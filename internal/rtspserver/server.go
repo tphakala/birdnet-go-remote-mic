@@ -21,8 +21,8 @@ type Config struct {
 }
 
 // FrameSource is how the server pulls media: the pipeline pushes frames in, the
-// playing session's writer drains them. It is implemented in main; the media
-// path consumes it.
+// playing session's writer drains them. ChanSource (feed.go) is the
+// implementation; tests pass their own.
 type FrameSource interface {
 	Next(ctx context.Context) (pipeline.Frame, error)
 }

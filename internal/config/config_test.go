@@ -39,8 +39,29 @@ func TestLegacyConfigRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := Load(p)
-	if err == nil || !strings.Contains(err.Error(), "devices:") {
-		t.Fatalf("legacy config should be rejected with a pointer to devices:, got %v", err)
+	// Assert the distinctive migration message, not just "devices:", which the
+	// empty-devices fallback error also contains: this must fail if the legacy
+	// detection block is removed.
+	if err == nil || !strings.Contains(err.Error(), "old single-device format") {
+		t.Fatalf("legacy config should be rejected with the migration hint, got %v", err)
+	}
+}
+
+func TestTopLevelAudioAnchorAccepted(t *testing.T) {
+	// A new config may carry a top-level `audio:` key as a YAML anchor to DRY
+	// the device blocks. Because a devices list is present, it must NOT be
+	// mistaken for the old single-device shape.
+	p := filepath.Join(t.TempDir(), "anchor.yaml")
+	cfg := "audio: &def\n  rate: 48000\ndevices:\n  - name: mic\n    device: \"hw:1,0\"\n    <<: *def\n"
+	if err := os.WriteFile(p, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("config with a top-level audio anchor should load, got %v", err)
+	}
+	if len(c.Devices) != 1 || c.Devices[0].Rate != 48000 {
+		t.Errorf("anchor did not merge into the device: %+v", c.Devices)
 	}
 }
 
@@ -129,6 +150,7 @@ func TestValidate(t *testing.T) {
 		{"path with space fails", func(c *Config) { c.Devices[0].Path = "/gar den" }, true},
 		{"bare slash path fails", func(c *Config) { c.Devices[0].Path = "/" }, true},
 		{"trailing slash path fails", func(c *Config) { c.Devices[0].Path = "/garden/" }, true},
+		{"reserved trackID suffix fails", func(c *Config) { c.Devices[0].Path = "/garden/trackID=0" }, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -74,15 +74,20 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	var legacy struct {
-		Audio map[string]any `yaml:"audio"`
-	}
-	if yaml.Unmarshal(data, &legacy) == nil && len(legacy.Audio) > 0 {
-		return Config{}, fmt.Errorf("config: %s uses the old single-device format; move the audio settings into a devices: list (see config.example.yaml)", path)
-	}
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return Config{}, fmt.Errorf("config: parse %s: %w", path, err)
+	}
+	// Detect the old single-device shape: a top-level `audio:` block and no
+	// `devices:` list. Gating on `devices` being absent means a new config may
+	// still use a top-level `audio:` YAML anchor to DRY its device blocks.
+	if len(c.Devices) == 0 {
+		var legacy struct {
+			Audio map[string]any `yaml:"audio"`
+		}
+		if yaml.Unmarshal(data, &legacy) == nil && len(legacy.Audio) > 0 {
+			return Config{}, fmt.Errorf("config: %s uses the old single-device format; move the audio settings into a devices: list (see config.example.yaml)", path)
+		}
 	}
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
@@ -191,6 +196,8 @@ func validatePath(p string) string {
 		return "must not end with /"
 	case strings.ContainsAny(p, " \t\r\n"):
 		return "must not contain whitespace"
+	case strings.HasSuffix(p, "/trackID=0"):
+		return "must not end with /trackID=0 (reserved for the per-track SETUP URL)"
 	default:
 		return ""
 	}
