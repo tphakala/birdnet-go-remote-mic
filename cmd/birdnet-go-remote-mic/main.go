@@ -147,9 +147,9 @@ func startAnnounce(ctx context.Context, cfg *config.Config, rate, channels int) 
 	if cfg.Mode == config.ModeOpus {
 		codec = "opus"
 	}
-	info := announce.Info{Name: cfg.Name, Port: port, Codec: codec, Rate: rate, Channels: channels, Version: version}
+	info := announce.Info{Name: cfg.Name, Path: "/stream", Port: port, Codec: codec, Rate: rate, Channels: channels, Version: version}
 	go func() {
-		if err := announce.Run(ctx, info); err != nil {
+		if err := announce.Run(ctx, []announce.Info{info}); err != nil {
 			log.Printf("mDNS advertisement stopped: %v (serving continues without discovery)", err)
 		}
 	}()

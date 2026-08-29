@@ -18,6 +18,7 @@ const serviceType = "_rtsp._tcp"
 // Info is what the appliance advertises.
 type Info struct {
 	Name     string // instance name (dnssd renames on conflict)
+	Path     string // RTSP path of this stream, e.g. "/stream"
 	Port     int    // RTSP port
 	Codec    string // "L16" or "opus"
 	Rate     int    // sample rate in Hz
@@ -35,31 +36,40 @@ func txtRecords(info Info) map[string]string {
 		"codec":   info.Codec,
 		"rate":    strconv.Itoa(info.Rate),
 		"ch":      strconv.Itoa(info.Channels),
-		"path":    "/stream",
+		"path":    info.Path,
 		"auth":    "none",
 	}
 }
 
-// Run advertises the service until ctx is cancelled, at which point dnssd sends
-// goodbye packets to flush peer caches. A startup error (bad config, no usable
-// interface) is returned so the caller can warn and keep serving without
-// discovery; a clean cancellation returns nil.
-func Run(ctx context.Context, info Info) error {
-	srv, err := dnssd.NewService(dnssd.Config{
-		Name: info.Name,
-		Type: serviceType,
-		Port: info.Port,
-		Text: txtRecords(info),
-	})
-	if err != nil {
-		return err
+// Run advertises every service until ctx is cancelled, at which point dnssd
+// sends goodbye packets to flush peer caches. A startup error (no services, bad
+// config, no usable interface) is returned so the caller can warn and keep
+// serving without discovery; a clean cancellation returns nil.
+//
+// Known limitation: dnssd cannot remove one service from a live responder, so a
+// device that dies mid-run keeps its advertisement until the process exits;
+// clients that discover it get a 404 from the RTSP server.
+func Run(ctx context.Context, infos []Info) error {
+	if len(infos) == 0 {
+		return errors.New("announce: no services to advertise")
 	}
 	resp, err := dnssd.NewResponder()
 	if err != nil {
 		return err
 	}
-	if _, err := resp.Add(srv); err != nil {
-		return err
+	for _, info := range infos {
+		srv, err := dnssd.NewService(dnssd.Config{
+			Name: info.Name,
+			Type: serviceType,
+			Port: info.Port,
+			Text: txtRecords(info),
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := resp.Add(srv); err != nil {
+			return err
+		}
 	}
 	if err := resp.Respond(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
