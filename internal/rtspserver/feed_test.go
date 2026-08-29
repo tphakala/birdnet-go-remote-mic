@@ -40,7 +40,23 @@ func TestCloseUnblocksNext(t *testing.T) {
 	c := NewChanSource(1)
 	c.Close()
 	c.Close() // idempotent
-	if _, err := c.Next(context.Background()); !errors.Is(err, ErrSourceClosed) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := c.Next(ctx); !errors.Is(err, ErrSourceClosed) {
 		t.Fatalf("Next after Close = %v, want ErrSourceClosed", err)
+	}
+}
+
+func TestCloseWinsOverBufferedFrame(t *testing.T) {
+	c := NewChanSource(4)
+	c.SetActive(true)
+	if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1}) {
+		t.Fatal("active push should succeed")
+	}
+	c.Close() // a buffered frame is queued, but the source is now dead
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := c.Next(ctx); !errors.Is(err, ErrSourceClosed) {
+		t.Fatalf("Next after Close = %v, want ErrSourceClosed even with a frame queued", err)
 	}
 }

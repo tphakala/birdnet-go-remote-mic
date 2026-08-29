@@ -63,7 +63,7 @@ devices:
     format: s16
 ```
 
-```
+```bash
 birdnet-go-remote-mic -list-devices          # enumerate capture devices
 birdnet-go-remote-mic -config config.yaml    # capture and serve
 ```
@@ -75,7 +75,7 @@ Then pull each stream at `rtsp://<host>:8554<path>`, for example
 
 Play or inspect the stream with standard tools (TCP-interleaved transport):
 
-```
+```bash
 ffprobe -rtsp_transport tcp rtsp://<host>:8554/stream
 ffplay  -rtsp_transport tcp rtsp://<host>:8554/stream
 ffmpeg  -rtsp_transport tcp -i rtsp://<host>:8554/stream -t 5 out.wav
@@ -101,7 +101,7 @@ For a local end-to-end check without hardware, use the ALSA loopback
 
 ## Development
 
-```
+```bash
 task check   # build (amd64 + arm64, CGO off), vet, lint, gofmt, race tests
 ```
 

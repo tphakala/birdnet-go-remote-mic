@@ -30,8 +30,16 @@ func NewChanSource(capacity int) *ChanSource {
 }
 
 // Next returns the next frame, blocking until one is available, ctx is done,
-// or the source is closed (dead device).
+// or the source is closed (dead device). Closure wins over a buffered frame: a
+// closed source returns ErrSourceClosed even when the channel still holds a
+// frame, so a dead device's writer tears down at once rather than emitting one
+// last packet (select would otherwise pick a ready case at random).
 func (c *ChanSource) Next(ctx context.Context) (pipeline.Frame, error) {
+	select {
+	case <-c.done:
+		return pipeline.Frame{}, ErrSourceClosed
+	default:
+	}
 	select {
 	case <-ctx.Done():
 		return pipeline.Frame{}, ctx.Err()

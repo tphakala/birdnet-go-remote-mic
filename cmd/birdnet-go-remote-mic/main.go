@@ -180,6 +180,8 @@ func run(cfgPath string) error {
 			alive--
 			srv.RemoveTrack(res.rt.track.Path)
 			res.rt.frames.Close()
+			_ = res.rt.src.Close() // release the ALSA stream now, not at process exit
+
 			if res.err != nil && ctx.Err() == nil {
 				lastPumpErr = res.err
 				log.Printf("device %q failed: %v; %s returns 404 until restart", res.rt.dev.Name, res.err, res.rt.dev.Path)
