@@ -58,6 +58,9 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	cs := &connSession{srv: s, conn: conn, ctx: ctx, cancel: cancel}
 	defer func() {
 		if cs.hasSlot {
+			if a, ok := s.frames.(activator); ok {
+				a.SetActive(false)
+			}
 			s.releaseSlot()
 		}
 		cs.close()
@@ -204,6 +207,15 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 	}
 	startWriter := cs.state != statePlaying
 	cs.state = statePlaying
+
+	// Turn frame delivery on before the PLAY response goes out; the writer
+	// itself starts only after the response is on the wire, so the client
+	// sees RTP-Info's starting seq/rtptime before the first packet.
+	if startWriter && cs.srv.frames != nil {
+		if a, ok := cs.srv.frames.(activator); ok {
+			a.SetActive(true)
+		}
+	}
 
 	h := rtsp.Header{}
 	h.Set("Session", cs.id)

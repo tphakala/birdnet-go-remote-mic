@@ -29,6 +29,10 @@ type FrameSource interface {
 	Next(ctx context.Context) (pipeline.Frame, error)
 }
 
+// activator is implemented by frame sources whose delivery can be gated
+// (ChanSource): PLAY activates, teardown deactivates.
+type activator interface{ SetActive(active bool) }
+
 // Server accepts RTSP connections and serves the single configured track.
 type Server struct {
 	cfg    Config

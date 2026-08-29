@@ -77,13 +77,6 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	}
 	addr := serveWith(t, Config{Path: "/stream", SDP: sdpBytes, PayloadType: 96, SRInterval: 50 * time.Millisecond, Timeout: 30 * time.Second}, frames)
 
-	go func() {
-		_ = pipeline.NewPCM(1).Run(fakeSrc, func(f pipeline.Frame) error {
-			frames.Push(f)
-			return nil
-		})
-	}()
-
 	var mu sync.Mutex
 	var got []byte
 	var pts []time.Duration
@@ -110,6 +103,15 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	if err := drivePlay(t, client); err != nil {
 		t.Fatalf("play handshake: %v", err)
 	}
+
+	// Push only after PLAY: delivery is gated on activation, and the fake
+	// source is finite, so pumping earlier would discard every period.
+	go func() {
+		_ = pipeline.NewPCM(1).Run(fakeSrc, func(f pipeline.Frame) error {
+			frames.Push(f)
+			return nil
+		})
+	}()
 
 	select {
 	case <-done:
@@ -150,13 +152,6 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	}
 	addr := serveWith(t, Config{Path: "/stream", SDP: sdpBytes, PayloadType: 97, SRInterval: time.Hour, Timeout: 30 * time.Second}, frames)
 
-	go func() {
-		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, func(f pipeline.Frame) error {
-			frames.Push(f)
-			return nil
-		})
-	}()
-
 	dec, err := opus.NewDecoder(48000, 1)
 	if err != nil {
 		t.Fatalf("NewDecoder: %v", err)
@@ -193,6 +188,15 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	if err := drivePlay(t, client); err != nil {
 		t.Fatalf("play handshake: %v", err)
 	}
+
+	// Push only after PLAY: delivery is gated on activation, and the fake
+	// source is finite, so pumping earlier would discard every period.
+	go func() {
+		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, func(f pipeline.Frame) error {
+			frames.Push(f)
+			return nil
+		})
+	}()
 
 	select {
 	case <-done:
@@ -264,6 +268,7 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	}()
 
 	frames := NewChanSource(256)
+	frames.SetActive(true)
 	for range 100 {
 		frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 	}
@@ -292,6 +297,7 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 
 func TestChanSourceBackpressure(t *testing.T) {
 	c := NewChanSource(2)
+	c.SetActive(true)
 	f := pipeline.Frame{Payload: []byte{1, 2}, Duration: 1}
 	if !c.Push(f) {
 		t.Fatal("first push should succeed")
@@ -309,6 +315,7 @@ func TestWriterTearsDownOnWriteError(t *testing.T) {
 	_ = clientConn.Close() // writes on serverConn now fail
 
 	frames := NewChanSource(4)
+	frames.SetActive(true)
 	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 	srv := New(Config{PayloadType: 96, SRInterval: time.Hour}, frames)
 	ctx, cancel := context.WithCancel(context.Background())
