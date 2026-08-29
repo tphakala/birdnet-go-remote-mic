@@ -10,8 +10,54 @@ processes: just one binary you control.
 
 ## Status
 
-Early planning. The normative design and roadmap live as issues in the private
-tracker; this README is a high-level overview only.
+Phases 0 and 2 are implemented: capture (via
+[go-audio-capture](https://github.com/tphakala/go-audio-capture)), the L16 and
+Opus pipeline, and a TCP-interleaved RTSP server that ffmpeg, VLC, and
+BirdNET-Go's own ingest client can play. mDNS discovery (phase 3) and packaging
+(phase 6) are still to come. The normative design and roadmap live as issues in
+a separate location.
+
+## Usage
+
+Write a config (see `config.example.yaml`):
+
+```yaml
+name: garden-mic
+listen: ":8554"
+mode: pcm          # "pcm" (L16, any rate, ultrasonic) or "opus" (48 kHz mono)
+audio:
+  device: "hw:1,0"
+  rate: 256000
+  channels: 1
+  format: s16
+```
+
+```
+birdnet-go-remote-mic -list-devices          # enumerate capture devices
+birdnet-go-remote-mic -config config.yaml    # capture and serve
+```
+
+Then pull the stream at `rtsp://<host>:8554/stream`.
+
+## Debugging
+
+Play or inspect the stream with standard tools (TCP-interleaved transport):
+
+```
+ffprobe -rtsp_transport tcp rtsp://<host>:8554/stream
+ffplay  -rtsp_transport tcp rtsp://<host>:8554/stream
+ffmpeg  -rtsp_transport tcp -i rtsp://<host>:8554/stream -t 5 out.wav
+```
+
+For a local end-to-end check without hardware, use the ALSA loopback
+(`snd-aloop`): play a tone into `hw:Loopback,0` and point the appliance's
+`audio.device` at the capture side `hw:Loopback,1`.
+
+## Development
+
+```
+task check   # build (amd64 + arm64, CGO off), vet, lint, gofmt, race tests
+```
 
 ## What it does
 
