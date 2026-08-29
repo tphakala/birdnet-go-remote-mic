@@ -12,6 +12,23 @@ func TestLoadExample(t *testing.T) {
 	}
 }
 
+func TestDiscoveryEnabledDefault(t *testing.T) {
+	c := Config{}
+	if !c.DiscoveryEnabled() {
+		t.Error("discovery should default to enabled when the block is absent")
+	}
+	off := false
+	c.Discovery.Enabled = &off
+	if c.DiscoveryEnabled() {
+		t.Error("discovery should be off when explicitly disabled")
+	}
+	on := true
+	c.Discovery.Enabled = &on
+	if !c.DiscoveryEnabled() {
+		t.Error("discovery should be on when explicitly enabled")
+	}
+}
+
 func TestValidate(t *testing.T) {
 	base := Config{
 		Name:   "garden-mic",

@@ -9,3 +9,5 @@ audio:
   format: s16             # only s16 is supported for now
 opus:
   bitrate: 64000          # Opus bitrate in bps; 0 uses the encoder default
+discovery:
+  enabled: true           # advertise over mDNS/DNS-SD (_rtsp._tcp); default true

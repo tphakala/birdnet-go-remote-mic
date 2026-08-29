@@ -9,14 +9,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"syscall"
 
 	capture "github.com/tphakala/go-audio-capture"
 	"github.com/tphakala/go-audio-stream/rtsp/sdp"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
@@ -108,6 +111,10 @@ func run(cfgPath string) error {
 	go func() { srvErr <- srv.ListenAndServe(ctx) }()
 	log.Printf("serving %q on %s (mode %s)", cfg.Name, cfg.Listen, cfg.Mode)
 
+	if cfg.DiscoveryEnabled() {
+		startAnnounce(ctx, &cfg, rate, channels)
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Print("shutting down")
@@ -123,6 +130,33 @@ func run(cfgPath string) error {
 		}
 		return nil
 	}
+}
+
+// startAnnounce advertises the appliance over mDNS in the background. Failure is
+// logged, not fatal: the appliance still serves on a multicast-blocked network,
+// where the manual host:port entry is the fallback.
+func startAnnounce(ctx context.Context, cfg *config.Config, rate, channels int) {
+	_, portStr, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		log.Printf("mDNS disabled: cannot parse listen address %q: %v", cfg.Listen, err)
+		return
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Printf("mDNS disabled: bad port in %q: %v", cfg.Listen, err)
+		return
+	}
+	codec := "L16"
+	if cfg.Mode == config.ModeOpus {
+		codec = "opus"
+	}
+	info := announce.Info{Name: cfg.Name, Port: port, Codec: codec, Rate: rate, Channels: channels, Version: version}
+	go func() {
+		if err := announce.Run(ctx, info); err != nil {
+			log.Printf("mDNS advertisement stopped: %v (serving continues without discovery)", err)
+		}
+	}()
+	log.Printf("advertising %q over mDNS (_rtsp._tcp) on port %d", cfg.Name, port)
 }
 
 func buildStage(cfg *config.Config, channels int) (stage pipeline.Stage, payloadType int) {

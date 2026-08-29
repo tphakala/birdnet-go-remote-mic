@@ -24,11 +24,23 @@ const (
 
 // Config is the whole configuration surface.
 type Config struct {
-	Name   string `yaml:"name"`
-	Listen string `yaml:"listen"`
-	Mode   Mode   `yaml:"mode"`
-	Audio  Audio  `yaml:"audio"`
-	Opus   Opus   `yaml:"opus"`
+	Name      string    `yaml:"name"`
+	Listen    string    `yaml:"listen"`
+	Mode      Mode      `yaml:"mode"`
+	Audio     Audio     `yaml:"audio"`
+	Opus      Opus      `yaml:"opus"`
+	Discovery Discovery `yaml:"discovery"`
+}
+
+// Discovery configures mDNS/DNS-SD advertisement. Enabled is a pointer so an
+// absent block defaults to on while an explicit "enabled: false" turns it off.
+type Discovery struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+// DiscoveryEnabled reports whether mDNS advertisement is on (the default).
+func (c *Config) DiscoveryEnabled() bool {
+	return c.Discovery.Enabled == nil || *c.Discovery.Enabled
 }
 
 // Audio configures capture.
