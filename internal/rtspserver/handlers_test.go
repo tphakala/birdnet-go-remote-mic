@@ -20,6 +20,7 @@ const testPath = "/stream"
 func baseURL(addr string) string  { return "rtsp://" + addr + testPath }
 func trackURL(addr string) string { return baseURL(addr) + "/trackID=0" }
 
+//nolint:gocritic // test helper; Config by value is fine.
 func startServer(t *testing.T, cfg Config) string {
 	t.Helper()
 	srv := New(cfg, nil)
