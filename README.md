@@ -10,12 +10,21 @@ processes: just one binary you control.
 
 ## Status
 
-Phases 0 and 2 are implemented: capture (via
+Phases 0, 2, and 3 are implemented: capture (via
 [go-audio-capture](https://github.com/tphakala/go-audio-capture)), the L16 and
-Opus pipeline, and a TCP-interleaved RTSP server that ffmpeg, VLC, and
-BirdNET-Go's own ingest client can play. mDNS discovery (phase 3) and packaging
-(phase 6) are still to come. The normative design and roadmap live as issues in
-the private tracker.
+Opus pipeline, a TCP-interleaved RTSP server that ffmpeg, VLC, and BirdNET-Go's
+own ingest client can play, and mDNS/DNS-SD advertisement so BirdNET-Go can
+discover the mic automatically. Packaging (phase 6) is still to come. The
+normative design and roadmap live as issues in the private tracker.
+
+## Discovery
+
+The appliance advertises itself over mDNS/DNS-SD as `_rtsp._tcp` (so
+`avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see it too), with TXT
+records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`, `path`, and a
+`txtvers`. It sends goodbye packets on shutdown so stale entries clear promptly.
+Set `discovery.enabled: false` to turn it off; on a network where multicast does
+not cross, add the mic in BirdNET-Go by its `host:port` instead.
 
 ## Usage
 
