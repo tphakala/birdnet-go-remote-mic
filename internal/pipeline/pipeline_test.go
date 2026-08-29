@@ -121,12 +121,12 @@ func TestOpusStageFraming(t *testing.T) {
 const opusFrameSamplesTest = 960
 
 func TestSDPSpec(t *testing.T) {
-	pcm := pipeline.SDPSpec(&config.Config{Name: "m", Mode: config.ModePCM}, 256000, 1)
+	pcm := pipeline.SDPSpec(&config.Device{Name: "m", Mode: config.ModePCM}, 256000, 1)
 	if pcm.EncodingName != "L16" || pcm.ClockRate != 256000 || pcm.Channels != 1 || pcm.PayloadType != 96 || pcm.Ptime != 20 {
 		t.Errorf("PCM spec unexpected: %+v", pcm)
 	}
 
-	op := pipeline.SDPSpec(&config.Config{Name: "m", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, 48000, 1)
+	op := pipeline.SDPSpec(&config.Device{Name: "m", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, 48000, 1)
 	if op.EncodingName != "opus" || op.ClockRate != 48000 || op.Channels != 2 || op.PayloadType != 97 {
 		t.Errorf("Opus spec unexpected: %+v", op)
 	}

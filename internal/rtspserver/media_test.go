@@ -70,7 +70,7 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	fakeSrc, wantPCM := sineSource(periods, periodFrames, rate)
 
 	frames := NewChanSource(128)
-	spec := pipeline.SDPSpec(&config.Config{Name: "test", Mode: config.ModePCM}, rate, 1)
+	spec := pipeline.SDPSpec(&config.Device{Name: "test", Mode: config.ModePCM}, rate, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
@@ -146,7 +146,7 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	fakeSrc, _ := sineSource(periods, periodFrames, rate)
 
 	frames := NewChanSource(128)
-	spec := pipeline.SDPSpec(&config.Config{Name: "test", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, rate, 1)
+	spec := pipeline.SDPSpec(&config.Device{Name: "test", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, rate, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
