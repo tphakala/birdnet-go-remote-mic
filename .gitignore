@@ -1,0 +1,31 @@
+# Build artifacts
+/bin/
+*.exe
+*.test
+*.out
+
+# Coverage and profiling
+coverage.out
+coverage.txt
+*.cov
+*.prof
+*.pprof
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.serena/
+.claude/
+
+# Local tool caches
+cache/
+
+# CodeGraph index database (local code intelligence)
+.codegraph/
+
+# NOTE: docs/ holds the normative design and plan. It is tracked in the private
+# Forgejo repo, not in the public mirror. Keep it out of the published history,
+# mirroring go-opus and go-flac.
+docs/
