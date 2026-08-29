@@ -1,0 +1,29 @@
+# Build artifacts
+/bin/
+*.exe
+*.test
+*.out
+
+# Coverage and profiling
+coverage.out
+coverage.txt
+*.cov
+*.prof
+*.pprof
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.serena/
+.claude/
+
+# Local tool caches
+cache/
+
+# CodeGraph index database (local code intelligence)
+.codegraph/
+
+# Local-only design and planning notes; never part of the published repo.
+docs/
