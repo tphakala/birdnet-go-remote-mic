@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	rtsp "github.com/tphakala/go-audio-stream/rtsp"
@@ -37,6 +38,11 @@ type connSession struct {
 	srv  *Server
 	conn net.Conn
 
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	writeMu   sync.Mutex
+
 	state    sessionState
 	id       string
 	rtpCh    int
@@ -44,15 +50,17 @@ type connSession struct {
 	startSeq uint16
 	startTS  uint32
 	hasSlot  bool
+	writing  bool // the media writer goroutine is running
 }
 
-func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
-	cs := &connSession{srv: s, conn: conn}
+func (s *Server) serveConn(parent context.Context, conn net.Conn) {
+	ctx, cancel := context.WithCancel(parent)
+	cs := &connSession{srv: s, conn: conn, ctx: ctx, cancel: cancel}
 	defer func() {
 		if cs.hasSlot {
 			s.releaseSlot()
 		}
-		_ = conn.Close()
+		cs.close()
 	}()
 
 	buf := make([]byte, 0, 8192)
@@ -194,6 +202,7 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 		cs.respondStatus(req, 454, "Session Not Found")
 		return
 	}
+	startWriter := cs.state != statePlaying
 	cs.state = statePlaying
 
 	h := rtsp.Header{}
@@ -201,6 +210,13 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 	h.Set("Range", "npt=0.000-")
 	h.Set("RTP-Info", fmt.Sprintf("url=%strackID=0;seq=%d;rtptime=%d", cs.contentBase(req), cs.startSeq, cs.startTS))
 	cs.write(&rtsp.Response{StatusCode: 200, Reason: "OK", CSeq: req.CSeq, Header: h})
+
+	// Start streaming only after the PLAY response is on the wire, so the
+	// client sees RTP-Info's starting seq/rtptime before the first packet.
+	if startWriter && cs.srv.frames != nil && !cs.writing {
+		cs.writing = true
+		go cs.runWriter()
+	}
 }
 
 // respondSession answers with a status and the Session header (used for
@@ -222,8 +238,27 @@ func (cs *connSession) write(resp *rtsp.Response) {
 	if err != nil {
 		return
 	}
+	cs.writeRaw(data)
+}
+
+// writeRaw writes one complete message or interleaved frame to the connection
+// under the write mutex, so RTSP responses, RTP media, and RTCP never interleave
+// mid-write. It returns false on a write error (the caller should tear down).
+func (cs *connSession) writeRaw(b []byte) bool {
+	cs.writeMu.Lock()
+	defer cs.writeMu.Unlock()
 	_ = cs.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_, _ = cs.conn.Write(data)
+	_, err := cs.conn.Write(b)
+	return err == nil
+}
+
+// close tears the connection down once: it cancels the per-conn context (so the
+// writer stops) and closes the socket (so a parked reader or writer unblocks).
+func (cs *connSession) close() {
+	cs.closeOnce.Do(func() {
+		cs.cancel()
+		_ = cs.conn.Close()
+	})
 }
 
 func (cs *connSession) matchPath(rawURL string) pathKind {

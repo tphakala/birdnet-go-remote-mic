@@ -14,10 +14,12 @@ import (
 
 // Config configures the server.
 type Config struct {
-	Listen  string        // RTSP listen address (host:port)
-	Path    string        // session path; defaults to "/stream"
-	SDP     []byte        // the DESCRIBE body, built at startup
-	Timeout time.Duration // session/idle timeout; defaults to 60s
+	Listen      string        // RTSP listen address (host:port)
+	Path        string        // session path; defaults to "/stream"
+	SDP         []byte        // the DESCRIBE body, built at startup
+	Timeout     time.Duration // session/idle timeout; defaults to 60s
+	PayloadType int           // RTP payload type for the media (96 L16, 97 Opus)
+	SRInterval  time.Duration // RTCP sender report interval; defaults to 5s
 }
 
 // FrameSource is how the server pulls media: the pipeline pushes frames in, the
@@ -37,12 +39,17 @@ type Server struct {
 }
 
 // New builds a Server. frames may be nil for control-only use (tests).
+//
+//nolint:gocritic // Config by value is the constructor API; New runs once at startup.
 func New(cfg Config, frames FrameSource) *Server {
 	if cfg.Path == "" {
 		cfg.Path = "/stream"
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 60 * time.Second
+	}
+	if cfg.SRInterval == 0 {
+		cfg.SRInterval = 5 * time.Second
 	}
 	return &Server{cfg: cfg, frames: frames}
 }
