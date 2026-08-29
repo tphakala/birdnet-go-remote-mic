@@ -9,7 +9,7 @@ import (
 const testCodec = "L16"
 
 func TestTXTRecords(t *testing.T) {
-	txt := txtRecords(Info{Name: "garden-mic", Path: "/garden", Codec: testCodec, Rate: 256000, Channels: 1, Version: "1.2.3"})
+	txt := txtRecords(&Info{Name: "garden-mic", Path: "/garden", Codec: testCodec, Rate: 256000, Channels: 1, Version: "1.2.3"})
 	want := map[string]string{
 		"txtvers": "1",
 		"model":   "birdnet-go-remote-mic",

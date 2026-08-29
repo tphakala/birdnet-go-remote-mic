@@ -75,7 +75,7 @@ type deviceRuntime struct {
 // openDevice opens and starts capture for one configured device and builds its
 // pipeline stage, SDP, and RTSP track.
 func openDevice(dev *config.Device) (*deviceRuntime, error) {
-	src, err := audio.OpenCapture(*dev)
+	src, err := audio.OpenCapture(dev)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}

@@ -41,7 +41,7 @@ type captureSource struct {
 // exactly, and OpenCapture double-checks the negotiated rate matches the
 // request. The caller's read goroutine should runtime.LockOSThread so the
 // capture loop is not descheduled mid-period.
-func OpenCapture(dev config.Device) (Source, error) {
+func OpenCapture(dev *config.Device) (Source, error) {
 	s, err := openStream(capture.Config{
 		Device:   dev.Device,
 		Rate:     dev.Rate,

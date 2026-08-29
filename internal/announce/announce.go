@@ -28,7 +28,7 @@ type Info struct {
 
 // txtRecords builds the TXT key/value set advertised with the service. The
 // schema is coordinated with the BirdNET-Go adopt flow (txtvers 1).
-func txtRecords(info Info) map[string]string {
+func txtRecords(info *Info) map[string]string {
 	return map[string]string{
 		"txtvers": "1",
 		"model":   "birdnet-go-remote-mic",
@@ -57,7 +57,8 @@ func Run(ctx context.Context, infos []Info) error {
 	if err != nil {
 		return err
 	}
-	for _, info := range infos {
+	for i := range infos {
+		info := &infos[i]
 		srv, err := dnssd.NewService(dnssd.Config{
 			Name: info.Name,
 			Type: serviceType,

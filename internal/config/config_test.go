@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+const (
+	nameGarden = "garden-mic"
+	pathGarden = "/garden"
+	formatS16  = "s16"
+	deviceHW1  = "hw:1,0"
+)
+
 func TestLoadExample(t *testing.T) {
 	c, err := Load("../../config.example.yaml")
 	if err != nil {
@@ -16,7 +23,7 @@ func TestLoadExample(t *testing.T) {
 		t.Fatalf("example should configure 2 devices, got %d", len(c.Devices))
 	}
 	d := c.Devices[0]
-	if d.Name != "garden-mic" || d.Mode != ModeOpus || d.Rate != 48000 || d.Device != "hw:1,0" || d.Path != "/garden" {
+	if d.Name != nameGarden || d.Mode != ModeOpus || d.Rate != 48000 || d.Device != deviceHW1 || d.Path != pathGarden {
 		t.Errorf("first example device parsed unexpectedly: %+v", d)
 	}
 	u := c.Devices[1]
@@ -51,7 +58,7 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("listen default = %q", c.Listen)
 	}
 	d := c.Devices[0]
-	if d.Mode != ModePCM || d.Channels != 1 || d.Format != "s16" || d.Path != "/stream" {
+	if d.Mode != ModePCM || d.Channels != 1 || d.Format != formatS16 || d.Path != "/stream" {
 		t.Errorf("device defaults not applied: %+v", d)
 	}
 }
@@ -77,8 +84,8 @@ func validBase() Config {
 	return Config{
 		Listen: ":8554",
 		Devices: []Device{
-			{Name: "garden-mic", Device: "hw:1,0", Path: "/garden", Mode: ModePCM, Rate: 256000, Channels: 1, Format: "s16"},
-			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: 1, Format: "s16"},
+			{Name: nameGarden, Device: deviceHW1, Path: pathGarden, Mode: ModePCM, Rate: 256000, Channels: 1, Format: formatS16},
+			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: 1, Format: formatS16},
 		},
 	}
 }
@@ -115,9 +122,9 @@ func TestValidate(t *testing.T) {
 		{"empty device fails", func(c *Config) { c.Devices[0].Device = "" }, true},
 		{"unknown mode fails", func(c *Config) { c.Devices[0].Mode = "flac" }, true},
 		{"negative opus bitrate fails", func(c *Config) { c.Devices[0].Opus.Bitrate = -1 }, true},
-		{"duplicate name fails", func(c *Config) { c.Devices[1].Name = "garden-mic" }, true},
-		{"duplicate path fails", func(c *Config) { c.Devices[1].Path = "/garden" }, true},
-		{"duplicate device id fails", func(c *Config) { c.Devices[1].Device = "hw:1,0" }, true},
+		{"duplicate name fails", func(c *Config) { c.Devices[1].Name = nameGarden }, true},
+		{"duplicate path fails", func(c *Config) { c.Devices[1].Path = pathGarden }, true},
+		{"duplicate device id fails", func(c *Config) { c.Devices[1].Device = deviceHW1 }, true},
 		{"path without slash fails", func(c *Config) { c.Devices[0].Path = "garden" }, true},
 		{"path with space fails", func(c *Config) { c.Devices[0].Path = "/gar den" }, true},
 		{"bare slash path fails", func(c *Config) { c.Devices[0].Path = "/" }, true},
