@@ -5,9 +5,9 @@ go 1.27
 require (
 	github.com/brutella/dnssd v1.2.14
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
-	github.com/tphakala/go-audio-capture v0.0.0-00010101000000-000000000000
-	github.com/tphakala/go-audio-stream v0.0.0-00010101000000-000000000000
-	github.com/tphakala/go-opus v0.0.0-00010101000000-000000000000
+	github.com/tphakala/go-audio-capture v0.1.0
+	github.com/tphakala/go-audio-stream v0.3.1-0.20260829075314-e3c95c4c21b3
+	github.com/tphakala/go-opus v1.1.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -21,13 +21,4 @@ require (
 	golang.org/x/sync v0.7.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/tools v0.22.0 // indirect
-)
-
-// Local development replaces: go-audio-capture is not yet published, and the
-// go-audio-stream send primitives live on a feature branch. Remove before the
-// first release.
-replace (
-	github.com/tphakala/go-audio-capture => ../go-audio-capture
-	github.com/tphakala/go-audio-stream => ../go-audio-stream
-	github.com/tphakala/go-opus => ../go-opus
 )
