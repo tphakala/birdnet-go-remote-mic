@@ -5,14 +5,22 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"runtime"
+	"syscall"
 
 	capture "github.com/tphakala/go-audio-capture"
+	"github.com/tphakala/go-audio-stream/rtsp/sdp"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -54,10 +62,74 @@ func run(cfgPath string) error {
 	if err != nil {
 		return err
 	}
-	// Wiring of capture, pipeline, and the RTSP server lands in Task 6.
-	log.Printf("loaded config %q: mode %s, %d Hz, %d ch on %s (server not yet wired)",
-		cfg.Name, cfg.Mode, cfg.Audio.Rate, cfg.Audio.Channels, cfg.Audio.Device)
-	return nil
+
+	src, err := audio.OpenCapture(cfg.Audio)
+	if err != nil {
+		return fmt.Errorf("open capture: %w", err)
+	}
+	defer func() { _ = src.Close() }()
+	rate, channels := src.Negotiated()
+	log.Printf("capture: %d Hz, %d ch on %s", rate, channels, cfg.Audio.Device)
+
+	stage, payloadType := buildStage(&cfg, channels)
+	sdpBytes, err := sdp.WriteSession(pipeline.SDPSpec(&cfg, rate, channels))
+	if err != nil {
+		return fmt.Errorf("build sdp: %w", err)
+	}
+
+	frames := rtspserver.NewChanSource(64)
+	srv := rtspserver.New(rtspserver.Config{
+		Listen:      cfg.Listen,
+		SDP:         sdpBytes,
+		PayloadType: payloadType,
+	}, frames)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Capture/pipeline pump: the sound card is the clock. Lock the goroutine to
+	// its OS thread so the capture loop is not descheduled mid-period.
+	pumpErr := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		var drops uint64
+		pumpErr <- stage.Run(src, func(f pipeline.Frame) error {
+			if !frames.Push(f) {
+				drops++
+				if drops%50 == 1 {
+					log.Printf("dropping frames: the client is not keeping up (total drops: %d)", drops)
+				}
+			}
+			return ctx.Err()
+		})
+	}()
+
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.ListenAndServe(ctx) }()
+	log.Printf("serving %q on %s (mode %s)", cfg.Name, cfg.Listen, cfg.Mode)
+
+	select {
+	case <-ctx.Done():
+		log.Print("shutting down")
+		return nil
+	case err := <-pumpErr:
+		if err != nil {
+			return fmt.Errorf("capture pump: %w", err)
+		}
+		return nil
+	case err := <-srvErr:
+		if err != nil {
+			return fmt.Errorf("rtsp server: %w", err)
+		}
+		return nil
+	}
+}
+
+func buildStage(cfg *config.Config, channels int) (stage pipeline.Stage, payloadType int) {
+	if cfg.Mode == config.ModeOpus {
+		return pipeline.NewOpus(cfg.Opus), 97
+	}
+	return pipeline.NewPCM(channels), 96
 }
 
 func fatal(err error) {
