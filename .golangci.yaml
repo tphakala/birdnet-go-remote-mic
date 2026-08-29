@@ -1,0 +1,72 @@
+# Adapted from github.com/tphakala/go-audio-stream's .golangci.yaml to keep one
+# linting standard across the audio projects. birdnet-go-remote-mic notes:
+#   - single module
+#   - Linux-only (the appliance captures via ALSA through go-audio-capture)
+#   - keeps gocritic's ruleguard wired to rules/*.go for modern-Go patterns
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - iface
+    - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - predeclared
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - thelper
+    - unconvert
+    - wastedassign
+  disable:
+    - unused
+  settings:
+    gocognit:
+      min-complexity: 50
+    gocritic:
+      # gocritic auto-enables the ruleguard check when settings.ruleguard.rules
+      # is set; the rules/*.go matchers carry the //go:build ruleguard tag so
+      # the normal toolchain ignores them.
+      disabled-checks:
+        - commentFormatting
+        - commentedOutCode
+      enabled-tags:
+        - style
+        - diagnostic
+        - performance
+      settings:
+        ruleguard:
+          rules: "rules/*.go"
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    exhaustive:
+      default-signifies-exhaustive: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+  new: false

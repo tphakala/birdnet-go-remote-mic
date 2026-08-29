@@ -1,0 +1,79 @@
+# https://taskfile.dev
+version: '3'
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  LDFLAGS: -s -w -X main.version={{.VERSION}}
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the appliance binary (CGO disabled, version stamped)
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic ./cmd/birdnet-go-remote-mic
+
+  build-arm64:
+    desc: Cross-build for linux/arm64 (the Pi Zero 2 W target)
+    env:
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: arm64
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic-arm64 ./cmd/birdnet-go-remote-mic
+
+  test:
+    desc: Run all tests
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run tests with the race detector
+    cmds:
+      - go test -race ./...
+
+  vet:
+    desc: Run go vet for amd64 and arm64
+    cmds:
+      - GOARCH=amd64 go vet ./...
+      - GOARCH=arm64 go vet ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Fail if any Go file is not gofmt-formatted
+    cmds:
+      - |
+        files=$(gofmt -l .)
+        if [ -n "$files" ]; then
+          echo "These files are not gofmt-formatted (run: gofmt -w .):"
+          echo "$files"
+          exit 1
+        fi
+
+  tidy:
+    desc: Tidy and verify go.mod
+    cmds:
+      - go mod tidy
+      - go mod verify
+
+  check:
+    desc: Full local gate (build, arm64 build, vet, lint, fmt, race tests)
+    cmds:
+      - task: build
+      - task: build-arm64
+      - task: vet
+      - task: lint
+      - task: fmt
+      - task: test:race
