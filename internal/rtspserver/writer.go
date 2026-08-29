@@ -20,7 +20,7 @@ const maxWriterPayload = 15360
 func (cs *connSession) runWriter() {
 	defer cs.close()
 
-	pt := uint8(cs.srv.cfg.PayloadType)
+	pt := uint8(cs.track.PayloadType)
 	ssrc := randU32()
 	seq := cs.startSeq
 	ts := cs.startTS
@@ -34,7 +34,7 @@ func (cs *connSession) runWriter() {
 	var lastTS uint32
 
 	for {
-		frame, err := cs.srv.frames.Next(cs.ctx)
+		frame, err := cs.track.Frames.Next(cs.ctx)
 		if err != nil {
 			return
 		}

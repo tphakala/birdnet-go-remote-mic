@@ -139,14 +139,14 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 // and channels are the negotiated capture values (used for the L16 rtpmap);
 // Opus is always advertised as opus/48000/2 per RFC 7587 with sprop-stereo=0 for
 // the mono source.
-func SDPSpec(cfg *config.Config, rate, channels int) sdp.WriteSpec {
-	if cfg.Mode == config.ModeOpus {
+func SDPSpec(d *config.Device, rate, channels int) sdp.WriteSpec {
+	if d.Mode == config.ModeOpus {
 		fmtp := "sprop-stereo=0"
-		if cfg.Opus.Bitrate > 0 {
-			fmtp += ";maxaveragebitrate=" + strconv.Itoa(cfg.Opus.Bitrate)
+		if d.Opus.Bitrate > 0 {
+			fmtp += ";maxaveragebitrate=" + strconv.Itoa(d.Opus.Bitrate)
 		}
 		return sdp.WriteSpec{
-			Name:         cfg.Name,
+			Name:         d.Name,
 			PayloadType:  97,
 			EncodingName: "opus",
 			ClockRate:    48000,
@@ -156,7 +156,7 @@ func SDPSpec(cfg *config.Config, rate, channels int) sdp.WriteSpec {
 		}
 	}
 	return sdp.WriteSpec{
-		Name:         cfg.Name,
+		Name:         d.Name,
 		PayloadType:  96,
 		EncodingName: "L16",
 		ClockRate:    rate,

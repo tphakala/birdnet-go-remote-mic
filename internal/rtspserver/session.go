@@ -35,8 +35,9 @@ const (
 
 // connSession is the per-connection RTSP state machine.
 type connSession struct {
-	srv  *Server
-	conn net.Conn
+	srv   *Server
+	conn  net.Conn
+	track *Track // bound at SETUP; one connection serves one track
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -58,7 +59,10 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	cs := &connSession{srv: s, conn: conn, ctx: ctx, cancel: cancel}
 	defer func() {
 		if cs.hasSlot {
-			s.releaseSlot()
+			if a, ok := cs.track.Frames.(activator); ok {
+				a.SetActive(false)
+			}
+			cs.track.releaseSlot()
 		}
 		cs.close()
 	}()
@@ -150,19 +154,26 @@ func (cs *connSession) respondOptions(req *rtsp.Request) {
 }
 
 func (cs *connSession) respondDescribe(req *rtsp.Request) {
-	if cs.matchPath(req.URL) != pathSession {
+	t, kind := cs.resolve(req.URL)
+	if kind != pathSession {
 		cs.respondStatus(req, 404, "Not Found")
 		return
 	}
 	h := rtsp.Header{}
 	h.Set("Content-Type", "application/sdp")
-	h.Set("Content-Base", cs.contentBase(req))
-	cs.write(&rtsp.Response{StatusCode: 200, Reason: "OK", CSeq: req.CSeq, Header: h, Body: cs.srv.cfg.SDP})
+	h.Set("Content-Base", cs.contentBase(req, t.Path))
+	cs.write(&rtsp.Response{StatusCode: 200, Reason: "OK", CSeq: req.CSeq, Header: h, Body: t.SDP})
 }
 
 func (cs *connSession) respondSetup(req *rtsp.Request) {
-	if cs.matchPath(req.URL) != pathTrack {
+	t, kind := cs.resolve(req.URL)
+	if kind != pathTrack {
 		cs.respondStatus(req, 404, "Not Found")
+		return
+	}
+	if cs.track != nil && cs.track != t {
+		// One connection serves one track; BirdNET-Go opens one conn per URL.
+		cs.respondStatus(req, 455, "Method Not Valid in This State")
 		return
 	}
 	th, err := rtsp.ParseTransport(req.Header.Get("Transport"))
@@ -171,11 +182,12 @@ func (cs *connSession) respondSetup(req *rtsp.Request) {
 		return
 	}
 	if !cs.hasSlot {
-		if !cs.srv.acquireSlot() {
+		if !t.acquireSlot() {
 			cs.respondStatus(req, 453, "Not Enough Bandwidth")
 			return
 		}
 		cs.hasSlot = true
+		cs.track = t
 	}
 
 	// The client chooses the interleaved channel pair (RFC 2326); default to
@@ -205,15 +217,24 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 	startWriter := cs.state != statePlaying
 	cs.state = statePlaying
 
+	// Turn frame delivery on before the PLAY response goes out; the writer
+	// itself starts only after the response is on the wire, so the client
+	// sees RTP-Info's starting seq/rtptime before the first packet.
+	if startWriter && cs.track.Frames != nil {
+		if a, ok := cs.track.Frames.(activator); ok {
+			a.SetActive(true)
+		}
+	}
+
 	h := rtsp.Header{}
 	h.Set("Session", cs.id)
 	h.Set("Range", "npt=0.000-")
-	h.Set("RTP-Info", fmt.Sprintf("url=%strackID=0;seq=%d;rtptime=%d", cs.contentBase(req), cs.startSeq, cs.startTS))
+	h.Set("RTP-Info", fmt.Sprintf("url=%strackID=0;seq=%d;rtptime=%d", cs.contentBase(req, cs.track.Path), cs.startSeq, cs.startTS))
 	cs.write(&rtsp.Response{StatusCode: 200, Reason: "OK", CSeq: req.CSeq, Header: h})
 
 	// Start streaming only after the PLAY response is on the wire, so the
 	// client sees RTP-Info's starting seq/rtptime before the first packet.
-	if startWriter && cs.srv.frames != nil && !cs.writing {
+	if startWriter && cs.track.Frames != nil && !cs.writing {
 		cs.writing = true
 		go cs.runWriter()
 	}
@@ -261,22 +282,25 @@ func (cs *connSession) close() {
 	})
 }
 
-func (cs *connSession) matchPath(rawURL string) pathKind {
+// resolve maps a request URL to the registered track it addresses: the track's
+// own path is the session URL, path+"/trackID=0" the track URL.
+func (cs *connSession) resolve(rawURL string) (*Track, pathKind) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return pathNone
+		return nil, pathNone
 	}
-	switch u.Path {
-	case cs.srv.cfg.Path:
-		return pathSession
-	case cs.srv.cfg.Path + "/trackID=0":
-		return pathTrack
-	default:
-		return pathNone
+	if t := cs.srv.lookup(u.Path); t != nil {
+		return t, pathSession
 	}
+	if p, ok := strings.CutSuffix(u.Path, "/trackID=0"); ok {
+		if t := cs.srv.lookup(p); t != nil {
+			return t, pathTrack
+		}
+	}
+	return nil, pathNone
 }
 
-func (cs *connSession) contentBase(req *rtsp.Request) string {
+func (cs *connSession) contentBase(req *rtsp.Request, path string) string {
 	host := req.Header.Get("Host")
 	if host == "" {
 		if u, err := url.Parse(req.URL); err == nil && u.Host != "" {
@@ -285,7 +309,7 @@ func (cs *connSession) contentBase(req *rtsp.Request) string {
 			host = cs.conn.LocalAddr().String()
 		}
 	}
-	return "rtsp://" + host + cs.srv.cfg.Path + "/"
+	return "rtsp://" + host + path + "/"
 }
 
 func (cs *connSession) sessionMatches(req *rtsp.Request) bool {

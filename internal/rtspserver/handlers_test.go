@@ -20,10 +20,12 @@ const testPath = "/stream"
 func baseURL(addr string) string  { return "rtsp://" + addr + testPath }
 func trackURL(addr string) string { return baseURL(addr) + "/trackID=0" }
 
+func defaultTrack() *Track { return &Track{Path: testPath, SDP: testSDP, PayloadType: 96} }
+
 //nolint:gocritic // test helper; Config by value is fine.
-func startServer(t *testing.T, cfg Config) string {
+func startServer(t *testing.T, cfg Config, tracks ...*Track) (string, *Server) {
 	t.Helper()
-	srv := New(cfg, nil)
+	srv := New(cfg, tracks...)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -38,7 +40,7 @@ func startServer(t *testing.T, cfg Config) string {
 			go srv.serveConn(context.Background(), conn)
 		}
 	}()
-	return ln.Addr().String()
+	return ln.Addr().String(), srv
 }
 
 type client struct {
@@ -93,7 +95,7 @@ func tcpTransport(pair string) rtsp.Header {
 }
 
 func TestControlHappyPath(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	base := baseURL(addr)
 	c := dial(t, addr)
 
@@ -157,7 +159,7 @@ func TestControlHappyPath(t *testing.T) {
 }
 
 func TestSetupEchoesClientChannels(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	c := dial(t, addr)
 	r := c.do(t, "SETUP", trackURL(addr), tcpTransport("2-3"))
 	if r.StatusCode != 200 {
@@ -169,7 +171,7 @@ func TestSetupEchoesClientChannels(t *testing.T) {
 }
 
 func TestSetupRejectsUDP(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	c := dial(t, addr)
 	h := rtsp.Header{}
 	h.Set("Transport", "RTP/AVP;unicast;client_port=5000-5001")
@@ -180,7 +182,7 @@ func TestSetupRejectsUDP(t *testing.T) {
 }
 
 func TestSecondSetupRejected(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	track := trackURL(addr)
 
 	c1 := dial(t, addr)
@@ -194,7 +196,7 @@ func TestSecondSetupRejected(t *testing.T) {
 }
 
 func TestUnknownPath404(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	c := dial(t, addr)
 	if r := c.do(t, "DESCRIBE", "rtsp://"+addr+"/wrong", nil); r.StatusCode != 404 {
 		t.Errorf("DESCRIBE /wrong = %d, want 404", r.StatusCode)
@@ -202,7 +204,7 @@ func TestUnknownPath404(t *testing.T) {
 }
 
 func TestPlayWithoutSession(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	c := dial(t, addr)
 	if r := c.do(t, "PLAY", baseURL(addr), nil); r.StatusCode != 454 {
 		t.Errorf("PLAY without SETUP = %d, want 454", r.StatusCode)
@@ -210,7 +212,7 @@ func TestPlayWithoutSession(t *testing.T) {
 }
 
 func TestUnknownMethod(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 60 * time.Second})
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	c := dial(t, addr)
 	// RECORD has a ClassifyStream-recognized prefix but is not implemented.
 	if r := c.do(t, "RECORD", baseURL(addr), nil); r.StatusCode != 501 {
@@ -219,7 +221,7 @@ func TestUnknownMethod(t *testing.T) {
 }
 
 func TestKeepaliveRefreshesDeadline(t *testing.T) {
-	addr := startServer(t, Config{Path: testPath, SDP: testSDP, Timeout: 300 * time.Millisecond})
+	addr, _ := startServer(t, Config{Timeout: 300 * time.Millisecond}, defaultTrack())
 	base := baseURL(addr)
 	c := dial(t, addr)
 
@@ -235,5 +237,67 @@ func TestKeepaliveRefreshesDeadline(t *testing.T) {
 	_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := c.conn.Read(make([]byte, 1)); err == nil {
 		t.Error("connection stayed open past the idle timeout")
+	}
+}
+
+func TestTracksRouteIndependently(t *testing.T) {
+	sdpB := bytes.Replace(testSDP, []byte("L16/256000/1"), []byte("L16/48000/1"), 1)
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second},
+		&Track{Path: "/a", SDP: testSDP, PayloadType: 96},
+		&Track{Path: "/b", SDP: sdpB, PayloadType: 96},
+	)
+	c := dial(t, addr)
+	ra := c.do(t, "DESCRIBE", "rtsp://"+addr+"/a", nil)
+	if ra.StatusCode != 200 || !bytes.Equal(ra.Body, testSDP) {
+		t.Fatalf("DESCRIBE /a = %d, body match %v", ra.StatusCode, bytes.Equal(ra.Body, testSDP))
+	}
+	if !strings.HasSuffix(ra.Header.Get("Content-Base"), "/a/") {
+		t.Errorf("Content-Base for /a = %q", ra.Header.Get("Content-Base"))
+	}
+	rb := c.do(t, "DESCRIBE", "rtsp://"+addr+"/b", nil) // DESCRIBE is stateless: same conn may probe both
+	if rb.StatusCode != 200 || !bytes.Equal(rb.Body, sdpB) {
+		t.Fatalf("DESCRIBE /b = %d, body match %v", rb.StatusCode, bytes.Equal(rb.Body, sdpB))
+	}
+}
+
+func TestSetupSecondTrackSameConnRejected(t *testing.T) {
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second},
+		&Track{Path: "/a", SDP: testSDP, PayloadType: 96},
+		&Track{Path: "/b", SDP: testSDP, PayloadType: 96},
+	)
+	c := dial(t, addr)
+	if r := c.do(t, "SETUP", "rtsp://"+addr+"/a/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
+		t.Fatalf("SETUP /a = %d", r.StatusCode)
+	}
+	if r := c.do(t, "SETUP", "rtsp://"+addr+"/b/trackID=0", tcpTransport("2-3")); r.StatusCode != 455 {
+		t.Errorf("cross-track SETUP = %d, want 455", r.StatusCode)
+	}
+}
+
+func TestPerTrackSlots(t *testing.T) {
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second},
+		&Track{Path: "/a", SDP: testSDP, PayloadType: 96},
+		&Track{Path: "/b", SDP: testSDP, PayloadType: 96},
+	)
+	c1 := dial(t, addr)
+	if r := c1.do(t, "SETUP", "rtsp://"+addr+"/a/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
+		t.Fatalf("SETUP /a = %d", r.StatusCode)
+	}
+	c2 := dial(t, addr)
+	if r := c2.do(t, "SETUP", "rtsp://"+addr+"/b/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
+		t.Errorf("SETUP /b on second conn = %d, want 200 (slots are per track)", r.StatusCode)
+	}
+	c3 := dial(t, addr)
+	if r := c3.do(t, "SETUP", "rtsp://"+addr+"/a/trackID=0", tcpTransport("0-1")); r.StatusCode != 453 {
+		t.Errorf("second SETUP /a = %d, want 453", r.StatusCode)
+	}
+}
+
+func TestRemovedTrack404(t *testing.T) {
+	addr, srv := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
+	srv.RemoveTrack(testPath)
+	c := dial(t, addr)
+	if r := c.do(t, "DESCRIBE", baseURL(addr), nil); r.StatusCode != 404 {
+		t.Errorf("DESCRIBE removed track = %d, want 404", r.StatusCode)
 	}
 }

@@ -26,58 +26,89 @@ normative design and roadmap live as issues in the private tracker.
 
 ## Discovery
 
-The appliance advertises itself over mDNS/DNS-SD as `_rtsp._tcp` (so
-`avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see it too), with TXT
-records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`, `path`, and a
-`txtvers`. It sends goodbye packets on shutdown so stale entries clear promptly.
-Set `discovery.enabled: false` to turn it off; on a network where multicast does
-not cross, add the mic in BirdNET-Go by its `host:port` instead.
+Each configured device is advertised as its own mDNS/DNS-SD `_rtsp._tcp`
+instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
+all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
+`path`, and a `txtvers`. It sends goodbye packets on shutdown so stale entries
+clear promptly. Set `discovery.enabled: false` to turn it off; on a network
+where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
+plus path instead.
 
 ## Usage
 
-Write a config (see `config.example.yaml`):
+One binary per host serves any number of capture devices: each entry in the
+`devices:` list gets its own RTSP path on the shared `listen` port and its own
+mDNS instance. Write a config (see `config.example.yaml`):
 
 ```yaml
-name: garden-mic
 listen: ":8554"
-mode: pcm          # "pcm" (L16, any rate, ultrasonic) or "opus" (48 kHz mono)
-audio:
-  device: "hw:1,0"
-  rate: 256000
-  channels: 1
-  format: s16
+discovery:
+  enabled: true
+devices:
+  - name: garden-mic       # unique instance name; also the mDNS label
+    device: "hw:1,0"
+    path: /garden          # unique RTSP path; defaults to /stream
+    mode: opus             # "opus" (48 kHz mono) or "pcm" (L16, any rate, ultrasonic)
+    rate: 48000
+    channels: 1
+    format: s16
+    opus:
+      bitrate: 64000
+  - name: ultrasonic-mic   # add as many devices as the hardware supports
+    device: "hw:2,0"
+    path: /bat
+    mode: pcm
+    rate: 256000
+    channels: 1
+    format: s16
 ```
 
-```
+```bash
 birdnet-go-remote-mic -list-devices          # enumerate capture devices
 birdnet-go-remote-mic -config config.yaml    # capture and serve
 ```
 
-Then pull the stream at `rtsp://<host>:8554/stream`.
+Then pull each stream at `rtsp://<host>:8554<path>`, for example
+`rtsp://<host>:8554/garden`. A single-device config is just a one-entry list.
 
 ## Debugging
 
 Play or inspect the stream with standard tools (TCP-interleaved transport):
 
-```
+```bash
 ffprobe -rtsp_transport tcp rtsp://<host>:8554/stream
 ffplay  -rtsp_transport tcp rtsp://<host>:8554/stream
 ffmpeg  -rtsp_transport tcp -i rtsp://<host>:8554/stream -t 5 out.wav
 ```
 
 For a local end-to-end check without hardware, use the ALSA loopback
-(`snd-aloop`): play a tone into `hw:Loopback,0` and point the appliance's
-`audio.device` at the capture side `hw:Loopback,1`.
+(`snd-aloop`): play a tone into `hw:Loopback,0` and point a device's
+`device` at the capture side `hw:Loopback,1`.
+
+### Multi-device behaviour
+
+- A device that fails to open at startup is logged and skipped; the process
+  only exits nonzero if no configured device opens at all.
+- A device that dies mid-run (a USB unplug) is retired: its path returns 404
+  until the process restarts, while the other devices keep serving. Its mDNS
+  advertisement persists until the process exits (a limitation of the dnssd
+  responder), so a discoverer that picks it up gets the 404.
+- Practical limits are hardware, not software: ALSA `hw:` devices are
+  single-client (the config rejects a device id used twice), USB isochronous
+  bandwidth is shared per controller (watch for xruns when several high-rate
+  or ultrasonic mics share one hub), and independent devices drift relative to
+  each other over time (each stream is honest to its own capture clock).
 
 ## Development
 
-```
+```bash
 task check   # build (amd64 + arm64, CGO off), vet, lint, gofmt, race tests
 ```
 
 ## What it does
 
-- **Captures** audio from a local device (USB or I2S) with no transcoding glue.
+- **Captures** audio from any number of local devices (USB or I2S) with no
+  transcoding glue, one binary per host serving one RTSP stream per device.
 - **Streams** over a self-implemented RTSP/RTP server, TCP-interleaved by
   default so the audio arrives lossless and firewall-friendly.
 - **Two modes over one protocol:**

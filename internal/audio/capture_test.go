@@ -36,7 +36,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// rather than silently deliver the wrong rate.
 	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
 	defer restore()
-	if _, err := OpenCapture(config.Audio{Device: "hw:1,0", Rate: 256000, Channels: 1, Format: "s16"}); err == nil {
+	if _, err := OpenCapture(&config.Device{Device: "hw:1,0", Rate: 256000, Channels: 1, Format: "s16"}); err == nil {
 		t.Fatal("OpenCapture accepted a rate mismatch, want error")
 	}
 	if !stub.closed {
@@ -47,7 +47,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 func TestOpenCaptureStartsAndReads(t *testing.T) {
 	_, restore := swapOpenStream(capture.Config{Rate: 256000, Channels: 1, PeriodFrames: 5120})
 	defer restore()
-	src, err := OpenCapture(config.Audio{Device: "hw:1,0", Rate: 256000, Channels: 1, Format: "s16"})
+	src, err := OpenCapture(&config.Device{Device: "hw:1,0", Rate: 256000, Channels: 1, Format: "s16"})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}
