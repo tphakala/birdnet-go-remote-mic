@@ -81,11 +81,8 @@ func run(cfgPath string) error {
 	}
 
 	frames := rtspserver.NewChanSource(64)
-	srv := rtspserver.New(rtspserver.Config{
-		Listen:      cfg.Listen,
-		SDP:         sdpBytes,
-		PayloadType: payloadType,
-	}, frames)
+	track := &rtspserver.Track{Path: "/stream", SDP: sdpBytes, PayloadType: payloadType, Frames: frames}
+	srv := rtspserver.New(rtspserver.Config{Listen: cfg.Listen}, track)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

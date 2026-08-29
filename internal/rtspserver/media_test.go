@@ -44,9 +44,9 @@ func sineSource(periods, periodFrames, rate int) (source audio.Source, pcm []byt
 // returns the listen address.
 //
 //nolint:gocritic // test helper; Config by value is fine.
-func serveWith(t *testing.T, cfg Config, frames FrameSource) string {
+func serveWith(t *testing.T, cfg Config, tr *Track) string {
 	t.Helper()
-	srv := New(cfg, frames)
+	srv := New(cfg, tr)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -75,7 +75,8 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	addr := serveWith(t, Config{Path: "/stream", SDP: sdpBytes, PayloadType: 96, SRInterval: 50 * time.Millisecond, Timeout: 30 * time.Second}, frames)
+	addr := serveWith(t, Config{SRInterval: 50 * time.Millisecond, Timeout: 30 * time.Second},
+		&Track{Path: "/stream", SDP: sdpBytes, PayloadType: 96, Frames: frames})
 
 	var mu sync.Mutex
 	var got []byte
@@ -150,7 +151,8 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	addr := serveWith(t, Config{Path: "/stream", SDP: sdpBytes, PayloadType: 97, SRInterval: time.Hour, Timeout: 30 * time.Second}, frames)
+	addr := serveWith(t, Config{SRInterval: time.Hour, Timeout: 30 * time.Second},
+		&Track{Path: "/stream", SDP: sdpBytes, PayloadType: 97, Frames: frames})
 
 	dec, err := opus.NewDecoder(48000, 1)
 	if err != nil {
@@ -272,9 +274,10 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	for range 100 {
 		frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 	}
-	srv := New(Config{PayloadType: 96, SRInterval: time.Hour}, frames)
+	track := &Track{Path: "/stream", PayloadType: 96, Frames: frames}
+	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(context.Background())
-	cs := &connSession{srv: srv, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1}
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -317,9 +320,10 @@ func TestWriterTearsDownOnWriteError(t *testing.T) {
 	frames := NewChanSource(4)
 	frames.SetActive(true)
 	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
-	srv := New(Config{PayloadType: 96, SRInterval: time.Hour}, frames)
+	track := &Track{Path: "/stream", PayloadType: 96, Frames: frames}
+	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(context.Background())
-	cs := &connSession{srv: srv, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1}
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1}
 
 	done := make(chan struct{})
 	go func() { cs.runWriter(); close(done) }()
