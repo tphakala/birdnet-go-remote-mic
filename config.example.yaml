@@ -1,0 +1,11 @@
+# birdnet-go-remote-mic example configuration.
+name: garden-mic          # instance name; used in the SDP session name (and later mDNS)
+listen: ":8554"           # RTSP listen address (host:port; empty host = all interfaces)
+mode: pcm                 # "pcm" (raw L16, any rate, for ultrasonic) or "opus" (48 kHz mono)
+audio:
+  device: "hw:1,0"        # go-audio-capture device id
+  rate: 256000            # capture sample rate in Hz; must be 48000 when mode is opus
+  channels: 1             # 1 or 2
+  format: s16             # only s16 is supported for now
+opus:
+  bitrate: 64000          # Opus bitrate in bps; 0 uses the encoder default
