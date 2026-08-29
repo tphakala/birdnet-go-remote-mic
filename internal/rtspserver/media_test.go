@@ -44,9 +44,9 @@ func sineSource(periods, periodFrames, rate int) (source audio.Source, pcm []byt
 // returns the listen address.
 //
 //nolint:gocritic // test helper; Config by value is fine.
-func serveWith(t *testing.T, cfg Config, frames FrameSource) string {
+func serveWith(t *testing.T, cfg Config, tr *Track) string {
 	t.Helper()
-	srv := New(cfg, frames)
+	srv := New(cfg, tr)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -70,19 +70,13 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	fakeSrc, wantPCM := sineSource(periods, periodFrames, rate)
 
 	frames := NewChanSource(128)
-	spec := pipeline.SDPSpec(&config.Config{Name: "test", Mode: config.ModePCM}, rate, 1)
+	spec := pipeline.SDPSpec(&config.Device{Name: "test", Mode: config.ModePCM}, rate, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	addr := serveWith(t, Config{Path: "/stream", SDP: sdpBytes, PayloadType: 96, SRInterval: 50 * time.Millisecond, Timeout: 30 * time.Second}, frames)
-
-	go func() {
-		_ = pipeline.NewPCM(1).Run(fakeSrc, func(f pipeline.Frame) error {
-			frames.Push(f)
-			return nil
-		})
-	}()
+	addr := serveWith(t, Config{SRInterval: 50 * time.Millisecond, Timeout: 30 * time.Second},
+		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 96, Frames: frames})
 
 	var mu sync.Mutex
 	var got []byte
@@ -90,7 +84,7 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	done := make(chan struct{})
 	var once sync.Once
 	client, err := rtsp.Dial(context.Background(), rtsp.Config{
-		URL:     "rtsp://" + addr + "/stream",
+		URL:     "rtsp://" + addr + testPath,
 		Timeout: 5 * time.Second,
 		OnFrame: func(fr audiostream.Frame) {
 			mu.Lock()
@@ -110,6 +104,15 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	if err := drivePlay(t, client); err != nil {
 		t.Fatalf("play handshake: %v", err)
 	}
+
+	// Push only after PLAY: delivery is gated on activation, and the fake
+	// source is finite, so pumping earlier would discard every period.
+	go func() {
+		_ = pipeline.NewPCM(1).Run(fakeSrc, func(f pipeline.Frame) error {
+			frames.Push(f)
+			return nil
+		})
+	}()
 
 	select {
 	case <-done:
@@ -143,19 +146,13 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	fakeSrc, _ := sineSource(periods, periodFrames, rate)
 
 	frames := NewChanSource(128)
-	spec := pipeline.SDPSpec(&config.Config{Name: "test", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, rate, 1)
+	spec := pipeline.SDPSpec(&config.Device{Name: "test", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, rate, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
-	addr := serveWith(t, Config{Path: "/stream", SDP: sdpBytes, PayloadType: 97, SRInterval: time.Hour, Timeout: 30 * time.Second}, frames)
-
-	go func() {
-		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, func(f pipeline.Frame) error {
-			frames.Push(f)
-			return nil
-		})
-	}()
+	addr := serveWith(t, Config{SRInterval: time.Hour, Timeout: 30 * time.Second},
+		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 97, Frames: frames})
 
 	dec, err := opus.NewDecoder(48000, 1)
 	if err != nil {
@@ -168,7 +165,7 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	done := make(chan struct{})
 	var once sync.Once
 	client, err := rtsp.Dial(context.Background(), rtsp.Config{
-		URL:     "rtsp://" + addr + "/stream",
+		URL:     "rtsp://" + addr + testPath,
 		Timeout: 5 * time.Second,
 		OnFrame: func(fr audiostream.Frame) {
 			mu.Lock()
@@ -193,6 +190,15 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	if err := drivePlay(t, client); err != nil {
 		t.Fatalf("play handshake: %v", err)
 	}
+
+	// Push only after PLAY: delivery is gated on activation, and the fake
+	// source is finite, so pumping earlier would discard every period.
+	go func() {
+		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, func(f pipeline.Frame) error {
+			frames.Push(f)
+			return nil
+		})
+	}()
 
 	select {
 	case <-done:
@@ -264,12 +270,14 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	}()
 
 	frames := NewChanSource(256)
+	frames.SetActive(true)
 	for range 100 {
 		frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 	}
-	srv := New(Config{PayloadType: 96, SRInterval: time.Hour}, frames)
+	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
+	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(context.Background())
-	cs := &connSession{srv: srv, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1}
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -292,6 +300,7 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 
 func TestChanSourceBackpressure(t *testing.T) {
 	c := NewChanSource(2)
+	c.SetActive(true)
 	f := pipeline.Frame{Payload: []byte{1, 2}, Duration: 1}
 	if !c.Push(f) {
 		t.Fatal("first push should succeed")
@@ -309,10 +318,12 @@ func TestWriterTearsDownOnWriteError(t *testing.T) {
 	_ = clientConn.Close() // writes on serverConn now fail
 
 	frames := NewChanSource(4)
+	frames.SetActive(true)
 	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
-	srv := New(Config{PayloadType: 96, SRInterval: time.Hour}, frames)
+	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
+	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(context.Background())
-	cs := &connSession{srv: srv, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1}
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1}
 
 	done := make(chan struct{})
 	go func() { cs.runWriter(); close(done) }()

@@ -1,6 +1,7 @@
 // Package rtspserver is the appliance's minimal TCP-interleaved RTSP server. It
-// serves a single audio track (L16 or Opus) to one playing client at a time,
-// reusing go-audio-stream's RTSP message layer and send primitives.
+// serves one or more audio tracks (L16 or Opus), routed by URL path, each to
+// one playing client at a time, reusing go-audio-stream's RTSP message layer
+// and send primitives.
 package rtspserver
 
 import (
@@ -14,44 +15,91 @@ import (
 
 // Config configures the server.
 type Config struct {
-	Listen      string        // RTSP listen address (host:port)
-	Path        string        // session path; defaults to "/stream"
-	SDP         []byte        // the DESCRIBE body, built at startup
-	Timeout     time.Duration // session/idle timeout; defaults to 60s
-	PayloadType int           // RTP payload type for the media (96 L16, 97 Opus)
-	SRInterval  time.Duration // RTCP sender report interval; defaults to 5s
+	Listen     string        // RTSP listen address (host:port)
+	Timeout    time.Duration // session/idle timeout; defaults to 60s
+	SRInterval time.Duration // RTCP sender report interval; defaults to 5s
 }
 
 // FrameSource is how the server pulls media: the pipeline pushes frames in, the
-// playing session's writer drains them. It is implemented in main; the media
-// path (Task 5) consumes it.
+// playing session's writer drains them. ChanSource (feed.go) is the
+// implementation; tests pass their own.
 type FrameSource interface {
 	Next(ctx context.Context) (pipeline.Frame, error)
 }
 
-// Server accepts RTSP connections and serves the single configured track.
-type Server struct {
-	cfg    Config
-	frames FrameSource
+// activator is implemented by frame sources whose delivery can be gated
+// (ChanSource): PLAY activates, teardown deactivates.
+type activator interface{ SetActive(active bool) }
+
+// Track is one device's stream: its RTSP path, DESCRIBE body, payload type and
+// frame source. Each track serves one playing client at a time.
+type Track struct {
+	Path        string // session path, e.g. "/stream"; SETUP matches Path+"/trackID=0"
+	SDP         []byte // the DESCRIBE body, built at startup
+	PayloadType int    // RTP payload type (96 L16, 97 Opus)
+	Frames      FrameSource
 
 	slotMu    sync.Mutex
-	slotTaken bool // true while one connection holds the single PLAY session slot
+	slotTaken bool
 }
 
-// New builds a Server. frames may be nil for control-only use (tests).
+// acquireSlot claims the track's single session slot; false if taken.
+func (t *Track) acquireSlot() bool {
+	t.slotMu.Lock()
+	defer t.slotMu.Unlock()
+	if t.slotTaken {
+		return false
+	}
+	t.slotTaken = true
+	return true
+}
+
+func (t *Track) releaseSlot() {
+	t.slotMu.Lock()
+	t.slotTaken = false
+	t.slotMu.Unlock()
+}
+
+// Server accepts RTSP connections and routes each request to a track by URL
+// path.
+type Server struct {
+	cfg Config
+
+	mu     sync.RWMutex
+	tracks map[string]*Track
+}
+
+// New builds a Server over tracks. Track paths must be unique (config
+// validation guarantees this); a duplicate would silently keep the last one.
 //
 //nolint:gocritic // Config by value is the constructor API; New runs once at startup.
-func New(cfg Config, frames FrameSource) *Server {
-	if cfg.Path == "" {
-		cfg.Path = "/stream"
-	}
+func New(cfg Config, tracks ...*Track) *Server {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 60 * time.Second
 	}
 	if cfg.SRInterval == 0 {
 		cfg.SRInterval = 5 * time.Second
 	}
-	return &Server{cfg: cfg, frames: frames}
+	m := make(map[string]*Track, len(tracks))
+	for _, tr := range tracks {
+		m[tr.Path] = tr
+	}
+	return &Server{cfg: cfg, tracks: m}
+}
+
+// lookup returns the track registered at path, or nil.
+func (s *Server) lookup(path string) *Track {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tracks[path]
+}
+
+// RemoveTrack unregisters a dead device's path: later requests get 404. The
+// caller also closes the track's frame source so a playing writer tears down.
+func (s *Server) RemoveTrack(path string) {
+	s.mu.Lock()
+	delete(s.tracks, path)
+	s.mu.Unlock()
 }
 
 // ListenAndServe listens on cfg.Listen and serves until ctx is cancelled.
@@ -74,21 +122,4 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		go s.serveConn(ctx, conn)
 	}
-}
-
-// acquireSlot claims the single session slot, returning false if it is taken.
-func (s *Server) acquireSlot() bool {
-	s.slotMu.Lock()
-	defer s.slotMu.Unlock()
-	if s.slotTaken {
-		return false
-	}
-	s.slotTaken = true
-	return true
-}
-
-func (s *Server) releaseSlot() {
-	s.slotMu.Lock()
-	s.slotTaken = false
-	s.slotMu.Unlock()
 }

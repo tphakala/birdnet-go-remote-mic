@@ -41,20 +41,20 @@ type captureSource struct {
 // exactly, and OpenCapture double-checks the negotiated rate matches the
 // request. The caller's read goroutine should runtime.LockOSThread so the
 // capture loop is not descheduled mid-period.
-func OpenCapture(cfg config.Audio) (Source, error) {
+func OpenCapture(dev *config.Device) (Source, error) {
 	s, err := openStream(capture.Config{
-		Device:   cfg.Device,
-		Rate:     cfg.Rate,
-		Channels: cfg.Channels,
+		Device:   dev.Device,
+		Rate:     dev.Rate,
+		Channels: dev.Channels,
 		Format:   capture.FormatS16LE,
 	})
 	if err != nil {
 		return nil, err
 	}
 	n := s.Negotiated()
-	if n.Rate != cfg.Rate {
+	if n.Rate != dev.Rate {
 		_ = s.Close()
-		return nil, fmt.Errorf("audio: negotiated rate %d Hz does not match requested %d Hz", n.Rate, cfg.Rate)
+		return nil, fmt.Errorf("audio: negotiated rate %d Hz does not match requested %d Hz", n.Rate, dev.Rate)
 	}
 	if err := s.Start(); err != nil {
 		_ = s.Close()
