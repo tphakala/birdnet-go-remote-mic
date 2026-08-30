@@ -101,9 +101,45 @@ func TestDiscoveryEnabledDefault(t *testing.T) {
 	}
 }
 
+func TestManagementDefaults(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "min.yaml")
+	minimal := "devices:\n  - name: mic\n    device: \"hw:1,0\"\n    rate: 48000\n"
+	if err := os.WriteFile(p, []byte(minimal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load minimal: %v", err)
+	}
+	if c.Management.Listen != ":8443" {
+		t.Errorf("management listen default = %q, want :8443", c.Management.Listen)
+	}
+	if !c.ManagementEnabled() {
+		t.Error("management should default to enabled when the block is absent")
+	}
+}
+
+func TestManagementEnabledDefault(t *testing.T) {
+	c := Config{}
+	if !c.ManagementEnabled() {
+		t.Error("management should default to enabled when the block is absent")
+	}
+	off := false
+	c.Management.Enabled = &off
+	if c.ManagementEnabled() {
+		t.Error("management should be off when explicitly disabled")
+	}
+	on := true
+	c.Management.Enabled = &on
+	if !c.ManagementEnabled() {
+		t.Error("management should be on when explicitly enabled")
+	}
+}
+
 func validBase() Config {
 	return Config{
-		Listen: ":8554",
+		Listen:     ":8554",
+		Management: Management{Listen: ":8443"},
 		Devices: []Device{
 			{Name: nameGarden, Device: deviceHW1, Path: pathGarden, Mode: ModePCM, Rate: 256000, Channels: 1, Format: formatS16},
 			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: 1, Format: formatS16},
@@ -151,6 +187,12 @@ func TestValidate(t *testing.T) {
 		{"bare slash path fails", func(c *Config) { c.Devices[0].Path = "/" }, true},
 		{"trailing slash path fails", func(c *Config) { c.Devices[0].Path = "/garden/" }, true},
 		{"reserved trackID suffix fails", func(c *Config) { c.Devices[0].Path = "/garden/trackID=0" }, true},
+		{"management bad listen fails", func(c *Config) { c.Management.Listen = "nope" }, true},
+		{"management disabled skips listen check", func(c *Config) {
+			off := false
+			c.Management.Enabled = &off
+			c.Management.Listen = "nope"
+		}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
