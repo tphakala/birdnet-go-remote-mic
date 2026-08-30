@@ -36,17 +36,35 @@ type captureSource struct {
 	buf        []byte
 }
 
+// captureFormat maps a validated config format string to a go-audio-capture
+// Format. config.Validate already rejects anything but "s16", so this is a
+// belt-and-braces guard: it fails loud the moment a new format is added to
+// validation without also wiring the capture layer, instead of silently keeping
+// S16LE and corrupting the L16/SDP byte math (frameBytes below assumes 16-bit).
+func captureFormat(format string) (capture.Format, error) {
+	switch format {
+	case "s16", "":
+		return capture.FormatS16LE, nil
+	default:
+		return 0, fmt.Errorf("audio: unsupported capture format %q (only s16 is supported)", format)
+	}
+}
+
 // OpenCapture opens and starts a capture stream for cfg. It enforces the
 // honest-rate policy: go-audio-capture already fails a rate it cannot deliver
 // exactly, and OpenCapture double-checks the negotiated rate matches the
 // request. The caller's read goroutine should runtime.LockOSThread so the
 // capture loop is not descheduled mid-period.
 func OpenCapture(dev *config.Device) (Source, error) {
+	format, err := captureFormat(dev.Format)
+	if err != nil {
+		return nil, err
+	}
 	s, err := openStream(capture.Config{
 		Device:   dev.Device,
 		Rate:     dev.Rate,
 		Channels: dev.Channels,
-		Format:   capture.FormatS16LE,
+		Format:   format,
 	})
 	if err != nil {
 		return nil, err

@@ -1,4 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.js";
+import { elem } from "../lib/ui.js";
 const CHEVRON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
 const CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 // Standard ALSA capture rates offered for PCM when the device's own supported
@@ -20,14 +21,6 @@ const BITRATE_OPTIONS = [
 // Per-form counter so element ids are valid and unique regardless of the
 // device name (which may contain spaces or other id-invalid characters).
 let formSeq = 0;
-function elem(tag, className, text) {
-    const e = document.createElement(tag);
-    if (className)
-        e.className = className;
-    if (text !== undefined)
-        e.textContent = text;
-    return e;
-}
 /**
  * The editable settings controls for one device. Builds its own DOM (into
  * `element`), tracks dirtiness via the onDirty callback, validates field

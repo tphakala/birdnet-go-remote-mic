@@ -176,6 +176,15 @@ func (cs *connSession) respondSetup(req *rtsp.Request) {
 		cs.respondStatus(req, 455, "Method Not Valid in This State")
 		return
 	}
+	if cs.state == statePlaying {
+		// RFC 2326 A.1: SETUP is not valid while Playing. A re-SETUP here would
+		// re-randomize startSeq/startTS (below) while the running writer keeps
+		// the old values, permanently breaking RTP seq/timestamp continuity for
+		// the live session. BirdNET-Go does one SETUP/PLAY per connection, so
+		// this is off the normal path; reject it rather than desync the stream.
+		cs.respondStatus(req, 455, "Method Not Valid in This State")
+		return
+	}
 	th, err := rtsp.ParseTransport(req.Header.Get("Transport"))
 	if err != nil || !strings.Contains(strings.ToUpper(th.Protocol), "TCP") {
 		cs.respondStatus(req, 461, "Unsupported Transport")
@@ -217,9 +226,9 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 	startWriter := cs.state != statePlaying
 	cs.state = statePlaying
 
-	// Turn frame delivery on before the PLAY response goes out; the writer
-	// itself starts only after the response is on the wire, so the client
-	// sees RTP-Info's starting seq/rtptime before the first packet.
+	// Enable frame delivery before the PLAY response goes out so no current
+	// audio is dropped, but hold the writer itself until the response is on the
+	// wire (see below).
 	if startWriter && cs.track.Frames != nil {
 		if a, ok := cs.track.Frames.(activator); ok {
 			a.SetActive(true)

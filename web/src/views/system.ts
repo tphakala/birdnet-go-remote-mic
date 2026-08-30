@@ -1,24 +1,10 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
+import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
+import { confirmDialog } from "../lib/modal.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
 import type { ApplianceStatus, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
-
-function elem(tag: string, className?: string, text?: string): HTMLElement {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function formatUptime(seconds: number): string {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${String(m).padStart(2, "0")}m`;
-  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-  return `${m}m`;
-}
 
 export class SystemView {
   private tilesEl: HTMLElement | null;
@@ -74,16 +60,9 @@ export class SystemView {
   private renderLoadError(message: string): void {
     if (!this.tilesEl) return;
     this.tilesEl.textContent = "";
-    const p = elem("p", "cfg-empty", `${message} `);
-    const retry = elem("button", "btn btn-secondary", "Retry");
-    retry.setAttribute("type", "button");
-    retry.addEventListener("click", () => {
-      if (this.tilesEl) this.tilesEl.textContent = "";
-      this.tilesEl?.appendChild(elem("p", "cfg-empty", "Loading system telemetry..."));
-      void store.retry();
-    });
-    p.appendChild(retry);
+    const p = elem("p", "cfg-empty");
     this.tilesEl.appendChild(p);
+    renderLoadError(p, message, "Loading system telemetry...", () => void store.retry());
   }
 
   private bindNetwork(): void {
@@ -94,10 +73,23 @@ export class SystemView {
       });
     }
     document.getElementById("btn-network-save")?.addEventListener("click", () => this.saveNetwork());
-    document.getElementById("btn-network-discard")?.addEventListener("click", () => {
-      const cfg = store.getState().config;
-      if (cfg) this.populateNetwork(cfg);
-    });
+    document.getElementById("btn-network-discard")?.addEventListener("click", () => void this.discardNetwork());
+  }
+
+  // discardNetwork reverts the network form to the saved config, confirming
+  // first when there are unsaved edits so a stray click cannot drop them.
+  private async discardNetwork(): Promise<void> {
+    if (this.netDirty) {
+      const ok = await confirmDialog({
+        title: "Discard changes?",
+        body: "The network settings have unsaved changes that will be lost.",
+        confirmLabel: "Discard",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    const cfg = store.getState().config;
+    if (cfg) this.populateNetwork(cfg);
   }
 
   private populateNetwork(cfg: Config): void {
@@ -231,15 +223,12 @@ export class SystemView {
       tr.appendChild(this.td(d.device, true));
       tr.appendChild(this.td(d.path, true));
       const rate = d.negotiatedRate ?? d.rate;
-      tr.appendChild(this.td(`${d.mode === "pcm" ? "PCM L16" : "OPUS"} ${rate.toLocaleString("en-US")} Hz`, true));
+      tr.appendChild(this.td(`${modeLabel(d.mode)} ${rate.toLocaleString("en-US")} Hz`, true));
       tr.appendChild(this.td(d.clientConnected ? "Connected" : "-", true));
 
       const stateTd = document.createElement("td");
-      let cls = "status-badge ok";
-      let label = "Serving";
-      if (d.state === "skipped") { cls = "status-badge crit"; label = "Skipped"; }
-      else if (d.state === "failed") { cls = "status-badge crit"; label = "Failed"; }
-      stateTd.appendChild(elem("span", cls, label));
+      const badge = deviceStateBadge(d.state);
+      stateTd.appendChild(elem("span", badge.cls, badge.label));
       tr.appendChild(stateTd);
 
       this.rowsEl.appendChild(tr);

@@ -1,4 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.js";
+import { elem } from "../lib/ui.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
 const CHEVRON =
@@ -42,13 +43,6 @@ export interface DeviceHardware {
 // Per-form counter so element ids are valid and unique regardless of the
 // device name (which may contain spaces or other id-invalid characters).
 let formSeq = 0;
-
-function elem(tag: string, className?: string, text?: string): HTMLElement {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 /**
  * The editable settings controls for one device. Builds its own DOM (into

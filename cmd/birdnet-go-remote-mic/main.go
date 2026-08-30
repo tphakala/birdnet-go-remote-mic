@@ -324,15 +324,11 @@ func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime)
 	}
 	infos := make([]announce.Info, 0, len(devices))
 	for _, rt := range devices {
-		codec := "L16"
-		if rt.dev.Mode == config.ModeOpus {
-			codec = "opus"
-		}
 		infos = append(infos, announce.Info{
 			Name:     rt.dev.Name,
 			Path:     rt.dev.Path,
 			Port:     port,
-			Codec:    codec,
+			Codec:    pipeline.CodecName(rt.dev.Mode),
 			Rate:     rt.rate,
 			Channels: rt.channels,
 			Version:  version,
@@ -348,9 +344,9 @@ func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime)
 
 func buildStage(d *config.Device, channels int) (stage pipeline.Stage, payloadType int) {
 	if d.Mode == config.ModeOpus {
-		return pipeline.NewOpus(d.Opus), 97
+		return pipeline.NewOpus(d.Opus), pipeline.PayloadType(d.Mode)
 	}
-	return pipeline.NewPCM(channels), 96
+	return pipeline.NewPCM(channels), pipeline.PayloadType(d.Mode)
 }
 
 func fatal(err error) {

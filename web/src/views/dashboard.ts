@@ -3,6 +3,8 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
+import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
+import { confirmDialog } from "../lib/modal.js";
 import type { ApplianceStatus, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
@@ -21,6 +23,7 @@ const ICON_GEAR =
 
 interface CardEntry {
   article: HTMLElement;
+  gearBtn: HTMLElement;
   serving: boolean;
   meter: VUMeter | null;
   urlEl: HTMLElement | null;
@@ -31,13 +34,7 @@ interface CardEntry {
   settingsWrap: HTMLElement;
   settingsForm: DeviceSettingsForm | null;
   expanded: boolean;
-}
-
-function elem(tag: string, className?: string, text?: string): HTMLElement {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
+  dirty: boolean;
 }
 
 function iconSpan(markup: string, className?: string): HTMLElement {
@@ -46,10 +43,6 @@ function iconSpan(markup: string, className?: string): HTMLElement {
   // Static trusted markup only; never runtime/user data.
   s.innerHTML = markup;
   return s;
-}
-
-function modeLabel(mode: string): string {
-  return mode === "pcm" ? "PCM L16" : "OPUS";
 }
 
 function channelLabel(channels: number): string {
@@ -73,15 +66,6 @@ function rtspPort(listen: string | undefined): string {
   if (!listen) return "8554";
   const i = listen.lastIndexOf(":");
   return i >= 0 ? listen.slice(i + 1) : listen;
-}
-
-function formatUptime(seconds: number): string {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${String(m).padStart(2, "0")}m`;
-  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-  return `${m}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
 }
 
 export class DashboardView {
@@ -138,15 +122,7 @@ export class DashboardView {
   // stuck loading forever. A successful retry re-renders via the devices event.
   private renderLoadError(message: string): void {
     if (!this.emptyEl) return;
-    this.emptyEl.hidden = false;
-    this.emptyEl.textContent = `${message} `;
-    const retry = elem("button", "btn btn-secondary", "Retry");
-    retry.setAttribute("type", "button");
-    retry.addEventListener("click", () => {
-      if (this.emptyEl) this.emptyEl.textContent = "Loading devices...";
-      void store.retry();
-    });
-    this.emptyEl.appendChild(retry);
+    renderLoadError(this.emptyEl, message, "Loading devices...", () => void store.retry());
   }
 
   private renderDevices(devices: Device[]): void {
@@ -154,6 +130,9 @@ export class DashboardView {
 
     if (this.emptyEl) {
       this.emptyEl.hidden = devices.length > 0;
+      // Clear the alert live-region role set by renderLoadError so the benign
+      // empty/loaded state is not re-announced as an error.
+      this.emptyEl.removeAttribute("role");
       // Replace the static "Loading devices..." placeholder once we know there
       // are genuinely zero configured devices (the element is visible here).
       if (devices.length === 0) this.emptyEl.textContent = "No capture devices are configured.";
@@ -357,8 +336,8 @@ export class DashboardView {
     article.appendChild(settingsWrap);
 
     const entry: CardEntry = {
-      article, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
-      device: d, settingsWrap, settingsForm: null, expanded: false,
+      article, gearBtn, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
+      device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
     };
     gearBtn.addEventListener("click", () => this.toggleSettings(entry));
     return entry;
@@ -366,7 +345,7 @@ export class DashboardView {
 
   private toggleSettings(entry: CardEntry): void {
     if (entry.expanded) {
-      this.closeSettings(entry);
+      void this.requestCloseSettings(entry);
       return;
     }
     if (!entry.settingsForm) {
@@ -385,14 +364,14 @@ export class DashboardView {
       // Build from the saved config (source of truth), matched by ALSA id.
       const cfg = store.getState().config;
       const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? entry.device;
-      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; }, {
+      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; entry.dirty = true; }, {
         friendlyName: entry.device.friendlyName,
         supportedRates: entry.device.supportedRates,
       });
       entry.settingsForm = form;
       entry.settingsWrap.append(form.element, actions);
 
-      cancelBtn.addEventListener("click", () => this.closeSettings(entry));
+      cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
       saveBtn.addEventListener("click", () => this.saveDevice(entry));
     }
     entry.expanded = true;
@@ -400,8 +379,29 @@ export class DashboardView {
     entry.article.classList.add("expanded");
   }
 
+  // requestCloseSettings collapses the panel, but first confirms the discard if
+  // the form has unsaved edits. It guards every collapse path (the Cancel button
+  // and the gear toggle), so a stray click cannot silently drop pending changes.
+  private async requestCloseSettings(entry: CardEntry): Promise<void> {
+    if (entry.dirty) {
+      const ok = await confirmDialog({
+        title: "Discard changes?",
+        body: "This device has unsaved changes that will be lost.",
+        confirmLabel: "Discard",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    this.closeSettings(entry);
+    // closeSettings clears settingsWrap (including the Cancel button focus was on),
+    // so return focus to the gear button, which always survives the collapse,
+    // rather than letting focus fall to <body>.
+    entry.gearBtn.focus();
+  }
+
   private closeSettings(entry: CardEntry): void {
     entry.expanded = false;
+    entry.dirty = false;
     entry.settingsWrap.hidden = true;
     entry.article.classList.remove("expanded");
     entry.settingsWrap.textContent = "";
@@ -440,16 +440,8 @@ export class DashboardView {
   }
 
   private buildStatusBadge(state: string): HTMLElement {
-    let cls = "status-badge ok";
-    let label = "Serving";
-    if (state === "skipped") {
-      cls = "status-badge crit";
-      label = "Skipped";
-    } else if (state === "failed") {
-      cls = "status-badge crit";
-      label = "Failed";
-    }
-    return elem("span", cls, label);
+    const badge = deviceStateBadge(state);
+    return elem("span", badge.cls, badge.label);
   }
 
   private updateCard(entry: CardEntry, d: Device): void {
@@ -488,7 +480,7 @@ export class DashboardView {
   private updateTelemetryFromStatus(): void {
     if (!this.status) return;
     const uptimeEl = document.getElementById("uptime-display");
-    if (uptimeEl) uptimeEl.textContent = formatUptime(this.status.uptimeSeconds);
+    if (uptimeEl) uptimeEl.textContent = formatUptime(this.status.uptimeSeconds, { seconds: true });
 
     const servingEl = document.getElementById("devices-serving-display");
     if (servingEl) servingEl.textContent = `${this.status.devicesServing} / ${this.status.devicesTotal}`;
