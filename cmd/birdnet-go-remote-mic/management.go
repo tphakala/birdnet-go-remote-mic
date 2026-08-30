@@ -122,6 +122,12 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 		Addr:              cfg.Management.Listen,
 		Handler:           mgmtserver.New(prov).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// WriteTimeout bounds slow-client writes on the unauthenticated LAN
+		// listener. The future /events SSE stream (issue #9) is long-lived and
+		// will need this relaxed or applied per-handler when it lands.
+		WriteTimeout: 30 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			Certificates: []tls.Certificate{cert},

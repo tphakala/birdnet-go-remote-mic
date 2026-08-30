@@ -204,6 +204,31 @@ func writeExpiredPair(t *testing.T, certPath, keyPath string) *big.Int {
 	return serial
 }
 
+func TestEnsureRegeneratesWhenHostNotCovered(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+
+	first, err := Ensure(certPath, keyPath, []string{localhost})
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	// A new address the persisted cert does not cover (e.g. after a DHCP change).
+	second, err := Ensure(certPath, keyPath, []string{localhost, "192.168.1.50"})
+	if err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+
+	fl, _ := x509.ParseCertificate(first.Certificate[0])
+	sl, _ := x509.ParseCertificate(second.Certificate[0])
+	if fl.SerialNumber.Cmp(sl.SerialNumber) == 0 {
+		t.Error("expected regeneration when a requested host is not covered, but serial was unchanged")
+	}
+	if err := sl.VerifyHostname("192.168.1.50"); err != nil {
+		t.Errorf("regenerated cert does not cover the new host: %v", err)
+	}
+}
+
 func TestEnsureResultLoadsAsTLS(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "cert.pem")

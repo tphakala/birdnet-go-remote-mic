@@ -31,30 +31,51 @@ const certValidity = 10 * 365 * 24 * time.Hour
 // expired pair is regenerated. The key file is written with owner-only
 // permissions.
 func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
-	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil && currentlyValid(&cert) {
-		return cert, nil
+	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+		if leaf := leafOf(&cert); leaf != nil && currentlyValid(leaf) && covers(leaf, hosts) {
+			return cert, nil
+		}
 	}
 	return generate(certPath, keyPath, hosts)
 }
 
-// currentlyValid reports whether cert's leaf is within its validity window now.
+// leafOf returns cert's parsed leaf, using the cached Leaf when present and
+// parsing the first DER entry otherwise. It returns nil if there is nothing to
+// parse or parsing fails.
+func leafOf(cert *tls.Certificate) *x509.Certificate {
+	if cert.Leaf != nil {
+		return cert.Leaf
+	}
+	if len(cert.Certificate) == 0 {
+		return nil
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil
+	}
+	return leaf
+}
+
+// currentlyValid reports whether leaf is within its validity window now.
 // tls.LoadX509KeyPair verifies only that the PEM parses and the keys match, not
 // that the certificate is still in date, so an expired pair would otherwise be
 // served forever.
-func currentlyValid(cert *tls.Certificate) bool {
-	leaf := cert.Leaf
-	if leaf == nil {
-		if len(cert.Certificate) == 0 {
-			return false
-		}
-		parsed, err := x509.ParseCertificate(cert.Certificate[0])
-		if err != nil {
-			return false
-		}
-		leaf = parsed
-	}
+func currentlyValid(leaf *x509.Certificate) bool {
 	now := time.Now()
 	return now.After(leaf.NotBefore) && now.Before(leaf.NotAfter)
+}
+
+// covers reports whether leaf carries a SAN for every requested host. A cert
+// persisted before the appliance's IP or hostname changed no longer covers the
+// new address; regenerating on a miss avoids a permanent name mismatch that
+// would otherwise require deleting the PEM files by hand.
+func covers(leaf *x509.Certificate, hosts []string) bool {
+	for _, h := range hosts {
+		if leaf.VerifyHostname(h) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // generate creates a new self-signed ECDSA P-256 certificate for hosts, writes

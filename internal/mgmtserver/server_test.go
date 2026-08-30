@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,6 +268,25 @@ func TestHandlerServesReadEndpointsUnderBasePath(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != 501 {
 			t.Errorf("status = %d, want 501", resp.StatusCode)
+		}
+	})
+
+	t.Run("malformed patch body yields problem+json 400", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/v1/config", strings.NewReader("{ not json"))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != 400 {
+			t.Errorf("status = %d, want 400", resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+			t.Errorf("content-type = %q, want application/problem+json", ct)
 		}
 	})
 }

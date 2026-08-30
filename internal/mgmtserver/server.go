@@ -6,6 +6,7 @@ package mgmtserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -74,12 +75,32 @@ func New(p Provider) *Server {
 var _ mgmtapi.StrictServerInterface = (*Server)(nil)
 
 // Handler returns the HTTP handler for the management API, with every route
-// mounted under /api/v1.
+// mounted under /api/v1. Request-binding and body-decode failures, which the
+// generated code would otherwise report as text/plain, are rendered as RFC 9457
+// problem+json so every error response matches the contract.
 func (s *Server) Handler() http.Handler {
-	return mgmtapi.HandlerWithOptions(mgmtapi.NewStrictHandler(s, nil), mgmtapi.StdHTTPServerOptions{
+	strict := mgmtapi.NewStrictHandlerWithOptions(s, nil, mgmtapi.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			writeProblem(w, http.StatusBadRequest, "bad request", err.Error())
+		},
+		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			writeProblem(w, http.StatusInternalServerError, "internal error", err.Error())
+		},
+	})
+	return mgmtapi.HandlerWithOptions(strict, mgmtapi.StdHTTPServerOptions{
 		BaseURL:    BasePath,
 		BaseRouter: http.NewServeMux(),
+		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			writeProblem(w, http.StatusBadRequest, "invalid parameter", err.Error())
+		},
 	})
+}
+
+// writeProblem sends an RFC 9457 problem detail.
+func writeProblem(w http.ResponseWriter, status int, title, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(problem(status, title, detail))
 }
 
 // GetHealth handles GET /healthz.

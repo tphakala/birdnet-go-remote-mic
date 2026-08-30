@@ -14,6 +14,12 @@ info:
 
     Errors use RFC 9457 problem details (application/problem+json).
 
+    Security status: the bearerAuth scheme below is declared but NOT yet
+    enforced by the appliance. Until token authentication lands, every
+    operation (not just /healthz) is served without an auth check, so a
+    consumer must not assume unauthenticated requests are rejected. The
+    security requirements describe the intended end state.
+
     Evolution policy: additive changes only within v1. Fields may be added
     to responses at any time; consumers must ignore unknown fields.
   license:
