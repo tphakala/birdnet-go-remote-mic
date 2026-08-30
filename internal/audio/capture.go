@@ -3,6 +3,7 @@
 package audio
 
 import (
+	"errors"
 	"fmt"
 
 	capture "github.com/tphakala/go-audio-capture"
@@ -36,36 +37,88 @@ type captureSource struct {
 	buf        []byte
 }
 
-// captureFormat maps a validated config format string to a go-audio-capture
-// Format. config.Validate already rejects anything but "s16", so this is a
-// belt-and-braces guard: it fails loud the moment a new format is added to
-// validation without also wiring the capture layer, instead of silently keeping
-// S16LE and corrupting the L16/SDP byte math (frameBytes below assumes 16-bit).
+// captureFormat maps a validated config format string to the go-audio-capture
+// Format of the STREAM OUTPUT. config.Validate already rejects anything but
+// "s16", so this is a belt-and-braces guard on the pipeline's output contract:
+// the whole send path (L16 packetization, SDP byte math, Opus encode) is
+// S16-only, and this fails loud the moment a new stream format is added to
+// validation without wiring the rest of the pipeline. It is distinct from the
+// hardware CAPTURE format, which OpenCapture negotiates (S16 or S32) and
+// downconverts to S16 so this output contract always holds.
 func captureFormat(format string) (capture.Format, error) {
 	switch format {
 	case "s16", "":
 		return capture.FormatS16LE, nil
 	default:
-		return 0, fmt.Errorf("audio: unsupported capture format %q (only s16 is supported)", format)
+		return 0, fmt.Errorf("audio: unsupported stream format %q (only s16 is supported)", format)
 	}
 }
 
-// OpenCapture opens and starts a capture stream for cfg. It enforces the
-// honest-rate policy: go-audio-capture already fails a rate it cannot deliver
-// exactly, and OpenCapture double-checks the negotiated rate matches the
-// request. The caller's read goroutine should runtime.LockOSThread so the
-// capture loop is not descheduled mid-period.
+// captureFormats is the order OpenCapture negotiates the hardware capture
+// format in: S16LE first (the common case, no conversion needed), then S32LE as
+// the fallback for 24/32-bit-only interfaces (e.g. the ZOOM AMS-24). The stream
+// output stays S16 either way; an S32 capture is downconverted.
+var captureFormats = []capture.Format{capture.FormatS16LE, capture.FormatS32LE}
+
+// openNegotiate opens the device at the requested rate, trying each capture
+// format in captureFormats order and returning the first that opens along with
+// the format it opened with. A failure to open one format does not stop the
+// next: a device can accept the requested rate only in the wider S32 format, so
+// even a *BadRateError from S16 must not short-circuit the S32 attempt. When no
+// format opens it returns the most informative error, preferring a *BadRateError
+// (which carries the supported rate range) over a raw driver error.
+func openNegotiate(device string, rate, channels int) (captureStream, capture.Format, error) {
+	var chosenErr error
+	for _, f := range captureFormats {
+		s, err := openStream(capture.Config{
+			Device:   device,
+			Rate:     rate,
+			Channels: channels,
+			Format:   f,
+		})
+		if err == nil {
+			return s, f, nil
+		}
+		chosenErr = preferRateError(chosenErr, err)
+	}
+	return nil, 0, chosenErr
+}
+
+// preferRateError keeps whichever of two open errors is more useful to report:
+// a *BadRateError (it names the supported rate window) wins over a raw driver
+// error, so a caller sees the honest-rate diagnostic rather than a bare EINVAL.
+// When both attempts are *BadRateError the FIRST is kept, so the surfaced range
+// is the preferred format's (S16, tried first) rather than the narrower fallback
+// format's.
+func preferRateError(existing, next error) error {
+	if existing == nil {
+		return next
+	}
+	var bre *capture.BadRateError
+	if errors.As(existing, &bre) {
+		return existing
+	}
+	if errors.As(next, &bre) {
+		return next
+	}
+	return existing
+}
+
+// OpenCapture opens and starts a capture stream for dev. It negotiates the
+// hardware capture format (S16LE preferred, S32LE fallback) and, for an S32
+// device, wraps the stream so every period is downconverted to S16LE; the rest
+// of the pipeline only ever sees S16. It enforces the honest-rate policy:
+// go-audio-capture already fails a rate it cannot deliver exactly, and
+// OpenCapture double-checks the negotiated rate matches the request. The
+// caller's read goroutine should runtime.LockOSThread so the capture loop is not
+// descheduled mid-period.
 func OpenCapture(dev *config.Device) (Source, error) {
-	format, err := captureFormat(dev.Format)
-	if err != nil {
+	// dev.Format is the stream OUTPUT format; guard it (S16-only) before touching
+	// hardware. The capture format is negotiated separately below.
+	if _, err := captureFormat(dev.Format); err != nil {
 		return nil, err
 	}
-	s, err := openStream(capture.Config{
-		Device:   dev.Device,
-		Rate:     dev.Rate,
-		Channels: dev.Channels,
-		Format:   format,
-	})
+	s, format, err := openNegotiate(dev.Device, dev.Rate, dev.Channels)
 	if err != nil {
 		return nil, err
 	}
@@ -78,14 +131,28 @@ func OpenCapture(dev *config.Device) (Source, error) {
 		_ = s.Close()
 		return nil, err
 	}
-	frameBytes := n.Channels * 2 // S16LE
-	return &captureSource{
-		s:          s,
-		rate:       n.Rate,
-		channels:   n.Channels,
-		frameBytes: frameBytes,
-		buf:        make([]byte, n.PeriodFrames*frameBytes),
-	}, nil
+	switch format {
+	case capture.FormatS16LE:
+		frameBytes := n.Channels * 2 // S16LE
+		return &captureSource{
+			s:          s,
+			rate:       n.Rate,
+			channels:   n.Channels,
+			frameBytes: frameBytes,
+			buf:        make([]byte, n.PeriodFrames*frameBytes),
+		}, nil
+	case capture.FormatS32LE:
+		return &convertingSource{
+			s:        s,
+			rate:     n.Rate,
+			channels: n.Channels,
+			in:       make([]byte, n.PeriodFrames*n.Channels*4), // S32LE
+			out:      make([]byte, n.PeriodFrames*n.Channels*2), // S16LE
+		}, nil
+	default:
+		_ = s.Close()
+		return nil, fmt.Errorf("audio: negotiated unsupported capture format %v", format)
+	}
 }
 
 func (c *captureSource) Negotiated() (rate, channels int) { return c.rate, c.channels }
@@ -99,3 +166,29 @@ func (c *captureSource) Read() (Period, error) {
 }
 
 func (c *captureSource) Close() error { return c.s.Close() }
+
+// convertingSource wraps an S32LE capture stream and delivers S16LE periods, so
+// a 24/32-bit-only device looks like any other S16 Source to the pipeline. It
+// keeps two reused buffers: in receives the raw S32 period from the stream, out
+// holds its S16 reduction. Like captureSource it is single-consumer; out is
+// valid only until the next Read.
+type convertingSource struct {
+	s        captureStream
+	rate     int
+	channels int
+	in       []byte // S32LE read buffer
+	out      []byte // S16LE output buffer
+}
+
+func (c *convertingSource) Negotiated() (rate, channels int) { return c.rate, c.channels }
+
+func (c *convertingSource) Read() (Period, error) {
+	n, err := c.s.Read(c.in)
+	if err != nil {
+		return Period{}, err
+	}
+	nbytes := downconvertS32ToS16(c.out, c.in[:n*c.channels*4])
+	return Period{Buf: c.out[:nbytes], Frames: n}, nil
+}
+
+func (c *convertingSource) Close() error { return c.s.Close() }
