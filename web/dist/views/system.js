@@ -60,7 +60,28 @@ export class SystemView {
             if (!this.netDirty && cfg)
                 this.populateNetwork(cfg);
         });
+        store.addEventListener("loaderror", (e) => {
+            this.renderLoadError(e.detail);
+        });
         this.bindNetwork();
+    }
+    // renderLoadError swaps the telemetry placeholder for the failure cause and a
+    // Retry button so the system view is not stuck loading when /system is
+    // unreachable. A successful retry re-renders via the system event.
+    renderLoadError(message) {
+        if (!this.tilesEl)
+            return;
+        this.tilesEl.textContent = "";
+        const p = elem("p", "cfg-empty", `${message} `);
+        const retry = elem("button", "btn btn-secondary", "Retry");
+        retry.addEventListener("click", () => {
+            if (this.tilesEl)
+                this.tilesEl.textContent = "";
+            this.tilesEl?.appendChild(elem("p", "cfg-empty", "Loading system telemetry..."));
+            void store.retry();
+        });
+        p.appendChild(retry);
+        this.tilesEl.appendChild(p);
     }
     bindNetwork() {
         if (this.discoveryEl) {

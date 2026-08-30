@@ -1009,6 +1009,26 @@ body {
   border-top: 1px solid var(--border-base);
 }
 
+/* Let a wide table scroll within its card on narrow viewports instead of
+   overflowing the page. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* Respect a reduced-motion preference: stop the pulsing status dots, the
+   restart spinner, and other animation/transition motion. The VU meter also
+   checks this in script and renders a static bar. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 .form-field {
   display: flex;
   flex-direction: column;

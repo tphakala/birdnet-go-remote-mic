@@ -58,12 +58,25 @@ export class AppStore extends EventTarget {
   }
 
   public async loadInitial(): Promise<void> {
-    await Promise.allSettled([
+    const [statusOk, devicesOk] = await Promise.all([
       this.refreshStatus(),
       this.refreshDevices(),
       this.refreshSystem(),
       this.refreshConfig(),
     ]);
+    // If the core data could not be fetched at all, surface an error so the
+    // views can offer a retry instead of a "Loading..." placeholder that never
+    // resolves.
+    if (!statusOk && !devicesOk) {
+      this.dispatchEvent(new CustomEvent("loaderror", {
+        detail: "Could not reach the appliance.",
+      }));
+    }
+  }
+
+  // retry re-runs the initial load; views call it from their error state.
+  public retry(): Promise<void> {
+    return this.loadInitial();
   }
 
   public startPolling(intervalMs: number = 3000): void {
@@ -86,16 +99,18 @@ export class AppStore extends EventTarget {
     sse.stop();
   }
 
-  public async refreshStatus(): Promise<void> {
+  public async refreshStatus(): Promise<boolean> {
     try {
       this.state.status = await api.getStatus();
       this.dispatchEvent(new CustomEvent("status", { detail: this.state.status }));
+      return true;
     } catch (err) {
       console.warn("Failed to refresh status:", err);
+      return false;
     }
   }
 
-  public async refreshDevices(): Promise<void> {
+  public async refreshDevices(): Promise<boolean> {
     try {
       this.state.devices = await api.getDevices();
       // Drop level entries for devices that are no longer present so the map
@@ -105,26 +120,32 @@ export class AppStore extends EventTarget {
         if (!present.has(name)) this.state.levels.delete(name);
       }
       this.dispatchEvent(new CustomEvent("devices", { detail: this.state.devices }));
+      return true;
     } catch (err) {
       console.warn("Failed to refresh devices:", err);
+      return false;
     }
   }
 
-  public async refreshSystem(): Promise<void> {
+  public async refreshSystem(): Promise<boolean> {
     try {
       this.state.system = await api.getSystem();
       this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
+      return true;
     } catch {
-      // System info is optional, non-fatal
+      // System info is optional, non-fatal.
+      return false;
     }
   }
 
-  public async refreshConfig(): Promise<void> {
+  public async refreshConfig(): Promise<boolean> {
     try {
       this.state.config = await api.getConfig();
       this.dispatchEvent(new CustomEvent("config", { detail: this.state.config }));
+      return true;
     } catch (err) {
       console.warn("Failed to refresh config:", err);
+      return false;
     }
   }
 }

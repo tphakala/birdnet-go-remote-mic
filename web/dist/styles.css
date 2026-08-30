@@ -755,7 +755,8 @@ body {
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.dropdown-item:hover {
+.dropdown-item:hover,
+.dropdown-item.active {
   background: var(--bg-surface-active);
   color: var(--text-primary);
   transform: translateX(2px);
@@ -990,6 +991,42 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px;
+}
+
+/* Full-width heading that separates field groups within the two-column grid. */
+.form-group-title {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.form-group-title:not(:first-child) {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-base);
+}
+
+/* Let a wide table scroll within its card on narrow viewports instead of
+   overflowing the page. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* Respect a reduced-motion preference: stop the pulsing status dots, the
+   restart spinner, and other animation/transition motion. The VU meter also
+   checks this in script and renders a static bar. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .form-field {

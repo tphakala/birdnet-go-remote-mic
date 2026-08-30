@@ -10,6 +10,10 @@ export class VUMeter {
     isClipped = false;
     animFrameId = null;
     lastTime = performance.now();
+    // When the viewer prefers reduced motion, skip the free-running rAF loop and
+    // the peak-needle decay animation, redrawing a static bar on each level
+    // update instead.
+    reducedMotion;
     constructor(canvas, peakValEl, clipEl) {
         this.canvas = canvas;
         const context = this.canvas.getContext("2d");
@@ -19,10 +23,16 @@ export class VUMeter {
         this.ctx = context;
         this.peakValEl = peakValEl ?? null;
         this.clipEl = clipEl ?? null;
+        this.reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
         if (this.clipEl) {
             this.clipEl.addEventListener("click", () => this.clearClip());
         }
-        this.startLoop();
+        if (this.reducedMotion) {
+            this.render();
+        }
+        else {
+            this.startLoop();
+        }
     }
     setLevels(rms, peak, clipped = false) {
         this.rmsVal = isFinite(rms) ? rms : -60;
@@ -33,6 +43,12 @@ export class VUMeter {
         if (this.peakVal > this.peakHoldVal) {
             this.peakHoldVal = this.peakVal;
             this.peakHoldTimer = 45; // Hold peak needle for ~45 frames before decay
+        }
+        // With no animation loop running, reflect the new levels immediately and
+        // pin the peak to the current value (no animated decay).
+        if (this.reducedMotion) {
+            this.peakHoldVal = this.peakVal;
+            this.render();
         }
     }
     clearClip() {
