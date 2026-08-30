@@ -3,6 +3,8 @@
 package audio
 
 import (
+	"encoding/binary"
+	"errors"
 	"testing"
 
 	capture "github.com/tphakala/go-audio-capture"
@@ -66,6 +68,121 @@ func TestOpenCapturePassesS16Format(t *testing.T) {
 	defer func() { _ = src.Close() }()
 	if got != capture.FormatS16LE {
 		t.Errorf("openStream got Format %v, want FormatS16LE", got)
+	}
+}
+
+// s32Stream is a captureStream that emits fixed interleaved S32LE sample data,
+// for exercising OpenCapture's S32 fallback and the converting source.
+type s32Stream struct {
+	neg     capture.Config
+	samples []int32
+	closed  bool
+}
+
+func (s *s32Stream) Negotiated() capture.Config { return s.neg }
+func (s *s32Stream) Start() error               { return nil }
+func (s *s32Stream) Read(buf []byte) (int, error) {
+	for i, v := range s.samples {
+		binary.LittleEndian.PutUint32(buf[i*4:], uint32(v))
+	}
+	return len(s.samples) / s.neg.Channels, nil
+}
+func (s *s32Stream) Close() error { s.closed = true; return nil }
+
+func TestOpenCaptureFallsBackToS32AndDownconverts(t *testing.T) {
+	// The device rejects S16 (here with a rate error, which must NOT short-circuit
+	// the S32 attempt), then opens in S32. Each S32 sample is downconverted to its
+	// top 16 bits before reaching the pipeline.
+	fake := &s32Stream{
+		neg:     capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 2},
+		samples: []int32{0x11112222, 0x33334444},
+	}
+	var tried []capture.Format
+	prev := openStream
+	openStream = func(cfg capture.Config) (captureStream, error) {
+		tried = append(tried, cfg.Format)
+		if cfg.Format == capture.FormatS16LE {
+			return nil, &capture.BadRateError{Requested: cfg.Rate}
+		}
+		return fake, nil
+	}
+	defer func() { openStream = prev }()
+
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: 1, Format: testFmtS16})
+	if err != nil {
+		t.Fatalf("OpenCapture: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if len(tried) != 2 || tried[0] != capture.FormatS16LE || tried[1] != capture.FormatS32LE {
+		t.Fatalf("tried formats = %v, want [FormatS16LE FormatS32LE]", tried)
+	}
+	if r, ch := src.Negotiated(); r != 48000 || ch != 1 {
+		t.Errorf("Negotiated = %d, %d; want 48000, 1", r, ch)
+	}
+	p, err := src.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if p.Frames != 2 {
+		t.Errorf("frames = %d, want 2", p.Frames)
+	}
+	want := []int16{0x1111, 0x3333}
+	if len(p.Buf) != len(want)*2 {
+		t.Fatalf("buf len = %d, want %d", len(p.Buf), len(want)*2)
+	}
+	for i, w := range want {
+		if got := int16(binary.LittleEndian.Uint16(p.Buf[i*2:])); got != w {
+			t.Errorf("sample %d = %#04x, want %#04x", i, uint16(got), uint16(w))
+		}
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !fake.closed {
+		t.Error("Close did not close the underlying S32 stream")
+	}
+}
+
+func TestOpenCapturePrefersRateErrorAcrossFormats(t *testing.T) {
+	// preferRateError must surface a *BadRateError over a raw driver error
+	// whichever format produced it, and when BOTH formats reject the rate it must
+	// keep the FIRST (S16) error so the reported range is the preferred format's,
+	// not the narrower fallback's. Min identifies which format's error survived.
+	raw := errors.New("alsa: HW_REFINE: invalid argument")
+	s16Rate := &capture.BadRateError{Requested: 384000, Min: 16000, Max: 384000}
+	s32Rate := &capture.BadRateError{Requested: 384000, Min: 44100, Max: 96000}
+	cases := []struct {
+		name     string
+		s16, s32 error
+		wantRate bool // expect a *BadRateError to surface
+		wantMin  int  // Min of the surfaced range (identifies which format's error)
+	}{
+		{"raw_then_rate", raw, s32Rate, true, 44100},            // S32 rate error beats S16 raw
+		{"rate_then_raw", s16Rate, raw, true, 16000},            // S16 rate error kept over S32 raw
+		{"both_rate_keep_first", s16Rate, s32Rate, true, 16000}, // S16 (first) range wins
+		{"both_raw", raw, errors.New("other"), false, 0},        // no rate error to prefer
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := openStream
+			openStream = func(cfg capture.Config) (captureStream, error) {
+				if cfg.Format == capture.FormatS16LE {
+					return nil, tc.s16
+				}
+				return nil, tc.s32
+			}
+			defer func() { openStream = prev }()
+
+			_, err := OpenCapture(&config.Device{Device: testDevID, Rate: 384000, Channels: 1, Format: testFmtS16})
+			var bre *capture.BadRateError
+			if got := errors.As(err, &bre); got != tc.wantRate {
+				t.Fatalf("errors.As BadRateError = %v, want %v (err=%v)", got, tc.wantRate, err)
+			}
+			if tc.wantRate && bre.Min != tc.wantMin {
+				t.Errorf("surfaced range Min = %d, want %d (wrong format's error surfaced)", bre.Min, tc.wantMin)
+			}
+		})
 	}
 }
 

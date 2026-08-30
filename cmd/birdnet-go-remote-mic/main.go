@@ -184,8 +184,10 @@ func run(cfgPath string) error {
 	serving := make([]*deviceRuntime, 0, len(cfg.Devices))
 	for i := range cfg.Devices {
 		dev := &cfg.Devices[i]
-		// Probe supported rates while the device is still free (hw: devices are
-		// exclusive, so this must happen before the real open below).
+		// Probe supported rates for the config UI. ProbeRates is a non-blocking
+		// HW_REFINE capability query that does not claim the device, but run it
+		// before the real open below anyway: once we hold the hw: device
+		// exclusively the query would see our own process and report it busy.
 		rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
 		friendly := hwNames[dev.Device]
 

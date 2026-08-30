@@ -19,6 +19,9 @@ coverage.txt
 .serena/
 .claude/
 
+# Runtime artifacts
+*.pid
+
 # Local tool caches
 cache/
 
