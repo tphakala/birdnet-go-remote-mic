@@ -25,9 +25,23 @@ const (
 
 // Config is the whole configuration surface.
 type Config struct {
-	Listen    string    `yaml:"listen"`
-	Discovery Discovery `yaml:"discovery"`
-	Devices   []Device  `yaml:"devices"`
+	Listen     string     `yaml:"listen"`
+	Discovery  Discovery  `yaml:"discovery"`
+	Management Management `yaml:"management"`
+	Devices    []Device   `yaml:"devices"`
+}
+
+// Management configures the HTTPS management API. Enabled is a pointer so an
+// absent block defaults to on while an explicit "enabled: false" turns it off.
+type Management struct {
+	Enabled *bool  `yaml:"enabled"` // default on
+	Listen  string `yaml:"listen"`  // HTTPS listen address (host:port); default ":8443"
+	CertDir string `yaml:"cert_dir"`
+}
+
+// ManagementEnabled reports whether the management API is on (the default).
+func (c *Config) ManagementEnabled() bool {
+	return c.Management.Enabled == nil || *c.Management.Enabled
 }
 
 // Device configures one capture device and the stream it serves.
@@ -100,6 +114,9 @@ func (c *Config) applyDefaults() {
 	if c.Listen == "" {
 		c.Listen = ":8554"
 	}
+	if c.Management.Listen == "" {
+		c.Management.Listen = ":8443"
+	}
 	for i := range c.Devices {
 		d := &c.Devices[i]
 		if d.Mode == "" {
@@ -122,6 +139,11 @@ func (c *Config) applyDefaults() {
 func (c *Config) Validate() error {
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return &ValidationError{"listen", "must be host:port"}
+	}
+	if c.ManagementEnabled() {
+		if _, _, err := net.SplitHostPort(c.Management.Listen); err != nil {
+			return &ValidationError{"management.listen", "must be host:port"}
+		}
 	}
 	if len(c.Devices) == 0 {
 		return &ValidationError{"devices", "must list at least one device"}

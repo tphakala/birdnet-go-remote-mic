@@ -51,6 +51,26 @@ tasks:
     cmds:
       - golangci-lint run ./...
 
+  api:generate:
+    desc: Regenerate the management API code from the OpenAPI spec
+    cmds:
+      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config api/oapi-codegen.yaml api/openapi.yaml
+
+  api:lint:
+    desc: Lint the OpenAPI spec with vacuum
+    cmds:
+      - go run github.com/daveshanley/vacuum@v0.30.1 lint -d -e api/openapi.yaml
+
+  api:verify:
+    desc: Fail if the generated API code is stale relative to the spec
+    cmds:
+      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config api/oapi-codegen.yaml api/openapi.yaml
+      - |
+        if ! git diff --quiet -- internal/mgmtapi/gen.go; then
+          echo "internal/mgmtapi/gen.go is out of date; run: task api:generate"
+          exit 1
+        fi
+
   fmt:
     desc: Fail if any Go file is not gofmt-formatted
     cmds:
@@ -69,11 +89,13 @@ tasks:
       - go mod verify
 
   check:
-    desc: Full local gate (build, arm64 build, vet, lint, fmt, race tests)
+    desc: Full local gate (build, arm64 build, vet, lint, api checks, fmt, race tests)
     cmds:
       - task: build
       - task: build-arm64
       - task: vet
       - task: lint
+      - task: api:lint
+      - task: api:verify
       - task: fmt
       - task: test:race

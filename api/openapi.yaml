@@ -1,0 +1,590 @@
+openapi: 3.1.0
+
+info:
+  title: birdnet-go-remote-mic management API
+  version: 0.1.0
+  summary: Management API for the BirdNET-Go remote microphone appliance.
+  description: |
+    Read and manage a birdnet-go-remote-mic appliance: appliance and
+    per-device status, and a narrow slice of configuration.
+
+    The API is served over HTTPS with a self-signed certificate generated
+    and persisted by the appliance. Consumers are BirdNET-Go (generated Go
+    client) and the appliance's own web UI (generated TypeScript types).
+
+    Errors use RFC 9457 problem details (application/problem+json).
+
+    Security status: the bearerAuth scheme below is declared but NOT yet
+    enforced by the appliance. Until token authentication lands, every
+    operation (not just /healthz) is served without an auth check, so a
+    consumer must not assume unauthenticated requests are rejected. The
+    security requirements describe the intended end state.
+
+    Evolution policy: additive changes only within v1. Fields may be added
+    to responses at any time; consumers must ignore unknown fields.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: Tomi P. Hakala
+    url: https://github.com/tphakala/birdnet-go-remote-mic
+
+servers:
+  - url: /api/v1
+    description: The appliance itself (path-relative; host and port are deployment-specific).
+
+tags:
+  - name: system
+    description: Appliance health and status.
+  - name: devices
+    description: Capture devices and their streams.
+  - name: config
+    description: Appliance configuration.
+  - name: events
+    description: Live event stream (Server-Sent Events).
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness probe
+      description: >
+        Always available and unauthenticated. Reports only that the process
+        is up; use /status for real state.
+      security: []
+      responses:
+        "200":
+          description: The appliance is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /status:
+    get:
+      operationId: getStatus
+      tags: [system]
+      summary: Appliance status
+      description: >
+        Appliance-level runtime state: version, uptime, RTSP listener,
+        discovery, and per-device counts. Full per-device detail lives at
+        /devices.
+      responses:
+        "200":
+          description: Current appliance status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplianceStatus"
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: List capture devices
+      description: >
+        Every configured device with its configured and negotiated
+        parameters and runtime state, including devices that failed to open
+        (state "skipped") or died after startup (state "failed").
+      responses:
+        "200":
+          description: All configured devices.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Device"
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /devices/{name}:
+    get:
+      operationId: getDevice
+      tags: [devices]
+      summary: Get one capture device
+      description: The named device with its configuration and runtime state.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The device's configured unique name.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The named device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "404":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /events:
+    get:
+      operationId: streamEvents
+      tags: [events]
+      summary: Live event stream
+      description: |
+        A single multiplexed Server-Sent Events stream for the whole
+        appliance. Each SSE event's `event:` field names its type and its
+        `data:` field is a JSON document:
+
+        - `levels`: emitted at a fixed cadence (10 Hz) with one
+          LevelsEvent covering every serving device. Peak and RMS are
+          measured over the window since the previous event; meter
+          ballistics (decay, peak hold) are the client's job.
+        - `heartbeat`: emitted every 15 seconds with `{}` as data, so
+          idle connections stay alive and clients can detect a dead
+          server. Sent as a named event (not an SSE comment) so simple
+          fetch-based parsers see it.
+
+        Further event types will be added additively; clients must ignore
+        event types they do not know. Level data is ephemeral: there is no
+        replay and `Last-Event-ID` is ignored.
+
+        Browser note: the native EventSource API cannot send an
+        Authorization header, so an authenticated web client should
+        consume this endpoint with fetch and a streamed response body.
+
+        OpenAPI 3.1 cannot type per-event payloads on a stream; the
+        `data:` schema for `levels` events is LevelsEvent. This operation
+        moves to OpenAPI 3.2 `itemSchema` once the code generators
+        support it.
+      parameters:
+        - name: events
+          in: query
+          required: false
+          description: >
+            Event types to subscribe to, comma-separated. Absent means
+            all types. Heartbeats are always sent.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              examples: [levels]
+      responses:
+        "200":
+          description: The event stream; stays open until the client disconnects.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >
+                  SSE framing per the HTML living standard. The data field
+                  of each `levels` event is a JSON LevelsEvent.
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      summary: Get the running configuration
+      description: >
+        The configuration as loaded (defaults applied). Secrets, once any
+        exist, are never returned by this endpoint.
+      responses:
+        "200":
+          description: The active configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: patchConfig
+      tags: [config]
+      summary: Update configuration
+      description: >
+        Validates and persists a partial configuration update to the config
+        file. The capture pipeline is built at startup, so changes take
+        effect after the appliance restarts; the response says whether a
+        restart is pending.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigPatch"
+      responses:
+        "200":
+          description: The update was validated and persisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigUpdateResult"
+        "400":
+          description: The patch is malformed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: The patch is well-formed but fails validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ValidationProblem"
+        default:
+          $ref: "#/components/responses/Problem"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Shared appliance token. Defined ahead of enforcement: the server
+        accepts unauthenticated requests until a token is configured, and
+        the mDNS TXT record advertises auth=none or auth=token accordingly.
+
+  responses:
+    Problem:
+      description: An RFC 9457 problem detail.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    Health:
+      type: object
+      description: Liveness probe response.
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+          description: Appliance build version.
+          examples: ["v0.3.0"]
+
+    ApplianceStatus:
+      type: object
+      description: Appliance-level runtime state.
+      required:
+        - version
+        - uptimeSeconds
+        - rtspListen
+        - discoveryEnabled
+        - devicesServing
+        - devicesTotal
+      properties:
+        version:
+          type: string
+          description: Appliance build version (set at build time).
+        uptimeSeconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Seconds since the process started.
+        rtspListen:
+          type: string
+          description: The RTSP listener address (host:port as configured).
+          examples: [":8554"]
+        discoveryEnabled:
+          type: boolean
+          description: Whether mDNS/DNS-SD advertisement is on.
+        devicesServing:
+          type: integer
+          minimum: 0
+          description: Devices currently capturing and serving their track.
+        devicesTotal:
+          type: integer
+          minimum: 0
+          description: Devices in the configuration, whatever their state.
+
+    Device:
+      type: object
+      description: >
+        One configured capture device: its configuration, what capture
+        actually negotiated, and its runtime state.
+      required:
+        - name
+        - device
+        - path
+        - mode
+        - format
+        - state
+        - rate
+        - channels
+        - clientConnected
+        - droppedFrames
+      properties:
+        name:
+          type: string
+          description: Unique device name (also the DNS-SD instance name).
+          examples: [garden]
+        device:
+          type: string
+          description: ALSA capture device id.
+          examples: ["hw:1,0"]
+        path:
+          type: string
+          description: RTSP path serving this device.
+          examples: [/garden]
+        mode:
+          $ref: "#/components/schemas/StreamMode"
+        format:
+          type: string
+          const: s16
+          description: Sample format (only S16LE is supported).
+        rate:
+          type: integer
+          minimum: 8000
+          maximum: 384000
+          description: Requested capture sample rate in Hz (as configured).
+        channels:
+          type: integer
+          minimum: 1
+          maximum: 2
+          description: Requested channel count.
+        opus:
+          $ref: "#/components/schemas/OpusSettings"
+        state:
+          $ref: "#/components/schemas/DeviceState"
+        negotiatedRate:
+          type: integer
+          description: >
+            Sample rate the hardware actually delivers. Absent unless the
+            device opened (the appliance refuses a rate mismatch, so when
+            present it equals rate).
+        negotiatedChannels:
+          type: integer
+          description: Channel count the hardware actually delivers. Absent unless the device opened.
+        clientConnected:
+          type: boolean
+          description: >
+            Whether an RTSP session currently holds this track's single
+            slot. Always false for skipped or failed devices.
+        droppedFrames:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Frames dropped because the connected client was not keeping
+            up. Zero for devices that never served.
+        error:
+          type: string
+          description: Why the device is skipped or failed. Absent when serving.
+
+    DeviceState:
+      type: string
+      enum: [serving, skipped, failed]
+      description: >
+        serving: capturing and available over RTSP. skipped: could not be
+        opened at startup. failed: died after startup; its RTSP path
+        returns 404 until the appliance restarts.
+
+    StreamMode:
+      type: string
+      enum: [pcm, opus]
+      description: >
+        pcm streams raw L16 at the capture rate (the ultrasonic path);
+        opus streams 48 kHz mono Opus (the normal-audio path).
+
+    OpusSettings:
+      type: object
+      description: Opus encoder settings, used only when mode is opus.
+      properties:
+        bitrate:
+          type: integer
+          minimum: 0
+          description: Encoder bitrate in bits per second; 0 selects the encoder default.
+
+    LevelsEvent:
+      type: object
+      description: >
+        The payload of one `levels` SSE event: audio levels for every
+        serving device, measured over the window since the previous event.
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeviceLevels"
+
+    DeviceLevels:
+      type: object
+      description: One device's audio levels over the last measurement window.
+      required: [name, peakDbfs, rmsDbfs, clipped]
+      properties:
+        name:
+          type: string
+          description: The device's configured unique name.
+          examples: [garden]
+        peakDbfs:
+          type: number
+          format: double
+          minimum: -99
+          maximum: 0
+          description: >
+            Peak sample level in dBFS over the window. Silence is clamped
+            to the -99 floor.
+          examples: [-12.4]
+        rmsDbfs:
+          type: number
+          format: double
+          minimum: -99
+          maximum: 0
+          description: >
+            RMS level in dBFS over the window, clamped to the -99 floor.
+          examples: [-27.9]
+        clipped:
+          type: boolean
+          description: Whether any sample in the window hit full scale.
+
+    Config:
+      type: object
+      description: The appliance configuration (defaults applied).
+      required: [listen, discovery, management, devices]
+      properties:
+        listen:
+          type: string
+          description: RTSP listener address (host:port).
+        discovery:
+          $ref: "#/components/schemas/DiscoverySettings"
+        management:
+          $ref: "#/components/schemas/ManagementSettings"
+        devices:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: "#/components/schemas/DeviceConfig"
+
+    DeviceConfig:
+      type: object
+      description: The configuration of one device, without runtime state.
+      required: [name, device, path, mode, rate, channels, format]
+      properties:
+        name:
+          type: string
+        device:
+          type: string
+        path:
+          type: string
+        mode:
+          $ref: "#/components/schemas/StreamMode"
+        rate:
+          type: integer
+          minimum: 8000
+          maximum: 384000
+        channels:
+          type: integer
+          minimum: 1
+          maximum: 2
+        format:
+          type: string
+          const: s16
+        opus:
+          $ref: "#/components/schemas/OpusSettings"
+
+    DiscoverySettings:
+      type: object
+      description: mDNS/DNS-SD advertisement settings.
+      properties:
+        enabled:
+          type: boolean
+          description: mDNS/DNS-SD advertisement; defaults to true when absent.
+
+    ManagementSettings:
+      type: object
+      description: HTTPS management API settings.
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the management API is served; defaults to true when absent.
+        listen:
+          type: string
+          description: HTTPS listen address (host:port); defaults to :8443.
+          examples: [":8443"]
+        certDir:
+          type: string
+          description: >
+            Directory where the self-signed certificate and key are
+            persisted; defaults to the config file's directory.
+
+    ConfigPatch:
+      type: object
+      description: >
+        A partial configuration update. Only the fields present are
+        changed; the result must validate as a whole configuration.
+      properties:
+        discovery:
+          $ref: "#/components/schemas/DiscoverySettings"
+        devices:
+          type: array
+          description: >
+            Replaces the whole device list when present (per-device merge
+            is not supported).
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: "#/components/schemas/DeviceConfig"
+
+    ConfigUpdateResult:
+      type: object
+      description: Outcome of a persisted configuration update.
+      required: [config, restartRequired]
+      properties:
+        config:
+          $ref: "#/components/schemas/Config"
+        restartRequired:
+          type: boolean
+          description: >
+            True when the persisted change only takes effect after the
+            appliance restarts.
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+
+    ValidationProblem:
+      description: A problem detail carrying per-field validation errors.
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required: [field, reason]
+                properties:
+                  field:
+                    type: string
+                    description: Dotted path of the invalid field.
+                    examples: ["devices[0].rate"]
+                  reason:
+                    type: string
