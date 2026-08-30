@@ -2,7 +2,7 @@ import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
-import type { ApplianceStatus, Config, Device, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
 
 function elem(tag: string, className?: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -61,7 +61,29 @@ export class SystemView {
       const cfg = (e as CustomEvent<Config>).detail;
       if (!this.netDirty && cfg) this.populateNetwork(cfg);
     });
+    store.addEventListener("loaderror", (e: Event) => {
+      const detail = (e as CustomEvent<LoadError>).detail;
+      if (detail.systemFailed) this.renderLoadError(detail.message);
+    });
     this.bindNetwork();
+  }
+
+  // renderLoadError swaps the telemetry placeholder for the failure cause and a
+  // Retry button so the system view is not stuck loading when /system is
+  // unreachable. A successful retry re-renders via the system event.
+  private renderLoadError(message: string): void {
+    if (!this.tilesEl) return;
+    this.tilesEl.textContent = "";
+    const p = elem("p", "cfg-empty", `${message} `);
+    const retry = elem("button", "btn btn-secondary", "Retry");
+    retry.setAttribute("type", "button");
+    retry.addEventListener("click", () => {
+      if (this.tilesEl) this.tilesEl.textContent = "";
+      this.tilesEl?.appendChild(elem("p", "cfg-empty", "Loading system telemetry..."));
+      void store.retry();
+    });
+    p.appendChild(retry);
+    this.tilesEl.appendChild(p);
   }
 
   private bindNetwork(): void {

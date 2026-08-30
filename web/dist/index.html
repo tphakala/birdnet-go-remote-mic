@@ -207,19 +207,21 @@
               <span class="section-desc">Per-device capture and RTSP serving state.</span>
             </div>
           </div>
-          <table class="client-table">
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>ALSA</th>
-                <th>Stream Path</th>
-                <th>Codec / Rate</th>
-                <th>Client</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody id="sys-device-rows"></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="client-table">
+              <thead>
+                <tr>
+                  <th>Device</th>
+                  <th>ALSA</th>
+                  <th>Stream Path</th>
+                  <th>Codec / Rate</th>
+                  <th>Client</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody id="sys-device-rows"></tbody>
+            </table>
+          </div>
         </div>
 
         <!-- Lifecycle & Maintenance Actions -->
@@ -263,7 +265,7 @@
 
 <!-- ================= RESTARTING MODAL OVERLAY ================= -->
 <div class="modal-overlay" id="restart-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-  <div class="modal-card">
+  <div class="modal-card" tabindex="-1">
     <div class="spinner-ring" aria-hidden="true"></div>
     <div>
       <h3 id="modal-title" style="font-size: 16px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">Restarting Appliance</h3>
@@ -272,8 +274,9 @@
       </p>
     </div>
     <div style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); background: var(--accent-cyan-bg); padding: 4px 10px; border-radius: var(--radius-xs);">
-      <span id="reconnect-timer">Reconnecting in 5s...</span>
+      <span id="reconnect-timer" role="status">Reconnecting in 5s...</span>
     </div>
+    <button type="button" class="btn btn-primary" id="restart-retry" hidden>Reload now</button>
   </div>
 </div>
 

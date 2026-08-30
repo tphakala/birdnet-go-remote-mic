@@ -180,6 +180,12 @@ type Device struct {
 	// Format Sample format (only S16LE is supported).
 	Format DeviceFormat `json:"format"`
 
+	// FriendlyName Human-facing label derived from the sound card name (the text before the first comma). Absent when the device id matches no enumerated hardware, or the derived label is empty. The UI uses it to default a blank name.
+	//
+	//
+	// Examples: Scarlett 2i2 USB
+	FriendlyName *string `json:"friendlyName,omitempty"`
+
 	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
 	Mode StreamMode `json:"mode"`
 
@@ -207,6 +213,12 @@ type Device struct {
 
 	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts.
 	State DeviceState `json:"state"`
+
+	// SupportedRates Sample rates the hardware accepts, probed once at startup. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a static list of common rates.
+	//
+	//
+	// Examples: [48000,96000,192000]
+	SupportedRates *[]int `json:"supportedRates,omitempty"`
 }
 
 // DeviceFormat Sample format (only S16LE is supported).

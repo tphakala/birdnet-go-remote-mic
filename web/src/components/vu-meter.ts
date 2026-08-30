@@ -20,6 +20,10 @@ export class VUMeter {
 
   private animFrameId: number | null = null;
   private lastTime: number = performance.now();
+  // When the viewer prefers reduced motion, skip the free-running rAF loop and
+  // the peak-needle decay animation, redrawing a static bar on each level
+  // update instead.
+  private reducedMotion: boolean;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -34,12 +38,17 @@ export class VUMeter {
     this.ctx = context;
     this.peakValEl = peakValEl ?? null;
     this.clipEl = clipEl ?? null;
+    this.reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
     if (this.clipEl) {
       this.clipEl.addEventListener("click", () => this.clearClip());
     }
 
-    this.startLoop();
+    if (this.reducedMotion) {
+      this.render();
+    } else {
+      this.startLoop();
+    }
   }
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
@@ -53,6 +62,19 @@ export class VUMeter {
     if (this.peakVal > this.peakHoldVal) {
       this.peakHoldVal = this.peakVal;
       this.peakHoldTimer = 45; // Hold peak needle for ~45 frames before decay
+    }
+
+    // With no animation loop running, ease the peak hold down once per level
+    // event (~10 Hz) rather than pinning it to the instantaneous peak. The peak
+    // rise is already applied above; this keeps the dB readout holding recent
+    // peaks and calm instead of flickering, which matters most in reduced motion.
+    if (this.reducedMotion) {
+      if (this.peakHoldTimer > 0) {
+        this.peakHoldTimer -= 1;
+      } else {
+        this.peakHoldVal = Math.max(-60, this.peakHoldVal - 3);
+      }
+      this.render();
     }
   }
 
