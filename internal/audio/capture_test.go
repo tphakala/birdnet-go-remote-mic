@@ -32,7 +32,7 @@ func swapOpenStream(neg capture.Config) (stub *stubStream, restore func()) {
 }
 
 func TestCaptureFormat(t *testing.T) {
-	for _, f := range []string{"s16", ""} {
+	for _, f := range []string{testFmtS16, ""} {
 		got, err := captureFormat(f)
 		if err != nil || got != capture.FormatS16LE {
 			t.Errorf("captureFormat(%q) = %v, %v; want FormatS16LE, nil", f, got, err)
@@ -59,7 +59,7 @@ func TestOpenCapturePassesS16Format(t *testing.T) {
 		return &stubStream{neg: capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960}}, nil
 	}
 	defer func() { openStream = prev }()
-	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: 1, Format: "s16"})
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: 1, Format: testFmtS16})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// rather than silently deliver the wrong rate.
 	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
 	defer restore()
-	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Channels: 1, Format: "s16"}); err == nil {
+	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Channels: 1, Format: testFmtS16}); err == nil {
 		t.Fatal("OpenCapture accepted a rate mismatch, want error")
 	}
 	if !stub.closed {
@@ -85,7 +85,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 func TestOpenCaptureStartsAndReads(t *testing.T) {
 	_, restore := swapOpenStream(capture.Config{Rate: 256000, Channels: 1, PeriodFrames: 5120})
 	defer restore()
-	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Channels: 1, Format: "s16"})
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Channels: 1, Format: testFmtS16})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}

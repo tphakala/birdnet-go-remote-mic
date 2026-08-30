@@ -5,6 +5,7 @@ import "testing"
 const (
 	testDevID    = "hw:1,0"
 	testCardName = "C-Media USB Audio Device"
+	testFmtS16   = "s16"
 )
 
 func TestCandidateRatesReturnsFreshCopy(t *testing.T) {
