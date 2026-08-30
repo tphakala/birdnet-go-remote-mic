@@ -12,13 +12,13 @@ import (
 func TestHardwareNamesFrom(t *testing.T) {
 	t.Parallel()
 	devs := []capture.DeviceInfo{
-		{ID: "hw:1,0", Name: "Scarlett 2i2 USB, USB Audio"},
-		{ID: "hw:2,0", Name: "C-Media USB Audio Device"},
+		{ID: testDevID, Name: "Scarlett 2i2 USB, USB Audio"},
+		{ID: "hw:2,0", Name: testCardName},
 	}
 	got := hardwareNamesFrom(devs)
 	want := map[string]string{
-		"hw:1,0": "Scarlett 2i2 USB",
-		"hw:2,0": "C-Media USB Audio Device",
+		testDevID: "Scarlett 2i2 USB",
+		"hw:2,0":  testCardName,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
@@ -41,7 +41,7 @@ func TestProbeRatesKeepsSupported(t *testing.T) {
 	}
 	defer func() { openStream = prev }()
 
-	got := ProbeRates("hw:1,0", 1, []int{16000, 48000, 96000, 384000})
+	got := ProbeRates(testDevID, 1, []int{16000, 48000, 96000, 384000})
 	want := []int{48000, 96000}
 	if len(got) != len(want) {
 		t.Fatalf("ProbeRates = %v, want %v", got, want)
@@ -61,7 +61,7 @@ func TestProbeRatesDropsNegotiatedMismatch(t *testing.T) {
 	}
 	defer func() { openStream = prev }()
 
-	if got := ProbeRates("hw:1,0", 1, []int{96000}); len(got) != 0 {
+	if got := ProbeRates(testDevID, 1, []int{96000}); len(got) != 0 {
 		t.Errorf("ProbeRates kept a negotiated mismatch: %v", got)
 	}
 }
@@ -88,7 +88,7 @@ func TestProbeRatesClosesEveryProbe(t *testing.T) {
 	}
 	defer func() { openStream = prev }()
 
-	ProbeRates("hw:1,0", 1, []int{48000, 96000})
+	ProbeRates(testDevID, 1, []int{48000, 96000})
 	for i, s := range opened {
 		if !s.closed {
 			t.Errorf("probe %d left the stream open", i)

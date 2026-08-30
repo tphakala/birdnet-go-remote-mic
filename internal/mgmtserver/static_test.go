@@ -8,6 +8,11 @@ import (
 	"testing/fstest"
 )
 
+const (
+	testStylesPath = "/styles.css"
+	testETagValue  = `"abc123"`
+)
+
 func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
 	memFS := fstest.MapFS{
 		"index.html": &fstest.MapFile{
@@ -41,7 +46,7 @@ func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
 		},
 		{
 			name:       "static css file",
-			path:       "/styles.css",
+			path:       testStylesPath,
 			method:     http.MethodGet,
 			wantStatus: http.StatusOK,
 			wantBody:   "body { background: #0b0f17; }",
@@ -65,7 +70,7 @@ func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
 		},
 		{
 			name:       "post method rejected",
-			path:       "/styles.css",
+			path:       testStylesPath,
 			method:     http.MethodPost,
 			wantStatus: http.StatusMethodNotAllowed,
 		},
@@ -180,7 +185,7 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 		},
 		{
 			name:        "static asset exact match returns 304",
-			path:        "/styles.css",
+			path:        testStylesPath,
 			ifNoneMatch: "*",
 			wantStatus:  http.StatusNotModified,
 		},
@@ -211,55 +216,55 @@ func TestEtagMatches(t *testing.T) {
 	}{
 		{
 			name:        "exact match returns true",
-			ifNoneMatch: `"abc123"`,
-			etag:        `"abc123"`,
+			ifNoneMatch: testETagValue,
+			etag:        testETagValue,
 			want:        true,
 		},
 		{
 			name:        "list with matching tag returns true",
 			ifNoneMatch: `"tag1", "abc123", "tag2"`,
-			etag:        `"abc123"`,
+			etag:        testETagValue,
 			want:        true,
 		},
 		{
 			name:        "asterisk returns true",
 			ifNoneMatch: "*",
-			etag:        `"abc123"`,
+			etag:        testETagValue,
 			want:        true,
 		},
 		{
 			name:        "asterisk element inside list returns true",
 			ifNoneMatch: `"tag1", *, "tag2"`,
-			etag:        `"abc123"`,
+			etag:        testETagValue,
 			want:        true,
 		},
 		{
 			name:        "weak prefix matching strong returns true",
 			ifNoneMatch: `W/"abc123"`,
-			etag:        `"abc123"`,
+			etag:        testETagValue,
 			want:        true,
 		},
 		{
 			name:        "weak target etag matching strong header returns true",
-			ifNoneMatch: `"abc123"`,
+			ifNoneMatch: testETagValue,
 			etag:        `W/"abc123"`,
 			want:        true,
 		},
 		{
 			name:        "no match returns false",
 			ifNoneMatch: `"nomatch1", "nomatch2"`,
-			etag:        `"abc123"`,
+			etag:        testETagValue,
 			want:        false,
 		},
 		{
 			name:        "empty header returns false",
 			ifNoneMatch: "",
-			etag:        `"abc123"`,
+			etag:        testETagValue,
 			want:        false,
 		},
 		{
 			name:        "empty target etag returns false",
-			ifNoneMatch: `"abc123"`,
+			ifNoneMatch: testETagValue,
 			etag:        "",
 			want:        false,
 		},

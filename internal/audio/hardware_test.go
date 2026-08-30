@@ -2,6 +2,11 @@ package audio
 
 import "testing"
 
+const (
+	testDevID    = "hw:1,0"
+	testCardName = "C-Media USB Audio Device"
+)
+
 func TestFriendlyName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -11,7 +16,7 @@ func TestFriendlyName(t *testing.T) {
 	}{
 		{"comma suffix dropped", "Scarlett 2i2 USB, USB Audio", "Scarlett 2i2 USB"},
 		{"short name comma suffix", "AMS-24, USB Audio", "AMS-24"},
-		{"no comma kept as-is", "C-Media USB Audio Device", "C-Media USB Audio Device"},
+		{"no comma kept as-is", testCardName, testCardName},
 		{"whitespace trimmed around comma", "  Foo , Bar", "Foo"},
 		{"empty stays empty", "", ""},
 		{"leading comma yields empty", ", USB Audio", ""},
