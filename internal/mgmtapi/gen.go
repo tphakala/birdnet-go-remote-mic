@@ -295,6 +295,29 @@ type ManagementSettings struct {
 	Listen *string `json:"listen,omitempty"`
 }
 
+// NetworkInterface One network interface and its live byte counters.
+type NetworkInterface struct {
+	// Addresses Assigned IP addresses in CIDR notation.
+	Addresses []string `json:"addresses"`
+
+	// Mac Hardware (MAC) address; absent for interfaces without one.
+	//
+	// Examples: dc:a6:32:00:11:22
+	Mac *string `json:"mac,omitempty"`
+
+	// Name Examples: eth0
+	Name string `json:"name"`
+
+	// RxBytes Bytes received since boot.
+	RxBytes int64 `json:"rxBytes"`
+
+	// TxBytes Bytes transmitted since boot.
+	TxBytes int64 `json:"txBytes"`
+
+	// Up Whether the interface is up and running.
+	Up bool `json:"up"`
+}
+
 // OpusSettings Opus encoder settings, used only when mode is opus.
 type OpusSettings struct {
 	// Bitrate Encoder bitrate in bits per second; 0 selects the encoder default.
@@ -312,6 +335,58 @@ type Problem struct {
 
 // StreamMode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
 type StreamMode string
+
+// SystemInfo Host hardware facts and live system metrics.
+type SystemInfo struct {
+	// CpuCores Number of logical CPUs.
+	CpuCores int `json:"cpuCores"`
+
+	// CpuModel CPU or SoC model as reported by the kernel.
+	//
+	// Examples: Raspberry Pi Zero 2 W Rev 1.0
+	CpuModel *string `json:"cpuModel,omitempty"`
+
+	// CpuPercent Recent host CPU utilization across all cores, as a percentage. Absent until the sampler has taken two readings.
+	CpuPercent *float64 `json:"cpuPercent,omitempty"`
+
+	// DiskTotalBytes Total bytes of the filesystem holding the appliance's data.
+	DiskTotalBytes int64 `json:"diskTotalBytes"`
+
+	// DiskUsedBytes Used bytes of that filesystem.
+	DiskUsedBytes int64 `json:"diskUsedBytes"`
+
+	// Hostname The host's name.
+	//
+	// Examples: birdmic
+	Hostname string `json:"hostname"`
+
+	// Kernel Kernel release string.
+	//
+	// Examples: 6.6.20+rpt-rpi-2712
+	Kernel *string `json:"kernel,omitempty"`
+
+	// MemTotalBytes Total physical memory in bytes.
+	MemTotalBytes int64 `json:"memTotalBytes"`
+
+	// MemUsedBytes Used physical memory in bytes (total minus available).
+	MemUsedBytes int64 `json:"memUsedBytes"`
+
+	// Network Non-loopback network interfaces.
+	Network []NetworkInterface `json:"network"`
+
+	// Os Operating system pretty name (from /etc/os-release).
+	//
+	// Examples: Debian GNU/Linux 13 (trixie)
+	Os *string `json:"os,omitempty"`
+
+	// Platform Go platform tag, GOOS/GOARCH.
+	//
+	// Examples: linux/arm64
+	Platform string `json:"platform"`
+
+	// TempCelsius SoC or CPU temperature in degrees Celsius. Absent when no thermal sensor is exposed (typical off Raspberry Pi hardware).
+	TempCelsius *float64 `json:"tempCelsius,omitempty"`
+}
 
 // ValidationProblem A problem detail carrying per-field validation errors.
 type ValidationProblem struct {
@@ -495,6 +570,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /status (the `GetStatus` operationId).
 	GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSystem Host system information
+	//
+	// Static hardware facts (platform, CPU, total memory and storage) and live host metrics (CPU and memory use, SoC temperature where a sensor exists), plus per-interface network details, for the web UI's host panel.
+	//
+	// Corresponds with GET /system (the `GetSystem` operationId).
+	GetSystem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // GetConfig Get the running configuration
@@ -651,6 +733,23 @@ func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (
 // Corresponds with GET /status (the `GetStatus` operationId).
 func (c *Client) GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetStatusRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSystem Host system information
+//
+// Static hardware facts (platform, CPU, total memory and storage) and live host metrics (CPU and memory use, SoC temperature where a sensor exists), plus per-interface network details, for the web UI's host panel.
+//
+// Corresponds with GET /system (the `GetSystem` operationId).
+func (c *Client) GetSystem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSystemRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -897,6 +996,33 @@ func NewGetStatusRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetSystemRequest constructs an http.Request for the GetSystem method
+func NewGetSystemRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -1036,6 +1162,15 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /status (the `GetStatus` operationId).
 	GetStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetStatusResponse, error)
+
+	// GetSystemWithResponse Host system information
+	//
+	// Static hardware facts (platform, CPU, total memory and storage) and live host metrics (CPU and memory use, SoC temperature where a sensor exists), plus per-interface network details, for the web UI's host panel.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /system (the `GetSystem` operationId).
+	GetSystemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemResponse, error)
 }
 
 type GetConfigResponse struct {
@@ -1381,6 +1516,54 @@ func (r GetStatusResponse) ContentType() string {
 	return ""
 }
 
+type GetSystemResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SystemInfo
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetSystemResponse) GetJSON200() *SystemInfo {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r GetSystemResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r GetSystemResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSystemResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSystemResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSystemResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // GetConfigWithResponse Get the running configuration
 //
 // The configuration as loaded (defaults applied). Secrets, once any exist, are never returned by this endpoint.
@@ -1523,6 +1706,21 @@ func (c *ClientWithResponses) GetStatusWithResponse(ctx context.Context, reqEdit
 		return nil, err
 	}
 	return ParseGetStatusResponse(rsp)
+}
+
+// GetSystemWithResponse Host system information
+//
+// Static hardware facts (platform, CPU, total memory and storage) and live host metrics (CPU and memory use, SoC temperature where a sensor exists), plus per-interface network details, for the web UI's host panel.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /system (the `GetSystem` operationId).
+func (c *ClientWithResponses) GetSystemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemResponse, error) {
+	rsp, err := c.GetSystem(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSystemResponse(rsp)
 }
 
 // ParseGetConfigResponse parses an HTTP response from a GetConfigWithResponse call
@@ -1763,6 +1961,39 @@ func ParseGetStatusResponse(rsp *http.Response) (*GetStatusResponse, error) {
 	return response, nil
 }
 
+// ParseGetSystemResponse parses an HTTP response from a GetSystemWithResponse call
+func ParseGetSystemResponse(rsp *http.Response) (*GetSystemResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSystemResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SystemInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetConfig Get the running configuration
@@ -1786,6 +2017,9 @@ type ServerInterface interface {
 	// GetStatus Appliance status
 	// (GET /status)
 	GetStatus(w http.ResponseWriter, r *http.Request)
+	// GetSystem Host system information
+	// (GET /system)
+	GetSystem(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1926,6 +2160,20 @@ func (siw *ServerInterfaceWrapper) GetStatus(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// GetSystem operation middleware
+func (siw *ServerInterfaceWrapper) GetSystem(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSystem(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -2053,6 +2301,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/events", wrapper.StreamEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/config", wrapper.GetConfig)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/config", wrapper.PatchConfig)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system", wrapper.GetSystem)
 
 	return m
 }
@@ -2384,6 +2633,44 @@ func (response GetStatusdefaultApplicationProblemPlusJSONResponse) VisitGetStatu
 	return err
 }
 
+type GetSystemRequestObject struct {
+}
+
+type GetSystemResponseObject interface {
+	VisitGetSystemResponse(w http.ResponseWriter) error
+}
+
+type GetSystem200JSONResponse SystemInfo
+
+func (response GetSystem200JSONResponse) VisitGetSystemResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSystemdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetSystemdefaultApplicationProblemPlusJSONResponse) VisitGetSystemResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetConfig Get the running configuration
@@ -2407,6 +2694,9 @@ type StrictServerInterface interface {
 	// GetStatus Appliance status
 	// (GET /status)
 	GetStatus(ctx context.Context, request GetStatusRequestObject) (GetStatusResponseObject, error)
+	// GetSystem Host system information
+	// (GET /system)
+	GetSystem(ctx context.Context, request GetSystemRequestObject) (GetSystemResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -2620,6 +2910,30 @@ func (sh *strictHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetStatusResponseObject); ok {
 		if err := validResponse.VisitGetStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSystem operation middleware
+func (sh *strictHandler) GetSystem(w http.ResponseWriter, r *http.Request) {
+	var request GetSystemRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSystem(ctx, request.(GetSystemRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSystem")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSystemResponseObject); ok {
+		if err := validResponse.VisitGetSystemResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

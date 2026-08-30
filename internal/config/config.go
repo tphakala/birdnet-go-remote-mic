@@ -11,7 +11,12 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 )
+
+// maxDevices caps the device list, matching the API contract's maxItems.
+const maxDevices = 32
 
 // Mode selects the stream format.
 type Mode string
@@ -34,9 +39,9 @@ type Config struct {
 // Management configures the HTTPS management API. Enabled is a pointer so an
 // absent block defaults to on while an explicit "enabled: false" turns it off.
 type Management struct {
-	Enabled *bool  `yaml:"enabled"` // default on
-	Listen  string `yaml:"listen"`  // HTTPS listen address (host:port); default ":8443"
-	CertDir string `yaml:"cert_dir"`
+	Enabled *bool  `yaml:"enabled,omitempty"`  // default on
+	Listen  string `yaml:"listen,omitempty"`   // HTTPS listen address (host:port); default ":8443"
+	CertDir string `yaml:"cert_dir,omitempty"` // default: the config file's directory
 }
 
 // ManagementEnabled reports whether the management API is on (the default).
@@ -46,20 +51,20 @@ func (c *Config) ManagementEnabled() bool {
 
 // Device configures one capture device and the stream it serves.
 type Device struct {
-	Name     string `yaml:"name"`     // DNS-SD instance name and log label; unique
-	Device   string `yaml:"device"`   // go-audio-capture device id, e.g. "hw:1,0"
-	Path     string `yaml:"path"`     // RTSP path, e.g. "/garden"; unique; default "/stream"
-	Mode     Mode   `yaml:"mode"`     // pcm or opus
-	Rate     int    `yaml:"rate"`     // capture sample rate in Hz
-	Channels int    `yaml:"channels"` // 1 or 2
-	Format   string `yaml:"format"`   // only "s16"
-	Opus     Opus   `yaml:"opus"`     // used only when Mode is opus
+	Name     string `yaml:"name"`           // DNS-SD instance name and log label; unique
+	Device   string `yaml:"device"`         // go-audio-capture device id, e.g. "hw:1,0"
+	Path     string `yaml:"path"`           // RTSP path, e.g. "/garden"; unique; default "/stream"
+	Mode     Mode   `yaml:"mode"`           // pcm or opus
+	Rate     int    `yaml:"rate"`           // capture sample rate in Hz
+	Channels int    `yaml:"channels"`       // 1 or 2
+	Format   string `yaml:"format"`         // only "s16"
+	Opus     Opus   `yaml:"opus,omitempty"` // used only when Mode is opus
 }
 
 // Discovery configures mDNS/DNS-SD advertisement. Enabled is a pointer so an
 // absent block defaults to on while an explicit "enabled: false" turns it off.
 type Discovery struct {
-	Enabled *bool `yaml:"enabled"`
+	Enabled *bool `yaml:"enabled,omitempty"`
 }
 
 // DiscoveryEnabled reports whether mDNS advertisement is on (the default).
@@ -69,7 +74,7 @@ func (c *Config) DiscoveryEnabled() bool {
 
 // Opus configures the Opus encoder (used only when Mode is ModeOpus).
 type Opus struct {
-	Bitrate int `yaml:"bitrate"`
+	Bitrate int `yaml:"bitrate,omitempty"`
 }
 
 // ValidationError reports a single invalid configuration field.
@@ -103,14 +108,18 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("config: %s uses the old single-device format; move the audio settings into a devices: list (see config.example.yaml)", path)
 		}
 	}
-	c.applyDefaults()
+	c.ApplyDefaults()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
 	return c, nil
 }
 
-func (c *Config) applyDefaults() {
+// ApplyDefaults fills in the defaults for any unset fields. It is idempotent, so
+// calling it on an already-defaulted config is a no-op. Load applies it before
+// validating; the config endpoints apply it to a patched config so an
+// API-supplied device defaults identically to a file-loaded one.
+func (c *Config) ApplyDefaults() {
 	if c.Listen == "" {
 		c.Listen = ":8554"
 	}
@@ -147,6 +156,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Devices) == 0 {
 		return &ValidationError{"devices", "must list at least one device"}
+	}
+	if len(c.Devices) > maxDevices {
+		return &ValidationError{"devices", fmt.Sprintf("must not list more than %d devices", maxDevices)}
 	}
 	names := make(map[string]bool, len(c.Devices))
 	paths := make(map[string]bool, len(c.Devices))
@@ -223,4 +235,40 @@ func validatePath(p string) string {
 	default:
 		return ""
 	}
+}
+
+// Clone returns a deep copy of c. The Devices slice and the *bool fields get
+// their own backing storage, so a caller may mutate the copy (for example
+// ApplyDefaults over a patched device list) without racing a concurrent reader
+// of the original. Device holds only value types, so copying the slice fully
+// copies each device.
+func (c *Config) Clone() Config {
+	out := *c
+	if c.Discovery.Enabled != nil {
+		v := *c.Discovery.Enabled
+		out.Discovery.Enabled = &v
+	}
+	if c.Management.Enabled != nil {
+		v := *c.Management.Enabled
+		out.Management.Enabled = &v
+	}
+	if c.Devices != nil {
+		out.Devices = make([]Device, len(c.Devices))
+		copy(out.Devices, c.Devices)
+	}
+	return out
+}
+
+// Save marshals c to YAML and writes it to path atomically via atomicfile.Write
+// (temp file, fsync, rename; symlink-preserving). The file is written 0600
+// because the config will hold a token once auth lands.
+func Save(path string, c *Config) error {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("config: marshal %s: %w", path, err)
+	}
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		return fmt.Errorf("config: write %s: %w", path, err)
+	}
+	return nil
 }

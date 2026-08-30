@@ -241,6 +241,26 @@ paths:
         default:
           $ref: "#/components/responses/Problem"
 
+  /system:
+    get:
+      operationId: getSystem
+      tags: [system]
+      summary: Host system information
+      description: >
+        Static hardware facts (platform, CPU, total memory and storage) and
+        live host metrics (CPU and memory use, SoC temperature where a sensor
+        exists), plus per-interface network details, for the web UI's host
+        panel.
+      responses:
+        "200":
+          description: Host system information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemInfo"
+        default:
+          $ref: "#/components/responses/Problem"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -588,3 +608,111 @@ components:
                     examples: ["devices[0].rate"]
                   reason:
                     type: string
+
+    SystemInfo:
+      type: object
+      description: Host hardware facts and live system metrics.
+      required:
+        - platform
+        - hostname
+        - cpuCores
+        - memTotalBytes
+        - memUsedBytes
+        - diskTotalBytes
+        - diskUsedBytes
+        - network
+      properties:
+        platform:
+          type: string
+          description: Go platform tag, GOOS/GOARCH.
+          examples: ["linux/arm64"]
+        os:
+          type: string
+          description: Operating system pretty name (from /etc/os-release).
+          examples: ["Debian GNU/Linux 13 (trixie)"]
+        kernel:
+          type: string
+          description: Kernel release string.
+          examples: ["6.6.20+rpt-rpi-2712"]
+        hostname:
+          type: string
+          description: The host's name.
+          examples: ["birdmic"]
+        cpuModel:
+          type: string
+          description: CPU or SoC model as reported by the kernel.
+          examples: ["Raspberry Pi Zero 2 W Rev 1.0"]
+        cpuCores:
+          type: integer
+          minimum: 1
+          description: Number of logical CPUs.
+        cpuPercent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: >
+            Recent host CPU utilization across all cores, as a percentage.
+            Absent until the sampler has taken two readings.
+        memTotalBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total physical memory in bytes.
+        memUsedBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Used physical memory in bytes (total minus available).
+        diskTotalBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total bytes of the filesystem holding the appliance's data.
+        diskUsedBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Used bytes of that filesystem.
+        tempCelsius:
+          type: number
+          format: double
+          description: >
+            SoC or CPU temperature in degrees Celsius. Absent when no thermal
+            sensor is exposed (typical off Raspberry Pi hardware).
+        network:
+          type: array
+          description: Non-loopback network interfaces.
+          items:
+            $ref: "#/components/schemas/NetworkInterface"
+
+    NetworkInterface:
+      type: object
+      description: One network interface and its live byte counters.
+      required: [name, up, addresses, rxBytes, txBytes]
+      properties:
+        name:
+          type: string
+          examples: ["eth0"]
+        mac:
+          type: string
+          description: Hardware (MAC) address; absent for interfaces without one.
+          examples: ["dc:a6:32:00:11:22"]
+        up:
+          type: boolean
+          description: Whether the interface is up and running.
+        addresses:
+          type: array
+          description: Assigned IP addresses in CIDR notation.
+          items:
+            type: string
+        rxBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Bytes received since boot.
+        txBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Bytes transmitted since boot.

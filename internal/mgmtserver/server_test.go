@@ -40,7 +40,7 @@ func (f *fakeProvider) Device(name string) (DeviceStatus, bool) {
 func servingOpus() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
-			Name: "garden", Device: "hw:1,0", Path: "/garden",
+			Name: devGarden, Device: "hw:1,0", Path: "/garden",
 			Mode: config.ModeOpus, Rate: 48000, Channels: 1, Format: "s16",
 			Opus: config.Opus{Bitrate: 96000},
 		},
@@ -123,7 +123,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 		t.Fatalf("got %d devices, want 1", len(list))
 	}
 	d := list[0]
-	if d.Name != "garden" || d.Mode != mgmtapi.Opus || d.Rate != 48000 || d.Channels != 1 {
+	if d.Name != devGarden || d.Mode != mgmtapi.Opus || d.Rate != 48000 || d.Channels != 1 {
 		t.Errorf("config fields wrong: %+v", d)
 	}
 	if d.State != mgmtapi.Serving {
