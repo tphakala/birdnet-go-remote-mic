@@ -3,6 +3,8 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
+import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
+import { confirmDialog } from "../lib/modal.js";
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path></svg>';
 const ICON_ULTRA = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h2"></path><path d="M6 8v8"></path><path d="M10 4v16"></path><path d="M14 6v12"></path><path d="M18 9v6"></path><path d="M22 12h-2"></path></svg>';
@@ -10,14 +12,6 @@ const ICON_ERROR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
 const ICON_WARN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
 const ICON_COPY = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
 const ICON_GEAR = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
-function elem(tag, className, text) {
-    const e = document.createElement(tag);
-    if (className)
-        e.className = className;
-    if (text !== undefined)
-        e.textContent = text;
-    return e;
-}
 function iconSpan(markup, className) {
     const s = document.createElement("span");
     if (className)
@@ -25,9 +19,6 @@ function iconSpan(markup, className) {
     // Static trusted markup only; never runtime/user data.
     s.innerHTML = markup;
     return s;
-}
-function modeLabel(mode) {
-    return mode === "pcm" ? "PCM L16" : "OPUS";
 }
 function channelLabel(channels) {
     if (channels === 1)
@@ -52,16 +43,6 @@ function rtspPort(listen) {
         return "8554";
     const i = listen.lastIndexOf(":");
     return i >= 0 ? listen.slice(i + 1) : listen;
-}
-function formatUptime(seconds) {
-    const d = Math.floor(seconds / 86400);
-    const h = Math.floor((seconds % 86400) / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    if (d > 0)
-        return `${d}d ${h}h ${String(m).padStart(2, "0")}m`;
-    if (h > 0)
-        return `${h}h ${String(m).padStart(2, "0")}m`;
-    return `${m}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
 }
 export class DashboardView {
     cards = new Map();
@@ -118,22 +99,16 @@ export class DashboardView {
     renderLoadError(message) {
         if (!this.emptyEl)
             return;
-        this.emptyEl.hidden = false;
-        this.emptyEl.textContent = `${message} `;
-        const retry = elem("button", "btn btn-secondary", "Retry");
-        retry.setAttribute("type", "button");
-        retry.addEventListener("click", () => {
-            if (this.emptyEl)
-                this.emptyEl.textContent = "Loading devices...";
-            void store.retry();
-        });
-        this.emptyEl.appendChild(retry);
+        renderLoadError(this.emptyEl, message, "Loading devices...", () => void store.retry());
     }
     renderDevices(devices) {
         if (!this.rack)
             return;
         if (this.emptyEl) {
             this.emptyEl.hidden = devices.length > 0;
+            // Clear the alert live-region role set by renderLoadError so the benign
+            // empty/loaded state is not re-announced as an error.
+            this.emptyEl.removeAttribute("role");
             // Replace the static "Loading devices..." placeholder once we know there
             // are genuinely zero configured devices (the element is visible here).
             if (devices.length === 0)
@@ -322,14 +297,14 @@ export class DashboardView {
         article.appendChild(settingsWrap);
         const entry = {
             article, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
-            device: d, settingsWrap, settingsForm: null, expanded: false,
+            device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
         };
         gearBtn.addEventListener("click", () => this.toggleSettings(entry));
         return entry;
     }
     toggleSettings(entry) {
         if (entry.expanded) {
-            this.closeSettings(entry);
+            void this.requestCloseSettings(entry);
             return;
         }
         if (!entry.settingsForm) {
@@ -346,21 +321,38 @@ export class DashboardView {
             // Build from the saved config (source of truth), matched by ALSA id.
             const cfg = store.getState().config;
             const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? entry.device;
-            const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; }, {
+            const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; entry.dirty = true; }, {
                 friendlyName: entry.device.friendlyName,
                 supportedRates: entry.device.supportedRates,
             });
             entry.settingsForm = form;
             entry.settingsWrap.append(form.element, actions);
-            cancelBtn.addEventListener("click", () => this.closeSettings(entry));
+            cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
             saveBtn.addEventListener("click", () => this.saveDevice(entry));
         }
         entry.expanded = true;
         entry.settingsWrap.hidden = false;
         entry.article.classList.add("expanded");
     }
+    // requestCloseSettings collapses the panel, but first confirms the discard if
+    // the form has unsaved edits. It guards every collapse path (the Cancel button
+    // and the gear toggle), so a stray click cannot silently drop pending changes.
+    async requestCloseSettings(entry) {
+        if (entry.dirty) {
+            const ok = await confirmDialog({
+                title: "Discard changes?",
+                body: "This device has unsaved changes that will be lost.",
+                confirmLabel: "Discard",
+                danger: true,
+            });
+            if (!ok)
+                return;
+        }
+        this.closeSettings(entry);
+    }
     closeSettings(entry) {
         entry.expanded = false;
+        entry.dirty = false;
         entry.settingsWrap.hidden = true;
         entry.article.classList.remove("expanded");
         entry.settingsWrap.textContent = "";
@@ -400,17 +392,8 @@ export class DashboardView {
         }
     }
     buildStatusBadge(state) {
-        let cls = "status-badge ok";
-        let label = "Serving";
-        if (state === "skipped") {
-            cls = "status-badge crit";
-            label = "Skipped";
-        }
-        else if (state === "failed") {
-            cls = "status-badge crit";
-            label = "Failed";
-        }
-        return elem("span", cls, label);
+        const badge = deviceStateBadge(state);
+        return elem("span", badge.cls, badge.label);
     }
     updateCard(entry, d) {
         entry.device = d;
@@ -453,7 +436,7 @@ export class DashboardView {
             return;
         const uptimeEl = document.getElementById("uptime-display");
         if (uptimeEl)
-            uptimeEl.textContent = formatUptime(this.status.uptimeSeconds);
+            uptimeEl.textContent = formatUptime(this.status.uptimeSeconds, { seconds: true });
         const servingEl = document.getElementById("devices-serving-display");
         if (servingEl)
             servingEl.textContent = `${this.status.devicesServing} / ${this.status.devicesTotal}`;
