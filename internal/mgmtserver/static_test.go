@@ -184,7 +184,7 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 			wantStatus:  http.StatusOK,
 		},
 		{
-			name:        "static asset exact match returns 304",
+			name:        "static asset wildcard returns 304",
 			path:        testStylesPath,
 			ifNoneMatch: "*",
 			wantStatus:  http.StatusNotModified,

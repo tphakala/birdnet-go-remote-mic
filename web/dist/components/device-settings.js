@@ -4,6 +4,7 @@ const CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" strok
 // Standard ALSA capture rates offered for PCM when the device's own supported
 // set is unknown (device unavailable at startup). Opus is always locked to
 // 48000. When the backend reports supportedRates for the device, those win.
+// Keep in sync with candidateRates in internal/audio/hardware.go.
 const STANDARD_RATES = [16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 256000, 384000];
 const MIN_BITRATE = 64000;
 const BITRATE_OPTIONS = [
@@ -270,6 +271,11 @@ export class DeviceSettingsForm {
         const rates = new Set(base);
         if (current > 0)
             rates.add(current);
+        // Opus locks the rate to 48000, so it must always be selectable even when a
+        // device's probed set omits it. Otherwise the mode-change snap to 48000
+        // silently no-ops and the form lands in an unsaveable state with nothing
+        // highlighted.
+        rates.add(48000);
         return [...rates].sort((a, b) => a - b).map((r) => ({ val: String(r), label: `${r.toLocaleString("en-US")} Hz` }));
     }
     rateHint() {

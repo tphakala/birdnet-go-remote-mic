@@ -20,10 +20,16 @@ function trapFocus(container: HTMLElement): () => void {
     }
     const first = items[0];
     const last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || items.indexOf(active) === -1) {
+      // Focus is on the dialog container (or has otherwise escaped the focusable
+      // set): pull it back to the appropriate end rather than letting Tab leave.
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && active === last) {
       e.preventDefault();
       first.focus();
     }
@@ -44,6 +50,7 @@ function confirmRestart(): Promise<boolean> {
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-labelledby", "confirm-restart-title");
+    overlay.setAttribute("aria-describedby", "confirm-restart-desc");
 
     const card = document.createElement("div");
     card.className = "modal-card";
@@ -54,6 +61,7 @@ function confirmRestart(): Promise<boolean> {
     title.textContent = "Restart appliance?";
 
     const body = document.createElement("p");
+    body.id = "confirm-restart-desc";
     body.style.cssText = "font-size:12px;color:var(--text-secondary);line-height:1.5;";
     body.textContent = "This closes every active RTSP client session while the service restarts.";
 
@@ -101,14 +109,22 @@ function confirmRestart(): Promise<boolean> {
 
 export async function triggerApplianceRestart(): Promise<void> {
   if (restarting) return;
+  // Arm the guard before the confirm dialog so a second trigger while the
+  // confirm is open cannot stack a second dialog or a second restart flow.
+  restarting = true;
 
-  if (!(await confirmRestart())) return;
+  if (!(await confirmRestart())) {
+    restarting = false;
+    return;
+  }
 
   const modal = document.getElementById("restart-modal");
   const timerEl = document.getElementById("reconnect-timer");
-  if (!modal) return;
+  if (!modal) {
+    restarting = false;
+    return;
+  }
 
-  restarting = true;
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {

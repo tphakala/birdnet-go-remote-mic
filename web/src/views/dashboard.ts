@@ -140,6 +140,7 @@ export class DashboardView {
     this.emptyEl.hidden = false;
     this.emptyEl.textContent = `${message} `;
     const retry = elem("button", "btn btn-secondary", "Retry");
+    retry.setAttribute("type", "button");
     retry.addEventListener("click", () => {
       if (this.emptyEl) this.emptyEl.textContent = "Loading devices...";
       void store.retry();

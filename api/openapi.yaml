@@ -425,7 +425,8 @@ components:
           description: >
             Human-facing label derived from the sound card name (the text
             before the first comma). Absent when the device id matches no
-            enumerated hardware. The UI uses it to default a blank name.
+            enumerated hardware, or the derived label is empty. The UI uses it
+            to default a blank name.
           examples: ["Scarlett 2i2 USB"]
         supportedRates:
           type: array

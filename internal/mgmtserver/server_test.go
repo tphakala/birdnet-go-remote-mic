@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +150,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.FriendlyName == nil || *d.FriendlyName != "Scarlett 2i2 USB" {
 		t.Errorf("friendlyName = %v, want Scarlett 2i2 USB", d.FriendlyName)
 	}
-	if d.SupportedRates == nil || len(*d.SupportedRates) != 3 || (*d.SupportedRates)[1] != 96000 {
+	if d.SupportedRates == nil || !slices.Equal(*d.SupportedRates, []int{48000, 96000, 192000}) {
 		t.Errorf("supportedRates = %v, want [48000 96000 192000]", d.SupportedRates)
 	}
 }

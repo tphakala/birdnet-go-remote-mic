@@ -64,10 +64,16 @@ export class VUMeter {
       this.peakHoldTimer = 45; // Hold peak needle for ~45 frames before decay
     }
 
-    // With no animation loop running, reflect the new levels immediately and
-    // pin the peak to the current value (no animated decay).
+    // With no animation loop running, ease the peak hold down once per level
+    // event (~10 Hz) rather than pinning it to the instantaneous peak. The peak
+    // rise is already applied above; this keeps the dB readout holding recent
+    // peaks and calm instead of flickering, which matters most in reduced motion.
     if (this.reducedMotion) {
-      this.peakHoldVal = this.peakVal;
+      if (this.peakHoldTimer > 0) {
+        this.peakHoldTimer -= 1;
+      } else {
+        this.peakHoldVal = Math.max(-60, this.peakHoldVal - 3);
+      }
       this.render();
     }
   }

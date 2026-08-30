@@ -119,7 +119,10 @@ export class SSEClient {
         if (!this.isRunning || gen !== this.generation) return;
         this.dispatch("disconnected", err);
       } finally {
-        this.clearHeartbeat();
+        // Only clear the heartbeat if this loop is still the current generation.
+        // A stale loop winding down after a stop()+start() race must not clear
+        // the live loop's heartbeat timer and leave it unmonitored.
+        if (gen === this.generation) this.clearHeartbeat();
       }
 
       if (this.isRunning && gen === this.generation) {

@@ -152,7 +152,12 @@ export class CustomDropdown {
         document.querySelectorAll(".custom-dropdown.open").forEach((el) => {
             if (el !== this.container) {
                 el.classList.remove("open");
-                el.querySelector(".dropdown-trigger")?.setAttribute("aria-expanded", "false");
+                const trigger = el.querySelector(".dropdown-trigger");
+                trigger?.setAttribute("aria-expanded", "false");
+                // Clear the other dropdown's roving-highlight state too, so it does not
+                // leave aria-activedescendant pointing at a now-hidden option.
+                trigger?.removeAttribute("aria-activedescendant");
+                el.querySelectorAll(".dropdown-item.active").forEach((item) => item.classList.remove("active"));
             }
         });
         this.container.classList.add("open");

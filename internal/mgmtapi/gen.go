@@ -180,7 +180,7 @@ type Device struct {
 	// Format Sample format (only S16LE is supported).
 	Format DeviceFormat `json:"format"`
 
-	// FriendlyName Human-facing label derived from the sound card name (the text before the first comma). Absent when the device id matches no enumerated hardware. The UI uses it to default a blank name.
+	// FriendlyName Human-facing label derived from the sound card name (the text before the first comma). Absent when the device id matches no enumerated hardware, or the derived label is empty. The UI uses it to default a blank name.
 	//
 	//
 	// Examples: Scarlett 2i2 USB

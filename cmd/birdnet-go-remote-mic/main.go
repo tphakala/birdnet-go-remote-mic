@@ -186,7 +186,7 @@ func run(cfgPath string) error {
 		dev := &cfg.Devices[i]
 		// Probe supported rates while the device is still free (hw: devices are
 		// exclusive, so this must happen before the real open below).
-		rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates)
+		rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
 		friendly := hwNames[dev.Device]
 
 		rt, oerr := openDevice(dev, hub)

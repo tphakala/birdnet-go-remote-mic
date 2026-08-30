@@ -1,11 +1,21 @@
 package audio
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
-// CandidateRates is the set of sample rates probed at startup and offered in the
+// candidateRates is the set of sample rates probed at startup and offered in the
 // config UI: the common ALSA capture rates from 16 kHz to the 384 kHz ultrasonic
 // ceiling. ProbeRates keeps the subset a given device actually accepts.
-var CandidateRates = []int{16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 256000, 384000}
+//
+// Keep this in sync with STANDARD_RATES in web/src/components/device-settings.ts,
+// the frontend fallback used when a device reports no probed rates.
+var candidateRates = []int{16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 256000, 384000}
+
+// CandidateRates returns a copy of the startup probe candidate rates. It returns
+// a fresh slice so a caller cannot mutate the shared package list.
+func CandidateRates() []int { return slices.Clone(candidateRates) }
 
 // FriendlyName derives a short, human-facing device label from an ALSA card
 // name by keeping the text before the first comma and trimming surrounding

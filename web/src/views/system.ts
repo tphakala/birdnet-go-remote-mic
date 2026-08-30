@@ -75,6 +75,7 @@ export class SystemView {
     this.tilesEl.textContent = "";
     const p = elem("p", "cfg-empty", `${message} `);
     const retry = elem("button", "btn btn-secondary", "Retry");
+    retry.setAttribute("type", "button");
     retry.addEventListener("click", () => {
       if (this.tilesEl) this.tilesEl.textContent = "";
       this.tilesEl?.appendChild(elem("p", "cfg-empty", "Loading system telemetry..."));
