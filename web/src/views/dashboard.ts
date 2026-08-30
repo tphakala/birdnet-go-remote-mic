@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import type { ApplianceStatus, Device, DeviceConfig, DeviceLevels, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC =
@@ -127,6 +127,26 @@ export class DashboardView {
     store.addEventListener("connection", (e: Event) => {
       this.updateConnection((e as CustomEvent<boolean>).detail);
     });
+    store.addEventListener("loaderror", (e: Event) => {
+      const detail = (e as CustomEvent<LoadError>).detail;
+      if (detail.coreFailed) this.renderLoadError(detail.message);
+    });
+  }
+
+  // renderLoadError replaces the "Loading..." placeholder with the failure cause
+  // and a Retry button when the initial data fetch fails, so the view is not
+  // stuck loading forever. A successful retry re-renders via the devices event.
+  private renderLoadError(message: string): void {
+    if (!this.emptyEl) return;
+    this.emptyEl.hidden = false;
+    this.emptyEl.textContent = `${message} `;
+    const retry = elem("button", "btn btn-secondary", "Retry");
+    retry.setAttribute("type", "button");
+    retry.addEventListener("click", () => {
+      if (this.emptyEl) this.emptyEl.textContent = "Loading devices...";
+      void store.retry();
+    });
+    this.emptyEl.appendChild(retry);
   }
 
   private renderDevices(devices: Device[]): void {
@@ -241,7 +261,9 @@ export class DashboardView {
       const strip = elem("div", "endpoint-strip");
       const info = elem("div", "endpoint-info");
       info.appendChild(elem("span", "endpoint-label", "RTSP URL:"));
-      urlEl = elem("span", "endpoint-url mono", this.rtspUrl(d));
+      const url = this.rtspUrl(d);
+      urlEl = elem("span", "endpoint-url mono", url);
+      urlEl.title = url;
       info.appendChild(urlEl);
       const copyBtn = elem("button", "copy-btn");
       copyBtn.setAttribute("type", "button");
@@ -363,7 +385,10 @@ export class DashboardView {
       // Build from the saved config (source of truth), matched by ALSA id.
       const cfg = store.getState().config;
       const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? entry.device;
-      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; });
+      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; }, {
+        friendlyName: entry.device.friendlyName,
+        supportedRates: entry.device.supportedRates,
+      });
       entry.settingsForm = form;
       entry.settingsWrap.append(form.element, actions);
 
@@ -434,7 +459,11 @@ export class DashboardView {
       entry.statusEl.className = fresh.className;
       entry.statusEl.textContent = fresh.textContent;
     }
-    if (entry.urlEl) entry.urlEl.textContent = this.rtspUrl(d);
+    if (entry.urlEl) {
+      const url = this.rtspUrl(d);
+      entry.urlEl.textContent = url;
+      entry.urlEl.title = url;
+    }
     if (entry.clientsEl) entry.clientsEl.textContent = d.clientConnected ? "1 connected" : "0 connected";
     if (entry.droppedEl) entry.droppedEl.textContent = String(d.droppedFrames);
   }

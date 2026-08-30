@@ -79,7 +79,12 @@ type deviceRuntime struct {
 	track    *rtspserver.Track
 	rate     int
 	channels int
-	dropped  atomic.Uint64
+	// friendlyName is the sound card's human label; supportedRates is the set of
+	// rates the device accepted at the startup probe. Both are static per run and
+	// read without a lock.
+	friendlyName   string
+	supportedRates []int
+	dropped        atomic.Uint64
 
 	mu    sync.Mutex
 	state mgmtserver.DeviceState
@@ -167,20 +172,38 @@ func run(cfgPath string) error {
 	// serving whatever hardware is actually present. Every configured device
 	// keeps a record (records) so the management API can report skipped ones;
 	// serving holds only the ones that opened and need pumping.
-	var records []*deviceRuntime
-	var serving []*deviceRuntime
+	// Enumerate the host's capture hardware once so each device can carry a
+	// friendly label (defaulting a blank name in the UI). A failure here is not
+	// fatal: devices simply carry no label.
+	hwNames, nerr := audio.HardwareNames()
+	if nerr != nil {
+		log.Printf("enumerate capture hardware: %v", nerr)
+	}
+
+	records := make([]*deviceRuntime, 0, len(cfg.Devices))
+	serving := make([]*deviceRuntime, 0, len(cfg.Devices))
 	for i := range cfg.Devices {
-		rt, oerr := openDevice(&cfg.Devices[i], hub)
+		dev := &cfg.Devices[i]
+		// Probe supported rates while the device is still free (hw: devices are
+		// exclusive, so this must happen before the real open below).
+		rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
+		friendly := hwNames[dev.Device]
+
+		rt, oerr := openDevice(dev, hub)
 		if oerr != nil {
-			log.Printf("skipping device %q (%s): %v", cfg.Devices[i].Name, cfg.Devices[i].Device, oerr)
+			log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, oerr)
 			records = append(records, &deviceRuntime{
-				dev:   cfg.Devices[i],
-				state: mgmtserver.StateSkipped,
-				err:   oerr.Error(),
+				dev:            *dev,
+				state:          mgmtserver.StateSkipped,
+				err:            oerr.Error(),
+				friendlyName:   friendly,
+				supportedRates: rates,
 			})
 			continue
 		}
 		rt.state = mgmtserver.StateServing
+		rt.friendlyName = friendly
+		rt.supportedRates = rates
 		log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.dev.Path)
 		records = append(records, rt)
 		serving = append(serving, rt)

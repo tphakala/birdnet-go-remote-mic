@@ -51,6 +51,12 @@ type DeviceStatus struct {
 	ClientConnected    bool
 	DroppedFrames      int64
 	Error              string
+	// FriendlyName is a human-facing label derived from the sound card name,
+	// empty when the device id matches no enumerated hardware.
+	FriendlyName string
+	// SupportedRates is the set of sample rates the hardware accepts, probed at
+	// startup. Empty when the device could not be probed (missing or busy).
+	SupportedRates []int
 }
 
 // Provider supplies live runtime state to the management API. Its methods are
@@ -220,6 +226,13 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	}
 	if d.Error != "" {
 		out.Error = ptr(d.Error)
+	}
+	if d.FriendlyName != "" {
+		out.FriendlyName = ptr(d.FriendlyName)
+	}
+	if len(d.SupportedRates) > 0 {
+		rates := append([]int(nil), d.SupportedRates...)
+		out.SupportedRates = &rates
 	}
 	return out
 }

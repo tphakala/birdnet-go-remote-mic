@@ -8,6 +8,10 @@ import (
 	"testing/fstest"
 )
 
+const (
+	testStylesPath = "/styles.css"
+)
+
 func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
 	memFS := fstest.MapFS{
 		"index.html": &fstest.MapFile{
@@ -41,7 +45,7 @@ func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
 		},
 		{
 			name:       "static css file",
-			path:       "/styles.css",
+			path:       testStylesPath,
 			method:     http.MethodGet,
 			wantStatus: http.StatusOK,
 			wantBody:   "body { background: #0b0f17; }",
@@ -65,7 +69,7 @@ func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
 		},
 		{
 			name:       "post method rejected",
-			path:       "/styles.css",
+			path:       testStylesPath,
 			method:     http.MethodPost,
 			wantStatus: http.StatusMethodNotAllowed,
 		},
@@ -113,6 +117,9 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 		"index.html": &fstest.MapFile{
 			Data: []byte("<!doctype html><html><body>Cached SPA</body></html>"),
 		},
+		"styles.css": &fstest.MapFile{
+			Data: []byte("body { background: #0b0f17; }"),
+		},
 	}
 
 	handler := newStaticHandler(memFS)
@@ -127,13 +134,68 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 		t.Fatal("first request had no ETag")
 	}
 
-	// Second request with matching If-None-Match gets 304 Not Modified
-	req2 := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
-	req2.Header.Set("If-None-Match", etag)
-	rr2 := httptest.NewRecorder()
-	handler.ServeHTTP(rr2, req2)
+	tests := []struct {
+		name        string
+		path        string
+		ifNoneMatch string
+		wantStatus  int
+	}{
+		{
+			name:        "exact match returns 304",
+			path:        "/",
+			ifNoneMatch: etag,
+			wantStatus:  http.StatusNotModified,
+		},
+		{
+			name:        "list with matching tag returns 304",
+			path:        "/",
+			ifNoneMatch: `"other-tag", ` + etag + `, "another-tag"`,
+			wantStatus:  http.StatusNotModified,
+		},
+		{
+			name:        "asterisk returns 304",
+			path:        "/",
+			ifNoneMatch: "*",
+			wantStatus:  http.StatusNotModified,
+		},
+		{
+			name:        "weak prefix matching strong returns 304",
+			path:        "/",
+			ifNoneMatch: "W/" + etag,
+			wantStatus:  http.StatusNotModified,
+		},
+		{
+			name:        "no match returns 200",
+			path:        "/",
+			ifNoneMatch: `"mismatched-etag"`,
+			wantStatus:  http.StatusOK,
+		},
+		{
+			name:        "empty header returns 200",
+			path:        "/",
+			ifNoneMatch: "",
+			wantStatus:  http.StatusOK,
+		},
+		{
+			name:        "static asset wildcard returns 304",
+			path:        testStylesPath,
+			ifNoneMatch: "*",
+			wantStatus:  http.StatusNotModified,
+		},
+	}
 
-	if rr2.Code != http.StatusNotModified {
-		t.Errorf("status = %d, want 304 Not Modified", rr2.Code)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, http.NoBody)
+			if tc.ifNoneMatch != "" {
+				req.Header.Set("If-None-Match", tc.ifNoneMatch)
+			}
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rr.Code, tc.wantStatus)
+			}
+		})
 	}
 }

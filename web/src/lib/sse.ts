@@ -12,6 +12,9 @@ export class SSEClient {
   private heartbeatTimeoutMs: number = 30000;
   private heartbeatTimer: number | null = null;
   private handlers: Set<SSEEventHandler> = new Set();
+  // generation invalidates an in-flight connect loop when stop()/start() race:
+  // a loop keeps running only while its captured generation is still current.
+  private generation = 0;
 
   constructor(url: string = "/api/v1/events") {
     this.url = url;
@@ -39,11 +42,14 @@ export class SSEClient {
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
-    this.connect();
+    this.connect(++this.generation);
   }
 
   public stop(): void {
     this.isRunning = false;
+    // Bump the generation so any connect loop still winding down (parked in a
+    // reconnect delay or a read) exits instead of resurrecting on the next start.
+    this.generation++;
     this.clearHeartbeat();
     if (this.abortController) {
       this.abortController.abort();
@@ -68,8 +74,8 @@ export class SSEClient {
     }
   }
 
-  private async connect(): Promise<void> {
-    while (this.isRunning) {
+  private async connect(gen: number): Promise<void> {
+    while (this.isRunning && gen === this.generation) {
       this.abortController = new AbortController();
       const headers = new Headers();
       headers.set("Accept", "text/event-stream");
@@ -110,14 +116,20 @@ export class SSEClient {
           }
         }
       } catch (err: unknown) {
-        if (!this.isRunning) return;
+        if (!this.isRunning || gen !== this.generation) return;
         this.dispatch("disconnected", err);
       } finally {
-        this.clearHeartbeat();
+        // Only clear the heartbeat if this loop is still the current generation.
+        // A stale loop winding down after a stop()+start() race must not clear
+        // the live loop's heartbeat timer and leave it unmonitored.
+        if (gen === this.generation) this.clearHeartbeat();
       }
 
-      if (this.isRunning) {
+      if (this.isRunning && gen === this.generation) {
         await new Promise((resolve) => setTimeout(resolve, this.reconnectDelayMs));
+        // Re-check after the delay: a stop()+start() during it must not let this
+        // stale loop double the new generation's shared backoff.
+        if (!this.isRunning || gen !== this.generation) return;
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.maxReconnectDelayMs);
       }
     }

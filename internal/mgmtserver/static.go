@@ -109,10 +109,9 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", asset.contentType)
 		}
 		w.Header().Set("ETag", asset.etag)
-		if r.Header.Get("If-None-Match") == asset.etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
+		// http.ServeContent evaluates If-None-Match against the ETag set above,
+		// handling "*", entity-tag lists, and weak validators per RFC 9110, so no
+		// separate conditional check is needed here.
 		http.ServeContent(w, r, cleanPath, sh.modTime, bytes.NewReader(asset.data))
 		return
 	}
@@ -124,10 +123,6 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(sh.indexFile) > 0 && path.Ext(cleanPath) == "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("ETag", sh.indexETag)
-		if r.Header.Get("If-None-Match") == sh.indexETag {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
 		http.ServeContent(w, r, "index.html", sh.modTime, bytes.NewReader(sh.indexFile))
 		return
 	}
