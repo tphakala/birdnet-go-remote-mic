@@ -443,6 +443,13 @@ export class DashboardView {
         }
         const edited = form.collect();
         const cfg = store.getState().config;
+        // The settings form does not edit the streaming enabled flag, and the card
+        // toggle may have changed it since the form was opened, so collect()'s
+        // snapshot can be stale. Source it from the current config so a settings save
+        // never overwrites a toggle made while the panel was open.
+        const curEnabled = cfg?.devices.find((cd) => cd.device === edited.device)?.enabled;
+        if (curEnabled !== undefined)
+            edited.enabled = curEnabled;
         const base = cfg?.devices ?? store.getState().devices.map(deviceToConfig);
         const merged = base.map((cd) => (cd.device === edited.device ? edited : cd));
         if (!merged.some((cd) => cd.device === edited.device))
