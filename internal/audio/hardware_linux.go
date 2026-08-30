@@ -3,13 +3,14 @@
 package audio
 
 import (
-	"errors"
-
 	capture "github.com/tphakala/go-audio-capture"
 )
 
 // enumerateDevices is a package var so tests can inject a fake device list.
 var enumerateDevices = capture.Devices
+
+// supportedRatesFn is a package var so tests can inject a fake capability query.
+var supportedRatesFn = capture.SupportedRates
 
 // HardwareNames returns a map from ALSA device id to a friendly label for every
 // capture device the host currently exposes. It lets the UI default a device's
@@ -32,37 +33,39 @@ func hardwareNamesFrom(devs []capture.DeviceInfo) map[string]string {
 	return names
 }
 
-// ProbeRates returns the subset of candidates the device accepts, found by
-// opening the device at each candidate rate and closing it immediately. It must
-// run while the device is free (before the real capture open), because hw:
-// devices are exclusive and cannot be re-probed once serving.
+// ProbeRates returns the subset of candidates the device accepts, for the config
+// UI's rate dropdown. It uses go-audio-capture's HW_REFINE-based SupportedRates,
+// which opens the device once per format with O_NONBLOCK and issues a refine
+// ioctl per rate without any state transition. That replaces the old open/close
+// probe (about a dozen exclusive opens per device at startup) and the
+// EBUSY-after-close race it risked, and it may run while the device is free.
 //
-// A candidate is kept only when the open succeeds and the hardware negotiates
-// that exact rate (the honest-rate policy). A *BadRateError means the rate is
-// unsupported, so probing continues. Any other open failure means the device
-// itself is missing or busy: probing stops and returns nil so the caller falls
-// back to the static rate list rather than reporting a misleading empty set.
+// It queries both capture formats (S16LE and S32LE) and keeps the union,
+// because OpenCapture negotiates the capture format automatically (S16
+// preferred, S32 fallback), so a rate a device offers only in S32 is still
+// usable. Any query error (device busy or gone, or a format the device rejects)
+// simply contributes no rates. When nothing in candidates is supported it
+// returns nil so the caller falls back to the static rate list rather than
+// reporting a misleading empty set.
 func ProbeRates(deviceID string, channels int, candidates []int) []int {
-	supported := make([]int, 0, len(candidates))
-	for _, r := range candidates {
-		s, err := openStream(capture.Config{
-			Device:   deviceID,
-			Rate:     r,
-			Channels: channels,
-			Format:   capture.FormatS16LE,
-		})
+	supported := make(map[int]bool)
+	for _, f := range captureFormats {
+		rs, err := supportedRatesFn(deviceID, channels, f)
 		if err != nil {
-			var bre *capture.BadRateError
-			if errors.As(err, &bre) {
-				continue
-			}
-			return nil
+			continue
 		}
-		neg := s.Negotiated()
-		_ = s.Close()
-		if neg.Rate == r {
-			supported = append(supported, r)
+		for _, r := range rs.Rates {
+			supported[r] = true
 		}
 	}
-	return supported
+	out := make([]int, 0, len(candidates))
+	for _, r := range candidates {
+		if supported[r] {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
