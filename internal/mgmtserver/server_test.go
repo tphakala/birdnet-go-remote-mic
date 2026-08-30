@@ -17,6 +17,8 @@ import (
 const (
 	testVersion = "v1.2.3"
 	nameAttic   = "attic"
+	devAttic    = "hw:2,0"
+	pathAttic   = "/attic"
 	rtspAddr    = ":8554"
 )
 
@@ -58,7 +60,7 @@ func servingOpus() DeviceStatus {
 func skippedPCM() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
-			Name: nameAttic, Device: "hw:2,0", Path: "/attic",
+			Name: nameAttic, Device: devAttic, Path: pathAttic,
 			Mode: config.ModePCM, Rate: 192000, Channels: 1, Format: "s16",
 		},
 		State: StateSkipped,

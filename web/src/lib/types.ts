@@ -3,7 +3,7 @@
  */
 
 export type StreamMode = "pcm" | "opus";
-export type DeviceState = "serving" | "skipped" | "failed";
+export type DeviceState = "serving" | "skipped" | "failed" | "disabled";
 
 export interface OpusSettings {
   bitrate?: number;
@@ -18,6 +18,10 @@ export interface DeviceConfig {
   channels: number;
   format: "s16";
   opus?: OpusSettings;
+  // Whether the device is captured and streamed; defaults to true when absent.
+  // A disabled device stays configured but is not opened until re-enabled and
+  // the appliance restarts.
+  enabled?: boolean;
 }
 
 export interface DiscoverySettings {
