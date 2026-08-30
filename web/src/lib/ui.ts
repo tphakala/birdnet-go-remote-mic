@@ -38,6 +38,7 @@ export function modeLabel(mode: string): string {
 export function deviceStateBadge(state: string): { cls: string; label: string } {
   if (state === "skipped") return { cls: "status-badge crit", label: "Skipped" };
   if (state === "failed") return { cls: "status-badge crit", label: "Failed" };
+  if (state === "disabled") return { cls: "status-badge idle", label: "Disabled" };
   return { cls: "status-badge ok", label: "Serving" };
 }
 

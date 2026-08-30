@@ -41,6 +41,8 @@ export function deviceStateBadge(state) {
         return { cls: "status-badge crit", label: "Skipped" };
     if (state === "failed")
         return { cls: "status-badge crit", label: "Failed" };
+    if (state === "disabled")
+        return { cls: "status-badge idle", label: "Disabled" };
     return { cls: "status-badge ok", label: "Serving" };
 }
 // renderLoadError replaces a container's contents with a failure message and a

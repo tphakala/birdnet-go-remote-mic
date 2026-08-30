@@ -184,12 +184,27 @@ func run(cfgPath string) error {
 	serving := make([]*deviceRuntime, 0, len(cfg.Devices))
 	for i := range cfg.Devices {
 		dev := &cfg.Devices[i]
+		friendly := hwNames[dev.Device]
+
+		// A disabled device stays configured and visible in the API/UI but is
+		// never opened or probed (probing would touch hardware the operator turned
+		// off). Toggling it takes effect on the next restart, since the capture
+		// pipeline is built here at startup.
+		if !dev.IsEnabled() {
+			log.Printf("device %q (%s) is disabled; not opening", dev.Name, dev.Device)
+			records = append(records, &deviceRuntime{
+				dev:          *dev,
+				state:        mgmtserver.StateDisabled,
+				friendlyName: friendly,
+			})
+			continue
+		}
+
 		// Probe supported rates for the config UI. ProbeRates is a non-blocking
 		// HW_REFINE capability query that does not claim the device, but run it
 		// before the real open below anyway: once we hold the hw: device
 		// exclusively the query would see our own process and report it busy.
 		rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
-		friendly := hwNames[dev.Device]
 
 		rt, oerr := openDevice(dev, hub)
 		if oerr != nil {

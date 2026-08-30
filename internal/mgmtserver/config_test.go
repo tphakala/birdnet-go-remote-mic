@@ -75,7 +75,7 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	s := New(&fakeProvider{}, WithConfigStore(store))
 
 	devs := []mgmtapi.DeviceConfig{{
-		Name: nameAttic, Device: "hw:2,0", Path: "/attic",
+		Name: nameAttic, Device: devAttic, Path: pathAttic,
 		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
 	}}
 	body := &mgmtapi.ConfigPatch{Devices: &devs}
@@ -102,6 +102,110 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	}
 	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic || loaded.Devices[0].Mode != config.ModePCM {
 		t.Errorf("persisted config = %+v, want one pcm device named attic", loaded.Devices)
+	}
+}
+
+func TestGetConfigMaterializesDeviceEnabled(t *testing.T) {
+	store, _ := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+	resp, err := s.GetConfig(context.Background(), mgmtapi.GetConfigRequestObject{})
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	got := resp.(mgmtapi.GetConfig200JSONResponse)
+	// The base device has no explicit enabled flag; it must materialize to true
+	// so the UI sees a concrete value.
+	if got.Devices[0].Enabled == nil || !*got.Devices[0].Enabled {
+		t.Errorf("device enabled = %v, want &true", got.Devices[0].Enabled)
+	}
+}
+
+func TestPatchConfigPersistsDisabledDevice(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	off := false
+	devs := []mgmtapi.DeviceConfig{{
+		Name: devGarden, Device: devHW1, Path: pathGarden,
+		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+		Opus:    &mgmtapi.OpusSettings{Bitrate: ptr(96000)},
+		Enabled: &off,
+	}}
+	body := &mgmtapi.ConfigPatch{Devices: &devs}
+
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200 := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if ok200.Config.Devices[0].Enabled == nil || *ok200.Config.Devices[0].Enabled {
+		t.Errorf("response device enabled = %v, want &false", ok200.Config.Devices[0].Enabled)
+	}
+
+	// The disabled flag must survive persistence and reload.
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if loaded.Devices[0].IsEnabled() {
+		t.Error("persisted device is enabled, want disabled")
+	}
+}
+
+func TestPatchConfigOmittedEnabledStaysDefaultOn(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	// A device patched with no enabled field must persist as enabled (default on),
+	// not be silently disabled. This guards the common PATCH path.
+	devs := []mgmtapi.DeviceConfig{{
+		Name: nameAttic, Device: devAttic, Path: pathAttic,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+	}}
+	if _, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if !loaded.Devices[0].IsEnabled() {
+		t.Error("device with omitted enabled persisted as disabled, want default-on")
+	}
+}
+
+func TestWireDeviceToConfigDoesNotAliasEnabled(t *testing.T) {
+	// Isolate the wireDeviceToConfig mapping directly: mutating the request's
+	// Enabled pointer after mapping must not change the mapped config, because the
+	// flag is copied into fresh storage rather than aliased. (An end-to-end PATCH
+	// test cannot prove this, since FileConfigStore.Update clones and would
+	// de-alias regardless.)
+	flag := false
+	req := &mgmtapi.DeviceConfig{
+		Name: devGarden, Device: devHW1, Path: pathGarden,
+		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+		Enabled: &flag,
+	}
+	out := wireDeviceToConfig(req)
+	*req.Enabled = true
+	if out.Enabled == nil || *out.Enabled {
+		t.Errorf("wireDeviceToConfig aliased Enabled: out.Enabled=%v after mutating the request", out.Enabled)
+	}
+}
+
+func TestGetConfigMaterializesDisabledDevice(t *testing.T) {
+	off := false
+	c := baseConfig()
+	c.Devices[0].Enabled = &off
+	store := NewFileConfigStore(filepath.Join(t.TempDir(), "config.yaml"), &c)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+	resp, err := s.GetConfig(context.Background(), mgmtapi.GetConfigRequestObject{})
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	got := resp.(mgmtapi.GetConfig200JSONResponse)
+	if got.Devices[0].Enabled == nil || *got.Devices[0].Enabled {
+		t.Errorf("disabled device enabled = %v, want &false", got.Devices[0].Enabled)
 	}
 }
 

@@ -196,6 +196,9 @@ func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 	if d.Mode == config.ModeOpus {
 		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(d.Opus.Bitrate)}
 	}
+	// Materialize the default-on Enabled flag to a concrete boolean so the web UI
+	// sees a definite value rather than a null it must reinterpret.
+	out.Enabled = ptr(d.IsEnabled())
 	return out
 }
 
@@ -214,6 +217,13 @@ func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 	}
 	if d.Opus != nil && d.Opus.Bitrate != nil {
 		out.Opus.Bitrate = *d.Opus.Bitrate
+	}
+	// An absent enabled flag leaves the device enabled (the default); a present
+	// one is copied into fresh storage so the persisted config does not alias the
+	// request body.
+	if d.Enabled != nil {
+		v := *d.Enabled
+		out.Enabled = &v
 	}
 	return out
 }

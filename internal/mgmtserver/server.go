@@ -28,6 +28,10 @@ const (
 	StateSkipped DeviceState = "skipped"
 	// StateFailed means the device died after startup; its RTSP path 404s.
 	StateFailed DeviceState = "failed"
+	// StateDisabled means the device is configured but intentionally not opened
+	// (its Enabled flag is false). It is not captured or streamed until enabled
+	// and the appliance restarts.
+	StateDisabled DeviceState = "disabled"
 )
 
 // ApplianceStatus is the appliance-level runtime state the API reports.

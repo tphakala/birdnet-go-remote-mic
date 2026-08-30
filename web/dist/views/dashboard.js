@@ -33,6 +33,7 @@ function deviceToConfig(d) {
     const c = {
         name: d.name, device: d.device, path: d.path, mode: d.mode,
         rate: d.rate, channels: d.channels, format: d.format,
+        enabled: d.state !== "disabled",
     };
     if (d.opus)
         c.opus = d.opus;
@@ -166,20 +167,34 @@ export class DashboardView {
     }
     buildCard(d) {
         const serving = d.state === "serving";
+        const disabled = d.state === "disabled";
         const isUltra = d.mode === "pcm";
-        const article = elem("article", `rack-card ${serving ? "active-stream" : "error-stream"}`);
+        // The toggle reflects the persisted (desired) enabled flag, which can differ
+        // from the runtime state until the next restart. Fall back to the runtime
+        // state only when the config is not loaded.
+        const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
+        const configEnabled = cfgDev?.enabled ?? d.state !== "disabled";
+        // A disabled device is off by intent, not broken: give it a neutral card and
+        // avatar rather than the error styling reserved for a failed/skipped device.
+        const article = elem("article", `rack-card ${serving ? "active-stream" : disabled ? "" : "error-stream"}`);
         // Header
         const header = elem("div", "rack-header");
         const ident = elem("div", "device-ident");
-        const avatarIcon = serving ? (isUltra ? ICON_ULTRA : ICON_MIC) : ICON_ERROR;
+        const avatarIcon = serving ? (isUltra ? ICON_ULTRA : ICON_MIC) : disabled ? ICON_MIC : ICON_ERROR;
         const avatar = iconSpan(avatarIcon, "device-avatar");
         if (serving && isUltra)
             avatar.style.color = "var(--ultrasonic-purple)";
-        if (!serving)
+        if (!serving && !disabled)
             avatar.style.color = "var(--signal-crit)";
         const nameBlock = elem("div", "device-name-block");
         nameBlock.appendChild(elem("span", "device-title", d.name));
-        nameBlock.appendChild(elem("span", "device-path mono", `ALSA: ${d.device}`));
+        // Surface the sound card's hardware model (friendlyName) next to the ALSA id
+        // so a device is identifiable by what it physically is, not only its config
+        // name. Omit it when absent (the device id matches no enumerated hardware) or
+        // when it only repeats the configured name (e.g. "loopback" / "Loopback").
+        const hw = d.friendlyName?.trim();
+        const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
+        nameBlock.appendChild(elem("span", "device-path mono", showHw ? `ALSA: ${d.device} · ${hw}` : `ALSA: ${d.device}`));
         ident.appendChild(avatar);
         ident.appendChild(nameBlock);
         const tags = elem("div", "device-tags");
@@ -192,6 +207,21 @@ export class DashboardView {
         }
         const statusEl = this.buildStatusBadge(d.state);
         tags.appendChild(statusEl);
+        // Streaming enable/disable toggle. A disabled device stays configured but is
+        // not opened; toggling persists the flag and takes effect on the next restart
+        // (the capture pipeline is built at startup). Reuses the shared switch style.
+        const toggleLabel = elem("label", "switch-control device-toggle");
+        toggleLabel.title = "Stream this device (applies on restart)";
+        const toggleInput = document.createElement("input");
+        toggleInput.type = "checkbox";
+        toggleInput.className = "visually-hidden";
+        toggleInput.checked = configEnabled;
+        toggleInput.setAttribute("aria-label", `Stream ${d.name}`);
+        const toggleTrack = elem("span", "switch-track");
+        toggleTrack.appendChild(elem("span", "switch-thumb"));
+        toggleLabel.appendChild(toggleInput);
+        toggleLabel.appendChild(toggleTrack);
+        tags.appendChild(toggleLabel);
         const gearBtn = elem("button", "card-gear");
         gearBtn.setAttribute("type", "button");
         gearBtn.setAttribute("aria-label", "Device settings");
@@ -289,7 +319,11 @@ export class DashboardView {
                 article.appendChild(banner);
             }
             const footer = elem("div", "rack-footer");
-            footer.appendChild(elem("span", undefined, "Excluded from the RTSP stream server. Other active devices continue serving without interruption."));
+            footer.appendChild(elem("span", undefined, d.state === "disabled"
+                ? configEnabled
+                    ? "Enabled. Restart the appliance to start serving it."
+                    : "Streaming is disabled for this device. Enable it and restart the appliance to serve it."
+                : "Excluded from the RTSP stream server. Other active devices continue serving without interruption."));
             article.appendChild(footer);
         }
         const settingsWrap = elem("div", "card-settings");
@@ -300,7 +334,40 @@ export class DashboardView {
             device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
         };
         gearBtn.addEventListener("click", () => this.toggleSettings(entry));
+        toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry, toggleInput));
         return entry;
+    }
+    // handleToggleEnabled persists a device's streaming enable/disable flag. The
+    // capture pipeline is built only at startup, so the change is saved to the
+    // config and takes effect on the next restart; the toggle reflects the desired
+    // state immediately and reverts if the PATCH is rejected.
+    async handleToggleEnabled(entry, input) {
+        const want = input.checked;
+        const id = entry.device.device;
+        const cfg = store.getState().config;
+        const base = cfg?.devices ?? store.getState().devices.map(deviceToConfig);
+        const merged = base.map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
+        input.disabled = true;
+        try {
+            await api.patchConfig({ devices: merged });
+            await store.refreshConfig();
+            await store.refreshDevices();
+            showToast(`${want ? "Enabled" : "Disabled"} ${entry.device.name}. Restart the appliance to apply.`);
+        }
+        catch (err) {
+            input.checked = !want;
+            if (err instanceof ApiError && err.errors && err.errors.length > 0) {
+                const first = err.errors[0];
+                showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
+            }
+            else {
+                const msg = err instanceof Error ? err.message : String(err);
+                showToast(`Toggle failed: ${msg}`, "error");
+            }
+        }
+        finally {
+            input.disabled = false;
+        }
     }
     toggleSettings(entry) {
         if (entry.expanded) {
@@ -320,7 +387,10 @@ export class DashboardView {
             actions.append(badge, spacer, cancelBtn, saveBtn);
             // Build from the saved config (source of truth), matched by ALSA id.
             const cfg = store.getState().config;
-            const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? entry.device;
+            // Prefer the persisted config (it carries the enabled flag); fall back to
+            // the runtime device projected through deviceToConfig so enabled is always
+            // present and collect() cannot drop it.
+            const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? deviceToConfig(entry.device);
             const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; entry.dirty = true; }, {
                 friendlyName: entry.device.friendlyName,
                 supportedRates: entry.device.supportedRates,
@@ -373,6 +443,13 @@ export class DashboardView {
         }
         const edited = form.collect();
         const cfg = store.getState().config;
+        // The settings form does not edit the streaming enabled flag, and the card
+        // toggle may have changed it since the form was opened, so collect()'s
+        // snapshot can be stale. Source it from the current config so a settings save
+        // never overwrites a toggle made while the panel was open.
+        const curEnabled = cfg?.devices.find((cd) => cd.device === edited.device)?.enabled;
+        if (curEnabled !== undefined)
+            edited.enabled = curEnabled;
         const base = cfg?.devices ?? store.getState().devices.map(deviceToConfig);
         const merged = base.map((cd) => (cd.device === edited.device ? edited : cd));
         if (!merged.some((cd) => cd.device === edited.device))

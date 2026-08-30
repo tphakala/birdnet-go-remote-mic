@@ -172,6 +172,10 @@ export class DeviceSettingsForm {
             rate: Number(this.rateHidden.value),
             channels: Number(this.channelsHidden.value),
             format: this.device.format || "s16",
+            // Preserve the streaming enable/disable flag: this form does not edit it,
+            // but saveDevice replaces the whole device entry in the PATCH, so dropping
+            // it here would silently re-enable a disabled device on save.
+            enabled: this.device.enabled,
         };
         if (mode === "opus")
             dev.opus = { bitrate: Number(this.bitrateHidden.value) || MIN_BITRATE };
