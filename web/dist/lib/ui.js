@@ -11,10 +11,13 @@ export function elem(tag, className, text) {
         e.textContent = text;
     return e;
 }
-// formatUptime renders a seconds count as a compact human string. The dashboard
-// top ribbon passes { seconds: true } so the live counter visibly ticks (a cue
-// the appliance is alive); the system info list omits seconds because it is a
-// static row that should not churn on every render.
+// formatUptime renders a seconds count as a compact human string. Seconds are
+// shown only below one hour, and only when the caller opts in: the dashboard top
+// ribbon passes { seconds: true } so a freshly (re)started appliance shows its
+// uptime advancing, while a long-running appliance settles to minute resolution
+// rather than churning a seconds field forever. This matches the pre-existing
+// dashboard formatter byte-for-byte. The system info list omits seconds entirely
+// because it is a static row that should not churn on every render.
 export function formatUptime(totalSeconds, opts = {}) {
     const d = Math.floor(totalSeconds / 86400);
     const h = Math.floor((totalSeconds % 86400) / 3600);
