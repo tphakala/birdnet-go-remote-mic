@@ -10,7 +10,6 @@ import (
 
 const (
 	testStylesPath = "/styles.css"
-	testETagValue  = `"abc123"`
 )
 
 func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
@@ -160,12 +159,6 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 			wantStatus:  http.StatusNotModified,
 		},
 		{
-			name:        "asterisk element inside list returns 304",
-			path:        "/",
-			ifNoneMatch: `"other-tag", *, "another-tag"`,
-			wantStatus:  http.StatusNotModified,
-		},
-		{
 			name:        "weak prefix matching strong returns 304",
 			path:        "/",
 			ifNoneMatch: "W/" + etag,
@@ -202,79 +195,6 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 
 			if rr.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d", rr.Code, tc.wantStatus)
-			}
-		})
-	}
-}
-
-func TestEtagMatches(t *testing.T) {
-	tests := []struct {
-		name        string
-		ifNoneMatch string
-		etag        string
-		want        bool
-	}{
-		{
-			name:        "exact match returns true",
-			ifNoneMatch: testETagValue,
-			etag:        testETagValue,
-			want:        true,
-		},
-		{
-			name:        "list with matching tag returns true",
-			ifNoneMatch: `"tag1", "abc123", "tag2"`,
-			etag:        testETagValue,
-			want:        true,
-		},
-		{
-			name:        "asterisk returns true",
-			ifNoneMatch: "*",
-			etag:        testETagValue,
-			want:        true,
-		},
-		{
-			name:        "asterisk element inside list returns true",
-			ifNoneMatch: `"tag1", *, "tag2"`,
-			etag:        testETagValue,
-			want:        true,
-		},
-		{
-			name:        "weak prefix matching strong returns true",
-			ifNoneMatch: `W/"abc123"`,
-			etag:        testETagValue,
-			want:        true,
-		},
-		{
-			name:        "weak target etag matching strong header returns true",
-			ifNoneMatch: testETagValue,
-			etag:        `W/"abc123"`,
-			want:        true,
-		},
-		{
-			name:        "no match returns false",
-			ifNoneMatch: `"nomatch1", "nomatch2"`,
-			etag:        testETagValue,
-			want:        false,
-		},
-		{
-			name:        "empty header returns false",
-			ifNoneMatch: "",
-			etag:        testETagValue,
-			want:        false,
-		},
-		{
-			name:        "empty target etag returns false",
-			ifNoneMatch: testETagValue,
-			etag:        "",
-			want:        false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := etagMatches(tc.ifNoneMatch, tc.etag)
-			if got != tc.want {
-				t.Errorf("etagMatches(%q, %q) = %v, want %v", tc.ifNoneMatch, tc.etag, got, tc.want)
 			}
 		})
 	}

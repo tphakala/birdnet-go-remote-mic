@@ -7,6 +7,18 @@ const (
 	testCardName = "C-Media USB Audio Device"
 )
 
+func TestCandidateRatesReturnsFreshCopy(t *testing.T) {
+	t.Parallel()
+	a := CandidateRates()
+	if len(a) == 0 {
+		t.Fatal("CandidateRates returned an empty slice")
+	}
+	a[0] = -1 // mutate the returned slice
+	if b := CandidateRates(); b[0] == -1 {
+		t.Error("CandidateRates returned a slice aliasing the package var; a mutation leaked")
+	}
+}
+
 func TestFriendlyName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

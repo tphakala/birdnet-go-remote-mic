@@ -109,10 +109,9 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", asset.contentType)
 		}
 		w.Header().Set("ETag", asset.etag)
-		if etagMatches(r.Header.Get("If-None-Match"), asset.etag) {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
+		// http.ServeContent evaluates If-None-Match against the ETag set above,
+		// handling "*", entity-tag lists, and weak validators per RFC 9110, so no
+		// separate conditional check is needed here.
 		http.ServeContent(w, r, cleanPath, sh.modTime, bytes.NewReader(asset.data))
 		return
 	}
@@ -124,33 +123,9 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(sh.indexFile) > 0 && path.Ext(cleanPath) == "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("ETag", sh.indexETag)
-		if etagMatches(r.Header.Get("If-None-Match"), sh.indexETag) {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
 		http.ServeContent(w, r, "index.html", sh.modTime, bytes.NewReader(sh.indexFile))
 		return
 	}
 
 	http.NotFound(w, r)
-}
-
-// etagMatches reports whether the If-None-Match header matches the target ETag
-// using RFC 7232 section 3.2 comparison rules.
-func etagMatches(ifNoneMatch, etag string) bool {
-	if ifNoneMatch == "" || etag == "" {
-		return false
-	}
-	target := strings.TrimPrefix(etag, "W/")
-	for _, part := range strings.Split(ifNoneMatch, ",") {
-		candidate := strings.TrimSpace(part)
-		if candidate == "*" {
-			return true
-		}
-		candidate = strings.TrimPrefix(candidate, "W/")
-		if candidate != "" && candidate == target {
-			return true
-		}
-	}
-	return false
 }

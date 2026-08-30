@@ -9,6 +9,32 @@ import (
 	capture "github.com/tphakala/go-audio-capture"
 )
 
+func TestHardwareNamesSuccess(t *testing.T) {
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) {
+		return []capture.DeviceInfo{{ID: testDevID, Name: "Foo Card, USB Audio"}}, nil
+	}
+	defer func() { enumerateDevices = prev }()
+
+	got, err := HardwareNames()
+	if err != nil {
+		t.Fatalf("HardwareNames: %v", err)
+	}
+	if got[testDevID] != "Foo Card" {
+		t.Errorf("names[%q] = %q, want %q", testDevID, got[testDevID], "Foo Card")
+	}
+}
+
+func TestHardwareNamesPropagatesError(t *testing.T) {
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) { return nil, errors.New("enumerate failed") }
+	defer func() { enumerateDevices = prev }()
+
+	if _, err := HardwareNames(); err == nil {
+		t.Error("HardwareNames should propagate the enumeration error")
+	}
+}
+
 func TestHardwareNamesFrom(t *testing.T) {
 	t.Parallel()
 	devs := []capture.DeviceInfo{

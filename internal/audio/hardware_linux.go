@@ -8,11 +8,14 @@ import (
 	capture "github.com/tphakala/go-audio-capture"
 )
 
+// enumerateDevices is a package var so tests can inject a fake device list.
+var enumerateDevices = capture.Devices
+
 // HardwareNames returns a map from ALSA device id to a friendly label for every
 // capture device the host currently exposes. It lets the UI default a device's
 // display name from the sound card when the config leaves it blank.
 func HardwareNames() (map[string]string, error) {
-	devs, err := capture.Devices()
+	devs, err := enumerateDevices()
 	if err != nil {
 		return nil, err
 	}

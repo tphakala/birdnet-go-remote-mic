@@ -107,7 +107,9 @@ export class DashboardView {
             this.updateConnection(e.detail);
         });
         store.addEventListener("loaderror", (e) => {
-            this.renderLoadError(e.detail);
+            const detail = e.detail;
+            if (detail.coreFailed)
+                this.renderLoadError(detail.message);
         });
     }
     // renderLoadError replaces the "Loading..." placeholder with the failure cause

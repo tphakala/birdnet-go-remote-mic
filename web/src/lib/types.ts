@@ -117,6 +117,16 @@ export interface RestartResult {
   status: string;
 }
 
+// LoadError is the detail of the store's "loaderror" event. coreFailed marks a
+// status+devices failure (the dashboard's data); systemFailed marks a /system
+// failure (the system view's data). A view renders its error only for its own
+// resource, so one failing endpoint does not blank another view's valid data.
+export interface LoadError {
+  coreFailed: boolean;
+  systemFailed: boolean;
+  message: string;
+}
+
 export interface Problem {
   type?: string;
   title?: string;

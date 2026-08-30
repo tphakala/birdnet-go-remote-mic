@@ -58,18 +58,20 @@ export class AppStore extends EventTarget {
   }
 
   public async loadInitial(): Promise<void> {
-    const [statusOk, devicesOk] = await Promise.all([
+    const [statusOk, devicesOk, systemOk] = await Promise.all([
       this.refreshStatus(),
       this.refreshDevices(),
       this.refreshSystem(),
       this.refreshConfig(),
     ]);
-    // If the core data could not be fetched at all, surface an error so the
-    // views can offer a retry instead of a "Loading..." placeholder that never
-    // resolves.
-    if (!statusOk && !devicesOk) {
+    // Surface a per-resource load error so each view can offer a retry for its
+    // own data instead of a "Loading..." placeholder that never resolves, and
+    // so one failing endpoint does not blank another view that loaded fine.
+    const coreFailed = !statusOk && !devicesOk;
+    const systemFailed = !systemOk;
+    if (coreFailed || systemFailed) {
       this.dispatchEvent(new CustomEvent("loaderror", {
-        detail: "Could not reach the appliance.",
+        detail: { coreFailed, systemFailed, message: "Could not reach the appliance." },
       }));
     }
   }

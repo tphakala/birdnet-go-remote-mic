@@ -65,6 +65,8 @@ export class DeviceSettingsForm {
   private nameErr!: HTMLElement;
   private pathEl!: HTMLInputElement;
   private pathErr!: HTMLElement;
+  private rateErr!: HTMLElement;
+  private chErr!: HTMLElement;
   private rateHidden!: HTMLInputElement;
   private channelsHidden!: HTMLInputElement;
   private bitrateHidden!: HTMLInputElement;
@@ -101,6 +103,8 @@ export class DeviceSettingsForm {
     this.rateHidden = rate.hidden;
     this.rateDrop = rate.dropdown;
     rateField.appendChild(rate.container);
+    this.rateErr = this.error(`set-${uid}-rate-err`);
+    rateField.appendChild(this.rateErr);
     rateField.appendChild(this.hint(this.rateHint()));
     grid.appendChild(rateField);
 
@@ -114,6 +118,8 @@ export class DeviceSettingsForm {
     this.channelsHidden = channels.hidden;
     this.channelsDrop = channels.dropdown;
     chField.appendChild(channels.container);
+    this.chErr = this.error(`set-${uid}-ch-err`);
+    chField.appendChild(this.chErr);
     chField.appendChild(this.hint("Opus requires mono."));
     grid.appendChild(chField);
 
@@ -184,8 +190,24 @@ export class DeviceSettingsForm {
     ok = this.mark(this.pathEl, this.pathErr, path.startsWith("/") && path.length >= 2,
       "Path must start with / and be at least 2 characters.") && ok;
     let rateOk = rate >= 8000 && rate <= 384000;
-    if (mode === "opus") rateOk = rate === 48000 && channels === 1;
-    ok = rateOk && ok;
+    let chOk = channels === 1 || channels === 2;
+    if (mode === "opus") {
+      rateOk = rate === 48000;
+      chOk = channels === 1;
+    }
+    ok = this.markControl(this.rateErr, rateOk,
+      mode === "opus" ? "Opus requires 48000 Hz." : "Rate must be 8000-384000 Hz.") && ok;
+    ok = this.markControl(this.chErr, chOk, "Opus requires mono (1 channel).") && ok;
+    return ok;
+  }
+
+  // markControl toggles the invalid state on a dropdown field (which has no text
+  // input to carry aria-invalid) and writes the failed rule into its error
+  // element, so a codec-constraint failure highlights the actual field.
+  private markControl(error: HTMLElement, ok: boolean, message: string): boolean {
+    const field = error.closest(".form-field");
+    field?.classList.toggle("invalid", !ok);
+    error.textContent = ok ? "" : message;
     return ok;
   }
 

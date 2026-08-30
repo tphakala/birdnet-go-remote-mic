@@ -2,7 +2,7 @@ import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
-import type { ApplianceStatus, Config, Device, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
 
 function elem(tag: string, className?: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -62,7 +62,8 @@ export class SystemView {
       if (!this.netDirty && cfg) this.populateNetwork(cfg);
     });
     store.addEventListener("loaderror", (e: Event) => {
-      this.renderLoadError((e as CustomEvent<string>).detail);
+      const detail = (e as CustomEvent<LoadError>).detail;
+      if (detail.systemFailed) this.renderLoadError(detail.message);
     });
     this.bindNetwork();
   }

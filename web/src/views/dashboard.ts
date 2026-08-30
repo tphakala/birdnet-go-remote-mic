@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import type { ApplianceStatus, Device, DeviceConfig, DeviceLevels, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC =
@@ -128,7 +128,8 @@ export class DashboardView {
       this.updateConnection((e as CustomEvent<boolean>).detail);
     });
     store.addEventListener("loaderror", (e: Event) => {
-      this.renderLoadError((e as CustomEvent<string>).detail);
+      const detail = (e as CustomEvent<LoadError>).detail;
+      if (detail.coreFailed) this.renderLoadError(detail.message);
     });
   }
 

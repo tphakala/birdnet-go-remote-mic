@@ -61,7 +61,9 @@ export class SystemView {
                 this.populateNetwork(cfg);
         });
         store.addEventListener("loaderror", (e) => {
-            this.renderLoadError(e.detail);
+            const detail = e.detail;
+            if (detail.systemFailed)
+                this.renderLoadError(detail.message);
         });
         this.bindNetwork();
     }

@@ -127,6 +127,9 @@ export class SSEClient {
 
       if (this.isRunning && gen === this.generation) {
         await new Promise((resolve) => setTimeout(resolve, this.reconnectDelayMs));
+        // Re-check after the delay: a stop()+start() during it must not let this
+        // stale loop double the new generation's shared backoff.
+        if (!this.isRunning || gen !== this.generation) return;
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.maxReconnectDelayMs);
       }
     }
