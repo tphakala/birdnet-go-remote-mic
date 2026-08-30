@@ -26,6 +26,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
@@ -84,8 +85,10 @@ type deviceRuntime struct {
 }
 
 // openDevice opens and starts capture for one configured device and builds its
-// pipeline stage, SDP, and RTSP track.
-func openDevice(dev *config.Device) (*deviceRuntime, error) {
+// pipeline stage, SDP, and RTSP track. The capture source is wrapped so every
+// period also feeds the device's level meter, which runs on the capture pump
+// regardless of whether an RTSP client is connected.
+func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 	src, err := audio.OpenCapture(dev)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
@@ -97,6 +100,10 @@ func openDevice(dev *config.Device) (*deviceRuntime, error) {
 		_ = src.Close()
 		return nil, fmt.Errorf("build sdp: %w", err)
 	}
+	// Register the level meter only once the device has fully opened. Doing it
+	// after the last fallible step keeps a device that fails here out of the
+	// hub, so the levels stream never reports a phantom silent device for it.
+	src = audio.NewMeteredSource(src, hub.Meter(dev.Name))
 	frames := rtspserver.NewChanSource(64)
 	return &deviceRuntime{
 		dev:      *dev,
@@ -116,6 +123,38 @@ func run(cfgPath string) error {
 		return err
 	}
 
+	mgmtEnabled := cfg.ManagementEnabled()
+
+	// The level hub taps every device's capture pump and streams per-device
+	// audio levels over SSE. It is created before devices open so a meter can be
+	// registered as each device is wrapped.
+	hub := levels.NewHub()
+
+	prov := &provider{
+		version:    version,
+		start:      startTime,
+		rtspListen: cfg.Listen,
+		discovery:  cfg.DiscoveryEnabled(),
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Start the management API before the device-open phase so status and
+	// diagnostics are reachable even if every device fails to open. It reports
+	// zero devices until setDevices publishes the records below. The combined
+	// shutdown defer cancels ctx first (so the API's shutdown goroutine fires
+	// even when run() returns on an error, not a signal) and then drains
+	// in-flight API connections before the process exits.
+	var management *mgmt
+	if mgmtEnabled {
+		management = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler())
+	}
+	defer func() {
+		stop()
+		management.Wait()
+	}()
+
 	// A device that fails to open is skipped, not fatal: the appliance keeps
 	// serving whatever hardware is actually present. Every configured device
 	// keeps a record (records) so the management API can report skipped ones;
@@ -123,7 +162,7 @@ func run(cfgPath string) error {
 	var records []*deviceRuntime
 	var serving []*deviceRuntime
 	for i := range cfg.Devices {
-		rt, oerr := openDevice(&cfg.Devices[i])
+		rt, oerr := openDevice(&cfg.Devices[i], hub)
 		if oerr != nil {
 			log.Printf("skipping device %q (%s): %v", cfg.Devices[i].Name, cfg.Devices[i].Device, oerr)
 			records = append(records, &deviceRuntime{
@@ -138,33 +177,32 @@ func run(cfgPath string) error {
 		records = append(records, rt)
 		serving = append(serving, rt)
 	}
-	if len(serving) == 0 {
+	prov.setDevices(records)
+
+	// With management enabled the appliance stays up as a diagnostic surface
+	// even when nothing is serving (issue #10): GET /devices still reports every
+	// skipped device and its open error. With management disabled there is no API
+	// to keep alive, so a total open failure is fatal and lets a supervisor
+	// restart the process (the current auto-recovery path; in-process capture
+	// restart is a later phase).
+	if len(serving) == 0 && !mgmtEnabled {
 		return errors.New("no configured capture device could be opened")
 	}
+
 	defer func() {
 		for _, rt := range serving {
 			_ = rt.src.Close()
 		}
 	}()
 
+	// Drive the level sampler for the lifetime of the process.
+	go hub.Run(ctx)
+
 	tracks := make([]*rtspserver.Track, len(serving))
 	for i, rt := range serving {
 		tracks[i] = rt.track
 	}
 	srv := rtspserver.New(rtspserver.Config{Listen: cfg.Listen}, tracks...)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if cfg.ManagementEnabled() {
-		startManagement(ctx, cfgPath, &cfg, &provider{
-			version:    version,
-			start:      startTime,
-			rtspListen: cfg.Listen,
-			discovery:  cfg.DiscoveryEnabled(),
-			devices:    records,
-		})
-	}
 
 	// One capture/pipeline pump per device: each sound card is its own clock.
 	// Lock each pump to its OS thread so the capture loop is not descheduled
@@ -194,12 +232,16 @@ func run(cfgPath string) error {
 	go func() { srvErr <- srv.ListenAndServe(ctx) }()
 	log.Printf("serving %d device(s) on %s", len(serving), cfg.Listen)
 
-	if cfg.DiscoveryEnabled() {
+	// mDNS advertises only actual streams; with nothing serving there is nothing
+	// to announce (announce.Run rejects an empty set).
+	if prov.discovery && len(serving) > 0 {
 		startAnnounce(ctx, cfg.Listen, serving)
 	}
 
-	// A dead device is isolated: its track is retired (404) and everything
-	// else keeps serving. The process exits when every pump has stopped.
+	// A dead device is isolated: its track is retired (404) and everything else
+	// keeps serving. When management is enabled the process stays up even after
+	// the last pump stops, so the degraded state remains inspectable until a
+	// signal arrives; otherwise it exits once every pump has stopped.
 	alive := len(serving)
 	var lastPumpErr error
 	for {
@@ -218,7 +260,7 @@ func run(cfgPath string) error {
 				res.rt.markFailed(res.err)
 				log.Printf("device %q failed: %v; %s returns 404 until restart", res.rt.dev.Name, res.err, res.rt.dev.Path)
 			}
-			if alive == 0 {
+			if alive == 0 && !mgmtEnabled {
 				if lastPumpErr != nil {
 					return fmt.Errorf("all capture devices stopped, last error: %w", lastPumpErr)
 				}

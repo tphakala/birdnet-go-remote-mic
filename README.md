@@ -87,12 +87,18 @@ For a local end-to-end check without hardware, use the ALSA loopback
 
 ### Multi-device behaviour
 
-- A device that fails to open at startup is logged and skipped; the process
-  only exits nonzero if no configured device opens at all.
+- A device that fails to open at startup is logged and skipped. With the
+  management API enabled (the default) the process stays up so its status API
+  keeps reporting every skipped device and its open error, even when no device
+  opens at all. With management disabled there is nothing to keep alive, so a
+  total open failure exits nonzero and lets a supervisor restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
-  until the process restarts, while the other devices keep serving. Its mDNS
-  advertisement persists until the process exits (a limitation of the dnssd
-  responder), so a discoverer that picks it up gets the 404.
+  until the process restarts, while the other devices keep serving. With
+  management enabled the process also stays up after the last device dies, so
+  the failure stays inspectable over the API (in-process capture restart is a
+  later phase); with management disabled it exits once every device has stopped.
+  A retired device's mDNS advertisement persists until the process exits (a
+  limitation of the dnssd responder), so a discoverer that picks it up gets 404.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice), USB isochronous
   bandwidth is shared per controller (watch for xruns when several high-rate

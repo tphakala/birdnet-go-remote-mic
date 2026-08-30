@@ -60,16 +60,34 @@ type Provider interface {
 	Version() string
 	Status() ApplianceStatus
 	Devices() []DeviceStatus
+	// Device returns one device by name, avoiding a full snapshot for the
+	// single-device lookup. ok is false when no device has that name.
+	Device(name string) (DeviceStatus, bool)
 }
 
 // Server implements mgmtapi.StrictServerInterface over a Provider.
 type Server struct {
-	provider Provider
+	provider    Provider
+	eventStream http.Handler
 }
 
-// New returns a Server backed by p.
-func New(p Provider) *Server {
-	return &Server{provider: p}
+// Option configures a Server.
+type Option func(*Server)
+
+// WithEventStream mounts h as the hand-written SSE handler for GET /events,
+// beside the generated handlers. The generated streaming stub is a buffered
+// response object and cannot stream, so the real event stream lives outside it.
+func WithEventStream(h http.Handler) Option {
+	return func(s *Server) { s.eventStream = h }
+}
+
+// New returns a Server backed by p, applying opts.
+func New(p Provider, opts ...Option) *Server {
+	s := &Server{provider: p}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 var _ mgmtapi.StrictServerInterface = (*Server)(nil)
@@ -87,13 +105,24 @@ func (s *Server) Handler() http.Handler {
 			writeProblem(w, http.StatusInternalServerError, "internal error", err.Error())
 		},
 	})
-	return mgmtapi.HandlerWithOptions(strict, mgmtapi.StdHTTPServerOptions{
+	generated := mgmtapi.HandlerWithOptions(strict, mgmtapi.StdHTTPServerOptions{
 		BaseURL:    BasePath,
 		BaseRouter: http.NewServeMux(),
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			writeProblem(w, http.StatusBadRequest, "invalid parameter", err.Error())
 		},
 	})
+	if s.eventStream == nil {
+		return generated
+	}
+	// Route the streaming endpoint to the hand-written handler and everything
+	// else to the generated one. Go 1.22 pattern specificity makes the exact
+	// method+path win over the "/" catch-all, so the generated StreamEvents stub
+	// is shadowed rather than reached.
+	mux := http.NewServeMux()
+	mux.Handle("GET "+BasePath+"/events", s.eventStream)
+	mux.Handle("/", generated)
+	return mux
 }
 
 // writeProblem sends an RFC 9457 problem detail.
@@ -136,11 +165,8 @@ func (s *Server) ListDevices(_ context.Context, _ mgmtapi.ListDevicesRequestObje
 
 // GetDevice handles GET /devices/{name}.
 func (s *Server) GetDevice(_ context.Context, request mgmtapi.GetDeviceRequestObject) (mgmtapi.GetDeviceResponseObject, error) {
-	devs := s.provider.Devices()
-	for i := range devs {
-		if devs[i].Config.Name == request.Name {
-			return mgmtapi.GetDevice200JSONResponse(mapDevice(&devs[i])), nil
-		}
+	if dev, ok := s.provider.Device(request.Name); ok {
+		return mgmtapi.GetDevice200JSONResponse(mapDevice(&dev)), nil
 	}
 	return mgmtapi.GetDevice404ApplicationProblemPlusJSONResponse{
 		ProblemApplicationProblemPlusJSONResponse: mgmtapi.ProblemApplicationProblemPlusJSONResponse(

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -20,22 +21,37 @@ import (
 
 // provider adapts the appliance's device records into mgmtserver.Provider. Its
 // methods are called from HTTP handler goroutines, so each device's mutable
-// state is read under the device's own lock.
+// state is read under the device's own lock. The record list itself is
+// published atomically because the management API starts before the capture
+// open loop finishes: until setDevices runs, the API reports zero devices
+// (a starting/degraded appliance) rather than racing a growing slice.
 type provider struct {
 	version    string
 	start      time.Time
 	rtspListen string
 	discovery  bool
-	devices    []*deviceRuntime
+	devices    atomic.Pointer[[]*deviceRuntime]
 }
 
 var _ mgmtserver.Provider = (*provider)(nil)
 
+// setDevices publishes the final record list once the open loop has built it.
+func (p *provider) setDevices(d []*deviceRuntime) { p.devices.Store(&d) }
+
+// deviceList returns the currently published records, or nil before setDevices.
+func (p *provider) deviceList() []*deviceRuntime {
+	if d := p.devices.Load(); d != nil {
+		return *d
+	}
+	return nil
+}
+
 func (p *provider) Version() string { return p.version }
 
 func (p *provider) Status() mgmtserver.ApplianceStatus {
+	devices := p.deviceList()
 	serving := 0
-	for _, d := range p.devices {
+	for _, d := range devices {
 		if d.currentState() == mgmtserver.StateServing {
 			serving++
 		}
@@ -46,16 +62,27 @@ func (p *provider) Status() mgmtserver.ApplianceStatus {
 		RTSPListen:       p.rtspListen,
 		DiscoveryEnabled: p.discovery,
 		DevicesServing:   serving,
-		DevicesTotal:     len(p.devices),
+		DevicesTotal:     len(devices),
 	}
 }
 
 func (p *provider) Devices() []mgmtserver.DeviceStatus {
-	out := make([]mgmtserver.DeviceStatus, 0, len(p.devices))
-	for _, d := range p.devices {
+	devices := p.deviceList()
+	out := make([]mgmtserver.DeviceStatus, 0, len(devices))
+	for _, d := range devices {
 		out = append(out, d.status())
 	}
 	return out
+}
+
+// Device returns one device by name without snapshotting the whole list.
+func (p *provider) Device(name string) (mgmtserver.DeviceStatus, bool) {
+	for _, d := range p.deviceList() {
+		if d.dev.Name == name {
+			return d.status(), true
+		}
+	}
+	return mgmtserver.DeviceStatus{}, false
 }
 
 // markFailed records that a device's pump died after startup.
@@ -101,10 +128,35 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	return ds
 }
 
+// mgmt is a running management API's shutdown handle. Wait blocks until the
+// HTTP server has drained in-flight connections, so run() can hold process exit
+// until the API has shut down cleanly (a prerequisite for a future config PATCH
+// that must flush its response before the appliance restarts).
+type mgmt struct {
+	done chan struct{}
+}
+
+// Wait blocks until the management API has finished shutting down. It is safe on
+// a nil handle (management disabled) and on a handle whose server never started.
+func (m *mgmt) Wait() {
+	if m != nil {
+		<-m.done
+	}
+}
+
+// closedMgmt returns a handle that is already done, for the paths where no
+// server is running (a cert failure) so callers can Wait unconditionally.
+func closedMgmt() *mgmt {
+	done := make(chan struct{})
+	close(done)
+	return &mgmt{done: done}
+}
+
 // startManagement generates or loads the self-signed certificate and serves the
-// management API over HTTPS in the background until ctx is cancelled. Failure to
-// start is logged, not fatal: the appliance keeps capturing and serving RTSP.
-func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider) {
+// management API over HTTPS in the background until ctx is cancelled. events, if
+// non-nil, is mounted as the hand-written SSE handler for GET /events. Failure
+// to start is logged, not fatal: the appliance keeps capturing and serving RTSP.
+func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler) *mgmt {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -115,18 +167,23 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	cert, err := mgmtcert.Ensure(certPath, keyPath, certHosts())
 	if err != nil {
 		log.Printf("management API disabled: cannot prepare TLS certificate: %v", err)
-		return
+		return closedMgmt()
+	}
+
+	var opts []mgmtserver.Option
+	if events != nil {
+		opts = append(opts, mgmtserver.WithEventStream(events))
 	}
 
 	srv := &http.Server{
 		Addr:              cfg.Management.Listen,
-		Handler:           mgmtserver.New(prov).Handler(),
+		Handler:           mgmtserver.New(prov, opts...).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		// WriteTimeout bounds slow-client writes on the unauthenticated LAN
-		// listener. The future /events SSE stream (issue #9) is long-lived and
-		// will need this relaxed or applied per-handler when it lands.
+		// listener. The /events SSE stream is long-lived and overrides this
+		// per-connection with http.ResponseController write deadlines.
 		WriteTimeout: 30 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
@@ -134,7 +191,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 		},
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -150,6 +209,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 
 	log.Printf("management API on https://%s%s (self-signed cert at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
 	log.Print("WARNING: the management API is UNAUTHENTICATED until token auth is configured")
+	return &mgmt{done: done}
 }
 
 // certHosts returns the SANs to embed in the self-signed certificate: loopback,

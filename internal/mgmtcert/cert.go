@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -123,17 +124,47 @@ func generate(certPath, keyPath string, hosts []string) (tls.Certificate, error)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
+	// Write both PEM files atomically (temp file + rename) so a crash mid-write
+	// never leaves a half-written file or a cert and key that do not match. A
+	// broken pair would still self-heal on the next start (Ensure regenerates
+	// when the pair fails to load), but the rename keeps every on-disk pair
+	// loadable in the first place.
+	if err := writeFileAtomic(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
 		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := writeFileAtomic(keyPath, keyPEM, 0o600); err != nil {
 		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
-	}
-	// os.WriteFile only applies the mode when creating the file; enforce
-	// owner-only permissions even when overwriting a pre-existing wider-mode key.
-	if err := os.Chmod(keyPath, 0o600); err != nil {
-		return tls.Certificate{}, fmt.Errorf("chmod key: %w", err)
 	}
 
 	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// writeFileAtomic writes data to path by writing a temp file in the same
+// directory and renaming it into place, so a concurrent reader or a crash never
+// observes a partially written file. The temp file is given perm before the
+// rename and removed if any step before the rename fails.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }() // no-op once the rename has consumed tmp
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
