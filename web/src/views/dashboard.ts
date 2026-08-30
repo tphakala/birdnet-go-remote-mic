@@ -363,7 +363,10 @@ export class DashboardView {
       // Build from the saved config (source of truth), matched by ALSA id.
       const cfg = store.getState().config;
       const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? entry.device;
-      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; });
+      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; }, {
+        friendlyName: entry.device.friendlyName,
+        supportedRates: entry.device.supportedRates,
+      });
       entry.settingsForm = form;
       entry.settingsWrap.append(form.element, actions);
 

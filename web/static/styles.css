@@ -992,6 +992,22 @@ body {
   gap: 16px;
 }
 
+/* Full-width heading that separates field groups within the two-column grid. */
+.form-group-title {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.form-group-title:not(:first-child) {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-base);
+}
+
 .form-field {
   display: flex;
   flex-direction: column;

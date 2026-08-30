@@ -73,6 +73,8 @@ export interface Device {
   droppedFrames: number;
   opus?: OpusSettings;
   error?: string;
+  friendlyName?: string;
+  supportedRates?: number[];
 }
 
 export interface NetworkInterface {

@@ -6,9 +6,9 @@ const CHEVRON =
 const CHECK =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 
-// Standard ALSA capture rates offered for PCM. Opus is always locked to 48000.
-// These are common device rates, not the specific device's reported set (see
-// Forgejo #10); an unsupported choice is rejected by the honest-rate policy.
+// Standard ALSA capture rates offered for PCM when the device's own supported
+// set is unknown (device unavailable at startup). Opus is always locked to
+// 48000. When the backend reports supportedRates for the device, those win.
 const STANDARD_RATES = [16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 256000, 384000];
 
 const MIN_BITRATE = 64000;
@@ -30,6 +30,14 @@ export interface DropdownOption {
   tagClass?: string;
 }
 
+// Hardware facts the backend reports for a device (from GET /devices). Both are
+// optional: absent when the device id matched no enumerated hardware or could
+// not be probed.
+export interface DeviceHardware {
+  friendlyName?: string;
+  supportedRates?: number[];
+}
+
 // Per-form counter so element ids are valid and unique regardless of the
 // device name (which may contain spaces or other id-invalid characters).
 let formSeq = 0;
@@ -45,13 +53,17 @@ function elem(tag: string, className?: string, text?: string): HTMLElement {
  * The editable settings controls for one device. Builds its own DOM (into
  * `element`), tracks dirtiness via the onDirty callback, validates field
  * formats, and returns the edited DeviceConfig via collect(). The ALSA device
- * id is fixed and not shown here; the caller supplies it back on save.
+ * id is fixed and not shown here; the caller supplies it back on save. Fields
+ * are grouped Capture (what the hardware delivers) then Stream (how it is named,
+ * addressed, and encoded).
  */
 export class DeviceSettingsForm {
   readonly element: HTMLElement;
   private dropdowns: CustomDropdown[] = [];
   private nameEl!: HTMLInputElement;
+  private nameErr!: HTMLElement;
   private pathEl!: HTMLInputElement;
+  private pathErr!: HTMLElement;
   private rateHidden!: HTMLInputElement;
   private channelsHidden!: HTMLInputElement;
   private bitrateHidden!: HTMLInputElement;
@@ -60,11 +72,13 @@ export class DeviceSettingsForm {
   private rateDrop!: CustomDropdown;
   private channelsDrop!: CustomDropdown;
   private device: DeviceConfig;
+  private hardware: DeviceHardware;
   private onDirty: () => void;
   private ready = false;
 
-  constructor(device: DeviceConfig, onDirty: () => void) {
+  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware = {}) {
     this.device = device;
+    this.hardware = hardware;
     this.onDirty = onDirty;
     this.element = elem("div", "device-settings");
     this.build();
@@ -76,22 +90,8 @@ export class DeviceSettingsForm {
     const uid = ++formSeq;
     const grid = elem("div", "form-grid-2col");
 
-    this.nameEl = this.field(grid, `set-${uid}-name`, "Device Name", d.name, "text",
-      "DNS-SD instance name and log label. Must be unique.");
-    this.pathEl = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
-      "Unique endpoint path on the RTSP server, e.g. /stream.");
-
-    // Mode
-    const modeField = elem("div", "form-field");
-    modeField.appendChild(this.label("Stream Codec Mode"));
-    const mode = this.buildDropdown("Stream codec mode", [
-      { val: "opus", label: "Opus (Compressed, 48 kHz)", tag: "OPUS", tagClass: "highlight" },
-      { val: "pcm", label: "PCM L16 (Uncompressed Raw)", tag: "PCM L16", tagClass: "ultrasonic" },
-    ], d.mode);
-    this.modeHidden = mode.hidden;
-    modeField.appendChild(mode.container);
-    modeField.appendChild(this.hint("Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."));
-    grid.appendChild(modeField);
+    // Capture group: what the hardware delivers.
+    this.groupTitle(grid, "Capture");
 
     // Rate
     const rateField = elem("div", "form-field");
@@ -100,7 +100,7 @@ export class DeviceSettingsForm {
     this.rateHidden = rate.hidden;
     this.rateDrop = rate.dropdown;
     rateField.appendChild(rate.container);
-    rateField.appendChild(this.hint("Capture rate delivered by the device and streamed as-is. Opus is fixed at 48000."));
+    rateField.appendChild(this.hint(this.rateHint()));
     grid.appendChild(rateField);
 
     // Channels
@@ -115,6 +115,33 @@ export class DeviceSettingsForm {
     chField.appendChild(channels.container);
     chField.appendChild(this.hint("Opus requires mono."));
     grid.appendChild(chField);
+
+    // Stream group: how the capture is named, addressed, and encoded.
+    this.groupTitle(grid, "Stream");
+
+    // Name, defaulting from the sound card's friendly label when blank.
+    const initialName = d.name || this.hardware.friendlyName || "";
+    const name = this.field(grid, `set-${uid}-name`, "Device Name", initialName, "text",
+      "DNS-SD instance name and log label. Must be unique.");
+    this.nameEl = name.input;
+    this.nameErr = name.error;
+
+    const path = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
+      "Unique endpoint path on the RTSP server, e.g. /stream.");
+    this.pathEl = path.input;
+    this.pathErr = path.error;
+
+    // Mode
+    const modeField = elem("div", "form-field");
+    modeField.appendChild(this.label("Stream Codec Mode"));
+    const mode = this.buildDropdown("Stream codec mode", [
+      { val: "opus", label: "Opus (Compressed, 48 kHz)", tag: "OPUS", tagClass: "highlight" },
+      { val: "pcm", label: "PCM L16 (Uncompressed Raw)", tag: "PCM L16", tagClass: "ultrasonic" },
+    ], d.mode);
+    this.modeHidden = mode.hidden;
+    modeField.appendChild(mode.container);
+    modeField.appendChild(this.hint("Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."));
+    grid.appendChild(modeField);
 
     // Bitrate
     this.bitrateField = elem("div", "form-field");
@@ -150,8 +177,11 @@ export class DeviceSettingsForm {
     const rate = Number(this.rateHidden.value);
     const channels = Number(this.channelsHidden.value);
     let ok = true;
-    ok = this.mark(this.nameEl, this.nameEl.value.trim().length > 0) && ok;
-    ok = this.mark(this.pathEl, this.pathEl.value.trim().startsWith("/") && this.pathEl.value.trim().length >= 2) && ok;
+    ok = this.mark(this.nameEl, this.nameErr, this.nameEl.value.trim().length > 0,
+      "Name is required.") && ok;
+    const path = this.pathEl.value.trim();
+    ok = this.mark(this.pathEl, this.pathErr, path.startsWith("/") && path.length >= 2,
+      "Path must start with / and be at least 2 characters.") && ok;
     let rateOk = rate >= 8000 && rate <= 384000;
     if (mode === "opus") rateOk = rate === 48000 && channels === 1;
     ok = rateOk && ok;
@@ -173,6 +203,12 @@ export class DeviceSettingsForm {
     return dev;
   }
 
+  // groupTitle appends a full-width heading that visually separates the field
+  // groups within the two-column grid.
+  private groupTitle(grid: HTMLElement, text: string): void {
+    grid.appendChild(elem("div", "form-group-title", text));
+  }
+
   private buildDropdown(
     ariaLabel: string, options: DropdownOption[], selected: string
   ): { container: HTMLElement; hidden: HTMLInputElement; dropdown: CustomDropdown } {
@@ -187,6 +223,7 @@ export class DeviceSettingsForm {
     trigger.tabIndex = 0;
     trigger.setAttribute("role", "combobox");
     trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-label", ariaLabel);
     trigger.appendChild(elem("div", "dropdown-value-group"));
     const chevron = elem("span", "dropdown-chevron");
@@ -196,6 +233,7 @@ export class DeviceSettingsForm {
 
     const menu = elem("div", "dropdown-menu");
     menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", ariaLabel);
     for (const opt of options) {
       const item = elem("div", "dropdown-item");
       item.dataset.val = opt.val;
@@ -225,7 +263,7 @@ export class DeviceSettingsForm {
 
   private field(
     grid: HTMLElement, id: string, labelText: string, value: string, type: string, hint: string
-  ): HTMLInputElement {
+  ): { input: HTMLInputElement; error: HTMLElement } {
     const field = elem("div", "form-field");
     const l = this.label(labelText);
     l.setAttribute("for", id);
@@ -235,6 +273,8 @@ export class DeviceSettingsForm {
     input.className = "field-input mono";
     input.id = id;
     input.value = value;
+    const errId = `${id}-err`;
+    input.setAttribute("aria-describedby", errId);
     input.addEventListener("input", () => {
       if (this.ready) {
         this.validate();
@@ -242,9 +282,11 @@ export class DeviceSettingsForm {
       }
     });
     field.appendChild(input);
+    const error = this.error(errId);
+    field.appendChild(error);
     field.appendChild(this.hint(hint));
     grid.appendChild(field);
-    return input;
+    return { input, error };
   }
 
   private label(text: string): HTMLElement {
@@ -255,15 +297,33 @@ export class DeviceSettingsForm {
     return elem("span", "field-hint", text);
   }
 
-  private mark(el: HTMLElement, ok: boolean): boolean {
-    el.classList.toggle("invalid", !ok);
+  private error(id: string): HTMLElement {
+    const e = elem("span", "field-error");
+    e.id = id;
+    return e;
+  }
+
+  // mark toggles the field's invalid state: the red border/message via the
+  // .invalid class on the form-field, the specific rule text in the .field-error
+  // element, and aria-invalid on the input so a screen reader announces it.
+  private mark(input: HTMLElement, error: HTMLElement, ok: boolean, message: string): boolean {
+    const field = input.closest(".form-field");
+    field?.classList.toggle("invalid", !ok);
+    input.setAttribute("aria-invalid", ok ? "false" : "true");
+    error.textContent = ok ? "" : message;
     return ok;
   }
 
   private rateOptions(current: number): DropdownOption[] {
-    const rates = new Set<number>(STANDARD_RATES);
+    const base = this.hardware.supportedRates?.length ? this.hardware.supportedRates : STANDARD_RATES;
+    const rates = new Set<number>(base);
     if (current > 0) rates.add(current);
     return [...rates].sort((a, b) => a - b).map((r) => ({ val: String(r), label: `${r.toLocaleString("en-US")} Hz` }));
+  }
+
+  private rateHint(): string {
+    const base = "Capture rate delivered by the device and streamed as-is. Opus is fixed at 48000.";
+    return this.hardware.supportedRates?.length ? base : base + " Showing common rates (device set unavailable).";
   }
 
   private bitrateOptions(current: number): DropdownOption[] {
