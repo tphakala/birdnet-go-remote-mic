@@ -51,14 +51,17 @@ func (e DeviceConfigFormat) Valid() bool {
 
 // Defines values for DeviceState.
 const (
-	Failed  DeviceState = "failed"
-	Serving DeviceState = "serving"
-	Skipped DeviceState = "skipped"
+	Disabled DeviceState = "disabled"
+	Failed   DeviceState = "failed"
+	Serving  DeviceState = "serving"
+	Skipped  DeviceState = "skipped"
 )
 
 // Valid indicates whether the value is a known member of the DeviceState enum.
 func (e DeviceState) Valid() bool {
 	switch e {
+	case Disabled:
+		return true
 	case Failed:
 		return true
 	case Serving:
@@ -211,7 +214,7 @@ type Device struct {
 	// Rate Requested capture sample rate in Hz (as configured).
 	Rate int `json:"rate"`
 
-	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts.
+	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
 	State DeviceState `json:"state"`
 
 	// SupportedRates Sample rates the hardware accepts, probed once at startup. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a static list of common rates.
@@ -226,9 +229,12 @@ type DeviceFormat string
 
 // DeviceConfig The configuration of one device, without runtime state.
 type DeviceConfig struct {
-	Channels int                `json:"channels"`
-	Device   string             `json:"device"`
-	Format   DeviceConfigFormat `json:"format"`
+	Channels int    `json:"channels"`
+	Device   string `json:"device"`
+
+	// Enabled Whether this device is captured and streamed; defaults to true when absent. Set false to keep it configured but not opened. Takes effect on the next restart.
+	Enabled *bool              `json:"enabled,omitempty"`
+	Format  DeviceConfigFormat `json:"format"`
 
 	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
 	Mode StreamMode `json:"mode"`
@@ -266,7 +272,7 @@ type DeviceLevels struct {
 	RmsDbfs float64 `json:"rmsDbfs"`
 }
 
-// DeviceState serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts.
+// DeviceState serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
 type DeviceState string
 
 // DiscoverySettings mDNS/DNS-SD advertisement settings.

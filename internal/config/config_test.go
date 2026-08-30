@@ -147,6 +147,43 @@ func validBase() Config {
 	}
 }
 
+func TestDeviceIsEnabled(t *testing.T) {
+	t.Parallel()
+	tru, fls := true, false
+	cases := []struct {
+		name string
+		flag *bool
+		want bool
+	}{
+		{"absent defaults on", nil, true},
+		{"explicit true", &tru, true},
+		{"explicit false", &fls, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := Device{Enabled: tc.flag}
+			if got := d.IsEnabled(); got != tc.want {
+				t.Errorf("IsEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCloneDeepCopiesDeviceEnabled(t *testing.T) {
+	t.Parallel()
+	on := true
+	c := validBase()
+	c.Devices[0].Enabled = &on
+	clone := c.Clone()
+	// Mutating the clone's device flag must not reach through to the original's
+	// backing storage.
+	*clone.Devices[0].Enabled = false
+	if !*c.Devices[0].Enabled {
+		t.Error("Clone aliased Device.Enabled; mutating the clone changed the original")
+	}
+}
+
 func TestValidate(t *testing.T) {
 	base := validBase()
 	if err := base.Validate(); err != nil {
@@ -158,6 +195,8 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"two pcm devices", func(*Config) {}, false},
+		{"disabled device stays valid", func(c *Config) { f := false; c.Devices[0].Enabled = &f }, false},
+		{"disabled device is still validated", func(c *Config) { f := false; c.Devices[0].Enabled = &f; c.Devices[0].Rate = 100 }, true},
 		{"opus at 48k mono", func(c *Config) {
 			c.Devices[0].Mode = ModeOpus
 			c.Devices[0].Rate = 48000

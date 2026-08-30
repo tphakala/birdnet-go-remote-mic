@@ -59,6 +59,17 @@ type Device struct {
 	Channels int    `yaml:"channels"`       // 1 or 2
 	Format   string `yaml:"format"`         // only "s16"
 	Opus     Opus   `yaml:"opus,omitempty"` // used only when Mode is opus
+	// Enabled is a pointer so an absent value defaults on: a device is captured
+	// and streamed unless explicitly disabled. A disabled device stays in the
+	// config (and is shown in the UI) but is not opened; toggling it takes effect
+	// on the next restart, since the capture pipeline is built only at startup.
+	Enabled *bool `yaml:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether the device is captured and streamed. A device with
+// no explicit enabled flag defaults on.
+func (d *Device) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
 }
 
 // Discovery configures mDNS/DNS-SD advertisement. Enabled is a pointer so an
@@ -237,11 +248,11 @@ func validatePath(p string) string {
 	}
 }
 
-// Clone returns a deep copy of c. The Devices slice and the *bool fields get
+// Clone returns a deep copy of c. The Devices slice and every *bool field (the
+// discovery and management enabled flags, and each device's Enabled flag) get
 // their own backing storage, so a caller may mutate the copy (for example
 // ApplyDefaults over a patched device list) without racing a concurrent reader
-// of the original. Device holds only value types, so copying the slice fully
-// copies each device.
+// of the original.
 func (c *Config) Clone() Config {
 	out := *c
 	if c.Discovery.Enabled != nil {
@@ -255,6 +266,14 @@ func (c *Config) Clone() Config {
 	if c.Devices != nil {
 		out.Devices = make([]Device, len(c.Devices))
 		copy(out.Devices, c.Devices)
+		// Device now carries a *bool (Enabled); give each copy its own backing
+		// storage so a caller mutating the clone cannot race the original.
+		for i := range c.Devices {
+			if c.Devices[i].Enabled != nil {
+				v := *c.Devices[i].Enabled
+				out.Devices[i].Enabled = &v
+			}
+		}
 	}
 	return out
 }

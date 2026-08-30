@@ -440,11 +440,13 @@ components:
 
     DeviceState:
       type: string
-      enum: [serving, skipped, failed]
+      enum: [serving, skipped, failed, disabled]
       description: >
         serving: capturing and available over RTSP. skipped: could not be
         opened at startup. failed: died after startup; its RTSP path
-        returns 404 until the appliance restarts.
+        returns 404 until the appliance restarts. disabled: configured but
+        intentionally not opened (its enabled flag is false); not captured
+        or streamed until enabled and the appliance restarts.
 
     StreamMode:
       type: string
@@ -549,6 +551,12 @@ components:
           const: s16
         opus:
           $ref: "#/components/schemas/OpusSettings"
+        enabled:
+          type: boolean
+          description: >
+            Whether this device is captured and streamed; defaults to true
+            when absent. Set false to keep it configured but not opened.
+            Takes effect on the next restart.
 
     DiscoverySettings:
       type: object
