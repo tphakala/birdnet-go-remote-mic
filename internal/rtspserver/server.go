@@ -60,6 +60,14 @@ func (t *Track) releaseSlot() {
 	t.slotMu.Unlock()
 }
 
+// ClientConnected reports whether a session currently holds the track's single
+// playing slot. Safe to call concurrently with SETUP/TEARDOWN.
+func (t *Track) ClientConnected() bool {
+	t.slotMu.Lock()
+	defer t.slotMu.Unlock()
+	return t.slotTaken
+}
+
 // Server accepts RTSP connections and routes each request to a track by URL
 // path.
 type Server struct {

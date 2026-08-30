@@ -15,7 +15,10 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
 	"github.com/tphakala/go-audio-stream/rtsp/sdp"
@@ -23,6 +26,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
 )
@@ -61,7 +65,9 @@ func printDevices() error {
 	return nil
 }
 
-// deviceRuntime bundles one opened device's moving parts.
+// deviceRuntime bundles one configured device's moving parts. A device that
+// failed to open keeps a record with src and track nil so the management API can
+// still report it (state skipped). src and track are set only when it opened.
 type deviceRuntime struct {
 	dev      config.Device
 	src      audio.Source
@@ -70,6 +76,11 @@ type deviceRuntime struct {
 	track    *rtspserver.Track
 	rate     int
 	channels int
+	dropped  atomic.Uint64
+
+	mu    sync.Mutex
+	state mgmtserver.DeviceState
+	err   string
 }
 
 // openDevice opens and starts capture for one configured device and builds its
@@ -99,40 +110,61 @@ func openDevice(dev *config.Device) (*deviceRuntime, error) {
 }
 
 func run(cfgPath string) error {
+	startTime := time.Now()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
 	}
 
 	// A device that fails to open is skipped, not fatal: the appliance keeps
-	// serving whatever hardware is actually present.
-	var devices []*deviceRuntime
+	// serving whatever hardware is actually present. Every configured device
+	// keeps a record (records) so the management API can report skipped ones;
+	// serving holds only the ones that opened and need pumping.
+	var records []*deviceRuntime
+	var serving []*deviceRuntime
 	for i := range cfg.Devices {
 		rt, oerr := openDevice(&cfg.Devices[i])
 		if oerr != nil {
 			log.Printf("skipping device %q (%s): %v", cfg.Devices[i].Name, cfg.Devices[i].Device, oerr)
+			records = append(records, &deviceRuntime{
+				dev:   cfg.Devices[i],
+				state: mgmtserver.StateSkipped,
+				err:   oerr.Error(),
+			})
 			continue
 		}
+		rt.state = mgmtserver.StateServing
 		log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.dev.Path)
-		devices = append(devices, rt)
+		records = append(records, rt)
+		serving = append(serving, rt)
 	}
-	if len(devices) == 0 {
+	if len(serving) == 0 {
 		return errors.New("no configured capture device could be opened")
 	}
 	defer func() {
-		for _, rt := range devices {
+		for _, rt := range serving {
 			_ = rt.src.Close()
 		}
 	}()
 
-	tracks := make([]*rtspserver.Track, len(devices))
-	for i, rt := range devices {
+	tracks := make([]*rtspserver.Track, len(serving))
+	for i, rt := range serving {
 		tracks[i] = rt.track
 	}
 	srv := rtspserver.New(rtspserver.Config{Listen: cfg.Listen}, tracks...)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if cfg.ManagementEnabled() {
+		startManagement(ctx, cfgPath, &cfg, &provider{
+			version:    version,
+			start:      startTime,
+			rtspListen: cfg.Listen,
+			discovery:  cfg.DiscoveryEnabled(),
+			devices:    records,
+		})
+	}
 
 	// One capture/pipeline pump per device: each sound card is its own clock.
 	// Lock each pump to its OS thread so the capture loop is not descheduled
@@ -141,14 +173,13 @@ func run(cfgPath string) error {
 		rt  *deviceRuntime
 		err error
 	}
-	pumpDone := make(chan pumpResult, len(devices))
-	for _, rt := range devices {
+	pumpDone := make(chan pumpResult, len(serving))
+	for _, rt := range serving {
 		go func(rt *deviceRuntime) {
 			runtime.LockOSThread()
-			var drops uint64
 			perr := rt.stage.Run(rt.src, func(f pipeline.Frame) error {
 				if !rt.frames.Push(f) {
-					drops++
+					drops := rt.dropped.Add(1)
 					if drops%50 == 1 {
 						log.Printf("%s: dropping frames: the client is not keeping up (total drops: %d)", rt.dev.Name, drops)
 					}
@@ -161,15 +192,15 @@ func run(cfgPath string) error {
 
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.ListenAndServe(ctx) }()
-	log.Printf("serving %d device(s) on %s", len(devices), cfg.Listen)
+	log.Printf("serving %d device(s) on %s", len(serving), cfg.Listen)
 
 	if cfg.DiscoveryEnabled() {
-		startAnnounce(ctx, cfg.Listen, devices)
+		startAnnounce(ctx, cfg.Listen, serving)
 	}
 
 	// A dead device is isolated: its track is retired (404) and everything
 	// else keeps serving. The process exits when every pump has stopped.
-	alive := len(devices)
+	alive := len(serving)
 	var lastPumpErr error
 	for {
 		select {
@@ -184,6 +215,7 @@ func run(cfgPath string) error {
 
 			if res.err != nil && ctx.Err() == nil {
 				lastPumpErr = res.err
+				res.rt.markFailed(res.err)
 				log.Printf("device %q failed: %v; %s returns 404 until restart", res.rt.dev.Name, res.err, res.rt.dev.Path)
 			}
 			if alive == 0 {

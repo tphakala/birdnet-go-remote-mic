@@ -1,0 +1,16 @@
+# oapi-codegen configuration for the management API.
+# Generate with:
+#   go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 \
+#     -config api/oapi-codegen.yaml api/openapi.yaml
+package: mgmtapi
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true
+  client: true
+output: internal/mgmtapi/gen.go
+output-options:
+  # Without skip-prune the SSE-only schemas (LevelsEvent, DeviceLevels) are
+  # dropped: nothing references them because the /events content type is a
+  # raw text/event-stream, yet consumers need their generated types.
+  skip-prune: true
