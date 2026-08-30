@@ -3,6 +3,10 @@
 package main
 
 import (
+	"context"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -88,4 +92,57 @@ func TestClosedMgmtWaitReturns(t *testing.T) {
 	var nilHandle *mgmt
 	nilHandle.Wait()
 	closedMgmt().Wait()
+}
+
+func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
+	// Point cert_dir at a regular file so certificate persistence cannot succeed.
+	// A configured-but-dead API must report ok=false so run() does not treat it as
+	// a live diagnostic surface.
+	badDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badDir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Management: config.Management{Listen: "127.0.0.1:0", CertDir: badDir}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil)
+	if ok {
+		t.Error("a certificate failure must report management unavailable")
+	}
+	h.Wait() // the returned handle must not block shutdown
+}
+
+func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
+	// Occupy a port, then point the management listener at it so the bind fails.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	cfg := &config.Config{Management: config.Management{Listen: occupied.Addr().String(), CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil)
+	if ok {
+		t.Error("a listener bind failure must report management unavailable")
+	}
+	h.Wait()
+}
+
+func TestStartManagementServesAndShutsDown(t *testing.T) {
+	// The happy path: the listener binds, ok is true, and Wait returns once ctx
+	// cancellation drives a graceful shutdown.
+	cfg := &config.Config{Management: config.Management{Listen: "127.0.0.1:0", CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil)
+	if !ok {
+		t.Fatal("management should have started on an ephemeral port")
+	}
+	cancel() // trigger graceful shutdown
+	h.Wait()
 }

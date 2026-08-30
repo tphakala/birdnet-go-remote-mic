@@ -142,13 +142,16 @@ func run(cfgPath string) error {
 
 	// Start the management API before the device-open phase so status and
 	// diagnostics are reachable even if every device fails to open. It reports
-	// zero devices until setDevices publishes the records below. The combined
-	// shutdown defer cancels ctx first (so the API's shutdown goroutine fires
-	// even when run() returns on an error, not a signal) and then drains
-	// in-flight API connections before the process exits.
+	// zero devices until setDevices publishes the records below. mgmtServing
+	// tracks whether the API actually came up (a cert or listener failure leaves
+	// it false), so a configured-but-dead API is not mistaken for a live
+	// diagnostic surface. The combined shutdown defer cancels ctx first (so the
+	// API's shutdown goroutine fires even when run() returns on an error, not a
+	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
+	mgmtServing := false
 	if mgmtEnabled {
-		management = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler())
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler())
 	}
 	defer func() {
 		stop()
@@ -179,13 +182,13 @@ func run(cfgPath string) error {
 	}
 	prov.setDevices(records)
 
-	// With management enabled the appliance stays up as a diagnostic surface
-	// even when nothing is serving (issue #10): GET /devices still reports every
-	// skipped device and its open error. With management disabled there is no API
-	// to keep alive, so a total open failure is fatal and lets a supervisor
-	// restart the process (the current auto-recovery path; in-process capture
-	// restart is a later phase).
-	if len(serving) == 0 && !mgmtEnabled {
+	// While the management API is serving, the appliance stays up as a diagnostic
+	// surface even when nothing is serving (issue #10): GET /devices still reports
+	// every skipped device and its open error. When the API is not serving (either
+	// management is disabled or it failed to start) there is nothing to keep alive,
+	// so a total open failure is fatal and lets a supervisor restart the process
+	// (the current auto-recovery path; in-process capture restart is a later phase).
+	if len(serving) == 0 && !mgmtServing {
 		return errors.New("no configured capture device could be opened")
 	}
 
@@ -239,8 +242,8 @@ func run(cfgPath string) error {
 	}
 
 	// A dead device is isolated: its track is retired (404) and everything else
-	// keeps serving. When management is enabled the process stays up even after
-	// the last pump stops, so the degraded state remains inspectable until a
+	// keeps serving. While the management API is serving the process stays up even
+	// after the last pump stops, so the degraded state remains inspectable until a
 	// signal arrives; otherwise it exits once every pump has stopped.
 	alive := len(serving)
 	var lastPumpErr error
@@ -260,7 +263,7 @@ func run(cfgPath string) error {
 				res.rt.markFailed(res.err)
 				log.Printf("device %q failed: %v; %s returns 404 until restart", res.rt.dev.Name, res.err, res.rt.dev.Path)
 			}
-			if alive == 0 && !mgmtEnabled {
+			if alive == 0 && !mgmtServing {
 				if lastPumpErr != nil {
 					return fmt.Errorf("all capture devices stopped, last error: %w", lastPumpErr)
 				}

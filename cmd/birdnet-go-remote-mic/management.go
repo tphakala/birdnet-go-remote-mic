@@ -154,9 +154,12 @@ func closedMgmt() *mgmt {
 
 // startManagement generates or loads the self-signed certificate and serves the
 // management API over HTTPS in the background until ctx is cancelled. events, if
-// non-nil, is mounted as the hand-written SSE handler for GET /events. Failure
-// to start is logged, not fatal: the appliance keeps capturing and serving RTSP.
-func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler) *mgmt {
+// non-nil, is mounted as the hand-written SSE handler for GET /events. It reports
+// whether the API actually came up: a certificate or listener failure is logged,
+// not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
+// the caller does not mistake a configured-but-dead API for an available
+// diagnostic surface when deciding whether to stay alive with no serving device.
+func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -167,7 +170,16 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	cert, err := mgmtcert.Ensure(certPath, keyPath, certHosts())
 	if err != nil {
 		log.Printf("management API disabled: cannot prepare TLS certificate: %v", err)
-		return closedMgmt()
+		return closedMgmt(), false
+	}
+
+	// Bind synchronously so a listen failure (for example the port already in
+	// use) is observed here and reported through ok, rather than being swallowed
+	// asynchronously inside the serve goroutine.
+	ln, err := net.Listen("tcp", cfg.Management.Listen)
+	if err != nil {
+		log.Printf("management API disabled: cannot listen on %s: %v", cfg.Management.Listen, err)
+		return closedMgmt(), false
 	}
 
 	var opts []mgmtserver.Option
@@ -176,7 +188,6 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.Management.Listen,
 		Handler:           mgmtserver.New(prov, opts...).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -201,15 +212,16 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	}()
 
 	go func() {
-		// ListenAndServeTLS with empty paths uses TLSConfig.Certificates.
-		if serr := srv.ListenAndServeTLS("", ""); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+		// Serve over the already-bound listener wrapped for TLS from the
+		// configured certificate.
+		if serr := srv.Serve(tls.NewListener(ln, srv.TLSConfig)); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
 			log.Printf("management API stopped: %v (RTSP serving continues)", serr)
 		}
 	}()
 
 	log.Printf("management API on https://%s%s (self-signed cert at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
 	log.Print("WARNING: the management API is UNAUTHENTICATED until token auth is configured")
-	return &mgmt{done: done}
+	return &mgmt{done: done}, true
 }
 
 // certHosts returns the SANs to embed in the self-signed certificate: loopback,
