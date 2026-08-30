@@ -18,6 +18,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtcert"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
+	"github.com/tphakala/birdnet-go-remote-mic/web"
 )
 
 // provider adapts the appliance's device records into mgmtserver.Provider. Its
@@ -170,7 +171,7 @@ func closedMgmt() *mgmt {
 // not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
 // the caller does not mistake a configured-but-dead API for an available
 // diagnostic surface when deciding whether to stay alive with no serving device.
-func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler) (handle *mgmt, ok bool) {
+func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler, restartFn func()) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -196,6 +197,12 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	opts := []mgmtserver.Option{
 		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, cfg)),
 		mgmtserver.WithSystemInfo(prov),
+		mgmtserver.WithRestart(restartFn),
+	}
+	if dfs, err := web.DistFS(); err == nil {
+		opts = append(opts, mgmtserver.WithStaticAssets(dfs))
+	} else {
+		log.Printf("web UI assets unavailable: %v (management API still serves JSON endpoints)", err)
 	}
 	if events != nil {
 		opts = append(opts, mgmtserver.WithEventStream(events))
