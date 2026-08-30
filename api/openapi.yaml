@@ -261,6 +261,25 @@ paths:
         default:
           $ref: "#/components/responses/Problem"
 
+  /system/restart:
+    post:
+      operationId: postSystemRestart
+      tags: [system]
+      summary: Request an appliance restart
+      description: >
+        Requests a graceful shutdown and restart of the appliance process.
+        The server responds 202 Accepted, flushes in-flight responses, and
+        initiates a graceful exit.
+      responses:
+        "202":
+          description: Restart request accepted; shutdown is initiating.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestartResult"
+        default:
+          $ref: "#/components/responses/Problem"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -569,6 +588,16 @@ components:
           description: >
             True when the persisted change only takes effect after the
             appliance restarts.
+
+    RestartResult:
+      type: object
+      description: Acknowledgement that a restart request was accepted.
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: Status message confirming restart initiation.
+          examples: ["restarting"]
 
     Problem:
       type: object

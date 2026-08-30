@@ -88,9 +88,44 @@ tasks:
       - go mod tidy
       - go mod verify
 
-  check:
-    desc: Full local gate (build, arm64 build, vet, lint, api checks, fmt, race tests)
+  web:build:
+    desc: Compile web UI TypeScript and sync static assets into web/dist
     cmds:
+      - npx -p typescript tsc -p web/tsconfig.json
+      - cp -r web/static/* web/dist/
+
+  web:typecheck:
+    desc: Type-check web UI TypeScript without emitting
+    cmds:
+      - npx -p typescript tsc -p web/tsconfig.json --noEmit
+
+  web:lint:
+    desc: Lint web UI TypeScript and JavaScript
+    cmds:
+      - npx -p oxlint oxlint --deny-warnings web/src
+
+  web:a11y:
+    desc: Audit HTML markup and accessibility rules
+    cmds:
+      - npx -p html-validate html-validate -c web/.htmlvalidate.json web/static/index.html
+
+  web:verify:
+    desc: Fail if web/dist is out of date relative to web/src or web/static
+    cmds:
+      - task: web:typecheck
+      - task: web:lint
+      - task: web:a11y
+      - task: web:build
+      - |
+        if ! git diff --quiet -- web/dist; then
+          echo "web/dist is out of date; run: task web:build"
+          exit 1
+        fi
+
+  check:
+    desc: Full local gate (build, arm64 build, vet, lint, api checks, web verify, fmt, race tests)
+    cmds:
+      - task: web:verify
       - task: build
       - task: build-arm64
       - task: vet

@@ -2,10 +2,16 @@ package mgmtserver
 
 import (
 	"context"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 )
+
+// restartFlushDelay lets the 202 response flush to the client before the restart
+// function (which typically exits the process) runs.
+const restartFlushDelay = 100 * time.Millisecond
 
 // NetworkInterface is one host network interface and its live byte counters.
 type NetworkInterface struct {
@@ -50,6 +56,12 @@ func WithSystemInfo(sp SystemProvider) Option {
 	return func(s *Server) { s.system = sp }
 }
 
+// WithRestart mounts fn as the action invoked when POST /system/restart is requested.
+// Without it the endpoint returns 501.
+func WithRestart(fn func()) Option {
+	return func(s *Server) { s.restartFn = fn }
+}
+
 // GetSystem handles GET /system. Without a mounted provider it reports 501.
 func (s *Server) GetSystem(_ context.Context, _ mgmtapi.GetSystemRequestObject) (mgmtapi.GetSystemResponseObject, error) {
 	if s.system == nil {
@@ -60,6 +72,28 @@ func (s *Server) GetSystem(_ context.Context, _ mgmtapi.GetSystemRequestObject) 
 	}
 	si := s.system.System()
 	return mgmtapi.GetSystem200JSONResponse(systemToWire(&si)), nil
+}
+
+// PostSystemRestart handles POST /system/restart. Without a restart function it reports 501.
+func (s *Server) PostSystemRestart(_ context.Context, _ mgmtapi.PostSystemRestartRequestObject) (mgmtapi.PostSystemRestartResponseObject, error) {
+	if s.restartFn == nil {
+		return mgmtapi.PostSystemRestartdefaultApplicationProblemPlusJSONResponse{
+			StatusCode: http.StatusNotImplemented,
+			Body:       problem(http.StatusNotImplemented, "not implemented", "restart control is not available"),
+		}, nil
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("mgmtserver: restart function panicked: %v", r)
+			}
+		}()
+		time.Sleep(restartFlushDelay)
+		s.restartFn()
+	}()
+	return mgmtapi.PostSystemRestart202JSONResponse(mgmtapi.RestartResult{
+		Status: "restarting",
+	}), nil
 }
 
 // systemToWire maps host system info to the generated wire type. Empty optional

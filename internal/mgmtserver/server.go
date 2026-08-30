@@ -7,6 +7,7 @@ package mgmtserver
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -71,6 +72,8 @@ type Server struct {
 	eventStream http.Handler
 	configStore ConfigStore
 	system      SystemProvider
+	restartFn   func()
+	staticFS    fs.FS
 }
 
 // Option configures a Server.
@@ -97,7 +100,8 @@ var _ mgmtapi.StrictServerInterface = (*Server)(nil)
 // Handler returns the HTTP handler for the management API, with every route
 // mounted under /api/v1. Request-binding and body-decode failures, which the
 // generated code would otherwise report as text/plain, are rendered as RFC 9457
-// problem+json so every error response matches the contract.
+// problem+json so every error response matches the contract. When staticFS is
+// provided, static assets and SPA fallback routing are mounted at /.
 func (s *Server) Handler() http.Handler {
 	strict := mgmtapi.NewStrictHandlerWithOptions(s, nil, mgmtapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -114,16 +118,22 @@ func (s *Server) Handler() http.Handler {
 			writeProblem(w, http.StatusBadRequest, "invalid parameter", err.Error())
 		},
 	})
-	if s.eventStream == nil {
+	if s.eventStream == nil && s.staticFS == nil {
 		return generated
 	}
-	// Route the streaming endpoint to the hand-written handler and everything
-	// else to the generated one. Go 1.22 pattern specificity makes the exact
-	// method+path win over the "/" catch-all, so the generated StreamEvents stub
-	// is shadowed rather than reached.
 	mux := http.NewServeMux()
-	mux.Handle("GET "+BasePath+"/events", s.eventStream)
-	mux.Handle("/", generated)
+	if s.eventStream != nil {
+		mux.Handle("GET "+BasePath+"/events", s.eventStream)
+	}
+	if s.staticFS != nil {
+		mux.Handle(BasePath+"/", generated)
+		// Without this, the bare base path falls through to the "/" SPA handler
+		// and returns index.html 200; redirect it into the API subtree instead.
+		mux.Handle(BasePath, http.RedirectHandler(BasePath+"/", http.StatusPermanentRedirect))
+		mux.Handle("/", newStaticHandler(s.staticFS))
+	} else {
+		mux.Handle("/", generated)
+	}
 	return mux
 }
 

@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 )
@@ -92,5 +93,43 @@ func TestGetSystemMapsFields(t *testing.T) {
 	}
 	if wlan.Addresses == nil {
 		t.Error("wlan0 addresses = nil, want empty slice")
+	}
+}
+
+func TestPostSystemRestartNotImplemented(t *testing.T) {
+	s := New(&fakeProvider{})
+	resp, err := s.PostSystemRestart(context.Background(), mgmtapi.PostSystemRestartRequestObject{})
+	if err != nil {
+		t.Fatalf("PostSystemRestart: %v", err)
+	}
+	p, ok := resp.(mgmtapi.PostSystemRestartdefaultApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("PostSystemRestart returned %T, want default problem", resp)
+	}
+	if p.StatusCode != 501 {
+		t.Errorf("status = %d, want 501", p.StatusCode)
+	}
+}
+
+func TestPostSystemRestartAccepted(t *testing.T) {
+	restartCalled := make(chan struct{})
+	s := New(&fakeProvider{}, WithRestart(func() {
+		close(restartCalled)
+	}))
+	resp, err := s.PostSystemRestart(context.Background(), mgmtapi.PostSystemRestartRequestObject{})
+	if err != nil {
+		t.Fatalf("PostSystemRestart: %v", err)
+	}
+	got, ok := resp.(mgmtapi.PostSystemRestart202JSONResponse)
+	if !ok {
+		t.Fatalf("PostSystemRestart returned %T, want 202 JSON", resp)
+	}
+	if got.Status != "restarting" {
+		t.Errorf("status = %q, want restarting", got.Status)
+	}
+	select {
+	case <-restartCalled:
+	case <-time.After(500 * time.Millisecond):
+		t.Error("restart function was not called within deadline")
 	}
 }

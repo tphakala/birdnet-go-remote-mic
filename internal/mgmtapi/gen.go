@@ -333,6 +333,14 @@ type Problem struct {
 	Type     *string `json:"type,omitempty"`
 }
 
+// RestartResult Acknowledgement that a restart request was accepted.
+type RestartResult struct {
+	// Status Status message confirming restart initiation.
+	//
+	// Examples: restarting
+	Status string `json:"status"`
+}
+
 // StreamMode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
 type StreamMode string
 
@@ -577,6 +585,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /system (the `GetSystem` operationId).
 	GetSystem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSystemRestart Request an appliance restart
+	//
+	// Requests a graceful shutdown and restart of the appliance process. The server responds 202 Accepted, flushes in-flight responses, and initiates a graceful exit.
+	//
+	// Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
+	PostSystemRestart(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // GetConfig Get the running configuration
@@ -750,6 +765,23 @@ func (c *Client) GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (
 // Corresponds with GET /system (the `GetSystem` operationId).
 func (c *Client) GetSystem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSystemRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSystemRestart Request an appliance restart
+//
+// Requests a graceful shutdown and restart of the appliance process. The server responds 202 Accepted, flushes in-flight responses, and initiates a graceful exit.
+//
+// Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
+func (c *Client) PostSystemRestart(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSystemRestartRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -1023,6 +1055,33 @@ func NewGetSystemRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewPostSystemRestartRequest constructs an http.Request for the PostSystemRestart method
+func NewPostSystemRestartRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/restart")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -1171,6 +1230,15 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /system (the `GetSystem` operationId).
 	GetSystemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemResponse, error)
+
+	// PostSystemRestartWithResponse Request an appliance restart
+	//
+	// Requests a graceful shutdown and restart of the appliance process. The server responds 202 Accepted, flushes in-flight responses, and initiates a graceful exit.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
+	PostSystemRestartWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemRestartResponse, error)
 }
 
 type GetConfigResponse struct {
@@ -1564,6 +1632,54 @@ func (r GetSystemResponse) ContentType() string {
 	return ""
 }
 
+type PostSystemRestartResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *RestartResult
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r PostSystemRestartResponse) GetJSON202() *RestartResult {
+	return r.JSON202
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r PostSystemRestartResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r PostSystemRestartResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostSystemRestartResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostSystemRestartResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostSystemRestartResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // GetConfigWithResponse Get the running configuration
 //
 // The configuration as loaded (defaults applied). Secrets, once any exist, are never returned by this endpoint.
@@ -1721,6 +1837,21 @@ func (c *ClientWithResponses) GetSystemWithResponse(ctx context.Context, reqEdit
 		return nil, err
 	}
 	return ParseGetSystemResponse(rsp)
+}
+
+// PostSystemRestartWithResponse Request an appliance restart
+//
+// Requests a graceful shutdown and restart of the appliance process. The server responds 202 Accepted, flushes in-flight responses, and initiates a graceful exit.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
+func (c *ClientWithResponses) PostSystemRestartWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemRestartResponse, error) {
+	rsp, err := c.PostSystemRestart(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSystemRestartResponse(rsp)
 }
 
 // ParseGetConfigResponse parses an HTTP response from a GetConfigWithResponse call
@@ -1994,6 +2125,39 @@ func ParseGetSystemResponse(rsp *http.Response) (*GetSystemResponse, error) {
 	return response, nil
 }
 
+// ParsePostSystemRestartResponse parses an HTTP response from a PostSystemRestartWithResponse call
+func ParsePostSystemRestartResponse(rsp *http.Response) (*PostSystemRestartResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostSystemRestartResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest RestartResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetConfig Get the running configuration
@@ -2020,6 +2184,9 @@ type ServerInterface interface {
 	// GetSystem Host system information
 	// (GET /system)
 	GetSystem(w http.ResponseWriter, r *http.Request)
+	// PostSystemRestart Request an appliance restart
+	// (POST /system/restart)
+	PostSystemRestart(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -2174,6 +2341,20 @@ func (siw *ServerInterfaceWrapper) GetSystem(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// PostSystemRestart operation middleware
+func (siw *ServerInterfaceWrapper) PostSystemRestart(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostSystemRestart(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -2302,6 +2483,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/config", wrapper.GetConfig)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/config", wrapper.PatchConfig)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system", wrapper.GetSystem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/restart", wrapper.PostSystemRestart)
 
 	return m
 }
@@ -2671,6 +2853,44 @@ func (response GetSystemdefaultApplicationProblemPlusJSONResponse) VisitGetSyste
 	return err
 }
 
+type PostSystemRestartRequestObject struct {
+}
+
+type PostSystemRestartResponseObject interface {
+	VisitPostSystemRestartResponse(w http.ResponseWriter) error
+}
+
+type PostSystemRestart202JSONResponse RestartResult
+
+func (response PostSystemRestart202JSONResponse) VisitPostSystemRestartResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSystemRestartdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PostSystemRestartdefaultApplicationProblemPlusJSONResponse) VisitPostSystemRestartResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetConfig Get the running configuration
@@ -2697,6 +2917,9 @@ type StrictServerInterface interface {
 	// GetSystem Host system information
 	// (GET /system)
 	GetSystem(ctx context.Context, request GetSystemRequestObject) (GetSystemResponseObject, error)
+	// PostSystemRestart Request an appliance restart
+	// (POST /system/restart)
+	PostSystemRestart(ctx context.Context, request PostSystemRestartRequestObject) (PostSystemRestartResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -2934,6 +3157,30 @@ func (sh *strictHandler) GetSystem(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetSystemResponseObject); ok {
 		if err := validResponse.VisitGetSystemResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PostSystemRestart operation middleware
+func (sh *strictHandler) PostSystemRestart(w http.ResponseWriter, r *http.Request) {
+	var request PostSystemRestartRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostSystemRestart(ctx, request.(PostSystemRestartRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostSystemRestart")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostSystemRestartResponseObject); ok {
+		if err := validResponse.VisitPostSystemRestartResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
