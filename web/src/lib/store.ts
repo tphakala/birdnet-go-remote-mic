@@ -98,6 +98,12 @@ export class AppStore extends EventTarget {
   public async refreshDevices(): Promise<void> {
     try {
       this.state.devices = await api.getDevices();
+      // Drop level entries for devices that are no longer present so the map
+      // does not grow without bound as devices are added or removed.
+      const present = new Set(this.state.devices.map((d) => d.name));
+      for (const name of this.state.levels.keys()) {
+        if (!present.has(name)) this.state.levels.delete(name);
+      }
       this.dispatchEvent(new CustomEvent("devices", { detail: this.state.devices }));
     } catch (err) {
       console.warn("Failed to refresh devices:", err);
