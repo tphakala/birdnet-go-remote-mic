@@ -135,6 +135,27 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 	}
 }
 
+// PayloadType returns the dynamic RTP payload type advertised for a stream mode:
+// 97 for Opus, 96 for PCM L16. It is the single source of truth shared by the
+// RTP writer wiring, the SDP, and the mDNS advertisement so the payload type
+// cannot drift between what DESCRIBE announces and what the writer sends.
+func PayloadType(mode config.Mode) int {
+	if mode == config.ModeOpus {
+		return 97
+	}
+	return 96
+}
+
+// CodecName returns the codec token for a stream mode: "opus" or "L16". It is
+// the SDP encoding name and the mDNS TXT codec value, kept in one place so the
+// two cannot describe the stream differently.
+func CodecName(mode config.Mode) string {
+	if mode == config.ModeOpus {
+		return "opus"
+	}
+	return "L16"
+}
+
 // SDPSpec builds the SDP write spec the server serializes at DESCRIBE time. rate
 // and channels are the negotiated capture values (used for the L16 rtpmap);
 // Opus is always advertised as opus/48000/2 per RFC 7587 with sprop-stereo=0 for
@@ -147,8 +168,8 @@ func SDPSpec(d *config.Device, rate, channels int) sdp.WriteSpec {
 		}
 		return sdp.WriteSpec{
 			Name:         d.Name,
-			PayloadType:  97,
-			EncodingName: "opus",
+			PayloadType:  PayloadType(d.Mode),
+			EncodingName: CodecName(d.Mode),
 			ClockRate:    48000,
 			Channels:     2,
 			Control:      "trackID=0",
@@ -157,8 +178,8 @@ func SDPSpec(d *config.Device, rate, channels int) sdp.WriteSpec {
 	}
 	return sdp.WriteSpec{
 		Name:         d.Name,
-		PayloadType:  96,
-		EncodingName: "L16",
+		PayloadType:  PayloadType(d.Mode),
+		EncodingName: CodecName(d.Mode),
 		ClockRate:    rate,
 		Channels:     channels,
 		Control:      "trackID=0",

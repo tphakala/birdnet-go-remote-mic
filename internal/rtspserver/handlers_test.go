@@ -195,6 +195,29 @@ func TestSecondSetupRejected(t *testing.T) {
 	}
 }
 
+func TestSetupDuringPlayRejected(t *testing.T) {
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
+	base := baseURL(addr)
+	c := dial(t, addr)
+
+	r := c.do(t, "SETUP", trackURL(addr), tcpTransport("0-1"))
+	if r.StatusCode != 200 {
+		t.Fatalf("SETUP = %d", r.StatusCode)
+	}
+	sessID, _, _ := strings.Cut(r.Header.Get("Session"), ";")
+	sess := rtsp.Header{}
+	sess.Set("Session", sessID)
+	if r := c.do(t, "PLAY", base, sess); r.StatusCode != 200 {
+		t.Fatalf("PLAY = %d", r.StatusCode)
+	}
+
+	// A re-SETUP on the already-playing session must be rejected (RFC 2326 A.1)
+	// rather than re-randomizing startSeq/startTS under the running writer.
+	if r := c.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); r.StatusCode != 455 {
+		t.Errorf("SETUP during PLAY = %d, want 455", r.StatusCode)
+	}
+}
+
 func TestUnknownPath404(t *testing.T) {
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
 	c := dial(t, addr)

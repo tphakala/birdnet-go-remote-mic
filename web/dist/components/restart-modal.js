@@ -1,96 +1,23 @@
 import { api } from "../lib/api.js";
 import { showToast } from "./toast.js";
+import { confirmDialog, setAppInert, trapFocus } from "../lib/modal.js";
 // restarting guards against a double click starting two restart flows (and thus
 // two countdown/health-poll intervals).
 let restarting = false;
-const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-// trapFocus keeps Tab and Shift+Tab cycling within container until released.
-function trapFocus(container) {
-    const handler = (e) => {
-        if (e.key !== "Tab")
-            return;
-        const items = Array.from(container.querySelectorAll(FOCUSABLE)).filter((el) => !el.hidden && el.offsetParent !== null);
-        if (items.length === 0) {
-            e.preventDefault();
-            return;
-        }
-        const first = items[0];
-        const last = items[items.length - 1];
-        const active = document.activeElement;
-        if (!active || items.indexOf(active) === -1) {
-            // Focus is on the dialog container (or has otherwise escaped the focusable
-            // set): pull it back to the appropriate end rather than letting Tab leave.
-            e.preventDefault();
-            (e.shiftKey ? last : first).focus();
-        }
-        else if (e.shiftKey && active === first) {
-            e.preventDefault();
-            last.focus();
-        }
-        else if (!e.shiftKey && active === last) {
-            e.preventDefault();
-            first.focus();
-        }
-    };
-    container.addEventListener("keydown", handler);
-    return () => container.removeEventListener("keydown", handler);
+// announce writes to the polite live region that carries only phase changes, so
+// a screen reader is not spammed by the per-second visual countdown.
+function announce(text) {
+    const el = document.getElementById("restart-announce");
+    if (el)
+        el.textContent = text;
 }
-// confirmRestart shows a modal asking to confirm the disruptive restart. It
-// defaults to Cancel (focused), closes on Escape or a backdrop click, traps
-// focus, and restores focus to the trigger. Resolves true only if confirmed.
+// confirmRestart asks the user to confirm the disruptive restart before it runs.
 function confirmRestart() {
-    return new Promise((resolve) => {
-        const prevFocus = document.activeElement;
-        const overlay = document.createElement("div");
-        overlay.className = "modal-overlay open";
-        overlay.setAttribute("role", "dialog");
-        overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-labelledby", "confirm-restart-title");
-        overlay.setAttribute("aria-describedby", "confirm-restart-desc");
-        const card = document.createElement("div");
-        card.className = "modal-card";
-        const title = document.createElement("h3");
-        title.id = "confirm-restart-title";
-        title.style.cssText = "font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:6px;";
-        title.textContent = "Restart appliance?";
-        const body = document.createElement("p");
-        body.id = "confirm-restart-desc";
-        body.style.cssText = "font-size:12px;color:var(--text-secondary);line-height:1.5;";
-        body.textContent = "This closes every active RTSP client session while the service restarts.";
-        const actions = document.createElement("div");
-        actions.className = "settings-actions";
-        const cancel = document.createElement("button");
-        cancel.type = "button";
-        cancel.className = "btn btn-secondary";
-        cancel.textContent = "Cancel";
-        const confirm = document.createElement("button");
-        confirm.type = "button";
-        confirm.className = "btn btn-danger";
-        confirm.textContent = "Restart";
-        actions.append(cancel, confirm);
-        card.append(title, body, actions);
-        overlay.appendChild(card);
-        const release = trapFocus(overlay);
-        const onKey = (e) => {
-            if (e.key === "Escape")
-                close(false);
-        };
-        function close(result) {
-            release();
-            document.removeEventListener("keydown", onKey);
-            overlay.remove();
-            prevFocus?.focus();
-            resolve(result);
-        }
-        cancel.addEventListener("click", () => close(false));
-        confirm.addEventListener("click", () => close(true));
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay)
-                close(false);
-        });
-        document.addEventListener("keydown", onKey);
-        document.body.appendChild(overlay);
-        cancel.focus();
+    return confirmDialog({
+        title: "Restart appliance?",
+        body: "This closes every active RTSP client session while the service restarts.",
+        confirmLabel: "Restart",
+        danger: true,
     });
 }
 export async function triggerApplianceRestart() {
@@ -119,8 +46,12 @@ export async function triggerApplianceRestart() {
         return;
     }
     modal.classList.add("open");
+    setAppInert(true);
     trapFocus(modal);
     modal.querySelector(".modal-card")?.focus();
+    // Announce the phase once; the per-second countdown below updates only the
+    // aria-hidden visual element, so it is not read out on every tick.
+    announce("Restarting the appliance. Reconnecting shortly.");
     let seconds = 5;
     if (timerEl)
         timerEl.textContent = `Reconnecting in ${seconds}s...`;
@@ -134,6 +65,7 @@ export async function triggerApplianceRestart() {
             clearInterval(countdown);
             if (timerEl)
                 timerEl.textContent = "Probing /healthz...";
+            announce("Checking whether the appliance is back online.");
             startHealthPolling();
         }
     }, 1000);
@@ -152,6 +84,7 @@ function startHealthPolling() {
                 clearInterval(interval);
                 if (timerEl)
                     timerEl.textContent = "Appliance online! Reloading...";
+                announce("Appliance is back online. Reloading.");
                 window.setTimeout(() => {
                     window.location.reload();
                 }, 600);
@@ -164,6 +97,7 @@ function startHealthPolling() {
             clearInterval(interval);
             if (timerEl)
                 timerEl.textContent = "Restart timed out.";
+            announce("Restart timed out. Use the reload button to try again.");
             showRetry();
         }
     }, 1000);

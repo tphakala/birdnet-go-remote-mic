@@ -36,7 +36,10 @@ func TestRunStopsOnCancel(t *testing.T) {
 	go func() {
 		done <- Run(ctx, []Info{{Name: "test-mic-cancel", Path: "/stream", Port: 18999, Codec: testCodec, Rate: 48000, Channels: 1, Version: "test"}})
 	}()
-	time.Sleep(300 * time.Millisecond) // let the responder start
+	// No readiness sleep: Run returns nil for a cancelled context whether the
+	// cancel lands during responder setup or while it is blocked in Respond
+	// (dnssd maps context.Canceled to a clean stop), so cancelling immediately
+	// exercises the same "stops on cancel" contract without a flaky timing race.
 	cancel()
 	select {
 	case err := <-done:
