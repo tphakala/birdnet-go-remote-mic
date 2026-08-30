@@ -28,6 +28,15 @@ func (f *fakeProvider) Version() string         { return f.status.Version }
 func (f *fakeProvider) Status() ApplianceStatus { return f.status }
 func (f *fakeProvider) Devices() []DeviceStatus { return f.devices }
 
+func (f *fakeProvider) Device(name string) (DeviceStatus, bool) {
+	for i := range f.devices {
+		if f.devices[i].Config.Name == name {
+			return f.devices[i], true
+		}
+	}
+	return DeviceStatus{}, false
+}
+
 func servingOpus() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
@@ -289,6 +298,54 @@ func TestHandlerServesReadEndpointsUnderBasePath(t *testing.T) {
 			t.Errorf("content-type = %q, want application/problem+json", ct)
 		}
 	})
+}
+
+func TestEventsRoutedToStreamHandlerWhenMounted(t *testing.T) {
+	stream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: ping\ndata: {}\n\n"))
+	})
+	s := New(&fakeProvider{status: ApplianceStatus{Version: "v1"}}, WithEventStream(stream))
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("GET events: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("events status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("content-type = %q, want text/event-stream", ct)
+	}
+
+	// The outer mux must still delegate the generated endpoints.
+	health, err := http.Get(srv.URL + "/api/v1/healthz")
+	if err != nil {
+		t.Fatalf("GET healthz: %v", err)
+	}
+	defer func() { _ = health.Body.Close() }()
+	if health.StatusCode != 200 {
+		t.Errorf("healthz status = %d, want 200", health.StatusCode)
+	}
+}
+
+func TestEventsNotImplementedWithoutStream(t *testing.T) {
+	s := New(&fakeProvider{status: ApplianceStatus{Version: "v1"}})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("GET events: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 501 {
+		t.Errorf("events status = %d, want 501 (no stream mounted)", resp.StatusCode)
+	}
 }
 
 func TestGetConfigNotImplemented(t *testing.T) {
