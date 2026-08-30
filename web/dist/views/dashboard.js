@@ -296,7 +296,7 @@ export class DashboardView {
         settingsWrap.hidden = true;
         article.appendChild(settingsWrap);
         const entry = {
-            article, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
+            article, gearBtn, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
             device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
         };
         gearBtn.addEventListener("click", () => this.toggleSettings(entry));
@@ -349,6 +349,10 @@ export class DashboardView {
                 return;
         }
         this.closeSettings(entry);
+        // closeSettings clears settingsWrap (including the Cancel button focus was on),
+        // so return focus to the gear button, which always survives the collapse,
+        // rather than letting focus fall to <body>.
+        entry.gearBtn.focus();
     }
     closeSettings(entry) {
         entry.expanded = false;

@@ -57,6 +57,10 @@ export function renderLoadError(
   const retry = elem("button", "btn btn-secondary", "Retry");
   retry.setAttribute("type", "button");
   retry.addEventListener("click", () => {
+    // Drop the assertive alert role before showing the benign loading text so
+    // the screen reader does not read "Loading..." as an alert. A later failure
+    // re-adds it when renderLoadError runs again.
+    container.removeAttribute("role");
     container.textContent = loadingText;
     onRetry();
   });

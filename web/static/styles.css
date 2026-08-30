@@ -30,7 +30,7 @@
   --text-primary: #f0f4f9;
   --text-secondary: #94a3b8;
   /* Lightened from #64748b: on the card surface #131c2a it was ~3.6:1, below
-     WCAG AA for the 10-11px meter scale and muted hints; #7a8ba4 is ~4.7:1. */
+     WCAG AA for the 10-11px meter scale and muted hints; #7a8ba4 is ~4.9:1. */
   --text-muted: #7a8ba4;
   --text-faint: #475569;
 
@@ -95,7 +95,7 @@
   --text-primary: #0f172a;
   --text-secondary: #475569;
   /* Darkened from #64748b: on the lighter surfaces (#eef2f6/#f1f5f9) it dipped
-     to ~4.3:1, below WCAG AA for small text; #5b6b82 is >=4.9:1 everywhere. */
+     to ~4.3:1, below WCAG AA for small text; #5b6b82 is >=4.8:1 everywhere. */
   --text-muted: #5b6b82;
   --text-faint: #94a3b8;
 

@@ -23,6 +23,7 @@ const ICON_GEAR =
 
 interface CardEntry {
   article: HTMLElement;
+  gearBtn: HTMLElement;
   serving: boolean;
   meter: VUMeter | null;
   urlEl: HTMLElement | null;
@@ -335,7 +336,7 @@ export class DashboardView {
     article.appendChild(settingsWrap);
 
     const entry: CardEntry = {
-      article, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
+      article, gearBtn, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
       device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
     };
     gearBtn.addEventListener("click", () => this.toggleSettings(entry));
@@ -392,6 +393,10 @@ export class DashboardView {
       if (!ok) return;
     }
     this.closeSettings(entry);
+    // closeSettings clears settingsWrap (including the Cancel button focus was on),
+    // so return focus to the gear button, which always survives the collapse,
+    // rather than letting focus fall to <body>.
+    entry.gearBtn.focus();
   }
 
   private closeSettings(entry: CardEntry): void {

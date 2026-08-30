@@ -3,6 +3,15 @@
 // the background from assistive tech, and behaves consistently.
 import { elem } from "./ui.js";
 
+// Monotonic counter giving each confirmDialog invocation unique element ids, so
+// two dialogs cannot collide on aria-labelledby/aria-describedby targets.
+let dialogSeq = 0;
+
+// Reference count of open modals so nested/overlapping modals compose: the
+// background is inerted while depth > 0 and only un-inerted when the last modal
+// closes.
+let inertDepth = 0;
+
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -39,11 +48,16 @@ export function trapFocus(container: HTMLElement): () => void {
 // setAppInert marks the main application container inert and aria-hidden (or
 // clears it) while a modal is open. Only .app-container is toggled: the modal
 // overlays and the toast container are its siblings, so inerting the whole body
-// would trap the very dialog we are showing.
+// would trap the very dialog we are showing. It is reference-counted: each
+// on() increments the depth and each off() decrements it (floored at 0), so a
+// nested inner modal closing does not un-inert the background while an outer
+// modal is still open. The background is inert while depth > 0 and cleared only
+// when the last modal closes.
 export function setAppInert(on: boolean): void {
   const app = document.querySelector<HTMLElement>(".app-container");
   if (!app) return;
-  if (on) {
+  inertDepth = on ? inertDepth + 1 : Math.max(0, inertDepth - 1);
+  if (inertDepth > 0) {
     app.setAttribute("inert", "");
     app.setAttribute("aria-hidden", "true");
   } else {
@@ -67,8 +81,9 @@ export interface ConfirmOptions {
 export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
     const prevFocus = document.activeElement as HTMLElement | null;
-    const titleId = "confirm-title";
-    const descId = "confirm-desc";
+    const uid = ++dialogSeq;
+    const titleId = `confirm-title-${uid}`;
+    const descId = `confirm-desc-${uid}`;
 
     const overlay = elem("div", "modal-overlay open");
     overlay.setAttribute("role", "dialog");
