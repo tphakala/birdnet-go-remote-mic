@@ -17,6 +17,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtcert"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
 
 // provider adapts the appliance's device records into mgmtserver.Provider. Its
@@ -30,10 +31,20 @@ type provider struct {
 	start      time.Time
 	rtspListen string
 	discovery  bool
+	dataPath   string // filesystem path whose storage usage /system reports
+	sampler    *sysinfo.Sampler
 	devices    atomic.Pointer[[]*deviceRuntime]
 }
 
-var _ mgmtserver.Provider = (*provider)(nil)
+var (
+	_ mgmtserver.Provider       = (*provider)(nil)
+	_ mgmtserver.SystemProvider = (*provider)(nil)
+)
+
+// System gathers host hardware facts and live metrics for GET /system.
+func (p *provider) System() mgmtserver.SystemInfo {
+	return sysinfo.Collect(p.dataPath, p.sampler)
+}
 
 // setDevices publishes the final record list once the open loop has built it.
 func (p *provider) setDevices(d []*deviceRuntime) { p.devices.Store(&d) }
@@ -182,7 +193,10 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 		return closedMgmt(), false
 	}
 
-	var opts []mgmtserver.Option
+	opts := []mgmtserver.Option{
+		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, cfg)),
+		mgmtserver.WithSystemInfo(prov),
+	}
 	if events != nil {
 		opts = append(opts, mgmtserver.WithEventStream(events))
 	}

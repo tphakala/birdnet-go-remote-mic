@@ -69,6 +69,8 @@ type Provider interface {
 type Server struct {
 	provider    Provider
 	eventStream http.Handler
+	configStore ConfigStore
+	system      SystemProvider
 }
 
 // Option configures a Server.
@@ -172,22 +174,6 @@ func (s *Server) GetDevice(_ context.Context, request mgmtapi.GetDeviceRequestOb
 		ProblemApplicationProblemPlusJSONResponse: mgmtapi.ProblemApplicationProblemPlusJSONResponse(
 			problem(http.StatusNotFound, "device not found", "no device named "+request.Name),
 		),
-	}, nil
-}
-
-// GetConfig handles GET /config. Not implemented until a later change.
-func (s *Server) GetConfig(_ context.Context, _ mgmtapi.GetConfigRequestObject) (mgmtapi.GetConfigResponseObject, error) {
-	return mgmtapi.GetConfigdefaultApplicationProblemPlusJSONResponse{
-		StatusCode: http.StatusNotImplemented,
-		Body:       problem(http.StatusNotImplemented, "not implemented", "reading configuration is not available yet"),
-	}, nil
-}
-
-// PatchConfig handles PATCH /config. Not implemented until a later change.
-func (s *Server) PatchConfig(_ context.Context, _ mgmtapi.PatchConfigRequestObject) (mgmtapi.PatchConfigResponseObject, error) {
-	return mgmtapi.PatchConfigdefaultApplicationProblemPlusJSONResponse{
-		StatusCode: http.StatusNotImplemented,
-		Body:       problem(http.StatusNotImplemented, "not implemented", "updating configuration is not available yet"),
 	}, nil
 }
 

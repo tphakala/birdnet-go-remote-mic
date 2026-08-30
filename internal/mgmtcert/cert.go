@@ -15,9 +15,9 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 )
 
 // certValidity is how long a freshly generated certificate stays valid. It is
@@ -129,42 +129,12 @@ func generate(certPath, keyPath string, hosts []string) (tls.Certificate, error)
 	// broken pair would still self-heal on the next start (Ensure regenerates
 	// when the pair fails to load), but the rename keeps every on-disk pair
 	// loadable in the first place.
-	if err := writeFileAtomic(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
+	if err := atomicfile.Write(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
 		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
 	}
-	if err := writeFileAtomic(keyPath, keyPEM, 0o600); err != nil {
+	if err := atomicfile.Write(keyPath, keyPEM, 0o600); err != nil {
 		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
 	}
 
 	return tls.X509KeyPair(certPEM, keyPEM)
-}
-
-// writeFileAtomic writes data to path by writing a temp file in the same
-// directory and renaming it into place, so a concurrent reader or a crash never
-// observes a partially written file. The temp file is given perm before the
-// rename and removed if any step before the rename fails.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }() // no-op once the rename has consumed tmp
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
