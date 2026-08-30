@@ -16,6 +16,9 @@ const BITRATE_OPTIONS = [
     { val: "320000", label: "320 kbps" },
     { val: "448000", label: "448 kbps" },
 ];
+// Per-form counter so element ids are valid and unique regardless of the
+// device name (which may contain spaces or other id-invalid characters).
+let formSeq = 0;
 function elem(tag, className, text) {
     const e = document.createElement(tag);
     if (className)
@@ -54,9 +57,10 @@ export class DeviceSettingsForm {
     }
     build() {
         const d = this.device;
+        const uid = ++formSeq;
         const grid = elem("div", "form-grid-2col");
-        this.nameEl = this.field(grid, `set-${d.name}-name`, "Device Name", d.name, "text", "DNS-SD instance name and log label. Must be unique.");
-        this.pathEl = this.field(grid, `set-${d.name}-path`, "RTSP Path", d.path, "text", "Unique endpoint path on the RTSP server, e.g. /stream.");
+        this.nameEl = this.field(grid, `set-${uid}-name`, "Device Name", d.name, "text", "DNS-SD instance name and log label. Must be unique.");
+        this.pathEl = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text", "Unique endpoint path on the RTSP server, e.g. /stream.");
         // Mode
         const modeField = elem("div", "form-field");
         modeField.appendChild(this.label("Stream Codec Mode"));

@@ -37,10 +37,10 @@ export interface Config {
   devices: DeviceConfig[];
 }
 
+// Only discovery and devices are patchable; the server ignores anything else
+// (see api/openapi.yaml ConfigPatch).
 export interface ConfigPatch {
-  listen?: string;
   discovery?: DiscoverySettings;
-  management?: ManagementSettings;
   devices?: DeviceConfig[];
 }
 

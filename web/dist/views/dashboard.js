@@ -229,7 +229,6 @@ export class DashboardView {
             // visualization whose dB readout updates ~10x/s; hide it from the
             // accessibility tree so it does not spam screen readers.
             const meterConsole = elem("div", "meter-console");
-            meterConsole.setAttribute("aria-hidden", "true");
             const scale = elem("div", "meter-scale");
             for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
                 scale.appendChild(elem("span", undefined, s));
@@ -239,13 +238,18 @@ export class DashboardView {
             const canvasContainer = elem("div", "meter-canvas-container");
             const canvas = document.createElement("canvas");
             canvas.className = "meter-canvas";
+            // The live meter and its dB readout update ~10 Hz; hide them from
+            // assistive tech to avoid announcement spam. The clip button stays exposed.
+            canvas.setAttribute("aria-hidden", "true");
             canvas.width = 700;
             canvas.height = 22;
             canvasContainer.appendChild(canvas);
             const stats = elem("div", "meter-stats");
             const dbReadout = elem("span", "db-readout mono", "-inf");
+            dbReadout.setAttribute("aria-hidden", "true");
             const clipBtn = elem("button", "clip-latch-btn", "CLIP");
             clipBtn.setAttribute("type", "button");
+            clipBtn.setAttribute("aria-label", "Clip indicator, click to clear");
             clipBtn.title = "Click to clear clip latch";
             stats.appendChild(dbReadout);
             stats.appendChild(clipBtn);

@@ -115,11 +115,21 @@ export class CustomDropdown {
         const tagClass = itemEl.dataset.tagClass || "highlight";
         const labelText = itemEl.dataset.label || itemEl.querySelector(".item-title span")?.textContent || val;
 
-        let tagHtml = "";
+        // Build with DOM nodes so a label/tag that ever comes from API or user
+        // data cannot inject markup.
+        valGroup.textContent = "";
         if (itemTag) {
-          tagHtml = `<span class="tech-tag ${tagClass}" style="font-size: 10px; padding: 1px 5px;">${itemTag}</span>`;
+          const tagEl = document.createElement("span");
+          tagEl.className = `tech-tag ${tagClass}`;
+          tagEl.style.fontSize = "10px";
+          tagEl.style.padding = "1px 5px";
+          tagEl.textContent = itemTag;
+          valGroup.appendChild(tagEl);
         }
-        valGroup.innerHTML = `${tagHtml}<span class="dropdown-selected-label">${labelText}</span>`;
+        const labelEl = document.createElement("span");
+        labelEl.className = "dropdown-selected-label";
+        labelEl.textContent = labelText;
+        valGroup.appendChild(labelEl);
       }
     }
 

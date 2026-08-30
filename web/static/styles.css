@@ -1060,7 +1060,7 @@ body {
   height: 1px;
   opacity: 0;
   overflow: hidden;
-  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 
@@ -1503,7 +1503,7 @@ select.field-input {
 .info-grid .info-val {
   font-size: 13px;
   color: var(--text-primary);
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* Dashboard card gear + inline device settings. */

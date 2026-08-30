@@ -30,6 +30,10 @@ export interface DropdownOption {
   tagClass?: string;
 }
 
+// Per-form counter so element ids are valid and unique regardless of the
+// device name (which may contain spaces or other id-invalid characters).
+let formSeq = 0;
+
 function elem(tag: string, className?: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
   if (className) e.className = className;
@@ -69,11 +73,12 @@ export class DeviceSettingsForm {
 
   private build(): void {
     const d = this.device;
+    const uid = ++formSeq;
     const grid = elem("div", "form-grid-2col");
 
-    this.nameEl = this.field(grid, `set-${d.name}-name`, "Device Name", d.name, "text",
+    this.nameEl = this.field(grid, `set-${uid}-name`, "Device Name", d.name, "text",
       "DNS-SD instance name and log label. Must be unique.");
-    this.pathEl = this.field(grid, `set-${d.name}-path`, "RTSP Path", d.path, "text",
+    this.pathEl = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
       "Unique endpoint path on the RTSP server, e.g. /stream.");
 
     // Mode

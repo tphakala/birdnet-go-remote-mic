@@ -91,23 +91,26 @@ tasks:
   web:build:
     desc: Compile web UI TypeScript and sync static assets into web/dist
     cmds:
-      - npx -p typescript tsc -p web/tsconfig.json
+      # Clean first so a renamed or deleted source file cannot leave a stale
+      # artifact behind in the embedded output.
+      - rm -rf web/dist
+      - npx -p typescript@7.0.2 tsc -p web/tsconfig.json
       - cp -r web/static/* web/dist/
 
   web:typecheck:
     desc: Type-check web UI TypeScript without emitting
     cmds:
-      - npx -p typescript tsc -p web/tsconfig.json --noEmit
+      - npx -p typescript@7.0.2 tsc -p web/tsconfig.json --noEmit
 
   web:lint:
     desc: Lint web UI TypeScript and JavaScript
     cmds:
-      - npx -p oxlint oxlint --deny-warnings web/src
+      - npx -p oxlint@1.80.0 oxlint --deny-warnings web/src
 
   web:a11y:
     desc: Audit HTML markup and accessibility rules
     cmds:
-      - npx -p html-validate html-validate -c web/.htmlvalidate.json web/static/index.html
+      - npx -p html-validate@11.10.0 html-validate -c web/.htmlvalidate.json web/static/index.html
 
   web:verify:
     desc: Fail if web/dist is out of date relative to web/src or web/static
@@ -117,8 +120,11 @@ tasks:
       - task: web:a11y
       - task: web:build
       - |
-        if ! git diff --quiet -- web/dist; then
+        # Fail on any modified OR untracked file under web/dist (a freshly
+        # emitted file is untracked and would slip past `git diff` alone).
+        if [ -n "$(git status --porcelain -- web/dist)" ]; then
           echo "web/dist is out of date; run: task web:build"
+          git status --porcelain -- web/dist
           exit 1
         fi
 

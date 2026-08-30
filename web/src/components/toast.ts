@@ -16,10 +16,13 @@ export function showToast(message: string, type: ToastType = "info", durationMs:
     iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`;
   }
 
-  toast.innerHTML = `
-    <span class="toast-icon">${iconSvg}</span>
-    <span class="toast-msg">${escapeHtml(message)}</span>
-  `;
+  const icon = document.createElement("span");
+  icon.className = "toast-icon";
+  icon.innerHTML = iconSvg; // static, trusted markup
+  const msg = document.createElement("span");
+  msg.className = "toast-msg";
+  msg.textContent = message;
+  toast.append(icon, msg);
 
   container.appendChild(toast);
 
@@ -29,13 +32,4 @@ export function showToast(message: string, type: ToastType = "info", durationMs:
       toast.remove();
     }, 250);
   }, durationMs);
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
