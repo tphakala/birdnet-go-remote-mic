@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -135,6 +137,7 @@ func run(cfgPath string) error {
 		start:      startTime,
 		rtspListen: cfg.Listen,
 		discovery:  cfg.DiscoveryEnabled(),
+		dataPath:   filepath.Dir(cfgPath),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -151,6 +154,8 @@ func run(cfgPath string) error {
 	var management *mgmt
 	mgmtServing := false
 	if mgmtEnabled {
+		// Sample host CPU utilization for GET /system only while the API serves.
+		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
 		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler())
 	}
 	defer func() {
