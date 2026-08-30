@@ -420,6 +420,22 @@ components:
         error:
           type: string
           description: Why the device is skipped or failed. Absent when serving.
+        friendlyName:
+          type: string
+          description: >
+            Human-facing label derived from the sound card name (the text
+            before the first comma). Absent when the device id matches no
+            enumerated hardware. The UI uses it to default a blank name.
+          examples: ["Scarlett 2i2 USB"]
+        supportedRates:
+          type: array
+          items:
+            type: integer
+          description: >
+            Sample rates the hardware accepts, probed once at startup. Absent
+            or empty when the device could not be probed (missing or busy), in
+            which case the UI offers a static list of common rates.
+          examples: [[48000, 96000, 192000]]
 
     DeviceState:
       type: string

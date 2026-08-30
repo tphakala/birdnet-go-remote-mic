@@ -49,6 +49,8 @@ func servingOpus() DeviceStatus {
 		NegotiatedChannels: 1,
 		ClientConnected:    true,
 		DroppedFrames:      12,
+		FriendlyName:       "Scarlett 2i2 USB",
+		SupportedRates:     []int{48000, 96000, 192000},
 	}
 }
 
@@ -144,6 +146,12 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.Error != nil {
 		t.Errorf("serving device should have no error, got %v", *d.Error)
 	}
+	if d.FriendlyName == nil || *d.FriendlyName != "Scarlett 2i2 USB" {
+		t.Errorf("friendlyName = %v, want Scarlett 2i2 USB", d.FriendlyName)
+	}
+	if d.SupportedRates == nil || len(*d.SupportedRates) != 3 || (*d.SupportedRates)[1] != 96000 {
+		t.Errorf("supportedRates = %v, want [48000 96000 192000]", d.SupportedRates)
+	}
 }
 
 func TestListDevicesMapsSkippedPCM(t *testing.T) {
@@ -168,6 +176,12 @@ func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	}
 	if d.Error == nil || *d.Error != "open capture: device busy" {
 		t.Errorf("skipped device error not mapped: %v", d.Error)
+	}
+	if d.FriendlyName != nil {
+		t.Errorf("device with no friendly name must omit it, got %v", *d.FriendlyName)
+	}
+	if d.SupportedRates != nil {
+		t.Errorf("device with no probed rates must omit supportedRates, got %v", *d.SupportedRates)
 	}
 }
 
