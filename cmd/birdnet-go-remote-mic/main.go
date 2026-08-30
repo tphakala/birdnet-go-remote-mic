@@ -156,7 +156,7 @@ func run(cfgPath string) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler())
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop)
 	}
 	defer func() {
 		stop()

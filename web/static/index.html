@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BirdNET-Go Remote Mic: Acoustic Field Station</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-container">
+
+  <!-- ================= TOP INSTRUMENT HEADER ================= -->
+  <header class="instrument-header" aria-label="Appliance Header">
+    <div class="brand-section">
+      <div class="brand-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="22"></line>
+          <line x1="8" y1="22" x2="16" y2="22"></line>
+        </svg>
+      </div>
+      <div class="brand-titles">
+        <div class="brand-row">
+          <span class="brand-name">BirdNET-Go Remote Mic</span>
+          <span class="appliance-badge mono" id="appliance-hostname">-</span>
+        </div>
+        <div class="brand-sub">
+          <span class="live-indicator" id="connection-indicator"><span class="pulse-dot"></span> <span id="connection-text">Connecting</span></span>
+          <span>&bull;</span>
+          <span class="mono" id="appliance-address">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- View Navigation -->
+    <nav class="nav-group" aria-label="Main Navigation">
+      <a href="#/dashboard" class="nav-item active" data-view="dashboard">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="7" height="9" x="3" y="3" rx="1"></rect>
+          <rect width="7" height="5" x="14" y="3" rx="1"></rect>
+          <rect width="7" height="9" x="14" y="12" rx="1"></rect>
+          <rect width="7" height="5" x="3" y="16" rx="1"></rect>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+      <a href="#/system" class="nav-item" data-view="system">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+          <path d="M9 3v18"></path>
+          <path d="m14 9 3 3-3 3"></path>
+        </svg>
+        <span>System</span>
+      </a>
+    </nav>
+
+    <!-- Header Quick Actions -->
+    <div class="header-actions">
+      <button type="button" class="icon-btn" id="theme-toggle-btn" title="Toggle Light/Dark Theme" aria-label="Toggle Theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2"></path>
+          <path d="M12 20v2"></path>
+          <path d="m4.93 4.93 1.41 1.41"></path>
+          <path d="m17.66 17.66 1.41 1.41"></path>
+          <path d="M2 12h2"></path>
+          <path d="M20 12h2"></path>
+          <path d="m6.34 17.66-1.41 1.41"></path>
+          <path d="m19.07 4.93-1.41 1.41"></path>
+        </svg>
+      </button>
+      <button type="button" class="icon-btn" id="header-restart-btn" title="Restart Appliance" aria-label="Restart Appliance">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+          <path d="M21 3v5h-5"></path>
+          <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+          <path d="M8 16H3v5"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ================= TELEMETRY RIBBON ================= -->
+  <section class="telemetry-strip" aria-label="Appliance Telemetry Overview">
+    <div class="telemetry-cell">
+      <span class="telemetry-label">Status</span>
+      <div class="telemetry-value-row">
+        <span class="status-badge ok" id="appliance-status-badge"><span class="pulse-dot"></span> <span id="appliance-status-text">Connecting</span></span>
+      </div>
+    </div>
+    <div class="telemetry-cell">
+      <span class="telemetry-label">Uptime</span>
+      <div class="telemetry-value-row">
+        <span class="telemetry-value mono" id="uptime-display">-</span>
+      </div>
+    </div>
+    <div class="telemetry-cell">
+      <span class="telemetry-label">Active Clients</span>
+      <div class="telemetry-value-row">
+        <span class="telemetry-value mono" id="total-clients-display">0</span>
+        <span class="telemetry-unit">consumers</span>
+      </div>
+    </div>
+    <div class="telemetry-cell">
+      <span class="telemetry-label">Devices Serving</span>
+      <div class="telemetry-value-row">
+        <span class="telemetry-value mono" id="devices-serving-display">0 / 0</span>
+      </div>
+    </div>
+    <div class="telemetry-cell">
+      <span class="telemetry-label">SoC Temperature</span>
+      <div class="telemetry-value-row">
+        <span class="telemetry-value mono" id="soc-temp-display">-</span>
+        <span class="telemetry-unit">&deg;C</span>
+      </div>
+    </div>
+    <div class="telemetry-cell">
+      <span class="telemetry-label">CPU Load</span>
+      <div class="telemetry-value-row">
+        <span class="telemetry-value mono" id="cpu-load-display">-</span>
+        <span class="telemetry-unit">%</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= MAIN WORKSPACE CONTAINER ================= -->
+  <main class="app-main" id="main-content" aria-label="Appliance Workspace">
+
+    <!-- ================= VIEW 1: DASHBOARD ================= -->
+    <section id="view-dashboard" class="view-panel view-container active" aria-label="Live Audio Dashboard">
+
+      <div class="channel-rack" id="channel-rack">
+        <p class="rack-empty" id="rack-empty">Loading devices...</p>
+      </div>
+    </section>
+
+    <!-- ================= VIEW 3: SYSTEM TELEMETRY & LIFECYCLE ================= -->
+    <section id="view-system" class="view-panel view-container" aria-label="Host System Telemetry">
+      <div style="display: flex; flex-direction: column; gap: 18px;">
+
+        <!-- System Telemetry Matrix (rendered from live /system) -->
+        <div class="system-matrix" id="sys-tiles">
+          <p class="cfg-empty">Loading system telemetry...</p>
+        </div>
+
+        <!-- Host and appliance details (rendered from live /system and /status) -->
+        <div class="config-section-card" id="sys-info-card" hidden>
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+                  <path d="M9 3v18"></path>
+                  <path d="m14 9 3 3-3 3"></path>
+                </svg>
+                <span>System Information</span>
+              </h2>
+              <span class="section-desc">Host platform and appliance build details.</span>
+            </div>
+          </div>
+          <dl class="info-grid" id="sys-info"></dl>
+        </div>
+
+        <!-- Global network & discovery settings (from live /config) -->
+        <div class="config-section-card" id="sys-network-card" hidden>
+          <div class="section-head">
+            <div>
+              <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg><span>Network &amp; Discovery</span></h2>
+              <span class="section-desc">Appliance-wide streaming and discovery settings. Saved to the config file and applied on restart.</span>
+            </div>
+          </div>
+          <div class="form-grid-2col">
+            <div class="form-field">
+              <label class="field-label" for="sys-rtsp-listen">RTSP Server Listen Address</label>
+              <input type="text" class="field-input mono" id="sys-rtsp-listen" value="" disabled>
+              <span class="field-hint">host:port shared by all streams. Edit the config file to change this.</span>
+            </div>
+            <div class="form-field">
+              <label class="field-label" for="sys-mgmt-listen">Management Listen Address</label>
+              <input type="text" class="field-input mono" id="sys-mgmt-listen" value="" disabled>
+              <span class="field-hint">Edit the config file to change the management listener.</span>
+            </div>
+            <div class="form-field">
+              <label class="field-label" for="sys-discovery-enabled">mDNS Advertisement</label>
+              <label class="switch-control">
+                <input type="checkbox" id="sys-discovery-enabled" class="visually-hidden">
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+                <span style="font-size: 12px; font-weight: 500;">Advertise _rtsp._tcp on the local network</span>
+              </label>
+              <span class="field-hint">Lets BirdNET-Go discover this appliance automatically.</span>
+            </div>
+          </div>
+          <div class="network-actions" id="sys-network-actions" hidden>
+            <span class="staged-badge">Unsaved changes</span>
+            <span class="network-actions-spacer"></span>
+            <button type="button" class="btn btn-secondary" id="btn-network-discard">Discard</button>
+            <button type="button" class="btn btn-primary" id="btn-network-save">Save Changes</button>
+          </div>
+        </div>
+
+        <!-- Per-device stream status (from live /devices) -->
+        <div class="client-card">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg><span>Stream Status</span></h2>
+              <span class="section-desc">Per-device capture and RTSP serving state.</span>
+            </div>
+          </div>
+          <table class="client-table">
+            <thead>
+              <tr>
+                <th>Device</th>
+                <th>ALSA</th>
+                <th>Stream Path</th>
+                <th>Codec / Rate</th>
+                <th>Client</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody id="sys-device-rows"></tbody>
+          </table>
+        </div>
+
+        <!-- Lifecycle & Maintenance Actions -->
+        <div class="config-section-card">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                  <line x1="12" y1="2" x2="12" y2="12"></line>
+                </svg>
+                <span>Appliance Lifecycle Management</span>
+              </h2>
+              <span class="section-desc">Trigger a graceful restart to reload configuration or flush ALSA buffers.</span>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <span style="font-size: 13px; font-weight: 600; color: var(--text-primary); display: block;">Graceful Appliance Restart</span>
+              <span style="font-size: 12px; color: var(--text-muted);">Closes active RTSP client sessions gracefully and stops the appliance; the service manager restarts it.</span>
+            </div>
+            <button type="button" class="btn btn-danger" id="btn-sys-restart">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+                <path d="M21 3v5h-5"></path>
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+                <path d="M8 16H3v5"></path>
+              </svg>
+              <span>Restart Appliance Now</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+</div>
+
+<!-- ================= RESTARTING MODAL OVERLAY ================= -->
+<div class="modal-overlay" id="restart-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-card">
+    <div class="spinner-ring" aria-hidden="true"></div>
+    <div>
+      <h3 id="modal-title" style="font-size: 16px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">Restarting Appliance</h3>
+      <p style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+        The appliance service is performing a graceful shutdown and restart. Polling <span class="mono">/healthz</span> for recovery.
+      </p>
+    </div>
+    <div style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); background: var(--accent-cyan-bg); padding: 4px 10px; border-radius: var(--radius-xs);">
+      <span id="reconnect-timer">Reconnecting in 5s...</span>
+    </div>
+  </div>
+</div>
+
+<!-- ================= TOAST CONTAINER ================= -->
+<div class="toast-container" id="toast-root" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

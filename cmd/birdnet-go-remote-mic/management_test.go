@@ -106,7 +106,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -119,13 +119,17 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = occupied.Close() }()
+	defer func() {
+		if cerr := occupied.Close(); cerr != nil {
+			t.Errorf("closing occupied listener: %v", cerr)
+		}
+	}()
 
 	cfg := &config.Config{Management: config.Management{Listen: occupied.Addr().String(), CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil)
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
@@ -139,7 +143,7 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
