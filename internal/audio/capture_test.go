@@ -31,6 +31,44 @@ func swapOpenStream(neg capture.Config) (stub *stubStream, restore func()) {
 	return stub, func() { openStream = prev }
 }
 
+func TestCaptureFormat(t *testing.T) {
+	for _, f := range []string{"s16", ""} {
+		got, err := captureFormat(f)
+		if err != nil || got != capture.FormatS16LE {
+			t.Errorf("captureFormat(%q) = %v, %v; want FormatS16LE, nil", f, got, err)
+		}
+	}
+	if _, err := captureFormat("s32"); err == nil {
+		t.Error("captureFormat(\"s32\") = nil error, want unsupported-format error")
+	}
+}
+
+func TestOpenCaptureRejectsUnknownFormat(t *testing.T) {
+	// A format that config.Validate does not (yet) permit must fail loud rather
+	// than silently fall back to S16LE and corrupt the byte math.
+	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: 1, Format: "s32"}); err == nil {
+		t.Fatal("OpenCapture accepted format s32, want error")
+	}
+}
+
+func TestOpenCapturePassesS16Format(t *testing.T) {
+	var got capture.Format
+	prev := openStream
+	openStream = func(cfg capture.Config) (captureStream, error) {
+		got = cfg.Format
+		return &stubStream{neg: capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960}}, nil
+	}
+	defer func() { openStream = prev }()
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: 1, Format: "s16"})
+	if err != nil {
+		t.Fatalf("OpenCapture: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+	if got != capture.FormatS16LE {
+		t.Errorf("openStream got Format %v, want FormatS16LE", got)
+	}
+}
+
 func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// Requested 256000 but the driver negotiated 48000: OpenCapture must refuse
 	// rather than silently deliver the wrong rate.

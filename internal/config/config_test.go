@@ -196,6 +196,7 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel() // each subtest builds isolated state via validBase()
 			c := validBase()
 			tt.mutate(&c)
 			err := c.Validate()

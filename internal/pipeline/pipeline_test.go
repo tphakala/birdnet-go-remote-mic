@@ -137,3 +137,32 @@ func TestSDPSpec(t *testing.T) {
 		t.Errorf("Opus fmtp missing maxaveragebitrate: %q", op.FMTP)
 	}
 }
+
+// TestPayloadTypeAndCodecName pins the centralized mode mappings and, crucially,
+// asserts that SDPSpec derives its payload type and encoding name from the same
+// helpers the RTP writer wiring and mDNS advertisement use, so a DESCRIBE can
+// never announce a payload type or codec the stream does not actually send.
+func TestPayloadTypeAndCodecName(t *testing.T) {
+	for _, tc := range []struct {
+		mode    config.Mode
+		payload int
+		codec   string
+	}{
+		{config.ModePCM, 96, "L16"},
+		{config.ModeOpus, 97, "opus"},
+	} {
+		if got := pipeline.PayloadType(tc.mode); got != tc.payload {
+			t.Errorf("PayloadType(%q) = %d, want %d", tc.mode, got, tc.payload)
+		}
+		if got := pipeline.CodecName(tc.mode); got != tc.codec {
+			t.Errorf("CodecName(%q) = %q, want %q", tc.mode, got, tc.codec)
+		}
+		spec := pipeline.SDPSpec(&config.Device{Name: "m", Mode: tc.mode}, 48000, 1)
+		if spec.PayloadType != pipeline.PayloadType(tc.mode) {
+			t.Errorf("SDPSpec payload %d != PayloadType %d for %q", spec.PayloadType, pipeline.PayloadType(tc.mode), tc.mode)
+		}
+		if spec.EncodingName != pipeline.CodecName(tc.mode) {
+			t.Errorf("SDPSpec encoding %q != CodecName %q for %q", spec.EncodingName, pipeline.CodecName(tc.mode), tc.mode)
+		}
+	}
+}
