@@ -130,12 +130,13 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	rt.mu.Unlock()
 
 	ds := mgmtserver.DeviceStatus{
-		Config:         rt.dev,
-		State:          state,
-		Error:          errMsg,
-		DroppedFrames:  int64(rt.dropped.Load()),
-		FriendlyName:   rt.friendlyName,
-		SupportedRates: rt.supportedRates,
+		Config:            rt.dev,
+		State:             state,
+		Error:             errMsg,
+		DroppedFrames:     int64(rt.dropped.Load()),
+		FriendlyName:      rt.friendlyName,
+		SupportedRates:    rt.supportedRates,
+		SupportedChannels: rt.supportedChannels,
 	}
 	if rt.src != nil {
 		ds.NegotiatedRate = rt.rate

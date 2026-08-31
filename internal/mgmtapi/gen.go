@@ -240,6 +240,12 @@ type Device struct {
 	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
 	State DeviceState `json:"state"`
 
+	// SupportedChannels Channel counts the hardware accepts (a subset of [1, 2]), probed once at startup via the same non-blocking capability query as supportedRates. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers both mono and stereo. The UI uses it to fix the Channels control on a device that supports a single channel count (mono or stereo), and to gate Opus, which requires mono.
+	//
+	//
+	// Examples: [1], [1,2]
+	SupportedChannels *[]int `json:"supportedChannels,omitempty"`
+
 	// SupportedRates Sample rates the hardware accepts, probed once at startup. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a static list of common rates.
 	//
 	//

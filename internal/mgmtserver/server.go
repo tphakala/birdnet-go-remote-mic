@@ -62,6 +62,10 @@ type DeviceStatus struct {
 	// SupportedRates is the set of sample rates the hardware accepts, probed at
 	// startup. Empty when the device could not be probed (missing or busy).
 	SupportedRates []int
+	// SupportedChannels is the subset of [1, 2] the hardware accepts, probed at
+	// startup via the same query as SupportedRates. Empty when the device could
+	// not be probed (missing or busy).
+	SupportedChannels []int
 }
 
 // Provider supplies live runtime state to the management API. Its methods are
@@ -244,6 +248,10 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	if len(d.SupportedRates) > 0 {
 		rates := append([]int(nil), d.SupportedRates...)
 		out.SupportedRates = &rates
+	}
+	if len(d.SupportedChannels) > 0 {
+		chans := append([]int(nil), d.SupportedChannels...)
+		out.SupportedChannels = &chans
 	}
 	return out
 }

@@ -144,25 +144,29 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // carrying the open error so GET /devices can report it, exactly as at startup.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	friendly := a.hwNames[dev.Device]
-	// Probe supported rates for the config UI before opening: once we hold the
-	// hw device exclusively the probe would see our own process and report busy.
+	// Probe supported rates and channels for the config UI before opening: once we
+	// hold the hw device exclusively the probe would see our own process and report
+	// busy. Both use the same non-blocking capability query.
 	rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
+	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
 
 	d := *dev
 	rt, err := a.open(&d, a.hub)
 	if err != nil {
 		log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, err)
 		return &deviceRuntime{
-			dev:            *dev,
-			state:          mgmtserver.StateSkipped,
-			err:            err.Error(),
-			friendlyName:   friendly,
-			supportedRates: rates,
+			dev:               *dev,
+			state:             mgmtserver.StateSkipped,
+			err:               err.Error(),
+			friendlyName:      friendly,
+			supportedRates:    rates,
+			supportedChannels: channels,
 		}
 	}
 	rt.state = mgmtserver.StateServing
 	rt.friendlyName = friendly
 	rt.supportedRates = rates
+	rt.supportedChannels = channels
 	a.srv.AddTrack(rt.track)
 	a.alive++
 	go a.pump(rt)

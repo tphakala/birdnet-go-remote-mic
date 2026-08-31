@@ -3,6 +3,8 @@
 package audio
 
 import (
+	"errors"
+
 	capture "github.com/tphakala/go-audio-capture"
 )
 
@@ -68,4 +70,65 @@ func ProbeRates(deviceID string, channels int, candidates []int) []int {
 		return nil
 	}
 	return out
+}
+
+// ProbeChannels returns the subset of candidate channel counts the device accepts,
+// for the config UI's Channels control. It reuses the same non-blocking HW_REFINE
+// capability query as ProbeRates (no exclusive open), querying each candidate
+// against both capture formats and keeping any count at least one format accepts.
+//
+// A channel count is accepted when SupportedRates returns a nil error: the
+// unconstrained refine pins the channel count and succeeds, which proves the
+// hardware supports that count for that format, independently of whether any
+// standard rate falls in the device's window (so a count usable only at a
+// non-standard rate is still reported). A count the device rejects at every
+// format yields *BadFormatError from each and is omitted. When nothing is
+// determinable (device busy or gone, or capability queries unsupported) it
+// returns nil, so the caller falls back to the static [1, 2] list rather than
+// reporting a misleading empty set.
+func ProbeChannels(deviceID string, candidates []int) []int {
+	out := make([]int, 0, len(candidates))
+	for _, ch := range candidates {
+		for _, f := range captureFormats {
+			if _, err := supportedRatesFn(deviceID, ch, f); err == nil {
+				out = append(out, ch)
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// DeviceInUse reports whether the device is currently held exclusively by another
+// process. It uses the same non-blocking capability query as the probes, which
+// opens the device with O_NONBLOCK and so fails promptly with ErrDeviceInUse when
+// the device is busy, rather than blocking the way a streaming open can. The
+// caller uses it to skip a contended device without stalling on the exclusive
+// open.
+//
+// It probes the configured channel count across both capture formats. A nil
+// error, or any error other than ErrDeviceInUse, means the device is not held
+// exclusively by another process (a *BadFormatError is only reachable after a
+// successful O_NONBLOCK open, and ErrDeviceGone means the device is missing, not
+// busy), so the real open should proceed and surface any failure. Only when every
+// attempt reports ErrDeviceInUse is the device treated as busy.
+func DeviceInUse(deviceID string, channels int) bool {
+	busy := false
+	for _, f := range captureFormats {
+		_, err := supportedRatesFn(deviceID, channels, f)
+		if err == nil {
+			return false
+		}
+		if errors.Is(err, capture.ErrDeviceInUse) {
+			busy = true
+			continue
+		}
+		// Any other error (BadFormatError, ErrDeviceGone, ErrCapabilitiesUnsupported)
+		// means the device is not held exclusively; let the real open decide.
+		return false
+	}
+	return busy
 }

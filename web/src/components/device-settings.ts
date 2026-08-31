@@ -38,6 +38,7 @@ export interface DropdownOption {
 export interface DeviceHardware {
   friendlyName?: string;
   supportedRates?: number[];
+  supportedChannels?: number[];
 }
 
 // Per-form counter so element ids are valid and unique regardless of the
@@ -102,19 +103,30 @@ export class DeviceSettingsForm {
     rateField.appendChild(this.hint(this.rateHint()));
     grid.appendChild(rateField);
 
-    // Channels
+    // Channels: built from the device's probed channel capability. A
+    // single-channel device fixes the control to Mono; an unknown capability
+    // (device busy or missing) falls back to offering both.
     const chField = elem("div", "form-field");
     chField.appendChild(this.label("Channels"));
-    const channels = this.buildDropdown("Channels", [
-      { val: "1", label: "1 (Mono)" },
-      { val: "2", label: "2 (Stereo)" },
-    ], String(d.channels));
+    const chOptions = this.channelOptions();
+    const chInitial = this.pick(chOptions, String(d.channels));
+    const channels = this.buildDropdown("Channels", chOptions, chInitial);
     this.channelsHidden = channels.hidden;
     this.channelsDrop = channels.dropdown;
     chField.appendChild(channels.container);
     this.chErr = this.error(`set-${uid}-ch-err`);
     chField.appendChild(this.chErr);
-    chField.appendChild(this.hint("Opus requires mono."));
+    // When the device supports a single channel count the dropdown has one
+    // option and is therefore already fixed to it; the hint says which, and it
+    // reads the same as the single-option mode dropdown (no special styling, so
+    // the two one-option controls stay consistent).
+    const chFixed = chOptions.length === 1;
+    const fixedIsMono = chOptions[0]?.val === "1";
+    chField.appendChild(this.hint(
+      chFixed
+        ? `This device supports only ${fixedIsMono ? "one channel (mono)" : "two channels (stereo)"}.`
+        : "Opus requires mono.",
+    ));
     grid.appendChild(chField);
 
     // Stream group: how the capture is named, addressed, and encoded.
@@ -132,16 +144,22 @@ export class DeviceSettingsForm {
     this.pathEl = path.input;
     this.pathErr = path.error;
 
-    // Mode
+    // Mode: Opus is offered only when the device can do 48 kHz mono (Opus is a
+    // 48 kHz mono codec). On a device that cannot, only PCM L16 is offered and a
+    // saved opus mode is coerced to pcm so the form is never in an unsaveable state.
     const modeField = elem("div", "form-field");
     modeField.appendChild(this.label("Stream Codec Mode"));
-    const mode = this.buildDropdown("Stream codec mode", [
-      { val: "opus", label: "Opus (Compressed, 48 kHz)", tag: "OPUS", tagClass: "highlight" },
-      { val: "pcm", label: "PCM L16 (Uncompressed Raw)", tag: "PCM L16", tagClass: "ultrasonic" },
-    ], d.mode);
+    const modeOpts = this.modeOptions();
+    const modeInitial = this.pick(modeOpts, d.mode);
+    const mode = this.buildDropdown("Stream codec mode", modeOpts, modeInitial);
     this.modeHidden = mode.hidden;
     modeField.appendChild(mode.container);
-    modeField.appendChild(this.hint("Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."));
+    const opusOffered = modeOpts.some((o) => o.val === "opus");
+    modeField.appendChild(this.hint(
+      opusOffered
+        ? "Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."
+        : "PCM L16 is raw and supports ultrasonic rates. Opus needs 48 kHz mono, which this device does not support.",
+    ));
     grid.appendChild(modeField);
 
     // Bitrate
@@ -152,7 +170,7 @@ export class DeviceSettingsForm {
     this.bitrateHidden = bitrate.hidden;
     this.bitrateField.appendChild(bitrate.container);
     this.bitrateField.appendChild(this.hint("Target bitrate for the Opus encoder."));
-    this.bitrateField.hidden = d.mode !== "opus";
+    this.bitrateField.hidden = modeInitial !== "opus";
     grid.appendChild(this.bitrateField);
 
     this.element.appendChild(grid);
@@ -220,7 +238,14 @@ export class DeviceSettingsForm {
       // it here would silently re-enable a disabled device on save.
       enabled: this.device.enabled,
     };
-    if (mode === "opus") dev.opus = { bitrate: Number(this.bitrateHidden.value) || MIN_BITRATE };
+    if (mode === "opus") {
+      dev.opus = { bitrate: Number(this.bitrateHidden.value) || MIN_BITRATE };
+    } else if (this.device.opus) {
+      // Preserve a saved Opus bitrate when the mode is not Opus (e.g. it was
+      // coerced to PCM because the device cannot do 48 kHz mono), so a temporary
+      // mode change does not silently discard the operator's bitrate.
+      dev.opus = this.device.opus;
+    }
     return dev;
   }
 
@@ -333,6 +358,67 @@ export class DeviceSettingsForm {
     input.setAttribute("aria-invalid", ok ? "false" : "true");
     error.textContent = ok ? "" : message;
     return ok;
+  }
+
+  // opusSupported reports whether the device can carry Opus in this appliance.
+  // Opus runs at 48 kHz internally (RFC 7587), and this appliance requires mono
+  // for Opus (config.Validate rejects opus with more than one channel), so it
+  // needs both 48 kHz and mono capture. A capability that was not probed
+  // (empty/absent) is treated as supported, the same graceful degradation the
+  // rate control uses, so a device that was merely busy at startup is not
+  // stripped of Opus.
+  private opusSupported(): boolean {
+    const rates = this.hardware.supportedRates;
+    const chans = this.hardware.supportedChannels;
+    const rate48kOK = !rates?.length || rates.includes(48000);
+    const monoOK = !chans?.length || chans.includes(1);
+    return rate48kOK && monoOK;
+  }
+
+  // modeOptions is the codec-mode list for this device: PCM L16 always, and Opus
+  // only when the device supports 48 kHz mono. Gating Opus here prevents offering
+  // a mode the hardware cannot satisfy (which would force an unsupported 48 kHz
+  // and be rejected at open).
+  private modeOptions(): DropdownOption[] {
+    const opts: DropdownOption[] = [];
+    if (this.opusSupported()) {
+      opts.push({ val: "opus", label: "Opus (Compressed, 48 kHz)", tag: "OPUS", tagClass: "highlight" });
+    }
+    opts.push({ val: "pcm", label: "PCM L16 (Uncompressed Raw)", tag: "PCM L16", tagClass: "ultrasonic" });
+    return opts;
+  }
+
+  // channelOptions is the Channels list for this device. When the device's
+  // supported channel counts are known, the control is constrained to them (a
+  // single-channel device is fixed to Mono), and an unsupported saved value is
+  // NOT re-added, so a stale stereo value on a mono-only device is steered back
+  // to a valid Mono selection on save. When capability is unknown (device busy or
+  // missing) it falls back to offering both, matching the rate control. When Opus
+  // is offered, mono stays selectable so the mode-change snap to mono lands on a
+  // real option.
+  private channelOptions(): DropdownOption[] {
+    const probed = this.hardware.supportedChannels?.filter((c) => c === 1 || c === 2) ?? [];
+    let chans: Set<number>;
+    if (probed.length) {
+      // The probed set is authoritative here. Mono (1) needs no forced re-add for
+      // Opus: opusSupported() can only be true when supportedChannels includes 1,
+      // so mono is already present whenever the mode-change snap to mono runs.
+      chans = new Set<number>(probed);
+    } else {
+      chans = new Set<number>([1, 2]);
+      const current = this.device.channels;
+      if (current === 1 || current === 2) chans.add(current);
+    }
+    return [...chans].sort((a, b) => a - b).map((c) => ({
+      val: String(c), label: c === 1 ? "1 (Mono)" : "2 (Stereo)",
+    }));
+  }
+
+  // pick returns want if it is one of options, else the first option's value, so
+  // a dropdown whose saved value is no longer offered (an Opus mode or a stereo
+  // count the device cannot do) lands on a valid selection instead of blank.
+  private pick(options: DropdownOption[], want: string): string {
+    return options.some((o) => o.val === want) ? want : (options[0]?.val ?? want);
   }
 
   private rateOptions(current: number): DropdownOption[] {
