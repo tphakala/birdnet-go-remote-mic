@@ -19,6 +19,21 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for AvailableDeviceState.
+const (
+	Available AvailableDeviceState = "available"
+)
+
+// Valid indicates whether the value is a known member of the AvailableDeviceState enum.
+func (e AvailableDeviceState) Valid() bool {
+	switch e {
+	case Available:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceFormat.
 const (
 	DeviceFormatS16 DeviceFormat = "s16"
@@ -128,6 +143,37 @@ type ApplianceStatus struct {
 	// Version Appliance build version (set at build time).
 	Version string `json:"version"`
 }
+
+// AvailableDevice A capture device the host exposes that the configuration does not yet list. It carries only the device id and the probed capabilities; a name, path and stream parameters are assigned when it is provisioned (see POST /devices).
+type AvailableDevice struct {
+	// Device ALSA capture device id.
+	//
+	// Examples: hw:1,0
+	Device string `json:"device"`
+
+	// FriendlyName Human-facing label derived from the sound card name.
+	//
+	// Examples: Scarlett 2i2 USB
+	FriendlyName *string `json:"friendlyName,omitempty"`
+
+	// State Always "available"; the device is detected but not configured.
+	State AvailableDeviceState `json:"state"`
+
+	// SupportedChannels Channel counts the hardware accepts (a subset of [1, 2]). Absent or empty when the device could not be probed.
+	//
+	//
+	// Examples: [1], [1,2]
+	SupportedChannels *[]int `json:"supportedChannels,omitempty"`
+
+	// SupportedRates Sample rates the hardware accepts, verified with a real HW_PARAMS commit. Absent or empty when the device could not be probed.
+	//
+	//
+	// Examples: [48000,96000,192000]
+	SupportedRates *[]int `json:"supportedRates,omitempty"`
+}
+
+// AvailableDeviceState Always "available"; the device is detected but not configured.
+type AvailableDeviceState string
 
 // ChannelLevels One capture channel's audio levels over the last window.
 type ChannelLevels struct {
@@ -368,6 +414,26 @@ type Problem struct {
 	Type     *string `json:"type,omitempty"`
 }
 
+// ProvisionDeviceRequest Request to enable (provision) a detected capture device. Only device is required; the appliance derives sensible defaults for everything else, and any field set here overrides its derived default.
+type ProvisionDeviceRequest struct {
+	// Channels Optional channel count; chosen from the device's capabilities when omitted.
+	Channels *int `json:"channels,omitempty"`
+
+	// Device ALSA capture device id to enable, as reported by GET /devices/available.
+	//
+	// Examples: hw:1,0
+	Device string `json:"device"`
+
+	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
+	Mode *StreamMode `json:"mode,omitempty"`
+
+	// Name Optional unique device name; derived from the hardware label when omitted.
+	Name *string `json:"name,omitempty"`
+
+	// Rate Optional capture sample rate in Hz; chosen from the device's capabilities when omitted.
+	Rate *int `json:"rate,omitempty"`
+}
+
 // RestartResult Acknowledgement that a restart request was accepted.
 type RestartResult struct {
 	// Status Status message confirming restart initiation.
@@ -455,6 +521,9 @@ type StreamEventsParams struct {
 
 // PatchConfigJSONRequestBody defines body for PatchConfig for application/json ContentType.
 type PatchConfigJSONRequestBody = ConfigPatch
+
+// ProvisionDeviceJSONRequestBody defines body for ProvisionDevice for application/json ContentType.
+type ProvisionDeviceJSONRequestBody = ProvisionDeviceRequest
 
 // RequestEditorFn is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -561,6 +630,38 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /devices (the `ListDevices` operationId).
 	ListDevices(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ProvisionDeviceWithBody Enable (provision) a detected capture device
+	//
+	// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+	ProvisionDeviceWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ProvisionDevice Enable (provision) a detected capture device
+	//
+	// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+	ProvisionDevice(ctx context.Context, body ProvisionDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListAvailableDevices List detected but unconfigured capture devices
+	//
+	// Every capture device the host exposes that the configuration does not yet list, with the sample rates and channel counts probed for it. These are the devices an operator can enable from the web UI without editing the configuration by hand.
+	//
+	// Corresponds with GET /devices/available (the `ListAvailableDevices` operationId).
+	ListAvailableDevices(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteDevice Remove a configured capture device
+	//
+	// Removes the named device from the configuration, stopping it if it is serving and returning its hardware to the pool of available devices. The change is persisted and hot-applied without a restart.
+	//
+	// Corresponds with DELETE /devices/{name} (the `DeleteDevice` operationId).
+	DeleteDevice(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetDevice Get one capture device
 	//
@@ -691,6 +792,78 @@ func (c *Client) PatchConfig(ctx context.Context, body PatchConfigJSONRequestBod
 // Corresponds with GET /devices (the `ListDevices` operationId).
 func (c *Client) ListDevices(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListDevicesRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ProvisionDeviceWithBody Enable (provision) a detected capture device
+//
+// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+func (c *Client) ProvisionDeviceWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewProvisionDeviceRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ProvisionDevice Enable (provision) a detected capture device
+//
+// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+func (c *Client) ProvisionDevice(ctx context.Context, body ProvisionDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewProvisionDeviceRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListAvailableDevices List detected but unconfigured capture devices
+//
+// Every capture device the host exposes that the configuration does not yet list, with the sample rates and channel counts probed for it. These are the devices an operator can enable from the web UI without editing the configuration by hand.
+//
+// Corresponds with GET /devices/available (the `ListAvailableDevices` operationId).
+func (c *Client) ListAvailableDevices(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAvailableDevicesRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteDevice Remove a configured capture device
+//
+// Removes the named device from the configuration, stopping it if it is serving and returning its hardware to the pool of available devices. The change is persisted and hot-applied without a restart.
+//
+// Corresponds with DELETE /devices/{name} (the `DeleteDevice` operationId).
+func (c *Client) DeleteDevice(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteDeviceRequest(c.Server, name)
 	if err != nil {
 		return nil, err
 	}
@@ -914,6 +1087,107 @@ func NewListDevicesRequest(server string) (*http.Request, error) {
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewProvisionDeviceRequest calls the generic ProvisionDevice builder with application/json body
+func NewProvisionDeviceRequest(server string, body ProvisionDeviceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewProvisionDeviceRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewProvisionDeviceRequestWithBody constructs an http.Request for the ProvisionDevice method, with any body, and a specified content type
+func NewProvisionDeviceRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListAvailableDevicesRequest constructs an http.Request for the ListAvailableDevices method
+func NewListAvailableDevicesRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices/available")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteDeviceRequest constructs an http.Request for the DeleteDevice method
+func NewDeleteDeviceRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1197,6 +1471,42 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /devices (the `ListDevices` operationId).
 	ListDevicesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
 
+	// ProvisionDeviceWithBodyWithResponse Enable (provision) a detected capture device
+	//
+	// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+	ProvisionDeviceWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ProvisionDeviceResponse, error)
+
+	// ProvisionDeviceWithResponse Enable (provision) a detected capture device
+	//
+	// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+	ProvisionDeviceWithResponse(ctx context.Context, body ProvisionDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*ProvisionDeviceResponse, error)
+
+	// ListAvailableDevicesWithResponse List detected but unconfigured capture devices
+	//
+	// Every capture device the host exposes that the configuration does not yet list, with the sample rates and channel counts probed for it. These are the devices an operator can enable from the web UI without editing the configuration by hand.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /devices/available (the `ListAvailableDevices` operationId).
+	ListAvailableDevicesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAvailableDevicesResponse, error)
+
+	// DeleteDeviceWithResponse Remove a configured capture device
+	//
+	// Removes the named device from the configuration, stopping it if it is serving and returning its hardware to the pool of available devices. The change is persisted and hot-applied without a restart.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /devices/{name} (the `DeleteDevice` operationId).
+	DeleteDeviceWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*DeleteDeviceResponse, error)
+
 	// GetDeviceWithResponse Get one capture device
 	//
 	// The named device with its configuration and runtime state.
@@ -1428,6 +1738,171 @@ func (r ListDevicesResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListDevicesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ProvisionDeviceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *Device
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *Problem
+	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
+	ApplicationproblemJSON409 *Problem
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationProblem
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r ProvisionDeviceResponse) GetJSON201() *Device {
+	return r.JSON201
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r ProvisionDeviceResponse) GetApplicationproblemJSON404() *Problem {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
+func (r ProvisionDeviceResponse) GetApplicationproblemJSON409() *Problem {
+	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r ProvisionDeviceResponse) GetApplicationproblemJSON422() *ValidationProblem {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r ProvisionDeviceResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r ProvisionDeviceResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ProvisionDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ProvisionDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ProvisionDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListAvailableDevicesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *[]AvailableDevice
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListAvailableDevicesResponse) GetJSON200() *[]AvailableDevice {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r ListAvailableDevicesResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r ListAvailableDevicesResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListAvailableDevicesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListAvailableDevicesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListAvailableDevicesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteDeviceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *Problem
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r DeleteDeviceResponse) GetApplicationproblemJSON404() *Problem {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r DeleteDeviceResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteDeviceResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteDeviceResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -1775,6 +2250,66 @@ func (c *ClientWithResponses) ListDevicesWithResponse(ctx context.Context, reqEd
 	return ParseListDevicesResponse(rsp)
 }
 
+// ProvisionDeviceWithBodyWithResponse Enable (provision) a detected capture device
+//
+// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+func (c *ClientWithResponses) ProvisionDeviceWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ProvisionDeviceResponse, error) {
+	rsp, err := c.ProvisionDeviceWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProvisionDeviceResponse(rsp)
+}
+
+// ProvisionDeviceWithResponse Enable (provision) a detected capture device
+//
+// Enables streaming on a capture device the host exposes but the configuration does not yet list. The appliance derives a unique name from the device's hardware label, generates a hard-to-guess RTSP path, and chooses a mode, sample rate and channel count from the device's probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM at the device's best rate). Any field set in the request overrides its derived default. The change is persisted and hot-applied to the running pipeline; the new device starts serving without a restart.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /devices (the `ProvisionDevice` operationId).
+func (c *ClientWithResponses) ProvisionDeviceWithResponse(ctx context.Context, body ProvisionDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*ProvisionDeviceResponse, error) {
+	rsp, err := c.ProvisionDevice(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProvisionDeviceResponse(rsp)
+}
+
+// ListAvailableDevicesWithResponse List detected but unconfigured capture devices
+//
+// Every capture device the host exposes that the configuration does not yet list, with the sample rates and channel counts probed for it. These are the devices an operator can enable from the web UI without editing the configuration by hand.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /devices/available (the `ListAvailableDevices` operationId).
+func (c *ClientWithResponses) ListAvailableDevicesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAvailableDevicesResponse, error) {
+	rsp, err := c.ListAvailableDevices(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListAvailableDevicesResponse(rsp)
+}
+
+// DeleteDeviceWithResponse Remove a configured capture device
+//
+// Removes the named device from the configuration, stopping it if it is serving and returning its hardware to the pool of available devices. The change is persisted and hot-applied without a restart.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /devices/{name} (the `DeleteDevice` operationId).
+func (c *ClientWithResponses) DeleteDeviceWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*DeleteDeviceResponse, error) {
+	rsp, err := c.DeleteDevice(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteDeviceResponse(rsp)
+}
+
 // GetDeviceWithResponse Get one capture device
 //
 // The named device with its configuration and runtime state.
@@ -2002,6 +2537,129 @@ func ParseListDevicesResponse(rsp *http.Response) (*ListDevicesResponse, error) 
 	return response, nil
 }
 
+// ParseProvisionDeviceResponse parses an HTTP response from a ProvisionDeviceWithResponse call
+func ParseProvisionDeviceResponse(rsp *http.Response) (*ProvisionDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ProvisionDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Device
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationProblem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListAvailableDevicesResponse parses an HTTP response from a ListAvailableDevicesWithResponse call
+func ParseListAvailableDevicesResponse(rsp *http.Response) (*ListAvailableDevicesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListAvailableDevicesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []AvailableDevice
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteDeviceResponse parses an HTTP response from a DeleteDeviceWithResponse call
+func ParseDeleteDeviceResponse(rsp *http.Response) (*DeleteDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetDeviceResponse parses an HTTP response from a GetDeviceWithResponse call
 func ParseGetDeviceResponse(rsp *http.Response) (*GetDeviceResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -2204,6 +2862,15 @@ type ServerInterface interface {
 	// ListDevices List capture devices
 	// (GET /devices)
 	ListDevices(w http.ResponseWriter, r *http.Request)
+	// ProvisionDevice Enable (provision) a detected capture device
+	// (POST /devices)
+	ProvisionDevice(w http.ResponseWriter, r *http.Request)
+	// ListAvailableDevices List detected but unconfigured capture devices
+	// (GET /devices/available)
+	ListAvailableDevices(w http.ResponseWriter, r *http.Request)
+	// DeleteDevice Remove a configured capture device
+	// (DELETE /devices/{name})
+	DeleteDevice(w http.ResponseWriter, r *http.Request, name string)
 	// GetDevice Get one capture device
 	// (GET /devices/{name})
 	GetDevice(w http.ResponseWriter, r *http.Request, name string)
@@ -2266,6 +2933,60 @@ func (siw *ServerInterfaceWrapper) ListDevices(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListDevices(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ProvisionDevice operation middleware
+func (siw *ServerInterfaceWrapper) ProvisionDevice(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ProvisionDevice(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAvailableDevices operation middleware
+func (siw *ServerInterfaceWrapper) ListAvailableDevices(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAvailableDevices(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteDevice operation middleware
+func (siw *ServerInterfaceWrapper) DeleteDevice(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteDevice(w, r, name)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2513,6 +3234,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealth)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/status", wrapper.GetStatus)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/devices", wrapper.ListDevices)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/devices", wrapper.ProvisionDevice)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/devices/available", wrapper.ListAvailableDevices)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/devices/{name}", wrapper.DeleteDevice)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/devices/{name}", wrapper.GetDevice)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/events", wrapper.StreamEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/config", wrapper.GetConfig)
@@ -2657,6 +3381,174 @@ type ListDevicesdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListDevicesdefaultApplicationProblemPlusJSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ProvisionDeviceRequestObject struct {
+	Body *ProvisionDeviceJSONRequestBody
+}
+
+type ProvisionDeviceResponseObject interface {
+	VisitProvisionDeviceResponse(w http.ResponseWriter) error
+}
+
+type ProvisionDevice201JSONResponse Device
+
+func (response ProvisionDevice201JSONResponse) VisitProvisionDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ProvisionDevice404ApplicationProblemPlusJSONResponse Problem
+
+func (response ProvisionDevice404ApplicationProblemPlusJSONResponse) VisitProvisionDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ProvisionDevice409ApplicationProblemPlusJSONResponse Problem
+
+func (response ProvisionDevice409ApplicationProblemPlusJSONResponse) VisitProvisionDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ProvisionDevice422ApplicationProblemPlusJSONResponse ValidationProblem
+
+func (response ProvisionDevice422ApplicationProblemPlusJSONResponse) VisitProvisionDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ProvisionDevicedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ProvisionDevicedefaultApplicationProblemPlusJSONResponse) VisitProvisionDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAvailableDevicesRequestObject struct {
+}
+
+type ListAvailableDevicesResponseObject interface {
+	VisitListAvailableDevicesResponse(w http.ResponseWriter) error
+}
+
+type ListAvailableDevices200JSONResponse []AvailableDevice
+
+func (response ListAvailableDevices200JSONResponse) VisitListAvailableDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAvailableDevicesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListAvailableDevicesdefaultApplicationProblemPlusJSONResponse) VisitListAvailableDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteDeviceRequestObject struct {
+	Name string `json:"name"`
+}
+
+type DeleteDeviceResponseObject interface {
+	VisitDeleteDeviceResponse(w http.ResponseWriter) error
+}
+
+type DeleteDevice204Response struct {
+}
+
+func (response DeleteDevice204Response) VisitDeleteDeviceResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteDevice404ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response DeleteDevice404ApplicationProblemPlusJSONResponse) VisitDeleteDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteDevicedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteDevicedefaultApplicationProblemPlusJSONResponse) VisitDeleteDeviceResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -2937,6 +3829,15 @@ type StrictServerInterface interface {
 	// ListDevices List capture devices
 	// (GET /devices)
 	ListDevices(ctx context.Context, request ListDevicesRequestObject) (ListDevicesResponseObject, error)
+	// ProvisionDevice Enable (provision) a detected capture device
+	// (POST /devices)
+	ProvisionDevice(ctx context.Context, request ProvisionDeviceRequestObject) (ProvisionDeviceResponseObject, error)
+	// ListAvailableDevices List detected but unconfigured capture devices
+	// (GET /devices/available)
+	ListAvailableDevices(ctx context.Context, request ListAvailableDevicesRequestObject) (ListAvailableDevicesResponseObject, error)
+	// DeleteDevice Remove a configured capture device
+	// (DELETE /devices/{name})
+	DeleteDevice(ctx context.Context, request DeleteDeviceRequestObject) (DeleteDeviceResponseObject, error)
 	// GetDevice Get one capture device
 	// (GET /devices/{name})
 	GetDevice(ctx context.Context, request GetDeviceRequestObject) (GetDeviceResponseObject, error)
@@ -3068,6 +3969,87 @@ func (sh *strictHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListDevicesResponseObject); ok {
 		if err := validResponse.VisitListDevicesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ProvisionDevice operation middleware
+func (sh *strictHandler) ProvisionDevice(w http.ResponseWriter, r *http.Request) {
+	var request ProvisionDeviceRequestObject
+
+	var body ProvisionDeviceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ProvisionDevice(ctx, request.(ProvisionDeviceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ProvisionDevice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ProvisionDeviceResponseObject); ok {
+		if err := validResponse.VisitProvisionDeviceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAvailableDevices operation middleware
+func (sh *strictHandler) ListAvailableDevices(w http.ResponseWriter, r *http.Request) {
+	var request ListAvailableDevicesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAvailableDevices(ctx, request.(ListAvailableDevicesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAvailableDevices")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAvailableDevicesResponseObject); ok {
+		if err := validResponse.VisitListAvailableDevicesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteDevice operation middleware
+func (sh *strictHandler) DeleteDevice(w http.ResponseWriter, r *http.Request, name string) {
+	var request DeleteDeviceRequestObject
+
+	request.Name = name
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteDevice(ctx, request.(DeleteDeviceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteDevice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteDeviceResponseObject); ok {
+		if err := validResponse.VisitDeleteDeviceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

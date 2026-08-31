@@ -171,6 +171,14 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 func run(cfgPath string) error {
 	startTime := time.Now()
 	cfg, err := config.Load(cfgPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// First run with no config file: boot with defaults and no devices so the
+		// web UI comes up and the operator can enumerate the host's capture
+		// hardware and enable devices from there. The first provisioning writes the
+		// config file at cfgPath.
+		log.Printf("no config file at %s; starting with defaults (enable capture devices from the web UI)", cfgPath)
+		cfg, err = config.Default(), nil
+	}
 	if err != nil {
 		return err
 	}

@@ -73,6 +73,10 @@ export class DeviceSettingsForm {
   private hardware: DeviceHardware;
   private onDirty: () => void;
   private ready = false;
+  // loadCoercion is set when opening the form silently downgraded the saved codec
+  // because the hardware no longer supports it, so the caller can tell the
+  // operator instead of the change appearing to happen on its own (#27).
+  private loadCoercion: string | null = null;
 
   constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware = {}) {
     this.device = device;
@@ -155,6 +159,12 @@ export class DeviceSettingsForm {
     this.modeHidden = mode.hidden;
     modeField.appendChild(mode.container);
     const opusOffered = modeOpts.some((o) => o.val === "opus");
+    // The saved config asked for Opus but the hardware can no longer satisfy it
+    // (no 48 kHz mono), so the form opened on PCM. Record it so the operator is
+    // told rather than seeing the codec change with no explanation (#27).
+    if (d.mode === "opus" && !opusOffered) {
+      this.loadCoercion = `${d.name} does not support Opus (48 kHz mono); switched to PCM L16. Save to keep this change.`;
+    }
     modeField.appendChild(this.hint(
       opusOffered
         ? "Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."
@@ -189,6 +199,13 @@ export class DeviceSettingsForm {
   public destroy(): void {
     for (const dropdown of this.dropdowns) dropdown.destroy();
     this.dropdowns = [];
+  }
+
+  // loadNotice returns a message when opening the form silently coerced an
+  // unsupported saved codec (Opus on hardware that cannot do 48 kHz mono) down to
+  // PCM, or null when nothing was coerced. The caller surfaces it to the operator.
+  public loadNotice(): string | null {
+    return this.loadCoercion;
   }
 
   public validate(): boolean {

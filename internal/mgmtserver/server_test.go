@@ -23,13 +23,15 @@ const (
 )
 
 type fakeProvider struct {
-	status  ApplianceStatus
-	devices []DeviceStatus
+	status    ApplianceStatus
+	devices   []DeviceStatus
+	available []AvailableDevice
 }
 
-func (f *fakeProvider) Version() string         { return f.status.Version }
-func (f *fakeProvider) Status() ApplianceStatus { return f.status }
-func (f *fakeProvider) Devices() []DeviceStatus { return f.devices }
+func (f *fakeProvider) Version() string                     { return f.status.Version }
+func (f *fakeProvider) Status() ApplianceStatus             { return f.status }
+func (f *fakeProvider) Devices() []DeviceStatus             { return f.devices }
+func (f *fakeProvider) AvailableDevices() []AvailableDevice { return f.available }
 
 func (f *fakeProvider) Device(name string) (DeviceStatus, bool) {
 	for i := range f.devices {
@@ -52,7 +54,7 @@ func servingOpus() DeviceStatus {
 		NegotiatedChannels: 1,
 		ClientConnected:    true,
 		DroppedFrames:      12,
-		FriendlyName:       "Scarlett 2i2 USB",
+		FriendlyName:       nameScarlett,
 		SupportedRates:     []int{48000, 96000, 192000},
 		SupportedChannels:  []int{1, 2},
 	}
@@ -150,7 +152,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.Error != nil {
 		t.Errorf("serving device should have no error, got %v", *d.Error)
 	}
-	if d.FriendlyName == nil || *d.FriendlyName != "Scarlett 2i2 USB" {
+	if d.FriendlyName == nil || *d.FriendlyName != nameScarlett {
 		t.Errorf("friendlyName = %v, want Scarlett 2i2 USB", d.FriendlyName)
 	}
 	if d.SupportedRates == nil || !slices.Equal(*d.SupportedRates, []int{48000, 96000, 192000}) {

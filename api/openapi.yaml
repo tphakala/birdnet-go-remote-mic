@@ -103,6 +103,74 @@ paths:
                   $ref: "#/components/schemas/Device"
         default:
           $ref: "#/components/responses/Problem"
+    post:
+      operationId: provisionDevice
+      tags: [devices]
+      summary: Enable (provision) a detected capture device
+      description: >
+        Enables streaming on a capture device the host exposes but the
+        configuration does not yet list. The appliance derives a unique name
+        from the device's hardware label, generates a hard-to-guess RTSP path,
+        and chooses a mode, sample rate and channel count from the device's
+        probed capabilities (Opus 48 kHz mono when supported, otherwise raw PCM
+        at the device's best rate). Any field set in the request overrides its
+        derived default. The change is persisted and hot-applied to the running
+        pipeline; the new device starts serving without a restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisionDeviceRequest"
+      responses:
+        "201":
+          description: The device was provisioned and is being served.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "404":
+          description: No such capture device is present on the host.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: A device with this id or derived name is already configured.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: The request is well-formed but fails validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ValidationProblem"
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /devices/available:
+    get:
+      operationId: listAvailableDevices
+      tags: [devices]
+      summary: List detected but unconfigured capture devices
+      description: >
+        Every capture device the host exposes that the configuration does not
+        yet list, with the sample rates and channel counts probed for it. These
+        are the devices an operator can enable from the web UI without editing
+        the configuration by hand.
+      responses:
+        "200":
+          description: All detected, unconfigured devices.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AvailableDevice"
+        default:
+          $ref: "#/components/responses/Problem"
 
   /devices/{name}:
     get:
@@ -124,6 +192,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Device"
+        "404":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteDevice
+      tags: [devices]
+      summary: Remove a configured capture device
+      description: >
+        Removes the named device from the configuration, stopping it if it is
+        serving and returning its hardware to the pool of available devices. The
+        change is persisted and hot-applied without a restart.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The device's configured unique name.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The device was removed.
         "404":
           $ref: "#/components/responses/Problem"
         default:
@@ -460,6 +550,75 @@ components:
         returns 404 until the appliance restarts. disabled: configured but
         intentionally not opened (its enabled flag is false); not captured
         or streamed until enabled and the appliance restarts.
+
+    AvailableDevice:
+      type: object
+      description: >
+        A capture device the host exposes that the configuration does not yet
+        list. It carries only the device id and the probed capabilities; a
+        name, path and stream parameters are assigned when it is provisioned
+        (see POST /devices).
+      required:
+        - device
+        - state
+      properties:
+        device:
+          type: string
+          description: ALSA capture device id.
+          examples: ["hw:1,0"]
+        state:
+          type: string
+          const: available
+          description: Always "available"; the device is detected but not configured.
+        friendlyName:
+          type: string
+          description: Human-facing label derived from the sound card name.
+          examples: ["Scarlett 2i2 USB"]
+        supportedRates:
+          type: array
+          items:
+            type: integer
+          description: >
+            Sample rates the hardware accepts, verified with a real HW_PARAMS
+            commit. Absent or empty when the device could not be probed.
+          examples: [[48000, 96000, 192000]]
+        supportedChannels:
+          type: array
+          items:
+            type: integer
+          description: >
+            Channel counts the hardware accepts (a subset of [1, 2]). Absent or
+            empty when the device could not be probed.
+          examples: [[1], [1, 2]]
+
+    ProvisionDeviceRequest:
+      type: object
+      description: >
+        Request to enable (provision) a detected capture device. Only device is
+        required; the appliance derives sensible defaults for everything else,
+        and any field set here overrides its derived default.
+      required:
+        - device
+      properties:
+        device:
+          type: string
+          description: ALSA capture device id to enable, as reported by GET /devices/available.
+          examples: ["hw:1,0"]
+        name:
+          type: string
+          description: Optional unique device name; derived from the hardware label when omitted.
+        mode:
+          $ref: "#/components/schemas/StreamMode"
+        rate:
+          type: integer
+          minimum: 8000
+          maximum: 384000
+          description: Optional capture sample rate in Hz; chosen from the device's capabilities when omitted.
+        channels:
+          type: integer
+          minimum: 1
+          maximum: 2
+          description: Optional channel count; chosen from the device's capabilities when omitted.
 
     StreamMode:
       type: string

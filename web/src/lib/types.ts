@@ -82,6 +82,29 @@ export interface Device {
   supportedChannels?: number[];
 }
 
+// AvailableDevice is a capture device the host exposes that the configuration
+// does not list (GET /devices/available). It carries only the device id and the
+// probed capabilities; a name, path and stream parameters are assigned when it
+// is provisioned via POST /devices.
+export interface AvailableDevice {
+  device: string;
+  state: "available";
+  friendlyName?: string;
+  supportedRates?: number[];
+  supportedChannels?: number[];
+}
+
+// ProvisionDeviceRequest enables a detected device (POST /devices). Only device
+// is required; the appliance derives everything else, and any field set here
+// overrides its derived default.
+export interface ProvisionDeviceRequest {
+  device: string;
+  name?: string;
+  mode?: StreamMode;
+  rate?: number;
+  channels?: number;
+}
+
 export interface NetworkInterface {
   name: string;
   mac?: string;

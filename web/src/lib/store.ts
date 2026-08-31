@@ -2,6 +2,7 @@ import { api } from "./api.js";
 import { sse } from "./sse.js";
 import type {
   ApplianceStatus,
+  AvailableDevice,
   Config,
   Device,
   DeviceLevels,
@@ -12,6 +13,7 @@ import type {
 export interface AppState {
   status: ApplianceStatus | null;
   devices: Device[];
+  available: AvailableDevice[];
   levels: Map<string, DeviceLevels>;
   system: SystemInfo | null;
   config: Config | null;
@@ -22,6 +24,7 @@ export class AppStore extends EventTarget {
   private state: AppState = {
     status: null,
     devices: [],
+    available: [],
     levels: new Map(),
     system: null,
     config: null,
@@ -69,6 +72,7 @@ export class AppStore extends EventTarget {
       this.refreshDevices(),
       this.refreshSystem(),
       this.refreshConfig(),
+      this.refreshAvailable(),
     ]);
     // Surface a per-resource load error so each view can offer a retry for its
     // own data instead of a "Loading..." placeholder that never resolves, and
@@ -95,6 +99,7 @@ export class AppStore extends EventTarget {
         this.refreshStatus(),
         this.refreshDevices(),
         this.refreshSystem(),
+        this.refreshAvailable(),
       ]);
     }, intervalMs);
   }
@@ -114,6 +119,17 @@ export class AppStore extends EventTarget {
       return true;
     } catch (err) {
       console.warn("Failed to refresh status:", err);
+      return false;
+    }
+  }
+
+  public async refreshAvailable(): Promise<boolean> {
+    try {
+      this.state.available = await api.getAvailableDevices();
+      this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
+      return true;
+    } catch (err) {
+      console.warn("Failed to refresh available devices:", err);
       return false;
     }
   }

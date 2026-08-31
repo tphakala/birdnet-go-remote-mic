@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtcert"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -38,6 +39,11 @@ type provider struct {
 	dataPath  string // filesystem path whose storage usage /system reports
 	sampler   *sysinfo.Sampler
 	devices   atomic.Pointer[[]*deviceRuntime]
+	// detected is the last enumerated set of host capture devices with their
+	// probed capabilities, refreshed on every reconcile. AvailableDevices filters
+	// out the ones the config already lists. Atomic because a reconcile (run-loop
+	// goroutine) stores it while HTTP handlers read it for GET /devices/available.
+	detected atomic.Pointer[[]audio.DetectedDevice]
 }
 
 // discoveryEnabled reports the current mDNS-advertisement flag.
@@ -92,6 +98,36 @@ func (p *provider) Devices() []mgmtserver.DeviceStatus {
 	out := make([]mgmtserver.DeviceStatus, 0, len(devices))
 	for _, d := range devices {
 		out = append(out, d.status())
+	}
+	return out
+}
+
+// setDetected publishes the latest enumerated host capture devices.
+func (p *provider) setDetected(d []audio.DetectedDevice) { p.detected.Store(&d) }
+
+// AvailableDevices lists detected host capture devices the config does not list,
+// so the UI can offer them for provisioning. It filters the cached enumeration by
+// the device ids the running config already owns.
+func (p *provider) AvailableDevices() []mgmtserver.AvailableDevice {
+	var det []audio.DetectedDevice
+	if d := p.detected.Load(); d != nil {
+		det = *d
+	}
+	configured := make(map[string]bool)
+	for _, rt := range p.deviceList() {
+		configured[rt.dev.Device] = true
+	}
+	out := make([]mgmtserver.AvailableDevice, 0, len(det))
+	for i := range det {
+		if configured[det[i].ID] {
+			continue
+		}
+		out = append(out, mgmtserver.AvailableDevice{
+			ID:                det[i].ID,
+			FriendlyName:      det[i].FriendlyName,
+			SupportedRates:    det[i].SupportedRates,
+			SupportedChannels: det[i].SupportedChannels,
+		})
 	}
 	return out
 }

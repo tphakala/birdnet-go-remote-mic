@@ -211,7 +211,7 @@ func TestValidate(t *testing.T) {
 		{"name with CRLF fails", func(c *Config) { c.Devices[0].Name = "bad\r\nname" }, true},
 		{"empty name fails", func(c *Config) { c.Devices[0].Name = "" }, true},
 		{"empty listen fails", func(c *Config) { c.Listen = "" }, true},
-		{"no devices fails", func(c *Config) { c.Devices = nil }, true},
+		{"no devices is valid (zero-config first run)", func(c *Config) { c.Devices = nil }, false},
 		{"rate too high fails", func(c *Config) { c.Devices[0].Rate = 500000 }, true},
 		{"rate too low fails", func(c *Config) { c.Devices[0].Rate = 100 }, true},
 		{"channels 3 fails", func(c *Config) { c.Devices[0].Channels = 3 }, true},

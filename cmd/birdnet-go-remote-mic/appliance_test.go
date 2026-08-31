@@ -235,3 +235,30 @@ func TestApplianceRestartStopsAllBeforeStartingAny(t *testing.T) {
 	drainPump(t, app) // the two superseded old pumps
 	drainPump(t, app)
 }
+
+func TestRememberCapsRetainsLastKnown(t *testing.T) {
+	a := &appliance{capsCache: map[string]deviceCaps{}}
+
+	// First probe records the caps.
+	r, c := a.rememberCaps("hw:1,0", []int{48000, 96000}, []int{1, 2})
+	if len(r) != 2 || len(c) != 2 {
+		t.Fatalf("first probe = %v %v, want the probed values", r, c)
+	}
+
+	// A transient empty probe (card-swap window) keeps the last-known caps.
+	r, c = a.rememberCaps("hw:1,0", nil, nil)
+	if len(r) != 2 || r[0] != 48000 || len(c) != 2 {
+		t.Errorf("empty re-probe = %v %v, want the retained [48000 96000] [1 2]", r, c)
+	}
+
+	// A later non-empty probe replaces the cache.
+	r, c = a.rememberCaps("hw:1,0", []int{384000}, []int{1})
+	if len(r) != 1 || r[0] != 384000 || len(c) != 1 || c[0] != 1 {
+		t.Errorf("updated probe = %v %v, want [384000] [1]", r, c)
+	}
+
+	// An unknown device with an empty probe stays empty (nothing to retain).
+	if r, c := a.rememberCaps("hw:9,0", nil, nil); r != nil || c != nil {
+		t.Errorf("unknown empty probe = %v %v, want nil nil", r, c)
+	}
+}
