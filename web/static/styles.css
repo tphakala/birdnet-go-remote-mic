@@ -813,6 +813,20 @@ body {
   padding: 12px;
 }
 
+/* A high-channel interface (6-8 channels) would stack that many meter rows and
+   grow the card tall enough to push the dashboard down. Cap the stack and let
+   the rows scroll within the console; the dB scale stays pinned at the top. */
+.meter-console.many-channels {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.meter-console.many-channels .meter-scale {
+  position: sticky;
+  top: 0;
+  background: var(--meter-bg);
+}
+
 .meter-scale {
   display: flex;
   justify-content: space-between;

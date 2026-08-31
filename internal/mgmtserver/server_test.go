@@ -54,6 +54,7 @@ func servingOpus() DeviceStatus {
 		DroppedFrames:      12,
 		FriendlyName:       "Scarlett 2i2 USB",
 		SupportedRates:     []int{48000, 96000, 192000},
+		SupportedChannels:  []int{1, 2},
 	}
 }
 
@@ -155,6 +156,9 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.SupportedRates == nil || !slices.Equal(*d.SupportedRates, []int{48000, 96000, 192000}) {
 		t.Errorf("supportedRates = %v, want [48000 96000 192000]", d.SupportedRates)
 	}
+	if d.SupportedChannels == nil || !slices.Equal(*d.SupportedChannels, []int{1, 2}) {
+		t.Errorf("supportedChannels = %v, want [1 2]", d.SupportedChannels)
+	}
 }
 
 func TestListDevicesMapsSkippedPCM(t *testing.T) {
@@ -185,6 +189,9 @@ func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	}
 	if d.SupportedRates != nil {
 		t.Errorf("device with no probed rates must omit supportedRates, got %v", *d.SupportedRates)
+	}
+	if d.SupportedChannels != nil {
+		t.Errorf("device with no probed channels must omit supportedChannels, got %v", *d.SupportedChannels)
 	}
 }
 

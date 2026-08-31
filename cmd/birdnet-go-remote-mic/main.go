@@ -36,6 +36,11 @@ import (
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// deviceInUse reports whether a capture device is held exclusively by another
+// process, via a non-blocking capability query. It is a package var so the open
+// retry is testable without hardware.
+var deviceInUse = audio.DeviceInUse
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to the YAML config file")
 	listDevices := flag.Bool("list-devices", false, "list capture devices and exit")
@@ -78,12 +83,13 @@ type deviceRuntime struct {
 	track    *rtspserver.Track
 	rate     int
 	channels int
-	// friendlyName is the sound card's human label; supportedRates is the set of
-	// rates the device accepted at the startup probe. Both are static per run and
-	// read without a lock.
-	friendlyName   string
-	supportedRates []int
-	dropped        atomic.Uint64
+	// friendlyName is the sound card's human label; supportedRates and
+	// supportedChannels are the rate and channel-count sets the device accepted at
+	// the startup probe. All static per run and read without a lock.
+	friendlyName      string
+	supportedRates    []int
+	supportedChannels []int
+	dropped           atomic.Uint64
 
 	mu    sync.Mutex
 	state mgmtserver.DeviceState
@@ -139,9 +145,21 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 	const delay = 50 * time.Millisecond
 	var err error
 	for i := range attempts {
-		var rt *deviceRuntime
-		if rt, err = openDevice(dev, hub); err == nil {
-			return rt, nil
+		// Gate the blocking capture open on a non-blocking busy check. A device
+		// held exclusively by another process can make the ALSA open block rather
+		// than fail promptly, which would park the single reconcile goroutine and
+		// stall the whole capture-open phase (no records publish, RTSP never comes
+		// up). The O_NONBLOCK capability query returns at once, so a busy device is
+		// retried and then skipped instead of blocking. The retry also rides out
+		// the transient EBUSY window right after a hot-reload Close, before the
+		// kernel releases the card, so a same-card restart is not falsely skipped.
+		if deviceInUse(dev.Device, dev.Channels) {
+			err = capture.ErrDeviceInUse
+		} else {
+			var rt *deviceRuntime
+			if rt, err = openDevice(dev, hub); err == nil {
+				return rt, nil
+			}
 		}
 		if i < attempts-1 {
 			time.Sleep(delay)

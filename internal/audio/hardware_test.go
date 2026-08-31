@@ -20,6 +20,18 @@ func TestCandidateRatesReturnsFreshCopy(t *testing.T) {
 	}
 }
 
+func TestCandidateChannelsReturnsFreshCopy(t *testing.T) {
+	t.Parallel()
+	a := CandidateChannels()
+	if len(a) != 2 || a[0] != 1 || a[1] != 2 {
+		t.Fatalf("CandidateChannels = %v, want [1 2]", a)
+	}
+	a[0] = -1 // mutate the returned slice
+	if b := CandidateChannels(); b[0] == -1 {
+		t.Error("CandidateChannels returned a slice aliasing the package var; a mutation leaked")
+	}
+}
+
 func TestFriendlyName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

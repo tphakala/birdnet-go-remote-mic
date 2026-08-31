@@ -17,6 +17,16 @@ var candidateRates = []int{16000, 22050, 32000, 44100, 48000, 88200, 96000, 1764
 // a fresh slice so a caller cannot mutate the shared package list.
 func CandidateRates() []int { return slices.Clone(candidateRates) }
 
+// candidateChannels is the set of channel counts probed at startup and offered in
+// the config UI. config.Validate accepts only 1 or 2 (Opus needs mono; PCM
+// supports up to stereo), so those are the only counts worth probing. ProbeChannels
+// keeps the subset a given device actually accepts.
+var candidateChannels = []int{1, 2}
+
+// CandidateChannels returns a copy of the startup probe candidate channel counts.
+// It returns a fresh slice so a caller cannot mutate the shared package list.
+func CandidateChannels() []int { return slices.Clone(candidateChannels) }
+
 // FriendlyName derives a short, human-facing device label from an ALSA card
 // name by keeping the text before the first comma and trimming surrounding
 // whitespace. ALSA longnames commonly append a bus suffix after a comma (for
