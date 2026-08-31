@@ -12,6 +12,35 @@ const ICON_ERROR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
 const ICON_WARN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
 const ICON_COPY = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
 const ICON_GEAR = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+// runtimeEnabled reports whether a device is on at runtime. A disabled device is
+// off; anything else (serving, or a failed/skipped device that was configured
+// to stream) is on until the operator changes it.
+function runtimeEnabled(state) {
+    return state !== "disabled";
+}
+// pendingStop reports that a device is currently serving while the config now
+// disables it: it keeps serving until a restart, and the serving card otherwise
+// shows a live "Serving" badge and meters with no explanation once the toast
+// fades, so a persistent banner is warranted. Only a serving device qualifies:
+// a failed or skipped device is not serving (its footer already explains the
+// exclusion, and a "stop serving" banner would be inaccurate there), and the
+// reverse (a disabled card now enabled in config) is explained by the
+// non-serving footer, so neither needs a banner.
+function pendingStop(configEnabled, state) {
+    return state === "serving" && !configEnabled;
+}
+const PENDING_STOP_TEXT = "Disabled. Restart the appliance to stop serving this device.";
+// nonServingFooterText is the footer message for a card that is not serving,
+// shared by buildCard and updateCard so an in-session toggle never leaves stale
+// enabled/disabled wording behind.
+function nonServingFooterText(state, configEnabled) {
+    if (state === "disabled") {
+        return configEnabled
+            ? "Enabled. Restart the appliance to start serving it."
+            : "Streaming is disabled for this device. Enable it and restart the appliance to serve it.";
+    }
+    return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
+}
 function iconSpan(markup, className) {
     const s = document.createElement("span");
     if (className)
@@ -33,7 +62,7 @@ function deviceToConfig(d) {
     const c = {
         name: d.name, device: d.device, path: d.path, mode: d.mode,
         rate: d.rate, channels: d.channels, format: d.format,
-        enabled: d.state !== "disabled",
+        enabled: runtimeEnabled(d.state),
     };
     if (d.opus)
         c.opus = d.opus;
@@ -81,8 +110,13 @@ export class DashboardView {
             const levels = e.detail;
             levels.forEach((dl, name) => {
                 const entry = this.cards.get(name);
-                if (entry && entry.meter)
-                    entry.meter.setLevels(dl.rmsDbfs, dl.peakDbfs, dl.clipped);
+                if (!entry)
+                    return;
+                for (const ch of dl.channels) {
+                    const meter = entry.meters[ch.channel];
+                    if (meter)
+                        meter.setLevels(ch.rmsDbfs, ch.peakDbfs, ch.clipped);
+                }
             });
         });
         store.addEventListener("connection", (e) => {
@@ -128,8 +162,7 @@ export class DashboardView {
             // the live meter keeps running across the 3s device poll.
             if (!existing || existing.serving !== serving) {
                 if (existing) {
-                    if (existing.meter)
-                        existing.meter.destroy();
+                    existing.meters.forEach((m) => m.destroy());
                     existing.settingsForm?.destroy();
                     existing.article.remove();
                     this.cards.delete(d.name);
@@ -143,8 +176,7 @@ export class DashboardView {
         // Remove cards for devices that are gone.
         for (const [name, entry] of this.cards) {
             if (!seen.has(name)) {
-                if (entry.meter)
-                    entry.meter.destroy();
+                entry.meters.forEach((m) => m.destroy());
                 entry.settingsForm?.destroy();
                 entry.article.remove();
                 this.cards.delete(name);
@@ -173,7 +205,7 @@ export class DashboardView {
         // from the runtime state until the next restart. Fall back to the runtime
         // state only when the config is not loaded.
         const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
-        const configEnabled = cfgDev?.enabled ?? d.state !== "disabled";
+        const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
         // A disabled device is off by intent, not broken: give it a neutral card and
         // avatar rather than the error styling reserved for a failed/skipped device.
         const article = elem("article", `rack-card ${serving ? "active-stream" : disabled ? "" : "error-stream"}`);
@@ -216,9 +248,21 @@ export class DashboardView {
         toggleInput.type = "checkbox";
         toggleInput.className = "visually-hidden";
         toggleInput.checked = configEnabled;
+        // role=switch + aria-checked announces "switch, on/off" rather than the bare
+        // "checkbox, checked"; keep aria-checked in sync wherever checked changes.
+        toggleInput.setAttribute("role", "switch");
+        toggleInput.setAttribute("aria-checked", String(configEnabled));
         toggleInput.setAttribute("aria-label", `Stream ${d.name}`);
         const toggleTrack = elem("span", "switch-track");
         toggleTrack.appendChild(elem("span", "switch-thumb"));
+        // Visible caption so the bare track is not an unlabeled control, matching the
+        // System-view discovery switch. Hidden from assistive tech (the input already
+        // carries an aria-label) so it is not announced twice. It sits before the
+        // input so the input stays adjacent to the track for the `input + .switch-track`
+        // state selectors.
+        const toggleCaption = elem("span", "switch-caption", "Stream");
+        toggleCaption.setAttribute("aria-hidden", "true");
+        toggleLabel.appendChild(toggleCaption);
         toggleLabel.appendChild(toggleInput);
         toggleLabel.appendChild(toggleTrack);
         tags.appendChild(toggleLabel);
@@ -231,10 +275,20 @@ export class DashboardView {
         header.appendChild(ident);
         header.appendChild(tags);
         article.appendChild(header);
+        // Persistent restart-required banner: shown when the device is still serving
+        // (or attempting to) while the config now disables it, so a toggle made this
+        // session is never silently lost behind a still-live "Serving" card.
+        const pendingNote = elem("div", "pending-restart-note");
+        pendingNote.setAttribute("role", "status");
+        const showPending = pendingStop(configEnabled, d.state);
+        pendingNote.textContent = showPending ? PENDING_STOP_TEXT : "";
+        pendingNote.hidden = !showPending;
+        article.appendChild(pendingNote);
         let urlEl = null;
-        let meter = null;
+        let meters = [];
         let clientsEl = null;
         let droppedEl = null;
+        let footerNote = null;
         if (serving) {
             // Endpoint strip
             const strip = elem("div", "endpoint-strip");
@@ -254,39 +308,13 @@ export class DashboardView {
             strip.appendChild(info);
             strip.appendChild(copyBtn);
             article.appendChild(strip);
-            // Meter console. The live VU meter is a decorative real-time
-            // visualization whose dB readout updates ~10x/s; hide it from the
-            // accessibility tree so it does not spam screen readers.
-            const meterConsole = elem("div", "meter-console");
-            const scale = elem("div", "meter-scale");
-            for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
-                scale.appendChild(elem("span", undefined, s));
-            }
-            meterConsole.appendChild(scale);
-            const wrapper = elem("div", "meter-track-wrapper");
-            const canvasContainer = elem("div", "meter-canvas-container");
-            const canvas = document.createElement("canvas");
-            canvas.className = "meter-canvas";
-            // The live meter and its dB readout update ~10 Hz; hide them from
-            // assistive tech to avoid announcement spam. The clip button stays exposed.
-            canvas.setAttribute("aria-hidden", "true");
-            canvas.width = 700;
-            canvas.height = 22;
-            canvasContainer.appendChild(canvas);
-            const stats = elem("div", "meter-stats");
-            const dbReadout = elem("span", "db-readout mono", "-inf");
-            dbReadout.setAttribute("aria-hidden", "true");
-            const clipBtn = elem("button", "clip-latch-btn", "CLIP");
-            clipBtn.setAttribute("type", "button");
-            clipBtn.setAttribute("aria-label", "Clip indicator, click to clear");
-            clipBtn.title = "Click to clear clip latch";
-            stats.appendChild(dbReadout);
-            stats.appendChild(clipBtn);
-            wrapper.appendChild(canvasContainer);
-            wrapper.appendChild(stats);
-            meterConsole.appendChild(wrapper);
-            article.appendChild(meterConsole);
-            meter = new VUMeter(canvas, dbReadout, clipBtn);
+            // Meter console: one live VU meter per capture channel. The meters are
+            // decorative real-time visualizations updating ~10 Hz, hidden from the
+            // accessibility tree so they do not spam screen readers.
+            const channelCount = d.negotiatedChannels ?? d.channels;
+            const built = this.buildMeterConsole(channelCount);
+            meters = built.meters;
+            article.appendChild(built.console);
             // Footer
             const footer = elem("div", "rack-footer");
             const metrics = elem("div", "stream-metrics");
@@ -319,23 +347,85 @@ export class DashboardView {
                 article.appendChild(banner);
             }
             const footer = elem("div", "rack-footer");
-            footer.appendChild(elem("span", undefined, d.state === "disabled"
-                ? configEnabled
-                    ? "Enabled. Restart the appliance to start serving it."
-                    : "Streaming is disabled for this device. Enable it and restart the appliance to serve it."
-                : "Excluded from the RTSP stream server. Other active devices continue serving without interruption."));
+            footerNote = elem("span", undefined, nonServingFooterText(d.state, configEnabled));
+            footer.appendChild(footerNote);
             article.appendChild(footer);
         }
         const settingsWrap = elem("div", "card-settings");
         settingsWrap.hidden = true;
         article.appendChild(settingsWrap);
         const entry = {
-            article, gearBtn, serving, meter, urlEl, statusEl, clientsEl, droppedEl,
+            article, gearBtn, serving, meters, urlEl, statusEl, clientsEl, droppedEl,
+            toggleInput, pendingNote, footerNote,
             device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
         };
         gearBtn.addEventListener("click", () => this.toggleSettings(entry));
         toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry, toggleInput));
         return entry;
+    }
+    // buildMeterConsole builds the shared dB scale plus one metering row per
+    // capture channel and returns the console element and its VU meters, indexed
+    // by channel. A mono device gets a single unlabeled row (unchanged from the
+    // single-meter layout); a multi-channel device labels each row "Ch N".
+    buildMeterConsole(count) {
+        const meterConsole = elem("div", "meter-console");
+        const scale = elem("div", "meter-scale");
+        for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
+            scale.appendChild(elem("span", undefined, s));
+        }
+        meterConsole.appendChild(scale);
+        const meters = [];
+        const n = Math.max(1, count);
+        const multi = n > 1;
+        for (let c = 0; c < n; c++) {
+            const wrapper = elem("div", "meter-track-wrapper");
+            if (multi) {
+                const label = elem("span", "meter-channel-label mono", `Ch ${c + 1}`);
+                label.setAttribute("aria-hidden", "true");
+                wrapper.appendChild(label);
+            }
+            const canvasContainer = elem("div", "meter-canvas-container");
+            const canvas = document.createElement("canvas");
+            canvas.className = "meter-canvas";
+            // The live meter and its dB readout update ~10 Hz; hide them from assistive
+            // tech to avoid announcement spam. The clip button stays exposed.
+            canvas.setAttribute("aria-hidden", "true");
+            canvas.width = 700;
+            canvas.height = 22;
+            canvasContainer.appendChild(canvas);
+            const stats = elem("div", "meter-stats");
+            const dbReadout = elem("span", "db-readout mono", "-inf");
+            dbReadout.setAttribute("aria-hidden", "true");
+            const clipBtn = elem("button", "clip-latch-btn", "CLIP");
+            clipBtn.setAttribute("type", "button");
+            clipBtn.setAttribute("aria-label", multi ? `Channel ${c + 1} clip indicator, click to clear` : "Clip indicator, click to clear");
+            clipBtn.title = "Click to clear clip latch";
+            stats.appendChild(dbReadout);
+            stats.appendChild(clipBtn);
+            wrapper.appendChild(canvasContainer);
+            wrapper.appendChild(stats);
+            meterConsole.appendChild(wrapper);
+            meters.push(new VUMeter(canvas, dbReadout, clipBtn));
+        }
+        return { console: meterConsole, meters };
+    }
+    // deviceConfigBase is the current device list to patch from: the persisted
+    // config when loaded, else the runtime devices projected to config shape so a
+    // patch built before the first config load still carries every device.
+    deviceConfigBase() {
+        return store.getState().config?.devices ?? store.getState().devices.map(deviceToConfig);
+    }
+    // apiErrorToast surfaces a failed PATCH: a validation problem shows the first
+    // field/reason, anything else shows the raw message, both under a prefix.
+    apiErrorToast(err, prefix) {
+        if (err instanceof ApiError && err.errors && err.errors.length > 0) {
+            const first = err.errors[0];
+            showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
+        }
+        else {
+            const msg = err instanceof Error ? err.message : String(err);
+            showToast(`${prefix}: ${msg}`, "error");
+        }
     }
     // handleToggleEnabled persists a device's streaming enable/disable flag. The
     // capture pipeline is built only at startup, so the change is saved to the
@@ -344,26 +434,18 @@ export class DashboardView {
     async handleToggleEnabled(entry, input) {
         const want = input.checked;
         const id = entry.device.device;
-        const cfg = store.getState().config;
-        const base = cfg?.devices ?? store.getState().devices.map(deviceToConfig);
-        const merged = base.map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
+        const merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
         input.disabled = true;
+        input.setAttribute("aria-checked", String(want));
         try {
             await api.patchConfig({ devices: merged });
-            await store.refreshConfig();
-            await store.refreshDevices();
+            await Promise.all([store.refreshConfig(), store.refreshDevices()]);
             showToast(`${want ? "Enabled" : "Disabled"} ${entry.device.name}. Restart the appliance to apply.`);
         }
         catch (err) {
             input.checked = !want;
-            if (err instanceof ApiError && err.errors && err.errors.length > 0) {
-                const first = err.errors[0];
-                showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
-            }
-            else {
-                const msg = err instanceof Error ? err.message : String(err);
-                showToast(`Toggle failed: ${msg}`, "error");
-            }
+            input.setAttribute("aria-checked", String(!want));
+            this.apiErrorToast(err, "Toggle failed");
         }
         finally {
             input.disabled = false;
@@ -450,26 +532,17 @@ export class DashboardView {
         const curEnabled = cfg?.devices.find((cd) => cd.device === edited.device)?.enabled;
         if (curEnabled !== undefined)
             edited.enabled = curEnabled;
-        const base = cfg?.devices ?? store.getState().devices.map(deviceToConfig);
-        const merged = base.map((cd) => (cd.device === edited.device ? edited : cd));
+        const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? edited : cd));
         if (!merged.some((cd) => cd.device === edited.device))
             merged.push(edited);
         try {
             await api.patchConfig({ devices: merged });
             this.closeSettings(entry);
-            await store.refreshConfig();
-            await store.refreshDevices();
+            await Promise.all([store.refreshConfig(), store.refreshDevices()]);
             showToast("Device settings saved. Restart the appliance to apply.");
         }
         catch (err) {
-            if (err instanceof ApiError && err.errors && err.errors.length > 0) {
-                const first = err.errors[0];
-                showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
-            }
-            else {
-                const msg = err instanceof Error ? err.message : String(err);
-                showToast(`Save failed: ${msg}`, "error");
-            }
+            this.apiErrorToast(err, "Save failed");
         }
     }
     buildStatusBadge(state) {
@@ -492,6 +565,30 @@ export class DashboardView {
             entry.clientsEl.textContent = d.clientConnected ? "1 connected" : "0 connected";
         if (entry.droppedEl)
             entry.droppedEl.textContent = String(d.droppedFrames);
+        // Reconcile the streaming toggle and the pending/footer copy against the
+        // persisted config, so an in-session toggle (or an out-of-band config change)
+        // is reflected without waiting for a serving-state flip and full rebuild.
+        const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
+        const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
+        // Do not fight the user mid-interaction (the input is disabled while a PATCH
+        // is in flight); otherwise keep it in sync with the persisted flag.
+        if (!entry.toggleInput.disabled && entry.toggleInput.checked !== configEnabled) {
+            entry.toggleInput.checked = configEnabled;
+            entry.toggleInput.setAttribute("aria-checked", String(configEnabled));
+        }
+        // Guard the live-region and footer writes so a steady state is not
+        // re-written on every ~3s poll (role=status re-announces to screen readers
+        // on any content mutation, and the writes are otherwise wasted).
+        const showPending = pendingStop(configEnabled, d.state);
+        if (showPending === entry.pendingNote.hidden) {
+            entry.pendingNote.hidden = !showPending;
+            entry.pendingNote.textContent = showPending ? PENDING_STOP_TEXT : "";
+        }
+        if (entry.footerNote) {
+            const footerText = nonServingFooterText(d.state, configEnabled);
+            if (entry.footerNote.textContent !== footerText)
+                entry.footerNote.textContent = footerText;
+        }
     }
     handleCopyUrl(btn, urlEl) {
         const url = urlEl?.textContent;

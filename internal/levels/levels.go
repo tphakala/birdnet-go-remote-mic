@@ -34,13 +34,21 @@ const defaultInterval = 100 * time.Millisecond
 // detect a dead server and proxies keep the connection open.
 const defaultHeartbeat = 15 * time.Second
 
-// DeviceLevels is one device's audio levels over the last measurement window.
-// The JSON tags match the OpenAPI DeviceLevels schema exactly.
-type DeviceLevels struct {
-	Name     string  `json:"name"`
+// ChannelLevels is one capture channel's audio levels over the last measurement
+// window. The JSON tags match the OpenAPI ChannelLevels schema exactly.
+type ChannelLevels struct {
+	Channel  int     `json:"channel"`
 	PeakDbfs float64 `json:"peakDbfs"`
 	RmsDbfs  float64 `json:"rmsDbfs"`
 	Clipped  bool    `json:"clipped"`
+}
+
+// DeviceLevels is one device's audio levels over the last measurement window,
+// one entry per captured channel (a mono device carries a single element). The
+// JSON tags match the OpenAPI DeviceLevels schema exactly.
+type DeviceLevels struct {
+	Name     string          `json:"name"`
+	Channels []ChannelLevels `json:"channels"`
 }
 
 // LevelsEvent is the payload of one levels SSE event: levels for every device
@@ -55,78 +63,106 @@ type LevelsEvent struct {
 // subs is shared with the hub: when no client is subscribed, Observe returns
 // immediately, so idle metering costs nothing and the accumulators cannot grow.
 type Meter struct {
-	subs    *atomic.Int32
+	subs *atomic.Int32
+	ch   []chanAccum // one accumulator per capture channel, fixed at creation
+}
+
+// chanAccum holds one channel's atomic accumulators for the current window. It
+// must never be copied (it holds atomics); the Meter owns a fixed-length slice
+// of them, indexed by capture channel, allocated once at Meter creation.
+type chanAccum struct {
 	peak    atomic.Uint32 // max |sample| this window
 	sumSq   atomic.Uint64 // sum of sample^2 this window
 	count   atomic.Uint64 // samples this window
 	clipped atomic.Bool   // any full-scale sample this window
 }
 
-// Observe folds one S16LE period into the accumulators. It is a single pass and
-// runs on the capture pump's OS thread, so it stays allocation-free and skips
+// Observe folds one interleaved S16LE period into the per-channel accumulators.
+// It deinterleaves by the meter's channel count (frame f of channel c sits at
+// interleaved index f*nch+c) and accumulates into stack locals per channel,
+// touching the atomics only once per channel per period rather than per sample.
+// It runs on the capture pump's OS thread, so it stays allocation-free and skips
 // all work when no client is watching.
 func (m *Meter) Observe(pcm []byte) {
 	if m.subs != nil && m.subs.Load() == 0 {
 		return
 	}
-	n := len(pcm) / 2
-	if n == 0 {
+	nch := len(m.ch)
+	if nch == 0 {
 		return
 	}
-	var peak uint32
-	var sumSq uint64
-	clipped := false
-	for i := 0; i < n; i++ {
-		s := int16(binary.LittleEndian.Uint16(pcm[i*2:]))
-		if a := abs16(s); a > peak {
-			peak = a
-		}
-		sumSq += uint64(int64(s) * int64(s))
-		if s == math.MaxInt16 || s == math.MinInt16 {
-			clipped = true
-		}
+	frames := (len(pcm) / 2) / nch
+	if frames == 0 {
+		return
 	}
-	m.count.Add(uint64(n))
-	m.sumSq.Add(sumSq)
-	for {
-		cur := m.peak.Load()
-		if peak <= cur {
-			break
+	for c := 0; c < nch; c++ {
+		var peak uint32
+		var sumSq uint64
+		clipped := false
+		for f := 0; f < frames; f++ {
+			s := int16(binary.LittleEndian.Uint16(pcm[(f*nch+c)*2:]))
+			if a := abs16(s); a > peak {
+				peak = a
+			}
+			sumSq += uint64(int64(s) * int64(s))
+			if s == math.MaxInt16 || s == math.MinInt16 {
+				clipped = true
+			}
 		}
-		if m.peak.CompareAndSwap(cur, peak) {
-			break
+		acc := &m.ch[c]
+		acc.count.Add(uint64(frames))
+		acc.sumSq.Add(sumSq)
+		for {
+			cur := acc.peak.Load()
+			if peak <= cur {
+				break
+			}
+			if acc.peak.CompareAndSwap(cur, peak) {
+				break
+			}
 		}
-	}
-	if clipped {
-		m.clipped.Store(true)
+		if clipped {
+			acc.clipped.Store(true)
+		}
 	}
 }
 
-// sample reads and resets the accumulators and returns the window's levels. The
-// four Swaps are not one atomic step, so a sample racing Observe may shift a
-// sliver of energy across the 100 ms boundary; that jitter is invisible on a VU
-// meter and there is only ever one sampler, so no window is double-counted.
+// sample reads and resets the accumulators and returns the window's per-channel
+// levels. The Swaps are not one atomic step, so a sample racing Observe may
+// shift a sliver of a channel's energy across its 100 ms window boundary; each
+// channel is deinterleaved into its own accumulator, so energy never crosses
+// between channels, and there is only ever one sampler, so no window is
+// double-counted. That jitter is invisible on a VU meter. It runs on the
+// sampler goroutine, not the hot path, so the per-call slice allocation is fine.
 func (m *Meter) sample(name string) DeviceLevels {
-	peak := m.peak.Swap(0)
-	sumSq := m.sumSq.Swap(0)
-	count := m.count.Swap(0)
-	clipped := m.clipped.Swap(false)
-	return DeviceLevels{
-		Name:     name,
-		PeakDbfs: dbfs(float64(peak) / fullScale),
-		RmsDbfs:  rmsDbfs(sumSq, count),
-		Clipped:  clipped,
+	chans := make([]ChannelLevels, len(m.ch))
+	for c := range m.ch {
+		acc := &m.ch[c]
+		peak := acc.peak.Swap(0)
+		sumSq := acc.sumSq.Swap(0)
+		count := acc.count.Swap(0)
+		clipped := acc.clipped.Swap(false)
+		chans[c] = ChannelLevels{
+			Channel:  c,
+			PeakDbfs: dbfs(float64(peak) / fullScale),
+			RmsDbfs:  rmsDbfs(sumSq, count),
+			Clipped:  clipped,
+		}
 	}
+	return DeviceLevels{Name: name, Channels: chans}
 }
 
-// reset zeroes the accumulators. It runs under the hub lock, mutually excluded
-// with sample, when the first client subscribes so a new session does not open
-// on residual left in the meter from a previous one.
+// reset zeroes every channel's accumulators. It runs under the hub lock,
+// mutually excluded with sample, when the first client subscribes so a new
+// session does not open on residual left in the meter from a previous one.
 func (m *Meter) reset() {
-	m.peak.Store(0)
-	m.sumSq.Store(0)
-	m.count.Store(0)
-	m.clipped.Store(false)
+	for c := range m.ch {
+		acc := &m.ch[c]
+		acc.peak.Store(0)
+		acc.sumSq.Store(0)
+		acc.count.Store(0)
+		acc.clipped.Store(false)
+	}
 }
 
 // abs16 returns the magnitude of s as a uint32, so that -32768 maps to 32768
@@ -201,10 +237,16 @@ func NewHub() *Hub {
 	}
 }
 
-// Meter registers and returns a meter for the named device. Call it once per
-// device during setup, before Run.
-func (h *Hub) Meter(name string) *Meter {
-	m := &Meter{subs: &h.subs}
+// Meter registers and returns a meter for the named device with one accumulator
+// per capture channel. Call it once per device during setup, before Run,
+// passing the device's negotiated capture channel count. A count below 1 is
+// treated as mono so a caller that has not negotiated yet still gets a usable
+// single-channel meter.
+func (h *Hub) Meter(name string, channels int) *Meter {
+	if channels < 1 {
+		channels = 1
+	}
+	m := &Meter{subs: &h.subs, ch: make([]chanAccum, channels)}
 	h.mu.Lock()
 	h.meters = append(h.meters, namedMeter{name: name, meter: m})
 	h.mu.Unlock()

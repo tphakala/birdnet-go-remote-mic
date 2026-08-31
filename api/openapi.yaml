@@ -478,13 +478,33 @@ components:
 
     DeviceLevels:
       type: object
-      description: One device's audio levels over the last measurement window.
-      required: [name, peakDbfs, rmsDbfs, clipped]
+      description: >
+        One device's audio levels over the last measurement window, one
+        entry per captured channel. A mono device carries a single-element
+        channels array; a stereo (or higher) device carries one entry per
+        interleaved channel.
+      required: [name, channels]
       properties:
         name:
           type: string
           description: The device's configured unique name.
           examples: [garden]
+        channels:
+          type: array
+          description: Per-channel levels, ordered by capture channel index.
+          items:
+            $ref: "#/components/schemas/ChannelLevels"
+
+    ChannelLevels:
+      type: object
+      description: One capture channel's audio levels over the last window.
+      required: [channel, peakDbfs, rmsDbfs, clipped]
+      properties:
+        channel:
+          type: integer
+          minimum: 0
+          description: Zero-based capture channel index.
+          examples: [0]
         peakDbfs:
           type: number
           format: double
