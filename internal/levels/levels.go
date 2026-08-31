@@ -253,6 +253,20 @@ func (h *Hub) Meter(name string, channels int) *Meter {
 	return m
 }
 
+// RemoveMeter drops the named device's meter so a hot-reloaded device that was
+// stopped no longer appears in the levels stream. Removing a name that is not
+// registered is a no-op. It is safe to call concurrently with Run and Subscribe.
+func (h *Hub) RemoveMeter(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.meters {
+		if h.meters[i].name == name {
+			h.meters = append(h.meters[:i], h.meters[i+1:]...)
+			return
+		}
+	}
+}
+
 // Run drives the sampler until ctx is cancelled. Sampling and heartbeats are
 // skipped while no client is subscribed, so an idle appliance does no work.
 func (h *Hub) Run(ctx context.Context) {

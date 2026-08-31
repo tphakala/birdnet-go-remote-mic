@@ -38,7 +38,9 @@ func skippedRecord(name, path, errMsg string) *deviceRuntime {
 }
 
 func newProvider() *provider {
-	return &provider{version: "v1.0.0", start: time.Now(), rtspListen: ":8554", discovery: true}
+	p := &provider{version: "v1.0.0", start: time.Now(), rtspListen: ":8554"}
+	p.setDiscovery(true)
+	return p
 }
 
 func TestProviderStatusDegradedBeforeSetDevices(t *testing.T) {
@@ -106,7 +108,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -129,7 +131,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil)
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
@@ -143,7 +145,7 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}

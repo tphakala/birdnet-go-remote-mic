@@ -54,18 +54,17 @@ function runtimeEnabled(state: string): boolean {
 }
 
 // pendingStop reports that a device is currently serving while the config now
-// disables it: it keeps serving until a restart, and the serving card otherwise
-// shows a live "Serving" badge and meters with no explanation once the toast
-// fades, so a persistent banner is warranted. Only a serving device qualifies:
-// a failed or skipped device is not serving (its footer already explains the
-// exclusion, and a "stop serving" banner would be inaccurate there), and the
-// reverse (a disabled card now enabled in config) is explained by the
-// non-serving footer, so neither needs a banner.
+// disables it. A config change is hot-applied, so this divergence is only ever a
+// brief moment while the reload stops the device; the banner labels that instant
+// so the still-live "Serving" badge and meters are not unexplained. Only a
+// serving device qualifies: a failed or skipped device is not serving (its footer
+// already explains the exclusion), and the reverse (a disabled card now enabled)
+// is explained by the non-serving footer, so neither needs a banner.
 function pendingStop(configEnabled: boolean, state: string): boolean {
   return state === "serving" && !configEnabled;
 }
 
-const PENDING_STOP_TEXT = "Disabled. Restart the appliance to stop serving this device.";
+const PENDING_STOP_TEXT = "Disabling; this device stops serving momentarily.";
 
 // nonServingFooterText is the footer message for a card that is not serving,
 // shared by buildCard and updateCard so an in-session toggle never leaves stale
@@ -73,8 +72,8 @@ const PENDING_STOP_TEXT = "Disabled. Restart the appliance to stop serving this 
 function nonServingFooterText(state: string, configEnabled: boolean): string {
   if (state === "disabled") {
     return configEnabled
-      ? "Enabled. Restart the appliance to start serving it."
-      : "Streaming is disabled for this device. Enable it and restart the appliance to serve it.";
+      ? "Enabling; this device starts serving momentarily."
+      : "Streaming is disabled for this device. Enable it to start serving.";
   }
   return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
 }
@@ -486,9 +485,10 @@ export class DashboardView {
   }
 
   // handleToggleEnabled persists a device's streaming enable/disable flag. The
-  // capture pipeline is built only at startup, so the change is saved to the
-  // config and takes effect on the next restart; the toggle reflects the desired
-  // state immediately and reverts if the PATCH is rejected.
+  // change is hot-applied to the running pipeline (the device is started or
+  // stopped in place, other devices keep serving), so it takes effect at once;
+  // the toggle reflects the desired state immediately and reverts if the PATCH is
+  // rejected.
   private async handleToggleEnabled(entry: CardEntry, input: HTMLInputElement): Promise<void> {
     const want = input.checked;
     const id = entry.device.device;
@@ -498,7 +498,7 @@ export class DashboardView {
     try {
       await api.patchConfig({ devices: merged });
       await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      showToast(`${want ? "Enabled" : "Disabled"} ${entry.device.name}. Restart the appliance to apply.`);
+      showToast(`${want ? "Enabled" : "Disabled"} ${entry.device.name}.`);
     } catch (err: unknown) {
       input.checked = !want;
       input.setAttribute("aria-checked", String(!want));
@@ -599,7 +599,7 @@ export class DashboardView {
       await api.patchConfig({ devices: merged });
       this.closeSettings(entry);
       await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      showToast("Device settings saved. Restart the appliance to apply.");
+      showToast("Device settings applied.");
     } catch (err: unknown) {
       this.apiErrorToast(err, "Save failed");
     }

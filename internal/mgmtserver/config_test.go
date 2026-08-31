@@ -105,6 +105,66 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	}
 }
 
+func TestPatchConfigWithReloaderAppliesLive(t *testing.T) {
+	store, _ := tempStore(t)
+	var got config.Config
+	called := false
+	reloader := func(_ context.Context, cfg config.Config) error {
+		called = true
+		got = cfg
+		return nil
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
+
+	devs := []mgmtapi.DeviceConfig{{
+		Name: nameAttic, Device: devAttic, Path: pathAttic,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200 := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if ok200.RestartRequired {
+		t.Error("restartRequired = true, want false when the reloader hot-applied the change")
+	}
+	if !called {
+		t.Fatal("reloader was not invoked")
+	}
+	if len(got.Devices) != 1 || got.Devices[0].Name != nameAttic {
+		t.Fatalf("reloader received devices = %+v, want one named attic", got.Devices)
+	}
+}
+
+func TestPatchConfigReloaderErrorReportsRestartRequired(t *testing.T) {
+	store, path := tempStore(t)
+	reloader := func(_ context.Context, _ config.Config) error {
+		return errors.New("shutting down")
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
+
+	devs := []mgmtapi.DeviceConfig{{
+		Name: nameAttic, Device: devAttic, Path: pathAttic,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200 := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok200.RestartRequired {
+		t.Error("restartRequired = false, want true when the hot reload failed")
+	}
+	// The change must still be persisted even though it could not be hot-applied.
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic {
+		t.Errorf("persisted config = %+v, want the patch persisted despite reload failure", loaded.Devices)
+	}
+}
+
 func TestGetConfigMaterializesDeviceEnabled(t *testing.T) {
 	store, _ := tempStore(t)
 	s := New(&fakeProvider{}, WithConfigStore(store))

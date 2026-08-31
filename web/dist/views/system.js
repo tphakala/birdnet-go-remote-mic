@@ -112,7 +112,7 @@ export class SystemView {
             if (this.netActionsEl)
                 this.netActionsEl.hidden = true;
             await store.refreshConfig();
-            showToast("Discovery setting saved. Restart the appliance to apply.");
+            showToast("Discovery setting applied.");
         }
         catch (err) {
             const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);

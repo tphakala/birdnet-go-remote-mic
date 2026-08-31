@@ -83,6 +83,7 @@ type Server struct {
 	configStore ConfigStore
 	system      SystemProvider
 	restartFn   func()
+	reloader    Reloader
 	staticFS    fs.FS
 }
 

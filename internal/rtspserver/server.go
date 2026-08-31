@@ -110,6 +110,18 @@ func (s *Server) RemoveTrack(path string) {
 	s.mu.Unlock()
 }
 
+// AddTrack registers a track at its path so the running server routes to it
+// without rebinding the listener. It is how a hot-reloaded device joins a
+// serving appliance. Registering a path that already exists replaces it (the
+// restart-on-param-change case removes the old track and adds the new one on the
+// same path); the caller is responsible for tearing the old track's frame
+// source down first so no writer keeps draining it.
+func (s *Server) AddTrack(t *Track) {
+	s.mu.Lock()
+	s.tracks[t.Path] = t
+	s.mu.Unlock()
+}
+
 // ListenAndServe listens on cfg.Listen and serves until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Listen)
