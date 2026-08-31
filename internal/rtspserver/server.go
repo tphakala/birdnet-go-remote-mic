@@ -122,6 +122,13 @@ func (s *Server) AddTrack(t *Track) {
 	s.mu.Unlock()
 }
 
+// HasTrack reports whether a track is currently registered at path. It lets a
+// caller confirm a hot-reload add or remove took effect without opening an RTSP
+// session.
+func (s *Server) HasTrack(path string) bool {
+	return s.lookup(path) != nil
+}
+
 // ListenAndServe listens on cfg.Listen and serves until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Listen)

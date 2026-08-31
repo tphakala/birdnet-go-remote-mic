@@ -29,8 +29,8 @@ const (
 	// StateFailed means the device died after startup; its RTSP path 404s.
 	StateFailed DeviceState = "failed"
 	// StateDisabled means the device is configured but intentionally not opened
-	// (its Enabled flag is false). It is not captured or streamed until enabled
-	// and the appliance restarts.
+	// (its Enabled flag is false). It is not captured or streamed until it is
+	// enabled, which a config reload applies at once, no restart needed.
 	StateDisabled DeviceState = "disabled"
 )
 

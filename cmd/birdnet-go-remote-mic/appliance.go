@@ -17,9 +17,10 @@ import (
 )
 
 // pumpBacklog bounds the pumpDone channel. At most one result arrives per live
-// pump, and the device list is capped at 32, so this comfortably holds every
-// pump ending at once (a reconcile that stops them all, or shutdown) without a
-// pump goroutine blocking on send.
+// pump; the device list is capped at 32, and a restart-everything reconcile can
+// briefly run up to 32 old (superseded) plus 32 new pumps, so 64 holds every
+// pump ending at once. If it were ever exceeded a pump would block on send, not
+// drop, so the bound is a smoothing buffer rather than a correctness limit.
 const pumpBacklog = 64
 
 // pumpResult reports a device's capture pump goroutine ending, with the error
@@ -63,6 +64,11 @@ type appliance struct {
 	alive          int   // number of live capture pumps
 	lastPumpErr    error // last spontaneous pump failure, for the exit status
 	announceCancel context.CancelFunc
+
+	// open builds and starts one device's runtime. It is a field so tests can
+	// inject a fake capture source instead of opening real ALSA hardware; in
+	// production it is openDeviceRetry.
+	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider) *appliance {
@@ -74,6 +80,7 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		hwNames:  map[string]string{},
 		devices:  map[string]*deviceRuntime{},
 		pumpDone: make(chan pumpResult, pumpBacklog),
+		open:     openDeviceRetry,
 	}
 }
 
@@ -141,7 +148,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
 
 	d := *dev
-	rt, err := openDeviceRetry(&d, a.hub)
+	rt, err := a.open(&d, a.hub)
 	if err != nil {
 		log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, err)
 		return &deviceRuntime{
@@ -183,9 +190,10 @@ func (a *appliance) stop(rt *deviceRuntime) {
 func (a *appliance) reconcile(newCfg *config.Config) {
 	if names, err := audio.HardwareNames(); err == nil {
 		a.hwNames = names
+	} else {
+		log.Printf("enumerate capture hardware: %v (devices carry no friendly label)", err)
 	}
 
-	prevServing := a.serving()
 	prevDiscovery := a.prov.discoveryEnabled()
 
 	plan := reload.Reconcile(a.runningParams(), newCfg)
@@ -195,12 +203,17 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 			a.stop(rt)
 		}
 	}
+	// Restart in two passes: stop every restarting device before starting any,
+	// so two devices that swap hardware cards can both reopen. ALSA is
+	// single-client, and interleaving stop and start would try to open one
+	// device's new card while the other still held it (EBUSY).
 	for i := range plan.Restart {
-		dev := &plan.Restart[i]
-		if rt, ok := a.devices[dev.Name]; ok && rt.currentState() == mgmtserver.StateServing {
+		if rt, ok := a.devices[plan.Restart[i].Name]; ok && rt.currentState() == mgmtserver.StateServing {
 			a.stop(rt)
 		}
-		a.devices[dev.Name] = a.openAndStart(dev)
+	}
+	for i := range plan.Restart {
+		a.devices[plan.Restart[i].Name] = a.openAndStart(&plan.Restart[i])
 	}
 	for i := range plan.Start {
 		a.devices[plan.Start[i].Name] = a.openAndStart(&plan.Start[i])
@@ -212,7 +225,12 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	a.prov.setDiscovery(newCfg.DiscoveryEnabled())
 	a.publish(newCfg)
 
-	if a.serving() != prevServing || newCfg.DiscoveryEnabled() != prevDiscovery {
+	// Rebuild the mDNS advertisement whenever any device changed or discovery
+	// toggled. A param-change restart keeps the serving count identical but
+	// alters the advertised path/rate/codec, so gate on the plan being non-empty,
+	// not on the count. dnssd cannot retire a single service, so restartAnnounce
+	// rebuilds the whole set.
+	if !plan.Empty() || newCfg.DiscoveryEnabled() != prevDiscovery {
 		a.restartAnnounce()
 	}
 }
@@ -229,22 +247,22 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		if d.IsEnabled() {
 			continue
 		}
-		// A disabled device is visible but never opened. Replace a formerly
-		// serving record (already stopped above) or refresh an existing one.
-		friendly := a.hwNames[d.Device]
-		if cur, ok := a.devices[d.Name]; ok && cur.currentState() == mgmtserver.StateDisabled {
-			cur.dev = d
-			cur.friendlyName = friendly
-			continue
-		}
-		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: friendly}
+		// A disabled device is visible but never opened. Always publish a FRESH
+		// record rather than mutating an existing one in place: an existing record
+		// may already be published to the provider, whose HTTP handlers read
+		// deviceRuntime.dev and friendlyName without a lock, so mutating those
+		// fields here would race a concurrent GET /devices.
+		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: a.hwNames[d.Device]}
 	}
 	for name, rt := range a.devices {
 		if want[name] {
 			continue
 		}
-		if rt.currentState() == mgmtserver.StateServing {
-			a.stop(rt) // safety net; the plan should already have stopped it
+		// A serving record the plan did not stop is a plan bug; stop it as a
+		// safety net. A device the plan already stopped is marked superseded, so
+		// skip it here to avoid a redundant second teardown.
+		if rt.currentState() == mgmtserver.StateServing && !rt.superseded {
+			a.stop(rt)
 		}
 		delete(a.devices, name)
 	}

@@ -151,6 +151,23 @@ func TestReconcileDeterministicOrder(t *testing.T) {
 	}
 }
 
+func TestReconcileRestartListIsSorted(t *testing.T) {
+	// Two devices change params at once; the Restart list must be sorted by name
+	// so execution order is deterministic (exercises the Restart sort).
+	running := map[string]config.Device{
+		"z": dev("z", "hw:0", "/z", 48000),
+		"a": dev("a", "hw:1", "/a", 48000),
+	}
+	desired := cfg(
+		dev("z", "hw:0", "/z", 96000),
+		dev("a", "hw:1", "/a", 96000),
+	)
+	p := Reconcile(running, desired)
+	if got := namesOf(p.Restart); !reflect.DeepEqual(got, []string{"a", "z"}) {
+		t.Fatalf("Restart = %v, want sorted [a z]", got)
+	}
+}
+
 func TestReconcileMixedPlan(t *testing.T) {
 	running := map[string]config.Device{
 		"keep":   dev("keep", "hw:0", "/keep", 48000),

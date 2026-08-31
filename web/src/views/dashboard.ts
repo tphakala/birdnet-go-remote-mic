@@ -33,8 +33,9 @@ interface CardEntry {
   clientsEl: HTMLElement | null;
   droppedEl: HTMLElement | null;
   toggleInput: HTMLInputElement;
-  // Persistent "restart required to apply" banner, shown whenever the desired
-  // (config) enabled flag diverges from the live runtime state.
+  // Transient banner shown while the desired (config) enabled flag diverges from
+  // the live runtime state, i.e. during the brief moment a config reload is
+  // starting or stopping the device.
   pendingNote: HTMLElement;
   // The non-serving footer message, if this card is not serving; updated in
   // place so an in-session toggle does not leave stale disabled/enabled text.
@@ -241,8 +242,8 @@ export class DashboardView {
     const disabled = d.state === "disabled";
     const isUltra = d.mode === "pcm";
     // The toggle reflects the persisted (desired) enabled flag, which can differ
-    // from the runtime state until the next restart. Fall back to the runtime
-    // state only when the config is not loaded.
+    // from the runtime state only briefly while a config reload applies. Fall
+    // back to the runtime state only when the config is not loaded.
     const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
     const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
     // A disabled device is off by intent, not broken: give it a neutral card and
@@ -282,10 +283,10 @@ export class DashboardView {
     tags.appendChild(statusEl);
 
     // Streaming enable/disable toggle. A disabled device stays configured but is
-    // not opened; toggling persists the flag and takes effect on the next restart
-    // (the capture pipeline is built at startup). Reuses the shared switch style.
+    // not opened; toggling persists the flag and a config reload applies it at
+    // once, starting or stopping the device. Reuses the shared switch style.
     const toggleLabel = elem("label", "switch-control device-toggle");
-    toggleLabel.title = "Stream this device (applies on restart)";
+    toggleLabel.title = "Stream this device (applies immediately)";
     const toggleInput = document.createElement("input");
     toggleInput.type = "checkbox";
     toggleInput.className = "visually-hidden";

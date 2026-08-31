@@ -18,7 +18,7 @@ func servingRecord(name, path string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
 			Name: name, Device: "hw:1,0", Path: path,
-			Mode: config.ModeOpus, Rate: 48000, Channels: 1, Format: "s16",
+			Mode: config.ModeOpus, Rate: 48000, Channels: 1, Format: testFmtS16,
 		},
 		state:    mgmtserver.StateServing,
 		rate:     48000,
@@ -30,7 +30,7 @@ func skippedRecord(name, path, errMsg string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
 			Name: name, Device: "hw:2,0", Path: path,
-			Mode: config.ModePCM, Rate: 192000, Channels: 1, Format: "s16",
+			Mode: config.ModePCM, Rate: 192000, Channels: 1, Format: testFmtS16,
 		},
 		state: mgmtserver.StateSkipped,
 		err:   errMsg,
@@ -104,7 +104,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	if err := os.WriteFile(badDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Management: config.Management{Listen: "127.0.0.1:0", CertDir: badDir}}
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: badDir}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -117,7 +117,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 
 func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	// Occupy a port, then point the management listener at it so the bind fails.
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	occupied, err := net.Listen("tcp", testListenAny)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 func TestStartManagementServesAndShutsDown(t *testing.T) {
 	// The happy path: the listener binds, ok is true, and Wait returns once ctx
 	// cancellation drives a graceful shutdown.
-	cfg := &config.Config{Management: config.Management{Listen: "127.0.0.1:0", CertDir: t.TempDir()}}
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

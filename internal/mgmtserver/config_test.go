@@ -124,7 +124,10 @@ func TestPatchConfigWithReloaderAppliesLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfig: %v", err)
 	}
-	ok200 := resp.(mgmtapi.PatchConfig200JSONResponse)
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
 	if ok200.RestartRequired {
 		t.Error("restartRequired = true, want false when the reloader hot-applied the change")
 	}
@@ -151,7 +154,10 @@ func TestPatchConfigReloaderErrorReportsRestartRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfig: %v", err)
 	}
-	ok200 := resp.(mgmtapi.PatchConfig200JSONResponse)
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
 	if !ok200.RestartRequired {
 		t.Error("restartRequired = false, want true when the hot reload failed")
 	}
