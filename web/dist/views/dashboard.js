@@ -19,25 +19,24 @@ function runtimeEnabled(state) {
     return state !== "disabled";
 }
 // pendingStop reports that a device is currently serving while the config now
-// disables it: it keeps serving until a restart, and the serving card otherwise
-// shows a live "Serving" badge and meters with no explanation once the toast
-// fades, so a persistent banner is warranted. Only a serving device qualifies:
-// a failed or skipped device is not serving (its footer already explains the
-// exclusion, and a "stop serving" banner would be inaccurate there), and the
-// reverse (a disabled card now enabled in config) is explained by the
-// non-serving footer, so neither needs a banner.
+// disables it. A config change is hot-applied, so this divergence is only ever a
+// brief moment while the reload stops the device; the banner labels that instant
+// so the still-live "Serving" badge and meters are not unexplained. Only a
+// serving device qualifies: a failed or skipped device is not serving (its footer
+// already explains the exclusion), and the reverse (a disabled card now enabled)
+// is explained by the non-serving footer, so neither needs a banner.
 function pendingStop(configEnabled, state) {
     return state === "serving" && !configEnabled;
 }
-const PENDING_STOP_TEXT = "Disabled. Restart the appliance to stop serving this device.";
+const PENDING_STOP_TEXT = "Disabling; this device stops serving shortly.";
 // nonServingFooterText is the footer message for a card that is not serving,
 // shared by buildCard and updateCard so an in-session toggle never leaves stale
 // enabled/disabled wording behind.
 function nonServingFooterText(state, configEnabled) {
     if (state === "disabled") {
         return configEnabled
-            ? "Enabled. Restart the appliance to start serving it."
-            : "Streaming is disabled for this device. Enable it and restart the appliance to serve it.";
+            ? "Enabling; this device starts serving shortly."
+            : "Streaming is disabled for this device. Enable it to start serving.";
     }
     return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
 }
@@ -202,8 +201,8 @@ export class DashboardView {
         const disabled = d.state === "disabled";
         const isUltra = d.mode === "pcm";
         // The toggle reflects the persisted (desired) enabled flag, which can differ
-        // from the runtime state until the next restart. Fall back to the runtime
-        // state only when the config is not loaded.
+        // from the runtime state only briefly while a config reload applies. Fall
+        // back to the runtime state only when the config is not loaded.
         const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
         const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
         // A disabled device is off by intent, not broken: give it a neutral card and
@@ -240,10 +239,10 @@ export class DashboardView {
         const statusEl = this.buildStatusBadge(d.state);
         tags.appendChild(statusEl);
         // Streaming enable/disable toggle. A disabled device stays configured but is
-        // not opened; toggling persists the flag and takes effect on the next restart
-        // (the capture pipeline is built at startup). Reuses the shared switch style.
+        // not opened; toggling persists the flag and a config reload applies it at
+        // once, starting or stopping the device. Reuses the shared switch style.
         const toggleLabel = elem("label", "switch-control device-toggle");
-        toggleLabel.title = "Stream this device (applies on restart)";
+        toggleLabel.title = "Stream this device (applies immediately)";
         const toggleInput = document.createElement("input");
         toggleInput.type = "checkbox";
         toggleInput.className = "visually-hidden";
@@ -428,9 +427,10 @@ export class DashboardView {
         }
     }
     // handleToggleEnabled persists a device's streaming enable/disable flag. The
-    // capture pipeline is built only at startup, so the change is saved to the
-    // config and takes effect on the next restart; the toggle reflects the desired
-    // state immediately and reverts if the PATCH is rejected.
+    // change is hot-applied to the running pipeline (the device is started or
+    // stopped in place, other devices keep serving), so it takes effect at once;
+    // the toggle reflects the desired state immediately and reverts if the PATCH is
+    // rejected.
     async handleToggleEnabled(entry, input) {
         const want = input.checked;
         const id = entry.device.device;
@@ -438,9 +438,12 @@ export class DashboardView {
         input.disabled = true;
         input.setAttribute("aria-checked", String(want));
         try {
-            await api.patchConfig({ devices: merged });
+            const res = await api.patchConfig({ devices: merged });
             await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-            showToast(`${want ? "Enabled" : "Disabled"} ${entry.device.name}. Restart the appliance to apply.`);
+            const verb = want ? "Enabled" : "Disabled";
+            showToast(res.restartRequired
+                ? `${verb} ${entry.device.name}. Restart the appliance to apply.`
+                : `${verb} ${entry.device.name}.`);
         }
         catch (err) {
             input.checked = !want;
@@ -536,10 +539,10 @@ export class DashboardView {
         if (!merged.some((cd) => cd.device === edited.device))
             merged.push(edited);
         try {
-            await api.patchConfig({ devices: merged });
+            const res = await api.patchConfig({ devices: merged });
             this.closeSettings(entry);
             await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-            showToast("Device settings saved. Restart the appliance to apply.");
+            showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
         }
         catch (err) {
             this.apiErrorToast(err, "Save failed");
