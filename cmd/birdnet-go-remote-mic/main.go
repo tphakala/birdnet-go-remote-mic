@@ -171,6 +171,14 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 func run(cfgPath string) error {
 	startTime := time.Now()
 	cfg, err := config.Load(cfgPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// First run with no config file: boot with defaults and no devices so the
+		// web UI comes up and the operator can enumerate the host's capture
+		// hardware and enable devices from there. The first provisioning writes the
+		// config file at cfgPath.
+		log.Printf("no config file at %s; starting with defaults (enable capture devices from the web UI)", cfgPath)
+		cfg, err = config.Default(), nil
+	}
 	if err != nil {
 		return err
 	}
@@ -183,10 +191,11 @@ func run(cfgPath string) error {
 	hub := levels.NewHub()
 
 	prov := &provider{
-		version:    version,
-		start:      startTime,
-		rtspListen: cfg.Listen,
-		dataPath:   filepath.Dir(cfgPath),
+		version:     version,
+		start:       startTime,
+		rtspListen:  cfg.Listen,
+		dataPath:    filepath.Dir(cfgPath),
+		enumTrigger: make(chan struct{}, 1),
 	}
 	prov.setDiscovery(cfg.DiscoveryEnabled())
 
@@ -249,6 +258,12 @@ func run(cfgPath string) error {
 	// reload takes. A device that fails to open is skipped, not fatal.
 	app.reconcile(&cfg)
 	defer app.closeAll()
+
+	// Enumerate the host's unconfigured capture hardware for GET /devices/available
+	// on a background goroutine: probing opens devices and can be slow, so it must
+	// not run on the capture run loop. It starts after the initial reconcile so the
+	// first probe already knows which devices the config owns and skips them.
+	go prov.runEnumeration(ctx)
 
 	// While the management API is serving, the appliance stays up as a diagnostic
 	// surface even when nothing is serving (issue #10): GET /devices still reports

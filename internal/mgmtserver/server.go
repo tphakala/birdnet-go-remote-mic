@@ -68,6 +68,16 @@ type DeviceStatus struct {
 	SupportedChannels []int
 }
 
+// AvailableDevice is a capture device the host exposes that the configuration
+// does not list. It carries the probed capabilities the UI uses to offer the
+// device for provisioning; it has no configuration until it is provisioned.
+type AvailableDevice struct {
+	ID                string
+	FriendlyName      string
+	SupportedRates    []int
+	SupportedChannels []int
+}
+
 // Provider supplies live runtime state to the management API. Its methods are
 // called from HTTP handler goroutines and must be safe for concurrent use.
 type Provider interface {
@@ -79,6 +89,14 @@ type Provider interface {
 	// Device returns one device by name, avoiding a full snapshot for the
 	// single-device lookup. ok is false when no device has that name.
 	Device(name string) (DeviceStatus, bool)
+	// AvailableDevices lists capture devices the host exposes that the
+	// configuration does not list, for the UI to offer for provisioning.
+	AvailableDevices() []AvailableDevice
+	// DetectedDevice returns a host device's probed capabilities by id whether or
+	// not it is configured, so provisioning can tell an unknown device (404) from
+	// an already-configured one (409). ok is false when the host has no such
+	// device in the last enumeration.
+	DetectedDevice(id string) (AvailableDevice, bool)
 }
 
 // Server implements mgmtapi.StrictServerInterface over a Provider.

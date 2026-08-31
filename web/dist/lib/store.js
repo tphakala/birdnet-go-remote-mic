@@ -4,6 +4,7 @@ export class AppStore extends EventTarget {
     state = {
         status: null,
         devices: [],
+        available: [],
         levels: new Map(),
         system: null,
         config: null,
@@ -16,6 +17,11 @@ export class AppStore extends EventTarget {
     // stale base for the next queued mutation. Both writers bump it; a refresh
     // commits only while its captured generation is still current.
     configEpoch = 0;
+    // Monotonic generation for available-device refreshes. Overlapping polls can
+    // resolve out of order (a provision/removal triggers an extra refresh that can
+    // race the 3s poll), so an older response must not overwrite a newer one and
+    // restore a stale Enable card.
+    availableEpoch = 0;
     constructor() {
         super();
         this.initSSE();
@@ -48,6 +54,7 @@ export class AppStore extends EventTarget {
             this.refreshDevices(),
             this.refreshSystem(),
             this.refreshConfig(),
+            this.refreshAvailable(),
         ]);
         // Surface a per-resource load error so each view can offer a retry for its
         // own data instead of a "Loading..." placeholder that never resolves, and
@@ -73,6 +80,7 @@ export class AppStore extends EventTarget {
                 this.refreshStatus(),
                 this.refreshDevices(),
                 this.refreshSystem(),
+                this.refreshAvailable(),
             ]);
         }, intervalMs);
     }
@@ -91,6 +99,23 @@ export class AppStore extends EventTarget {
         }
         catch (err) {
             console.warn("Failed to refresh status:", err);
+            return false;
+        }
+    }
+    async refreshAvailable() {
+        const epoch = ++this.availableEpoch;
+        try {
+            const available = await api.getAvailableDevices();
+            // A newer refreshAvailable started while this GET was in flight; its result
+            // is fresher, so drop this stale body rather than restoring a stale list.
+            if (epoch !== this.availableEpoch)
+                return true;
+            this.state.available = available;
+            this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
+            return true;
+        }
+        catch (err) {
+            console.warn("Failed to refresh available devices:", err);
             return false;
         }
     }

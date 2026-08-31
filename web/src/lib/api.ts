@@ -1,9 +1,11 @@
 import type {
   ApplianceStatus,
+  AvailableDevice,
   Config,
   ConfigPatch,
   ConfigUpdateResult,
   Device,
+  ProvisionDeviceRequest,
   RestartResult,
   SystemInfo,
   ValidationProblem,
@@ -92,6 +94,23 @@ export class ApiClient {
 
   public async getDevice(name: string): Promise<Device> {
     return this.request<Device>(`/devices/${encodeURIComponent(name)}`);
+  }
+
+  public async getAvailableDevices(): Promise<AvailableDevice[]> {
+    return this.request<AvailableDevice[]>("/devices/available");
+  }
+
+  public async provisionDevice(req: ProvisionDeviceRequest): Promise<Device> {
+    return this.request<Device>("/devices", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  public async deleteDevice(name: string): Promise<void> {
+    await this.request<void>(`/devices/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
   }
 
   public async getConfig(): Promise<Config> {

@@ -10,9 +10,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 )
+
+const devHW2 = "hw:2,0"
+
+func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
+	p := newProvider()
+	// One configured device on hw:1,0.
+	p.setDevices([]*deviceRuntime{servingRecord("garden", "/garden")})
+	// The host exposes hw:1,0 (configured, listed with no probed caps, as
+	// DetectDevices emits it) and hw:2,0 (free, probed).
+	p.setDetected([]audio.DetectedDevice{
+		{ID: "hw:1,0", FriendlyName: "Scarlett"},
+		{ID: devHW2, FriendlyName: "AudioMoth", SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+	})
+
+	avail := p.AvailableDevices()
+	if len(avail) != 1 || avail[0].ID != devHW2 {
+		t.Fatalf("AvailableDevices = %+v, want only the unconfigured hw:2,0", avail)
+	}
+	if avail[0].FriendlyName != "AudioMoth" || len(avail[0].SupportedRates) != 1 {
+		t.Errorf("capabilities not passed through: %+v", avail[0])
+	}
+
+	// DetectedDevice is unfiltered: it returns a configured device too (even with
+	// no caps), so provisioning distinguishes already-configured (409) from
+	// absent (404).
+	if _, ok := p.DetectedDevice("hw:1,0"); !ok {
+		t.Error("DetectedDevice(configured) = false, want true (unfiltered)")
+	}
+	if _, ok := p.DetectedDevice("hw:9,0"); ok {
+		t.Error("DetectedDevice(absent) = true, want false")
+	}
+}
 
 func servingRecord(name, path string) *deviceRuntime {
 	return &deviceRuntime{

@@ -12,6 +12,26 @@ const ICON_ERROR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
 const ICON_WARN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
 const ICON_COPY = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
 const ICON_GEAR = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+// capsSummary renders a short human summary of a device's probed capabilities
+// (channel support and top sample rate) for the available-devices list.
+function capsSummary(d) {
+    const parts = [];
+    const ch = d.supportedChannels ?? [];
+    if (ch.length) {
+        if (ch.includes(1) && ch.includes(2))
+            parts.push("mono/stereo");
+        else if (ch.includes(2))
+            parts.push("stereo");
+        else
+            parts.push("mono");
+    }
+    const rates = d.supportedRates ?? [];
+    if (rates.length) {
+        const maxKhz = Math.max(...rates) / 1000;
+        parts.push(`up to ${maxKhz.toLocaleString("en-US")} kHz`);
+    }
+    return parts.join(" · ");
+}
 // runtimeEnabled reports whether a device is on at runtime. A disabled device is
 // off; anything else (serving, or a failed/skipped device that was configured
 // to stream) is on until the operator changes it.
@@ -77,6 +97,11 @@ export class DashboardView {
     cards = new Map();
     rack;
     emptyEl;
+    availableSection;
+    availableRack;
+    // Device ids with a provisioning request in flight, so the Enable button shows
+    // progress and a second click cannot double-provision.
+    provisioning = new Set();
     status = null;
     // Serializes config mutations (device toggle + settings save) so each PATCH is
     // built from a fresh base only after the previous mutation settled. Prevents a
@@ -85,6 +110,8 @@ export class DashboardView {
     constructor() {
         this.rack = document.getElementById("channel-rack");
         this.emptyEl = document.getElementById("rack-empty");
+        this.availableSection = document.getElementById("available-section");
+        this.availableRack = document.getElementById("available-rack");
         this.initHeader();
         this.bindEvents();
     }
@@ -121,6 +148,9 @@ export class DashboardView {
                         meter.setLevels(ch.rmsDbfs, ch.peakDbfs, ch.clipped);
                 }
             });
+        });
+        store.addEventListener("available", (e) => {
+            this.renderAvailable(e.detail);
         });
         store.addEventListener("connection", (e) => {
             this.updateConnection(e.detail);
@@ -201,6 +231,117 @@ export class DashboardView {
         const clientsEl = document.getElementById("total-clients-display");
         if (clientsEl)
             clientsEl.textContent = String(clientCount);
+    }
+    // renderAvailable lists the host's detected-but-unconfigured capture devices,
+    // each with an Enable button that provisions it. The whole section hides when
+    // nothing is available, so a fully configured host shows no empty panel.
+    renderAvailable(available) {
+        if (!this.availableRack || !this.availableSection)
+            return;
+        this.availableSection.hidden = available.length === 0;
+        this.availableRack.textContent = "";
+        for (const d of available) {
+            this.availableRack.appendChild(this.buildAvailableCard(d));
+        }
+    }
+    buildAvailableCard(d) {
+        const card = elem("div", "config-device-card available-card");
+        const info = elem("div", "available-info");
+        info.appendChild(elem("div", "device-title", d.friendlyName || d.device));
+        const sub = elem("div", "available-sub");
+        sub.appendChild(elem("span", "mono", d.device));
+        const caps = capsSummary(d);
+        if (caps)
+            sub.appendChild(elem("span", "available-caps", caps));
+        info.appendChild(sub);
+        const enableBtn = elem("button", "btn btn-primary available-enable", "Enable");
+        enableBtn.setAttribute("type", "button");
+        // Name the device in the accessible label: there is one Enable button per
+        // available device, so a bare "Enable" is ambiguous to a screen-reader user.
+        enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.device}`);
+        if (this.provisioning.has(d.device))
+            this.markBusy(enableBtn, "Enabling...");
+        enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
+        card.append(info, enableBtn);
+        return card;
+    }
+    async provisionDevice(d, btn) {
+        if (this.provisioning.has(d.device))
+            return;
+        this.provisioning.add(d.device);
+        this.markBusy(btn, "Enabling...");
+        try {
+            // Serialize through the same queue as toggles and settings saves: those
+            // submit a full-array PATCH built from the cached config, so a provision
+            // running concurrently could be clobbered by a stale PATCH (or vice versa).
+            // The refreshes run inside the task so the next queued mutation rebuilds
+            // from the post-provision config.
+            await this.enqueue(async () => {
+                const created = await api.provisionDevice({ device: d.device });
+                await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+                showToast(`Enabled ${created.name}. Streaming on ${created.path}.`);
+            });
+        }
+        catch (err) {
+            this.apiErrorToast(err, "Enable failed");
+        }
+        finally {
+            this.provisioning.delete(d.device);
+            this.clearBusy(btn, "Enable");
+        }
+    }
+    // markBusy/clearBusy toggle a control's in-progress affordance without using
+    // the disabled property on a focused element, which would steal keyboard focus
+    // (a control removed from the tab order sends focus to the body). aria-disabled
+    // plus a guard keeps the element focusable and announces the busy state.
+    markBusy(el, label) {
+        el.textContent = label;
+        el.setAttribute("aria-disabled", "true");
+        el.setAttribute("aria-busy", "true");
+        el.classList.add("is-busy");
+    }
+    clearBusy(el, label) {
+        el.textContent = label;
+        el.removeAttribute("aria-disabled");
+        el.removeAttribute("aria-busy");
+        el.classList.remove("is-busy");
+    }
+    // removeDevice deletes a configured device after confirmation, returning its
+    // hardware to the available list. On success the card disappears via the device
+    // refresh; on failure the button is restored so it can be retried.
+    async removeDevice(entry, btn) {
+        // aria-disabled keeps the button focusable while busy, so guard against a
+        // keyboard re-activation that pointer-events cannot block: without this a
+        // second Enter opens a second confirm and issues a second DELETE.
+        if (btn.getAttribute("aria-disabled") === "true")
+            return;
+        const ok = await confirmDialog({
+            title: "Remove device",
+            body: `Remove ${entry.device.name}? It stops streaming and returns to the available list, and its stream path is discarded.`,
+            confirmLabel: "Remove",
+            danger: true,
+        });
+        if (!ok)
+            return;
+        this.markBusy(btn, "Removing...");
+        try {
+            // Serialize with toggles and settings saves: a stale full-array PATCH from
+            // one of those must not run interleaved with this delete and restore the
+            // removed device (or drop a concurrently provisioned one).
+            await this.enqueue(async () => {
+                await api.deleteDevice(entry.device.name);
+                // The card (and this button) is about to be destroyed by the refresh,
+                // which would drop focus to the document body. Move it to the workspace
+                // region first so a keyboard user keeps a sensible place.
+                document.getElementById("main-content")?.focus();
+                await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+                showToast(`Removed ${entry.device.name}.`);
+            });
+        }
+        catch (err) {
+            this.apiErrorToast(err, "Remove failed");
+            this.clearBusy(btn, "Remove");
+        }
     }
     rtspUrl(d) {
         const port = rtspPort(this.status?.rtspListen);
@@ -459,7 +600,11 @@ export class DashboardView {
     async handleToggleEnabled(entry, input) {
         const want = input.checked;
         const id = entry.device.device;
+        // Remember focus before disabling: re-enabling a disabled control drops focus
+        // to the body, dumping a keyboard user at the top of the page.
+        const hadFocus = document.activeElement === input;
         input.disabled = true;
+        input.setAttribute("aria-busy", "true");
         input.setAttribute("aria-checked", String(want));
         await this.enqueue(async () => {
             // Build merged from a FRESH base inside the queued task, after any prior
@@ -490,6 +635,11 @@ export class DashboardView {
             }
             finally {
                 input.disabled = false;
+                input.removeAttribute("aria-busy");
+                // Return focus to the toggle so re-enabling it does not leave a keyboard
+                // user stranded on the document body.
+                if (hadFocus)
+                    input.focus();
             }
         });
     }
@@ -501,6 +651,9 @@ export class DashboardView {
         if (!entry.settingsForm) {
             entry.settingsWrap.textContent = "";
             const actions = elem("div", "settings-actions");
+            const removeBtn = elem("button", "btn btn-danger", "Remove");
+            removeBtn.setAttribute("type", "button");
+            removeBtn.setAttribute("aria-label", `Remove ${entry.device.name}`);
             const badge = elem("span", "staged-badge", "Unsaved changes");
             badge.hidden = true;
             const spacer = elem("span", "settings-actions-spacer");
@@ -508,7 +661,8 @@ export class DashboardView {
             cancelBtn.setAttribute("type", "button");
             const saveBtn = elem("button", "btn btn-primary", "Save Changes");
             saveBtn.setAttribute("type", "button");
-            actions.append(badge, spacer, cancelBtn, saveBtn);
+            actions.append(removeBtn, badge, spacer, cancelBtn, saveBtn);
+            removeBtn.addEventListener("click", () => void this.removeDevice(entry, removeBtn));
             // Build from the saved config (source of truth), matched by ALSA id.
             const cfg = store.getState().config;
             // Prefer the persisted config (it carries the enabled flag); fall back to
@@ -522,8 +676,16 @@ export class DashboardView {
             });
             entry.settingsForm = form;
             entry.settingsWrap.append(form.element, actions);
+            // Tell the operator when opening the form silently downgraded an
+            // unsupported saved codec, rather than the change appearing unexplained.
+            const notice = form.loadNotice();
+            if (notice) {
+                badge.hidden = false;
+                entry.dirty = true;
+                showToast(notice, "warn");
+            }
             cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
-            saveBtn.addEventListener("click", () => this.saveDevice(entry));
+            saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn));
         }
         entry.expanded = true;
         entry.settingsWrap.hidden = false;
@@ -558,7 +720,9 @@ export class DashboardView {
         entry.settingsForm?.destroy();
         entry.settingsForm = null;
     }
-    async saveDevice(entry) {
+    async saveDevice(entry, btn) {
+        if (btn.getAttribute("aria-disabled") === "true")
+            return;
         const form = entry.settingsForm;
         if (!form)
             return;
@@ -567,32 +731,40 @@ export class DashboardView {
             return;
         }
         const edited = form.collect();
-        await this.enqueue(async () => {
-            // Source the enabled flag and the patch base FRESH inside the queued task:
-            // the settings form does not edit enabled, the card toggle may have changed
-            // it since the panel opened, and a prior queued mutation may have changed
-            // the base. Building here (not at collect time) avoids clobbering either.
-            const curEnabled = store.getState().config?.devices.find((cd) => cd.device === edited.device)?.enabled;
-            if (curEnabled !== undefined)
-                edited.enabled = curEnabled;
-            const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? edited : cd));
-            if (!merged.some((cd) => cd.device === edited.device))
-                merged.push(edited);
-            try {
-                const res = await api.patchConfig({ devices: merged });
-                this.closeSettings(entry);
-                // Seed the cached config with the authoritative PATCH response before the
-                // refresh so a later queued mutation cannot rebuild from a stale base if
-                // the GET refresh fails (see applyConfig). A refresh failure after a
-                // successful PATCH must not report "Save failed": the change persisted.
-                store.applyConfig(res.config);
-                await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-                showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
-            }
-            catch (err) {
-                this.apiErrorToast(err, "Save failed");
-            }
-        });
+        this.markBusy(btn, "Saving...");
+        try {
+            await this.enqueue(async () => {
+                // Source the enabled flag and the patch base FRESH inside the queued task:
+                // the settings form does not edit enabled, the card toggle may have changed
+                // it since the panel opened, and a prior queued mutation may have changed
+                // the base. Building here (not at collect time) avoids clobbering either.
+                const curEnabled = store.getState().config?.devices.find((cd) => cd.device === edited.device)?.enabled;
+                if (curEnabled !== undefined)
+                    edited.enabled = curEnabled;
+                const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? edited : cd));
+                if (!merged.some((cd) => cd.device === edited.device))
+                    merged.push(edited);
+                try {
+                    const res = await api.patchConfig({ devices: merged });
+                    this.closeSettings(entry);
+                    // Seed the cached config with the authoritative PATCH response before the
+                    // refresh so a later queued mutation cannot rebuild from a stale base if
+                    // the GET refresh fails (see applyConfig). A refresh failure after a
+                    // successful PATCH must not report "Save failed": the change persisted.
+                    store.applyConfig(res.config);
+                    await Promise.all([store.refreshConfig(), store.refreshDevices()]);
+                    showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
+                }
+                catch (err) {
+                    this.apiErrorToast(err, "Save failed");
+                }
+            });
+        }
+        finally {
+            // Restore the button whether the save succeeded (its panel is torn down, so
+            // this is a harmless no-op on a detached node) or failed (it stays for retry).
+            this.clearBusy(btn, "Save Changes");
+        }
     }
     buildStatusBadge(state) {
         const badge = deviceStateBadge(state);

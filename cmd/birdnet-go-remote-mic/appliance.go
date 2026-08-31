@@ -59,6 +59,11 @@ type appliance struct {
 	cfg     config.Config
 	hwNames map[string]string
 	devices map[string]*deviceRuntime
+	// capsCache holds the last non-empty probed capabilities per device id. A
+	// re-probe during a hot reload can transiently report nothing (the card is
+	// briefly busy or gone mid card-swap); retaining the last-known-good caps keeps
+	// the UI from flickering to an empty rate/channel list during that window.
+	capsCache map[string]deviceCaps
 
 	pumpDone chan pumpResult
 
@@ -74,15 +79,44 @@ type appliance struct {
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider) *appliance {
 	return &appliance{
-		ctx:      ctx,
-		hub:      hub,
-		srv:      srv,
-		prov:     prov,
-		hwNames:  map[string]string{},
-		devices:  map[string]*deviceRuntime{},
-		pumpDone: make(chan pumpResult, pumpBacklog),
-		open:     openDeviceRetry,
+		ctx:       ctx,
+		hub:       hub,
+		srv:       srv,
+		prov:      prov,
+		hwNames:   map[string]string{},
+		devices:   map[string]*deviceRuntime{},
+		capsCache: map[string]deviceCaps{},
+		pumpDone:  make(chan pumpResult, pumpBacklog),
+		open:      openDeviceRetry,
 	}
+}
+
+// deviceCaps is the last non-empty capability probe for one device id.
+type deviceCaps struct {
+	rates    []int
+	channels []int
+}
+
+// rememberCaps records non-empty probe results and substitutes the last-known
+// values for an empty one, so a device that is transiently unprobable during a
+// hot-reload card swap keeps its previously reported rates and channels instead
+// of momentarily reporting none.
+func (a *appliance) rememberCaps(id string, rates, channels []int) (keptRates, keptChannels []int) {
+	c := a.capsCache[id]
+	switch {
+	case len(rates) > 0:
+		c.rates = rates
+	case len(c.rates) > 0:
+		rates = c.rates
+	}
+	switch {
+	case len(channels) > 0:
+		c.channels = channels
+	case len(c.channels) > 0:
+		channels = c.channels
+	}
+	a.capsCache[id] = c
+	return rates, channels
 }
 
 // serving reports how many devices currently have a live pump.
@@ -149,6 +183,9 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// busy. Both use the same non-blocking capability query.
 	rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
 	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
+	// Keep the last-known caps if this probe came back empty (a transient
+	// card-swap window), so the UI does not flicker to an empty list.
+	rates, channels = a.rememberCaps(dev.Device, rates, channels)
 
 	d := *dev
 	rt, err := a.open(&d, a.hub)
@@ -201,6 +238,15 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 
 	prevDiscovery := a.prov.discoveryEnabled()
 
+	// Publish the desired configured-device ids BEFORE opening anything, so the
+	// background enumeration excludes a device from probing before its capture
+	// open begins and the probe and the open never contend for the same ALSA id.
+	desiredIDs := make(map[string]bool, len(newCfg.Devices))
+	for i := range newCfg.Devices {
+		desiredIDs[newCfg.Devices[i].Device] = true
+	}
+	a.prov.setConfiguredIDs(desiredIDs)
+
 	plan := reload.Reconcile(a.runningParams(), newCfg)
 
 	for _, name := range plan.Stop {
@@ -229,6 +275,14 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	a.cfg = *newCfg
 	a.prov.setDiscovery(newCfg.DiscoveryEnabled())
 	a.publish(newCfg)
+
+	// Ask the background enumeration goroutine to refresh the available-device
+	// list now that the configured set changed, so a just-provisioned device
+	// leaves the list and a just-removed one rejoins it promptly. The actual
+	// hardware probing runs on that goroutine, never here: probing opens devices
+	// and can be slow, and this reconcile runs on the capture run loop that also
+	// drives pump events, reloads and shutdown.
+	a.prov.signalEnumerate()
 
 	// Rebuild the mDNS advertisement whenever any device changed or discovery
 	// toggled. A param-change restart keeps the serving count identical but

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtcert"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -38,6 +39,23 @@ type provider struct {
 	dataPath  string // filesystem path whose storage usage /system reports
 	sampler   *sysinfo.Sampler
 	devices   atomic.Pointer[[]*deviceRuntime]
+	// detected is the last enumerated set of host capture devices with their
+	// probed capabilities, refreshed by the background enumeration goroutine.
+	// AvailableDevices filters out the ones the config already lists. Atomic
+	// because the enumeration goroutine stores it while HTTP handlers read it for
+	// GET /devices/available.
+	detected atomic.Pointer[[]audio.DetectedDevice]
+	// enumTrigger asks the enumeration goroutine to re-probe now (buffered depth 1,
+	// coalescing). A config change signals it so a provisioned or removed device
+	// leaves or rejoins the available list promptly, without probing hardware on
+	// the capture run-loop goroutine.
+	enumTrigger chan struct{}
+	// configured is the set of ALSA device ids the desired config owns, published
+	// at the START of a reconcile (before any device is opened). The enumeration
+	// skips these, so a device being provisioned is excluded from probing before
+	// its capture open begins and the two never contend for the same id. Atomic
+	// because reconcile stores it while the enumeration goroutine reads it.
+	configured atomic.Pointer[map[string]bool]
 }
 
 // discoveryEnabled reports the current mDNS-advertisement flag.
@@ -92,6 +110,115 @@ func (p *provider) Devices() []mgmtserver.DeviceStatus {
 	out := make([]mgmtserver.DeviceStatus, 0, len(devices))
 	for _, d := range devices {
 		out = append(out, d.status())
+	}
+	return out
+}
+
+// setDetected publishes the latest enumerated host capture devices.
+func (p *provider) setDetected(d []audio.DetectedDevice) { p.detected.Store(&d) }
+
+// signalEnumerate asks the enumeration goroutine to re-probe now, coalescing with
+// any pending request (the channel has depth 1). It never blocks, so the caller
+// (the capture run loop, after a config change) is not stalled by hardware I/O.
+func (p *provider) signalEnumerate() {
+	select {
+	case p.enumTrigger <- struct{}{}:
+	default:
+	}
+}
+
+// setConfiguredIDs publishes the ids the desired config owns, called at the start
+// of a reconcile before any device opens.
+func (p *provider) setConfiguredIDs(ids map[string]bool) { p.configured.Store(&ids) }
+
+// configuredIDs is the set of ALSA device ids the config owns, so the enumeration
+// skips re-probing them (openAndStart already probes configured devices, and a
+// device being opened must be excluded before its open begins to avoid contending
+// with the probe). It uses the desired set published by reconcile; before the
+// first reconcile it falls back to the running device list.
+func (p *provider) configuredIDs() map[string]bool {
+	if c := p.configured.Load(); c != nil {
+		return *c
+	}
+	list := p.deviceList()
+	ids := make(map[string]bool, len(list))
+	for _, rt := range list {
+		ids[rt.dev.Device] = true
+	}
+	return ids
+}
+
+// DetectedDevice returns the probed capabilities for a host device by id from the
+// last enumeration, whether or not it is configured. Provisioning uses it so it
+// can tell "no such device on the host" (404) from "already configured" (409),
+// which AvailableDevices alone cannot because it hides configured devices.
+func (p *provider) DetectedDevice(id string) (mgmtserver.AvailableDevice, bool) {
+	if d := p.detected.Load(); d != nil {
+		for i := range *d {
+			if (*d)[i].ID == id {
+				return mgmtserver.AvailableDevice{
+					ID:                (*d)[i].ID,
+					FriendlyName:      (*d)[i].FriendlyName,
+					SupportedRates:    (*d)[i].SupportedRates,
+					SupportedChannels: (*d)[i].SupportedChannels,
+				}, true
+			}
+		}
+	}
+	return mgmtserver.AvailableDevice{}, false
+}
+
+// runEnumeration keeps the available-device list fresh off the capture run-loop
+// goroutine: it re-probes the host's unconfigured capture hardware once at
+// startup, then on a slow tick (so a hot-plugged device appears) and whenever a
+// config change signals enumTrigger (so a provisioned or removed device updates
+// promptly). Probing opens hardware and can be slow, which is exactly why it must
+// not run on the run loop that also drives capture, reloads and shutdown.
+func (p *provider) runEnumeration(ctx context.Context) {
+	const interval = 15 * time.Second
+	detect := func() {
+		det, err := audio.DetectDevices(p.configuredIDs())
+		if err != nil {
+			log.Printf("enumerate available capture devices: %v", err)
+			return
+		}
+		p.setDetected(det)
+	}
+	detect()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			detect()
+		case <-p.enumTrigger:
+			detect()
+		}
+	}
+}
+
+// AvailableDevices lists detected host capture devices the config does not list,
+// so the UI can offer them for provisioning. It filters the cached enumeration by
+// the device ids the running config already owns.
+func (p *provider) AvailableDevices() []mgmtserver.AvailableDevice {
+	var det []audio.DetectedDevice
+	if d := p.detected.Load(); d != nil {
+		det = *d
+	}
+	configured := p.configuredIDs()
+	out := make([]mgmtserver.AvailableDevice, 0, len(det))
+	for i := range det {
+		if configured[det[i].ID] {
+			continue
+		}
+		out = append(out, mgmtserver.AvailableDevice{
+			ID:                det[i].ID,
+			FriendlyName:      det[i].FriendlyName,
+			SupportedRates:    det[i].SupportedRates,
+			SupportedChannels: det[i].SupportedChannels,
+		})
 	}
 	return out
 }

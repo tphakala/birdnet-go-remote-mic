@@ -39,13 +39,13 @@ func TestHardwareNamesPropagatesError(t *testing.T) {
 func TestHardwareNamesFrom(t *testing.T) {
 	t.Parallel()
 	devs := []capture.DeviceInfo{
-		{ID: testDevID, Name: "Scarlett 2i2 USB, USB Audio"},
-		{ID: "hw:2,0", Name: testCardName},
+		{ID: testDevID, Name: testCardLongName},
+		{ID: testDevID2, Name: testCardName},
 	}
 	got := hardwareNamesFrom(devs)
 	want := map[string]string{
-		testDevID: "Scarlett 2i2 USB",
-		"hw:2,0":  testCardName,
+		testDevID:  testFriendlyName,
+		testDevID2: testCardName,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
@@ -63,11 +63,135 @@ func swapSupportedRates(fn func(string, int, capture.Format) (capture.RateSuppor
 	return func() { supportedRatesFn = prev }
 }
 
+func swapVerifiedRates(fn func(string, int, capture.Format) (capture.RateSupport, error)) func() {
+	prev := verifiedRatesFn
+	verifiedRatesFn = fn
+	return func() { verifiedRatesFn = prev }
+}
+
+func TestDetectDevices(t *testing.T) {
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) {
+		return []capture.DeviceInfo{
+			{ID: "hw:1,0", Name: testCardLongName},
+			{ID: testDevID2, Name: testAudioMoth},
+		}, nil
+	}
+	defer func() { enumerateDevices = prev }()
+
+	// Channel probe (refine seam): hw:2,0 is mono-only, hw:1,0 does mono+stereo.
+	restoreCh := swapSupportedRates(func(dev string, ch int, _ capture.Format) (capture.RateSupport, error) {
+		if dev == testDevID2 && ch == 2 {
+			return capture.RateSupport{}, &capture.BadFormatError{Channels: ch}
+		}
+		return capture.RateSupport{Rates: []int{48000}}, nil
+	})
+	defer restoreCh()
+
+	// Rate probe (verified seam): hw:2,0 is S32-only offering 44.1/48k; hw:1,0
+	// offers 48k on S16 and additionally 96k on S32.
+	restoreRates := swapVerifiedRates(func(dev string, _ int, f capture.Format) (capture.RateSupport, error) {
+		if f == capture.FormatS16LE {
+			if dev == testDevID2 {
+				return capture.RateSupport{}, &capture.BadFormatError{Format: f}
+			}
+			return capture.RateSupport{Rates: []int{48000}}, nil
+		}
+		if dev == testDevID2 {
+			return capture.RateSupport{Rates: []int{44100, 48000}}, nil
+		}
+		return capture.RateSupport{Rates: []int{48000, 96000}}, nil
+	})
+	defer restoreRates()
+
+	got, err := DetectDevices(nil)
+	if err != nil {
+		t.Fatalf("DetectDevices: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d devices, want 2: %+v", len(got), got)
+	}
+
+	if got[0].ID != "hw:1,0" || got[0].FriendlyName != testFriendlyName {
+		t.Errorf("device 0 = %+v, want id hw:1,0 name %q", got[0], testFriendlyName)
+	}
+	if !slices.Equal(got[0].SupportedChannels, []int{1, 2}) {
+		t.Errorf("device 0 channels = %v, want [1 2]", got[0].SupportedChannels)
+	}
+	if !slices.Equal(got[0].SupportedRates, []int{48000, 96000}) {
+		t.Errorf("device 0 rates = %v, want [48000 96000]", got[0].SupportedRates)
+	}
+
+	if got[1].ID != testDevID2 || got[1].FriendlyName != testAudioMoth {
+		t.Errorf("device 1 = %+v, want id hw:2,0 name AudioMoth", got[1])
+	}
+	if !slices.Equal(got[1].SupportedChannels, []int{1}) {
+		t.Errorf("device 1 channels = %v, want [1]", got[1].SupportedChannels)
+	}
+	if !slices.Equal(got[1].SupportedRates, []int{44100, 48000}) {
+		t.Errorf("device 1 rates = %v, want [44100 48000]", got[1].SupportedRates)
+	}
+}
+
+func TestDetectDevicesPropagatesEnumerateError(t *testing.T) {
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) { return nil, errors.New("enumerate failed") }
+	defer func() { enumerateDevices = prev }()
+
+	if _, err := DetectDevices(nil); err == nil {
+		t.Error("DetectDevices should propagate the enumeration error")
+	}
+}
+
+func TestDetectDevicesListsButDoesNotProbeConfigured(t *testing.T) {
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) {
+		return []capture.DeviceInfo{
+			{ID: testDevID, Name: testCardLongName},
+			{ID: testDevID2, Name: testAudioMoth},
+		}, nil
+	}
+	defer func() { enumerateDevices = prev }()
+
+	// A probe seam records which ids it was asked about, so we can prove the
+	// skipped (configured) device is listed but never probed.
+	var probed []string
+	defer swapSupportedRates(func(dev string, _ int, _ capture.Format) (capture.RateSupport, error) {
+		probed = append(probed, dev)
+		return capture.RateSupport{Rates: []int{48000}}, nil
+	})()
+	defer swapVerifiedRates(func(dev string, _ int, _ capture.Format) (capture.RateSupport, error) {
+		probed = append(probed, dev)
+		return capture.RateSupport{Rates: []int{48000}}, nil
+	})()
+
+	got, err := DetectDevices(map[string]bool{testDevID: true})
+	if err != nil {
+		t.Fatalf("DetectDevices: %v", err)
+	}
+	// Both host devices are listed (so provisioning can tell configured from
+	// absent), but only the unconfigured one carries probed capabilities.
+	if len(got) != 2 {
+		t.Fatalf("got %d devices, want 2 (both listed): %+v", len(got), got)
+	}
+	if got[0].ID != testDevID || got[0].SupportedRates != nil || got[0].SupportedChannels != nil {
+		t.Errorf("configured device %+v: want listed with no probed caps", got[0])
+	}
+	if got[1].ID != testDevID2 || len(got[1].SupportedRates) == 0 {
+		t.Errorf("unconfigured device %+v: want probed caps", got[1])
+	}
+	for _, p := range probed {
+		if p == testDevID {
+			t.Errorf("skipped device %s was probed (seam calls: %v)", testDevID, probed)
+		}
+	}
+}
+
 func TestProbeRatesUnionOfFormatsFilteredToCandidates(t *testing.T) {
 	// S16 offers 48 kHz; S32 additionally offers 96 kHz and 192 kHz. The union,
 	// intersected with candidates (which omit 192 kHz), yields 48 and 96 kHz in
 	// candidate order.
-	restore := swapSupportedRates(func(_ string, _ int, f capture.Format) (capture.RateSupport, error) {
+	restore := swapVerifiedRates(func(_ string, _ int, f capture.Format) (capture.RateSupport, error) {
 		switch f {
 		case capture.FormatS16LE:
 			return capture.RateSupport{Rates: []int{48000}}, nil
@@ -92,7 +216,7 @@ func TestProbeRatesUnionOfFormatsFilteredToCandidates(t *testing.T) {
 func TestProbeRatesS32OnlyDevice(t *testing.T) {
 	// An S32-only device (e.g. the ZOOM AMS-24) rejects S16 with *BadFormatError;
 	// its S32 rates must still be reported so the UI is not empty for it.
-	restore := swapSupportedRates(func(_ string, ch int, f capture.Format) (capture.RateSupport, error) {
+	restore := swapVerifiedRates(func(_ string, ch int, f capture.Format) (capture.RateSupport, error) {
 		if f == capture.FormatS16LE {
 			return capture.RateSupport{}, &capture.BadFormatError{Channels: ch, Format: f}
 		}
@@ -115,7 +239,7 @@ func TestProbeRatesS32OnlyDevice(t *testing.T) {
 func TestProbeRatesFallsBackWhenDeviceUnavailable(t *testing.T) {
 	// Both format queries fail (device busy or gone): report nil so the caller
 	// falls back to the static rate list.
-	restore := swapSupportedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
+	restore := swapVerifiedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
 		return capture.RateSupport{}, capture.ErrDeviceInUse
 	})
 	defer restore()
@@ -128,7 +252,7 @@ func TestProbeRatesFallsBackWhenDeviceUnavailable(t *testing.T) {
 func TestProbeRatesNilWhenNoCandidateMatches(t *testing.T) {
 	// The device is reachable but supports only rates outside the candidate set:
 	// return nil so the UI falls back rather than showing an empty dropdown.
-	restore := swapSupportedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
+	restore := swapVerifiedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
 		return capture.RateSupport{Rates: []int{8000, 11025}}, nil
 	})
 	defer restore()

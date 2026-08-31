@@ -12,7 +12,16 @@ import (
 var enumerateDevices = capture.Devices
 
 // supportedRatesFn is a package var so tests can inject a fake capability query.
+// It backs ProbeChannels and DeviceInUse, which only need the fast refine-based
+// query (channel support and busy detection do not require a rate commit).
 var supportedRatesFn = capture.SupportedRates
+
+// verifiedRatesFn backs ProbeRates. It is the HW_PARAMS-committing probe, which
+// (unlike refine-only SupportedRates) rejects rates a USB Audio Class device
+// advertises but cannot actually deliver, so the UI never offers a rate the
+// hardware silently refuses at open. It is a package var so tests can inject a
+// fake.
+var verifiedRatesFn = capture.SupportedRatesVerified
 
 // HardwareNames returns a map from ALSA device id to a friendly label for every
 // capture device the host currently exposes. It lets the UI default a device's
@@ -35,12 +44,67 @@ func hardwareNamesFrom(devs []capture.DeviceInfo) map[string]string {
 	return names
 }
 
+// DetectDevices enumerates the capture devices the host exposes and probes each
+// one's supported channel counts and sample rates, so the web UI can list the
+// hardware an operator may enable without any prior configuration. Rates are
+// verified with a real HW_PARAMS commit (see ProbeRates), so a device never
+// advertises a rate it cannot deliver.
+//
+// Every host device is listed (id and friendly name; enumeration opens nothing),
+// but a device whose id is in skip is NOT probed for capabilities: those are the
+// ids the configuration already owns, so openAndStart probes them for the
+// configured-device UI, and probing a serving device here would only fail busy.
+// Listing them without caps still lets a caller tell a device that is present but
+// configured (skipped here, hidden from the available view by the provider's
+// filter) from one that is genuinely absent from the host. Probing opens
+// hardware, so this must run off the capture run-loop goroutine.
+//
+// Rates are probed at a supported channel count (mono when available, since that
+// is the common provisioning default) so a stereo-only device still reports its
+// rates.
+func DetectDevices(skip map[string]bool) ([]DetectedDevice, error) {
+	devs, err := enumerateDevices()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DetectedDevice, 0, len(devs))
+	for i := range devs {
+		id := devs[i].ID
+		d := DetectedDevice{ID: id, FriendlyName: FriendlyName(devs[i].Name)}
+		if !skip[id] {
+			d.SupportedChannels = ProbeChannels(id, candidateChannels)
+			d.SupportedRates = ProbeRates(id, rateProbeChannel(d.SupportedChannels), candidateRates)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// rateProbeChannel picks the channel count to probe rates at: mono when the
+// device supports it (the common case and the provisioning default), else the
+// first supported count, else mono as a last resort. Rates can depend on the
+// channel count, so probing a stereo-only device at mono would wrongly report no
+// rates.
+func rateProbeChannel(supported []int) int {
+	if len(supported) == 0 {
+		return 1
+	}
+	for _, ch := range supported {
+		if ch == 1 {
+			return 1
+		}
+	}
+	return supported[0]
+}
+
 // ProbeRates returns the subset of candidates the device accepts, for the config
-// UI's rate dropdown. It uses go-audio-capture's HW_REFINE-based SupportedRates,
-// which opens the device once per format with O_NONBLOCK and issues a refine
-// ioctl per rate without any state transition. That replaces the old open/close
-// probe (about a dozen exclusive opens per device at startup) and the
-// EBUSY-after-close race it risked, and it may run while the device is free.
+// UI's rate dropdown. It uses go-audio-capture's SupportedRatesVerified, which
+// refines to filter the advertised rates and then commits HW_PARAMS on a fresh
+// O_NONBLOCK open per candidate to VERIFY each one. This rejects rates a USB Audio
+// Class device advertises at refine time but cannot actually deliver (the refine
+// lie), which HW_REFINE alone reported as supported. The opens are O_NONBLOCK, so
+// the probe still fails fast on a busy device rather than blocking, and it may run
+// while the device is free.
 //
 // It queries both capture formats (S16LE and S32LE) and keeps the union,
 // because OpenCapture negotiates the capture format automatically (S16
@@ -52,7 +116,7 @@ func hardwareNamesFrom(devs []capture.DeviceInfo) map[string]string {
 func ProbeRates(deviceID string, channels int, candidates []int) []int {
 	supported := make(map[int]bool)
 	for _, f := range captureFormats {
-		rs, err := supportedRatesFn(deviceID, channels, f)
+		rs, err := verifiedRatesFn(deviceID, channels, f)
 		if err != nil {
 			continue
 		}

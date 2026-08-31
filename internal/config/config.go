@@ -98,6 +98,16 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("config: %s: %s", e.Field, e.Reason)
 }
 
+// Default returns a valid configuration with defaults applied and no devices. It
+// is used on first run when no config file exists yet, so the appliance boots and
+// the web UI can enumerate the host's capture hardware and provision devices; the
+// first provisioning writes the config file.
+func Default() Config {
+	var c Config
+	c.ApplyDefaults()
+	return c
+}
+
 // Load reads, defaults, and validates a YAML config file.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is an operator-supplied CLI flag
@@ -165,9 +175,10 @@ func (c *Config) Validate() error {
 			return &ValidationError{"management.listen", "must be host:port"}
 		}
 	}
-	if len(c.Devices) == 0 {
-		return &ValidationError{"devices", "must list at least one device"}
-	}
+	// An empty device list is valid: on first run the appliance boots with no
+	// configured devices so the web UI can enumerate the host's capture hardware
+	// and let the operator enable devices from there. The management API keeps the
+	// appliance up while nothing is serving (see run()).
 	if len(c.Devices) > maxDevices {
 		return &ValidationError{"devices", fmt.Sprintf("must not list more than %d devices", maxDevices)}
 	}
