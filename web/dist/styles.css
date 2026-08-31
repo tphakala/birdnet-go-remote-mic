@@ -1653,3 +1653,45 @@ select.field-input {
 .network-actions-spacer {
   flex: 1;
 }
+
+/* ===== Available (detected but unconfigured) capture devices ===== */
+.available-section {
+  margin-top: 18px;
+}
+.available-rack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.available-card {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.available-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.available-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+.available-caps {
+  color: var(--text-secondary);
+}
+.available-enable {
+  flex: 0 0 auto;
+}
+/* Busy affordance for a control kept focusable (aria-disabled, not disabled). */
+.is-busy {
+  opacity: 0.65;
+  cursor: progress;
+  pointer-events: none;
+}

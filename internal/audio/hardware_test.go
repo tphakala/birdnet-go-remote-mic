@@ -3,9 +3,13 @@ package audio
 import "testing"
 
 const (
-	testDevID    = "hw:1,0"
-	testCardName = "C-Media USB Audio Device"
-	testFmtS16   = "s16"
+	testDevID        = "hw:1,0"
+	testDevID2       = "hw:2,0"
+	testCardName     = "C-Media USB Audio Device"
+	testFriendlyName = "Scarlett 2i2 USB"
+	testCardLongName = "Scarlett 2i2 USB, USB Audio"
+	testAudioMoth    = "AudioMoth"
+	testFmtS16       = "s16"
 )
 
 func TestCandidateRatesReturnsFreshCopy(t *testing.T) {
@@ -39,7 +43,7 @@ func TestFriendlyName(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"comma suffix dropped", "Scarlett 2i2 USB, USB Audio", "Scarlett 2i2 USB"},
+		{"comma suffix dropped", testCardLongName, testFriendlyName},
 		{"short name comma suffix", "AMS-24, USB Audio", "AMS-24"},
 		{"no comma kept as-is", testCardName, testCardName},
 		{"whitespace trimmed around comma", "  Foo , Bar", "Foo"},

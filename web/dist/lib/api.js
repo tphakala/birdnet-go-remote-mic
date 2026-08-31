@@ -64,6 +64,20 @@ export class ApiClient {
     async getDevice(name) {
         return this.request(`/devices/${encodeURIComponent(name)}`);
     }
+    async getAvailableDevices() {
+        return this.request("/devices/available");
+    }
+    async provisionDevice(req) {
+        return this.request("/devices", {
+            method: "POST",
+            body: JSON.stringify(req),
+        });
+    }
+    async deleteDevice(name) {
+        await this.request(`/devices/${encodeURIComponent(name)}`, {
+            method: "DELETE",
+        });
+    }
     async getConfig() {
         return this.request("/config");
     }

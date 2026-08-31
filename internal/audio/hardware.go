@@ -27,6 +27,19 @@ var candidateChannels = []int{1, 2}
 // It returns a fresh slice so a caller cannot mutate the shared package list.
 func CandidateChannels() []int { return slices.Clone(candidateChannels) }
 
+// DetectedDevice is one capture device the host exposes, with the capabilities
+// probed for it. It is what the web UI lists as an "available" device the
+// operator can enable, so it carries no configuration (name, path, mode): those
+// are derived when the device is provisioned. Empty SupportedRates/Channels mean
+// the device could not be probed (busy or gone) and the UI falls back to a
+// static list.
+type DetectedDevice struct {
+	ID                string
+	FriendlyName      string
+	SupportedRates    []int
+	SupportedChannels []int
+}
+
 // FriendlyName derives a short, human-facing device label from an ALSA card
 // name by keeping the text before the first comma and trimming surrounding
 // whitespace. ALSA longnames commonly append a bus suffix after a comma (for
