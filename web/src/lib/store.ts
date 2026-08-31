@@ -150,6 +150,19 @@ export class AppStore extends EventTarget {
       return false;
     }
   }
+
+  // applyConfig records the authoritative config the server returned from a
+  // successful PATCH /config, so the cached config reflects the change even if
+  // the follow-up GET refresh fails. That matters because refreshConfig swallows
+  // its error and leaves config stale on failure, and the 3s poll never refreshes
+  // config; without this, a later queued mutation would rebuild its full-array
+  // PATCH from the stale base and silently clobber this change. Using the PATCH
+  // response (not the request body) also seeds a config that was never loaded
+  // (initial GET failed) and picks up any server-side normalization.
+  public applyConfig(config: Config): void {
+    this.state.config = config;
+    this.dispatchEvent(new CustomEvent("config", { detail: config }));
+  }
 }
 
 export const store = new AppStore();

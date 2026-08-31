@@ -116,6 +116,10 @@ export class DashboardView {
   private rack: HTMLElement | null;
   private emptyEl: HTMLElement | null;
   private status: ApplianceStatus | null = null;
+  // Serializes config mutations (device toggle + settings save) so each PATCH is
+  // built from a fresh base only after the previous mutation settled. Prevents a
+  // full-array PATCH from a stale base from clobbering a concurrent change.
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     this.rack = document.getElementById("channel-rack");
@@ -188,6 +192,12 @@ export class DashboardView {
     const seen = new Set<string>();
     let clientCount = 0;
 
+    // Index the persisted config by ALSA id once per pass so the per-card
+    // reconcile is a Map lookup rather than a linear scan of the config list per
+    // card (an N+1 over the device count).
+    const cfgByDevice = new Map<string, DeviceConfig>();
+    for (const cd of store.getState().config?.devices ?? []) cfgByDevice.set(cd.device, cd);
+
     for (const d of devices) {
       seen.add(d.name);
       if (d.clientConnected) clientCount++;
@@ -205,9 +215,9 @@ export class DashboardView {
           existing.article.remove();
           this.cards.delete(d.name);
         }
-        this.cards.set(d.name, this.buildCard(d));
+        this.cards.set(d.name, this.buildCard(d, cfgByDevice));
       } else {
-        this.updateCard(existing, d);
+        this.updateCard(existing, d, cfgByDevice);
       }
     }
 
@@ -237,14 +247,14 @@ export class DashboardView {
     return `rtsp://${window.location.hostname}:${port}${d.path}`;
   }
 
-  private buildCard(d: Device): CardEntry {
+  private buildCard(d: Device, cfgByDevice: Map<string, DeviceConfig>): CardEntry {
     const serving = d.state === "serving";
     const disabled = d.state === "disabled";
     const isUltra = d.mode === "pcm";
     // The toggle reflects the persisted (desired) enabled flag, which can differ
     // from the runtime state only briefly while a config reload applies. Fall
     // back to the runtime state only when the config is not loaded.
-    const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
+    const cfgDev = cfgByDevice.get(d.device);
     const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
     // A disabled device is off by intent, not broken: give it a neutral card and
     // avatar rather than the error styling reserved for a failed/skipped device.
@@ -430,6 +440,10 @@ export class DashboardView {
     const meters: VUMeter[] = [];
     const n = Math.max(1, count);
     const multi = n > 1;
+    // Cap the stack height for high-channel interfaces so a 6-8 channel device
+    // does not grow the card tall enough to push the dashboard down; the rows
+    // scroll within the console instead. Most appliance devices are mono/stereo.
+    if (n > 4) meterConsole.classList.add("many-channels");
     for (let c = 0; c < n; c++) {
       const wrapper = elem("div", "meter-track-wrapper");
       if (multi) {
@@ -473,6 +487,17 @@ export class DashboardView {
     return store.getState().config?.devices ?? store.getState().devices.map(deviceToConfig);
   }
 
+  // enqueue serializes config mutations. The queued task runs only after the
+  // previous mutation's PATCH and refresh have settled, so it can build its
+  // full-array PATCH from a fresh deviceConfigBase() and never clobber a
+  // concurrent change with a stale base. The chain tail never rejects (errors are
+  // handled inside each task), so one failure cannot wedge later mutations.
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run = this.mutationQueue.then(() => task());
+    this.mutationQueue = run.catch(() => {});
+    return run;
+  }
+
   // apiErrorToast surfaces a failed PATCH: a validation problem shows the first
   // field/reason, anything else shows the raw message, both under a prefix.
   private apiErrorToast(err: unknown, prefix: string): void {
@@ -493,25 +518,39 @@ export class DashboardView {
   private async handleToggleEnabled(entry: CardEntry, input: HTMLInputElement): Promise<void> {
     const want = input.checked;
     const id = entry.device.device;
-    const merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
     input.disabled = true;
     input.setAttribute("aria-checked", String(want));
-    try {
-      const res = await api.patchConfig({ devices: merged });
-      await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      const verb = want ? "Enabled" : "Disabled";
-      showToast(
-        res.restartRequired
-          ? `${verb} ${entry.device.name}. Restart the appliance to apply.`
-          : `${verb} ${entry.device.name}.`,
-      );
-    } catch (err: unknown) {
-      input.checked = !want;
-      input.setAttribute("aria-checked", String(!want));
-      this.apiErrorToast(err, "Toggle failed");
-    } finally {
-      input.disabled = false;
-    }
+    await this.enqueue(async () => {
+      // Build merged from a FRESH base inside the queued task, after any prior
+      // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
+      // a concurrent change with a stale base.
+      const merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
+      try {
+        const res = await api.patchConfig({ devices: merged });
+        // The PATCH persisted. Seed the cached config with the authoritative
+        // response before the refresh, so a later queued mutation rebuilds its
+        // base from this change even if the GET refresh below fails (refreshConfig
+        // swallows its error, and the 3s poll never refreshes config, so a stale
+        // base would otherwise let the next full-array PATCH clobber this one).
+        store.applyConfig(res.config);
+        // A refresh failure afterwards must NOT revert the toggle: the change is
+        // already applied and reflected in the cached config above.
+        await Promise.all([store.refreshConfig(), store.refreshDevices()]);
+        const verb = want ? "Enabled" : "Disabled";
+        showToast(
+          res.restartRequired
+            ? `${verb} ${entry.device.name}. Restart the appliance to apply.`
+            : `${verb} ${entry.device.name}.`,
+        );
+      } catch (err: unknown) {
+        // Only a failed PATCH reverts the toggle: the mutation did not persist.
+        input.checked = !want;
+        input.setAttribute("aria-checked", String(!want));
+        this.apiErrorToast(err, "Toggle failed");
+      } finally {
+        input.disabled = false;
+      }
+    });
   }
 
   private toggleSettings(entry: CardEntry): void {
@@ -541,6 +580,7 @@ export class DashboardView {
       const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; entry.dirty = true; }, {
         friendlyName: entry.device.friendlyName,
         supportedRates: entry.device.supportedRates,
+        supportedChannels: entry.device.supportedChannels,
       });
       entry.settingsForm = form;
       entry.settingsWrap.append(form.element, actions);
@@ -591,24 +631,30 @@ export class DashboardView {
       return;
     }
     const edited = form.collect();
-    const cfg = store.getState().config;
-    // The settings form does not edit the streaming enabled flag, and the card
-    // toggle may have changed it since the form was opened, so collect()'s
-    // snapshot can be stale. Source it from the current config so a settings save
-    // never overwrites a toggle made while the panel was open.
-    const curEnabled = cfg?.devices.find((cd) => cd.device === edited.device)?.enabled;
-    if (curEnabled !== undefined) edited.enabled = curEnabled;
-    const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? edited : cd));
-    if (!merged.some((cd) => cd.device === edited.device)) merged.push(edited);
+    await this.enqueue(async () => {
+      // Source the enabled flag and the patch base FRESH inside the queued task:
+      // the settings form does not edit enabled, the card toggle may have changed
+      // it since the panel opened, and a prior queued mutation may have changed
+      // the base. Building here (not at collect time) avoids clobbering either.
+      const curEnabled = store.getState().config?.devices.find((cd) => cd.device === edited.device)?.enabled;
+      if (curEnabled !== undefined) edited.enabled = curEnabled;
+      const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? edited : cd));
+      if (!merged.some((cd) => cd.device === edited.device)) merged.push(edited);
 
-    try {
-      const res = await api.patchConfig({ devices: merged });
-      this.closeSettings(entry);
-      await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
-    } catch (err: unknown) {
-      this.apiErrorToast(err, "Save failed");
-    }
+      try {
+        const res = await api.patchConfig({ devices: merged });
+        this.closeSettings(entry);
+        // Seed the cached config with the authoritative PATCH response before the
+        // refresh so a later queued mutation cannot rebuild from a stale base if
+        // the GET refresh fails (see applyConfig). A refresh failure after a
+        // successful PATCH must not report "Save failed": the change persisted.
+        store.applyConfig(res.config);
+        await Promise.all([store.refreshConfig(), store.refreshDevices()]);
+        showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
+      } catch (err: unknown) {
+        this.apiErrorToast(err, "Save failed");
+      }
+    });
   }
 
   private buildStatusBadge(state: string): HTMLElement {
@@ -616,7 +662,7 @@ export class DashboardView {
     return elem("span", badge.cls, badge.label);
   }
 
-  private updateCard(entry: CardEntry, d: Device): void {
+  private updateCard(entry: CardEntry, d: Device, cfgByDevice: Map<string, DeviceConfig>): void {
     entry.device = d;
     if (entry.statusEl) {
       const fresh = this.buildStatusBadge(d.state);
@@ -634,7 +680,7 @@ export class DashboardView {
     // Reconcile the streaming toggle and the pending/footer copy against the
     // persisted config, so an in-session toggle (or an out-of-band config change)
     // is reflected without waiting for a serving-state flip and full rebuild.
-    const cfgDev = store.getState().config?.devices.find((cd) => cd.device === d.device);
+    const cfgDev = cfgByDevice.get(d.device);
     const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
     // Do not fight the user mid-interaction (the input is disabled while a PATCH
     // is in flight); otherwise keep it in sync with the persisted flag.

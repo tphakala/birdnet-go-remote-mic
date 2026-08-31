@@ -79,6 +79,7 @@ export interface Device {
   error?: string;
   friendlyName?: string;
   supportedRates?: number[];
+  supportedChannels?: number[];
 }
 
 export interface NetworkInterface {

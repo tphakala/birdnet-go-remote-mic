@@ -437,6 +437,19 @@ components:
             or empty when the device could not be probed (missing or busy), in
             which case the UI offers a static list of common rates.
           examples: [[48000, 96000, 192000]]
+        supportedChannels:
+          type: array
+          items:
+            type: integer
+          description: >
+            Channel counts the hardware accepts (a subset of [1, 2]), probed
+            once at startup via the same non-blocking capability query as
+            supportedRates. Absent or empty when the device could not be probed
+            (missing or busy), in which case the UI offers both mono and stereo.
+            The UI uses it to fix the Channels control on a device that supports
+            a single channel count (mono or stereo), and to gate Opus, which
+            requires mono.
+          examples: [[1], [1, 2]]
 
     DeviceState:
       type: string
