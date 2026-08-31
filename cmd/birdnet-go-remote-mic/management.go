@@ -50,6 +50,12 @@ type provider struct {
 	// leaves or rejoins the available list promptly, without probing hardware on
 	// the capture run-loop goroutine.
 	enumTrigger chan struct{}
+	// configured is the set of ALSA device ids the desired config owns, published
+	// at the START of a reconcile (before any device is opened). The enumeration
+	// skips these, so a device being provisioned is excluded from probing before
+	// its capture open begins and the two never contend for the same id. Atomic
+	// because reconcile stores it while the enumeration goroutine reads it.
+	configured atomic.Pointer[map[string]bool]
 }
 
 // discoveryEnabled reports the current mDNS-advertisement flag.
@@ -121,10 +127,19 @@ func (p *provider) signalEnumerate() {
 	}
 }
 
-// configuredIDs is the set of ALSA device ids the running config owns, so the
-// enumeration skips re-probing them (openAndStart already probes configured
-// devices, and a serving device would only reject the probe as busy).
+// setConfiguredIDs publishes the ids the desired config owns, called at the start
+// of a reconcile before any device opens.
+func (p *provider) setConfiguredIDs(ids map[string]bool) { p.configured.Store(&ids) }
+
+// configuredIDs is the set of ALSA device ids the config owns, so the enumeration
+// skips re-probing them (openAndStart already probes configured devices, and a
+// device being opened must be excluded before its open begins to avoid contending
+// with the probe). It uses the desired set published by reconcile; before the
+// first reconcile it falls back to the running device list.
 func (p *provider) configuredIDs() map[string]bool {
+	if c := p.configured.Load(); c != nil {
+		return *c
+	}
 	list := p.deviceList()
 	ids := make(map[string]bool, len(list))
 	for _, rt := range list {
@@ -192,10 +207,7 @@ func (p *provider) AvailableDevices() []mgmtserver.AvailableDevice {
 	if d := p.detected.Load(); d != nil {
 		det = *d
 	}
-	configured := make(map[string]bool)
-	for _, rt := range p.deviceList() {
-		configured[rt.dev.Device] = true
-	}
+	configured := p.configuredIDs()
 	out := make([]mgmtserver.AvailableDevice, 0, len(det))
 	for i := range det {
 		if configured[det[i].ID] {

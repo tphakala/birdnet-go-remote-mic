@@ -2,6 +2,7 @@ package mgmtserver
 
 import (
 	"context"
+	"net/http"
 	"regexp"
 	"testing"
 
@@ -246,6 +247,32 @@ func TestProvisionDeviceAlreadyConfiguredYields409(t *testing.T) {
 	}
 	if _, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse); !ok {
 		t.Fatalf("returned %T, want 409", resp)
+	}
+}
+
+func TestProvisionDeviceNotImplementedWithoutStore(t *testing.T) {
+	s := New(&fakeProvider{})
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	d, ok := resp.(mgmtapi.ProvisionDevicedefaultApplicationProblemPlusJSONResponse)
+	if !ok || d.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("returned %T (status %v), want 501", resp, ok)
+	}
+}
+
+func TestDeleteDeviceNotImplementedWithoutStore(t *testing.T) {
+	s := New(&fakeProvider{})
+	resp, err := s.DeleteDevice(context.Background(), mgmtapi.DeleteDeviceRequestObject{Name: devGarden})
+	if err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	d, ok := resp.(mgmtapi.DeleteDevicedefaultApplicationProblemPlusJSONResponse)
+	if !ok || d.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("returned %T (status %v), want 501", resp, ok)
 	}
 }
 

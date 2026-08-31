@@ -238,6 +238,15 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 
 	prevDiscovery := a.prov.discoveryEnabled()
 
+	// Publish the desired configured-device ids BEFORE opening anything, so the
+	// background enumeration excludes a device from probing before its capture
+	// open begins and the probe and the open never contend for the same ALSA id.
+	desiredIDs := make(map[string]bool, len(newCfg.Devices))
+	for i := range newCfg.Devices {
+		desiredIDs[newCfg.Devices[i].Device] = true
+	}
+	a.prov.setConfiguredIDs(desiredIDs)
+
 	plan := reload.Reconcile(a.runningParams(), newCfg)
 
 	for _, name := range plan.Stop {

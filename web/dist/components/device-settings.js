@@ -127,6 +127,13 @@ export class DeviceSettingsForm {
         // told rather than seeing the codec change with no explanation.
         if (d.mode === "opus" && !opusOffered) {
             this.loadCoercion = `${d.name} does not support Opus (48 kHz mono); switched to PCM L16. Save to keep this change.`;
+            // Opus pinned the rate to 48000. If the hardware does not offer 48000 for
+            // PCM either, move the rate control to a supported value so Save does not
+            // persist a rate the device cannot open.
+            const rates = this.hardware.supportedRates;
+            if (rates && rates.length && !rates.includes(d.rate)) {
+                this.rateDrop.select(String(rates[0]));
+            }
         }
         modeField.appendChild(this.hint(opusOffered
             ? "Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."

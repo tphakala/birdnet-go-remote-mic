@@ -38,6 +38,11 @@ export class AppStore extends EventTarget {
   // stale base for the next queued mutation. Both writers bump it; a refresh
   // commits only while its captured generation is still current.
   private configEpoch = 0;
+  // Monotonic generation for available-device refreshes. Overlapping polls can
+  // resolve out of order (a provision/removal triggers an extra refresh that can
+  // race the 3s poll), so an older response must not overwrite a newer one and
+  // restore a stale Enable card.
+  private availableEpoch = 0;
 
   constructor() {
     super();
@@ -124,8 +129,13 @@ export class AppStore extends EventTarget {
   }
 
   public async refreshAvailable(): Promise<boolean> {
+    const epoch = ++this.availableEpoch;
     try {
-      this.state.available = await api.getAvailableDevices();
+      const available = await api.getAvailableDevices();
+      // A newer refreshAvailable started while this GET was in flight; its result
+      // is fresher, so drop this stale body rather than restoring a stale list.
+      if (epoch !== this.availableEpoch) return true;
+      this.state.available = available;
       this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
       return true;
     } catch (err) {

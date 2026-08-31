@@ -309,11 +309,16 @@ export class DashboardView {
     this.provisioning.add(d.device);
     this.markBusy(btn, "Enabling...");
     try {
-      const created = await api.provisionDevice({ device: d.device });
-      // The device leaves the available list and joins the configured rack; both
-      // refreshes below re-render each section.
-      await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-      showToast(`Enabled ${created.name}. Streaming on ${created.path}.`);
+      // Serialize through the same queue as toggles and settings saves: those
+      // submit a full-array PATCH built from the cached config, so a provision
+      // running concurrently could be clobbered by a stale PATCH (or vice versa).
+      // The refreshes run inside the task so the next queued mutation rebuilds
+      // from the post-provision config.
+      await this.enqueue(async () => {
+        const created = await api.provisionDevice({ device: d.device });
+        await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+        showToast(`Enabled ${created.name}. Streaming on ${created.path}.`);
+      });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Enable failed");
     } finally {
@@ -357,13 +362,18 @@ export class DashboardView {
     if (!ok) return;
     this.markBusy(btn, "Removing...");
     try {
-      await api.deleteDevice(entry.device.name);
-      // The card (and this button) is about to be destroyed by the refresh, which
-      // would drop focus to the document body. Move it to the workspace region
-      // first so a keyboard user keeps a sensible place.
-      document.getElementById("main-content")?.focus();
-      await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-      showToast(`Removed ${entry.device.name}.`);
+      // Serialize with toggles and settings saves: a stale full-array PATCH from
+      // one of those must not run interleaved with this delete and restore the
+      // removed device (or drop a concurrently provisioned one).
+      await this.enqueue(async () => {
+        await api.deleteDevice(entry.device.name);
+        // The card (and this button) is about to be destroyed by the refresh,
+        // which would drop focus to the document body. Move it to the workspace
+        // region first so a keyboard user keeps a sensible place.
+        document.getElementById("main-content")?.focus();
+        await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+        showToast(`Removed ${entry.device.name}.`);
+      });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Remove failed");
       this.clearBusy(btn, "Remove");
