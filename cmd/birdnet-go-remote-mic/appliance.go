@@ -17,10 +17,11 @@ import (
 )
 
 // pumpBacklog bounds the pumpDone channel. At most one result arrives per live
-// pump; the device list is capped at 32, and a restart-everything reconcile can
-// briefly run up to 32 old (superseded) plus 32 new pumps, so 64 holds every
-// pump ending at once. If it were ever exceeded a pump would block on send, not
-// drop, so the bound is a smoothing buffer rather than a correctness limit.
+// pump; the device list is capped at 32. During a reconcile only the stopped
+// (superseded) pumps end, but a shutdown that lands mid restart-everything can
+// end up to 32 old plus 32 new live pumps at once, so 64 covers the worst case.
+// If it were ever exceeded a pump would block on send, not drop, so the bound is
+// a smoothing buffer rather than a correctness limit.
 const pumpBacklog = 64
 
 // pumpResult reports a device's capture pump goroutine ending, with the error
