@@ -1153,6 +1153,51 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   width: 17px;
 }
 
+/* Device-card streaming toggle: a visible caption plus a hit target at least
+   24px tall (the bare 20px track is under WCAG 2.5.8 target size). */
+.device-toggle {
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 2px;
+}
+
+.switch-caption {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  /* Use text-secondary, not text-muted: this is the only visible label for an
+     interactive control, so it needs AA contrast at 11px in both themes. */
+  color: var(--text-secondary);
+}
+
+/* Persistent "restart required to apply" banner on a device card, shown when the
+   configured streaming flag diverges from the live runtime state. It is a direct
+   flex child of .rack-card, so the card's own padding and gap position it. */
+.pending-restart-note {
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--signal-warn-bg);
+  border: 1px solid var(--signal-warn-glow);
+  border-left: 3px solid var(--signal-warn);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Per-channel meter row label, present only on multi-channel devices. */
+.meter-channel-label {
+  min-width: 34px;
+  font-size: 11px;
+  /* The only visible per-channel identifier; keep it at AA contrast. */
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.meter-track-wrapper + .meter-track-wrapper {
+  margin-top: 8px;
+}
+
 /* Sticky Action Bar for Staged Changes */
 .floating-actionbar {
   position: sticky;

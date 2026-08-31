@@ -110,7 +110,7 @@ func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 	// Register the level meter only once the device has fully opened. Doing it
 	// after the last fallible step keeps a device that fails here out of the
 	// hub, so the levels stream never reports a phantom silent device for it.
-	src = audio.NewMeteredSource(src, hub.Meter(dev.Name))
+	src = audio.NewMeteredSource(src, hub.Meter(dev.Name, channels))
 	frames := rtspserver.NewChanSource(64)
 	return &deviceRuntime{
 		dev:      *dev,
@@ -234,6 +234,21 @@ func run(cfgPath string) error {
 	// so a total open failure is fatal and lets a supervisor restart the process
 	// (the current auto-recovery path; in-process capture restart is a later phase).
 	if len(serving) == 0 && !mgmtServing {
+		// Distinguish a deliberate all-disabled config from a genuine open
+		// failure. "No device could be opened" reads as a hardware fault and a
+		// supervisor will restart-loop on it, but a config where every device is
+		// disabled is not a fault a restart can clear: report it distinctly so the
+		// operator (not an endless restart) is what resolves it.
+		allDisabled := len(records) > 0
+		for _, rt := range records {
+			if rt.state != mgmtserver.StateDisabled {
+				allDisabled = false
+				break
+			}
+		}
+		if allDisabled {
+			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
+		}
 		return errors.New("no configured capture device could be opened")
 	}
 
