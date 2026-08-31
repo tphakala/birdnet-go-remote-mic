@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -85,6 +86,11 @@ type Server struct {
 	restartFn   func()
 	reloader    Reloader
 	staticFS    fs.FS
+
+	// patchMu serializes a config PATCH's persist-then-reload sequence end to
+	// end, so two concurrent patches cannot persist in one order and hot-reload
+	// in the other (which would leave disk and the live pipeline disagreeing).
+	patchMu sync.Mutex
 }
 
 // Option configures a Server.

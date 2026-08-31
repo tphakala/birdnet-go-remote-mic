@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
@@ -168,6 +171,48 @@ func TestPatchConfigReloaderErrorReportsRestartRequired(t *testing.T) {
 	}
 	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic {
 		t.Errorf("persisted config = %+v, want the patch persisted despite reload failure", loaded.Devices)
+	}
+}
+
+// TestPatchConfigSerializesReload proves the persist-then-reload sequence runs
+// under one lock: the reloader never executes concurrently, so two racing
+// patches cannot persist in one order and reconcile in the other.
+func TestPatchConfigSerializesReload(t *testing.T) {
+	store, _ := tempStore(t)
+	var inFlight, maxInFlight atomic.Int32
+	reloader := func(_ context.Context, _ config.Config) error {
+		n := inFlight.Add(1)
+		for {
+			m := maxInFlight.Load()
+			if n <= m || maxInFlight.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond) // widen the window a racing patch could enter
+		inFlight.Add(-1)
+		return nil
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
+
+	const n = 6
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			devs := []mgmtapi.DeviceConfig{{
+				Name: "d" + strconv.Itoa(i), Device: "hw:" + strconv.Itoa(i), Path: "/d" + strconv.Itoa(i),
+				Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+			}}
+			if _, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}}); err != nil {
+				t.Errorf("PatchConfig: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := maxInFlight.Load(); got != 1 {
+		t.Fatalf("max concurrent reloads = %d, want 1 (persist+reload must be serialized)", got)
 	}
 }
 

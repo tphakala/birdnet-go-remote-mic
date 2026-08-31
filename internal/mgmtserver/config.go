@@ -124,6 +124,12 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 		}, nil
 	}
 
+	// Serialize the persist-then-reload sequence: without this, two concurrent
+	// patches could persist in one order but reconcile in the other, leaving the
+	// file and the running pipeline disagreeing.
+	s.patchMu.Lock()
+	defer s.patchMu.Unlock()
+
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
 		if patch.Discovery != nil {
 			cur.Discovery.Enabled = patch.Discovery.Enabled

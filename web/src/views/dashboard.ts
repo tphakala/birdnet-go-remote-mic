@@ -65,7 +65,7 @@ function pendingStop(configEnabled: boolean, state: string): boolean {
   return state === "serving" && !configEnabled;
 }
 
-const PENDING_STOP_TEXT = "Disabling; this device stops serving momentarily.";
+const PENDING_STOP_TEXT = "Disabling; this device stops serving shortly.";
 
 // nonServingFooterText is the footer message for a card that is not serving,
 // shared by buildCard and updateCard so an in-session toggle never leaves stale
@@ -73,7 +73,7 @@ const PENDING_STOP_TEXT = "Disabling; this device stops serving momentarily.";
 function nonServingFooterText(state: string, configEnabled: boolean): string {
   if (state === "disabled") {
     return configEnabled
-      ? "Enabling; this device starts serving momentarily."
+      ? "Enabling; this device starts serving shortly."
       : "Streaming is disabled for this device. Enable it to start serving.";
   }
   return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
@@ -497,9 +497,14 @@ export class DashboardView {
     input.disabled = true;
     input.setAttribute("aria-checked", String(want));
     try {
-      await api.patchConfig({ devices: merged });
+      const res = await api.patchConfig({ devices: merged });
       await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      showToast(`${want ? "Enabled" : "Disabled"} ${entry.device.name}.`);
+      const verb = want ? "Enabled" : "Disabled";
+      showToast(
+        res.restartRequired
+          ? `${verb} ${entry.device.name}. Restart the appliance to apply.`
+          : `${verb} ${entry.device.name}.`,
+      );
     } catch (err: unknown) {
       input.checked = !want;
       input.setAttribute("aria-checked", String(!want));
@@ -597,10 +602,10 @@ export class DashboardView {
     if (!merged.some((cd) => cd.device === edited.device)) merged.push(edited);
 
     try {
-      await api.patchConfig({ devices: merged });
+      const res = await api.patchConfig({ devices: merged });
       this.closeSettings(entry);
       await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      showToast("Device settings applied.");
+      showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
     } catch (err: unknown) {
       this.apiErrorToast(err, "Save failed");
     }
