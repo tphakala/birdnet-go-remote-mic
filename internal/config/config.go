@@ -62,7 +62,7 @@ type Device struct {
 	// Enabled is a pointer so an absent value defaults on: a device is captured
 	// and streamed unless explicitly disabled. A disabled device stays in the
 	// config (and is shown in the UI) but is not opened; toggling it takes effect
-	// on the next restart, since the capture pipeline is built only at startup.
+	// at once via a config reload, which starts or stops the device in place.
 	Enabled *bool `yaml:"enabled,omitempty"`
 }
 

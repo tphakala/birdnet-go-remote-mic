@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -29,8 +30,8 @@ const (
 	// StateFailed means the device died after startup; its RTSP path 404s.
 	StateFailed DeviceState = "failed"
 	// StateDisabled means the device is configured but intentionally not opened
-	// (its Enabled flag is false). It is not captured or streamed until enabled
-	// and the appliance restarts.
+	// (its Enabled flag is false). It is not captured or streamed until it is
+	// enabled, which a config reload applies at once, no restart needed.
 	StateDisabled DeviceState = "disabled"
 )
 
@@ -83,7 +84,13 @@ type Server struct {
 	configStore ConfigStore
 	system      SystemProvider
 	restartFn   func()
+	reloader    Reloader
 	staticFS    fs.FS
+
+	// patchMu serializes a config PATCH's persist-then-reload sequence end to
+	// end, so two concurrent patches cannot persist in one order and hot-reload
+	// in the other (which would leave disk and the live pipeline disagreeing).
+	patchMu sync.Mutex
 }
 
 // Option configures a Server.

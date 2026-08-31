@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 
@@ -82,12 +83,30 @@ func (s *Server) GetConfig(_ context.Context, _ mgmtapi.GetConfigRequestObject) 
 	return mgmtapi.GetConfig200JSONResponse(configToWire(&cur)), nil
 }
 
+// Reloader applies a persisted configuration to the running appliance without a
+// restart. It returns nil once the change has been reconciled into the live
+// capture pipeline (individual devices that then fail to open surface through
+// GET /devices, exactly as at startup, and are not reload errors). A non-nil
+// error means the change could not be hot-applied at all (for example the
+// appliance is shutting down); the configuration is still persisted, so a
+// restart will pick it up.
+type Reloader func(ctx context.Context, cfg config.Config) error
+
+// WithReloader mounts fn so a persisted PATCH /config is applied to the running
+// pipeline in place. With a reloader mounted, a successful patch reports
+// restartRequired=false. Without one, the change is persisted but reported as
+// restart-required.
+func WithReloader(fn Reloader) Option {
+	return func(s *Server) { s.reloader = fn }
+}
+
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
 // Only discovery and the device list are patchable; an absent field is left
 // unchanged, and a present devices array replaces the whole list. The merged
-// configuration must validate as a whole. Because the capture pipeline is built
-// at startup, any persisted change takes effect only after a restart.
-func (s *Server) PatchConfig(_ context.Context, request mgmtapi.PatchConfigRequestObject) (mgmtapi.PatchConfigResponseObject, error) {
+// configuration must validate as a whole. With a reloader mounted the change is
+// applied to the running pipeline in place (restartRequired=false); without one
+// it is persisted but takes effect only after a restart.
+func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigRequestObject) (mgmtapi.PatchConfigResponseObject, error) {
 	if s.configStore == nil {
 		return mgmtapi.PatchConfigdefaultApplicationProblemPlusJSONResponse{
 			StatusCode: http.StatusNotImplemented,
@@ -104,6 +123,12 @@ func (s *Server) PatchConfig(_ context.Context, request mgmtapi.PatchConfigReque
 			RestartRequired: false,
 		}, nil
 	}
+
+	// Serialize the persist-then-reload sequence: without this, two concurrent
+	// patches could persist in one order but reconcile in the other, leaving the
+	// file and the running pipeline disagreeing.
+	s.patchMu.Lock()
+	defer s.patchMu.Unlock()
 
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
 		if patch.Discovery != nil {
@@ -134,9 +159,23 @@ func (s *Server) PatchConfig(_ context.Context, request mgmtapi.PatchConfigReque
 	}
 
 	cur := s.configStore.Config()
+
+	// With a reloader mounted, apply the persisted change to the running pipeline
+	// in place. A reload error (not a per-device open failure, which surfaces via
+	// GET /devices) means the change is persisted but not live, so fall back to
+	// reporting that a restart is needed to apply it.
+	restartRequired := true
+	if s.reloader != nil {
+		if err := s.reloader(ctx, cur); err != nil {
+			log.Printf("mgmtserver: config persisted but hot reload failed: %v (a restart will apply it)", err)
+		} else {
+			restartRequired = false
+		}
+	}
+
 	return mgmtapi.PatchConfig200JSONResponse{
 		Config:          configToWire(&cur),
-		RestartRequired: true,
+		RestartRequired: restartRequired,
 	}, nil
 }
 

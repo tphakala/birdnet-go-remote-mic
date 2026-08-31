@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -89,6 +88,13 @@ type deviceRuntime struct {
 	mu    sync.Mutex
 	state mgmtserver.DeviceState
 	err   string
+
+	// superseded marks a device the reconcile loop deliberately stopped (a
+	// hot-reload stop or restart). Its pump still delivers a final pumpResult;
+	// the loop reads this to skip the spontaneous-death cleanup, so a device
+	// restarted on the same RTSP path is not torn down by the old pump's exit.
+	// Set and read only on the run-loop goroutine.
+	superseded bool
 }
 
 // openDevice opens and starts capture for one configured device and builds its
@@ -123,6 +129,27 @@ func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 	}, nil
 }
 
+// openDeviceRetry opens a device, retrying a few times on failure. The retry
+// matters most on a hot-reload restart: ALSA is single-client and the kernel may
+// not release a hw device the instant Close returns, so an immediate reopen of
+// the same card can transiently fail with EBUSY. A handful of short retries rides
+// that out; a device that still will not open is reported skipped, not dropped.
+func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+	const attempts = 5
+	const delay = 50 * time.Millisecond
+	var err error
+	for i := range attempts {
+		var rt *deviceRuntime
+		if rt, err = openDevice(dev, hub); err == nil {
+			return rt, nil
+		}
+		if i < attempts-1 {
+			time.Sleep(delay)
+		}
+	}
+	return nil, err
+}
+
 func run(cfgPath string) error {
 	startTime := time.Now()
 	cfg, err := config.Load(cfgPath)
@@ -141,12 +168,39 @@ func run(cfgPath string) error {
 		version:    version,
 		start:      startTime,
 		rtspListen: cfg.Listen,
-		discovery:  cfg.DiscoveryEnabled(),
 		dataPath:   filepath.Dir(cfgPath),
 	}
+	prov.setDiscovery(cfg.DiscoveryEnabled())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen}), prov)
+
+	// reconcileCh carries a runtime config reload from an API handler goroutine to
+	// the run loop, which owns the pipeline. The reloader closure handed to the
+	// management API blocks the PATCH handler until the loop applies the change,
+	// but bails out if the appliance is shutting down or the client disconnects,
+	// so a config patch never hangs.
+	reconcileCh := make(chan reconcileReq)
+	reloader := func(reqCtx context.Context, newCfg config.Config) error {
+		reply := make(chan error, 1)
+		select {
+		case reconcileCh <- reconcileReq{cfg: newCfg, reply: reply}:
+		case <-ctx.Done():
+			return errors.New("appliance is shutting down")
+		case <-reqCtx.Done():
+			return reqCtx.Err()
+		}
+		select {
+		case err := <-reply:
+			return err
+		case <-ctx.Done():
+			return errors.New("appliance is shutting down")
+		case <-reqCtx.Done():
+			return reqCtx.Err()
+		}
+	}
 
 	// Start the management API before the device-open phase so status and
 	// diagnostics are reachable even if every device fails to open. It reports
@@ -161,171 +215,59 @@ func run(cfgPath string) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop, reloader)
 	}
 	defer func() {
 		stop()
 		management.Wait()
 	}()
 
-	// A device that fails to open is skipped, not fatal: the appliance keeps
-	// serving whatever hardware is actually present. Every configured device
-	// keeps a record (records) so the management API can report skipped ones;
-	// serving holds only the ones that opened and need pumping.
-	// Enumerate the host's capture hardware once so each device can carry a
-	// friendly label (defaulting a blank name in the UI). A failure here is not
-	// fatal: devices simply carry no label.
-	hwNames, nerr := audio.HardwareNames()
-	if nerr != nil {
-		log.Printf("enumerate capture hardware: %v", nerr)
-	}
+	// Drive the level sampler for the lifetime of the process.
+	go hub.Run(ctx)
 
-	records := make([]*deviceRuntime, 0, len(cfg.Devices))
-	serving := make([]*deviceRuntime, 0, len(cfg.Devices))
-	for i := range cfg.Devices {
-		dev := &cfg.Devices[i]
-		friendly := hwNames[dev.Device]
-
-		// A disabled device stays configured and visible in the API/UI but is
-		// never opened or probed (probing would touch hardware the operator turned
-		// off). Toggling it takes effect on the next restart, since the capture
-		// pipeline is built here at startup.
-		if !dev.IsEnabled() {
-			log.Printf("device %q (%s) is disabled; not opening", dev.Name, dev.Device)
-			records = append(records, &deviceRuntime{
-				dev:          *dev,
-				state:        mgmtserver.StateDisabled,
-				friendlyName: friendly,
-			})
-			continue
-		}
-
-		// Probe supported rates for the config UI. ProbeRates is a non-blocking
-		// HW_REFINE capability query that does not claim the device, but run it
-		// before the real open below anyway: once we hold the hw: device
-		// exclusively the query would see our own process and report it busy.
-		rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
-
-		rt, oerr := openDevice(dev, hub)
-		if oerr != nil {
-			log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, oerr)
-			records = append(records, &deviceRuntime{
-				dev:            *dev,
-				state:          mgmtserver.StateSkipped,
-				err:            oerr.Error(),
-				friendlyName:   friendly,
-				supportedRates: rates,
-			})
-			continue
-		}
-		rt.state = mgmtserver.StateServing
-		rt.friendlyName = friendly
-		rt.supportedRates = rates
-		log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.dev.Path)
-		records = append(records, rt)
-		serving = append(serving, rt)
-	}
-	prov.setDevices(records)
+	// Build the initial pipeline by reconciling from an empty state to the loaded
+	// config: this opens every enabled device, records disabled and skipped ones,
+	// and starts the mDNS advertisement, using the very same path a later hot
+	// reload takes. A device that fails to open is skipped, not fatal.
+	app.reconcile(&cfg)
+	defer app.closeAll()
 
 	// While the management API is serving, the appliance stays up as a diagnostic
 	// surface even when nothing is serving (issue #10): GET /devices still reports
-	// every skipped device and its open error. When the API is not serving (either
-	// management is disabled or it failed to start) there is nothing to keep alive,
-	// so a total open failure is fatal and lets a supervisor restart the process
-	// (the current auto-recovery path; in-process capture restart is a later phase).
-	if len(serving) == 0 && !mgmtServing {
-		// Distinguish a deliberate all-disabled config from a genuine open
-		// failure. "No device could be opened" reads as a hardware fault and a
-		// supervisor will restart-loop on it, but a config where every device is
-		// disabled is not a fault a restart can clear: report it distinctly so the
-		// operator (not an endless restart) is what resolves it.
-		allDisabled := len(records) > 0
-		for _, rt := range records {
-			if rt.state != mgmtserver.StateDisabled {
-				allDisabled = false
-				break
-			}
-		}
-		if allDisabled {
+	// every skipped device and its open error, and a hot reload can bring devices
+	// up later. When the API is not serving (management disabled or it failed to
+	// start) there is nothing to keep alive, so a total open failure is fatal and
+	// lets a supervisor restart the process. A deliberate all-disabled config is
+	// reported distinctly, since a restart cannot clear it.
+	if app.serving() == 0 && !mgmtServing {
+		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
 		}
 		return errors.New("no configured capture device could be opened")
 	}
 
-	defer func() {
-		for _, rt := range serving {
-			_ = rt.src.Close()
-		}
-	}()
-
-	// Drive the level sampler for the lifetime of the process.
-	go hub.Run(ctx)
-
-	tracks := make([]*rtspserver.Track, len(serving))
-	for i, rt := range serving {
-		tracks[i] = rt.track
-	}
-	srv := rtspserver.New(rtspserver.Config{Listen: cfg.Listen}, tracks...)
-
-	// One capture/pipeline pump per device: each sound card is its own clock.
-	// Lock each pump to its OS thread so the capture loop is not descheduled
-	// mid-period.
-	type pumpResult struct {
-		rt  *deviceRuntime
-		err error
-	}
-	pumpDone := make(chan pumpResult, len(serving))
-	for _, rt := range serving {
-		go func(rt *deviceRuntime) {
-			runtime.LockOSThread()
-			perr := rt.stage.Run(rt.src, func(f pipeline.Frame) error {
-				if !rt.frames.Push(f) {
-					drops := rt.dropped.Add(1)
-					if drops%50 == 1 {
-						log.Printf("%s: dropping frames: the client is not keeping up (total drops: %d)", rt.dev.Name, drops)
-					}
-				}
-				return ctx.Err()
-			})
-			pumpDone <- pumpResult{rt: rt, err: perr}
-		}(rt)
-	}
-
 	srvErr := make(chan error, 1)
-	go func() { srvErr <- srv.ListenAndServe(ctx) }()
-	log.Printf("serving %d device(s) on %s", len(serving), cfg.Listen)
+	go func() { srvErr <- app.srv.ListenAndServe(ctx) }()
+	log.Printf("serving %d device(s) on %s", app.serving(), cfg.Listen)
 
-	// mDNS advertises only actual streams; with nothing serving there is nothing
-	// to announce (announce.Run rejects an empty set).
-	if prov.discovery && len(serving) > 0 {
-		startAnnounce(ctx, cfg.Listen, serving)
-	}
-
-	// A dead device is isolated: its track is retired (404) and everything else
-	// keeps serving. While the management API is serving the process stays up even
-	// after the last pump stops, so the degraded state remains inspectable until a
-	// signal arrives; otherwise it exits once every pump has stopped.
-	alive := len(serving)
-	var lastPumpErr error
+	// The run loop owns the pipeline. It applies config reloads from the API,
+	// retires devices that die (their track 404s while the rest keep serving), and
+	// exits on shutdown or a fatal server error. While the API is serving the
+	// process stays up even after the last pump stops, so a degraded state stays
+	// inspectable until a signal arrives.
 	for {
 		select {
 		case <-ctx.Done():
 			log.Print("shutting down")
 			return nil
-		case res := <-pumpDone:
-			alive--
-			srv.RemoveTrack(res.rt.track.Path)
-			res.rt.frames.Close()
-			_ = res.rt.src.Close() // release the ALSA stream now, not at process exit
-
-			if res.err != nil && ctx.Err() == nil {
-				lastPumpErr = res.err
-				res.rt.markFailed(res.err)
-				log.Printf("device %q failed: %v; %s returns 404 until restart", res.rt.dev.Name, res.err, res.rt.dev.Path)
-			}
-			if alive == 0 && !mgmtServing {
-				if lastPumpErr != nil {
-					return fmt.Errorf("all capture devices stopped, last error: %w", lastPumpErr)
+		case req := <-reconcileCh:
+			app.reconcile(&req.cfg)
+			req.reply <- nil
+		case res := <-app.pumpDone:
+			app.onPumpDone(res)
+			if app.alive == 0 && !mgmtServing {
+				if app.lastPumpErr != nil {
+					return fmt.Errorf("all capture devices stopped, last error: %w", app.lastPumpErr)
 				}
 				return nil
 			}

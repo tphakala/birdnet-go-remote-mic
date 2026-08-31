@@ -31,11 +31,20 @@ type provider struct {
 	version    string
 	start      time.Time
 	rtspListen string
-	discovery  bool
-	dataPath   string // filesystem path whose storage usage /system reports
-	sampler    *sysinfo.Sampler
-	devices    atomic.Pointer[[]*deviceRuntime]
+	// discovery is the effective mDNS-advertisement flag. It is atomic because a
+	// runtime config reload (on the run-loop goroutine) flips it while HTTP
+	// handlers read it for GET /status.
+	discovery atomic.Bool
+	dataPath  string // filesystem path whose storage usage /system reports
+	sampler   *sysinfo.Sampler
+	devices   atomic.Pointer[[]*deviceRuntime]
 }
+
+// discoveryEnabled reports the current mDNS-advertisement flag.
+func (p *provider) discoveryEnabled() bool { return p.discovery.Load() }
+
+// setDiscovery updates the mDNS-advertisement flag from a config reload.
+func (p *provider) setDiscovery(v bool) { p.discovery.Store(v) }
 
 var (
 	_ mgmtserver.Provider       = (*provider)(nil)
@@ -72,7 +81,7 @@ func (p *provider) Status() mgmtserver.ApplianceStatus {
 		Version:          p.version,
 		Uptime:           time.Since(p.start),
 		RTSPListen:       p.rtspListen,
-		DiscoveryEnabled: p.discovery,
+		DiscoveryEnabled: p.discovery.Load(),
 		DevicesServing:   serving,
 		DevicesTotal:     len(devices),
 	}
@@ -173,7 +182,7 @@ func closedMgmt() *mgmt {
 // not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
 // the caller does not mistake a configured-but-dead API for an available
 // diagnostic surface when deciding whether to stay alive with no serving device.
-func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler, restartFn func()) (handle *mgmt, ok bool) {
+func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler, restartFn func(), reloader mgmtserver.Reloader) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -200,6 +209,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, cfg)),
 		mgmtserver.WithSystemInfo(prov),
 		mgmtserver.WithRestart(restartFn),
+	}
+	if reloader != nil {
+		opts = append(opts, mgmtserver.WithReloader(reloader))
 	}
 	if dfs, err := web.DistFS(); err == nil {
 		opts = append(opts, mgmtserver.WithStaticAssets(dfs))

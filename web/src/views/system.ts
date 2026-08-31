@@ -105,11 +105,11 @@ export class SystemView {
 
   private async saveNetwork(): Promise<void> {
     try {
-      await api.patchConfig({ discovery: { enabled: this.discoveryEl?.checked ?? true } });
+      const res = await api.patchConfig({ discovery: { enabled: this.discoveryEl?.checked ?? true } });
       this.netDirty = false;
       if (this.netActionsEl) this.netActionsEl.hidden = true;
       await store.refreshConfig();
-      showToast("Discovery setting saved. Restart the appliance to apply.");
+      showToast(res.restartRequired ? "Discovery setting saved. Restart the appliance to apply." : "Discovery setting applied.");
     } catch (err: unknown) {
       const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
       showToast(`Save failed: ${msg}`, "error");

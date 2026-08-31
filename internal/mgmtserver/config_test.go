@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
@@ -102,6 +105,114 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	}
 	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic || loaded.Devices[0].Mode != config.ModePCM {
 		t.Errorf("persisted config = %+v, want one pcm device named attic", loaded.Devices)
+	}
+}
+
+func TestPatchConfigWithReloaderAppliesLive(t *testing.T) {
+	store, _ := tempStore(t)
+	var got config.Config
+	called := false
+	reloader := func(_ context.Context, cfg config.Config) error {
+		called = true
+		got = cfg
+		return nil
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
+
+	devs := []mgmtapi.DeviceConfig{{
+		Name: nameAttic, Device: devAttic, Path: pathAttic,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if ok200.RestartRequired {
+		t.Error("restartRequired = true, want false when the reloader hot-applied the change")
+	}
+	if !called {
+		t.Fatal("reloader was not invoked")
+	}
+	if len(got.Devices) != 1 || got.Devices[0].Name != nameAttic {
+		t.Fatalf("reloader received devices = %+v, want one named attic", got.Devices)
+	}
+}
+
+func TestPatchConfigReloaderErrorReportsRestartRequired(t *testing.T) {
+	store, path := tempStore(t)
+	reloader := func(_ context.Context, _ config.Config) error {
+		return errors.New("shutting down")
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
+
+	devs := []mgmtapi.DeviceConfig{{
+		Name: nameAttic, Device: devAttic, Path: pathAttic,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if !ok200.RestartRequired {
+		t.Error("restartRequired = false, want true when the hot reload failed")
+	}
+	// The change must still be persisted even though it could not be hot-applied.
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic {
+		t.Errorf("persisted config = %+v, want the patch persisted despite reload failure", loaded.Devices)
+	}
+}
+
+// TestPatchConfigSerializesReload proves the persist-then-reload sequence runs
+// under one lock: the reloader never executes concurrently, so two racing
+// patches cannot persist in one order and reconcile in the other.
+func TestPatchConfigSerializesReload(t *testing.T) {
+	store, _ := tempStore(t)
+	var inFlight, maxInFlight atomic.Int32
+	reloader := func(_ context.Context, _ config.Config) error {
+		n := inFlight.Add(1)
+		for {
+			m := maxInFlight.Load()
+			if n <= m || maxInFlight.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond) // widen the window a racing patch could enter
+		inFlight.Add(-1)
+		return nil
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
+
+	const n = 6
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			devs := []mgmtapi.DeviceConfig{{
+				Name: "d" + strconv.Itoa(i), Device: "hw:" + strconv.Itoa(i), Path: "/d" + strconv.Itoa(i),
+				Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+			}}
+			if _, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}}); err != nil {
+				t.Errorf("PatchConfig: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := maxInFlight.Load(); got != 1 {
+		t.Fatalf("max concurrent reloads = %d, want 1 (persist+reload must be serialized)", got)
 	}
 }
 
