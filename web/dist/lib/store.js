@@ -10,6 +10,12 @@ export class AppStore extends EventTarget {
         connected: false,
     };
     pollIntervalTimer = null;
+    // Monotonic generation for config writes. A GET /config that was already in
+    // flight when a newer applyConfig (or a newer refreshConfig) landed must not
+    // overwrite the fresher value with its stale body, which would resurrect a
+    // stale base for the next queued mutation. Both writers bump it; a refresh
+    // commits only while its captured generation is still current.
+    configEpoch = 0;
     constructor() {
         super();
         this.initSSE();
@@ -118,8 +124,14 @@ export class AppStore extends EventTarget {
         }
     }
     async refreshConfig() {
+        const epoch = ++this.configEpoch;
         try {
-            this.state.config = await api.getConfig();
+            const config = await api.getConfig();
+            // A newer applyConfig or refreshConfig ran while this GET was in flight;
+            // its result is fresher, so drop this stale body rather than clobbering it.
+            if (epoch !== this.configEpoch)
+                return true;
+            this.state.config = config;
             this.dispatchEvent(new CustomEvent("config", { detail: this.state.config }));
             return true;
         }
@@ -137,6 +149,10 @@ export class AppStore extends EventTarget {
     // response (not the request body) also seeds a config that was never loaded
     // (initial GET failed) and picks up any server-side normalization.
     applyConfig(config) {
+        // Bump the generation so a GET /config already in flight (from an overlapping
+        // refreshConfig) cannot overwrite this authoritative PATCH result when it
+        // resolves later.
+        ++this.configEpoch;
         this.state.config = config;
         this.dispatchEvent(new CustomEvent("config", { detail: config }));
     }
