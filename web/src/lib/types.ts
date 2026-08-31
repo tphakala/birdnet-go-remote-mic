@@ -106,11 +106,16 @@ export interface SystemInfo {
   network: NetworkInterface[];
 }
 
-export interface DeviceLevels {
-  name: string;
+export interface ChannelLevels {
+  channel: number;
   peakDbfs: number;
   rmsDbfs: number;
   clipped: boolean;
+}
+
+export interface DeviceLevels {
+  name: string;
+  channels: ChannelLevels[];
 }
 
 export interface LevelsEvent {

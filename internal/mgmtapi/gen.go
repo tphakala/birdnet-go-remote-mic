@@ -129,6 +129,29 @@ type ApplianceStatus struct {
 	Version string `json:"version"`
 }
 
+// ChannelLevels One capture channel's audio levels over the last window.
+type ChannelLevels struct {
+	// Channel Zero-based capture channel index.
+	//
+	// Examples: 0
+	Channel int `json:"channel"`
+
+	// Clipped Whether any sample in the window hit full scale.
+	Clipped bool `json:"clipped"`
+
+	// PeakDbfs Peak sample level in dBFS over the window. Silence is clamped to the -99 floor.
+	//
+	//
+	// Examples: -12.4
+	PeakDbfs float64 `json:"peakDbfs"`
+
+	// RmsDbfs RMS level in dBFS over the window, clamped to the -99 floor.
+	//
+	//
+	// Examples: -27.9
+	RmsDbfs float64 `json:"rmsDbfs"`
+}
+
 // Config The appliance configuration (defaults applied).
 type Config struct {
 	Devices []DeviceConfig `json:"devices"`
@@ -249,27 +272,15 @@ type DeviceConfig struct {
 // DeviceConfigFormat defines model for DeviceConfig.Format.
 type DeviceConfigFormat string
 
-// DeviceLevels One device's audio levels over the last measurement window.
+// DeviceLevels One device's audio levels over the last measurement window, one entry per captured channel. A mono device carries a single-element channels array; a stereo (or higher) device carries one entry per interleaved channel.
 type DeviceLevels struct {
-	// Clipped Whether any sample in the window hit full scale.
-	Clipped bool `json:"clipped"`
+	// Channels Per-channel levels, ordered by capture channel index.
+	Channels []ChannelLevels `json:"channels"`
 
 	// Name The device's configured unique name.
 	//
 	// Examples: garden
 	Name string `json:"name"`
-
-	// PeakDbfs Peak sample level in dBFS over the window. Silence is clamped to the -99 floor.
-	//
-	//
-	// Examples: -12.4
-	PeakDbfs float64 `json:"peakDbfs"`
-
-	// RmsDbfs RMS level in dBFS over the window, clamped to the -99 floor.
-	//
-	//
-	// Examples: -27.9
-	RmsDbfs float64 `json:"rmsDbfs"`
 }
 
 // DeviceState serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
