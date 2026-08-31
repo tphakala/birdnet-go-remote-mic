@@ -33,6 +33,15 @@ func (f *fakeProvider) Status() ApplianceStatus             { return f.status }
 func (f *fakeProvider) Devices() []DeviceStatus             { return f.devices }
 func (f *fakeProvider) AvailableDevices() []AvailableDevice { return f.available }
 
+func (f *fakeProvider) DetectedDevice(id string) (AvailableDevice, bool) {
+	for i := range f.available {
+		if f.available[i].ID == id {
+			return f.available[i], true
+		}
+	}
+	return AvailableDevice{}, false
+}
+
 func (f *fakeProvider) Device(name string) (DeviceStatus, bool) {
 	for i := range f.devices {
 		if f.devices[i].Config.Name == name {

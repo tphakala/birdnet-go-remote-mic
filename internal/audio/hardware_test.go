@@ -8,6 +8,7 @@ const (
 	testCardName     = "C-Media USB Audio Device"
 	testFriendlyName = "Scarlett 2i2 USB"
 	testCardLongName = "Scarlett 2i2 USB, USB Audio"
+	testAudioMoth    = "AudioMoth"
 	testFmtS16       = "s16"
 )
 

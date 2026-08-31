@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -59,22 +60,17 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 		}), nil
 	}
 
-	// The device must be one the host currently exposes and does not already
-	// configure. AvailableDevices is exactly that set, so a miss here means the
-	// id is unknown or already configured.
-	var detected *AvailableDevice
-	for _, d := range s.provider.AvailableDevices() {
-		if d.ID == req.Device {
-			dd := d
-			detected = &dd
-			break
-		}
-	}
-	if detected == nil {
+	// The device must be one the host currently exposes. Look it up in the full
+	// detected set (not the available-only view), so a device that IS present but
+	// already configured falls through to the 409 conflict below rather than being
+	// misreported as a 404. A miss here means the host genuinely has no such id.
+	dd, ok := s.provider.DetectedDevice(req.Device)
+	if !ok {
 		return mgmtapi.ProvisionDevice404ApplicationProblemPlusJSONResponse(
-			problem(http.StatusNotFound, "device not found", "no unconfigured capture device with id "+req.Device+" is present on the host"),
+			problem(http.StatusNotFound, "device not found", "no capture device with id "+req.Device+" is present on the host"),
 		), nil
 	}
+	detected := &dd
 
 	// Serialize the persist-then-reload sequence exactly like PatchConfig, so a
 	// provision and a concurrent patch cannot interleave persist and reload.
@@ -306,7 +302,15 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 		}
 		return config.ModePCM, rate, channels
 	default:
-		if canOpus(d) {
+		// Auto: prefer Opus, but only when the request did not ask for something
+		// Opus cannot honor. Opus is fixed at 48 kHz mono, so an explicit rate or
+		// channel count other than that means the operator wants PCM; silently
+		// returning Opus would discard their request (the contract says a set field
+		// overrides the default).
+		opusOK := canOpus(d) &&
+			(req.Rate == nil || *req.Rate == 48000) &&
+			(req.Channels == nil || *req.Channels == 1)
+		if opusOK {
 			return config.ModeOpus, 48000, 1
 		}
 		if rate == 0 {
@@ -321,13 +325,13 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 // (empty capabilities) is not assumed to support 48 kHz, since a wrong Opus guess
 // is rejected at open, whereas PCM at the fallback rate is more forgiving.
 func canOpus(d *AvailableDevice) bool {
-	return containsInt(d.SupportedRates, 48000) && containsInt(d.SupportedChannels, 1)
+	return slices.Contains(d.SupportedRates, 48000) && slices.Contains(d.SupportedChannels, 1)
 }
 
 // preferChannel picks a channel count: mono when supported or when the counts are
 // unknown (the common default), otherwise the first supported count.
 func preferChannel(supported []int) int {
-	if len(supported) == 0 || containsInt(supported, 1) {
+	if len(supported) == 0 || slices.Contains(supported, 1) {
 		return 1
 	}
 	return supported[0]
@@ -337,7 +341,7 @@ func preferChannel(supported []int) int {
 // the highest supported rate (an ultrasonic-only device), falling back to 48 kHz
 // when the rates are unknown.
 func preferRate(supported []int) int {
-	if len(supported) == 0 || containsInt(supported, 48000) {
+	if len(supported) == 0 || slices.Contains(supported, 48000) {
 		return 48000
 	}
 	best := supported[0]
@@ -347,15 +351,6 @@ func preferRate(supported []int) int {
 		}
 	}
 	return best
-}
-
-func containsInt(xs []int, v int) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 func isValidationError(err error) bool {
@@ -384,11 +379,12 @@ func mapAvailableDevice(d *AvailableDevice) mgmtapi.AvailableDevice {
 	return out
 }
 
-// configDeviceToWireDevice builds a wire Device from a configured device without
-// runtime state, used when a just-provisioned device has not yet been published
-// by the reload. Its state is reported as disabled-equivalent "skipped" only if
-// unknown; here we report it as serving-intent via the config, leaving runtime
-// fields zero.
+// configDeviceToWireDevice builds a wire Device from a configured device with
+// zeroed runtime fields. It is the fallback for the 201 response only when the
+// provider has NOT published the just-provisioned device, which happens when the
+// hot reload failed and the change awaits a restart. It therefore reports the
+// device as "skipped" (persisted but not currently serving), not "serving"; the
+// next GET /devices carries the true live state once the device opens.
 func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 	out := mgmtapi.Device{
 		Name:     d.Name,
@@ -398,7 +394,7 @@ func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 		Format:   mgmtapi.DeviceFormat(d.Format),
 		Rate:     d.Rate,
 		Channels: d.Channels,
-		State:    mgmtapi.Serving,
+		State:    mgmtapi.Skipped,
 	}
 	if d.Mode == config.ModeOpus {
 		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(d.Opus.Bitrate)}

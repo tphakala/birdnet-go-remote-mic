@@ -51,7 +51,7 @@ export class DeviceSettingsForm {
     ready = false;
     // loadCoercion is set when opening the form silently downgraded the saved codec
     // because the hardware no longer supports it, so the caller can tell the
-    // operator instead of the change appearing to happen on its own (#27).
+    // operator instead of the change appearing to happen on its own.
     loadCoercion = null;
     constructor(device, onDirty, hardware = {}) {
         this.device = device;
@@ -124,7 +124,7 @@ export class DeviceSettingsForm {
         const opusOffered = modeOpts.some((o) => o.val === "opus");
         // The saved config asked for Opus but the hardware can no longer satisfy it
         // (no 48 kHz mono), so the form opened on PCM. Record it so the operator is
-        // told rather than seeing the codec change with no explanation (#27).
+        // told rather than seeing the codec change with no explanation.
         if (d.mode === "opus" && !opusOffered) {
             this.loadCoercion = `${d.name} does not support Opus (48 kHz mono); switched to PCM L16. Save to keep this change.`;
         }

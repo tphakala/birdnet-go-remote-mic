@@ -32,6 +32,20 @@ func TestLoadExample(t *testing.T) {
 	}
 }
 
+func TestDefaultIsValidAndDeviceless(t *testing.T) {
+	t.Parallel()
+	c := Default()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Default() must validate (zero-config first run), got %v", err)
+	}
+	if len(c.Devices) != 0 {
+		t.Errorf("Default() devices = %d, want 0", len(c.Devices))
+	}
+	if c.Listen == "" || c.Management.Listen == "" {
+		t.Errorf("Default() must apply listen defaults, got %+v", c)
+	}
+}
+
 func TestLegacyConfigRejected(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "old.yaml")
 	old := "name: garden-mic\nlisten: \":8554\"\nmode: pcm\naudio:\n  device: \"hw:1,0\"\n  rate: 256000\n"

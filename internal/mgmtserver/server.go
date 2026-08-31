@@ -92,6 +92,11 @@ type Provider interface {
 	// AvailableDevices lists capture devices the host exposes that the
 	// configuration does not list, for the UI to offer for provisioning.
 	AvailableDevices() []AvailableDevice
+	// DetectedDevice returns a host device's probed capabilities by id whether or
+	// not it is configured, so provisioning can tell an unknown device (404) from
+	// an already-configured one (409). ok is false when the host has no such
+	// device in the last enumeration.
+	DetectedDevice(id string) (AvailableDevice, bool)
 }
 
 // Server implements mgmtapi.StrictServerInterface over a Provider.

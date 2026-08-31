@@ -74,7 +74,7 @@ func TestDetectDevices(t *testing.T) {
 	enumerateDevices = func() ([]capture.DeviceInfo, error) {
 		return []capture.DeviceInfo{
 			{ID: "hw:1,0", Name: testCardLongName},
-			{ID: testDevID2, Name: "AudioMoth"},
+			{ID: testDevID2, Name: testAudioMoth},
 		}, nil
 	}
 	defer func() { enumerateDevices = prev }()
@@ -104,7 +104,7 @@ func TestDetectDevices(t *testing.T) {
 	})
 	defer restoreRates()
 
-	got, err := DetectDevices()
+	got, err := DetectDevices(nil)
 	if err != nil {
 		t.Fatalf("DetectDevices: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestDetectDevices(t *testing.T) {
 		t.Errorf("device 0 rates = %v, want [48000 96000]", got[0].SupportedRates)
 	}
 
-	if got[1].ID != testDevID2 || got[1].FriendlyName != "AudioMoth" {
+	if got[1].ID != testDevID2 || got[1].FriendlyName != testAudioMoth {
 		t.Errorf("device 1 = %+v, want id hw:2,0 name AudioMoth", got[1])
 	}
 	if !slices.Equal(got[1].SupportedChannels, []int{1}) {
@@ -138,8 +138,52 @@ func TestDetectDevicesPropagatesEnumerateError(t *testing.T) {
 	enumerateDevices = func() ([]capture.DeviceInfo, error) { return nil, errors.New("enumerate failed") }
 	defer func() { enumerateDevices = prev }()
 
-	if _, err := DetectDevices(); err == nil {
+	if _, err := DetectDevices(nil); err == nil {
 		t.Error("DetectDevices should propagate the enumeration error")
+	}
+}
+
+func TestDetectDevicesListsButDoesNotProbeConfigured(t *testing.T) {
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) {
+		return []capture.DeviceInfo{
+			{ID: testDevID, Name: testCardLongName},
+			{ID: testDevID2, Name: testAudioMoth},
+		}, nil
+	}
+	defer func() { enumerateDevices = prev }()
+
+	// A probe seam records which ids it was asked about, so we can prove the
+	// skipped (configured) device is listed but never probed.
+	var probed []string
+	defer swapSupportedRates(func(dev string, _ int, _ capture.Format) (capture.RateSupport, error) {
+		probed = append(probed, dev)
+		return capture.RateSupport{Rates: []int{48000}}, nil
+	})()
+	defer swapVerifiedRates(func(dev string, _ int, _ capture.Format) (capture.RateSupport, error) {
+		probed = append(probed, dev)
+		return capture.RateSupport{Rates: []int{48000}}, nil
+	})()
+
+	got, err := DetectDevices(map[string]bool{testDevID: true})
+	if err != nil {
+		t.Fatalf("DetectDevices: %v", err)
+	}
+	// Both host devices are listed (so provisioning can tell configured from
+	// absent), but only the unconfigured one carries probed capabilities.
+	if len(got) != 2 {
+		t.Fatalf("got %d devices, want 2 (both listed): %+v", len(got), got)
+	}
+	if got[0].ID != testDevID || got[0].SupportedRates != nil || got[0].SupportedChannels != nil {
+		t.Errorf("configured device %+v: want listed with no probed caps", got[0])
+	}
+	if got[1].ID != testDevID2 || len(got[1].SupportedRates) == 0 {
+		t.Errorf("unconfigured device %+v: want probed caps", got[1])
+	}
+	for _, p := range probed {
+		if p == testDevID {
+			t.Errorf("skipped device %s was probed (seam calls: %v)", testDevID, probed)
+		}
 	}
 }
 

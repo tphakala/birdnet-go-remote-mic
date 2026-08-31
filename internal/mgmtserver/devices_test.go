@@ -96,6 +96,10 @@ func TestChooseParams(t *testing.T) {
 		{"explicit pcm with rate override defaults mono", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(96000)}, config.ModePCM, 96000, 1},
 		{"explicit pcm derives best rate", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)}, config.ModePCM, 384000, 1},
 		{"channel override respected for pcm", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Channels: intPtr(2)}, config.ModePCM, 384000, 2},
+		// Auto mode must NOT silently return Opus and discard an explicit rate the
+		// operator asked for; an explicit non-48k rate means they want PCM.
+		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: intPtr(96000)}, config.ModePCM, 96000, 1},
+		{"auto with explicit stereo falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: intPtr(2)}, config.ModePCM, 48000, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -202,6 +206,23 @@ func TestProvisionDeviceMissingBodyYields422(t *testing.T) {
 	s := New(&fakeProvider{}, WithConfigStore(store))
 	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
 		Body: &mgmtapi.ProvisionDeviceRequest{Device: "   "},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse); !ok {
+		t.Fatalf("returned %T, want 422", resp)
+	}
+}
+
+func TestProvisionDeviceInvalidOverrideYields422(t *testing.T) {
+	// An explicit override that fails config.Validate (a rate above the ceiling)
+	// takes the post-build validation path, not the early empty-device path.
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{{ID: devAttic, FriendlyName: nameAudioMoth}}}
+	s := New(prov, WithConfigStore(store))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(500000)},
 	})
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)

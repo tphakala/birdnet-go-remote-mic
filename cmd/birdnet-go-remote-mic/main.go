@@ -191,10 +191,11 @@ func run(cfgPath string) error {
 	hub := levels.NewHub()
 
 	prov := &provider{
-		version:    version,
-		start:      startTime,
-		rtspListen: cfg.Listen,
-		dataPath:   filepath.Dir(cfgPath),
+		version:     version,
+		start:       startTime,
+		rtspListen:  cfg.Listen,
+		dataPath:    filepath.Dir(cfgPath),
+		enumTrigger: make(chan struct{}, 1),
 	}
 	prov.setDiscovery(cfg.DiscoveryEnabled())
 
@@ -257,6 +258,12 @@ func run(cfgPath string) error {
 	// reload takes. A device that fails to open is skipped, not fatal.
 	app.reconcile(&cfg)
 	defer app.closeAll()
+
+	// Enumerate the host's unconfigured capture hardware for GET /devices/available
+	// on a background goroutine: probing opens devices and can be slow, so it must
+	// not run on the capture run loop. It starts after the initial reconcile so the
+	// first probe already knows which devices the config owns and skips them.
+	go prov.runEnumeration(ctx)
 
 	// While the management API is serving, the appliance stays up as a diagnostic
 	// surface even when nothing is serving (issue #10): GET /devices still reports

@@ -294,6 +294,9 @@ export class DashboardView {
 
     const enableBtn = elem("button", "btn btn-primary available-enable", "Enable");
     enableBtn.setAttribute("type", "button");
+    // Name the device in the accessible label: there is one Enable button per
+    // available device, so a bare "Enable" is ambiguous to a screen-reader user.
+    enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.device}`);
     if (this.provisioning.has(d.device)) this.markBusy(enableBtn, "Enabling...");
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
@@ -341,6 +344,10 @@ export class DashboardView {
   // hardware to the available list. On success the card disappears via the device
   // refresh; on failure the button is restored so it can be retried.
   private async removeDevice(entry: CardEntry, btn: HTMLElement): Promise<void> {
+    // aria-disabled keeps the button focusable while busy, so guard against a
+    // keyboard re-activation that pointer-events cannot block: without this a
+    // second Enter opens a second confirm and issues a second DELETE.
+    if (btn.getAttribute("aria-disabled") === "true") return;
     const ok = await confirmDialog({
       title: "Remove device",
       body: `Remove ${entry.device.name}? It stops streaming and returns to the available list, and its stream path is discarded.`,
@@ -351,6 +358,10 @@ export class DashboardView {
     this.markBusy(btn, "Removing...");
     try {
       await api.deleteDevice(entry.device.name);
+      // The card (and this button) is about to be destroyed by the refresh, which
+      // would drop focus to the document body. Move it to the workspace region
+      // first so a keyboard user keeps a sensible place.
+      document.getElementById("main-content")?.focus();
       await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
       showToast(`Removed ${entry.device.name}.`);
     } catch (err: unknown) {
@@ -636,7 +647,7 @@ export class DashboardView {
     const want = input.checked;
     const id = entry.device.device;
     // Remember focus before disabling: re-enabling a disabled control drops focus
-    // to the body, dumping a keyboard user at the top of the page (#26).
+    // to the body, dumping a keyboard user at the top of the page.
     const hadFocus = document.activeElement === input;
     input.disabled = true;
     input.setAttribute("aria-busy", "true");
@@ -672,7 +683,7 @@ export class DashboardView {
         input.disabled = false;
         input.removeAttribute("aria-busy");
         // Return focus to the toggle so re-enabling it does not leave a keyboard
-        // user stranded on the document body (#26).
+        // user stranded on the document body.
         if (hadFocus) input.focus();
       }
     });
@@ -689,6 +700,7 @@ export class DashboardView {
       const actions = elem("div", "settings-actions");
       const removeBtn = elem("button", "btn btn-danger", "Remove");
       removeBtn.setAttribute("type", "button");
+      removeBtn.setAttribute("aria-label", `Remove ${entry.device.name}`);
       const badge = elem("span", "staged-badge", "Unsaved changes");
       badge.hidden = true;
       const spacer = elem("span", "settings-actions-spacer");
@@ -714,7 +726,7 @@ export class DashboardView {
       entry.settingsWrap.append(form.element, actions);
 
       // Tell the operator when opening the form silently downgraded an
-      // unsupported saved codec, rather than the change appearing unexplained (#27).
+      // unsupported saved codec, rather than the change appearing unexplained.
       const notice = form.loadNotice();
       if (notice) {
         badge.hidden = false;
@@ -723,7 +735,7 @@ export class DashboardView {
       }
 
       cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
-      saveBtn.addEventListener("click", () => this.saveDevice(entry));
+      saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn));
     }
     entry.expanded = true;
     entry.settingsWrap.hidden = false;
@@ -760,7 +772,8 @@ export class DashboardView {
     entry.settingsForm = null;
   }
 
-  private async saveDevice(entry: CardEntry): Promise<void> {
+  private async saveDevice(entry: CardEntry, btn: HTMLElement): Promise<void> {
+    if (btn.getAttribute("aria-disabled") === "true") return;
     const form = entry.settingsForm;
     if (!form) return;
     if (!form.validate()) {
@@ -768,7 +781,9 @@ export class DashboardView {
       return;
     }
     const edited = form.collect();
-    await this.enqueue(async () => {
+    this.markBusy(btn, "Saving...");
+    try {
+      await this.enqueue(async () => {
       // Source the enabled flag and the patch base FRESH inside the queued task:
       // the settings form does not edit enabled, the card toggle may have changed
       // it since the panel opened, and a prior queued mutation may have changed
@@ -791,7 +806,12 @@ export class DashboardView {
       } catch (err: unknown) {
         this.apiErrorToast(err, "Save failed");
       }
-    });
+      });
+    } finally {
+      // Restore the button whether the save succeeded (its panel is torn down, so
+      // this is a harmless no-op on a detached node) or failed (it stays for retry).
+      this.clearBusy(btn, "Save Changes");
+    }
   }
 
   private buildStatusBadge(state: string): HTMLElement {

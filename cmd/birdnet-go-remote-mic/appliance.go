@@ -100,8 +100,8 @@ type deviceCaps struct {
 // rememberCaps records non-empty probe results and substitutes the last-known
 // values for an empty one, so a device that is transiently unprobable during a
 // hot-reload card swap keeps its previously reported rates and channels instead
-// of momentarily reporting none (Forgejo #28).
-func (a *appliance) rememberCaps(id string, rates, channels []int) (outRates, outChannels []int) {
+// of momentarily reporting none.
+func (a *appliance) rememberCaps(id string, rates, channels []int) (keptRates, keptChannels []int) {
 	c := a.capsCache[id]
 	switch {
 	case len(rates) > 0:
@@ -184,7 +184,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
 	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
 	// Keep the last-known caps if this probe came back empty (a transient
-	// card-swap window), so the UI does not flicker to an empty list (#28).
+	// card-swap window), so the UI does not flicker to an empty list.
 	rates, channels = a.rememberCaps(dev.Device, rates, channels)
 
 	d := *dev
@@ -267,16 +267,13 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	a.prov.setDiscovery(newCfg.DiscoveryEnabled())
 	a.publish(newCfg)
 
-	// Enumerate host capture hardware so GET /devices/available reflects what can
-	// be provisioned from the UI. This runs after the open phase: a device this
-	// appliance now holds fails the probe fast (busy) and the provider filters
-	// configured devices out anyway, so only idle, unconfigured devices are
-	// reported with their capabilities.
-	if det, err := audio.DetectDevices(); err == nil {
-		a.prov.setDetected(det)
-	} else {
-		log.Printf("enumerate available capture devices: %v", err)
-	}
+	// Ask the background enumeration goroutine to refresh the available-device
+	// list now that the configured set changed, so a just-provisioned device
+	// leaves the list and a just-removed one rejoins it promptly. The actual
+	// hardware probing runs on that goroutine, never here: probing opens devices
+	// and can be slow, and this reconcile runs on the capture run loop that also
+	// drives pump events, reloads and shutdown.
+	a.prov.signalEnumerate()
 
 	// Rebuild the mDNS advertisement whenever any device changed or discovery
 	// toggled. A param-change restart keeps the serving count identical but
