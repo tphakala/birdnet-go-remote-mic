@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 )
 
 // maxDevices caps the device list, matching the API contract's maxItems.
@@ -47,7 +48,20 @@ type Config struct {
 	Listen     string     `yaml:"listen"`
 	Discovery  Discovery  `yaml:"discovery"`
 	Management Management `yaml:"management"`
+	Auth       Auth       `yaml:"auth,omitempty"`
 	Devices    []Device   `yaml:"devices"`
+}
+
+// Auth configures the shared access token that gates the management API and
+// web UI (Bearer) and the RTSP stream (Digest). An empty token means open
+// access, the default. See auth.ValidToken for the token shape.
+type Auth struct {
+	Token string `yaml:"token,omitempty"`
+}
+
+// AuthRequired reports whether a token is set, so clients must authenticate.
+func (c *Config) AuthRequired() bool {
+	return c.Auth.Token != ""
 }
 
 // Management configures the HTTPS management API. Enabled is a pointer so an
@@ -193,6 +207,9 @@ func (c *Config) Validate() error {
 		if _, _, err := net.SplitHostPort(c.Management.Listen); err != nil {
 			return &ValidationError{"management.listen", "must be host:port"}
 		}
+	}
+	if reason := auth.ValidToken(c.Auth.Token); reason != "" {
+		return &ValidationError{"auth.token", reason}
 	}
 	// An empty device list is valid: on first run the appliance boots with no
 	// configured devices so the web UI can enumerate the host's capture hardware

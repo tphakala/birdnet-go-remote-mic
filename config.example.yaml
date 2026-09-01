@@ -6,8 +6,11 @@ management:
   enabled: true             # serve the HTTPS management API and (later) web UI; default true
   listen: ":8443"           # HTTPS listen address (host:port); default :8443
   cert_dir: ""              # where to persist the self-signed cert/key; default: the config file's directory
-                            # NOTE: the API is currently UNAUTHENTICATED. Token auth is coming; until then,
-                            # set enabled: false if the appliance is on an untrusted network.
+auth:
+  token: ""                 # shared access token gating the management API/web UI (bearer) and the RTSP
+                            # stream (Digest password, any username); 12-128 chars of [A-Za-z0-9._~-].
+                            # Empty (the default) means OPEN ACCESS: anyone on the network can listen and
+                            # change settings. Set one here or from the web UI's Access Control card.
 devices:
   - name: garden-mic        # DNS-SD instance name and log label; must be unique
     device: "hw:1,0"        # go-audio-capture device id (see -list-devices)
