@@ -5,6 +5,7 @@
 package reload
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -58,8 +59,11 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 		}
 	}
 
-	// Start or restart every device the config wants serving.
-	for name, want := range desiredEnabled {
+	// Start or restart every device the config wants serving. Range over keys and
+	// index the value: config.Device is large enough that a range-value copy is
+	// wasteful (and gocritic-flagged).
+	for name := range desiredEnabled {
+		want := desiredEnabled[name]
 		cur, isRunning := running[name]
 		switch {
 		case !isRunning:
@@ -87,7 +91,7 @@ func captureParamsEqual(a, b *config.Device) bool {
 		a.Path == b.Path &&
 		a.Mode == b.Mode &&
 		a.Rate == b.Rate &&
-		a.Channels == b.Channels &&
+		slices.Equal(a.Channels, b.Channels) &&
 		a.Format == b.Format &&
 		a.Opus.Bitrate == b.Opus.Bitrate
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -246,13 +247,15 @@ func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 // per-field reason, which surfaces as a 422.
 func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 	out := config.Device{
-		Name:     d.Name,
-		Device:   d.Device,
-		Path:     d.Path,
-		Mode:     config.Mode(d.Mode),
-		Format:   string(d.Format),
-		Rate:     d.Rate,
-		Channels: d.Channels,
+		Name:   d.Name,
+		Device: d.Device,
+		Path:   d.Path,
+		Mode:   config.Mode(d.Mode),
+		Format: string(d.Format),
+		Rate:   d.Rate,
+		// Clone the selection into fresh storage so the persisted config does not
+		// alias the request body (parity with the Enabled handling below).
+		Channels: slices.Clone(d.Channels),
 	}
 	if d.Opus != nil && d.Opus.Bitrate != nil {
 		out.Opus.Bitrate = *d.Opus.Bitrate

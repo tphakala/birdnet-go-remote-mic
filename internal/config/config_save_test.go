@@ -112,7 +112,7 @@ func TestValidateDeviceCountBoundary(t *testing.T) {
 				Name:   "dev" + strconv.Itoa(i),
 				Device: "hw:" + strconv.Itoa(i) + ",0",
 				Path:   "/dev" + strconv.Itoa(i),
-				Mode:   ModePCM, Rate: 48000, Channels: 1, Format: formatS16,
+				Mode:   ModePCM, Rate: 48000, Channels: []int{1}, Format: formatS16,
 			})
 		}
 		return devs

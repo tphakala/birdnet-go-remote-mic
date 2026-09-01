@@ -55,7 +55,7 @@ func servingOpus() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
 			Name: devGarden, Device: "hw:1,0", Path: "/garden",
-			Mode: config.ModeOpus, Rate: 48000, Channels: 1, Format: "s16",
+			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: "s16",
 			Opus: config.Opus{Bitrate: 96000},
 		},
 		State:              StateServing,
@@ -73,7 +73,7 @@ func skippedPCM() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
 			Name: nameAttic, Device: devAttic, Path: pathAttic,
-			Mode: config.ModePCM, Rate: 192000, Channels: 1, Format: "s16",
+			Mode: config.ModePCM, Rate: 192000, Channels: []int{1}, Format: "s16",
 		},
 		State: StateSkipped,
 		Error: "open capture: device busy",
@@ -140,7 +140,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 		t.Fatalf("got %d devices, want 1", len(list))
 	}
 	d := list[0]
-	if d.Name != devGarden || d.Mode != mgmtapi.Opus || d.Rate != 48000 || d.Channels != 1 {
+	if d.Name != devGarden || d.Mode != mgmtapi.Opus || d.Rate != 48000 || !slices.Equal(d.Channels, []int{1}) {
 		t.Errorf("config fields wrong: %+v", d)
 	}
 	if d.State != mgmtapi.Serving {

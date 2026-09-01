@@ -279,7 +279,7 @@ func randomPath(taken map[string]bool) string {
 // mode is unspecified it defaults to Opus (48 kHz mono) if the device is known to
 // support that, otherwise raw PCM at the device's best rate. Opus forces 48 kHz
 // mono per its contract.
-func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode config.Mode, rate, channels int) {
+func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode config.Mode, rate int, channels []int) {
 	if req.Mode != nil {
 		mode = config.Mode(string(*req.Mode))
 	}
@@ -287,15 +287,15 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 		rate = *req.Rate
 	}
 	if req.Channels != nil {
-		channels = *req.Channels
+		channels = config.NormalizeChannels(*req.Channels)
 	}
-	if channels == 0 {
-		channels = preferChannel(d.SupportedChannels)
+	if len(channels) == 0 {
+		channels = defaultSelection(d.SupportedChannels)
 	}
 
 	switch mode {
 	case config.ModeOpus:
-		return config.ModeOpus, 48000, 1
+		return config.ModeOpus, 48000, opusSelection(channels)
 	case config.ModePCM:
 		if rate == 0 {
 			rate = preferRate(d.SupportedRates)
@@ -303,15 +303,16 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 		return config.ModePCM, rate, channels
 	default:
 		// Auto: prefer Opus, but only when the request did not ask for something
-		// Opus cannot honor. Opus is fixed at 48 kHz mono, so an explicit rate or
-		// channel count other than that means the operator wants PCM; silently
-		// returning Opus would discard their request (the contract says a set field
-		// overrides the default).
+		// Opus cannot honor. Opus is fixed at 48 kHz mono (exactly one selected
+		// channel), so an explicit rate other than 48 kHz or a multi-channel
+		// selection means the operator wants PCM; silently returning Opus would
+		// discard their request (the contract says a set field overrides the
+		// default).
 		opusOK := canOpus(d) &&
 			(req.Rate == nil || *req.Rate == 48000) &&
-			(req.Channels == nil || *req.Channels == 1)
+			len(channels) == 1
 		if opusOK {
-			return config.ModeOpus, 48000, 1
+			return config.ModeOpus, 48000, channels
 		}
 		if rate == 0 {
 			rate = preferRate(d.SupportedRates)
@@ -320,21 +321,44 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 	}
 }
 
-// canOpus reports whether the device is known to support the exact 48 kHz mono
-// combination Opus requires. It requires positive evidence: an unprobed device
-// (empty capabilities) is not assumed to support 48 kHz, since a wrong Opus guess
-// is rejected at open, whereas PCM at the fallback rate is more forgiving.
+// canOpus reports whether the device is known to support the 48 kHz Opus needs.
+// A single-channel (mono) stream is always achievable by selecting one channel
+// (the selecting source extracts it from whatever contiguous count the device
+// opens), so only 48 kHz support is load-bearing here. It requires positive
+// evidence: an unprobed device (empty rate list) is not assumed to support 48
+// kHz, since a wrong Opus guess is rejected at open, whereas PCM at the fallback
+// rate is more forgiving.
 func canOpus(d *AvailableDevice) bool {
-	return slices.Contains(d.SupportedRates, 48000) && slices.Contains(d.SupportedChannels, 1)
+	return slices.Contains(d.SupportedRates, 48000)
 }
 
-// preferChannel picks a channel count: mono when supported or when the counts are
-// unknown (the common default), otherwise the first supported count.
-func preferChannel(supported []int) int {
-	if len(supported) == 0 || slices.Contains(supported, 1) {
-		return 1
+// opusSelection reduces a channel selection to the single channel Opus streams.
+// A single-channel request (mono from any channel, e.g. [3]) is honored verbatim
+// rather than silently rewritten to channel 1; a multi-channel selection collapses
+// to its first channel, since Opus is single-channel and config.Validate would
+// otherwise reject len != 1.
+func opusSelection(channels []int) []int {
+	if len(channels) == 1 {
+		return channels
 	}
-	return supported[0]
+	return []int{channels[0]}
+}
+
+// defaultSelection picks a channel selection for a newly provisioned device:
+// mono (channel 1) when the device can open a single channel or its capability is
+// unknown (the common default, and the one Opus accepts), otherwise the device's
+// full native width so no channel is silently dropped on a stereo-only (or wider)
+// interface that cannot open mono directly.
+func defaultSelection(supported []int) []int {
+	if len(supported) == 0 || slices.Contains(supported, 1) {
+		return []int{1}
+	}
+	maxCh := slices.Max(supported)
+	sel := make([]int, maxCh)
+	for i := range sel {
+		sel[i] = i + 1
+	}
+	return sel
 }
 
 // preferRate picks a sample rate: 48 kHz when supported (normal audio), otherwise

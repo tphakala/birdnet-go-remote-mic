@@ -104,13 +104,54 @@ func preferRateError(existing, next error) error {
 	return existing
 }
 
+// maxProbeChannels caps how many capture channels ResolveOpenChannels will probe
+// for. It is sourced from the config channel cap so the two cannot drift.
+const maxProbeChannels = config.MaxChannels
+
+// ResolveOpenChannels returns the channel COUNT to open the device at so every
+// channel in the 1-based selection is captured. ALSA opens a contiguous channel
+// count starting at channel 0, so streaming channel N requires opening at least N
+// channels; a device that cannot open exactly that count (a stereo-only interface
+// asked for a single channel, say) is opened at the smallest supported count above
+// it, and the selecting source drops the surplus. It probes counts from
+// max(selection) up to maxProbeChannels with the non-blocking refine capability
+// query (any capture format accepting the count wins). If none probes cleanly it
+// falls back to max(selection) so the real open surfaces an honest error rather
+// than this guessing. A device that supports the exact count is the common case
+// and returns on the first probe.
+func ResolveOpenChannels(device string, selection []int) int {
+	maxSel := maxSelected(selection)
+	for count := maxSel; count <= maxProbeChannels; count++ {
+		for _, f := range captureFormats {
+			if _, err := supportedRatesFn(device, count, f); err == nil {
+				return count
+			}
+		}
+	}
+	return maxSel
+}
+
+// maxSelected returns the highest channel number in a 1-based selection, or 1 for
+// an empty selection so the caller opens at least one channel.
+func maxSelected(selection []int) int {
+	m := 1
+	for _, c := range selection {
+		if c > m {
+			m = c
+		}
+	}
+	return m
+}
+
 // OpenCapture opens and starts a capture stream for dev. It negotiates the
 // hardware capture format (S16LE preferred, S32LE fallback) and, for an S32
-// device, wraps the stream so every period is downconverted to S16LE; the rest
-// of the pipeline only ever sees S16. It enforces the honest-rate policy:
-// go-audio-capture already fails a rate it cannot deliver exactly, and
-// OpenCapture double-checks the negotiated rate matches the request. The
-// caller's read goroutine should runtime.LockOSThread so the capture loop is not
+// device, wraps the stream so every period is downconverted to S16LE. It then
+// wraps the stream to deliver only dev.Channels (the 1-based selection), so the
+// device is opened at whatever contiguous channel count covers the selection but
+// the pipeline sees exactly the selected channels. It enforces the honest-rate
+// policy: go-audio-capture already fails a rate it cannot deliver exactly, and
+// OpenCapture double-checks the negotiated rate matches the request. The caller's
+// read goroutine should runtime.LockOSThread so the capture loop is not
 // descheduled mid-period.
 func OpenCapture(dev *config.Device) (Source, error) {
 	// dev.Format is the stream OUTPUT format; guard it (S16-only) before touching
@@ -118,7 +159,8 @@ func OpenCapture(dev *config.Device) (Source, error) {
 	if _, err := captureFormat(dev.Format); err != nil {
 		return nil, err
 	}
-	s, format, err := openNegotiate(dev.Device, dev.Rate, dev.Channels)
+	openCh := ResolveOpenChannels(dev.Device, dev.Channels)
+	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh)
 	if err != nil {
 		return nil, err
 	}
@@ -127,33 +169,114 @@ func OpenCapture(dev *config.Device) (Source, error) {
 		_ = s.Close()
 		return nil, fmt.Errorf("audio: negotiated rate %d Hz does not match requested %d Hz", n.Rate, dev.Rate)
 	}
+	// Honesty check on the channel count, mirroring the rate check: the selecting
+	// source extracts channel indices up to max(selection) from the negotiated
+	// buffer, so a device that delivered fewer channels than we opened at would
+	// make the strided copy read out of bounds. ALSA pins the channel count
+	// exactly (or fails the open), so this cannot trigger on the linux backend
+	// today; the guard turns any future surprise into an honest error instead of a
+	// panic in the capture pump.
+	if maxSel := maxSelected(dev.Channels); n.Channels < maxSel {
+		_ = s.Close()
+		return nil, fmt.Errorf("audio: device negotiated %d channels but the selection needs channel %d", n.Channels, maxSel)
+	}
 	if err := s.Start(); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
+	var base Source
 	switch format {
 	case capture.FormatS16LE:
 		frameBytes := n.Channels * 2 // S16LE
-		return &captureSource{
+		base = &captureSource{
 			s:          s,
 			rate:       n.Rate,
 			channels:   n.Channels,
 			frameBytes: frameBytes,
 			buf:        make([]byte, n.PeriodFrames*frameBytes),
-		}, nil
+		}
 	case capture.FormatS32LE:
-		return &convertingSource{
+		base = &convertingSource{
 			s:        s,
 			rate:     n.Rate,
 			channels: n.Channels,
 			in:       make([]byte, n.PeriodFrames*n.Channels*4), // S32LE
 			out:      make([]byte, n.PeriodFrames*n.Channels*2), // S16LE
-		}, nil
+		}
 	default:
 		_ = s.Close()
 		return nil, fmt.Errorf("audio: negotiated unsupported capture format %v", format)
 	}
+	return newSelectingSource(base, n.Channels, dev.Channels), nil
 }
+
+// selectingSource wraps an interleaved S16LE Source opened at srcChannels and
+// delivers only the selected channels, interleaved in selection order. This is
+// how a device opened at a contiguous channel count (from channel 0) serves an
+// arbitrary subset: a strided copy per frame extracts the wanted channels, so a
+// stereo-only interface can serve a single-channel stream (and thus Opus). Like
+// the sources it wraps it is single-consumer; the returned buffer is valid only
+// until the next Read.
+type selectingSource struct {
+	inner Source
+	rate  int
+	srcCh int   // channels the inner source delivers (the open count)
+	idx   []int // 0-based source channel indices to keep, in selection order
+	out   []byte
+}
+
+// newSelectingSource wraps inner to extract the 1-based selection from an
+// srcChannels-wide interleaved S16 stream. When the selection is exactly channels
+// 1..srcChannels in order the extraction is a no-op, so inner is returned
+// unwrapped and the hot path stays a plain passthrough.
+func newSelectingSource(inner Source, srcChannels int, selection []int) Source {
+	idx := make([]int, len(selection))
+	for i, c := range selection {
+		idx[i] = c - 1
+	}
+	if len(idx) == srcChannels {
+		passthrough := true
+		for i, v := range idx {
+			if v != i {
+				passthrough = false
+				break
+			}
+		}
+		if passthrough {
+			return inner
+		}
+	}
+	rate, _ := inner.Negotiated()
+	return &selectingSource{inner: inner, rate: rate, srcCh: srcChannels, idx: idx}
+}
+
+func (s *selectingSource) Negotiated() (rate, channels int) { return s.rate, len(s.idx) }
+
+func (s *selectingSource) Read() (Period, error) {
+	p, err := s.inner.Read()
+	if err != nil {
+		return Period{}, err
+	}
+	outCh := len(s.idx)
+	need := p.Frames * outCh * 2 // S16LE
+	if cap(s.out) < need {
+		s.out = make([]byte, need)
+	}
+	out := s.out[:need]
+	srcFrameBytes := s.srcCh * 2
+	for f := 0; f < p.Frames; f++ {
+		base := f * srcFrameBytes
+		o := f * outCh * 2
+		for j, ci := range s.idx {
+			so := base + ci*2
+			out[o+j*2] = p.Buf[so]
+			out[o+j*2+1] = p.Buf[so+1]
+		}
+	}
+	return Period{Buf: out, Frames: p.Frames}, nil
+}
+
+func (s *selectingSource) Close() error { return s.inner.Close() }
 
 func (c *captureSource) Negotiated() (rate, channels int) { return c.rate, c.channels }
 

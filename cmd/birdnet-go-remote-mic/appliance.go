@@ -181,7 +181,10 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// Probe supported rates and channels for the config UI before opening: once we
 	// hold the hw device exclusively the probe would see our own process and report
 	// busy. Both use the same non-blocking capability query.
-	rates := audio.ProbeRates(dev.Device, dev.Channels, audio.CandidateRates())
+	// Probe rates at the channel count we will actually open (the selection rounded
+	// up to a supported count), since a device's rate set can depend on the channel
+	// count.
+	rates := audio.ProbeRates(dev.Device, audio.ResolveOpenChannels(dev.Device, dev.Channels), audio.CandidateRates())
 	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
 	// Keep the last-known caps if this probe came back empty (a transient
 	// card-swap window), so the UI does not flicker to an empty list.
