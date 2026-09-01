@@ -1,5 +1,6 @@
-import { api } from "./api.js";
+import { api, ApiError } from "./api.js";
 import { sse } from "./sse.js";
+import { setToken } from "./auth.js";
 export class AppStore extends EventTarget {
     state = {
         status: null,
@@ -22,16 +23,55 @@ export class AppStore extends EventTarget {
     // race the 3s poll), so an older response must not overwrite a newer one and
     // restore a stale Enable card.
     availableEpoch = 0;
+    // loginPending is set from the first 401 until a token is accepted, so a
+    // burst of rejected requests (the initial load fires five) opens one prompt
+    // and the generic load-error state is suppressed in favor of it.
+    loginPending = false;
     constructor() {
         super();
+        api.onUnauthorized = () => this.onUnauthorized();
         this.initSSE();
+    }
+    // onUnauthorized reacts to the appliance rejecting the UI's credentials:
+    // polling and the SSE stream stop (they would only be rejected again) and the
+    // login prompt is asked for, once per outage.
+    onUnauthorized() {
+        if (this.loginPending)
+            return;
+        this.loginPending = true;
+        this.stopPolling();
+        this.dispatchEvent(new CustomEvent("authrequired"));
+    }
+    // login stores token, verifies it against /status, and on success reloads
+    // everything and resumes polling. A rejected token is not kept.
+    async login(token) {
+        setToken(token);
+        try {
+            await api.getStatus();
+        }
+        catch (err) {
+            setToken(null);
+            if (err instanceof ApiError && err.status === 401) {
+                return { ok: false, message: "That token was rejected. Check it and try again." };
+            }
+            const msg = err instanceof Error ? err.message : String(err);
+            return { ok: false, message: `Could not reach the appliance: ${msg}` };
+        }
+        this.loginPending = false;
+        this.dispatchEvent(new CustomEvent("authok"));
+        await this.loadInitial();
+        this.startPolling();
+        return { ok: true, message: "" };
     }
     getState() {
         return this.state;
     }
     initSSE() {
         sse.subscribe((eventName, data) => {
-            if (eventName === "connected") {
+            if (eventName === "unauthorized") {
+                this.onUnauthorized();
+            }
+            else if (eventName === "connected") {
                 this.state.connected = true;
                 this.dispatchEvent(new CustomEvent("connection", { detail: true }));
             }
@@ -61,6 +101,9 @@ export class AppStore extends EventTarget {
         // so one failing endpoint does not blank another view that loaded fine.
         const coreFailed = !statusOk && !devicesOk;
         const systemFailed = !systemOk;
+        // A rejected token is handled by the login prompt, not the retry state.
+        if (this.loginPending)
+            return;
         if (coreFailed || systemFailed) {
             this.dispatchEvent(new CustomEvent("loaderror", {
                 detail: { coreFailed, systemFailed, message: "Could not reach the appliance." },
@@ -121,7 +164,15 @@ export class AppStore extends EventTarget {
     }
     async refreshDevices() {
         try {
-            this.state.devices = await api.getDevices();
+            const devices = await api.getDevices();
+            // Defensive normalization at the store boundary: the contract guarantees
+            // channels is an array, but every consumer indexes it, so a malformed
+            // payload becomes an empty selection rather than a runtime error.
+            for (const d of devices) {
+                if (!Array.isArray(d.channels))
+                    d.channels = [];
+            }
+            this.state.devices = devices;
             // Drop level entries for devices that are no longer present so the map
             // does not grow without bound as devices are added or removed.
             const present = new Set(this.state.devices.map((d) => d.name));

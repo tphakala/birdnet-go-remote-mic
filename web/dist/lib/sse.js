@@ -76,6 +76,16 @@ export class SSEClient {
                     headers,
                     signal: this.abortController.signal,
                 });
+                if (response.status === 401) {
+                    // The appliance wants a (different) token. Reconnecting on a timer
+                    // would hammer it with the same rejected credential every 1..10 s, so
+                    // stop here; the store restarts the stream once a token is accepted.
+                    this.isRunning = false;
+                    this.generation++;
+                    this.abortController = null;
+                    this.dispatch("unauthorized", null);
+                    return;
+                }
                 if (!response.ok || !response.body) {
                     throw new Error(`SSE HTTP error: ${response.status} ${response.statusText}`);
                 }

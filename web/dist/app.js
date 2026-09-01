@@ -3,12 +3,18 @@ import { store } from "./lib/store.js";
 import { DashboardView } from "./views/dashboard.js";
 import { SystemView } from "./views/system.js";
 import { triggerApplianceRestart } from "./components/restart-modal.js";
+import { initLoginModal } from "./components/login-modal.js";
+import { applyStoredToken } from "./lib/auth.js";
 class App {
     init() {
         this.initTheme();
         this.initNav();
         this.initViews();
+        initLoginModal();
         router.init();
+        // Push a stored token into the clients before the first request so a
+        // token-gated appliance loads without a prompt on a returning browser.
+        applyStoredToken();
         store.loadInitial();
         store.startPolling();
     }

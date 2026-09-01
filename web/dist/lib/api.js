@@ -15,6 +15,11 @@ export class ApiError extends Error {
 export class ApiClient {
     baseUrl;
     token = null;
+    // onUnauthorized fires when the appliance rejects the CURRENT token (a 401
+    // to a request that carried the token in force at response time). A 401 to a
+    // request sent under an older token, mid-rotation, is a stale rejection and
+    // does not fire it, so a poll racing a token swap cannot pop the login prompt.
+    onUnauthorized = null;
     constructor(baseUrl = "/api/v1") {
         this.baseUrl = baseUrl;
     }
@@ -24,8 +29,9 @@ export class ApiClient {
     async request(path, options = {}) {
         const headers = new Headers(options.headers || {});
         headers.set("Accept", "application/json, application/problem+json");
-        if (this.token) {
-            headers.set("Authorization", `Bearer ${this.token}`);
+        const used = this.token;
+        if (used) {
+            headers.set("Authorization", `Bearer ${used}`);
         }
         if (options.body && !headers.has("Content-Type")) {
             headers.set("Content-Type", "application/json");
@@ -34,6 +40,9 @@ export class ApiClient {
             ...options,
             headers,
         });
+        if (res.status === 401 && used === this.token) {
+            this.onUnauthorized?.();
+        }
         if (res.status === 204) {
             return {};
         }

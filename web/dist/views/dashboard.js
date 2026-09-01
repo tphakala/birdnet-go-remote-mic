@@ -5,12 +5,14 @@ import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
+import { getToken } from "../lib/auth.js";
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path></svg>';
 const ICON_ULTRA = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h2"></path><path d="M6 8v8"></path><path d="M10 4v16"></path><path d="M14 6v12"></path><path d="M18 9v6"></path><path d="M22 12h-2"></path></svg>';
 const ICON_ERROR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
 const ICON_WARN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
 const ICON_COPY = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
+const ICON_LOCK = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
 const ICON_GEAR = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
 // capsSummary renders a short human summary of a device's probed capabilities
 // (channel support and top sample rate) for the available-devices list.
@@ -391,6 +393,15 @@ export class DashboardView {
             if (chLabel)
                 tags.appendChild(elem("span", "tech-tag", chLabel));
         }
+        let lockEl = null;
+        if (serving) {
+            lockEl = elem("span", "tech-tag lock-tag");
+            lockEl.appendChild(iconSpan(ICON_LOCK));
+            lockEl.appendChild(elem("span", undefined, "Token"));
+            lockEl.title = "Pulling this stream requires the access token";
+            lockEl.hidden = !this.status?.authRequired;
+            tags.appendChild(lockEl);
+        }
         const statusEl = this.buildStatusBadge(d.state);
         tags.appendChild(statusEl);
         // Streaming enable/disable toggle. A disabled device stays configured but is
@@ -458,15 +469,21 @@ export class DashboardView {
             copyBtn.title = "Copy RTSP stream URL";
             copyBtn.appendChild(iconSpan(ICON_COPY, "icon-copy"));
             copyBtn.appendChild(elem("span", "copy-label", "Copy URL"));
-            copyBtn.addEventListener("click", () => this.handleCopyUrl(copyBtn, urlEl));
+            copyBtn.addEventListener("click", () => this.handleCopyUrl(copyBtn, urlEl, d.path));
             strip.appendChild(info);
             strip.appendChild(copyBtn);
             article.appendChild(strip);
             // Meter console: one live VU meter per capture channel. The meters are
             // decorative real-time visualizations updating ~10 Hz, hidden from the
             // accessibility tree so they do not spam screen readers.
+            // Meter rows carry the STREAMED channel numbers (a [1,3] selection meters
+            // "Ch 1" and "Ch 3"), matching the card tag and the settings form. If the
+            // negotiated count ever disagrees with the selection, fall back to 1..N.
             const channelCount = d.negotiatedChannels ?? d.channels.length;
-            const built = this.buildMeterConsole(channelCount);
+            const channelNumbers = channelCount === d.channels.length
+                ? d.channels
+                : Array.from({ length: channelCount }, (_, i) => i + 1);
+            const built = this.buildMeterConsole(channelNumbers);
             meters = built.meters;
             article.appendChild(built.console);
             // Footer
@@ -509,7 +526,7 @@ export class DashboardView {
         settingsWrap.hidden = true;
         article.appendChild(settingsWrap);
         const entry = {
-            article, gearBtn, serving, meters, urlEl, statusEl, clientsEl, droppedEl,
+            article, gearBtn, serving, meters, urlEl, lockEl, statusEl, clientsEl, droppedEl,
             toggleInput, pendingNote, footerNote,
             device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
         };
@@ -518,10 +535,12 @@ export class DashboardView {
         return entry;
     }
     // buildMeterConsole builds the shared dB scale plus one metering row per
-    // capture channel and returns the console element and its VU meters, indexed
-    // by channel. A mono device gets a single unlabeled row (unchanged from the
-    // single-meter layout); a multi-channel device labels each row "Ch N".
-    buildMeterConsole(count) {
+    // streamed channel and returns the console element and its VU meters, indexed
+    // by streamed-channel position. A mono device gets a single unlabeled row
+    // (unchanged from the single-meter layout); a multi-channel device labels
+    // each row with its real channel number ("Ch 3" for the second row of a
+    // [1,3] selection).
+    buildMeterConsole(channels) {
         const meterConsole = elem("div", "meter-console");
         const scale = elem("div", "meter-scale");
         for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
@@ -529,7 +548,7 @@ export class DashboardView {
         }
         meterConsole.appendChild(scale);
         const meters = [];
-        const n = Math.max(1, count);
+        const n = Math.max(1, channels.length);
         const multi = n > 1;
         // Cap the stack height for high-channel interfaces so a 6-8 channel device
         // does not grow the card tall enough to push the dashboard down; the rows
@@ -538,8 +557,9 @@ export class DashboardView {
             meterConsole.classList.add("many-channels");
         for (let c = 0; c < n; c++) {
             const wrapper = elem("div", "meter-track-wrapper");
+            const chNum = channels[c] ?? c + 1;
             if (multi) {
-                const label = elem("span", "meter-channel-label mono", `Ch ${c + 1}`);
+                const label = elem("span", "meter-channel-label mono", `Ch ${chNum}`);
                 label.setAttribute("aria-hidden", "true");
                 wrapper.appendChild(label);
             }
@@ -557,7 +577,7 @@ export class DashboardView {
             dbReadout.setAttribute("aria-hidden", "true");
             const clipBtn = elem("button", "clip-latch-btn", "CLIP");
             clipBtn.setAttribute("type", "button");
-            clipBtn.setAttribute("aria-label", multi ? `Channel ${c + 1} clip indicator, click to clear` : "Clip indicator, click to clear");
+            clipBtn.setAttribute("aria-label", multi ? `Channel ${chNum} clip indicator, click to clear` : "Clip indicator, click to clear");
             clipBtn.title = "Click to clear clip latch";
             stats.appendChild(dbReadout);
             stats.appendChild(clipBtn);
@@ -689,7 +709,7 @@ export class DashboardView {
                 showToast(notice, "warn");
             }
             cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
-            saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn));
+            saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn, cancelBtn));
         }
         entry.expanded = true;
         entry.settingsWrap.hidden = false;
@@ -724,7 +744,7 @@ export class DashboardView {
         entry.settingsForm?.destroy();
         entry.settingsForm = null;
     }
-    async saveDevice(entry, btn) {
+    async saveDevice(entry, btn, cancelBtn) {
         if (btn.getAttribute("aria-disabled") === "true")
             return;
         const form = entry.settingsForm;
@@ -735,7 +755,11 @@ export class DashboardView {
             return;
         }
         const edited = form.collect();
+        // Show the save in flight and block a second submit or a discard while the
+        // queued PATCH runs; markBusy keeps Save focusable (aria-disabled) while
+        // Cancel, which is not focused, can simply be disabled.
         this.markBusy(btn, "Saving...");
+        cancelBtn.disabled = true;
         try {
             await this.enqueue(async () => {
                 // Source the enabled flag and the patch base FRESH inside the queued task:
@@ -765,9 +789,11 @@ export class DashboardView {
             });
         }
         finally {
-            // Restore the button whether the save succeeded (its panel is torn down, so
-            // this is a harmless no-op on a detached node) or failed (it stays for retry).
+            // Restore the buttons whether the save succeeded (its panel is torn down,
+            // so this is a harmless no-op on detached nodes) or failed (they stay for
+            // retry).
             this.clearBusy(btn, "Save Changes");
+            cancelBtn.disabled = false;
         }
     }
     buildStatusBadge(state) {
@@ -786,6 +812,8 @@ export class DashboardView {
             entry.urlEl.textContent = url;
             entry.urlEl.title = url;
         }
+        if (entry.lockEl)
+            entry.lockEl.hidden = !this.status?.authRequired;
         if (entry.clientsEl)
             entry.clientsEl.textContent = d.clientConnected ? "1 connected" : "0 connected";
         if (entry.droppedEl)
@@ -815,11 +843,23 @@ export class DashboardView {
                 entry.footerNote.textContent = footerText;
         }
     }
-    handleCopyUrl(btn, urlEl) {
-        const url = urlEl?.textContent;
-        if (!url || !navigator.clipboard)
+    // handleCopyUrl copies the stream URL. When the appliance requires the access
+    // token and this browser holds it, the copied URL embeds it as RTSP
+    // credentials (rtsp://mic:<token>@host:port/path) so it pastes straight into
+    // BirdNET-Go, ffmpeg or VLC; the displayed URL stays credential-free.
+    handleCopyUrl(btn, urlEl, path) {
+        const shown = urlEl?.textContent;
+        if (!shown || !navigator.clipboard)
             return;
+        let url = shown;
+        const token = this.status?.authRequired ? getToken() : null;
+        if (token) {
+            const port = rtspPort(this.status?.rtspListen);
+            url = `rtsp://mic:${token}@${window.location.hostname}:${port}${path}`;
+        }
         navigator.clipboard.writeText(url).then(() => {
+            if (token)
+                showToast("Stream URL copied with the access token included.");
             btn.classList.add("copied");
             const labelSpan = btn.querySelector(".copy-label");
             const orig = labelSpan?.textContent ?? "Copy URL";
@@ -843,6 +883,10 @@ export class DashboardView {
         const servingEl = document.getElementById("devices-serving-display");
         if (servingEl)
             servingEl.textContent = `${this.status.devicesServing} / ${this.status.devicesTotal}`;
+        // The open-access notice shows while no token is configured.
+        const banner = document.getElementById("open-access-banner");
+        if (banner)
+            banner.hidden = this.status.authRequired;
         const badge = document.getElementById("appliance-status-badge");
         const text = document.getElementById("appliance-status-text");
         if (badge && text) {
