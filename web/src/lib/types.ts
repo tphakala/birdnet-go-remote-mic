@@ -15,7 +15,9 @@ export interface DeviceConfig {
   path: string;
   mode: StreamMode;
   rate: number;
-  channels: number;
+  // Selected 1-based capture channel numbers to stream, ascending and unique
+  // (e.g. [1], [1, 2], or [1, 3]). A single-channel selection is a mono stream.
+  channels: number[];
   format: "s16";
   opus?: OpusSettings;
   // Whether the device is captured and streamed; defaults to true when absent.
@@ -69,7 +71,8 @@ export interface Device {
   mode: StreamMode;
   format: "s16";
   rate: number;
-  channels: number;
+  // Selected 1-based capture channel numbers streamed (see DeviceConfig.channels).
+  channels: number[];
   state: DeviceState;
   negotiatedRate?: number;
   negotiatedChannels?: number;
@@ -102,7 +105,9 @@ export interface ProvisionDeviceRequest {
   name?: string;
   mode?: StreamMode;
   rate?: number;
-  channels?: number;
+  // Optional 1-based channel selection; chosen from the device's capabilities
+  // when omitted.
+  channels?: number[];
 }
 
 export interface NetworkInterface {

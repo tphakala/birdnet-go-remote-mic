@@ -80,8 +80,14 @@ func TestDetectDevices(t *testing.T) {
 	defer func() { enumerateDevices = prev }()
 
 	// Channel probe (refine seam): hw:2,0 is mono-only, hw:1,0 does mono+stereo.
+	// Every candidate count above the device's max is rejected as an unsupported
+	// channel/format combo, so ProbeChannels keeps only the counts it accepts.
 	restoreCh := swapSupportedRates(func(dev string, ch int, _ capture.Format) (capture.RateSupport, error) {
-		if dev == testDevID2 && ch == 2 {
+		maxCh := 2
+		if dev == testDevID2 {
+			maxCh = 1
+		}
+		if ch > maxCh {
 			return capture.RateSupport{}, &capture.BadFormatError{Channels: ch}
 		}
 		return capture.RateSupport{Rates: []int{48000}}, nil

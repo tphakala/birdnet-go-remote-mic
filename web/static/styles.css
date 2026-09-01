@@ -1106,6 +1106,52 @@ body {
   display: block;
 }
 
+/* Per-channel selection: a wrap row of checkbox chips (Ch1..ChN). */
+.channel-select {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.channel-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.channel-checkbox:hover {
+  border-color: var(--border-highlight);
+  background: var(--bg-surface-raised);
+}
+
+.channel-checkbox:has(input:checked) {
+  border-color: var(--border-active);
+  background: var(--accent-cyan-bg);
+  color: var(--text-primary);
+}
+
+.channel-checkbox:has(input:focus-visible) {
+  box-shadow: 0 0 0 2px var(--accent-cyan-glow);
+}
+
+.channel-checkbox input {
+  accent-color: var(--accent-cyan);
+  margin: 0;
+}
+
+.form-field.invalid .channel-select .channel-checkbox {
+  border-color: var(--signal-crit);
+}
+
 /* Custom Switch Toggle */
 /* Visually hides an element while keeping it in the accessibility tree and
    keyboard-focusable (do NOT use display:none, which removes focusability). */

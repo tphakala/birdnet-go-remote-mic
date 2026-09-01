@@ -17,11 +17,12 @@ var candidateRates = []int{16000, 22050, 32000, 44100, 48000, 88200, 96000, 1764
 // a fresh slice so a caller cannot mutate the shared package list.
 func CandidateRates() []int { return slices.Clone(candidateRates) }
 
-// candidateChannels is the set of channel counts probed at startup and offered in
-// the config UI. config.Validate accepts only 1 or 2 (Opus needs mono; PCM
-// supports up to stereo), so those are the only counts worth probing. ProbeChannels
-// keeps the subset a given device actually accepts.
-var candidateChannels = []int{1, 2}
+// candidateChannels is the set of channel counts probed at startup. The UI takes
+// the largest accepted count as the number of selectable channels and builds the
+// per-channel selection control (Ch1..ChN) from it, so this spans common
+// multi-channel USB interface widths up to the maxChannels cap (8). ProbeChannels
+// keeps the subset a given device actually accepts (a single refine per count).
+var candidateChannels = []int{1, 2, 3, 4, 5, 6, 7, 8}
 
 // CandidateChannels returns a copy of the startup probe candidate channel counts.
 // It returns a fresh slice so a caller cannot mutate the shared package list.

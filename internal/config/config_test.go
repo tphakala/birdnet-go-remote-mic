@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -93,7 +94,7 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("listen default = %q", c.Listen)
 	}
 	d := c.Devices[0]
-	if d.Mode != ModePCM || d.Channels != 1 || d.Format != formatS16 || d.Path != "/stream" {
+	if d.Mode != ModePCM || !slices.Equal(d.Channels, []int{1}) || d.Format != formatS16 || d.Path != "/stream" {
 		t.Errorf("device defaults not applied: %+v", d)
 	}
 }
@@ -155,8 +156,8 @@ func validBase() Config {
 		Listen:     ":8554",
 		Management: Management{Listen: ":8443"},
 		Devices: []Device{
-			{Name: nameGarden, Device: deviceHW1, Path: pathGarden, Mode: ModePCM, Rate: 256000, Channels: 1, Format: formatS16},
-			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: 1, Format: formatS16},
+			{Name: nameGarden, Device: deviceHW1, Path: pathGarden, Mode: ModePCM, Rate: 256000, Channels: []int{1}, Format: formatS16},
+			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: []int{1}, Format: formatS16},
 		},
 	}
 }
@@ -198,6 +199,38 @@ func TestCloneDeepCopiesDeviceEnabled(t *testing.T) {
 	}
 }
 
+func TestCloneDeepCopiesDeviceChannels(t *testing.T) {
+	t.Parallel()
+	c := validBase()
+	c.Devices[0].Channels = []int{1, 2}
+	clone := c.Clone()
+	// Mutating a channel in the clone must not reach the original's backing array.
+	clone.Devices[0].Channels[0] = 99
+	if c.Devices[0].Channels[0] != 1 {
+		t.Errorf("Clone aliased Device.Channels; original changed to %v", c.Devices[0].Channels)
+	}
+}
+
+func TestApplyDefaultsNormalizesChannels(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want []int
+	}{
+		{[]int{2, 1}, []int{1, 2}},          // unsorted -> ascending
+		{[]int{1, 1}, []int{1}},             // duplicates removed
+		{[]int{3, 1, 2, 1}, []int{1, 2, 3}}, // both
+		{nil, []int{1}},                     // empty defaults to mono
+	}
+	for _, tt := range cases {
+		c := validBase()
+		c.Devices[0].Channels = tt.in
+		c.ApplyDefaults()
+		if !slices.Equal(c.Devices[0].Channels, tt.want) {
+			t.Errorf("ApplyDefaults(%v) channels = %v, want %v", tt.in, c.Devices[0].Channels, tt.want)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	base := validBase()
 	if err := base.Validate(); err != nil {
@@ -216,11 +249,14 @@ func TestValidate(t *testing.T) {
 			c.Devices[0].Rate = 48000
 		}, false},
 		{"opus at 44100 fails", func(c *Config) { c.Devices[0].Mode = ModeOpus; c.Devices[0].Rate = 44100 }, true},
-		{"opus stereo fails", func(c *Config) {
+		{"opus multi-channel fails", func(c *Config) {
 			c.Devices[0].Mode = ModeOpus
 			c.Devices[0].Rate = 48000
-			c.Devices[0].Channels = 2
+			c.Devices[0].Channels = []int{1, 2}
 		}, true},
+		{"multi-channel pcm selection valid", func(c *Config) { c.Devices[0].Channels = []int{1, 2} }, false},
+		{"non-contiguous channel selection valid", func(c *Config) { c.Devices[0].Channels = []int{1, 3} }, false},
+		{"max channel number valid", func(c *Config) { c.Devices[0].Channels = []int{1, maxChannels} }, false},
 		{"format s24 fails", func(c *Config) { c.Devices[0].Format = "s24" }, true},
 		{"name with CRLF fails", func(c *Config) { c.Devices[0].Name = "bad\r\nname" }, true},
 		{"empty name fails", func(c *Config) { c.Devices[0].Name = "" }, true},
@@ -228,7 +264,11 @@ func TestValidate(t *testing.T) {
 		{"no devices is valid (zero-config first run)", func(c *Config) { c.Devices = nil }, false},
 		{"rate too high fails", func(c *Config) { c.Devices[0].Rate = 500000 }, true},
 		{"rate too low fails", func(c *Config) { c.Devices[0].Rate = 100 }, true},
-		{"channels 3 fails", func(c *Config) { c.Devices[0].Channels = 3 }, true},
+		{"empty channel selection fails", func(c *Config) { c.Devices[0].Channels = []int{} }, true},
+		{"channel number above max fails", func(c *Config) { c.Devices[0].Channels = []int{maxChannels + 1} }, true},
+		{"channel number zero fails", func(c *Config) { c.Devices[0].Channels = []int{0} }, true},
+		{"unsorted channel selection fails", func(c *Config) { c.Devices[0].Channels = []int{2, 1} }, true},
+		{"duplicate channel selection fails", func(c *Config) { c.Devices[0].Channels = []int{1, 1} }, true},
 		{"empty device fails", func(c *Config) { c.Devices[0].Device = "" }, true},
 		{"unknown mode fails", func(c *Config) { c.Devices[0].Mode = "flac" }, true},
 		{"negative opus bitrate fails", func(c *Config) { c.Devices[0].Opus.Bitrate = -1 }, true},

@@ -153,7 +153,7 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 		// retried and then skipped instead of blocking. The retry also rides out
 		// the transient EBUSY window right after a hot-reload Close, before the
 		// kernel releases the card, so a same-card restart is not falsely skipped.
-		if deviceInUse(dev.Device, dev.Channels) {
+		if deviceInUse(dev.Device, audio.ResolveOpenChannels(dev.Device, dev.Channels)) {
 			err = capture.ErrDeviceInUse
 		} else {
 			var rt *deviceRuntime

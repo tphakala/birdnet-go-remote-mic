@@ -105,10 +105,12 @@ function iconSpan(markup: string, className?: string): HTMLElement {
   return s;
 }
 
-function channelLabel(channels: number): string {
-  if (channels === 1) return "Mono";
-  if (channels === 2) return "Stereo";
-  return `${channels} ch`;
+// channelLabel renders the streamed channel selection, e.g. "Ch 1", "Ch 1+2",
+// or "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.
+function channelLabel(channels: number[]): string {
+  if (!channels.length) return "";
+  if (channels.length === 1) return `Ch ${channels[0]}`;
+  return "Ch " + channels.join("+");
 }
 
 // The runtime device carries all configured fields; project it to the config
@@ -425,7 +427,7 @@ export class DashboardView {
       const modeTag = elem("span", `tech-tag ${isUltra ? "ultrasonic" : "highlight"}`, modeLabel(d.mode));
       tags.appendChild(modeTag);
       tags.appendChild(elem("span", "tech-tag", `${rate.toLocaleString("en-US")} Hz`));
-      tags.appendChild(elem("span", "tech-tag", channelLabel(d.negotiatedChannels ?? d.channels)));
+      tags.appendChild(elem("span", "tech-tag", channelLabel(d.channels)));
     }
     const statusEl = this.buildStatusBadge(d.state);
     tags.appendChild(statusEl);
@@ -508,7 +510,7 @@ export class DashboardView {
       // Meter console: one live VU meter per capture channel. The meters are
       // decorative real-time visualizations updating ~10 Hz, hidden from the
       // accessibility tree so they do not spam screen readers.
-      const channelCount = d.negotiatedChannels ?? d.channels;
+      const channelCount = d.negotiatedChannels ?? d.channels.length;
       const built = this.buildMeterConsole(channelCount);
       meters = built.meters;
       article.appendChild(built.console);

@@ -159,10 +159,10 @@ type AvailableDevice struct {
 	// State Always "available"; the device is detected but not configured.
 	State AvailableDeviceState `json:"state"`
 
-	// SupportedChannels Channel counts the hardware accepts (a subset of [1, 2]). Absent or empty when the device could not be probed.
+	// SupportedChannels Channel counts the hardware accepts. Absent or empty when the device could not be probed. The UI takes the largest count as the number of selectable channels (Ch1..ChN).
 	//
 	//
-	// Examples: [1], [1,2]
+	// Examples: [2], [1,2], [2,4]
 	SupportedChannels *[]int `json:"supportedChannels,omitempty"`
 
 	// SupportedRates Sample rates the hardware accepts, verified with a real HW_PARAMS commit. Absent or empty when the device could not be probed.
@@ -232,8 +232,8 @@ type ConfigUpdateResult struct {
 
 // Device One configured capture device: its configuration, what capture actually negotiated, and its runtime state.
 type Device struct {
-	// Channels Requested channel count.
-	Channels int `json:"channels"`
+	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]). The stream carries these channels in order; a single-channel selection yields a mono stream (and is the one Opus accepts).
+	Channels []int `json:"channels"`
 
 	// ClientConnected Whether an RTSP session currently holds this track's single slot. Always false for skipped or failed devices.
 	ClientConnected bool `json:"clientConnected"`
@@ -286,10 +286,10 @@ type Device struct {
 	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
 	State DeviceState `json:"state"`
 
-	// SupportedChannels Channel counts the hardware accepts (a subset of [1, 2]), probed once at startup via the same non-blocking capability query as supportedRates. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers both mono and stereo. The UI uses it to fix the Channels control on a device that supports a single channel count (mono or stereo), and to gate Opus, which requires mono.
+	// SupportedChannels Channel counts the hardware accepts, probed once at startup via the same non-blocking capability query as supportedRates. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a mono/stereo default. The UI takes the largest count as the number of selectable channels and builds the per-channel selection control (Ch1..ChN) from it.
 	//
 	//
-	// Examples: [1], [1,2]
+	// Examples: [2], [1,2], [2,4]
 	SupportedChannels *[]int `json:"supportedChannels,omitempty"`
 
 	// SupportedRates Sample rates the hardware accepts, probed once at startup. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a static list of common rates.
@@ -304,7 +304,8 @@ type DeviceFormat string
 
 // DeviceConfig The configuration of one device, without runtime state.
 type DeviceConfig struct {
-	Channels int    `json:"channels"`
+	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]).
+	Channels []int  `json:"channels"`
 	Device   string `json:"device"`
 
 	// Enabled Whether this device is captured and streamed; defaults to true when absent. Set false to keep it configured but not opened. Takes effect on the next restart.
@@ -416,8 +417,8 @@ type Problem struct {
 
 // ProvisionDeviceRequest Request to enable (provision) a detected capture device. Only device is required; the appliance derives sensible defaults for everything else, and any field set here overrides its derived default.
 type ProvisionDeviceRequest struct {
-	// Channels Optional channel count; chosen from the device's capabilities when omitted.
-	Channels *int `json:"channels,omitempty"`
+	// Channels Optional 1-based channel selection to stream, ascending and unique; chosen from the device's capabilities when omitted.
+	Channels *[]int `json:"channels,omitempty"`
 
 	// Device ALSA capture device id to enable, as reported by GET /devices/available.
 	//

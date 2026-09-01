@@ -38,13 +38,16 @@ export class DeviceSettingsForm {
     pathErr;
     rateErr;
     chErr;
+    channelsGroup;
     rateHidden;
-    channelsHidden;
+    // channelBoxes are the per-channel selection checkboxes (Ch1..ChN), in channel
+    // order. The stream carries the checked channels; their 1-based numbers are the
+    // config's channels array.
+    channelBoxes = [];
     bitrateHidden;
     modeHidden;
     bitrateField;
     rateDrop;
-    channelsDrop;
     device;
     hardware;
     onDirty;
@@ -70,7 +73,8 @@ export class DeviceSettingsForm {
         // Rate
         const rateField = elem("div", "form-field");
         rateField.appendChild(this.label("Sample Rate (Hz)"));
-        const rate = this.buildDropdown("Sample rate", this.rateOptions(d.rate), String(d.rate));
+        const rateOpts = this.rateOptions(d.rate);
+        const rate = this.buildDropdown("Sample rate", rateOpts, this.pick(rateOpts, String(d.rate)));
         this.rateHidden = rate.hidden;
         this.rateDrop = rate.dropdown;
         rateField.appendChild(rate.container);
@@ -78,28 +82,22 @@ export class DeviceSettingsForm {
         rateField.appendChild(this.rateErr);
         rateField.appendChild(this.hint(this.rateHint()));
         grid.appendChild(rateField);
-        // Channels: built from the device's probed channel capability. A
-        // single-channel device fixes the control to Mono; an unknown capability
-        // (device busy or missing) falls back to offering both.
+        // Channels: a per-channel selection built from the device's probed channel
+        // capability. The operator picks which capture channels the stream carries;
+        // one selected channel is a mono stream (the only kind Opus accepts), two or
+        // more is a multi-channel PCM stream. The number of selectable channels is the
+        // largest probed channel count, defaulting to stereo when unknown.
         const chField = elem("div", "form-field");
         chField.appendChild(this.label("Channels"));
-        const chOptions = this.channelOptions();
-        const chInitial = this.pick(chOptions, String(d.channels));
-        const channels = this.buildDropdown("Channels", chOptions, chInitial);
-        this.channelsHidden = channels.hidden;
-        this.channelsDrop = channels.dropdown;
-        chField.appendChild(channels.container);
+        const chGroup = this.buildChannelSelect(this.maxChannels(), d.channels);
+        this.channelsGroup = chGroup;
+        chField.appendChild(chGroup);
         this.chErr = this.error(`set-${uid}-ch-err`);
         chField.appendChild(this.chErr);
-        // When the device supports a single channel count the dropdown has one
-        // option and is therefore already fixed to it; the hint says which, and it
-        // reads the same as the single-option mode dropdown (no special styling, so
-        // the two one-option controls stay consistent).
-        const chFixed = chOptions.length === 1;
-        const fixedIsMono = chOptions[0]?.val === "1";
-        chField.appendChild(this.hint(chFixed
-            ? `This device supports only ${fixedIsMono ? "one channel (mono)" : "two channels (stereo)"}.`
-            : "Opus requires mono."));
+        // Associate the validation error with the checkbox group so a screen reader
+        // announces it when focus is inside the group (parity with the text inputs).
+        chGroup.setAttribute("aria-describedby", this.chErr.id);
+        chField.appendChild(this.hint("Select which capture channels to stream. One channel is a mono stream; Opus requires exactly one."));
         grid.appendChild(chField);
         // Stream group: how the capture is named, addressed, and encoded.
         this.groupTitle(grid, "Stream");
@@ -155,7 +153,11 @@ export class DeviceSettingsForm {
             this.bitrateField.hidden = !isOpus;
             if (isOpus) {
                 this.rateDrop.select("48000");
-                this.channelsDrop.select("1");
+                // Opus is a single mono channel: collapse the selection to one channel
+                // (keeping the lowest already-selected, or Ch1) so the form can never hold
+                // an unsaveable multi-channel Opus selection.
+                const first = this.selectedChannels()[0] ?? 1;
+                this.setChannelSelection([first]);
             }
             this.validate();
         });
@@ -174,19 +176,22 @@ export class DeviceSettingsForm {
     validate() {
         const mode = this.modeHidden.value;
         const rate = Number(this.rateHidden.value);
-        const channels = Number(this.channelsHidden.value);
+        const channels = this.selectedChannels();
         let ok = true;
         ok = this.mark(this.nameEl, this.nameErr, this.nameEl.value.trim().length > 0, "Name is required.") && ok;
         const path = this.pathEl.value.trim();
         ok = this.mark(this.pathEl, this.pathErr, path.startsWith("/") && path.length >= 2, "Path must start with / and be at least 2 characters.") && ok;
         let rateOk = rate >= 8000 && rate <= 384000;
-        let chOk = channels === 1 || channels === 2;
+        let chOk = channels.length >= 1;
+        let chMsg = "Select at least one channel.";
         if (mode === "opus") {
             rateOk = rate === 48000;
-            chOk = channels === 1;
+            chOk = channels.length === 1;
+            chMsg = "Opus requires exactly one channel.";
         }
         ok = this.markControl(this.rateErr, rateOk, mode === "opus" ? "Opus requires 48000 Hz." : "Rate must be 8000-384000 Hz.") && ok;
-        ok = this.markControl(this.chErr, chOk, "Opus requires mono (1 channel).") && ok;
+        ok = this.markControl(this.chErr, chOk, chMsg) && ok;
+        this.channelsGroup.setAttribute("aria-invalid", String(!chOk));
         return ok;
     }
     // markControl toggles the invalid state on a dropdown field (which has no text
@@ -206,7 +211,7 @@ export class DeviceSettingsForm {
             path: this.pathEl.value.trim(),
             mode,
             rate: Number(this.rateHidden.value),
-            channels: Number(this.channelsHidden.value),
+            channels: this.selectedChannels(),
             format: this.device.format || "s16",
             // Preserve the streaming enable/disable flag: this form does not edit it,
             // but saveDevice replaces the whole device entry in the PATCH, so dropping
@@ -326,18 +331,15 @@ export class DeviceSettingsForm {
         return ok;
     }
     // opusSupported reports whether the device can carry Opus in this appliance.
-    // Opus runs at 48 kHz internally (RFC 7587), and this appliance requires mono
-    // for Opus (config.Validate rejects opus with more than one channel), so it
-    // needs both 48 kHz and mono capture. A capability that was not probed
-    // (empty/absent) is treated as supported, the same graceful degradation the
-    // rate control uses, so a device that was merely busy at startup is not
-    // stripped of Opus.
+    // Opus runs at 48 kHz mono internally (RFC 7587). Mono is always achievable by
+    // selecting a single channel (the appliance extracts one channel from whatever
+    // contiguous count the device opens), so only 48 kHz capture support gates Opus
+    // here. A rate set that was not probed (empty/absent) is treated as supported,
+    // the same graceful degradation the rate control uses, so a device that was
+    // merely busy at startup is not stripped of Opus.
     opusSupported() {
         const rates = this.hardware.supportedRates;
-        const chans = this.hardware.supportedChannels;
-        const rate48kOK = !rates?.length || rates.includes(48000);
-        const monoOK = !chans?.length || chans.includes(1);
-        return rate48kOK && monoOK;
+        return !rates?.length || rates.includes(48000);
     }
     // modeOptions is the codec-mode list for this device: PCM L16 always, and Opus
     // only when the device supports 48 kHz mono. Gating Opus here prevents offering
@@ -351,32 +353,71 @@ export class DeviceSettingsForm {
         opts.push({ val: "pcm", label: "PCM L16 (Uncompressed Raw)", tag: "PCM L16", tagClass: "ultrasonic" });
         return opts;
     }
-    // channelOptions is the Channels list for this device. When the device's
-    // supported channel counts are known, the control is constrained to them (a
-    // single-channel device is fixed to Mono), and an unsupported saved value is
-    // NOT re-added, so a stale stereo value on a mono-only device is steered back
-    // to a valid Mono selection on save. When capability is unknown (device busy or
-    // missing) it falls back to offering both, matching the rate control. When Opus
-    // is offered, mono stays selectable so the mode-change snap to mono lands on a
-    // real option.
-    channelOptions() {
-        const probed = this.hardware.supportedChannels?.filter((c) => c === 1 || c === 2) ?? [];
-        let chans;
-        if (probed.length) {
-            // The probed set is authoritative here. Mono (1) needs no forced re-add for
-            // Opus: opusSupported() can only be true when supportedChannels includes 1,
-            // so mono is already present whenever the mode-change snap to mono runs.
-            chans = new Set(probed);
+    // maxChannels is how many channels the per-channel selection control offers
+    // (Ch1..ChN). It is the largest probed channel count, capped at the config
+    // maximum (8) and floored at stereo when capability is unknown, and never below
+    // an already-selected channel so a saved selection is not truncated by a stale
+    // or empty probe.
+    maxChannels() {
+        const probed = this.hardware.supportedChannels;
+        const probedMax = probed?.length ? Math.max(...probed) : 0;
+        const savedMax = this.device.channels.length ? Math.max(...this.device.channels) : 0;
+        return Math.min(8, Math.max(probedMax || 2, savedMax, 1));
+    }
+    // buildChannelSelect builds the per-channel checkbox group (Ch1..ChN). In Opus
+    // mode the group behaves like a radio: checking one channel clears the rest, so
+    // an Opus selection is always a single mono channel.
+    buildChannelSelect(maxCh, selected) {
+        const want = new Set(selected);
+        const group = elem("div", "channel-select");
+        group.setAttribute("role", "group");
+        group.setAttribute("aria-label", "Capture channels to stream");
+        this.channelBoxes = [];
+        for (let ch = 1; ch <= maxCh; ch++) {
+            const wrap = elem("label", "channel-checkbox");
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.value = String(ch);
+            box.checked = want.has(ch);
+            box.setAttribute("aria-label", `Channel ${ch}`);
+            box.addEventListener("change", () => {
+                const isOpus = this.modeHidden?.value === "opus";
+                if (isOpus && box.checked) {
+                    // Opus streams one channel: checking one clears the rest (radio-like).
+                    for (const other of this.channelBoxes) {
+                        if (other !== box)
+                            other.checked = false;
+                    }
+                }
+                else if (isOpus && !box.checked && this.selectedChannels().length === 0) {
+                    // ...and it cannot be emptied: unchecking the only channel re-checks it
+                    // so an Opus device never lands in the "no channel" invalid state.
+                    box.checked = true;
+                    return;
+                }
+                if (this.ready)
+                    this.onDirty();
+                this.validate();
+            });
+            wrap.appendChild(box);
+            wrap.appendChild(elem("span", undefined, `Ch ${ch}`));
+            group.appendChild(wrap);
+            this.channelBoxes.push(box);
         }
-        else {
-            chans = new Set([1, 2]);
-            const current = this.device.channels;
-            if (current === 1 || current === 2)
-                chans.add(current);
-        }
-        return [...chans].sort((a, b) => a - b).map((c) => ({
-            val: String(c), label: c === 1 ? "1 (Mono)" : "2 (Stereo)",
-        }));
+        return group;
+    }
+    // selectedChannels returns the checked channel numbers in ascending order.
+    selectedChannels() {
+        return this.channelBoxes
+            .filter((b) => b.checked)
+            .map((b) => Number(b.value))
+            .sort((a, b) => a - b);
+    }
+    // setChannelSelection checks exactly the given channels and clears the rest.
+    setChannelSelection(chs) {
+        const want = new Set(chs);
+        for (const box of this.channelBoxes)
+            box.checked = want.has(Number(box.value));
     }
     // pick returns want if it is one of options, else the first option's value, so
     // a dropdown whose saved value is no longer offered (an Opus mode or a stereo
@@ -385,15 +426,25 @@ export class DeviceSettingsForm {
         return options.some((o) => o.val === want) ? want : (options[0]?.val ?? want);
     }
     rateOptions(current) {
-        const base = this.hardware.supportedRates?.length ? this.hardware.supportedRates : STANDARD_RATES;
-        const rates = new Set(base);
+        const probed = this.hardware.supportedRates;
+        if (probed?.length) {
+            // The probed set is authoritative here, exactly as channelOptions treats
+            // supportedChannels: constrain the dropdown to rates the device can actually
+            // open, and do NOT re-add a saved value the probe rejects (a stale rate is
+            // steered back to a valid one by the pick() on the initial selection). 48000
+            // needs no forced re-add: the Opus mode-change snaps the rate to 48000, but
+            // Opus is only offered when opusSupported() is true, which requires 48000 to
+            // be in the probed set already, so the snap target is present whenever it can
+            // be reached.
+            const rates = new Set(probed);
+            return [...rates].sort((a, b) => a - b).map((r) => ({ val: String(r), label: `${r.toLocaleString("en-US")} Hz` }));
+        }
+        // Capability unknown (device busy or missing): fall back to the common rates and
+        // retain the saved value so the control is never empty. STANDARD_RATES already
+        // includes 48000, so the Opus snap still lands on a real option here.
+        const rates = new Set(STANDARD_RATES);
         if (current > 0)
             rates.add(current);
-        // Opus locks the rate to 48000, so it must always be selectable even when a
-        // device's probed set omits it. Otherwise the mode-change snap to 48000
-        // silently no-ops and the form lands in an unsaveable state with nothing
-        // highlighted.
-        rates.add(48000);
         return [...rates].sort((a, b) => a - b).map((r) => ({ val: String(r), label: `${r.toLocaleString("en-US")} Hz` }));
     }
     rateHint() {

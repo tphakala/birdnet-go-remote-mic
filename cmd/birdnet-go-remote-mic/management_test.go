@@ -51,7 +51,7 @@ func servingRecord(name, path string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
 			Name: name, Device: "hw:1,0", Path: path,
-			Mode: config.ModeOpus, Rate: 48000, Channels: 1, Format: testFmtS16,
+			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
 		},
 		state:    mgmtserver.StateServing,
 		rate:     48000,
@@ -63,7 +63,7 @@ func skippedRecord(name, path, errMsg string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
 			Name: name, Device: "hw:2,0", Path: path,
-			Mode: config.ModePCM, Rate: 192000, Channels: 1, Format: testFmtS16,
+			Mode: config.ModePCM, Rate: 192000, Channels: []int{1}, Format: testFmtS16,
 		},
 		state: mgmtserver.StateSkipped,
 		err:   errMsg,

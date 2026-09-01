@@ -12,7 +12,7 @@ import (
 func dev(name, hw, path string, rate int) config.Device {
 	return config.Device{
 		Name: name, Device: hw, Path: path,
-		Mode: config.ModePCM, Rate: rate, Channels: 1, Format: "s16",
+		Mode: config.ModePCM, Rate: rate, Channels: []int{1}, Format: "s16",
 	}
 }
 
@@ -102,7 +102,7 @@ func TestReconcileRestartsOnParamChanges(t *testing.T) {
 	cases := map[string]func(config.Device) config.Device{
 		"hw":       func(d config.Device) config.Device { d.Device = "hw:1"; return d },
 		"path":     func(d config.Device) config.Device { d.Path = "/b"; return d },
-		"channels": func(d config.Device) config.Device { d.Channels = 2; return d },
+		"channels": func(d config.Device) config.Device { d.Channels = []int{2}; return d },
 		"format":   func(d config.Device) config.Device { d.Format = "s32"; return d },
 		"mode":     func(d config.Device) config.Device { d.Mode = config.ModeOpus; return d },
 		"bitrate":  func(d config.Device) config.Device { d.Opus.Bitrate = 64000; return d },

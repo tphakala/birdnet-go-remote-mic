@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -75,11 +76,13 @@ func TestRandomPathFormatAndUniqueness(t *testing.T) {
 
 func modePtr(m mgmtapi.StreamMode) *mgmtapi.StreamMode { return &m }
 func intPtr(v int) *int                                { return &v }
+func chanPtr(v ...int) *[]int                          { return &v }
 
 func TestChooseParams(t *testing.T) {
 	t.Parallel()
 	opusCapable := &AvailableDevice{SupportedRates: []int{44100, 48000, 96000}, SupportedChannels: []int{1, 2}}
 	ultrasonic := &AvailableDevice{SupportedRates: []int{256000, 384000}, SupportedChannels: []int{1}}
+	stereoOnly48k := &AvailableDevice{SupportedRates: []int{48000, 96000}, SupportedChannels: []int{2}}
 	unprobed := &AvailableDevice{}
 
 	tests := []struct {
@@ -88,26 +91,36 @@ func TestChooseParams(t *testing.T) {
 		req      *mgmtapi.ProvisionDeviceRequest
 		wantMode config.Mode
 		wantRate int
-		wantCh   int
+		wantCh   []int
 	}{
-		{"auto picks opus when 48k mono supported", opusCapable, &mgmtapi.ProvisionDeviceRequest{}, config.ModeOpus, 48000, 1},
-		{"auto picks pcm at best rate for ultrasonic", ultrasonic, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 384000, 1},
-		{"auto unprobed defaults pcm 48k mono", unprobed, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 48000, 1},
-		{"explicit opus forces 48k mono", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, 1},
-		{"explicit pcm with rate override defaults mono", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(96000)}, config.ModePCM, 96000, 1},
-		{"explicit pcm derives best rate", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)}, config.ModePCM, 384000, 1},
-		{"channel override respected for pcm", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Channels: intPtr(2)}, config.ModePCM, 384000, 2},
+		{"auto picks opus when 48k supported", opusCapable, &mgmtapi.ProvisionDeviceRequest{}, config.ModeOpus, 48000, []int{1}},
+		{"auto picks pcm at best rate for ultrasonic", ultrasonic, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 384000, []int{1}},
+		{"auto unprobed defaults pcm 48k mono", unprobed, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 48000, []int{1}},
+		// A stereo-only interface cannot open mono, so its auto default is the full
+		// native width and it lands on PCM stereo (Opus needs a single channel).
+		{"auto stereo-only defaults pcm full width", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 48000, []int{1, 2}},
+		// But selecting a single channel on that same stereo-only device unlocks
+		// Opus: the selecting source extracts one channel to a mono stream.
+		{"single-channel selection unlocks opus on stereo-only", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1)}, config.ModeOpus, 48000, []int{1}},
+		// An explicit non-first single channel must be honored for Opus, not
+		// silently rewritten to channel 1.
+		{"explicit single non-first channel preserved for opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(2)}, config.ModeOpus, 48000, []int{2}},
+		{"auto single non-first channel picks opus on that channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(2)}, config.ModeOpus, 48000, []int{2}},
+		{"explicit opus forces 48k mono", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
+		{"explicit pcm with rate override defaults mono", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(96000)}, config.ModePCM, 96000, []int{1}},
+		{"explicit pcm derives best rate", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)}, config.ModePCM, 384000, []int{1}},
+		{"channel selection respected for pcm", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Channels: chanPtr(1, 2)}, config.ModePCM, 48000, []int{1, 2}},
 		// Auto mode must NOT silently return Opus and discard an explicit rate the
 		// operator asked for; an explicit non-48k rate means they want PCM.
-		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: intPtr(96000)}, config.ModePCM, 96000, 1},
-		{"auto with explicit stereo falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: intPtr(2)}, config.ModePCM, 48000, 2},
+		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: intPtr(96000)}, config.ModePCM, 96000, []int{1}},
+		{"auto with multi-channel selection falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1, 2)}, config.ModePCM, 48000, []int{1, 2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			mode, rate, ch := chooseParams(tt.dev, tt.req)
-			if mode != tt.wantMode || rate != tt.wantRate || ch != tt.wantCh {
-				t.Errorf("chooseParams = (%s, %d, %d), want (%s, %d, %d)", mode, rate, ch, tt.wantMode, tt.wantRate, tt.wantCh)
+			if mode != tt.wantMode || rate != tt.wantRate || !slices.Equal(ch, tt.wantCh) {
+				t.Errorf("chooseParams = (%s, %d, %v), want (%s, %d, %v)", mode, rate, ch, tt.wantMode, tt.wantRate, tt.wantCh)
 			}
 		})
 	}
@@ -168,8 +181,8 @@ func TestProvisionDeviceHappyPath(t *testing.T) {
 		t.Errorf("created = %+v, want name audiomoth on hw:2,0", created)
 	}
 	// AudioMoth is 384k-only mono: no 48k, so PCM at 384k mono, never Opus.
-	if created.Mode != mgmtapi.Pcm || created.Rate != 384000 || created.Channels != 1 {
-		t.Errorf("created params = (%s, %d, %d), want (pcm, 384000, 1)", created.Mode, created.Rate, created.Channels)
+	if created.Mode != mgmtapi.Pcm || created.Rate != 384000 || !slices.Equal(created.Channels, []int{1}) {
+		t.Errorf("created params = (%s, %d, %v), want (pcm, 384000, [1])", created.Mode, created.Rate, created.Channels)
 	}
 	if !hexPath.MatchString(created.Path) {
 		t.Errorf("created path = %q, want /<16 hex>", created.Path)
