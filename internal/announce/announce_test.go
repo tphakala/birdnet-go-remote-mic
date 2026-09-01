@@ -30,6 +30,13 @@ func TestTXTRecords(t *testing.T) {
 	}
 }
 
+func TestTXTRecordsAdvertiseTokenAuth(t *testing.T) {
+	txt := txtRecords(&Info{Name: "garden-mic", Path: "/garden", Codec: testCodec, Rate: 48000, Channels: 1, Version: "1.2.3", AuthRequired: true})
+	if txt["auth"] != "token" {
+		t.Errorf("txt[auth] = %q, want token when a token is required", txt["auth"])
+	}
+}
+
 func TestRunStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
