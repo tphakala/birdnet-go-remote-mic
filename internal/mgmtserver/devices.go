@@ -261,10 +261,14 @@ func slug(s string) string {
 // rare; the loop retries the astronomically unlikely collision. A crypto/rand
 // read failure is a fatal environment fault, so it panics rather than returning a
 // guessable fallback.
+// randRead is the entropy source randomPath draws from; a test swaps it to force
+// a collision and prove the retry loop.
+var randRead = rand.Read
+
 func randomPath(taken map[string]bool) string {
 	for {
 		var buf [8]byte
-		if _, err := rand.Read(buf[:]); err != nil {
+		if _, err := randRead(buf[:]); err != nil {
 			panic(fmt.Sprintf("mgmtserver: crypto/rand failed: %v", err))
 		}
 		p := "/" + hex.EncodeToString(buf[:])
@@ -295,7 +299,15 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 
 	switch mode {
 	case config.ModeOpus:
-		return config.ModeOpus, 48000, opusSelection(channels)
+		// Opus streams exactly one channel. A DERIVED default (the request named
+		// no channels) is narrowed to its first channel, since the operator asked
+		// for Opus rather than a channel set; an EXPLICIT selection is kept as
+		// asked so config.Validate rejects a multi-channel one with a 422 instead
+		// of this silently discarding part of the request.
+		if req.Channels == nil && len(channels) > 1 {
+			channels = channels[:1]
+		}
+		return config.ModeOpus, 48000, channels
 	case config.ModePCM:
 		if rate == 0 {
 			rate = preferRate(d.SupportedRates)
@@ -330,18 +342,6 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 // rate is more forgiving.
 func canOpus(d *AvailableDevice) bool {
 	return slices.Contains(d.SupportedRates, 48000)
-}
-
-// opusSelection reduces a channel selection to the single channel Opus streams.
-// A single-channel request (mono from any channel, e.g. [3]) is honored verbatim
-// rather than silently rewritten to channel 1; a multi-channel selection collapses
-// to its first channel, since Opus is single-channel and config.Validate would
-// otherwise reject len != 1.
-func opusSelection(channels []int) []int {
-	if len(channels) == 1 {
-		return channels
-	}
-	return []int{channels[0]}
 }
 
 // defaultSelection picks a channel selection for a newly provisioned device:

@@ -104,12 +104,13 @@ type deviceRuntime struct {
 	superseded bool
 }
 
-// openDevice opens and starts capture for one configured device and builds its
-// pipeline stage, SDP, and RTSP track. The capture source is wrapped so every
-// period also feeds the device's level meter, which runs on the capture pump
-// regardless of whether an RTSP client is connected.
-func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
-	src, err := audio.OpenCapture(dev)
+// openDevice opens and starts capture for one configured device at the
+// resolved hardware channel count openCh and builds its pipeline stage, SDP, and
+// RTSP track. The capture source is wrapped so every period also feeds the
+// device's level meter, which runs on the capture pump regardless of whether an
+// RTSP client is connected.
+func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
+	src, err := audio.OpenCaptureAt(dev, openCh)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
@@ -141,7 +142,11 @@ func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 // not release a hw device the instant Close returns, so an immediate reopen of
 // the same card can transiently fail with EBUSY. A handful of short retries rides
 // that out; a device that still will not open is reported skipped, not dropped.
-func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+//
+// openCh is the hardware channel count the caller resolved once for this open
+// (see appliance.openAndStart); the busy gate probes at it and the open uses it,
+// so the two never disagree and the refine ioctl is not repeated per attempt.
+func openDeviceRetry(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
 	const attempts = 5
 	const delay = 50 * time.Millisecond
 	var err error
@@ -154,11 +159,11 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 		// retried and then skipped instead of blocking. The retry also rides out
 		// the transient EBUSY window right after a hot-reload Close, before the
 		// kernel releases the card, so a same-card restart is not falsely skipped.
-		if deviceInUse(dev.Device, audio.ResolveOpenChannels(dev.Device, dev.Channels)) {
+		if deviceInUse(dev.Device, openCh) {
 			err = capture.ErrDeviceInUse
 		} else {
 			var rt *deviceRuntime
-			if rt, err = openDevice(dev, hub); err == nil {
+			if rt, err = openDevice(dev, openCh, hub); err == nil {
 				return rt, nil
 			}
 		}

@@ -78,10 +78,10 @@ type appliance struct {
 	// reconcile did (or did not) rebuild the mDNS set without touching dnssd.
 	announceGen int
 
-	// open builds and starts one device's runtime. It is a field so tests can
-	// inject a fake capture source instead of opening real ALSA hardware; in
-	// production it is openDeviceRetry.
-	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
+	// open builds and starts one device's runtime at the resolved hardware
+	// channel count. It is a field so tests can inject a fake capture source
+	// instead of opening real ALSA hardware; in production it is openDeviceRetry.
+	open func(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error)
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard) *appliance {
@@ -186,20 +186,24 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // carrying the open error so GET /devices can report it, exactly as at startup.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	friendly := a.hwNames[dev.Device]
+	// Resolve the hardware channel count ONCE per open: the selection rounded up
+	// to a count the device supports. The rate probe, the busy gate in the opener
+	// and the capture open all use this same value, so they cannot disagree and
+	// the refine ioctl runs once rather than at each site.
+	openCh := audio.ResolveOpenChannels(dev.Device, dev.Channels)
 	// Probe supported rates and channels for the config UI before opening: once we
 	// hold the hw device exclusively the probe would see our own process and report
-	// busy. Both use the same non-blocking capability query.
-	// Probe rates at the channel count we will actually open (the selection rounded
-	// up to a supported count), since a device's rate set can depend on the channel
-	// count.
-	rates := audio.ProbeRates(dev.Device, audio.ResolveOpenChannels(dev.Device, dev.Channels), audio.CandidateRates())
+	// busy. Both use the same non-blocking capability query. Rates are probed at
+	// the count we will actually open, since a device's rate set can depend on
+	// the channel count.
+	rates := audio.ProbeRates(dev.Device, openCh, audio.CandidateRates())
 	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
 	// Keep the last-known caps if this probe came back empty (a transient
 	// card-swap window), so the UI does not flicker to an empty list.
 	rates, channels = a.rememberCaps(dev.Device, rates, channels)
 
 	d := *dev
-	rt, err := a.open(&d, a.hub)
+	rt, err := a.open(&d, openCh, a.hub)
 	if err != nil {
 		log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, err)
 		return &deviceRuntime{

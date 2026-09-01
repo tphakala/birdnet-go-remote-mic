@@ -179,6 +179,10 @@ func (p *provider) DetectedDevice(id string) (mgmtserver.AvailableDevice, bool) 
 	return mgmtserver.AvailableDevice{}, false
 }
 
+// detectDevices enumerates the host's capture hardware, skipping the given ids.
+// It is a package var so the enumeration wiring is testable without ALSA.
+var detectDevices = audio.DetectDevices
+
 // runEnumeration keeps the available-device list fresh off the capture run-loop
 // goroutine: it re-probes the host's unconfigured capture hardware once at
 // startup, then on a slow tick (so a hot-plugged device appears) and whenever a
@@ -188,7 +192,7 @@ func (p *provider) DetectedDevice(id string) (mgmtserver.AvailableDevice, bool) 
 func (p *provider) runEnumeration(ctx context.Context) {
 	const interval = 15 * time.Second
 	detect := func() {
-		det, err := audio.DetectDevices(p.configuredIDs())
+		det, err := detectDevices(p.configuredIDs())
 		if err != nil {
 			log.Printf("enumerate available capture devices: %v", err)
 			return

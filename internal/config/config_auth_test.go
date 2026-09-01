@@ -8,7 +8,10 @@ import (
 	"testing"
 )
 
-const validAuthToken = "k7Qm3vX9pL2wR8nT"
+const (
+	validAuthToken = "k7Qm3vX9pL2wR8nT"
+	reasonCharset  = "letters"
+)
 
 func authTestConfig(token string) Config {
 	c := Default()
@@ -25,9 +28,9 @@ func TestValidateAuthToken(t *testing.T) {
 		{"empty token is open access", "", ""},
 		{"short token rejected", "short", "12"},
 		{"twelve chars accepted", "abcdefghijkl", ""},
-		{"space rejected", "abcdef ghijkl", "letters"},
-		{"slash rejected", "abcdef/ghijkl", "letters"},
-		{"quote rejected", `abcdef"ghijkl`, "letters"},
+		{"space rejected", "abcdef ghijkl", reasonCharset},
+		{"slash rejected", "abcdef/ghijkl", reasonCharset},
+		{"quote rejected", `abcdef"ghijkl`, reasonCharset},
 		{"too long rejected", strings.Repeat("x", 129), "128"},
 	}
 	for _, tt := range tests {

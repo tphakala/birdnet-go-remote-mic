@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"io"
+	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -72,9 +74,10 @@ func (l *fakeOpenLog) snapshot() []string {
 // fakeOpener returns an appliance.open replacement that builds a real
 // deviceRuntime (real pipeline stage, ChanSource and Track) around a blocking
 // fake source, logging each open and each source close through log.
-func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
-	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+func fakeOpener(log *fakeOpenLog) func(*config.Device, int, *levels.Hub) (*deviceRuntime, error) {
+	return func(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
 		log.add("open:" + dev.Name)
+		log.add("openCh:" + dev.Name + "=" + strconv.Itoa(openCh))
 		streamCh := len(dev.Channels)
 		src := newBlockingSource(dev.Rate, streamCh)
 		frames := rtspserver.NewChanSource(64)
@@ -308,5 +311,23 @@ func TestApplianceAuthToggleRebuildsAnnouncement(t *testing.T) {
 	app.reconcile(&cfg)
 	if app.announceGen != before {
 		t.Error("a no-op reconcile must not rebuild the advertisement")
+	}
+}
+
+// TestOpenAndStartPassesResolvedOpenCount verifies the appliance resolves the
+// ALSA open channel count once per device open and hands that count to the
+// opener, so the busy gate and the capture open agree with the rate probe. With
+// no hardware the resolver falls back to the highest selected channel, so a
+// [1,3] selection must reach the opener as 3.
+func TestOpenAndStartPassesResolvedOpenCount(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	dev := testDevice("pair", "hw:9,9", "/pair", 48000)
+	dev.Channels = []int{1, 3}
+	cfg := config.Config{Listen: testListenAny, Devices: []config.Device{dev}}
+	app.reconcile(&cfg)
+	defer app.closeAll()
+	if events := log.snapshot(); !slices.Contains(events, "openCh:pair=3") {
+		t.Errorf("open events = %v, want openCh:pair=3", events)
 	}
 }

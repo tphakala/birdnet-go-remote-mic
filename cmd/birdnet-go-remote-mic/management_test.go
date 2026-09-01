@@ -18,7 +18,11 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 )
 
-const devHW2 = "hw:2,0"
+const (
+	devHW1        = "hw:1,0"
+	devHW2        = "hw:2,0"
+	nameAudioMoth = "AudioMoth"
+)
 
 func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 	p := newProvider()
@@ -27,22 +31,22 @@ func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 	// The host exposes hw:1,0 (configured, listed with no probed caps, as
 	// DetectDevices emits it) and hw:2,0 (free, probed).
 	p.setDetected([]audio.DetectedDevice{
-		{ID: "hw:1,0", FriendlyName: "Scarlett"},
-		{ID: devHW2, FriendlyName: "AudioMoth", SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+		{ID: devHW1, FriendlyName: "Scarlett"},
+		{ID: devHW2, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
 	})
 
 	avail := p.AvailableDevices()
 	if len(avail) != 1 || avail[0].ID != devHW2 {
 		t.Fatalf("AvailableDevices = %+v, want only the unconfigured hw:2,0", avail)
 	}
-	if avail[0].FriendlyName != "AudioMoth" || len(avail[0].SupportedRates) != 1 {
+	if avail[0].FriendlyName != nameAudioMoth || len(avail[0].SupportedRates) != 1 {
 		t.Errorf("capabilities not passed through: %+v", avail[0])
 	}
 
 	// DetectedDevice is unfiltered: it returns a configured device too (even with
 	// no caps), so provisioning distinguishes already-configured (409) from
 	// absent (404).
-	if _, ok := p.DetectedDevice("hw:1,0"); !ok {
+	if _, ok := p.DetectedDevice(devHW1); !ok {
 		t.Error("DetectedDevice(configured) = false, want true (unfiltered)")
 	}
 	if _, ok := p.DetectedDevice("hw:9,0"); ok {
@@ -53,7 +57,7 @@ func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 func servingRecord(name, path string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
-			Name: name, Device: "hw:1,0", Path: path,
+			Name: name, Device: devHW1, Path: path,
 			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
 		},
 		state:    mgmtserver.StateServing,
@@ -253,5 +257,58 @@ func TestStartManagementEnforcesBearer(t *testing.T) {
 	}
 	if got := get("/api/v1/status", testAuthToken); got != http.StatusOK {
 		t.Errorf("status with the token = %d, want 200", got)
+	}
+}
+
+// TestRunEnumerationWiresDetectionToProvider drives the enumeration goroutine
+// end to end: DetectDevices is called with the configured-id skip set, its
+// result is published, and the two provider views (unfiltered DetectedDevice,
+// filtered AvailableDevices) reflect it.
+func TestRunEnumerationWiresDetectionToProvider(t *testing.T) {
+	var gotSkip map[string]bool
+	called := make(chan struct{}, 1)
+	prev := detectDevices
+	detectDevices = func(skip map[string]bool) ([]audio.DetectedDevice, error) {
+		gotSkip = skip
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return []audio.DetectedDevice{
+			{ID: devHW1, FriendlyName: "Scarlett"},
+			{ID: devHW2, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+		}, nil
+	}
+	defer func() { detectDevices = prev }()
+
+	p := newProvider()
+	p.enumTrigger = make(chan struct{}, 1)
+	p.setConfiguredIDs(map[string]bool{devHW1: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.runEnumeration(ctx)
+		close(done)
+	}()
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("DetectDevices was not called")
+	}
+	cancel()
+	<-done
+
+	if !gotSkip[devHW1] {
+		t.Errorf("DetectDevices skip set = %v, want the configured hw:1,0", gotSkip)
+	}
+	if _, ok := p.DetectedDevice(devHW1); !ok {
+		t.Error("DetectedDevice(configured) = false, want true (unfiltered view)")
+	}
+	if _, ok := p.DetectedDevice(devHW2); !ok {
+		t.Error("DetectedDevice(free) = false, want true")
+	}
+	avail := p.AvailableDevices()
+	if len(avail) != 1 || avail[0].ID != devHW2 {
+		t.Errorf("AvailableDevices = %+v, want only the unconfigured hw:2,0", avail)
 	}
 }

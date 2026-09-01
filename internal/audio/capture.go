@@ -143,23 +143,33 @@ func maxSelected(selection []int) int {
 	return m
 }
 
-// OpenCapture opens and starts a capture stream for dev. It negotiates the
-// hardware capture format (S16LE preferred, S32LE fallback) and, for an S32
-// device, wraps the stream so every period is downconverted to S16LE. It then
-// wraps the stream to deliver only dev.Channels (the 1-based selection), so the
-// device is opened at whatever contiguous channel count covers the selection but
-// the pipeline sees exactly the selected channels. It enforces the honest-rate
-// policy: go-audio-capture already fails a rate it cannot deliver exactly, and
-// OpenCapture double-checks the negotiated rate matches the request. The caller's
-// read goroutine should runtime.LockOSThread so the capture loop is not
-// descheduled mid-period.
+// OpenCapture opens and starts a capture stream for dev at the channel count
+// ResolveOpenChannels picks for its selection. See OpenCaptureAt.
 func OpenCapture(dev *config.Device) (Source, error) {
+	return OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.Channels))
+}
+
+// OpenCaptureAt opens and starts a capture stream for dev at openCh hardware
+// channels, which the caller resolved (ResolveOpenChannels) so the rate probe,
+// the busy gate and the open all agree on one count without re-probing. It
+// negotiates the hardware capture format (S16LE preferred, S32LE fallback) and,
+// for an S32 device, wraps the stream so every period is downconverted to
+// S16LE. It then wraps the stream to deliver only dev.Channels (the 1-based
+// selection), so the device is opened at whatever contiguous channel count
+// covers the selection but the pipeline sees exactly the selected channels. It
+// enforces the honest-rate policy: go-audio-capture already fails a rate it
+// cannot deliver exactly, and OpenCaptureAt double-checks the negotiated rate
+// matches the request. The caller's read goroutine should runtime.LockOSThread
+// so the capture loop is not descheduled mid-period.
+func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 	// dev.Format is the stream OUTPUT format; guard it (S16-only) before touching
 	// hardware. The capture format is negotiated separately below.
 	if _, err := captureFormat(dev.Format); err != nil {
 		return nil, err
 	}
-	openCh := ResolveOpenChannels(dev.Device, dev.Channels)
+	if openCh < maxSelected(dev.Channels) {
+		return nil, fmt.Errorf("audio: open channel count %d does not cover the selection (needs channel %d)", openCh, maxSelected(dev.Channels))
+	}
 	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh)
 	if err != nil {
 		return nil, err
