@@ -14,11 +14,15 @@ info:
 
     Errors use RFC 9457 problem details (application/problem+json).
 
-    Security status: the bearerAuth scheme below is declared but NOT yet
-    enforced by the appliance. Until token authentication lands, every
-    operation (not just /healthz) is served without an auth check, so a
-    consumer must not assume unauthenticated requests are rejected. The
-    security requirements describe the intended end state.
+    Authentication: when the appliance has a shared access token configured
+    (auth.token), every operation except /healthz requires it as an RFC
+    6750 bearer credential (Authorization: Bearer <token>). A missing or
+    wrong token yields 401 with a WWW-Authenticate: Bearer challenge and an
+    RFC 9457 problem body (covered by each operation's default response).
+    Without a configured token the appliance serves every operation
+    unauthenticated (open access, the default), and the mDNS TXT record
+    says auth=none rather than auth=token. The same token is the Digest
+    password for the RTSP stream.
 
     Evolution policy: additive changes only within v1. Fields may be added
     to responses at any time; consumers must ignore unknown fields.
@@ -376,9 +380,11 @@ components:
       type: http
       scheme: bearer
       description: >
-        Shared appliance token. Defined ahead of enforcement: the server
-        accepts unauthenticated requests until a token is configured, and
-        the mDNS TXT record advertises auth=none or auth=token accordingly.
+        The appliance's shared access token (auth.token in the
+        configuration). Enforced on every operation except /healthz once a
+        token is configured; the mDNS TXT record advertises auth=token or
+        auth=none accordingly. The same token is the Digest password for
+        the RTSP stream.
 
   responses:
     Problem:
@@ -410,6 +416,7 @@ components:
         - uptimeSeconds
         - rtspListen
         - discoveryEnabled
+        - authRequired
         - devicesServing
         - devicesTotal
       properties:
@@ -428,6 +435,11 @@ components:
         discoveryEnabled:
           type: boolean
           description: Whether mDNS/DNS-SD advertisement is on.
+        authRequired:
+          type: boolean
+          description: >
+            Whether a shared access token is configured, so the API, web
+            UI and RTSP stream require credentials.
         devicesServing:
           type: integer
           minimum: 0
@@ -715,7 +727,7 @@ components:
     Config:
       type: object
       description: The appliance configuration (defaults applied).
-      required: [listen, discovery, management, devices]
+      required: [listen, discovery, management, auth, devices]
       properties:
         listen:
           type: string
@@ -724,6 +736,8 @@ components:
           $ref: "#/components/schemas/DiscoverySettings"
         management:
           $ref: "#/components/schemas/ManagementSettings"
+        auth:
+          $ref: "#/components/schemas/AuthSettings"
         devices:
           type: array
           minItems: 1
@@ -779,6 +793,23 @@ components:
           type: boolean
           description: mDNS/DNS-SD advertisement; defaults to true when absent.
 
+    AuthSettings:
+      type: object
+      description: >
+        Shared access token settings. The one token gates the management
+        API and web UI (bearer) and the RTSP stream (Digest password).
+      properties:
+        token:
+          type: string
+          description: >
+            The shared access token: 12 to 128 characters from the URL
+            unreserved set [A-Za-z0-9._~-], or empty for open access. In a
+            patch, an absent field leaves the token unchanged and an empty
+            string disables authentication. Reads return the configured
+            value (empty when open) to the authenticated caller.
+          pattern: "^(|[A-Za-z0-9._~-]{12,128})$"
+          examples: ["k7Qm3vX9pL2wR8nT"]
+
     ManagementSettings:
       type: object
       description: HTTPS management API settings.
@@ -804,6 +835,8 @@ components:
       properties:
         discovery:
           $ref: "#/components/schemas/DiscoverySettings"
+        auth:
+          $ref: "#/components/schemas/AuthSettings"
         devices:
           type: array
           description: >

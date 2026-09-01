@@ -123,6 +123,9 @@ func (e StreamMode) Valid() bool {
 
 // ApplianceStatus Appliance-level runtime state.
 type ApplianceStatus struct {
+	// AuthRequired Whether a shared access token is configured, so the API, web UI and RTSP stream require credentials.
+	AuthRequired bool `json:"authRequired"`
+
 	// DevicesServing Devices currently capturing and serving their track.
 	DevicesServing int `json:"devicesServing"`
 
@@ -142,6 +145,15 @@ type ApplianceStatus struct {
 
 	// Version Appliance build version (set at build time).
 	Version string `json:"version"`
+}
+
+// AuthSettings Shared access token settings. The one token gates the management API and web UI (bearer) and the RTSP stream (Digest password).
+type AuthSettings struct {
+	// Token The shared access token: 12 to 128 characters from the URL unreserved set [A-Za-z0-9._~-], or empty for open access. In a patch, an absent field leaves the token unchanged and an empty string disables authentication. Reads return the configured value (empty when open) to the authenticated caller.
+	//
+	//
+	// Examples: k7Qm3vX9pL2wR8nT
+	Token *string `json:"token,omitempty"`
 }
 
 // AvailableDevice A capture device the host exposes that the configuration does not yet list. It carries only the device id and the probed capabilities; a name, path and stream parameters are assigned when it is provisioned (see POST /devices).
@@ -200,6 +212,8 @@ type ChannelLevels struct {
 
 // Config The appliance configuration (defaults applied).
 type Config struct {
+	// Auth Shared access token settings. The one token gates the management API and web UI (bearer) and the RTSP stream (Digest password).
+	Auth    AuthSettings   `json:"auth"`
 	Devices []DeviceConfig `json:"devices"`
 
 	// Discovery mDNS/DNS-SD advertisement settings.
@@ -214,6 +228,9 @@ type Config struct {
 
 // ConfigPatch A partial configuration update. Only the fields present are changed; the result must validate as a whole configuration.
 type ConfigPatch struct {
+	// Auth Shared access token settings. The one token gates the management API and web UI (bearer) and the RTSP stream (Digest password).
+	Auth *AuthSettings `json:"auth,omitempty"`
+
 	// Devices Replaces the whole device list when present (per-device merge is not supported).
 	Devices *[]DeviceConfig `json:"devices,omitempty"`
 
