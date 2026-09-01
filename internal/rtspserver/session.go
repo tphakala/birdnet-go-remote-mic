@@ -52,6 +52,15 @@ type connSession struct {
 	startTS  uint32
 	hasSlot  bool
 	writing  bool // the media writer goroutine is running
+
+	// nonce is the Digest nonce issued to this connection on its first
+	// challenge; answers are accepted only under it, so a captured Authorization
+	// header is useless on any other connection. authed records that a valid
+	// answer arrived: authentication is per connection, later requests are not
+	// re-checked (every client resends credentials anyway, and tolerating one
+	// that does not costs nothing on a single TCP connection).
+	nonce  string
+	authed bool
 }
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
@@ -127,6 +136,13 @@ func (cs *connSession) step(buf []byte) (consumed int, fatal bool) {
 }
 
 func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
+	// OPTIONS stays open: clients probe capabilities before they authenticate
+	// (live555 and mediamtx behave the same way). Everything else, including an
+	// unknown method, must authenticate first.
+	if req.Method != "OPTIONS" && !cs.authorized(req) {
+		cs.respondUnauthorized(req)
+		return false
+	}
 	switch req.Method {
 	case "OPTIONS":
 		cs.respondOptions(req)
@@ -145,6 +161,35 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 		cs.respondStatus(req, 501, "Not Implemented")
 	}
 	return false
+}
+
+// authorized reports whether req may proceed: always when no token is
+// configured, once the connection has authenticated, or when req carries a
+// valid Digest answer to this connection's nonce, which authenticates the
+// connection for its lifetime. A token enabled by a hot reload starts
+// challenging an open-access connection on its next request.
+func (cs *connSession) authorized(req *rtsp.Request) bool {
+	g := cs.srv.cfg.Auth
+	if !g.Enabled() || cs.authed {
+		return true
+	}
+	if cs.nonce != "" && g.CheckDigest(req.Method, req.Header.Get("Authorization"), cs.nonce) {
+		cs.authed = true
+		return true
+	}
+	return false
+}
+
+// respondUnauthorized answers 401 with this connection's Digest challenge,
+// minting the nonce on the first challenge. The connection stays open so the
+// client can retry with credentials.
+func (cs *connSession) respondUnauthorized(req *rtsp.Request) {
+	if cs.nonce == "" {
+		cs.nonce = cs.srv.cfg.Auth.NewNonce()
+	}
+	h := rtsp.Header{}
+	h.Set("WWW-Authenticate", cs.srv.cfg.Auth.DigestChallenge(cs.nonce))
+	cs.write(&rtsp.Response{StatusCode: 401, Reason: "Unauthorized", CSeq: req.CSeq, Header: h})
 }
 
 func (cs *connSession) respondOptions(req *rtsp.Request) {
