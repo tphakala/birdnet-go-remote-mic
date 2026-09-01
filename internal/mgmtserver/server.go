@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 )
@@ -41,8 +42,11 @@ type ApplianceStatus struct {
 	Uptime           time.Duration
 	RTSPListen       string
 	DiscoveryEnabled bool
-	DevicesServing   int
-	DevicesTotal     int
+	// AuthRequired is whether a shared access token is configured, so the API,
+	// web UI and RTSP stream demand credentials.
+	AuthRequired   bool
+	DevicesServing int
+	DevicesTotal   int
 }
 
 // DeviceStatus is one device's configuration plus its runtime state. Config
@@ -108,6 +112,9 @@ type Server struct {
 	restartFn   func()
 	reloader    Reloader
 	staticFS    fs.FS
+	// guard gates the API routes with the shared bearer token; nil or disabled
+	// means open access.
+	guard *auth.Guard
 
 	// patchMu serializes a config PATCH's persist-then-reload sequence end to
 	// end, so two concurrent patches cannot persist in one order and hot-reload
@@ -157,21 +164,25 @@ func (s *Server) Handler() http.Handler {
 			writeProblem(w, http.StatusBadRequest, "invalid parameter", err.Error())
 		},
 	})
+	// The bearer gate wraps the API subtree only (the generated routes and the
+	// hand-written event stream); static assets below stay open. With no guard
+	// mounted requireBearer is a no-op passthrough.
+	api := requireBearer(s.guard, generated)
 	if s.eventStream == nil && s.staticFS == nil {
-		return generated
+		return api
 	}
 	mux := http.NewServeMux()
 	if s.eventStream != nil {
-		mux.Handle("GET "+BasePath+"/events", s.eventStream)
+		mux.Handle("GET "+BasePath+"/events", requireBearer(s.guard, s.eventStream))
 	}
 	if s.staticFS != nil {
-		mux.Handle(BasePath+"/", generated)
+		mux.Handle(BasePath+"/", api)
 		// Without this, the bare base path falls through to the "/" SPA handler
 		// and returns index.html 200; redirect it into the API subtree instead.
 		mux.Handle(BasePath, http.RedirectHandler(BasePath+"/", http.StatusPermanentRedirect))
 		mux.Handle("/", newStaticHandler(s.staticFS))
 	} else {
-		mux.Handle("/", generated)
+		mux.Handle("/", api)
 	}
 	return mux
 }
@@ -199,6 +210,7 @@ func (s *Server) GetStatus(_ context.Context, _ mgmtapi.GetStatusRequestObject) 
 		UptimeSeconds:    int64(st.Uptime.Seconds()),
 		RtspListen:       st.RTSPListen,
 		DiscoveryEnabled: st.DiscoveryEnabled,
+		AuthRequired:     st.AuthRequired,
 		DevicesServing:   st.DevicesServing,
 		DevicesTotal:     st.DevicesTotal,
 	}, nil
