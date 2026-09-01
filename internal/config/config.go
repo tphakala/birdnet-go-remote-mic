@@ -19,10 +19,10 @@ import (
 // maxDevices caps the device list, matching the API contract's maxItems.
 const maxDevices = 32
 
-// maxChannels caps a device's channel selection. It matches the OpenAPI
+// MaxChannels caps a device's channel selection. It matches the OpenAPI
 // ProvisionDeviceRequest.channels maxItems and covers common multi-channel USB
 // interfaces (2/4/6/8 channels).
-const maxChannels = 8
+const MaxChannels = 8
 
 // NormalizeChannels returns a sorted, de-duplicated copy of a channel selection.
 // ApplyDefaults and the device-provisioning path share it so the canonical
@@ -234,8 +234,8 @@ func (c *Config) Validate() error {
 			return &ValidationError{field("channels"), "must select at least one channel"}
 		}
 		for j, ch := range d.Channels {
-			if ch < 1 || ch > maxChannels {
-				return &ValidationError{field("channels"), fmt.Sprintf("channel numbers must be between 1 and %d", maxChannels)}
+			if ch < 1 || ch > MaxChannels {
+				return &ValidationError{field("channels"), fmt.Sprintf("channel numbers must be between 1 and %d", MaxChannels)}
 			}
 			if j > 0 && ch <= d.Channels[j-1] {
 				return &ValidationError{field("channels"), "must be ascending with no duplicates"}

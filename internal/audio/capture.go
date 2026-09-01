@@ -105,8 +105,8 @@ func preferRateError(existing, next error) error {
 }
 
 // maxProbeChannels caps how many capture channels ResolveOpenChannels will probe
-// for. It matches config's maxChannels and the OpenAPI channels maxItems.
-const maxProbeChannels = 8
+// for. It is sourced from the config channel cap so the two cannot drift.
+const maxProbeChannels = config.MaxChannels
 
 // ResolveOpenChannels returns the channel COUNT to open the device at so every
 // channel in the 1-based selection is captured. ALSA opens a contiguous channel

@@ -3,6 +3,8 @@ package audio
 import (
 	"slices"
 	"strings"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
 
 // candidateRates is the set of sample rates probed at startup and offered in the
@@ -22,7 +24,13 @@ func CandidateRates() []int { return slices.Clone(candidateRates) }
 // per-channel selection control (Ch1..ChN) from it, so this spans common
 // multi-channel USB interface widths up to the maxChannels cap (8). ProbeChannels
 // keeps the subset a given device actually accepts (a single refine per count).
-var candidateChannels = []int{1, 2, 3, 4, 5, 6, 7, 8}
+var candidateChannels = func() []int {
+	s := make([]int, config.MaxChannels)
+	for i := range s {
+		s[i] = i + 1
+	}
+	return s
+}()
 
 // CandidateChannels returns a copy of the startup probe candidate channel counts.
 // It returns a fresh slice so a caller cannot mutate the shared package list.

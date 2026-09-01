@@ -387,7 +387,9 @@ export class DashboardView {
             const modeTag = elem("span", `tech-tag ${isUltra ? "ultrasonic" : "highlight"}`, modeLabel(d.mode));
             tags.appendChild(modeTag);
             tags.appendChild(elem("span", "tech-tag", `${rate.toLocaleString("en-US")} Hz`));
-            tags.appendChild(elem("span", "tech-tag", channelLabel(d.channels)));
+            const chLabel = channelLabel(d.channels);
+            if (chLabel)
+                tags.appendChild(elem("span", "tech-tag", chLabel));
         }
         const statusEl = this.buildStatusBadge(d.state);
         tags.appendChild(statusEl);
