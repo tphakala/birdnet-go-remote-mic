@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -111,7 +112,7 @@ func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFun
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	log := &fakeOpenLog{}
-	app := newAppliance(ctx, levels.NewHub(), rtspserver.New(rtspserver.Config{Listen: testListenAny}), &provider{version: "test", start: time.Now()})
+	app := newAppliance(ctx, levels.NewHub(), rtspserver.New(rtspserver.Config{Listen: testListenAny}), &provider{version: "test", start: time.Now()}, auth.NewGuard(""))
 	app.open = fakeOpener(log)
 	return app, log, cancel
 }
@@ -261,5 +262,51 @@ func TestRememberCapsRetainsLastKnown(t *testing.T) {
 	// An unknown device with an empty probe stays empty (nothing to retain).
 	if r, c := a.rememberCaps("hw:9,0", nil, nil); r != nil || c != nil {
 		t.Errorf("unknown empty probe = %v %v, want nil nil", r, c)
+	}
+}
+
+const testAuthToken = "k7Qm3vX9pL2wR8nT"
+
+func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	cfg := config.Config{Listen: testListenAny}
+	cfg.Auth.Token = testAuthToken
+	app.reconcile(&cfg)
+	if !app.guard.Enabled() {
+		t.Error("reconcile with a token must enable the guard")
+	}
+	if !app.prov.Status().AuthRequired {
+		t.Error("reconcile with a token must report authRequired")
+	}
+	cfg.Auth.Token = ""
+	app.reconcile(&cfg)
+	if app.guard.Enabled() {
+		t.Error("reconcile with an empty token must disable the guard")
+	}
+	if app.prov.Status().AuthRequired {
+		t.Error("reconcile with an empty token must report open access")
+	}
+}
+
+func TestApplianceAuthToggleRebuildsAnnouncement(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	cfg := config.Config{Listen: testListenAny, Devices: []config.Device{testDevice("garden", "hw:1,0", "/garden", 48000)}}
+	app.reconcile(&cfg)
+	defer app.closeAll()
+	before := app.announceGen
+	// Same devices, same discovery flag: only the token changes. The TXT auth
+	// hint must follow it, so the advertisement is rebuilt.
+	cfg.Auth.Token = testAuthToken
+	app.reconcile(&cfg)
+	if app.announceGen == before {
+		t.Error("enabling auth must rebuild the mDNS advertisement (TXT auth hint)")
+	}
+	before = app.announceGen
+	// An unrelated reconcile with nothing changed must not rebuild.
+	app.reconcile(&cfg)
+	if app.announceGen != before {
+		t.Error("a no-op reconcile must not rebuild the advertisement")
 	}
 }

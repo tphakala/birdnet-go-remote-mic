@@ -25,6 +25,7 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -198,11 +199,22 @@ func run(cfgPath string) error {
 		enumTrigger: make(chan struct{}, 1),
 	}
 	prov.setDiscovery(cfg.DiscoveryEnabled())
+	prov.setAuthRequired(cfg.AuthRequired())
+
+	// One shared access token gates the RTSP stream (Digest) and the management
+	// API and web UI (Bearer). The guard is consulted per request and swapped by
+	// reconcile, so a token set or rotated through PATCH /config applies live.
+	guard := auth.NewGuard(cfg.Auth.Token)
+	if cfg.AuthRequired() {
+		log.Print("access token required for the RTSP stream and the management API")
+	} else {
+		log.Print("WARNING: the RTSP stream and the management API are OPEN to the network; set auth.token (or use the web UI's Access Control card) to require a token")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen}), prov)
+	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard)
 
 	// reconcileCh carries a runtime config reload from an API handler goroutine to
 	// the run loop, which owns the pipeline. The reloader closure handed to the
@@ -242,7 +254,7 @@ func run(cfgPath string) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop, reloader)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop, reloader, guard)
 	}
 	defer func() {
 		stop()
@@ -318,28 +330,11 @@ func run(cfgPath string) error {
 // multicast-blocked network, where the manual host:port entry is the fallback.
 // A device that dies later keeps its advertisement until the process exits
 // (dnssd cannot retire a single service); clients get 404.
-func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime) {
-	_, portStr, err := net.SplitHostPort(listen)
+func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime, authRequired bool) {
+	infos, port, err := announceInfos(listen, devices, authRequired)
 	if err != nil {
-		log.Printf("mDNS disabled: cannot parse listen address %q: %v", listen, err)
+		log.Printf("mDNS disabled: %v", err)
 		return
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		log.Printf("mDNS disabled: bad port in %q: %v", listen, err)
-		return
-	}
-	infos := make([]announce.Info, 0, len(devices))
-	for _, rt := range devices {
-		infos = append(infos, announce.Info{
-			Name:     rt.dev.Name,
-			Path:     rt.dev.Path,
-			Port:     port,
-			Codec:    pipeline.CodecName(rt.dev.Mode),
-			Rate:     rt.rate,
-			Channels: rt.channels,
-			Version:  version,
-		})
 	}
 	go func() {
 		if aerr := announce.Run(ctx, infos); aerr != nil {
@@ -347,6 +342,34 @@ func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime)
 		}
 	}()
 	log.Printf("advertising %d service(s) over mDNS (_rtsp._tcp) on port %d", len(infos), port)
+}
+
+// announceInfos builds the per-device advertisement records for the serving
+// set on the RTSP listen port, carrying the auth hint (auth=token or auth=none)
+// so BirdNET-Go's adopt flow knows whether to ask for the token.
+func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
+	_, portStr, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot parse listen address %q: %w", listen, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, 0, fmt.Errorf("bad port in %q: %w", listen, err)
+	}
+	infos := make([]announce.Info, 0, len(devices))
+	for _, rt := range devices {
+		infos = append(infos, announce.Info{
+			Name:         rt.dev.Name,
+			Path:         rt.dev.Path,
+			Port:         port,
+			Codec:        pipeline.CodecName(rt.dev.Mode),
+			Rate:         rt.rate,
+			Channels:     rt.channels,
+			Version:      version,
+			AuthRequired: authRequired,
+		})
+	}
+	return infos, port, nil
 }
 
 func buildStage(d *config.Device, channels int) (stage pipeline.Stage, payloadType int) {

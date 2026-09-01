@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -51,6 +52,9 @@ type appliance struct {
 	hub  *levels.Hub
 	srv  *rtspserver.Server
 	prov *provider
+	// guard is the shared-token guard the RTSP and management servers consult;
+	// reconcile swaps its token so a config change applies without a restart.
+	guard *auth.Guard
 
 	// cfg is the configuration currently applied to the pipeline. devices holds
 	// one runtime per configured device keyed by name, in any state (serving,
@@ -70,6 +74,9 @@ type appliance struct {
 	alive          int   // number of live capture pumps
 	lastPumpErr    error // last spontaneous pump failure, for the exit status
 	announceCancel context.CancelFunc
+	// announceGen counts advertisement rebuilds, so a test can assert that a
+	// reconcile did (or did not) rebuild the mDNS set without touching dnssd.
+	announceGen int
 
 	// open builds and starts one device's runtime. It is a field so tests can
 	// inject a fake capture source instead of opening real ALSA hardware; in
@@ -77,12 +84,13 @@ type appliance struct {
 	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 }
 
-func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider) *appliance {
+func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard) *appliance {
 	return &appliance{
 		ctx:       ctx,
 		hub:       hub,
 		srv:       srv,
 		prov:      prov,
+		guard:     guard,
 		hwNames:   map[string]string{},
 		devices:   map[string]*deviceRuntime{},
 		capsCache: map[string]deviceCaps{},
@@ -240,6 +248,7 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	}
 
 	prevDiscovery := a.prov.discoveryEnabled()
+	prevAuth := a.prov.authRequired()
 
 	// Publish the desired configured-device ids BEFORE opening anything, so the
 	// background enumeration excludes a device from probing before its capture
@@ -277,6 +286,11 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 
 	a.cfg = *newCfg
 	a.prov.setDiscovery(newCfg.DiscoveryEnabled())
+	// Swap the access token in place: the management gate and the RTSP server
+	// read the guard per request, so the new token is enforced from the next
+	// request on (already-authenticated RTSP connections keep their session).
+	a.guard.Set(newCfg.Auth.Token)
+	a.prov.setAuthRequired(newCfg.AuthRequired())
 	a.publish(newCfg)
 
 	// Ask the background enumeration goroutine to refresh the available-device
@@ -287,12 +301,13 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	// drives pump events, reloads and shutdown.
 	a.prov.signalEnumerate()
 
-	// Rebuild the mDNS advertisement whenever any device changed or discovery
-	// toggled. A param-change restart keeps the serving count identical but
+	// Rebuild the mDNS advertisement whenever any device changed, discovery
+	// toggled, or the auth hint changed (the TXT record advertises auth=token or
+	// auth=none). A param-change restart keeps the serving count identical but
 	// alters the advertised path/rate/codec, so gate on the plan being non-empty,
 	// not on the count. dnssd cannot retire a single service, so restartAnnounce
 	// rebuilds the whole set.
-	if !plan.Empty() || newCfg.DiscoveryEnabled() != prevDiscovery {
+	if !plan.Empty() || newCfg.DiscoveryEnabled() != prevDiscovery || newCfg.AuthRequired() != prevAuth {
 		a.restartAnnounce()
 	}
 }
@@ -385,7 +400,8 @@ func (a *appliance) restartAnnounce() {
 	}
 	actx, cancel := context.WithCancel(a.ctx)
 	a.announceCancel = cancel
-	startAnnounce(actx, a.cfg.Listen, serving)
+	a.announceGen++
+	startAnnounce(actx, a.cfg.Listen, serving, a.prov.authRequired())
 }
 
 // closeAll releases every serving device's capture source at shutdown so the

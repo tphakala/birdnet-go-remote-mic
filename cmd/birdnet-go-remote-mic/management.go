@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtcert"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -36,9 +37,12 @@ type provider struct {
 	// runtime config reload (on the run-loop goroutine) flips it while HTTP
 	// handlers read it for GET /status.
 	discovery atomic.Bool
-	dataPath  string // filesystem path whose storage usage /system reports
-	sampler   *sysinfo.Sampler
-	devices   atomic.Pointer[[]*deviceRuntime]
+	// auth is whether a shared access token is configured. Atomic for the same
+	// reason as discovery: the reconcile loop writes it, GET /status reads it.
+	auth     atomic.Bool
+	dataPath string // filesystem path whose storage usage /system reports
+	sampler  *sysinfo.Sampler
+	devices  atomic.Pointer[[]*deviceRuntime]
 	// detected is the last enumerated set of host capture devices with their
 	// probed capabilities, refreshed by the background enumeration goroutine.
 	// AvailableDevices filters out the ones the config already lists. Atomic
@@ -63,6 +67,12 @@ func (p *provider) discoveryEnabled() bool { return p.discovery.Load() }
 
 // setDiscovery updates the mDNS-advertisement flag from a config reload.
 func (p *provider) setDiscovery(v bool) { p.discovery.Store(v) }
+
+// authRequired reports whether a shared access token is configured.
+func (p *provider) authRequired() bool { return p.auth.Load() }
+
+// setAuthRequired records the auth state from a config reload.
+func (p *provider) setAuthRequired(v bool) { p.auth.Store(v) }
 
 var (
 	_ mgmtserver.Provider       = (*provider)(nil)
@@ -100,6 +110,7 @@ func (p *provider) Status() mgmtserver.ApplianceStatus {
 		Uptime:           time.Since(p.start),
 		RTSPListen:       p.rtspListen,
 		DiscoveryEnabled: p.discovery.Load(),
+		AuthRequired:     p.auth.Load(),
 		DevicesServing:   serving,
 		DevicesTotal:     len(devices),
 	}
@@ -284,6 +295,8 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 // until the API has shut down cleanly (a prerequisite for a future config PATCH
 // that must flush its response before the appliance restarts).
 type mgmt struct {
+	// addr is the bound listener address (host:port), for logs and tests.
+	addr string
 	done chan struct{}
 }
 
@@ -310,7 +323,7 @@ func closedMgmt() *mgmt {
 // not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
 // the caller does not mistake a configured-but-dead API for an available
 // diagnostic surface when deciding whether to stay alive with no serving device.
-func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler, restartFn func(), reloader mgmtserver.Reloader) (handle *mgmt, ok bool) {
+func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -337,6 +350,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, cfg)),
 		mgmtserver.WithSystemInfo(prov),
 		mgmtserver.WithRestart(restartFn),
+		mgmtserver.WithAuth(guard),
 	}
 	if reloader != nil {
 		opts = append(opts, mgmtserver.WithReloader(reloader))
@@ -383,8 +397,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	}()
 
 	log.Printf("management API on https://%s%s (self-signed cert at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
-	log.Print("WARNING: the management API is UNAUTHENTICATED until token auth is configured")
-	return &mgmt{done: done}, true
+	return &mgmt{done: done, addr: ln.Addr().String()}, true
 }
 
 // certHosts returns the SANs to embed in the self-signed certificate: loopback,
