@@ -29,7 +29,8 @@ normative design and roadmap live as issues in the private tracker.
 Each configured device is advertised as its own mDNS/DNS-SD `_rtsp._tcp`
 instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
 all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
-`path`, and a `txtvers`. It sends goodbye packets on shutdown so stale entries
+`path`, `auth` (`token` when an access token is required, else `none`), and a
+`txtvers`. It sends goodbye packets on shutdown so stale entries
 clear promptly. Set `discovery.enabled: false` to turn it off; on a network
 where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
 plus path instead.
@@ -44,6 +45,8 @@ mDNS instance. Write a config (see `config.example.yaml`):
 listen: ":8554"
 discovery:
   enabled: true
+auth:
+  token: ""              # set a token to require credentials (see Authentication)
 devices:
   - name: garden-mic       # unique instance name; also the mDNS label
     device: "hw:1,0"
@@ -70,6 +73,50 @@ birdnet-go-remote-mic -config config.yaml    # capture and serve
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
 `rtsp://<host>:8554/garden`. A single-device config is just a one-entry list.
+
+## Authentication
+
+By default the appliance is open: anyone on the network can pull the streams
+and use the management API and web UI. Set a shared access token to require
+credentials everywhere at once:
+
+```yaml
+auth:
+  token: k7Qm3vX9pL2wR8nT   # 12-128 characters of letters, digits, . _ ~ -
+```
+
+or open the web UI, go to System, and use the Access Control card (Generate,
+Save). The change applies immediately, no restart: the running RTSP server and
+API start asking for the token on the next request, and the mDNS TXT record
+switches to `auth=token`. Clearing the token returns the appliance to open
+access. The UI warns with a banner while access is open.
+
+One token gates both surfaces:
+
+- Management API and web UI: send it as a bearer credential. `/api/v1/healthz`
+  stays open for liveness checks; everything else answers 401 without it.
+
+  ```bash
+  curl -k -H "Authorization: Bearer k7Qm3vX9pL2wR8nT" https://<host>:8443/api/v1/status
+  ```
+
+- RTSP stream: standard Digest authentication with the token as the password
+  and any username (`mic` by convention), so the usual URL form works in
+  BirdNET-Go, ffmpeg, VLC and GStreamer:
+
+  ```bash
+  ffprobe -rtsp_transport tcp rtsp://mic:k7Qm3vX9pL2wR8nT@<host>:8554/garden
+  ```
+
+  The card's Copy URL button includes the credentials when a token is set.
+
+Notes: RTSP authentication is per connection, so a client that is already
+streaming keeps its session after the token is rotated and must present the new
+token only when it reconnects; the same goes for an open web UI event stream.
+Digest and bearer both travel in clear text on the LAN (the API is HTTPS, RTSP
+is plain TCP), which is the threat model of a home-network appliance: the token
+keeps casual listeners and stray clients out, it is not a substitute for network
+isolation on a hostile network.
 
 ## Debugging
 
