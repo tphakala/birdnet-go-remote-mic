@@ -28,7 +28,7 @@ func TestOpenDeviceRetrySkipsBusyDevice(t *testing.T) {
 	restore := swapDeviceInUse(func(string, int) bool { return true })
 	defer restore()
 
-	dev := &config.Device{Name: "busy", Device: "hw:9,9", Channels: 1, Rate: 48000, Format: "s16"}
+	dev := &config.Device{Name: "busy", Device: "hw:9,9", Channels: []int{1}, Rate: 48000, Format: "s16"}
 	_, err := openDeviceRetry(dev, levels.NewHub())
 	if !errors.Is(err, capture.ErrDeviceInUse) {
 		t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
@@ -43,7 +43,7 @@ func TestOpenDeviceRetryPassesGateWhenFree(t *testing.T) {
 	restore := swapDeviceInUse(func(string, int) bool { return false })
 	defer restore()
 
-	dev := &config.Device{Name: "free", Device: "hw:9,9", Channels: 1, Rate: 48000, Format: "s16"}
+	dev := &config.Device{Name: "free", Device: "hw:9,9", Channels: []int{1}, Rate: 48000, Format: "s16"}
 	_, err := openDeviceRetry(dev, levels.NewHub())
 	if err == nil {
 		t.Fatal("openDeviceRetry on nonexistent hardware should fail")

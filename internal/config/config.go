@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,19 @@ import (
 
 // maxDevices caps the device list, matching the API contract's maxItems.
 const maxDevices = 32
+
+// MaxChannels caps a device's channel selection. It matches the OpenAPI
+// ProvisionDeviceRequest.channels maxItems and covers common multi-channel USB
+// interfaces (2/4/6/8 channels).
+const MaxChannels = 8
+
+// NormalizeChannels returns a sorted, de-duplicated copy of a channel selection.
+// ApplyDefaults and the device-provisioning path share it so the canonical
+// channel order is defined in exactly one place. slices.Sorted already collects
+// into a fresh slice, so the result never aliases sel.
+func NormalizeChannels(sel []int) []int {
+	return slices.Compact(slices.Sorted(slices.Values(sel)))
+}
 
 // Mode selects the stream format.
 type Mode string
@@ -56,7 +70,7 @@ type Device struct {
 	Path     string `yaml:"path"`           // RTSP path, e.g. "/garden"; unique; default "/stream"
 	Mode     Mode   `yaml:"mode"`           // pcm or opus
 	Rate     int    `yaml:"rate"`           // capture sample rate in Hz
-	Channels int    `yaml:"channels"`       // 1 or 2
+	Channels []int  `yaml:"channels"`       // 1-based channel numbers to stream, e.g. [1] or [1,2] or [1,3]
 	Format   string `yaml:"format"`         // only "s16"
 	Opus     Opus   `yaml:"opus,omitempty"` // used only when Mode is opus
 	// Enabled is a pointer so an absent value defaults on: a device is captured
@@ -152,8 +166,13 @@ func (c *Config) ApplyDefaults() {
 		if d.Mode == "" {
 			d.Mode = ModePCM
 		}
-		if d.Channels == 0 {
-			d.Channels = 1
+		if len(d.Channels) == 0 {
+			d.Channels = []int{1}
+		} else {
+			// Normalize the selection to canonical ascending-unique order so a
+			// hand-edited [2,1] or [1,1] stores and validates the same as [1,2],
+			// and downstream (open count, extraction) can assume sorted-unique.
+			d.Channels = NormalizeChannels(d.Channels)
 		}
 		if d.Format == "" {
 			d.Format = "s16"
@@ -211,15 +230,23 @@ func (c *Config) Validate() error {
 		if d.Rate < 8000 || d.Rate > 384000 {
 			return &ValidationError{field("rate"), "must be between 8000 and 384000 Hz"}
 		}
-		if d.Channels < 1 || d.Channels > 2 {
-			return &ValidationError{field("channels"), "must be 1 or 2"}
+		if len(d.Channels) == 0 {
+			return &ValidationError{field("channels"), "must select at least one channel"}
+		}
+		for j, ch := range d.Channels {
+			if ch < 1 || ch > MaxChannels {
+				return &ValidationError{field("channels"), fmt.Sprintf("channel numbers must be between 1 and %d", MaxChannels)}
+			}
+			if j > 0 && ch <= d.Channels[j-1] {
+				return &ValidationError{field("channels"), "must be ascending with no duplicates"}
+			}
 		}
 		if d.Mode == ModeOpus {
 			if d.Rate != 48000 {
 				return &ValidationError{field("rate"), "opus mode requires 48000 Hz"}
 			}
-			if d.Channels != 1 {
-				return &ValidationError{field("channels"), "opus mode requires 1 channel"}
+			if len(d.Channels) != 1 {
+				return &ValidationError{field("channels"), "opus mode requires exactly one channel"}
 			}
 		}
 		if d.Opus.Bitrate < 0 {
@@ -277,13 +304,15 @@ func (c *Config) Clone() Config {
 	if c.Devices != nil {
 		out.Devices = make([]Device, len(c.Devices))
 		copy(out.Devices, c.Devices)
-		// Device now carries a *bool (Enabled); give each copy its own backing
-		// storage so a caller mutating the clone cannot race the original.
+		// Device carries reference types (a *bool Enabled and a []int Channels);
+		// give each copy its own backing storage so a caller mutating the clone
+		// cannot race or alias the original.
 		for i := range c.Devices {
 			if c.Devices[i].Enabled != nil {
 				v := *c.Devices[i].Enabled
 				out.Devices[i].Enabled = &v
 			}
+			out.Devices[i].Channels = slices.Clone(c.Devices[i].Channels)
 		}
 	}
 	return out

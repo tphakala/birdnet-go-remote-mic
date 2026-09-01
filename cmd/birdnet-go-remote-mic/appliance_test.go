@@ -74,16 +74,17 @@ func (l *fakeOpenLog) snapshot() []string {
 func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
 	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 		log.add("open:" + dev.Name)
-		src := newBlockingSource(dev.Rate, dev.Channels)
+		streamCh := len(dev.Channels)
+		src := newBlockingSource(dev.Rate, streamCh)
 		frames := rtspserver.NewChanSource(64)
 		return &deviceRuntime{
 			dev:      *dev,
-			src:      audio.NewMeteredSource(loggingClose{src, dev.Name, log}, hub.Meter(dev.Name, dev.Channels)),
-			stage:    pipeline.NewPCM(dev.Channels),
+			src:      audio.NewMeteredSource(loggingClose{src, dev.Name, log}, hub.Meter(dev.Name, streamCh)),
+			stage:    pipeline.NewPCM(streamCh),
 			frames:   frames,
 			track:    &rtspserver.Track{Path: dev.Path, PayloadType: 96, Frames: frames},
 			rate:     dev.Rate,
-			channels: dev.Channels,
+			channels: streamCh,
 		}, nil
 	}
 }
@@ -103,7 +104,7 @@ func (c loggingClose) Close() error {
 }
 
 func testDevice(name, hw, path string, rate int) config.Device {
-	return config.Device{Name: name, Device: hw, Path: path, Mode: config.ModePCM, Rate: rate, Channels: 1, Format: testFmtS16}
+	return config.Device{Name: name, Device: hw, Path: path, Mode: config.ModePCM, Rate: rate, Channels: []int{1}, Format: testFmtS16}
 }
 
 func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFunc) {

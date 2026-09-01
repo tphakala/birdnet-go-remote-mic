@@ -62,9 +62,9 @@ type DeviceStatus struct {
 	// SupportedRates is the set of sample rates the hardware accepts, probed at
 	// startup. Empty when the device could not be probed (missing or busy).
 	SupportedRates []int
-	// SupportedChannels is the subset of [1, 2] the hardware accepts, probed at
-	// startup via the same query as SupportedRates. Empty when the device could
-	// not be probed (missing or busy).
+	// SupportedChannels is the set of channel counts the hardware accepts (up to
+	// 8), probed at startup via the same query as SupportedRates. Empty when the
+	// device could not be probed (missing or busy).
 	SupportedChannels []int
 }
 

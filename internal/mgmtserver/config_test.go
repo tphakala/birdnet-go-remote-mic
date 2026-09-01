@@ -28,7 +28,7 @@ func baseConfig() config.Config {
 		Listen: ":8554",
 		Devices: []config.Device{{
 			Name: devGarden, Device: devHW1, Path: pathGarden,
-			Mode: config.ModeOpus, Rate: 48000, Channels: 1, Format: fmtS16,
+			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: fmtS16,
 			Opus: config.Opus{Bitrate: 96000},
 		}},
 	}
@@ -79,7 +79,7 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 
 	devs := []mgmtapi.DeviceConfig{{
 		Name: nameAttic, Device: devAttic, Path: pathAttic,
-		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: []int{1},
 	}}
 	body := &mgmtapi.ConfigPatch{Devices: &devs}
 
@@ -121,7 +121,7 @@ func TestPatchConfigWithReloaderAppliesLive(t *testing.T) {
 
 	devs := []mgmtapi.DeviceConfig{{
 		Name: nameAttic, Device: devAttic, Path: pathAttic,
-		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: []int{1},
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
 	if err != nil {
@@ -151,7 +151,7 @@ func TestPatchConfigReloaderErrorReportsRestartRequired(t *testing.T) {
 
 	devs := []mgmtapi.DeviceConfig{{
 		Name: nameAttic, Device: devAttic, Path: pathAttic,
-		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: []int{1},
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
 	if err != nil {
@@ -202,7 +202,7 @@ func TestPatchConfigSerializesReload(t *testing.T) {
 			defer wg.Done()
 			devs := []mgmtapi.DeviceConfig{{
 				Name: "d" + strconv.Itoa(i), Device: "hw:" + strconv.Itoa(i), Path: "/d" + strconv.Itoa(i),
-				Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+				Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
 			}}
 			if _, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}}); err != nil {
 				t.Errorf("PatchConfig: %v", err)
@@ -238,7 +238,7 @@ func TestPatchConfigPersistsDisabledDevice(t *testing.T) {
 	off := false
 	devs := []mgmtapi.DeviceConfig{{
 		Name: devGarden, Device: devHW1, Path: pathGarden,
-		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
 		Opus:    &mgmtapi.OpusSettings{Bitrate: ptr(96000)},
 		Enabled: &off,
 	}}
@@ -271,7 +271,7 @@ func TestPatchConfigOmittedEnabledStaysDefaultOn(t *testing.T) {
 	// not be silently disabled. This guards the common PATCH path.
 	devs := []mgmtapi.DeviceConfig{{
 		Name: nameAttic, Device: devAttic, Path: pathAttic,
-		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: 1,
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 192000, Channels: []int{1},
 	}}
 	if _, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}}); err != nil {
 		t.Fatalf("PatchConfig: %v", err)
@@ -294,7 +294,7 @@ func TestWireDeviceToConfigDoesNotAliasEnabled(t *testing.T) {
 	flag := false
 	req := &mgmtapi.DeviceConfig{
 		Name: devGarden, Device: devHW1, Path: pathGarden,
-		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: 1,
+		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
 		Enabled: &flag,
 	}
 	out := wireDeviceToConfig(req)
@@ -369,7 +369,7 @@ func TestPatchConfigInvalidYields422(t *testing.T) {
 
 	devs := []mgmtapi.DeviceConfig{{
 		Name: devGarden, Device: devHW1, Path: pathGarden,
-		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 100, Channels: 1, // rate too low
+		Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: 100, Channels: []int{1}, // rate too low
 	}}
 	body := &mgmtapi.ConfigPatch{Devices: &devs}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})

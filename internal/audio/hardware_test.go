@@ -1,6 +1,9 @@
 package audio
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 const (
 	testDevID        = "hw:1,0"
@@ -27,8 +30,8 @@ func TestCandidateRatesReturnsFreshCopy(t *testing.T) {
 func TestCandidateChannelsReturnsFreshCopy(t *testing.T) {
 	t.Parallel()
 	a := CandidateChannels()
-	if len(a) != 2 || a[0] != 1 || a[1] != 2 {
-		t.Fatalf("CandidateChannels = %v, want [1 2]", a)
+	if !slices.Equal(a, []int{1, 2, 3, 4, 5, 6, 7, 8}) {
+		t.Fatalf("CandidateChannels = %v, want [1 2 3 4 5 6 7 8]", a)
 	}
 	a[0] = -1 // mutate the returned slice
 	if b := CandidateChannels(); b[0] == -1 {
