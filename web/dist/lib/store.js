@@ -47,6 +47,12 @@ export class AppStore extends EventTarget {
     }
     endTokenSwap() {
         this.swapDepth = Math.max(0, this.swapDepth - 1);
+        // The event stream stops itself on a 401, and inside the swap window that
+        // 401 is expected rather than a credential failure, so nothing else would
+        // bring it back until the next startPolling. Restart it under the token now
+        // in force; start() is a no-op while the stream is already running.
+        if (this.swapDepth === 0 && this.pollIntervalTimer !== null)
+            sse.start();
     }
     // onUnauthorized reacts to the appliance rejecting the UI's credentials:
     // polling and the SSE stream stop (they would only be rejected again) and the
