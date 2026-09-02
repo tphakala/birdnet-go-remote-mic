@@ -257,6 +257,19 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	prevDiscovery := a.prov.discoveryEnabled()
 	prevAuth := a.prov.authRequired()
 
+	// Apply the access token and the auth state BEFORE the device work below.
+	// PATCH /config already enforces a patched token on the guard before it
+	// invokes this reload, so the guard is not the reason for the ordering; the
+	// reported state is. Device stops, restarts and opens can take seconds of
+	// retries, and setting these afterwards would leave GET /status answering
+	// with the old authRequired and the mDNS TXT record advertising the old auth
+	// hint for that whole window. Doing it here also makes the reconcile
+	// self-sufficient rather than relying on its caller having set the guard.
+	// Set is idempotent: an unchanged token does not advance the generation, so
+	// this cannot disturb a live RTSP session.
+	a.guard.Set(newCfg.Auth.Token)
+	a.prov.setAuthRequired(newCfg.AuthRequired())
+
 	// Publish the desired configured-device ids BEFORE opening anything, so the
 	// background enumeration excludes a device from probing before its capture
 	// open begins and the probe and the open never contend for the same ALSA id.
@@ -293,13 +306,6 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 
 	a.cfg = *newCfg
 	a.prov.setDiscovery(newCfg.DiscoveryEnabled())
-	// Swap the access token in place: the management gate reads the guard per
-	// request, so the new token is enforced from the next API request on. Set
-	// advances the guard's generation when the token changes, so a serving RTSP
-	// connection authenticated under the old token (or under open access) is
-	// dropped and must reconnect; a connection holding the new token continues.
-	a.guard.Set(newCfg.Auth.Token)
-	a.prov.setAuthRequired(newCfg.AuthRequired())
 	a.publish(newCfg)
 
 	// Ask the background enumeration goroutine to refresh the available-device

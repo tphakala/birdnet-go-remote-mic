@@ -85,14 +85,16 @@ credentials everywhere at once:
 
 ```yaml
 auth:
-  token: k7Qm3vX9pL2wR8nT   # 12-128 characters of letters, digits, . _ ~ -
+  token: "REPLACE-WITH-YOUR-OWN"   # 12-128 characters of letters, digits, . _ ~ -
 ```
 
-or open the web UI, go to System, and use the Access Control card (Generate,
-Save). The change applies immediately, no restart: the running RTSP server and
-API start asking for the token on the next request, and the mDNS TXT record
-switches to `auth=token`. Clearing the token returns the appliance to open
-access. The UI warns with a banner while access is open.
+Generate your own; the value above is a placeholder, and a token copied from
+documentation protects nothing. The web UI does it for you: go to System, open
+the Access Control card, and press Generate then Save. The change applies
+immediately, no restart: the running RTSP server and API start asking for the
+token on the next request, and the mDNS TXT record switches to `auth=token`.
+Clearing the token returns the appliance to open access. The UI warns with a
+banner while access is open.
 
 One token gates both surfaces:
 
@@ -101,15 +103,21 @@ One token gates both surfaces:
   the login screen can load; every other `/api/v1` route answers 401 without it.
 
   ```bash
-  curl -k -H "Authorization: Bearer k7Qm3vX9pL2wR8nT" https://<host>:8443/api/v1/status
+  curl --cacert mgmt-cert.pem -H "Authorization: Bearer <your-token>" https://<host>:8443/api/v1/status
   ```
+
+  The appliance generates its own certificate (`mgmt-cert.pem`, beside the
+  config file), so copy that file to the client and verify against it. `curl -k`
+  works too, but it skips verification entirely, which lets anything on the
+  network impersonate the appliance and collect the token: keep it for local
+  testing only.
 
 - RTSP stream: standard Digest authentication with the token as the password
   and any username (`mic` by convention), so the usual URL form works in
   BirdNET-Go, ffmpeg, VLC and GStreamer:
 
   ```bash
-  ffprobe -rtsp_transport tcp rtsp://mic:k7Qm3vX9pL2wR8nT@<host>:8554/garden
+  ffprobe -rtsp_transport tcp rtsp://mic:<your-token>@<host>:8554/garden
   ```
 
   On the Dashboard, a device card's Copy URL button includes the credentials
@@ -124,9 +132,9 @@ credentials in their URL. A connection that is not currently streaming, one
 still negotiating or set up but idle, is instead re-challenged on its next
 request, which for a mostly-idle client is when its keepalive next falls due: up
 to about 30 seconds with the default 60 second session timeout, measured with
-ffmpeg. A client that does not
-present the current token is disconnected and its stream slot released. Restart
-the appliance if you need every idle session cut at once. One exception: a
+ffmpeg. A client that does not present the current token is disconnected and its
+stream slot released. Restart the appliance if you need every idle session cut
+at once. One exception: a
 management event stream (GET /events) opened before the change keeps running,
 because the bearer token is checked once when the stream starts, not per event.
 As for what crosses the wire: the bearer token rides inside TLS (the API is

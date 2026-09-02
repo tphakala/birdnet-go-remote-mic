@@ -130,6 +130,11 @@ func (g *Guard) CheckBearer(authorization string) bool {
 		return false
 	}
 	scheme, presented, ok := strings.Cut(authorization, " ")
+	// RFC 6750 section 2.1 is "Bearer" 1*SP b64token, so one or more spaces
+	// separate the scheme from the credential. Drop the extra separators before
+	// comparing; a space or tab INSIDE the credential is still a rejection,
+	// because the token charset has neither.
+	presented = strings.TrimLeft(presented, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") || presented == "" || strings.ContainsAny(presented, " \t") {
 		return false
 	}
