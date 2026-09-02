@@ -122,6 +122,10 @@ func TestChooseParams(t *testing.T) {
 		// A DERIVED default on a stereo-only device is narrowed to one channel for
 		// Opus: the operator asked for Opus, not for a channel set.
 		{"explicit opus on stereo-only derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
+		// An explicit EMPTY channel array is a derived selection just like an
+		// omitted field, so Opus on a stereo-only device narrows to one channel
+		// instead of 422ing where omitting the field would have succeeded.
+		{"explicit opus with empty channel array derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr()}, config.ModeOpus, 48000, []int{1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

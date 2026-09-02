@@ -293,6 +293,13 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 	if req.Channels != nil {
 		channels = config.NormalizeChannels(*req.Channels)
 	}
+	// derived records that the selection is the appliance's default, not the
+	// operator's: an omitted field and an explicit empty array (channels: [])
+	// both leave nothing after normalization, so both fall back below and must
+	// be treated the same way. Keying the Opus narrowing on req.Channels==nil
+	// instead would 422 an explicit [] on a stereo-only device while an omitted
+	// field succeeded.
+	derived := len(channels) == 0
 	if len(channels) == 0 {
 		channels = defaultSelection(d.SupportedChannels)
 	}
@@ -300,11 +307,11 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 	switch mode {
 	case config.ModeOpus:
 		// Opus streams exactly one channel. A DERIVED default (the request named
-		// no channels) is narrowed to its first channel, since the operator asked
-		// for Opus rather than a channel set; an EXPLICIT selection is kept as
-		// asked so config.Validate rejects a multi-channel one with a 422 instead
-		// of this silently discarding part of the request.
-		if req.Channels == nil && len(channels) > 1 {
+		// no channels, or an empty array) is narrowed to its first channel, since
+		// the operator asked for Opus rather than a channel set; an EXPLICIT
+		// selection is kept as asked so config.Validate rejects a multi-channel
+		// one with a 422 instead of this silently discarding part of the request.
+		if derived && len(channels) > 1 {
 			channels = channels[:1]
 		}
 		return config.ModeOpus, 48000, channels
