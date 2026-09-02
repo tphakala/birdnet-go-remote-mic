@@ -53,6 +53,26 @@ func TestOpenCaptureRejectsUnknownFormat(t *testing.T) {
 	}
 }
 
+func TestOpenCaptureAtRejectsOpenCountBelowSelection(t *testing.T) {
+	called := false
+	prev := openStream
+	openStream = func(capture.Config) (captureStream, error) {
+		called = true
+		return &stubStream{}, nil
+	}
+	defer func() { openStream = prev }()
+
+	// The selection needs channel 2 but only 1 channel is opened: OpenCaptureAt
+	// must reject before touching hardware, so the strided selecting copy can
+	// never read past the negotiated buffer.
+	if _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{2}, Format: testFmtS16}, 1); err == nil {
+		t.Fatal("OpenCaptureAt accepted openCh=1 below max(selection)=2, want error")
+	}
+	if called {
+		t.Error("OpenCaptureAt opened the device despite an insufficient open channel count")
+	}
+}
+
 func TestOpenCapturePassesS16Format(t *testing.T) {
 	var got capture.Format
 	prev := openStream

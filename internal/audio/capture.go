@@ -43,7 +43,7 @@ type captureSource struct {
 // the whole send path (L16 packetization, SDP byte math, Opus encode) is
 // S16-only, and this fails loud the moment a new stream format is added to
 // validation without wiring the rest of the pipeline. It is distinct from the
-// hardware CAPTURE format, which OpenCapture negotiates (S16 or S32) and
+// hardware CAPTURE format, which OpenCaptureAt negotiates (S16 or S32) and
 // downconverts to S16 so this output contract always holds.
 func captureFormat(format string) (capture.Format, error) {
 	switch format {
@@ -54,7 +54,7 @@ func captureFormat(format string) (capture.Format, error) {
 	}
 }
 
-// captureFormats is the order OpenCapture negotiates the hardware capture
+// captureFormats is the order OpenCaptureAt negotiates the hardware capture
 // format in: S16LE first (the common case, no conversion needed), then S32LE as
 // the fallback for 24/32-bit-only interfaces (e.g. the ZOOM AMS-24). The stream
 // output stays S16 either way; an S32 capture is downconverted.
@@ -143,8 +143,11 @@ func maxSelected(selection []int) int {
 	return m
 }
 
-// OpenCapture opens and starts a capture stream for dev at the channel count
-// ResolveOpenChannels picks for its selection. See OpenCaptureAt.
+// OpenCapture opens and starts a capture stream for dev, resolving the open
+// channel count (ResolveOpenChannels) itself for callers that do not. The
+// appliance resolves per open attempt and calls OpenCaptureAt directly, so this
+// convenience wrapper has no production caller today; it is kept for callers and
+// tests that just want "open dev" without managing the count. See OpenCaptureAt.
 func OpenCapture(dev *config.Device) (Source, error) {
 	return OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.Channels))
 }
@@ -167,8 +170,9 @@ func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 	if _, err := captureFormat(dev.Format); err != nil {
 		return nil, err
 	}
-	if openCh < maxSelected(dev.Channels) {
-		return nil, fmt.Errorf("audio: open channel count %d does not cover the selection (needs channel %d)", openCh, maxSelected(dev.Channels))
+	maxSel := maxSelected(dev.Channels)
+	if openCh < maxSel {
+		return nil, fmt.Errorf("audio: open channel count %d does not cover the selection (needs channel %d)", openCh, maxSel)
 	}
 	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh)
 	if err != nil {
@@ -186,7 +190,7 @@ func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 	// exactly (or fails the open), so this cannot trigger on the linux backend
 	// today; the guard turns any future surprise into an honest error instead of a
 	// panic in the capture pump.
-	if maxSel := maxSelected(dev.Channels); n.Channels < maxSel {
+	if n.Channels < maxSel {
 		_ = s.Close()
 		return nil, fmt.Errorf("audio: device negotiated %d channels but the selection needs channel %d", n.Channels, maxSel)
 	}

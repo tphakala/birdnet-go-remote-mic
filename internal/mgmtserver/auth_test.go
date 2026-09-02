@@ -156,7 +156,7 @@ func TestAuthWrongBearerReportsInvalidToken(t *testing.T) {
 // the code (covered by TestAuthWrongBearerReportsInvalidToken).
 func TestAuthNonBearerSchemeGetsBareChallenge(t *testing.T) {
 	srv := authTestServer(t, auth.NewGuard(testAuthToken))
-	req, err := http.NewRequest(http.MethodGet, srv.URL+pathStatus, nil)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+pathStatus, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

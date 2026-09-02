@@ -1,6 +1,7 @@
 package rtspserver
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -158,7 +159,7 @@ func TestAuthBasicRejected(t *testing.T) {
 	addr, _ := startServer(t, authConfig(testAuthToken), defaultTrack())
 	c := dial(t, addr)
 	h := rtsp.Header{}
-	h.Set("Authorization", "Basic bWljOms3UW0zdlg5cEwyd1I4blQ=")
+	h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(testUser+":"+testAuthToken)))
 	if resp := c.do(t, methodDesc, baseURL(addr), h); resp.StatusCode != 401 {
 		t.Errorf("Basic credentials: status = %d, want 401", resp.StatusCode)
 	}
@@ -189,9 +190,15 @@ func TestAuthRotationChallengesNegotiatingConnection(t *testing.T) {
 	g.Set("rotated-token-0001")
 	// The connection authenticated under the old generation is re-challenged.
 	reCh := challengeOf(t, c1.do(t, methodDesc, baseURL(addr), nil))
+	// The old token no longer works: answering the re-challenge with it is
+	// rejected and the connection (still stateInit) stays open to try again.
+	if resp := c1.do(t, methodDesc, baseURL(addr), answer(t, reCh, testAuthToken, methodDesc, baseURL(addr))); resp.StatusCode != 401 {
+		t.Errorf("old token after rotation on the same connection: status = %d, want 401", resp.StatusCode)
+	}
 	// It kept its socket (state was stateInit): answering with the new token on
 	// the same connection succeeds.
-	if resp := c1.do(t, methodDesc, baseURL(addr), answer(t, reCh, "rotated-token-0001", methodDesc, baseURL(addr))); resp.StatusCode != 200 {
+	reCh2 := challengeOf(t, c1.do(t, methodDesc, baseURL(addr), nil))
+	if resp := c1.do(t, methodDesc, baseURL(addr), answer(t, reCh2, "rotated-token-0001", methodDesc, baseURL(addr))); resp.StatusCode != 200 {
 		t.Errorf("re-auth with the new token on the same connection: status = %d, want 200", resp.StatusCode)
 	}
 	// A new connection must present the new token.
@@ -256,7 +263,10 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 	}
 }
 
-func TestAuthSlotReleasedWhenClientDropsAfterSetup(t *testing.T) {
+// TestAuthenticatedClientTCPDropReleasesSlot proves the track slot an
+// authenticated client claimed at SETUP is released when its TCP connection
+// simply drops (no TEARDOWN), so the next client can take it.
+func TestAuthenticatedClientTCPDropReleasesSlot(t *testing.T) {
 	addr, _ := startServer(t, authConfig(testAuthToken), defaultTrack())
 	c := dial(t, addr)
 	ch := challengeOf(t, c.do(t, methodDesc, baseURL(addr), nil))

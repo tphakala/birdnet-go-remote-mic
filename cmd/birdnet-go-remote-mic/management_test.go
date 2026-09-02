@@ -223,7 +223,6 @@ func TestAnnounceInfosCarryAuth(t *testing.T) {
 func TestStartManagementEnforcesBearer(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, auth.NewGuard(testAuthToken))
 	if !ok {

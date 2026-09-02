@@ -52,8 +52,14 @@ func TestGetConfigCarriesAuthToken(t *testing.T) {
 func TestGetConfigOpenAccessReportsEmptyToken(t *testing.T) {
 	store, _ := tokenStore(t, "")
 	s := New(&fakeProvider{}, WithConfigStore(store))
-	resp, _ := s.GetConfig(context.Background(), mgmtapi.GetConfigRequestObject{})
-	got := resp.(mgmtapi.GetConfig200JSONResponse)
+	resp, err := s.GetConfig(context.Background(), mgmtapi.GetConfigRequestObject{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := resp.(mgmtapi.GetConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("response type %T, want 200", resp)
+	}
 	if got.Auth.Token == nil || *got.Auth.Token != "" {
 		t.Errorf("auth.token = %v, want an empty string for open access", got.Auth.Token)
 	}

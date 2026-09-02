@@ -374,6 +374,7 @@ func TestProvisionDeviceOpusMultiChannelYields422(t *testing.T) {
 
 // TestRandomPathRetriesOnCollision forces the entropy source to return a taken
 // path first, proving the retry loop runs and returns the next, distinct path.
+// It must stay sequential (no t.Parallel): it swaps the package-level randRead.
 func TestRandomPathRetriesOnCollision(t *testing.T) {
 	calls := 0
 	prev := randRead

@@ -18,7 +18,7 @@ func TestTXTRecords(t *testing.T) {
 		"txtvers": "1",
 		"model":   "birdnet-go-remote-mic",
 		"version": testVersion,
-		"codec":   "L16",
+		"codec":   testCodec,
 		"rate":    "256000",
 		"ch":      "1",
 		"path":    testPath,
