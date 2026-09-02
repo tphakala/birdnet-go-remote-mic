@@ -22,20 +22,33 @@ const (
 	maxTokenLen = 128
 )
 
-// Guard holds the active token and checks credentials against it. It is safe
-// for concurrent use: Set swaps the token atomically so a hot reload applies
-// without a restart, and every check reads the token once.
-//
-// A nil *Guard is a disabled guard: Enabled reports false and every check
-// fails, so a caller that forgot to wire one can never authenticate by accident.
-type Guard struct {
-	token atomic.Pointer[string]
+// tokenState pairs the active token with its generation counter. Guard holds it
+// behind a single atomic.Pointer so a reader always sees a consistent
+// (token, generation) pair, even while Set swaps them.
+type tokenState struct {
+	token string
 	// gen counts token changes. It advances only when Set installs a token
 	// that differs from the current one, so the RTSP server can detect that a
 	// connection authenticated under a superseded token (or under open access)
 	// and re-challenge it. Setting the same token again does not advance it, so
 	// an idempotent reconcile never disturbs a playing session.
-	gen atomic.Uint64
+	gen uint64
+}
+
+// Guard holds the active token and checks credentials against it. It is safe
+// for concurrent use: Set swaps the token and its generation atomically as one
+// pair so a hot reload applies without a restart, and every check reads the
+// token once.
+//
+// A nil *Guard is a disabled guard: Enabled reports false and every check
+// fails, so a caller that forgot to wire one can never authenticate by accident.
+type Guard struct {
+	// state holds the token and its generation together. A nil pointer is the
+	// zero state (open access, generation 0). Readers load it once; Set builds
+	// the next state from the loaded one under a compare-and-swap loop, so the
+	// token and generation always move as an atomic pair and concurrent Sets
+	// cannot lose an update.
+	state atomic.Pointer[tokenState]
 }
 
 // NewGuard returns a Guard holding token. An empty token disables the guard.
@@ -49,12 +62,26 @@ func NewGuard(token string) *Guard {
 // access); callers skip their checks while Enabled reports false. When the new
 // token differs from the current one, Generation advances so the RTSP server
 // evicts sessions authenticated under the old token; setting the same value is
-// a no-op for eviction. Set on a nil *Guard panics; the nil case is test-only.
+// a no-op for eviction. The token and generation are swapped together as one
+// atomic pair, built from the current state under a compare-and-swap loop, so
+// concurrent Sets cannot double-count the generation and a reader never sees a
+// new token paired with an old generation. Set on a nil *Guard panics; the nil
+// case is test-only.
 func (g *Guard) Set(token string) {
-	old := g.current()
-	g.token.Store(&token)
-	if token != old {
-		g.gen.Add(1)
+	for {
+		old := g.state.Load()
+		var oldToken string
+		var oldGen uint64
+		if old != nil {
+			oldToken, oldGen = old.token, old.gen
+		}
+		next := &tokenState{token: token, gen: oldGen}
+		if token != oldToken {
+			next.gen = oldGen + 1
+		}
+		if g.state.CompareAndSwap(old, next) {
+			return
+		}
 	}
 }
 
@@ -67,7 +94,10 @@ func (g *Guard) Generation() uint64 {
 	if g == nil {
 		return 0
 	}
-	return g.gen.Load()
+	if st := g.state.Load(); st != nil {
+		return st.gen
+	}
+	return 0
 }
 
 // current returns the active token, or "" for a nil or disabled guard.
@@ -75,8 +105,8 @@ func (g *Guard) current() string {
 	if g == nil {
 		return ""
 	}
-	if p := g.token.Load(); p != nil {
-		return *p
+	if st := g.state.Load(); st != nil {
+		return st.token
 	}
 	return ""
 }

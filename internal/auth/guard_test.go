@@ -57,6 +57,37 @@ func TestSetSwapsToken(t *testing.T) {
 	}
 }
 
+func TestGeneration(t *testing.T) {
+	// Generation advances only when Set installs a token that differs from the
+	// current one. Setting the same token again must NOT advance it: PatchConfig
+	// and the reconcile both call Set with the same token on every config change,
+	// and a spurious advance would evict every live stream.
+	g := NewGuard("")
+	steps := []struct {
+		set  string
+		want uint64
+	}{
+		{"", 0},                   // open access from the start: no advance
+		{testToken, 1},            // enabling a token advances once
+		{testToken, 1},            // same token again: idempotent, no advance
+		{"rotated-token-0001", 2}, // rotating to a different token advances
+		{"", 3},                   // clearing the token advances (open access)
+	}
+	for i, s := range steps {
+		g.Set(s.set)
+		if got := g.Generation(); got != s.want {
+			t.Errorf("step %d Set(%q): Generation = %d, want %d", i, s.set, got, s.want)
+		}
+	}
+}
+
+func TestNilGuardGenerationIsZero(t *testing.T) {
+	var g *Guard
+	if got := g.Generation(); got != 0 {
+		t.Errorf("nil guard Generation = %d, want 0", got)
+	}
+}
+
 func TestNilGuardIsDisabled(t *testing.T) {
 	var g *Guard
 	if g.Enabled() {
