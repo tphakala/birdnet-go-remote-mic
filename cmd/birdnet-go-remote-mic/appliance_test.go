@@ -5,8 +5,6 @@ package main
 import (
 	"context"
 	"io"
-	"slices"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -74,10 +72,9 @@ func (l *fakeOpenLog) snapshot() []string {
 // fakeOpener returns an appliance.open replacement that builds a real
 // deviceRuntime (real pipeline stage, ChanSource and Track) around a blocking
 // fake source, logging each open and each source close through log.
-func fakeOpener(log *fakeOpenLog) func(*config.Device, int, *levels.Hub) (*deviceRuntime, error) {
-	return func(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
+func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
+	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 		log.add("open:" + dev.Name)
-		log.add("openCh:" + dev.Name + "=" + strconv.Itoa(openCh))
 		streamCh := len(dev.Channels)
 		src := newBlockingSource(dev.Rate, streamCh)
 		frames := rtspserver.NewChanSource(64)
@@ -113,9 +110,25 @@ func testDevice(name, hw, path string, rate int) config.Device {
 
 func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFunc) {
 	t.Helper()
+	// Stub the mDNS responder so reconcile tests that set a Listen address do not
+	// multicast a fake service onto the host's real LAN. announceGen is bumped by
+	// restartAnnounce before startAnnounce runs, so a no-op stub still lets the
+	// rebuild-count assertions work. Swapping a package var means these tests must
+	// stay sequential (they are; none calls t.Parallel).
+	prevAnnounce := startAnnounce
+	startAnnounce = func(context.Context, string, []*deviceRuntime, bool) {}
+	t.Cleanup(func() { startAnnounce = prevAnnounce })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	log := &fakeOpenLog{}
-	app := newAppliance(ctx, levels.NewHub(), rtspserver.New(rtspserver.Config{Listen: testListenAny}), &provider{version: "test", start: time.Now()}, auth.NewGuard(""))
+	// One guard is shared by the RTSP server and the appliance, exactly as
+	// main.go wires them, so a token applied by reconcile enforces on the stream
+	// too. Passing it only to newAppliance (as before) left the RTSP server with
+	// a nil guard, so the auth assertions could not see whether the stream was
+	// actually protected.
+	guard := auth.NewGuard("")
+	srv := rtspserver.New(rtspserver.Config{Listen: testListenAny, Auth: guard})
+	app := newAppliance(ctx, levels.NewHub(), srv, &provider{version: "test", start: time.Now()}, guard)
 	app.open = fakeOpener(log)
 	return app, log, cancel
 }
@@ -279,6 +292,12 @@ func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
 	if !app.guard.Enabled() {
 		t.Error("reconcile with a token must enable the guard")
 	}
+	// The SAME guard gates the RTSP stream: assert through the server so a
+	// regression that stops wiring the guard into rtspserver.New (leaving the
+	// stream open to anyone on the LAN) is caught here, not just on app.guard.
+	if !app.srv.AuthEnabled() {
+		t.Error("reconcile with a token must enable the RTSP server's guard too")
+	}
 	if !app.prov.Status().AuthRequired {
 		t.Error("reconcile with a token must report authRequired")
 	}
@@ -286,6 +305,9 @@ func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
 	app.reconcile(&cfg)
 	if app.guard.Enabled() {
 		t.Error("reconcile with an empty token must disable the guard")
+	}
+	if app.srv.AuthEnabled() {
+		t.Error("reconcile with an empty token must disable the RTSP server's guard")
 	}
 	if app.prov.Status().AuthRequired {
 		t.Error("reconcile with an empty token must report open access")
@@ -311,23 +333,5 @@ func TestApplianceAuthToggleRebuildsAnnouncement(t *testing.T) {
 	app.reconcile(&cfg)
 	if app.announceGen != before {
 		t.Error("a no-op reconcile must not rebuild the advertisement")
-	}
-}
-
-// TestOpenAndStartPassesResolvedOpenCount verifies the appliance resolves the
-// ALSA open channel count once per device open and hands that count to the
-// opener, so the busy gate and the capture open agree with the rate probe. With
-// no hardware the resolver falls back to the highest selected channel, so a
-// [1,3] selection must reach the opener as 3.
-func TestOpenAndStartPassesResolvedOpenCount(t *testing.T) {
-	app, log, cancel := newTestAppliance(t)
-	defer cancel()
-	dev := testDevice("pair", "hw:9,9", "/pair", 48000)
-	dev.Channels = []int{1, 3}
-	cfg := config.Config{Listen: testListenAny, Devices: []config.Device{dev}}
-	app.reconcile(&cfg)
-	defer app.closeAll()
-	if events := log.snapshot(); !slices.Contains(events, "openCh:pair=3") {
-		t.Errorf("open events = %v, want openCh:pair=3", events)
 	}
 }
