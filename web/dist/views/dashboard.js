@@ -469,21 +469,22 @@ export class DashboardView {
             copyBtn.title = "Copy RTSP stream URL";
             copyBtn.appendChild(iconSpan(ICON_COPY, "icon-copy"));
             copyBtn.appendChild(elem("span", "copy-label", "Copy URL"));
-            copyBtn.addEventListener("click", () => this.handleCopyUrl(copyBtn, urlEl, d.path));
+            copyBtn.addEventListener("click", () => this.handleCopyUrl(copyBtn, urlEl));
             strip.appendChild(info);
             strip.appendChild(copyBtn);
             article.appendChild(strip);
-            // Meter console: one live VU meter per capture channel. The meters are
-            // decorative real-time visualizations updating ~10 Hz, hidden from the
-            // accessibility tree so they do not spam screen readers.
-            // Meter rows carry the STREAMED channel numbers (a [1,3] selection meters
-            // "Ch 1" and "Ch 3"), matching the card tag and the settings form. If the
-            // negotiated count ever disagrees with the selection, fall back to 1..N.
+            // Meter console: one live VU meter per CAPTURED hardware channel. The
+            // level meter is registered on the raw capture source with the negotiated
+            // hardware channel count and emits a zero-based index per hardware channel
+            // (see the levels handler, which indexes entry.meters by ch.channel), so
+            // the rows are the device's captured channels, not the streamed selection.
+            // Metering happens before channel selection, so a non-contiguous selection
+            // (e.g. streaming only Ch 1 and Ch 3 of a 4-channel card) still shows every
+            // captured channel here, including the ones that are not streamed. The
+            // meters are decorative real-time visualizations updating ~10 Hz, hidden
+            // from the accessibility tree so they do not spam screen readers.
             const channelCount = d.negotiatedChannels ?? d.channels.length;
-            const channelNumbers = channelCount === d.channels.length
-                ? d.channels
-                : Array.from({ length: channelCount }, (_, i) => i + 1);
-            const built = this.buildMeterConsole(channelNumbers);
+            const built = this.buildMeterConsole(channelCount);
             meters = built.meters;
             article.appendChild(built.console);
             // Footer
@@ -535,12 +536,12 @@ export class DashboardView {
         return entry;
     }
     // buildMeterConsole builds the shared dB scale plus one metering row per
-    // streamed channel and returns the console element and its VU meters, indexed
-    // by streamed-channel position. A mono device gets a single unlabeled row
-    // (unchanged from the single-meter layout); a multi-channel device labels
-    // each row with its real channel number ("Ch 3" for the second row of a
-    // [1,3] selection).
-    buildMeterConsole(channels) {
+    // captured hardware channel and returns the console element and its VU meters,
+    // indexed by zero-based hardware channel position (the levels event's
+    // ch.channel indexes straight into this array). A mono device gets a single
+    // unlabeled row; a multi-channel device labels each row with its 1-based
+    // hardware channel number ("Ch 2" for the second captured channel).
+    buildMeterConsole(count) {
         const meterConsole = elem("div", "meter-console");
         const scale = elem("div", "meter-scale");
         for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
@@ -548,7 +549,7 @@ export class DashboardView {
         }
         meterConsole.appendChild(scale);
         const meters = [];
-        const n = Math.max(1, channels.length);
+        const n = Math.max(1, count);
         const multi = n > 1;
         // Cap the stack height for high-channel interfaces so a 6-8 channel device
         // does not grow the card tall enough to push the dashboard down; the rows
@@ -557,7 +558,7 @@ export class DashboardView {
             meterConsole.classList.add("many-channels");
         for (let c = 0; c < n; c++) {
             const wrapper = elem("div", "meter-track-wrapper");
-            const chNum = channels[c] ?? c + 1;
+            const chNum = c + 1;
             if (multi) {
                 const label = elem("span", "meter-channel-label mono", `Ch ${chNum}`);
                 label.setAttribute("aria-hidden", "true");
@@ -812,8 +813,13 @@ export class DashboardView {
             entry.urlEl.textContent = url;
             entry.urlEl.title = url;
         }
-        if (entry.lockEl)
-            entry.lockEl.hidden = !this.status?.authRequired;
+        if (entry.lockEl) {
+            // Guard the write so a steady state is not rewritten on every ~3s poll,
+            // matching the pendingNote convention below.
+            const hideLock = !this.status?.authRequired;
+            if (entry.lockEl.hidden !== hideLock)
+                entry.lockEl.hidden = hideLock;
+        }
         if (entry.clientsEl)
             entry.clientsEl.textContent = d.clientConnected ? "1 connected" : "0 connected";
         if (entry.droppedEl)
@@ -846,16 +852,18 @@ export class DashboardView {
     // handleCopyUrl copies the stream URL. When the appliance requires the access
     // token and this browser holds it, the copied URL embeds it as RTSP
     // credentials (rtsp://mic:<token>@host:port/path) so it pastes straight into
-    // BirdNET-Go, ffmpeg or VLC; the displayed URL stays credential-free.
-    handleCopyUrl(btn, urlEl, path) {
+    // BirdNET-Go, ffmpeg or VLC; the displayed URL stays credential-free. The
+    // credentialed form is derived from the displayed URL (which updateCard keeps
+    // current), not from a path captured when the card was built, so a device
+    // path edit is reflected in the copied URL.
+    handleCopyUrl(btn, urlEl) {
         const shown = urlEl?.textContent;
         if (!shown || !navigator.clipboard)
             return;
         let url = shown;
         const token = this.status?.authRequired ? getToken() : null;
         if (token) {
-            const port = rtspPort(this.status?.rtspListen);
-            url = `rtsp://mic:${token}@${window.location.hostname}:${port}${path}`;
+            url = shown.replace("rtsp://", `rtsp://mic:${token}@`);
         }
         navigator.clipboard.writeText(url).then(() => {
             if (token)
@@ -883,9 +891,11 @@ export class DashboardView {
         const servingEl = document.getElementById("devices-serving-display");
         if (servingEl)
             servingEl.textContent = `${this.status.devicesServing} / ${this.status.devicesTotal}`;
-        // The open-access notice shows while no token is configured.
+        // The open-access notice shows while no token is configured. Guard the write
+        // so this role=status banner is not re-announced on every ~3s poll when its
+        // state is unchanged, matching the pendingNote convention.
         const banner = document.getElementById("open-access-banner");
-        if (banner)
+        if (banner && banner.hidden !== this.status.authRequired)
             banner.hidden = this.status.authRequired;
         const badge = document.getElementById("appliance-status-badge");
         const text = document.getElementById("appliance-status-text");
