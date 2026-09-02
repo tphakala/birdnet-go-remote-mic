@@ -85,14 +85,16 @@ credentials everywhere at once:
 
 ```yaml
 auth:
-  token: "REPLACE-WITH-YOUR-OWN"   # 12-128 characters of letters, digits, . _ ~ -
+  token: "<replace-with-your-own>"   # 12-128 characters of letters, digits, . _ ~ -
 ```
 
-Generate your own; the value above is a placeholder, and a token copied from
-documentation protects nothing. The web UI does it for you: go to System, open
-the Access Control card, and press Generate then Save. The change applies
-immediately, no restart: the running RTSP server and API start asking for the
-token on the next request, and the mDNS TXT record switches to `auth=token`.
+Generate your own. The value above is a placeholder that deliberately fails
+validation (angle brackets are outside the allowed set), so an unedited config
+refuses to start rather than serving on a token printed in this file. The web UI
+does it for you: go to System, open the Access Control card, and press Generate
+then Save. The change applies immediately, no restart: the running RTSP server
+and API start asking for the token on the next request, and the mDNS TXT record
+switches to `auth=token`.
 Clearing the token returns the appliance to open access. The UI warns with a
 banner while access is open.
 
@@ -107,10 +109,12 @@ One token gates both surfaces:
   ```
 
   The appliance generates its own certificate (`mgmt-cert.pem`, beside the
-  config file), so copy that file to the client and verify against it. `curl -k`
-  works too, but it skips verification entirely, which lets anything on the
-  network impersonate the appliance and collect the token: keep it for local
-  testing only.
+  config file by default), so copy that file to the client and verify against
+  it. Reach the appliance by IP or by its bare hostname: the certificate covers
+  those, not the `.local` name mDNS advertises, so a `.local` URL fails the name
+  check. `curl -k` works with any host form, but it skips verification
+  entirely, which lets anything on the network impersonate the appliance and
+  collect the token: keep it for local testing only.
 
 - RTSP stream: standard Digest authentication with the token as the password
   and any username (`mic` by convention), so the usual URL form works in
@@ -134,9 +138,9 @@ request, which for a mostly-idle client is when its keepalive next falls due: up
 to about 30 seconds with the default 60 second session timeout, measured with
 ffmpeg. A client that does not present the current token is disconnected and its
 stream slot released. Restart the appliance if you need every idle session cut
-at once. One exception: a
-management event stream (GET /events) opened before the change keeps running,
-because the bearer token is checked once when the stream starts, not per event.
+at once. One exception: a management event stream (GET /events) opened before
+the change keeps running, because the bearer token is checked once when the
+stream starts, not per event.
 As for what crosses the wire: the bearer token rides inside TLS (the API is
 HTTPS with a self-signed certificate), and Digest never sends the token at all,
 only an MD5 response over it. That MD5 exchange travels over plain TCP, so it is

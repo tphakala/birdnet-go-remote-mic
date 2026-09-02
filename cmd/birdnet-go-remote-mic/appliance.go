@@ -261,9 +261,10 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	// PATCH /config already enforces a patched token on the guard before it
 	// invokes this reload, so the guard is not the reason for the ordering; the
 	// reported state is. Device stops, restarts and opens can take seconds of
-	// retries, and setting these afterwards would leave GET /status answering
-	// with the old authRequired and the mDNS TXT record advertising the old auth
-	// hint for that whole window. Doing it here also makes the reconcile
+	// retries, and GET /status reads this flag per request, so setting it
+	// afterwards answered with the old value for that whole window. (The mDNS
+	// TXT hint is unaffected either way: restartAnnounce runs at the end of the
+	// reconcile and reads the flag then.) Doing it here also makes the reconcile
 	// self-sufficient rather than relying on its caller having set the guard.
 	// Set is idempotent: an unchanged token does not advance the generation, so
 	// this cannot disturb a live RTSP session.
