@@ -2,6 +2,7 @@ package mgmtserver
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 )
@@ -16,10 +17,13 @@ func WithAuth(g *auth.Guard) Option {
 }
 
 // requireBearer wraps next with the RFC 6750 bearer check. A missing or wrong
-// credential yields 401 with a WWW-Authenticate challenge (carrying
-// error="invalid_token" when a bearer was presented but rejected) and an RFC
-// 9457 problem body. The liveness probe is exempt so a restart watcher and a
-// load balancer can poll it without the token.
+// credential yields 401 with a WWW-Authenticate challenge and an RFC 9457
+// problem body. The error="invalid_token" code is appended only when the
+// presented scheme is Bearer (RFC 6750 section 3.1 scopes the error codes to
+// the Bearer scheme); a Basic or Digest header, or none at all, gets the bare
+// challenge so the client is not misdirected about which scheme failed. The
+// liveness probe is exempt so a restart watcher and a load balancer can poll
+// it without the token.
 func requireBearer(g *auth.Guard, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !g.Enabled() || r.URL.Path == BasePath+"/healthz" {
@@ -32,7 +36,7 @@ func requireBearer(g *auth.Guard, next http.Handler) http.Handler {
 			return
 		}
 		challenge := `Bearer realm="` + auth.Realm + `"`
-		if header != "" {
+		if scheme, _, _ := strings.Cut(header, " "); strings.EqualFold(scheme, "Bearer") {
 			challenge += `, error="invalid_token"`
 		}
 		w.Header().Set("WWW-Authenticate", challenge)

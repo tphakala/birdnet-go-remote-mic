@@ -86,6 +86,9 @@ var securedRoutes = []struct{ method, path string }{
 	{http.MethodGet, pathStatus},
 	{http.MethodGet, "/api/v1/devices"},
 	{http.MethodGet, "/api/v1/devices/available"},
+	{http.MethodPost, "/api/v1/devices"},
+	{http.MethodGet, "/api/v1/devices/mic-1"},
+	{http.MethodDelete, "/api/v1/devices/mic-1"},
 	{http.MethodGet, pathConfig},
 	{http.MethodPatch, pathConfig},
 	{http.MethodGet, "/api/v1/system"},
@@ -143,6 +146,31 @@ func TestAuthWrongBearerReportsInvalidToken(t *testing.T) {
 	want := bearerRealm + `, error="invalid_token"`
 	if h := got.header.Get("WWW-Authenticate"); h != want {
 		t.Errorf("WWW-Authenticate = %q, want %q", h, want)
+	}
+}
+
+// TestAuthNonBearerSchemeGetsBareChallenge proves error="invalid_token" is
+// scoped to the Bearer scheme (RFC 6750 section 3.1): a Basic header, which did
+// not fail bearer validation, gets the bare challenge instead of being
+// misdirected with a bearer-specific error code. A wrong Bearer still carries
+// the code (covered by TestAuthWrongBearerReportsInvalidToken).
+func TestAuthNonBearerSchemeGetsBareChallenge(t *testing.T) {
+	srv := authTestServer(t, auth.NewGuard(testAuthToken))
+	req, err := http.NewRequest(http.MethodGet, srv.URL+pathStatus, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic bWljOnNlY3JldA==")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if h := resp.Header.Get("WWW-Authenticate"); h != bearerRealm {
+		t.Errorf("WWW-Authenticate = %q, want the bare challenge %q (no invalid_token for a non-Bearer scheme)", h, bearerRealm)
 	}
 }
 
