@@ -77,6 +77,18 @@ func TestCheckDigestRejections(t *testing.T) {
 	challenge := g.DigestChallenge(nonce)
 	good := clientAnswer(t, challenge, testUser, testToken, testMethod, testURI)
 
+	// Hand-built headers for the branches rtsp.Authorize will not emit: a non-MD5
+	// algorithm, and a qop=auth answer missing nc or cnonce. Building them by hand
+	// keeps the CheckDigest field checks (not the client) under test.
+	const nc, cnonce = "00000001", "0a4f113b"
+	legacyResp := digestResponse(testUser, testToken, testMethod, testURI, nonce, "", "", "")
+	// Compute each qop response over the header EXACTLY as sent (the missing field
+	// empty), so the only thing left to reject the answer is the explicit nc/cnonce
+	// presence check, not a response mismatch.
+	respNoCnonce := digestResponse(testUser, testToken, testMethod, testURI, nonce, nc, "", "auth")
+	respNoNc := digestResponse(testUser, testToken, testMethod, testURI, nonce, "", cnonce, "auth")
+	base := `Digest username="mic", realm="birdnet-go-remote-mic", nonce="` + nonce + `", uri="` + testURI + `"`
+
 	tests := []struct {
 		name   string
 		method string
@@ -89,9 +101,18 @@ func TestCheckDigestRejections(t *testing.T) {
 		{"method mismatch", "PLAY", good, nonce},
 		{"basic scheme", testMethod, "Basic bWljOms3UW0zdlg5cEwyd1I4blQ=", nonce},
 		{"empty header", testMethod, "", nonce},
-		{"missing response", testMethod, `Digest username="mic", realm="birdnet-go-remote-mic", nonce="` + nonce + `", uri="` + testURI + `"`, nonce},
+		{"missing response", testMethod, base, nonce},
 		{"unsupported qop", testMethod, strings.Replace(good, "qop=auth", "qop=auth-int", 1), nonce},
 		{"empty nonce on server", testMethod, good, ""},
+		// A non-MD5 algorithm is rejected even with an otherwise valid MD5 response:
+		// the appliance advertises MD5 only and must not silently accept a mislabeled
+		// answer.
+		{"non-md5 algorithm", testMethod, base + `, algorithm=SHA-256, response="` + legacyResp + `"`, nonce},
+		// qop=auth requires both nc and cnonce; an empty nc is a forgeable replay
+		// counter, so a missing one must be rejected rather than treated as zero.
+		// The response matches the header as sent, so only the presence check rejects.
+		{"qop auth missing cnonce", testMethod, base + `, qop=auth, nc=` + nc + `, response="` + respNoCnonce + `"`, nonce},
+		{"qop auth missing nc", testMethod, base + `, qop=auth, cnonce="` + cnonce + `", response="` + respNoNc + `"`, nonce},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
