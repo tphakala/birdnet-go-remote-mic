@@ -42,6 +42,11 @@ var version = "dev"
 // retry is testable without hardware.
 var deviceInUse = audio.DeviceInUse
 
+// resolveOpenChannels resolves the hardware channel count to open a device at,
+// rounding its selection up to a count the card supports. It is a package var
+// so the open retry's per-attempt resolution is testable without hardware.
+var resolveOpenChannels = audio.ResolveOpenChannels
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to the YAML config file")
 	listDevices := flag.Bool("list-devices", false, "list capture devices and exit")
@@ -143,14 +148,21 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 // the same card can transiently fail with EBUSY. A handful of short retries rides
 // that out; a device that still will not open is reported skipped, not dropped.
 //
-// openCh is the hardware channel count the caller resolved once for this open
-// (see appliance.openAndStart); the busy gate probes at it and the open uses it,
-// so the two never disagree and the refine ioctl is not repeated per attempt.
-func openDeviceRetry(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
+// The hardware open channel count is resolved at the top of EACH attempt, not
+// once up front. openDeviceRetry runs right after the old capture source was
+// closed, inside the very EBUSY window the retry exists to ride out; a probe
+// during that window fails, so ResolveOpenChannels falls back to max(selection).
+// Re-resolving per attempt lets a card freed between attempts be opened at the
+// count it actually needs (a stereo-only card whose mono fallback would fail to
+// open), instead of a wrong value pinned from the first probe. The busy gate and
+// the capture open within one attempt share that attempt's resolved count, so
+// they never disagree.
+func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 	const attempts = 5
 	const delay = 50 * time.Millisecond
 	var err error
 	for i := range attempts {
+		openCh := resolveOpenChannels(dev.Device, dev.Channels)
 		// Gate the blocking capture open on a non-blocking busy check. A device
 		// held exclusively by another process can make the ALSA open block rather
 		// than fail promptly, which would park the single reconcile goroutine and
@@ -334,8 +346,10 @@ func run(cfgPath string) error {
 // Failure is logged, not fatal: the appliance still serves on a
 // multicast-blocked network, where the manual host:port entry is the fallback.
 // A device that dies later keeps its advertisement until the process exits
-// (dnssd cannot retire a single service); clients get 404.
-func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime, authRequired bool) {
+// (dnssd cannot retire a single service); clients get 404. It is a package var
+// so reconcile tests can swap in a stub and assert announceGen without a real
+// responder multicasting on the test host's LAN.
+var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRuntime, authRequired bool) {
 	infos, port, err := announceInfos(listen, devices, authRequired)
 	if err != nil {
 		log.Printf("mDNS disabled: %v", err)

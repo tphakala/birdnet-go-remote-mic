@@ -78,10 +78,11 @@ type appliance struct {
 	// reconcile did (or did not) rebuild the mDNS set without touching dnssd.
 	announceGen int
 
-	// open builds and starts one device's runtime at the resolved hardware
-	// channel count. It is a field so tests can inject a fake capture source
-	// instead of opening real ALSA hardware; in production it is openDeviceRetry.
-	open func(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error)
+	// open builds and starts one device's runtime, resolving the hardware open
+	// channel count per attempt (see openDeviceRetry). It is a field so tests can
+	// inject a fake capture source instead of opening real ALSA hardware; in
+	// production it is openDeviceRetry.
+	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard) *appliance {
@@ -186,11 +187,13 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // carrying the open error so GET /devices can report it, exactly as at startup.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	friendly := a.hwNames[dev.Device]
-	// Resolve the hardware channel count ONCE per open: the selection rounded up
-	// to a count the device supports. The rate probe, the busy gate in the opener
-	// and the capture open all use this same value, so they cannot disagree and
-	// the refine ioctl runs once rather than at each site.
-	openCh := audio.ResolveOpenChannels(dev.Device, dev.Channels)
+	// Resolve the hardware channel count for the capability PROBE only. The
+	// open itself re-resolves per attempt inside the opener (openDeviceRetry), as
+	// close to the open as possible, so a card transiently held right after a
+	// restart is opened at its correct count once it frees rather than at a
+	// fallback pinned here. A wrong value here costs at most a cosmetic
+	// capability list, and rememberCaps below retains the last known good.
+	openCh := resolveOpenChannels(dev.Device, dev.Channels)
 	// Probe supported rates and channels for the config UI before opening: once we
 	// hold the hw device exclusively the probe would see our own process and report
 	// busy. Both use the same non-blocking capability query. Rates are probed at
@@ -203,7 +206,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rates, channels = a.rememberCaps(dev.Device, rates, channels)
 
 	d := *dev
-	rt, err := a.open(&d, openCh, a.hub)
+	rt, err := a.open(&d, a.hub)
 	if err != nil {
 		log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, err)
 		return &deviceRuntime{
