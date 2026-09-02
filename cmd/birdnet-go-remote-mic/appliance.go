@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -51,6 +52,9 @@ type appliance struct {
 	hub  *levels.Hub
 	srv  *rtspserver.Server
 	prov *provider
+	// guard is the shared-token guard the RTSP and management servers consult;
+	// reconcile swaps its token so a config change applies without a restart.
+	guard *auth.Guard
 
 	// cfg is the configuration currently applied to the pipeline. devices holds
 	// one runtime per configured device keyed by name, in any state (serving,
@@ -70,19 +74,24 @@ type appliance struct {
 	alive          int   // number of live capture pumps
 	lastPumpErr    error // last spontaneous pump failure, for the exit status
 	announceCancel context.CancelFunc
+	// announceGen counts advertisement rebuilds, so a test can assert that a
+	// reconcile did (or did not) rebuild the mDNS set without touching dnssd.
+	announceGen int
 
-	// open builds and starts one device's runtime. It is a field so tests can
+	// open builds and starts one device's runtime, resolving the hardware open
+	// channel count per attempt (see openDeviceRetry). It is a field so tests can
 	// inject a fake capture source instead of opening real ALSA hardware; in
 	// production it is openDeviceRetry.
 	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 }
 
-func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider) *appliance {
+func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard) *appliance {
 	return &appliance{
 		ctx:       ctx,
 		hub:       hub,
 		srv:       srv,
 		prov:      prov,
+		guard:     guard,
 		hwNames:   map[string]string{},
 		devices:   map[string]*deviceRuntime{},
 		capsCache: map[string]deviceCaps{},
@@ -178,13 +187,19 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // carrying the open error so GET /devices can report it, exactly as at startup.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	friendly := a.hwNames[dev.Device]
+	// Resolve the hardware channel count for the capability PROBE only. The
+	// open itself re-resolves per attempt inside the opener (openDeviceRetry), as
+	// close to the open as possible, so a card transiently held right after a
+	// restart is opened at its correct count once it frees rather than at a
+	// fallback pinned here. A wrong value here costs at most a cosmetic
+	// capability list, and rememberCaps below retains the last known good.
+	openCh := resolveOpenChannels(dev.Device, dev.Channels)
 	// Probe supported rates and channels for the config UI before opening: once we
 	// hold the hw device exclusively the probe would see our own process and report
-	// busy. Both use the same non-blocking capability query.
-	// Probe rates at the channel count we will actually open (the selection rounded
-	// up to a supported count), since a device's rate set can depend on the channel
-	// count.
-	rates := audio.ProbeRates(dev.Device, audio.ResolveOpenChannels(dev.Device, dev.Channels), audio.CandidateRates())
+	// busy. Both use the same non-blocking capability query. Rates are probed at
+	// the count we will actually open, since a device's rate set can depend on
+	// the channel count.
+	rates := audio.ProbeRates(dev.Device, openCh, audio.CandidateRates())
 	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
 	// Keep the last-known caps if this probe came back empty (a transient
 	// card-swap window), so the UI does not flicker to an empty list.
@@ -230,8 +245,8 @@ func (a *appliance) stop(rt *deviceRuntime) {
 // reconcile applies newCfg to the running pipeline: it starts newly enabled or
 // added devices, stops removed or disabled ones, and restarts those whose capture
 // parameters changed, while leaving unchanged devices serving. It then republishes
-// the device records and, if the serving set or discovery flag changed, restarts
-// the mDNS advertisement.
+// the device records and, if the serving set, the discovery flag, or the auth
+// hint changed, restarts the mDNS advertisement.
 func (a *appliance) reconcile(newCfg *config.Config) {
 	if names, err := audio.HardwareNames(); err == nil {
 		a.hwNames = names
@@ -240,6 +255,21 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	}
 
 	prevDiscovery := a.prov.discoveryEnabled()
+	prevAuth := a.prov.authRequired()
+
+	// Apply the access token and the auth state BEFORE the device work below.
+	// PATCH /config already enforces a patched token on the guard before it
+	// invokes this reload, so the guard is not the reason for the ordering; the
+	// reported state is. Device stops, restarts and opens can take seconds of
+	// retries, and GET /status reads this flag per request, so setting it
+	// afterwards answered with the old value for that whole window. (The mDNS
+	// TXT hint is unaffected either way: restartAnnounce runs at the end of the
+	// reconcile and reads the flag then.) Doing it here also makes the reconcile
+	// self-sufficient rather than relying on its caller having set the guard.
+	// Set is idempotent: an unchanged token does not advance the generation, so
+	// this cannot disturb a live RTSP session.
+	a.guard.Set(newCfg.Auth.Token)
+	a.prov.setAuthRequired(newCfg.AuthRequired())
 
 	// Publish the desired configured-device ids BEFORE opening anything, so the
 	// background enumeration excludes a device from probing before its capture
@@ -287,12 +317,13 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	// drives pump events, reloads and shutdown.
 	a.prov.signalEnumerate()
 
-	// Rebuild the mDNS advertisement whenever any device changed or discovery
-	// toggled. A param-change restart keeps the serving count identical but
+	// Rebuild the mDNS advertisement whenever any device changed, discovery
+	// toggled, or the auth hint changed (the TXT record advertises auth=token or
+	// auth=none). A param-change restart keeps the serving count identical but
 	// alters the advertised path/rate/codec, so gate on the plan being non-empty,
 	// not on the count. dnssd cannot retire a single service, so restartAnnounce
 	// rebuilds the whole set.
-	if !plan.Empty() || newCfg.DiscoveryEnabled() != prevDiscovery {
+	if !plan.Empty() || newCfg.DiscoveryEnabled() != prevDiscovery || newCfg.AuthRequired() != prevAuth {
 		a.restartAnnounce()
 	}
 }
@@ -365,7 +396,8 @@ func (a *appliance) onPumpDone(res pumpResult) {
 
 // restartAnnounce cancels the current mDNS advertisement and starts a fresh one
 // for the serving set. dnssd cannot retire a single service, so the whole
-// advertisement is rebuilt whenever the serving set or discovery flag changes.
+// advertisement is rebuilt whenever the serving set, the discovery flag, or the
+// auth hint (the TXT auth=token/auth=none record) changes.
 func (a *appliance) restartAnnounce() {
 	if a.announceCancel != nil {
 		a.announceCancel()
@@ -385,7 +417,8 @@ func (a *appliance) restartAnnounce() {
 	}
 	actx, cancel := context.WithCancel(a.ctx)
 	a.announceCancel = cancel
-	startAnnounce(actx, a.cfg.Listen, serving)
+	a.announceGen++
+	startAnnounce(actx, a.cfg.Listen, serving, a.prov.authRequired())
 }
 
 // closeAll releases every serving device's capture source at shutdown so the

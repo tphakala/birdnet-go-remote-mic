@@ -53,6 +53,26 @@ func TestOpenCaptureRejectsUnknownFormat(t *testing.T) {
 	}
 }
 
+func TestOpenCaptureAtRejectsOpenCountBelowSelection(t *testing.T) {
+	called := false
+	prev := openStream
+	openStream = func(capture.Config) (captureStream, error) {
+		called = true
+		return &stubStream{}, nil
+	}
+	defer func() { openStream = prev }()
+
+	// The selection needs channel 2 but only 1 channel is opened: OpenCaptureAt
+	// must reject before touching hardware, so the strided selecting copy can
+	// never read past the negotiated buffer.
+	if _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{2}, Format: testFmtS16}, 1); err == nil {
+		t.Fatal("OpenCaptureAt accepted openCh=1 below max(selection)=2, want error")
+	}
+	if called {
+		t.Error("OpenCaptureAt opened the device despite an insufficient open channel count")
+	}
+}
+
 func TestOpenCapturePassesS16Format(t *testing.T) {
 	var got capture.Format
 	prev := openStream
@@ -283,5 +303,29 @@ func TestOpenCaptureStartsAndReads(t *testing.T) {
 	}
 	if p.Frames != 5120 { // buffer is PeriodFrames*frameBytes; stub returns len/2 frames
 		t.Errorf("Read frames = %d, want 5120", p.Frames)
+	}
+}
+
+// TestOpenCaptureAtOpensAtGivenCount verifies the caller-resolved open channel
+// count is what reaches the hardware open, so the appliance can resolve it once
+// (for the rate probe, the busy gate and the open) instead of re-probing here.
+func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
+	var got int
+	prev := openStream
+	openStream = func(cfg capture.Config) (captureStream, error) {
+		got = cfg.Channels
+		return &stubStream{neg: capture.Config{Rate: 48000, Channels: cfg.Channels, PeriodFrames: 960}}, nil
+	}
+	defer func() { openStream = prev }()
+	src, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{1}, Format: testFmtS16}, 2)
+	if err != nil {
+		t.Fatalf("OpenCaptureAt: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+	if got != 2 {
+		t.Errorf("hardware opened at %d channels, want the given 2", got)
+	}
+	if _, ch := src.Negotiated(); ch != 1 {
+		t.Errorf("stream delivers %d channels, want the 1 selected", ch)
 	}
 }

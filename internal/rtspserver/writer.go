@@ -38,6 +38,19 @@ func (cs *connSession) runWriter() {
 		if err != nil {
 			return
 		}
+		// Proactive eviction: stop streaming the moment the guard's generation
+		// moves past the one this connection authenticated under (or, for an
+		// open-access session that never authenticated, the moment a token is
+		// enabled). handle() only re-challenges when the client sends a request,
+		// but live555/VLC keepalive with OPTIONS and other clients send only
+		// RTCP, so a request-driven check alone would let such a session stream
+		// on indefinitely after the token changed. Returning here runs the same
+		// teardown as any other writer exit: defer cs.close() cancels the context
+		// and closes the socket, and serveConn's deferred cleanup releases the
+		// track slot.
+		if g := cs.srv.cfg.Auth; g.Enabled() && cs.authGen.Load() != g.Generation() {
+			return
+		}
 		if len(frame.Payload) > maxWriterPayload {
 			return // out-of-contract payload: tear down rather than corrupt the frame
 		}

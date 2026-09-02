@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	rtsp "github.com/tphakala/go-audio-stream/rtsp"
@@ -52,6 +53,21 @@ type connSession struct {
 	startTS  uint32
 	hasSlot  bool
 	writing  bool // the media writer goroutine is running
+
+	// nonce is the Digest nonce issued to this connection on its first
+	// challenge; answers are accepted only under it, so a captured Authorization
+	// header is useless on any other connection. authed records that a valid
+	// answer arrived and authGen the guard generation it was valid under. A
+	// later request is trusted only while authGen still matches the guard's
+	// current generation; enabling or rotating the token advances the
+	// generation, so a connection authenticated under the old token (or under
+	// open access) is re-challenged and evicted rather than authenticated for
+	// its whole lifetime. authed and authGen are atomics because handle runs on
+	// the read goroutine while runWriter reads them on the writer goroutine to
+	// evict a serving connection proactively.
+	nonce   string
+	authed  atomic.Bool
+	authGen atomic.Uint64
 }
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
@@ -127,6 +143,18 @@ func (cs *connSession) step(buf []byte) (consumed int, fatal bool) {
 }
 
 func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
+	// OPTIONS stays open: clients probe capabilities before they authenticate
+	// (live555 and mediamtx behave the same way). Everything else, including an
+	// unknown method, must authenticate first.
+	if req.Method != "OPTIONS" && !cs.authorized(req) {
+		cs.respondUnauthorized(req)
+		// A connection that had already reached a session (SETUP or PLAY) is
+		// torn down after the challenge: enabling or rotating the token must
+		// evict it, and serveConn's deferred cleanup then releases the track
+		// slot and stops the writer. A connection still negotiating (stateInit)
+		// keeps its socket so it can retry with credentials.
+		return cs.state != stateInit
+	}
 	switch req.Method {
 	case "OPTIONS":
 		cs.respondOptions(req)
@@ -145,6 +173,50 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 		cs.respondStatus(req, 501, "Not Implemented")
 	}
 	return false
+}
+
+// authorized reports whether req may proceed: when this connection already
+// authenticated under the guard's current generation, when no token is
+// configured, or when req carries a valid Digest answer to this connection's
+// nonce (which records the current generation and authenticates the
+// connection). Authentication holds only while the generation is unchanged: a
+// token enabled or rotated by a hot reload advances the generation, so a
+// connection authenticated under the old token (or under open access) is no
+// longer authorized and gets re-challenged on its next request.
+func (cs *connSession) authorized(req *rtsp.Request) bool {
+	g := cs.srv.cfg.Auth
+	if cs.authed.Load() && cs.authGen.Load() == g.Generation() {
+		return true
+	}
+	if !g.Enabled() {
+		return true
+	}
+	// Snapshot the generation BEFORE running the credential check, then record
+	// that snapshot on success. If the token is rotated between this read and
+	// CheckDigest's own token read, either CheckDigest fails against the new
+	// token, or the recorded generation is older than the verified token and the
+	// connection is simply re-challenged next request. Reading the generation
+	// after the check could instead stamp an old-token answer with the new
+	// generation, authenticating a revoked credential.
+	gen := g.Generation()
+	if cs.nonce != "" && g.CheckDigest(req.Method, req.Header.Get("Authorization"), cs.nonce) {
+		cs.authed.Store(true)
+		cs.authGen.Store(gen)
+		return true
+	}
+	return false
+}
+
+// respondUnauthorized answers 401 with this connection's Digest challenge,
+// minting the nonce on the first challenge. The connection stays open so the
+// client can retry with credentials.
+func (cs *connSession) respondUnauthorized(req *rtsp.Request) {
+	if cs.nonce == "" {
+		cs.nonce = cs.srv.cfg.Auth.NewNonce()
+	}
+	h := rtsp.Header{}
+	h.Set("WWW-Authenticate", cs.srv.cfg.Auth.DigestChallenge(cs.nonce))
+	cs.write(&rtsp.Response{StatusCode: 401, Reason: "Unauthorized", CSeq: req.CSeq, Header: h})
 }
 
 func (cs *connSession) respondOptions(req *rtsp.Request) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -109,9 +110,25 @@ func testDevice(name, hw, path string, rate int) config.Device {
 
 func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFunc) {
 	t.Helper()
+	// Stub the mDNS responder so reconcile tests that set a Listen address do not
+	// multicast a fake service onto the host's real LAN. announceGen is bumped by
+	// restartAnnounce before startAnnounce runs, so a no-op stub still lets the
+	// rebuild-count assertions work. Swapping a package var means these tests must
+	// stay sequential (they are; none calls t.Parallel).
+	prevAnnounce := startAnnounce
+	startAnnounce = func(context.Context, string, []*deviceRuntime, bool) {}
+	t.Cleanup(func() { startAnnounce = prevAnnounce })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	log := &fakeOpenLog{}
-	app := newAppliance(ctx, levels.NewHub(), rtspserver.New(rtspserver.Config{Listen: testListenAny}), &provider{version: "test", start: time.Now()})
+	// One guard is shared by the RTSP server and the appliance, exactly as
+	// main.go wires them, so a token applied by reconcile enforces on the stream
+	// too. Passing it only to newAppliance (as before) left the RTSP server with
+	// a nil guard, so the auth assertions could not see whether the stream was
+	// actually protected.
+	guard := auth.NewGuard("")
+	srv := rtspserver.New(rtspserver.Config{Listen: testListenAny, Auth: guard})
+	app := newAppliance(ctx, levels.NewHub(), srv, &provider{version: "test", start: time.Now()}, guard)
 	app.open = fakeOpener(log)
 	return app, log, cancel
 }
@@ -241,19 +258,19 @@ func TestRememberCapsRetainsLastKnown(t *testing.T) {
 	a := &appliance{capsCache: map[string]deviceCaps{}}
 
 	// First probe records the caps.
-	r, c := a.rememberCaps("hw:1,0", []int{48000, 96000}, []int{1, 2})
+	r, c := a.rememberCaps(devHW1, []int{48000, 96000}, []int{1, 2})
 	if len(r) != 2 || len(c) != 2 {
 		t.Fatalf("first probe = %v %v, want the probed values", r, c)
 	}
 
 	// A transient empty probe (card-swap window) keeps the last-known caps.
-	r, c = a.rememberCaps("hw:1,0", nil, nil)
+	r, c = a.rememberCaps(devHW1, nil, nil)
 	if len(r) != 2 || r[0] != 48000 || len(c) != 2 {
 		t.Errorf("empty re-probe = %v %v, want the retained [48000 96000] [1 2]", r, c)
 	}
 
 	// A later non-empty probe replaces the cache.
-	r, c = a.rememberCaps("hw:1,0", []int{384000}, []int{1})
+	r, c = a.rememberCaps(devHW1, []int{384000}, []int{1})
 	if len(r) != 1 || r[0] != 384000 || len(c) != 1 || c[0] != 1 {
 		t.Errorf("updated probe = %v %v, want [384000] [1]", r, c)
 	}
@@ -261,5 +278,51 @@ func TestRememberCapsRetainsLastKnown(t *testing.T) {
 	// An unknown device with an empty probe stays empty (nothing to retain).
 	if r, c := a.rememberCaps("hw:9,0", nil, nil); r != nil || c != nil {
 		t.Errorf("unknown empty probe = %v %v, want nil nil", r, c)
+	}
+}
+
+const testAuthToken = "k7Qm3vX9pL2wR8nT"
+
+func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	cfg := config.Config{Listen: testListenAny}
+	cfg.Auth.Token = testAuthToken
+	app.reconcile(&cfg)
+	if !app.guard.Enabled() {
+		t.Error("reconcile with a token must enable the guard")
+	}
+	if !app.prov.Status().AuthRequired {
+		t.Error("reconcile with a token must report authRequired")
+	}
+	cfg.Auth.Token = ""
+	app.reconcile(&cfg)
+	if app.guard.Enabled() {
+		t.Error("reconcile with an empty token must disable the guard")
+	}
+	if app.prov.Status().AuthRequired {
+		t.Error("reconcile with an empty token must report open access")
+	}
+}
+
+func TestApplianceAuthToggleRebuildsAnnouncement(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	cfg := config.Config{Listen: testListenAny, Devices: []config.Device{testDevice("garden", devHW1, "/garden", 48000)}}
+	app.reconcile(&cfg)
+	defer app.closeAll()
+	before := app.announceGen
+	// Same devices, same discovery flag: only the token changes. The TXT auth
+	// hint must follow it, so the advertisement is rebuilt.
+	cfg.Auth.Token = testAuthToken
+	app.reconcile(&cfg)
+	if app.announceGen == before {
+		t.Error("enabling auth must rebuild the mDNS advertisement (TXT auth hint)")
+	}
+	before = app.announceGen
+	// An unrelated reconcile with nothing changed must not rebuild.
+	app.reconcile(&cfg)
+	if app.announceGen != before {
+		t.Error("a no-op reconcile must not rebuild the advertisement")
 	}
 }

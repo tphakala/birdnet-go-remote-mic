@@ -36,17 +36,27 @@ export interface ManagementSettings {
   certDir?: string;
 }
 
+// AuthSettings is the shared access token that gates the management API and
+// web UI (bearer) and the RTSP stream (Digest password). An empty token means
+// open access; in a patch, an absent field leaves it unchanged and an empty
+// string disables authentication.
+export interface AuthSettings {
+  token?: string;
+}
+
 export interface Config {
   listen: string;
   discovery?: DiscoverySettings;
   management?: ManagementSettings;
+  auth?: AuthSettings;
   devices: DeviceConfig[];
 }
 
-// Only discovery and devices are patchable; the server ignores anything else
-// (see api/openapi.yaml ConfigPatch).
+// Only discovery, auth and devices are patchable; the server ignores anything
+// else (see api/openapi.yaml ConfigPatch).
 export interface ConfigPatch {
   discovery?: DiscoverySettings;
+  auth?: AuthSettings;
   devices?: DeviceConfig[];
 }
 
@@ -60,6 +70,9 @@ export interface ApplianceStatus {
   uptimeSeconds: number;
   rtspListen: string;
   discoveryEnabled: boolean;
+  // Whether a shared access token is configured (the API, UI and RTSP stream
+  // require credentials).
+  authRequired: boolean;
   devicesServing: number;
   devicesTotal: number;
 }

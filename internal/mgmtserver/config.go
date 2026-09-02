@@ -102,11 +102,11 @@ func WithReloader(fn Reloader) Option {
 }
 
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
-// Only discovery and the device list are patchable; an absent field is left
-// unchanged, and a present devices array replaces the whole list. The merged
-// configuration must validate as a whole. With a reloader mounted the change is
-// applied to the running pipeline in place (restartRequired=false); without one
-// it is persisted but takes effect only after a restart.
+// Only discovery, the access token and the device list are patchable; an absent
+// field is left unchanged, and a present devices array replaces the whole list.
+// The merged configuration must validate as a whole. With a reloader mounted the
+// change is applied to the running pipeline in place (restartRequired=false);
+// without one it is persisted but takes effect only after a restart.
 func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigRequestObject) (mgmtapi.PatchConfigResponseObject, error) {
 	if s.configStore == nil {
 		return mgmtapi.PatchConfigdefaultApplicationProblemPlusJSONResponse{
@@ -117,7 +117,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	patch := request.Body
 	// An empty patch changes nothing: report the current config without
 	// rewriting the file and without claiming a restart is pending.
-	if patch == nil || (patch.Discovery == nil && patch.Devices == nil) {
+	if patch == nil || (patch.Discovery == nil && patch.Auth == nil && patch.Devices == nil) {
 		cur := s.configStore.Config()
 		return mgmtapi.PatchConfig200JSONResponse{
 			Config:          configToWire(&cur),
@@ -134,6 +134,11 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
 		if patch.Discovery != nil {
 			cur.Discovery.Enabled = patch.Discovery.Enabled
+		}
+		// An auth block with no token field is a no-op; an empty string clears
+		// the token (open access), which Validate accepts.
+		if patch.Auth != nil && patch.Auth.Token != nil {
+			cur.Auth.Token = *patch.Auth.Token
 		}
 		if patch.Devices != nil {
 			devs := make([]config.Device, 0, len(*patch.Devices))
@@ -160,6 +165,16 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	}
 
 	cur := s.configStore.Config()
+
+	// Enforce the persisted token immediately, before the reload round trip.
+	// Persistence and enforcement must not be separated: GET /config returns
+	// the token, so a token that is stored and readable but not yet enforced
+	// (or one whose reload below fails) would leave the API answering as if it
+	// were still open access. Set is idempotent, so cmd's own reconcile guard
+	// applying the same token again is harmless.
+	if s.guard != nil {
+		s.guard.Set(cur.Auth.Token)
+	}
 
 	// With a reloader mounted, apply the persisted change to the running pipeline
 	// in place. A reload error (not a per-device open failure, which surfaces via
@@ -211,6 +226,11 @@ func configToWire(c *config.Config) mgmtapi.Config {
 		Management: mgmtapi.ManagementSettings{
 			Enabled: ptr(c.ManagementEnabled()),
 		},
+		// The token is materialized even when empty so the UI sees a definite
+		// "open access" rather than a null it must reinterpret. Returning it to
+		// an authenticated caller (who already holds it) is not an escalation, and
+		// the Access Control card needs it to show what to paste into BirdNET-Go.
+		Auth:    mgmtapi.AuthSettings{Token: ptr(c.Auth.Token)},
 		Devices: devs,
 	}
 	if c.Management.Listen != "" {

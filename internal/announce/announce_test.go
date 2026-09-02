@@ -6,18 +6,22 @@ import (
 	"time"
 )
 
-const testCodec = "L16"
+const (
+	testCodec   = "L16"
+	testPath    = "/garden"
+	testVersion = "1.2.3"
+)
 
 func TestTXTRecords(t *testing.T) {
-	txt := txtRecords(&Info{Name: "garden-mic", Path: "/garden", Codec: testCodec, Rate: 256000, Channels: 1, Version: "1.2.3"})
+	txt := txtRecords(&Info{Name: "garden-mic", Path: testPath, Codec: testCodec, Rate: 256000, Channels: 1, Version: testVersion})
 	want := map[string]string{
 		"txtvers": "1",
 		"model":   "birdnet-go-remote-mic",
-		"version": "1.2.3",
-		"codec":   "L16",
+		"version": testVersion,
+		"codec":   testCodec,
 		"rate":    "256000",
 		"ch":      "1",
-		"path":    "/garden",
+		"path":    testPath,
 		"auth":    "none",
 	}
 	if len(txt) != len(want) {
@@ -27,6 +31,13 @@ func TestTXTRecords(t *testing.T) {
 		if txt[k] != v {
 			t.Errorf("txt[%q] = %q, want %q", k, txt[k], v)
 		}
+	}
+}
+
+func TestTXTRecordsAdvertiseTokenAuth(t *testing.T) {
+	txt := txtRecords(&Info{Name: "garden-mic", Path: testPath, Codec: testCodec, Rate: 48000, Channels: 1, Version: testVersion, AuthRequired: true})
+	if txt["auth"] != "token" {
+		t.Errorf("txt[auth] = %q, want token when a token is required", txt["auth"])
 	}
 }
 

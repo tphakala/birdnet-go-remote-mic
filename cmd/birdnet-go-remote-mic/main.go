@@ -25,6 +25,7 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -40,6 +41,11 @@ var version = "dev"
 // process, via a non-blocking capability query. It is a package var so the open
 // retry is testable without hardware.
 var deviceInUse = audio.DeviceInUse
+
+// resolveOpenChannels resolves the hardware channel count to open a device at,
+// rounding its selection up to a count the card supports. It is a package var
+// so the open retry's per-attempt resolution is testable without hardware.
+var resolveOpenChannels = audio.ResolveOpenChannels
 
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to the YAML config file")
@@ -103,12 +109,13 @@ type deviceRuntime struct {
 	superseded bool
 }
 
-// openDevice opens and starts capture for one configured device and builds its
-// pipeline stage, SDP, and RTSP track. The capture source is wrapped so every
-// period also feeds the device's level meter, which runs on the capture pump
-// regardless of whether an RTSP client is connected.
-func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
-	src, err := audio.OpenCapture(dev)
+// openDevice opens and starts capture for one configured device at the
+// resolved hardware channel count openCh and builds its pipeline stage, SDP, and
+// RTSP track. The capture source is wrapped so every period also feeds the
+// device's level meter, which runs on the capture pump regardless of whether an
+// RTSP client is connected.
+func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
+	src, err := audio.OpenCaptureAt(dev, openCh)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
@@ -140,11 +147,22 @@ func openDevice(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 // not release a hw device the instant Close returns, so an immediate reopen of
 // the same card can transiently fail with EBUSY. A handful of short retries rides
 // that out; a device that still will not open is reported skipped, not dropped.
+//
+// The hardware open channel count is resolved at the top of EACH attempt, not
+// once up front. openDeviceRetry runs right after the old capture source was
+// closed, inside the very EBUSY window the retry exists to ride out; a probe
+// during that window fails, so ResolveOpenChannels falls back to max(selection).
+// Re-resolving per attempt lets a card freed between attempts be opened at the
+// count it actually needs (a stereo-only card whose mono fallback would fail to
+// open), instead of a wrong value pinned from the first probe. The busy gate and
+// the capture open within one attempt share that attempt's resolved count, so
+// they never disagree.
 func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 	const attempts = 5
 	const delay = 50 * time.Millisecond
 	var err error
 	for i := range attempts {
+		openCh := resolveOpenChannels(dev.Device, dev.Channels)
 		// Gate the blocking capture open on a non-blocking busy check. A device
 		// held exclusively by another process can make the ALSA open block rather
 		// than fail promptly, which would park the single reconcile goroutine and
@@ -153,11 +171,11 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 		// retried and then skipped instead of blocking. The retry also rides out
 		// the transient EBUSY window right after a hot-reload Close, before the
 		// kernel releases the card, so a same-card restart is not falsely skipped.
-		if deviceInUse(dev.Device, audio.ResolveOpenChannels(dev.Device, dev.Channels)) {
+		if deviceInUse(dev.Device, openCh) {
 			err = capture.ErrDeviceInUse
 		} else {
 			var rt *deviceRuntime
-			if rt, err = openDevice(dev, hub); err == nil {
+			if rt, err = openDevice(dev, openCh, hub); err == nil {
 				return rt, nil
 			}
 		}
@@ -198,11 +216,25 @@ func run(cfgPath string) error {
 		enumTrigger: make(chan struct{}, 1),
 	}
 	prov.setDiscovery(cfg.DiscoveryEnabled())
+	prov.setAuthRequired(cfg.AuthRequired())
+
+	// One shared access token gates the RTSP stream (Digest) and the management
+	// API and web UI (Bearer). The guard is consulted per request and swapped by
+	// reconcile, so a token set or rotated through PATCH /config applies live.
+	guard := auth.NewGuard(cfg.Auth.Token)
+	switch {
+	case cfg.AuthRequired():
+		log.Print("access token required for the RTSP stream and the management API")
+	case cfg.ManagementEnabled():
+		log.Print("WARNING: the RTSP stream and the management API are OPEN to the network; set auth.token (or use the web UI's Access Control card) to require a token")
+	default:
+		log.Print("WARNING: the RTSP stream is OPEN to the network; set auth.token in the config to require a token")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen}), prov)
+	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard)
 
 	// reconcileCh carries a runtime config reload from an API handler goroutine to
 	// the run loop, which owns the pipeline. The reloader closure handed to the
@@ -242,7 +274,7 @@ func run(cfgPath string) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop, reloader)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop, reloader, guard)
 	}
 	defer func() {
 		stop()
@@ -317,29 +349,14 @@ func run(cfgPath string) error {
 // Failure is logged, not fatal: the appliance still serves on a
 // multicast-blocked network, where the manual host:port entry is the fallback.
 // A device that dies later keeps its advertisement until the process exits
-// (dnssd cannot retire a single service); clients get 404.
-func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime) {
-	_, portStr, err := net.SplitHostPort(listen)
+// (dnssd cannot retire a single service); clients get 404. It is a package var
+// so reconcile tests can swap in a stub and assert announceGen without a real
+// responder multicasting on the test host's LAN.
+var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRuntime, authRequired bool) {
+	infos, port, err := announceInfos(listen, devices, authRequired)
 	if err != nil {
-		log.Printf("mDNS disabled: cannot parse listen address %q: %v", listen, err)
+		log.Printf("mDNS disabled: %v", err)
 		return
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		log.Printf("mDNS disabled: bad port in %q: %v", listen, err)
-		return
-	}
-	infos := make([]announce.Info, 0, len(devices))
-	for _, rt := range devices {
-		infos = append(infos, announce.Info{
-			Name:     rt.dev.Name,
-			Path:     rt.dev.Path,
-			Port:     port,
-			Codec:    pipeline.CodecName(rt.dev.Mode),
-			Rate:     rt.rate,
-			Channels: rt.channels,
-			Version:  version,
-		})
 	}
 	go func() {
 		if aerr := announce.Run(ctx, infos); aerr != nil {
@@ -347,6 +364,34 @@ func startAnnounce(ctx context.Context, listen string, devices []*deviceRuntime)
 		}
 	}()
 	log.Printf("advertising %d service(s) over mDNS (_rtsp._tcp) on port %d", len(infos), port)
+}
+
+// announceInfos builds the per-device advertisement records for the serving
+// set on the RTSP listen port, carrying the auth hint (auth=token or auth=none)
+// so BirdNET-Go's adopt flow knows whether to ask for the token.
+func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
+	_, portStr, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot parse listen address %q: %w", listen, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, 0, fmt.Errorf("bad port in %q: %w", listen, err)
+	}
+	infos := make([]announce.Info, 0, len(devices))
+	for _, rt := range devices {
+		infos = append(infos, announce.Info{
+			Name:         rt.dev.Name,
+			Path:         rt.dev.Path,
+			Port:         port,
+			Codec:        pipeline.CodecName(rt.dev.Mode),
+			Rate:         rt.rate,
+			Channels:     rt.channels,
+			Version:      version,
+			AuthRequired: authRequired,
+		})
+	}
+	return infos, port, nil
 }
 
 func buildStage(d *config.Device, channels int) (stage pipeline.Stage, payloadType int) {

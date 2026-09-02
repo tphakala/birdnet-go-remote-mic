@@ -17,19 +17,23 @@ processes: just one binary you control.
 
 ## Status
 
-Phases 0, 2, and 3 are implemented: capture (via
+The capture and streaming core is implemented: capture (via
 [go-audio-capture](https://github.com/tphakala/go-audio-capture)), the L16 and
 Opus pipeline, a TCP-interleaved RTSP server that ffmpeg, VLC, and BirdNET-Go's
 own ingest client can play, and mDNS/DNS-SD advertisement so BirdNET-Go can
-discover the mic automatically. Packaging (phase 6) is still to come. The
-normative design and roadmap live as issues in the private tracker.
+discover the mic automatically. On top of that, an HTTPS management API and web
+UI provision and reconfigure devices with in-place hot reload, per-device audio
+level metering streams over SSE, and an optional shared access token gates both
+the API and the RTSP stream. Packaging (phase 6) is still to come. The normative
+design and roadmap live as issues in the private tracker.
 
 ## Discovery
 
 Each configured device is advertised as its own mDNS/DNS-SD `_rtsp._tcp`
 instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
 all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
-`path`, and a `txtvers`. It sends goodbye packets on shutdown so stale entries
+`path`, `auth` (`token` when an access token is required, else `none`), and a
+`txtvers`. It sends goodbye packets on shutdown so stale entries
 clear promptly. Set `discovery.enabled: false` to turn it off; on a network
 where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
 plus path instead.
@@ -44,13 +48,15 @@ mDNS instance. Write a config (see `config.example.yaml`):
 listen: ":8554"
 discovery:
   enabled: true
+auth:
+  token: ""              # set a token to require credentials (see Authentication)
 devices:
   - name: garden-mic       # unique instance name; also the mDNS label
     device: "hw:1,0"
     path: /garden          # unique RTSP path; defaults to /stream
     mode: opus             # "opus" (48 kHz mono) or "pcm" (L16, any rate, ultrasonic)
     rate: 48000
-    channels: 1
+    channels: [1]
     format: s16
     opus:
       bitrate: 64000
@@ -59,7 +65,7 @@ devices:
     path: /bat
     mode: pcm
     rate: 256000
-    channels: 1
+    channels: [1]
     format: s16
 ```
 
@@ -70,6 +76,77 @@ birdnet-go-remote-mic -config config.yaml    # capture and serve
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
 `rtsp://<host>:8554/garden`. A single-device config is just a one-entry list.
+
+## Authentication
+
+By default the appliance is open: anyone on the network can pull the streams
+and use the management API and web UI. Set a shared access token to require
+credentials everywhere at once:
+
+```yaml
+auth:
+  token: "<replace-with-your-own>"   # 12-128 characters of letters, digits, . _ ~ -
+```
+
+Generate your own. The value above is a placeholder that deliberately fails
+validation (angle brackets are outside the allowed set), so an unedited config
+refuses to start rather than serving on a token printed in this file. The web UI
+does it for you: go to System, open the Access Control card, and press Generate
+then Save. The change applies immediately, no restart: the running RTSP server
+and API start asking for the token on the next request, and the mDNS TXT record
+switches to `auth=token`.
+Clearing the token returns the appliance to open access. The UI warns with a
+banner while access is open.
+
+One token gates both surfaces:
+
+- Management API and web UI: send it as a bearer credential. `/api/v1/healthz`
+  stays open for liveness checks and the web UI's own static files stay open so
+  the login screen can load; every other `/api/v1` route answers 401 without it.
+
+  ```bash
+  curl --cacert mgmt-cert.pem -H "Authorization: Bearer <your-token>" https://<host>:8443/api/v1/status
+  ```
+
+  The appliance generates its own certificate (`mgmt-cert.pem`, beside the
+  config file by default), so copy that file to the client and verify against
+  it. Reach the appliance by IP or by its bare hostname: the certificate covers
+  those, not the `.local` name mDNS advertises, so a `.local` URL fails the name
+  check. `curl -k` works with any host form, but it skips verification
+  entirely, which lets anything on the network impersonate the appliance and
+  collect the token: keep it for local testing only.
+
+- RTSP stream: standard Digest authentication with the token as the password
+  and any username (`mic` by convention), so the usual URL form works in
+  BirdNET-Go, ffmpeg, VLC and GStreamer:
+
+  ```bash
+  ffprobe -rtsp_transport tcp rtsp://mic:<your-token>@<host>:8554/garden
+  ```
+
+  On the Dashboard, a device card's Copy URL button includes the credentials
+  when a token is set and this browser is signed in.
+
+Notes: enabling a token, or rotating one, stops existing streams. A connection
+that is actively receiving audio is dropped as soon as the change lands, within
+a frame or so; the server tears it down rather than re-authenticating it in
+place, so the client has to reconnect with the current token. BirdNET-Go retries
+on its own, while ffmpeg and VLC exit and need restarting with the new
+credentials in their URL. A connection that is not currently streaming, one
+still negotiating or set up but idle, is instead re-challenged on its next
+request, which for a mostly-idle client is when its keepalive next falls due: up
+to about 30 seconds with the default 60 second session timeout, measured with
+ffmpeg. A client that does not present the current token is disconnected and its
+stream slot released. Restart the appliance if you need every idle session cut
+at once. One exception: a management event stream (GET /events) opened before
+the change keeps running, because the bearer token is checked once when the
+stream starts, not per event.
+As for what crosses the wire: the bearer token rides inside TLS (the API is
+HTTPS with a self-signed certificate), and Digest never sends the token at all,
+only an MD5 response over it. That MD5 exchange travels over plain TCP, so it is
+brute-forceable offline, and the audio itself is unencrypted. This is the threat
+model of a home-network appliance: the token keeps casual listeners and stray
+clients out, it is not a substitute for network isolation on a hostile network.
 
 ## Debugging
 

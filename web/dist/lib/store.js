@@ -1,5 +1,6 @@
-import { api } from "./api.js";
+import { api, ApiError } from "./api.js";
 import { sse } from "./sse.js";
+import { setToken } from "./auth.js";
 export class AppStore extends EventTarget {
     state = {
         status: null,
@@ -22,16 +23,88 @@ export class AppStore extends EventTarget {
     // race the 3s poll), so an older response must not overwrite a newer one and
     // restore a stale Enable card.
     availableEpoch = 0;
+    // loginPending is set from the first 401 until a token is accepted, so a
+    // burst of rejected requests (the initial load fires five) opens one prompt
+    // and the generic load-error state is suppressed in favor of it.
+    loginPending = false;
+    // swapDepth is non-zero while a deliberate token rotation is in progress. The
+    // appliance enforces the new token before it finishes writing the PATCH
+    // response, so an in-flight poll can be rejected with a 401 that carries
+    // EITHER the old or the new token while the swap is landing. During that
+    // window such a 401 is expected and must not stop polling or pop the login
+    // prompt; the rotation caller reloads once setToken has run.
+    swapDepth = 0;
     constructor() {
         super();
+        api.onUnauthorized = () => this.onUnauthorized();
         this.initSSE();
+    }
+    // beginTokenSwap opens the rotation window; endTokenSwap closes it. The pair
+    // is depth-counted (floored at 0) so overlapping rotations do not close the
+    // window early.
+    beginTokenSwap() {
+        this.swapDepth++;
+    }
+    endTokenSwap() {
+        this.swapDepth = Math.max(0, this.swapDepth - 1);
+        // The event stream stops itself on a 401, and inside the swap window that
+        // 401 is expected rather than a credential failure, so nothing else would
+        // bring it back until the next startPolling. Restart it under the token now
+        // in force; start() is a no-op while the stream is already running.
+        if (this.swapDepth === 0 && this.pollIntervalTimer !== null)
+            sse.start();
+    }
+    // onUnauthorized reacts to the appliance rejecting the UI's credentials:
+    // polling and the SSE stream stop (they would only be rejected again) and the
+    // login prompt is asked for, once per outage.
+    onUnauthorized() {
+        // A 401 during a deliberate rotation is expected under either token and must
+        // not interrupt polling; the rotation caller resumes once setToken has run.
+        if (this.swapDepth > 0)
+            return;
+        if (this.loginPending)
+            return;
+        this.loginPending = true;
+        this.stopPolling();
+        this.dispatchEvent(new CustomEvent("authrequired"));
+    }
+    // login stores token, verifies it against /status, and on success reloads
+    // everything and resumes polling. A rejected token is not kept.
+    async login(token) {
+        setToken(token);
+        try {
+            await api.getStatus();
+        }
+        catch (err) {
+            setToken(null);
+            if (err instanceof ApiError && err.status === 401) {
+                return { ok: false, message: "That token was rejected. Check it and try again." };
+            }
+            const msg = err instanceof Error ? err.message : String(err);
+            return { ok: false, message: `Could not reach the appliance: ${msg}` };
+        }
+        this.loginPending = false;
+        this.dispatchEvent(new CustomEvent("authok"));
+        await this.loadInitial();
+        // loadInitial may have hit a fresh 401 (the token was revoked between the
+        // verifying getStatus and the bulk load), which re-arms loginPending via
+        // onUnauthorized. Resuming polling would only be rejected again, so report
+        // failure and leave the prompt up instead.
+        if (this.loginPending) {
+            return { ok: false, message: "The appliance rejected the token during load. Try again." };
+        }
+        this.startPolling();
+        return { ok: true, message: "" };
     }
     getState() {
         return this.state;
     }
     initSSE() {
         sse.subscribe((eventName, data) => {
-            if (eventName === "connected") {
+            if (eventName === "unauthorized") {
+                this.onUnauthorized();
+            }
+            else if (eventName === "connected") {
                 this.state.connected = true;
                 this.dispatchEvent(new CustomEvent("connection", { detail: true }));
             }
@@ -61,6 +134,9 @@ export class AppStore extends EventTarget {
         // so one failing endpoint does not blank another view that loaded fine.
         const coreFailed = !statusOk && !devicesOk;
         const systemFailed = !systemOk;
+        // A rejected token is handled by the login prompt, not the retry state.
+        if (this.loginPending)
+            return;
         if (coreFailed || systemFailed) {
             this.dispatchEvent(new CustomEvent("loaderror", {
                 detail: { coreFailed, systemFailed, message: "Could not reach the appliance." },
@@ -72,9 +148,12 @@ export class AppStore extends EventTarget {
         return this.loadInitial();
     }
     startPolling(intervalMs = 3000) {
+        // Start the event stream before the early return: if the poll timer is
+        // already running while a prior stop()/start() left SSE stopped, returning
+        // early here would leave the stream down. sse.start() is idempotent.
+        sse.start();
         if (this.pollIntervalTimer !== null)
             return;
-        sse.start();
         this.pollIntervalTimer = window.setInterval(async () => {
             await Promise.allSettled([
                 this.refreshStatus(),
@@ -121,7 +200,15 @@ export class AppStore extends EventTarget {
     }
     async refreshDevices() {
         try {
-            this.state.devices = await api.getDevices();
+            const devices = await api.getDevices();
+            // Defensive normalization at the store boundary: the contract guarantees
+            // channels is an array, but every consumer indexes it, so a malformed
+            // payload becomes an empty selection rather than a runtime error.
+            for (const d of devices) {
+                if (!Array.isArray(d.channels))
+                    d.channels = [];
+            }
+            this.state.devices = devices;
             // Drop level entries for devices that are no longer present so the map
             // does not grow without bound as devices are added or removed.
             const present = new Set(this.state.devices.map((d) => d.name));

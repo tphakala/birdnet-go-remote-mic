@@ -210,8 +210,11 @@ body {
 }
 
 .brand-name {
+  /* An h1 for document structure, styled as the compact brand label. */
+  margin: 0;
   font-size: 15px;
   font-weight: 700;
+  line-height: 1.3;
   letter-spacing: -0.3px;
   color: var(--text-primary);
 }
@@ -1213,6 +1216,16 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   width: 17px;
 }
 
+/* In-flight state: the input is disabled while its PATCH runs, so dim the
+   track and show a progress cursor rather than a frozen-looking switch. */
+.switch-control input:disabled + .switch-track {
+  opacity: 0.55;
+  cursor: progress;
+}
+.switch-control:has(input:disabled) {
+  cursor: progress;
+}
+
 /* Device-card streaming toggle: a visible caption plus a hit target at least
    24px tall (the bare 20px track is under WCAG 2.5.8 target size). */
 .device-toggle {
@@ -1478,6 +1491,14 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   display: flex;
 }
 
+/* The login prompt must sit above transient confirm dialogs. Both are
+   .modal-overlay at z-index 1000, and a confirm dialog appended to the DOM
+   after the prompt would otherwise paint on top of it if a 401 fires while a
+   confirm is open. Keep it below the toast stack (2000). */
+#login-modal {
+  z-index: 1500;
+}
+
 .modal-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-base);
@@ -1506,8 +1527,9 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   to { transform: rotate(360deg); }
 }
 
-/* Toast Notifications */
-.toast-container {
+/* Toast Notifications: one fixed stack holding the polite (notices) and the
+   assertive (errors) live regions, so both kinds line up in one column. */
+.toast-stack {
   position: fixed;
   bottom: 24px;
   right: 24px;
@@ -1515,6 +1537,37 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   flex-direction: column;
   gap: 8px;
   z-index: 2000;
+}
+
+.toast-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast-container:empty {
+  display: none;
+}
+
+.toast-dismiss {
+  margin-left: 6px;
+  padding: 3px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.toast-dismiss:hover,
+.toast-dismiss:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-surface-active);
+  outline: none;
+}
+.toast-dismiss:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-cyan);
 }
 
 .toast {
@@ -1562,6 +1615,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Exit animation referenced by toast.ts remove(); without it the removal was an
+   instant disappearance (the animation name resolved to nothing). */
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(12px); }
 }
 
 /* Responsive Rules */
@@ -1727,7 +1787,7 @@ select.field-input {
   align-items: center;
   gap: 10px;
   color: var(--text-muted);
-  font-size: 0.82rem;
+  font-size: 0.85rem;
 }
 .available-caps {
   color: var(--text-secondary);
@@ -1740,4 +1800,95 @@ select.field-input {
   opacity: 0.65;
   cursor: progress;
   pointer-events: none;
+}
+
+/* ---------- Access control ---------- */
+
+/* Open-access notice under the telemetry strip: visible until a token is set. */
+.open-access-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  background: var(--signal-warn-bg);
+  border: 1px solid var(--signal-warn);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.open-access-banner svg {
+  color: var(--signal-warn);
+  flex-shrink: 0;
+}
+.open-access-banner a {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+/* Access Control card */
+.auth-state {
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.auth-state.locked {
+  color: var(--signal-ok);
+}
+.auth-state.open {
+  color: var(--signal-warn);
+}
+/* Light-theme contrast overrides. The default signal colours fail WCAG AA for
+   this small (12 px, 600 weight) text on the light grounds: measured on
+   #ffffff (config-section-card) locked #059669 is 3.77:1 and open #d97706 is
+   3.19:1, and the banner link #0891b2 is 2.97:1 on the warn-tinted banner
+   ground (signal-warn-bg 0.1 over --bg-app #eef2f6). Darkened per state, each
+   verified against its actual background: locked #047857 -> 5.48:1, open
+   #b45309 -> 5.02:1, banner link #155e75 -> 5.86:1. Dark theme already passes,
+   so scope the overrides to light only. */
+:root[data-theme="light"] .auth-state.locked {
+  color: #047857;
+}
+:root[data-theme="light"] .auth-state.open {
+  color: #b45309;
+}
+:root[data-theme="light"] .open-access-banner a {
+  color: #155e75;
+}
+.auth-token-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.auth-token-row .field-input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+/* Standalone error captions (not inside a .form-field.invalid toggle) show
+   whenever they carry text. */
+.auth-error {
+  display: block;
+}
+.auth-error:empty {
+  display: none;
+}
+
+/* "Token" tag on a serving card */
+.lock-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Access token prompt */
+.login-card {
+  align-items: stretch;
+  text-align: left;
+}
+.login-card .brand-icon {
+  align-self: center;
+}
+.login-field {
+  gap: 6px;
 }

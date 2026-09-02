@@ -38,6 +38,7 @@ export class DeviceSettingsForm {
     pathErr;
     rateErr;
     chErr;
+    chHint;
     channelsGroup;
     rateHidden;
     // channelBoxes are the per-channel selection checkboxes (Ch1..ChN), in channel
@@ -68,6 +69,17 @@ export class DeviceSettingsForm {
         const d = this.device;
         const uid = ++formSeq;
         const grid = elem("div", "form-grid-2col");
+        // Resolve the codec mode the form actually opens on BEFORE building the
+        // channel field. modeOptions() may not offer the saved mode (Opus on
+        // hardware that cannot do 48 kHz mono), and pick() then coerces it to PCM.
+        // The channel group's caption and accessible name must describe this
+        // resolved mode, not the saved one, or they would claim "Opus streams one
+        // channel" while the mode dropdown is actually showing PCM. Computed once
+        // and reused where the mode dropdown is built below.
+        const modeOpts = this.modeOptions();
+        // pick() returns one of modeOpts' values ("opus" or "pcm"), so it is always
+        // a valid StreamMode.
+        const modeInitial = this.pick(modeOpts, d.mode);
         // Capture group: what the hardware delivers.
         this.groupTitle(grid, "Capture");
         // Rate
@@ -80,7 +92,9 @@ export class DeviceSettingsForm {
         rateField.appendChild(rate.container);
         this.rateErr = this.error(`set-${uid}-rate-err`);
         rateField.appendChild(this.rateErr);
-        rateField.appendChild(this.hint(this.rateHint()));
+        const rateHint = this.hint(this.rateHint(), `set-${uid}-rate-hint`);
+        rateField.appendChild(rateHint);
+        this.describe(rate.container, this.rateErr.id, rateHint.id);
         grid.appendChild(rateField);
         // Channels: a per-channel selection built from the device's probed channel
         // capability. The operator picks which capture channels the stream carries;
@@ -94,10 +108,18 @@ export class DeviceSettingsForm {
         chField.appendChild(chGroup);
         this.chErr = this.error(`set-${uid}-ch-err`);
         chField.appendChild(this.chErr);
-        // Associate the validation error with the checkbox group so a screen reader
-        // announces it when focus is inside the group (parity with the text inputs).
-        chGroup.setAttribute("aria-describedby", this.chErr.id);
-        chField.appendChild(this.hint("Select which capture channels to stream. One channel is a mono stream; Opus requires exactly one."));
+        // The hint depends on the codec mode (Opus streams one channel, and the Opus
+        // clause is dropped on a device that cannot offer Opus). Start it empty:
+        // applyChannelMode is the single writer of both this caption and the group's
+        // accessible name, and it is called with the resolved mode just below (and
+        // again on every mode change).
+        this.chHint = this.hint("", `set-${uid}-ch-hint`);
+        chField.appendChild(this.chHint);
+        // Associate the validation error and the hint with the checkbox group so a
+        // screen reader announces both when focus is inside the group (parity with
+        // the text inputs).
+        chGroup.setAttribute("aria-describedby", `${this.chErr.id} ${this.chHint.id}`);
+        this.applyChannelMode(modeInitial);
         grid.appendChild(chField);
         // Stream group: how the capture is named, addressed, and encoded.
         this.groupTitle(grid, "Stream");
@@ -114,8 +136,6 @@ export class DeviceSettingsForm {
         // saved opus mode is coerced to pcm so the form is never in an unsaveable state.
         const modeField = elem("div", "form-field");
         modeField.appendChild(this.label("Stream Codec Mode"));
-        const modeOpts = this.modeOptions();
-        const modeInitial = this.pick(modeOpts, d.mode);
         const mode = this.buildDropdown("Stream codec mode", modeOpts, modeInitial);
         this.modeHidden = mode.hidden;
         modeField.appendChild(mode.container);
@@ -133,9 +153,11 @@ export class DeviceSettingsForm {
                 this.rateDrop.select(String(rates[0]));
             }
         }
-        modeField.appendChild(this.hint(opusOffered
+        const modeHint = this.hint(opusOffered
             ? "Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."
-            : "PCM L16 is raw and supports ultrasonic rates. Opus needs 48 kHz mono, which this device does not support."));
+            : "PCM L16 is raw and supports ultrasonic rates. Opus needs 48 kHz mono, which this device does not support.", `set-${uid}-mode-hint`);
+        modeField.appendChild(modeHint);
+        this.describe(mode.container, modeHint.id);
         grid.appendChild(modeField);
         // Bitrate
         this.bitrateField = elem("div", "form-field");
@@ -144,13 +166,16 @@ export class DeviceSettingsForm {
         const bitrate = this.buildDropdown("Opus bitrate", this.bitrateOptions(saved), this.selectedBitrate(saved));
         this.bitrateHidden = bitrate.hidden;
         this.bitrateField.appendChild(bitrate.container);
-        this.bitrateField.appendChild(this.hint("Target bitrate for the Opus encoder."));
+        const bitrateHint = this.hint("Target bitrate for the Opus encoder.", `set-${uid}-bitrate-hint`);
+        this.bitrateField.appendChild(bitrateHint);
+        this.describe(bitrate.container, bitrateHint.id);
         this.bitrateField.hidden = modeInitial !== "opus";
         grid.appendChild(this.bitrateField);
         this.element.appendChild(grid);
         this.modeHidden.addEventListener("change", () => {
             const isOpus = this.modeHidden.value === "opus";
             this.bitrateField.hidden = !isOpus;
+            this.applyChannelMode(this.modeHidden.value);
             if (isOpus) {
                 this.rateDrop.select("48000");
                 // Opus is a single mono channel: collapse the selection to one channel
@@ -295,7 +320,11 @@ export class DeviceSettingsForm {
         input.id = id;
         input.value = value;
         const errId = `${id}-err`;
-        input.setAttribute("aria-describedby", errId);
+        const hintId = `${id}-hint`;
+        // Describe the input with both its error and its hint, so a screen reader
+        // reads the guidance with the field (parity with the channel group, whose
+        // comment claims this).
+        input.setAttribute("aria-describedby", `${errId} ${hintId}`);
         input.addEventListener("input", () => {
             if (this.ready) {
                 this.validate();
@@ -305,15 +334,43 @@ export class DeviceSettingsForm {
         field.appendChild(input);
         const error = this.error(errId);
         field.appendChild(error);
-        field.appendChild(this.hint(hint));
+        field.appendChild(this.hint(hint, hintId));
         grid.appendChild(field);
         return { input, error };
     }
     label(text) {
         return elem("label", "field-label", text);
     }
-    hint(text) {
-        return elem("span", "field-hint", text);
+    hint(text, id) {
+        const h = elem("span", "field-hint", text);
+        if (id)
+            h.id = id;
+        return h;
+    }
+    // describe points a dropdown's trigger (its focusable, announced element) at
+    // the given description ids, so the hint and error text are read out with the
+    // control rather than being bare, unassociated captions.
+    describe(container, ...ids) {
+        container.querySelector(".dropdown-trigger")?.setAttribute("aria-describedby", ids.join(" "));
+    }
+    // channelHint is the caption under the channel group for the given mode. In
+    // Opus mode the group is single-select, and that is said plainly; on a device
+    // that cannot offer Opus the Opus clause is omitted rather than left dangling.
+    channelHint(mode) {
+        if (mode === "opus")
+            return "Opus streams one channel: choosing a channel clears the others.";
+        if (this.opusSupported())
+            return "Select which capture channels to stream. One channel is a mono stream; Opus requires exactly one.";
+        return "Select which capture channels to stream. One channel is a mono stream.";
+    }
+    // applyChannelMode refreshes the channel group's caption and accessible name
+    // for the codec mode, so the single-select behaviour in Opus mode is announced
+    // (the caption says choosing a channel clears the others, and the group's
+    // aria-label names it) instead of being an unexplained checkbox quirk. It is
+    // the single writer of both, so buildChannelSelect sets neither.
+    applyChannelMode(mode) {
+        this.chHint.textContent = this.channelHint(mode);
+        this.channelsGroup.setAttribute("aria-label", mode === "opus" ? "Capture channel to stream (Opus streams one channel)" : "Capture channels to stream");
     }
     error(id) {
         const e = elem("span", "field-error");
@@ -371,7 +428,8 @@ export class DeviceSettingsForm {
         const want = new Set(selected);
         const group = elem("div", "channel-select");
         group.setAttribute("role", "group");
-        group.setAttribute("aria-label", "Capture channels to stream");
+        // The accessible name is written by applyChannelMode (the single writer, it
+        // varies with the codec mode), called right after this in build().
         this.channelBoxes = [];
         for (let ch = 1; ch <= maxCh; ch++) {
             const wrap = elem("label", "channel-checkbox");

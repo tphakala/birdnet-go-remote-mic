@@ -15,6 +15,14 @@ export class ApiError extends Error {
 export class ApiClient {
     baseUrl;
     token = null;
+    // onUnauthorized fires on a 401. The `used === this.token` guard below only
+    // suppresses a 401 whose RESPONSE is processed after setToken already changed
+    // the token (a request sent under the old token, resolving after the swap).
+    // It cannot suppress a 401 processed while both `used` and `this.token` still
+    // hold the pre-rotation token, which happens because the appliance enforces
+    // the new token before it finishes writing the PATCH response. The store owns
+    // a swap window (beginTokenSwap/endTokenSwap) that covers that remaining gap.
+    onUnauthorized = null;
     constructor(baseUrl = "/api/v1") {
         this.baseUrl = baseUrl;
     }
@@ -24,8 +32,9 @@ export class ApiClient {
     async request(path, options = {}) {
         const headers = new Headers(options.headers || {});
         headers.set("Accept", "application/json, application/problem+json");
-        if (this.token) {
-            headers.set("Authorization", `Bearer ${this.token}`);
+        const used = this.token;
+        if (used) {
+            headers.set("Authorization", `Bearer ${used}`);
         }
         if (options.body && !headers.has("Content-Type")) {
             headers.set("Content-Type", "application/json");
@@ -34,6 +43,9 @@ export class ApiClient {
             ...options,
             headers,
         });
+        if (res.status === 401 && used === this.token) {
+            this.onUnauthorized?.();
+        }
         if (res.status === 204) {
             return {};
         }

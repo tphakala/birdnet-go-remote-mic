@@ -43,7 +43,7 @@ type captureSource struct {
 // the whole send path (L16 packetization, SDP byte math, Opus encode) is
 // S16-only, and this fails loud the moment a new stream format is added to
 // validation without wiring the rest of the pipeline. It is distinct from the
-// hardware CAPTURE format, which OpenCapture negotiates (S16 or S32) and
+// hardware CAPTURE format, which OpenCaptureAt negotiates (S16 or S32) and
 // downconverts to S16 so this output contract always holds.
 func captureFormat(format string) (capture.Format, error) {
 	switch format {
@@ -54,7 +54,7 @@ func captureFormat(format string) (capture.Format, error) {
 	}
 }
 
-// captureFormats is the order OpenCapture negotiates the hardware capture
+// captureFormats is the order OpenCaptureAt negotiates the hardware capture
 // format in: S16LE first (the common case, no conversion needed), then S32LE as
 // the fallback for 24/32-bit-only interfaces (e.g. the ZOOM AMS-24). The stream
 // output stays S16 either way; an S32 capture is downconverted.
@@ -143,23 +143,37 @@ func maxSelected(selection []int) int {
 	return m
 }
 
-// OpenCapture opens and starts a capture stream for dev. It negotiates the
-// hardware capture format (S16LE preferred, S32LE fallback) and, for an S32
-// device, wraps the stream so every period is downconverted to S16LE. It then
-// wraps the stream to deliver only dev.Channels (the 1-based selection), so the
-// device is opened at whatever contiguous channel count covers the selection but
-// the pipeline sees exactly the selected channels. It enforces the honest-rate
-// policy: go-audio-capture already fails a rate it cannot deliver exactly, and
-// OpenCapture double-checks the negotiated rate matches the request. The caller's
-// read goroutine should runtime.LockOSThread so the capture loop is not
-// descheduled mid-period.
+// OpenCapture opens and starts a capture stream for dev, resolving the open
+// channel count (ResolveOpenChannels) itself for callers that do not. The
+// appliance resolves per open attempt and calls OpenCaptureAt directly, so this
+// convenience wrapper has no production caller today; it is kept for callers and
+// tests that just want "open dev" without managing the count. See OpenCaptureAt.
 func OpenCapture(dev *config.Device) (Source, error) {
+	return OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.Channels))
+}
+
+// OpenCaptureAt opens and starts a capture stream for dev at openCh hardware
+// channels, which the caller resolved (ResolveOpenChannels) so the rate probe,
+// the busy gate and the open all agree on one count without re-probing. It
+// negotiates the hardware capture format (S16LE preferred, S32LE fallback) and,
+// for an S32 device, wraps the stream so every period is downconverted to
+// S16LE. It then wraps the stream to deliver only dev.Channels (the 1-based
+// selection), so the device is opened at whatever contiguous channel count
+// covers the selection but the pipeline sees exactly the selected channels. It
+// enforces the honest-rate policy: go-audio-capture already fails a rate it
+// cannot deliver exactly, and OpenCaptureAt double-checks the negotiated rate
+// matches the request. The caller's read goroutine should runtime.LockOSThread
+// so the capture loop is not descheduled mid-period.
+func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 	// dev.Format is the stream OUTPUT format; guard it (S16-only) before touching
 	// hardware. The capture format is negotiated separately below.
 	if _, err := captureFormat(dev.Format); err != nil {
 		return nil, err
 	}
-	openCh := ResolveOpenChannels(dev.Device, dev.Channels)
+	maxSel := maxSelected(dev.Channels)
+	if openCh < maxSel {
+		return nil, fmt.Errorf("audio: open channel count %d does not cover the selection (needs channel %d)", openCh, maxSel)
+	}
 	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh)
 	if err != nil {
 		return nil, err
@@ -176,7 +190,7 @@ func OpenCapture(dev *config.Device) (Source, error) {
 	// exactly (or fails the open), so this cannot trigger on the linux backend
 	// today; the guard turns any future surprise into an honest error instead of a
 	// panic in the capture pump.
-	if maxSel := maxSelected(dev.Channels); n.Channels < maxSel {
+	if n.Channels < maxSel {
 		_ = s.Close()
 		return nil, fmt.Errorf("audio: device negotiated %d channels but the selection needs channel %d", n.Channels, maxSel)
 	}
