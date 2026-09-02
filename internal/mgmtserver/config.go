@@ -167,6 +167,16 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 
 	cur := s.configStore.Config()
 
+	// Enforce the persisted token immediately, before the reload round trip.
+	// Persistence and enforcement must not be separated: GET /config returns
+	// the token, so a token that is stored and readable but not yet enforced
+	// (or one whose reload below fails) would leave the API answering as if it
+	// were still open access. Set is idempotent, so cmd's own reconcile guard
+	// applying the same token again is harmless.
+	if s.guard != nil {
+		s.guard.Set(cur.Auth.Token)
+	}
+
 	// With a reloader mounted, apply the persisted change to the running pipeline
 	// in place. A reload error (not a per-device open failure, which surfaces via
 	// GET /devices) means the change is persisted but not live, so fall back to

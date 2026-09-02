@@ -2,11 +2,13 @@ package mgmtserver
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 )
@@ -89,6 +91,31 @@ func TestPatchConfigAuthOnlyPersistsAndReloads(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "token: "+testAuthToken) {
 		t.Errorf("persisted file lacks the token:\n%s", data)
+	}
+}
+
+// TestPatchConfigAuthEnforcedEvenWhenReloadFails proves the persisted token is
+// enforced on the guard immediately, before (and independently of) the reload
+// round trip. A reload that fails still leaves the API requiring the token, so
+// a token that is readable via GET /config is never left unenforced.
+func TestPatchConfigAuthEnforcedEvenWhenReloadFails(t *testing.T) {
+	store, _ := tokenStore(t, "")
+	guard := auth.NewGuard("")
+	failingReload := func(_ context.Context, _ config.Config) error {
+		return errors.New("shutting down")
+	}
+	s := New(&fakeProvider{}, WithConfigStore(store), WithAuth(guard), WithReloader(failingReload))
+
+	resp := patchAuth(t, s, ptr(testAuthToken))
+	got, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("response type %T, want 200", resp)
+	}
+	if !got.RestartRequired {
+		t.Error("a failed reload must report restartRequired=true")
+	}
+	if !guard.Enabled() {
+		t.Error("the token must be enforced on the guard even though the reload failed")
 	}
 }
 
