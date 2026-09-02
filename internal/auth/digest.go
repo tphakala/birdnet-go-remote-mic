@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"strings"
+
+	"github.com/tphakala/go-audio-stream/rtsp"
 )
 
 // CheckDigest reports whether an Authorization header value is a valid Digest
@@ -21,11 +23,15 @@ func (g *Guard) CheckDigest(method, authorization, nonce string) bool {
 	if token == "" || nonce == "" {
 		return false
 	}
-	scheme, rest, ok := strings.Cut(authorization, " ")
-	if !ok || !strings.EqualFold(scheme, "Digest") {
+	// Reuse go-audio-stream's RFC 7235 header parser so the server accepts
+	// exactly the grammar the client emits (whitespace around "=", any param
+	// order, quoted values); a second hand-rolled parser could drift from it
+	// and reject RFC-legal headers.
+	chs := rtsp.ParseChallenges([]string{authorization})
+	if len(chs) != 1 || chs[0].Scheme != rtsp.AuthDigest {
 		return false
 	}
-	p := parseDigestParams(rest)
+	p := chs[0].Params
 	username, uri, response := p["username"], p["uri"], p["response"]
 	if username == "" || uri == "" || response == "" || p["realm"] != Realm {
 		return false
@@ -48,7 +54,11 @@ func (g *Guard) CheckDigest(method, authorization, nonce string) bool {
 		if nc == "" || cnonce == "" {
 			return false
 		}
-		expected = md5hex(strings.Join([]string{ha1, nonce, nc, cnonce, "auth", ha2}, ":"))
+		// Hash the qop token exactly as the client presented it (e.g. "AUTH"),
+		// not the literal "auth": RFC 7616 has the client fold the presented
+		// value into its own response, so folding "auth" here would reject a
+		// client that sent a differently-cased but legal qop.
+		expected = md5hex(strings.Join([]string{ha1, nonce, nc, cnonce, qop, ha2}, ":"))
 	default:
 		return false
 	}
@@ -59,50 +69,4 @@ func (g *Guard) CheckDigest(method, authorization, nonce string) bool {
 func md5hex(s string) string {
 	sum := md5.Sum([]byte(s)) //nolint:gosec // see the import comment: Digest mandates MD5.
 	return hex.EncodeToString(sum[:])
-}
-
-// parseDigestParams parses the auth-params of a Digest credential ("k=v, k="v
-// with \"escapes\"", ...) into a map keyed by lowercased name. Malformed input
-// yields whatever parsed cleanly; the caller's field checks reject the rest.
-func parseDigestParams(s string) map[string]string {
-	params := make(map[string]string, 10)
-	for i := 0; i < len(s); {
-		// Skip separators between parameters.
-		for i < len(s) && (s[i] == ',' || s[i] == ' ' || s[i] == '\t') {
-			i++
-		}
-		if i >= len(s) {
-			break
-		}
-		eq := strings.IndexByte(s[i:], '=')
-		if eq < 0 {
-			break
-		}
-		key := strings.ToLower(strings.TrimSpace(s[i : i+eq]))
-		i += eq + 1
-		var value string
-		if i < len(s) && s[i] == '"' {
-			i++
-			var b strings.Builder
-			for i < len(s) && s[i] != '"' {
-				if s[i] == '\\' && i+1 < len(s) {
-					i++
-				}
-				b.WriteByte(s[i])
-				i++
-			}
-			i++ // closing quote (or end of input)
-			value = b.String()
-		} else {
-			start := i
-			for i < len(s) && s[i] != ',' && s[i] != ' ' && s[i] != '\t' {
-				i++
-			}
-			value = s[start:i]
-		}
-		if key != "" {
-			params[key] = value
-		}
-	}
-	return params
 }

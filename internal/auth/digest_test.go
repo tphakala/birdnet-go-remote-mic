@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/md5" //nolint:gosec // the test recomputes the Digest response the server checks; Digest is MD5.
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -128,22 +130,61 @@ func TestCheckDigestAfterRotation(t *testing.T) {
 	}
 }
 
-func TestParseDigestParams(t *testing.T) {
-	got := parseDigestParams(`username="mic", REALM="a \"quoted\" realm",nonce=abc123 , uri="rtsp://h/p", algorithm=MD5, nc=00000001`)
-	want := map[string]string{
-		"username":  "mic",
-		"realm":     `a "quoted" realm`,
-		"nonce":     "abc123",
-		"uri":       "rtsp://h/p",
-		"algorithm": "MD5",
-		"nc":        "00000001",
+// digestResponse recomputes the RFC 7616/2069 response the client would put in
+// its Authorization header, so the acceptance cases below can be assembled by
+// hand (varying whitespace, param order, and qop casing) while still carrying a
+// correct response. Passing "" for qop selects the RFC 2069 legacy form.
+func digestResponse(user, token, method, uri, nonce, nc, cnonce, qop string) string {
+	h := func(s string) string {
+		sum := md5.Sum([]byte(s)) //nolint:gosec // Digest is MD5.
+		return hex.EncodeToString(sum[:])
 	}
-	if len(got) != len(want) {
-		t.Fatalf("parsed %d params, want %d: %v", len(got), len(want), got)
+	ha1 := h(user + ":" + Realm + ":" + token)
+	ha2 := h(method + ":" + uri)
+	if qop == "" {
+		return h(ha1 + ":" + nonce + ":" + ha2)
 	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("param %q = %q, want %q", k, got[k], v)
-		}
+	return h(strings.Join([]string{ha1, nonce, nc, cnonce, qop, ha2}, ":"))
+}
+
+// TestCheckDigestAcceptanceDomain proves the parser accepts RFC-legal header
+// shapes that a second, stricter hand-rolled parser would have rejected:
+// whitespace around "=", any param order, and a qop token in a different case.
+// Each header is built by hand (not via rtsp.Authorize) so the server-side
+// parser is what is under test.
+func TestCheckDigestAcceptanceDomain(t *testing.T) {
+	g := NewGuard(testToken)
+	nonce := g.NewNonce()
+	const nc, cnonce = "00000001", "0a4f113b"
+	legacyResp := digestResponse(testUser, testToken, testMethod, testURI, nonce, "", "", "")
+	upperQopResp := digestResponse(testUser, testToken, testMethod, testURI, nonce, nc, cnonce, "AUTH")
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{
+			"space after algorithm equals",
+			`Digest username="mic", realm="birdnet-go-remote-mic", nonce="` + nonce + `", uri="` + testURI + `", algorithm= MD5, response="` + legacyResp + `"`,
+		},
+		{
+			"spaces around nonce equals",
+			`Digest username="mic", realm="birdnet-go-remote-mic", nonce = "` + nonce + `", uri="` + testURI + `", response="` + legacyResp + `"`,
+		},
+		{
+			"params in reversed order",
+			`Digest response="` + legacyResp + `", uri="` + testURI + `", nonce="` + nonce + `", realm="birdnet-go-remote-mic", username="mic"`,
+		},
+		{
+			"qop token uppercased",
+			`Digest username="mic", realm="birdnet-go-remote-mic", nonce="` + nonce + `", uri="` + testURI + `", qop=AUTH, nc=` + nc + `, cnonce="` + cnonce + `", response="` + upperQopResp + `"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !g.CheckDigest(testMethod, tt.header, nonce) {
+				t.Errorf("CheckDigest rejected RFC-legal header: %q", tt.header)
+			}
+		})
 	}
 }
