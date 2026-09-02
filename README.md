@@ -120,7 +120,10 @@ request. Enabling a token, or rotating one, re-challenges every open connection:
 a client that knows the current token re-authenticates transparently (RTSP
 clients resend credentials after a 401), while one that does not, including a
 connection that was serving while access was open, is disconnected and its
-stream slot released. As for what crosses the wire: the bearer token rides
+stream slot released. A client that is mid-stream sends nothing until its
+keepalive falls due, so the change reaches it then rather than instantly: with
+the default 60 second session timeout that is up to about 30 seconds, measured
+with ffmpeg. Restart the appliance if you need every session cut at once. As for what crosses the wire: the bearer token rides
 inside TLS (the API is HTTPS with a self-signed certificate), and Digest never
 sends the token at all, only an MD5 response over it. That MD5 exchange travels
 over plain TCP, so it is brute-forceable offline, and the audio itself is
