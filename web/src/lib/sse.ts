@@ -95,7 +95,9 @@ export class SSEClient {
 
         if (response.status === 401) {
           // Release the unread body so the rejected connection is not left open.
-          void response.body?.cancel();
+          // cancel() rejects when the stream is already errored; swallow that so
+          // it does not surface as an unhandled rejection.
+          void response.body?.cancel().catch(() => {});
           if (used === this.token) {
             // The appliance rejects the token in force. Reconnecting on a timer
             // would hammer it with the same rejected credential every 1..10 s,

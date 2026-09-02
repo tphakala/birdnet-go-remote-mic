@@ -26,7 +26,9 @@ export function showToast(message, type = "info", durationMs) {
     toast.className = `toast toast-${type}`;
     const icon = document.createElement("span");
     icon.className = "toast-icon";
-    icon.innerHTML = TOAST_ICONS[type]; // static, trusted markup
+    // Fall back to ICON_OK so an off-contract type cannot render "undefined"
+    // (the replaced ternary had a default; the lookup must keep one).
+    icon.innerHTML = TOAST_ICONS[type] ?? ICON_OK; // static, trusted markup
     const msg = document.createElement("span");
     msg.className = "toast-msg";
     msg.textContent = message;

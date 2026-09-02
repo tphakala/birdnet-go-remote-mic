@@ -200,25 +200,25 @@ export class SystemView {
       const res = await api.patchConfig({ auth: { token } });
       this.authDirty = false;
       store.applyConfig(res.config);
+      // The appliance enforces a patched token immediately, before the reload:
+      // mgmtserver PatchConfig calls guard.Set(token) unconditionally right
+      // after persisting and BEFORE invoking the reloader, so the new token is
+      // live regardless of the outcome. restartRequired is computed only from
+      // whether the reloader succeeded; it says nothing about the token, only
+      // that the rest of the reload did not take effect. So adopt the new token
+      // on both branches, before anything else runs (see setToken): skipping it
+      // would leave the UI holding a credential the appliance no longer accepts.
+      setToken(token || null);
+      // applyConfig above already seeded the authoritative config, so only
+      // refreshStatus is needed (it carries authRequired).
+      await store.refreshStatus();
       if (res.restartRequired) {
-        // The appliance saved the token but still enforces the OLD credential
-        // until a restart, so do NOT adopt the new token here: doing so would
-        // make the very next request fail against the still-running old token.
-        // This matches saveNetwork and saveDevice, which also branch on
-        // restartRequired rather than assuming the change is live.
-        // applyConfig above already seeded the authoritative config, so only
-        // refreshStatus is needed (it carries authRequired).
-        await store.refreshStatus();
+        // The token is already live; it is the rest of the configuration that
+        // needs a restart before it takes effect.
         showToast(token
-          ? "Access token saved. Restart the appliance to apply it."
-          : "Open access saved. Restart the appliance to apply it.", "warn");
+          ? "Access token saved and active. Restart the appliance to finish applying the configuration."
+          : "Open access saved and active. Restart the appliance to finish applying the configuration.", "warn");
       } else {
-        // The change is live; adopt the new token before anything else runs
-        // (see setToken).
-        setToken(token || null);
-        // applyConfig above already seeded the authoritative config, so only
-        // refreshStatus is needed (it carries authRequired).
-        await store.refreshStatus();
         showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
       }
     } catch (err: unknown) {
