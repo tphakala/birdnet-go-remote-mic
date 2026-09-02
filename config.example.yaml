@@ -3,7 +3,7 @@ listen: ":8554"             # RTSP listen address shared by all streams (host:po
 discovery:
   enabled: true             # advertise each device over mDNS/DNS-SD (_rtsp._tcp); default true
 management:
-  enabled: true             # serve the HTTPS management API and (later) web UI; default true
+  enabled: true             # serve the HTTPS management API and web UI; default true
   listen: ":8443"           # HTTPS listen address (host:port); default :8443
   cert_dir: ""              # where to persist the self-signed cert/key; default: the config file's directory
 auth:

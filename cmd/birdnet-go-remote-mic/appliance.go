@@ -245,8 +245,8 @@ func (a *appliance) stop(rt *deviceRuntime) {
 // reconcile applies newCfg to the running pipeline: it starts newly enabled or
 // added devices, stops removed or disabled ones, and restarts those whose capture
 // parameters changed, while leaving unchanged devices serving. It then republishes
-// the device records and, if the serving set or discovery flag changed, restarts
-// the mDNS advertisement.
+// the device records and, if the serving set, the discovery flag, or the auth
+// hint changed, restarts the mDNS advertisement.
 func (a *appliance) reconcile(newCfg *config.Config) {
 	if names, err := audio.HardwareNames(); err == nil {
 		a.hwNames = names
@@ -387,7 +387,8 @@ func (a *appliance) onPumpDone(res pumpResult) {
 
 // restartAnnounce cancels the current mDNS advertisement and starts a fresh one
 // for the serving set. dnssd cannot retire a single service, so the whole
-// advertisement is rebuilt whenever the serving set or discovery flag changes.
+// advertisement is rebuilt whenever the serving set, the discovery flag, or the
+// auth hint (the TXT auth=token/auth=none record) changes.
 func (a *appliance) restartAnnounce() {
 	if a.announceCancel != nil {
 		a.announceCancel()

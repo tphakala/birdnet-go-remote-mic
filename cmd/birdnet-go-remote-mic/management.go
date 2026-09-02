@@ -299,7 +299,7 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 // until the API has shut down cleanly (a prerequisite for a future config PATCH
 // that must flush its response before the appliance restarts).
 type mgmt struct {
-	// addr is the bound listener address (host:port), for logs and tests.
+	// addr is the bound listener address (host:port), read by tests.
 	addr string
 	done chan struct{}
 }
@@ -373,9 +373,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		// WriteTimeout bounds slow-client writes on the unauthenticated LAN
-		// listener. The /events SSE stream is long-lived and overrides this
-		// per-connection with http.ResponseController write deadlines.
+		// WriteTimeout bounds slow-client writes on the management listener. The
+		// /events SSE stream is long-lived and overrides this per-connection with
+		// http.ResponseController write deadlines.
 		WriteTimeout: 30 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,

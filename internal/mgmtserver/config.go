@@ -102,12 +102,11 @@ func WithReloader(fn Reloader) Option {
 }
 
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
-// Only discovery, the access token and the device list are patchable; an
-// absent field is left unchanged, and a present devices array replaces the
-// whole list. The merged
-// configuration must validate as a whole. With a reloader mounted the change is
-// applied to the running pipeline in place (restartRequired=false); without one
-// it is persisted but takes effect only after a restart.
+// Only discovery, the access token and the device list are patchable; an absent
+// field is left unchanged, and a present devices array replaces the whole list.
+// The merged configuration must validate as a whole. With a reloader mounted the
+// change is applied to the running pipeline in place (restartRequired=false);
+// without one it is persisted but takes effect only after a restart.
 func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigRequestObject) (mgmtapi.PatchConfigResponseObject, error) {
 	if s.configStore == nil {
 		return mgmtapi.PatchConfigdefaultApplicationProblemPlusJSONResponse{

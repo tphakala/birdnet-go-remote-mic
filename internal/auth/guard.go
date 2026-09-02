@@ -113,8 +113,9 @@ func (g *Guard) CheckBearer(authorization string) bool {
 // a captured Authorization header is useless on any other connection.
 func (g *Guard) NewNonce() string {
 	var b [16]byte
-	// crypto/rand.Read cannot fail on supported platforms (it panics on an
-	// unrecoverable entropy failure), so the error is dropped by design.
+	// crypto/rand.Read never returns an error: on an unrecoverable entropy
+	// failure it terminates the process (a runtime fatal, not a recoverable
+	// panic), so the error is dropped by design.
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }

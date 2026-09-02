@@ -25,13 +25,13 @@ type Info struct {
 	Channels int
 	Version  string // binary version
 	// AuthRequired is whether the appliance demands its shared token: the TXT
-	// record advertises auth=token so BirdNET-Go's adopt flow asks for it, or
-	// auth=none for open access.
+	// record advertises auth=token so BirdNET-Go's planned adopt flow can ask for
+	// it, or auth=none for open access.
 	AuthRequired bool
 }
 
 // txtRecords builds the TXT key/value set advertised with the service. The
-// schema is coordinated with the BirdNET-Go adopt flow (txtvers 1).
+// schema is intended for the planned BirdNET-Go adopt flow (txtvers 1).
 func txtRecords(info *Info) map[string]string {
 	authHint := "none"
 	if info.AuthRequired {

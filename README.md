@@ -17,12 +17,15 @@ processes: just one binary you control.
 
 ## Status
 
-Phases 0, 2, and 3 are implemented: capture (via
+The capture and streaming core is implemented: capture (via
 [go-audio-capture](https://github.com/tphakala/go-audio-capture)), the L16 and
 Opus pipeline, a TCP-interleaved RTSP server that ffmpeg, VLC, and BirdNET-Go's
 own ingest client can play, and mDNS/DNS-SD advertisement so BirdNET-Go can
-discover the mic automatically. Packaging (phase 6) is still to come. The
-normative design and roadmap live as issues in the private tracker.
+discover the mic automatically. On top of that, an HTTPS management API and web
+UI provision and reconfigure devices with in-place hot reload, per-device audio
+level metering streams over SSE, and an optional shared access token gates both
+the API and the RTSP stream. Packaging (phase 6) is still to come. The normative
+design and roadmap live as issues in the private tracker.
 
 ## Discovery
 
@@ -53,7 +56,7 @@ devices:
     path: /garden          # unique RTSP path; defaults to /stream
     mode: opus             # "opus" (48 kHz mono) or "pcm" (L16, any rate, ultrasonic)
     rate: 48000
-    channels: 1
+    channels: [1]
     format: s16
     opus:
       bitrate: 64000
@@ -62,7 +65,7 @@ devices:
     path: /bat
     mode: pcm
     rate: 256000
-    channels: 1
+    channels: [1]
     format: s16
 ```
 
@@ -94,7 +97,8 @@ access. The UI warns with a banner while access is open.
 One token gates both surfaces:
 
 - Management API and web UI: send it as a bearer credential. `/api/v1/healthz`
-  stays open for liveness checks; everything else answers 401 without it.
+  stays open for liveness checks and the web UI's own static files stay open so
+  the login screen can load; every other `/api/v1` route answers 401 without it.
 
   ```bash
   curl -k -H "Authorization: Bearer k7Qm3vX9pL2wR8nT" https://<host>:8443/api/v1/status
@@ -108,13 +112,19 @@ One token gates both surfaces:
   ffprobe -rtsp_transport tcp rtsp://mic:k7Qm3vX9pL2wR8nT@<host>:8554/garden
   ```
 
-  The card's Copy URL button includes the credentials when a token is set.
+  On the Dashboard, a device card's Copy URL button includes the credentials
+  when a token is set and this browser is signed in.
 
-Notes: RTSP authentication is per connection, so a client that is already
-streaming keeps its session after the token is rotated and must present the new
-token only when it reconnects; the same goes for an open web UI event stream.
-Digest and bearer both travel in clear text on the LAN (the API is HTTPS, RTSP
-is plain TCP), which is the threat model of a home-network appliance: the token
+Notes: any auth change takes effect on existing RTSP connections at their next
+request. Enabling a token, or rotating one, re-challenges every open connection:
+a client that knows the current token re-authenticates transparently (RTSP
+clients resend credentials after a 401), while one that does not, including a
+connection that was serving while access was open, is disconnected and its
+stream slot released. As for what crosses the wire: the bearer token rides
+inside TLS (the API is HTTPS with a self-signed certificate), and Digest never
+sends the token at all, only an MD5 response over it. That MD5 exchange travels
+over plain TCP, so it is brute-forceable offline, and the audio itself is
+unencrypted. This is the threat model of a home-network appliance: the token
 keeps casual listeners and stray clients out, it is not a substitute for network
 isolation on a hostile network.
 

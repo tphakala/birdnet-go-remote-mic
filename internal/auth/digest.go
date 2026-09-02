@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"crypto/md5" //nolint:gosec // RFC 7616 Digest over RTSP is MD5 by definition; the token itself never crosses the wire.
+	"crypto/md5" //nolint:gosec // Digest is MD5 here not because RFC 7616 mandates it (it allows SHA-256) but because ffmpeg, live555/VLC and GStreamer implement only MD5 for RTSP; the token itself never crosses the wire.
 	"crypto/subtle"
 	"encoding/hex"
 	"strings"
@@ -12,12 +12,14 @@ import (
 // CheckDigest reports whether an Authorization header value is a valid Digest
 // answer, for the given request method, to the challenge this guard issued
 // under nonce. It accepts the RFC 7616 qop=auth form (cnonce and nc present)
-// and the RFC 2069 legacy form (no qop). The username is free-form: the shared
-// token is the password, so any client can use whatever username its URL
-// carries. The uri the client hashed is used as-is rather than compared with
-// the request URL: clients disagree on trailing slashes and Content-Base forms,
-// and the nonce already binds the answer to this connection. Comparisons are
-// constant-time. A disabled or nil guard, or an empty nonce, rejects everything.
+// and the RFC 2069 legacy form (no qop). The username is free-form but must be
+// non-empty: the shared token is the password, so any client can use whatever
+// username its URL carries, but a credential with no username is rejected. The
+// uri the client hashed is used as-is rather than compared with the request URL:
+// clients disagree on trailing slashes and Content-Base forms, and the nonce
+// already binds the answer to this connection. The nonce and response
+// comparisons are constant-time. A disabled or nil guard, or an empty nonce,
+// rejects everything.
 func (g *Guard) CheckDigest(method, authorization, nonce string) bool {
 	token := g.current()
 	if token == "" || nonce == "" {
@@ -67,6 +69,6 @@ func (g *Guard) CheckDigest(method, authorization, nonce string) bool {
 
 // md5hex returns the lowercase hex MD5 of s, the digest form RFC 7616 specifies.
 func md5hex(s string) string {
-	sum := md5.Sum([]byte(s)) //nolint:gosec // see the import comment: Digest mandates MD5.
+	sum := md5.Sum([]byte(s)) //nolint:gosec // see the import comment: RTSP clients implement only MD5 Digest.
 	return hex.EncodeToString(sum[:])
 }

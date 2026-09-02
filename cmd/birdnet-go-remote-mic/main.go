@@ -222,10 +222,13 @@ func run(cfgPath string) error {
 	// API and web UI (Bearer). The guard is consulted per request and swapped by
 	// reconcile, so a token set or rotated through PATCH /config applies live.
 	guard := auth.NewGuard(cfg.Auth.Token)
-	if cfg.AuthRequired() {
+	switch {
+	case cfg.AuthRequired():
 		log.Print("access token required for the RTSP stream and the management API")
-	} else {
+	case cfg.ManagementEnabled():
 		log.Print("WARNING: the RTSP stream and the management API are OPEN to the network; set auth.token (or use the web UI's Access Control card) to require a token")
+	default:
+		log.Print("WARNING: the RTSP stream is OPEN to the network; set auth.token in the config to require a token")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -337,7 +337,7 @@ func (c *Config) Clone() Config {
 
 // Save marshals c to YAML and writes it to path atomically via atomicfile.Write
 // (temp file, fsync, rename; symlink-preserving). The file is written 0600
-// because the config will hold a token once auth lands.
+// because the config holds the shared access token.
 func Save(path string, c *Config) error {
 	data, err := yaml.Marshal(c)
 	if err != nil {

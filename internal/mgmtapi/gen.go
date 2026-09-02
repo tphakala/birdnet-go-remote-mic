@@ -300,7 +300,7 @@ type Device struct {
 	// Rate Requested capture sample rate in Hz (as configured).
 	Rate int `json:"rate"`
 
-	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
+	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 	State DeviceState `json:"state"`
 
 	// SupportedChannels Channel counts the hardware accepts, probed once at startup via the same non-blocking capability query as supportedRates. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a mono/stereo default. The UI takes the largest count as the number of selectable channels and builds the per-channel selection control (Ch1..ChN) from it.
@@ -325,7 +325,7 @@ type DeviceConfig struct {
 	Channels []int  `json:"channels"`
 	Device   string `json:"device"`
 
-	// Enabled Whether this device is captured and streamed; defaults to true when absent. Set false to keep it configured but not opened. Takes effect on the next restart.
+	// Enabled Whether this device is captured and streamed; defaults to true when absent. Set false to keep it configured but not opened. A change is hot-applied without a restart.
 	Enabled *bool              `json:"enabled,omitempty"`
 	Format  DeviceConfigFormat `json:"format"`
 
@@ -353,7 +353,7 @@ type DeviceLevels struct {
 	Name string `json:"name"`
 }
 
-// DeviceState serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until enabled and the appliance restarts.
+// DeviceState serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 type DeviceState string
 
 // DiscoverySettings mDNS/DNS-SD advertisement settings.
@@ -619,14 +619,14 @@ type ClientInterface interface {
 
 	// GetConfig Get the running configuration
 	//
-	// The configuration as loaded (defaults applied). Secrets, once any exist, are never returned by this endpoint.
+	// The configuration as loaded (defaults applied). This includes the shared access token, which only an authenticated caller can read (this route is behind the bearer gate when a token is set); the Access Control card needs it to show what to paste into BirdNET-Go.
 	//
 	// Corresponds with GET /config (the `GetConfig` operationId).
 	GetConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PatchConfigWithBody Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -635,7 +635,7 @@ type ClientInterface interface {
 
 	// PatchConfig Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -728,7 +728,7 @@ type ClientInterface interface {
 
 	// GetStatus Appliance status
 	//
-	// Appliance-level runtime state: version, uptime, RTSP listener, discovery, and per-device counts. Full per-device detail lives at /devices.
+	// Appliance-level runtime state: version, uptime, RTSP listener, discovery, whether an access token is required, and per-device counts. Full per-device detail lives at /devices.
 	//
 	// Corresponds with GET /status (the `GetStatus` operationId).
 	GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -750,7 +750,7 @@ type ClientInterface interface {
 
 // GetConfig Get the running configuration
 //
-// The configuration as loaded (defaults applied). Secrets, once any exist, are never returned by this endpoint.
+// The configuration as loaded (defaults applied). This includes the shared access token, which only an authenticated caller can read (this route is behind the bearer gate when a token is set); the Access Control card needs it to show what to paste into BirdNET-Go.
 //
 // Corresponds with GET /config (the `GetConfig` operationId).
 func (c *Client) GetConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -767,7 +767,7 @@ func (c *Client) GetConfig(ctx context.Context, reqEditors ...RequestEditorFn) (
 
 // PatchConfigWithBody Update configuration
 //
-// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 //
 // Takes any type of body and a specified content type.
 //
@@ -786,7 +786,7 @@ func (c *Client) PatchConfigWithBody(ctx context.Context, contentType string, bo
 
 // PatchConfig Update configuration
 //
-// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -969,7 +969,7 @@ func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (
 
 // GetStatus Appliance status
 //
-// Appliance-level runtime state: version, uptime, RTSP listener, discovery, and per-device counts. Full per-device detail lives at /devices.
+// Appliance-level runtime state: version, uptime, RTSP listener, discovery, whether an access token is required, and per-device counts. Full per-device detail lives at /devices.
 //
 // Corresponds with GET /status (the `GetStatus` operationId).
 func (c *Client) GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1455,7 +1455,7 @@ type ClientWithResponsesInterface interface {
 
 	// GetConfigWithResponse Get the running configuration
 	//
-	// The configuration as loaded (defaults applied). Secrets, once any exist, are never returned by this endpoint.
+	// The configuration as loaded (defaults applied). This includes the shared access token, which only an authenticated caller can read (this route is behind the bearer gate when a token is set); the Access Control card needs it to show what to paste into BirdNET-Go.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -1464,7 +1464,7 @@ type ClientWithResponsesInterface interface {
 
 	// PatchConfigWithBodyWithResponse Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -1473,7 +1473,7 @@ type ClientWithResponsesInterface interface {
 
 	// PatchConfigWithResponse Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -1578,7 +1578,7 @@ type ClientWithResponsesInterface interface {
 
 	// GetStatusWithResponse Appliance status
 	//
-	// Appliance-level runtime state: version, uptime, RTSP listener, discovery, and per-device counts. Full per-device detail lives at /devices.
+	// Appliance-level runtime state: version, uptime, RTSP listener, discovery, whether an access token is required, and per-device counts. Full per-device detail lives at /devices.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -2210,7 +2210,7 @@ func (r PostSystemRestartResponse) ContentType() string {
 
 // GetConfigWithResponse Get the running configuration
 //
-// The configuration as loaded (defaults applied). Secrets, once any exist, are never returned by this endpoint.
+// The configuration as loaded (defaults applied). This includes the shared access token, which only an authenticated caller can read (this route is behind the bearer gate when a token is set); the Access Control card needs it to show what to paste into BirdNET-Go.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -2225,7 +2225,7 @@ func (c *ClientWithResponses) GetConfigWithResponse(ctx context.Context, reqEdit
 
 // PatchConfigWithBodyWithResponse Update configuration
 //
-// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -2240,7 +2240,7 @@ func (c *ClientWithResponses) PatchConfigWithBodyWithResponse(ctx context.Contex
 
 // PatchConfigWithResponse Update configuration
 //
-// Validates and persists a partial configuration update to the config file. The capture pipeline is built at startup, so changes take effect after the appliance restarts; the response says whether a restart is pending.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -2399,7 +2399,7 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 
 // GetStatusWithResponse Appliance status
 //
-// Appliance-level runtime state: version, uptime, RTSP listener, discovery, and per-device counts. Full per-device detail lives at /devices.
+// Appliance-level runtime state: version, uptime, RTSP listener, discovery, whether an access token is required, and per-device counts. Full per-device detail lives at /devices.
 //
 // Returns a wrapper object for the known response body format(s).
 //
