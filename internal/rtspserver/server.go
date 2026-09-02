@@ -25,7 +25,9 @@ type Config struct {
 	// authenticated only while the guard's generation is unchanged: enabling or
 	// rotating the token via a hot reload advances the generation, so a
 	// connection authenticated under the old token (or one serving under open
-	// access) is re-challenged on its next request and torn down.
+	// access) is torn down. A session actively streaming is dropped by its
+	// writer as soon as the change lands (proactive, not waiting on the client),
+	// and any other connection is re-challenged on its next request.
 	Auth *auth.Guard
 }
 

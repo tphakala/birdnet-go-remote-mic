@@ -293,9 +293,11 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 
 	a.cfg = *newCfg
 	a.prov.setDiscovery(newCfg.DiscoveryEnabled())
-	// Swap the access token in place: the management gate and the RTSP server
-	// read the guard per request, so the new token is enforced from the next
-	// request on (already-authenticated RTSP connections keep their session).
+	// Swap the access token in place: the management gate reads the guard per
+	// request, so the new token is enforced from the next API request on. Set
+	// advances the guard's generation when the token changes, so a serving RTSP
+	// connection authenticated under the old token (or under open access) is
+	// dropped and must reconnect; a connection holding the new token continues.
 	a.guard.Set(newCfg.Auth.Token)
 	a.prov.setAuthRequired(newCfg.AuthRequired())
 	a.publish(newCfg)

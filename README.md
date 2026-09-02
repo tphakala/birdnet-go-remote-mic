@@ -115,21 +115,24 @@ One token gates both surfaces:
   On the Dashboard, a device card's Copy URL button includes the credentials
   when a token is set and this browser is signed in.
 
-Notes: any auth change takes effect on existing RTSP connections at their next
-request. Enabling a token, or rotating one, re-challenges every open connection:
-a client that knows the current token re-authenticates transparently (RTSP
-clients resend credentials after a 401), while one that does not, including a
-connection that was serving while access was open, is disconnected and its
-stream slot released. A client that is mid-stream sends nothing until its
-keepalive falls due, so the change reaches it then rather than instantly: with
-the default 60 second session timeout that is up to about 30 seconds, measured
-with ffmpeg. Restart the appliance if you need every session cut at once. As for what crosses the wire: the bearer token rides
-inside TLS (the API is HTTPS with a self-signed certificate), and Digest never
-sends the token at all, only an MD5 response over it. That MD5 exchange travels
-over plain TCP, so it is brute-forceable offline, and the audio itself is
-unencrypted. This is the threat model of a home-network appliance: the token
-keeps casual listeners and stray clients out, it is not a substitute for network
-isolation on a hostile network.
+Notes: enabling a token, or rotating one, stops existing streams. A connection
+that is actively receiving audio is dropped as soon as the change lands; the
+server tears it down rather than re-authenticating it in place, so the client
+reconnects from scratch with the current token (BirdNET-Go, ffmpeg and VLC all
+reconnect on their own). A connection that is not currently streaming, one still
+negotiating or set up but idle, is instead re-challenged on its next request,
+which for a mostly-idle client is when its keepalive next falls due: up to about
+30 seconds with the default 60 second session timeout. A client that does not
+present the current token is disconnected and its stream slot released. Restart
+the appliance if you need every idle session cut at once. One exception: a
+management event stream (GET /events) opened before the change keeps running,
+because the bearer token is checked once when the stream starts, not per event.
+As for what crosses the wire: the bearer token rides inside TLS (the API is
+HTTPS with a self-signed certificate), and Digest never sends the token at all,
+only an MD5 response over it. That MD5 exchange travels over plain TCP, so it is
+brute-forceable offline, and the audio itself is unencrypted. This is the threat
+model of a home-network appliance: the token keeps casual listeners and stray
+clients out, it is not a substitute for network isolation on a hostile network.
 
 ## Debugging
 
