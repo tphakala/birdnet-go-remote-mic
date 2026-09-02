@@ -116,13 +116,15 @@ One token gates both surfaces:
   when a token is set and this browser is signed in.
 
 Notes: enabling a token, or rotating one, stops existing streams. A connection
-that is actively receiving audio is dropped as soon as the change lands; the
-server tears it down rather than re-authenticating it in place, so the client
-reconnects from scratch with the current token (BirdNET-Go, ffmpeg and VLC all
-reconnect on their own). A connection that is not currently streaming, one still
-negotiating or set up but idle, is instead re-challenged on its next request,
-which for a mostly-idle client is when its keepalive next falls due: up to about
-30 seconds with the default 60 second session timeout. A client that does not
+that is actively receiving audio is dropped as soon as the change lands, within
+a frame or so; the server tears it down rather than re-authenticating it in
+place, so the client has to reconnect with the current token. BirdNET-Go retries
+on its own, while ffmpeg and VLC exit and need restarting with the new
+credentials in their URL. A connection that is not currently streaming, one
+still negotiating or set up but idle, is instead re-challenged on its next
+request, which for a mostly-idle client is when its keepalive next falls due: up
+to about 30 seconds with the default 60 second session timeout, measured with
+ffmpeg. A client that does not
 present the current token is disconnected and its stream slot released. Restart
 the appliance if you need every idle session cut at once. One exception: a
 management event stream (GET /events) opened before the change keeps running,
