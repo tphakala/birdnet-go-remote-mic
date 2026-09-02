@@ -172,7 +172,13 @@ func TestAuthDisabledGuardIsOpen(t *testing.T) {
 	}
 }
 
-func TestAuthRotationAppliesToNewConnections(t *testing.T) {
+// TestAuthRotationChallengesNegotiatingConnection is closure (b) for G3. A
+// connection that authenticated with the old token but is still negotiating
+// (it never reached SETUP, so its state is stateInit) is re-challenged on its
+// next request after a rotation, keeps its socket, and re-authenticates
+// transparently with the new token. A fresh connection must present the new
+// token too.
+func TestAuthRotationChallengesNegotiatingConnection(t *testing.T) {
 	g := auth.NewGuard(testAuthToken)
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, Auth: g}, defaultTrack())
 	c1 := dial(t, addr)
@@ -181,9 +187,12 @@ func TestAuthRotationAppliesToNewConnections(t *testing.T) {
 		t.Fatalf("c1 auth: status = %d", resp.StatusCode)
 	}
 	g.Set("rotated-token-0001")
-	// The already-authenticated connection keeps working (auth is per connection).
-	if resp := c1.do(t, "GET_PARAMETER", baseURL(addr), nil); resp.StatusCode != 200 {
-		t.Errorf("authenticated connection after rotation: status = %d, want 200", resp.StatusCode)
+	// The connection authenticated under the old generation is re-challenged.
+	reCh := challengeOf(t, c1.do(t, methodDesc, baseURL(addr), nil))
+	// It kept its socket (state was stateInit): answering with the new token on
+	// the same connection succeeds.
+	if resp := c1.do(t, methodDesc, baseURL(addr), answer(t, reCh, "rotated-token-0001", methodDesc, baseURL(addr))); resp.StatusCode != 200 {
+		t.Errorf("re-auth with the new token on the same connection: status = %d, want 200", resp.StatusCode)
 	}
 	// A new connection must present the new token.
 	c2 := dial(t, addr)
@@ -194,6 +203,56 @@ func TestAuthRotationAppliesToNewConnections(t *testing.T) {
 	ch3 := challengeOf(t, c2.do(t, methodDesc, baseURL(addr), nil))
 	if resp := c2.do(t, methodDesc, baseURL(addr), answer(t, ch3, "rotated-token-0001", methodDesc, baseURL(addr))); resp.StatusCode != 200 {
 		t.Errorf("new token on a new connection: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestAuthEnableEvictsPlayingOpenAccessSession is closure (a) for G3. A session
+// set up and playing while access was open is torn down on its next request
+// once a token is enabled: the request is answered 401, the connection is
+// closed, and the freed track slot is available to a second client. Without the
+// eviction the stream would keep serving audio to a now-unauthenticated client
+// and the single slot would stay held.
+func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
+	g := auth.NewGuard("")
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, Auth: g}, defaultTrack())
+	c1 := dial(t, addr)
+	setup := c1.do(t, "SETUP", trackURL(addr), tcpTransport("0-1"))
+	if setup.StatusCode != 200 {
+		t.Fatalf("open-access SETUP: status = %d, want 200", setup.StatusCode)
+	}
+	play := rtsp.Header{}
+	play.Set("Session", setup.Header.Get("Session"))
+	if resp := c1.do(t, "PLAY", baseURL(addr), play); resp.StatusCode != 200 {
+		t.Fatalf("open-access PLAY: status = %d, want 200", resp.StatusCode)
+	}
+
+	// Enable a token: the playing connection is now unauthenticated.
+	g.Set(testAuthToken)
+	if resp := c1.do(t, "GET_PARAMETER", baseURL(addr), nil); resp.StatusCode != 401 {
+		t.Fatalf("GET_PARAMETER after a token was enabled: status = %d, want 401", resp.StatusCode)
+	}
+	// The connection is torn down after the challenge (state was past init).
+	_ = c1.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c1.conn.Read(make([]byte, 1)); err == nil {
+		t.Error("connection stayed open after eviction; want it closed")
+	}
+
+	// The slot the evicted connection held is released, so a second client that
+	// presents the token can take it.
+	c2 := dial(t, addr)
+	ch := challengeOf(t, c2.do(t, methodDesc, baseURL(addr), nil))
+	if resp := c2.do(t, methodDesc, baseURL(addr), answer(t, ch, testAuthToken, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
+		t.Fatalf("c2 auth: status = %d, want 200", resp.StatusCode)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if resp := c2.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); resp.StatusCode == 200 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("SETUP after eviction never got the slot")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

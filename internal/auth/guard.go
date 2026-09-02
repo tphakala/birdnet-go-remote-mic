@@ -30,6 +30,12 @@ const (
 // fails, so a caller that forgot to wire one can never authenticate by accident.
 type Guard struct {
 	token atomic.Pointer[string]
+	// gen counts token changes. It advances only when Set installs a token
+	// that differs from the current one, so the RTSP server can detect that a
+	// connection authenticated under a superseded token (or under open access)
+	// and re-challenge it. Setting the same token again does not advance it, so
+	// an idempotent reconcile never disturbs a playing session.
+	gen atomic.Uint64
 }
 
 // NewGuard returns a Guard holding token. An empty token disables the guard.
@@ -40,9 +46,28 @@ func NewGuard(token string) *Guard {
 }
 
 // Set replaces the active token. An empty token disables the guard (open
-// access); callers skip their checks while Enabled reports false.
+// access); callers skip their checks while Enabled reports false. When the new
+// token differs from the current one, Generation advances so the RTSP server
+// evicts sessions authenticated under the old token; setting the same value is
+// a no-op for eviction. Set on a nil *Guard panics; the nil case is test-only.
 func (g *Guard) Set(token string) {
+	old := g.current()
 	g.token.Store(&token)
+	if token != old {
+		g.gen.Add(1)
+	}
+}
+
+// Generation returns a counter that advances every time Set installs a token
+// different from the current one. The RTSP server records the generation at
+// which a connection authenticated and re-challenges once it advances, so
+// enabling or rotating a token evicts connections authenticated under the old
+// one (or under open access). A nil guard reports 0.
+func (g *Guard) Generation() uint64 {
+	if g == nil {
+		return 0
+	}
+	return g.gen.Load()
 }
 
 // current returns the active token, or "" for a nil or disabled guard.

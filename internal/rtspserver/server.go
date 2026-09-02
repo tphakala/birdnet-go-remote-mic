@@ -21,7 +21,11 @@ type Config struct {
 	SRInterval time.Duration // RTCP sender report interval; defaults to 5s
 	// Auth is the shared-token guard. A nil or disabled guard means open access;
 	// an enabled one makes every method except OPTIONS require a Digest answer
-	// (RFC 7616, MD5) with the token as the password, checked per connection.
+	// (RFC 7616, MD5) with the token as the password. A connection stays
+	// authenticated only while the guard's generation is unchanged: enabling or
+	// rotating the token via a hot reload advances the generation, so a
+	// connection authenticated under the old token (or one serving under open
+	// access) is re-challenged on its next request and torn down.
 	Auth *auth.Guard
 }
 

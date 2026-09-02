@@ -56,11 +56,15 @@ type connSession struct {
 	// nonce is the Digest nonce issued to this connection on its first
 	// challenge; answers are accepted only under it, so a captured Authorization
 	// header is useless on any other connection. authed records that a valid
-	// answer arrived: authentication is per connection, later requests are not
-	// re-checked (every client resends credentials anyway, and tolerating one
-	// that does not costs nothing on a single TCP connection).
-	nonce  string
-	authed bool
+	// answer arrived and authGen the guard generation it was valid under. A
+	// later request is trusted only while authGen still matches the guard's
+	// current generation; enabling or rotating the token advances the
+	// generation, so a connection authenticated under the old token (or under
+	// open access) is re-challenged and evicted rather than authenticated for
+	// its whole lifetime.
+	nonce   string
+	authed  bool
+	authGen uint64
 }
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
@@ -141,7 +145,12 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 	// unknown method, must authenticate first.
 	if req.Method != "OPTIONS" && !cs.authorized(req) {
 		cs.respondUnauthorized(req)
-		return false
+		// A connection that had already reached a session (SETUP or PLAY) is
+		// torn down after the challenge: enabling or rotating the token must
+		// evict it, and serveConn's deferred cleanup then releases the track
+		// slot and stops the writer. A connection still negotiating (stateInit)
+		// keeps its socket so it can retry with credentials.
+		return cs.state != stateInit
 	}
 	switch req.Method {
 	case "OPTIONS":
@@ -163,18 +172,25 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 	return false
 }
 
-// authorized reports whether req may proceed: always when no token is
-// configured, once the connection has authenticated, or when req carries a
-// valid Digest answer to this connection's nonce, which authenticates the
-// connection for its lifetime. A token enabled by a hot reload starts
-// challenging an open-access connection on its next request.
+// authorized reports whether req may proceed: when this connection already
+// authenticated under the guard's current generation, when no token is
+// configured, or when req carries a valid Digest answer to this connection's
+// nonce (which records the current generation and authenticates the
+// connection). Authentication holds only while the generation is unchanged: a
+// token enabled or rotated by a hot reload advances the generation, so a
+// connection authenticated under the old token (or under open access) is no
+// longer authorized and gets re-challenged on its next request.
 func (cs *connSession) authorized(req *rtsp.Request) bool {
 	g := cs.srv.cfg.Auth
-	if !g.Enabled() || cs.authed {
+	if cs.authed && cs.authGen == g.Generation() {
+		return true
+	}
+	if !g.Enabled() {
 		return true
 	}
 	if cs.nonce != "" && g.CheckDigest(req.Method, req.Header.Get("Authorization"), cs.nonce) {
 		cs.authed = true
+		cs.authGen = g.Generation()
 		return true
 	}
 	return false
