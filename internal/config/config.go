@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"slices"
@@ -161,7 +162,29 @@ func Load(path string) (Config, error) {
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
+	if c.Auth.Token != "" {
+		warnIfTokenFileReadable(path)
+	}
 	return c, nil
+}
+
+// warnIfTokenFileReadable logs a warning when path is accessible by group or
+// other while it holds a shared access token. The check masks every group and
+// other bit (0o077), so a group-writable or world-readable file both trip it:
+// read leaks the secret and write lets a local account replace it. Save writes
+// 0600, but a hand-edited or hand-copied file, or the shipped example an
+// operator pasted a token into, can be wider. The token is the bearer and
+// Digest secret, so a non-owner-only file exposes it to every local account;
+// the warning steers the operator to chmod 600 rather than silently accepting
+// it.
+func warnIfTokenFileReadable(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		log.Printf("config: %s is accessible by group or other (mode %#o) but holds an access token; restrict it with: chmod 600 %s", path, perm, path)
+	}
 }
 
 // ApplyDefaults fills in the defaults for any unset fields. It is idempotent, so

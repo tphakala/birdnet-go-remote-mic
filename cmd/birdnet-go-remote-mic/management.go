@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -405,21 +406,54 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 }
 
 // certHosts returns the SANs to embed in the self-signed certificate: loopback,
-// this host's name, and its LAN IP addresses, so a client reaching the appliance
-// by hostname or by IP does not hit a certificate name mismatch.
+// this host's name, the <hostname>.local name it advertises over DNS-SD, and its
+// LAN IP addresses, so a client reaching the appliance by the discovered .local
+// URL, by bare hostname, or by IP does not hit a certificate name mismatch.
 func certHosts() []string {
-	hosts := []string{"localhost", "127.0.0.1", "::1"}
-	if h, err := os.Hostname(); err == nil && h != "" {
-		hosts = append(hosts, h)
-	}
+	host, _ := os.Hostname()
+	var ips []string
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
 			if !ok || ipnet.IP.IsLoopback() {
 				continue
 			}
-			hosts = append(hosts, ipnet.IP.String())
+			ips = append(ips, ipnet.IP.String())
 		}
+	}
+	return certHostsFor(host, ips)
+}
+
+// certHostsFor builds the certificate SANs from the host's name and its
+// non-loopback interface IPs. Beyond loopback and the bare hostname it adds
+// <hostname>.local, the name brutella/dnssd publishes for the appliance (it sets
+// no explicit host), which is the URL an operator naturally has in hand after
+// discovery. Without that SAN, https://<host>.local fails verification and the
+// operator falls back to curl -k, which disables verification entirely and lets
+// anything on the network impersonate the appliance and harvest the bearer
+// token. Every name is added at most once, so a hostname that already ends in
+// .local yields a single .local SAN rather than a duplicate or a .local.local.
+func certHostsFor(hostname string, ifaceIPs []string) []string {
+	hosts := make([]string, 0, 4+len(ifaceIPs))
+	seen := make(map[string]bool)
+	add := func(h string) {
+		if h == "" || seen[h] {
+			return
+		}
+		seen[h] = true
+		hosts = append(hosts, h)
+	}
+	add("localhost")
+	add("127.0.0.1")
+	add("::1")
+	if hostname != "" {
+		add(hostname)
+		if !strings.HasSuffix(hostname, ".local") {
+			add(hostname + ".local")
+		}
+	}
+	for _, ip := range ifaceIPs {
+		add(ip)
 	}
 	return hosts
 }

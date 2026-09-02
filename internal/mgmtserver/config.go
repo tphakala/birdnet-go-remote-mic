@@ -132,8 +132,15 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	defer s.patchMu.Unlock()
 
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
-		if patch.Discovery != nil {
-			cur.Discovery.Enabled = patch.Discovery.Enabled
+		// A discovery block with no enabled field is a no-op: copying the patch's
+		// nil pointer straight in would reset the flag, and a nil discovery flag
+		// defaults ON, so discovery:{} would silently re-enable advertisement an
+		// operator explicitly turned off. Copy a present value into fresh storage
+		// so the persisted config never aliases the request body (parity with the
+		// device and auth branches).
+		if patch.Discovery != nil && patch.Discovery.Enabled != nil {
+			v := *patch.Discovery.Enabled
+			cur.Discovery.Enabled = &v
 		}
 		// An auth block with no token field is a no-op; an empty string clears
 		// the token (open access), which Validate accepts.

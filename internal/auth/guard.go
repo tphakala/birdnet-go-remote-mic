@@ -116,6 +116,24 @@ func (g *Guard) Enabled() bool {
 	return g.current() != ""
 }
 
+// Snapshot returns the enabled state and generation from a single atomic load,
+// so a caller that needs both sees a consistent (enabled, gen) pair rather than
+// risking a token rotation between two separate reads of Enabled and
+// Generation. The RTSP writer's eviction check and session authorization both
+// need the pair. A nil or never-configured guard reports (false, 0); a guard
+// whose token was cleared reports (false, gen) with gen at its advanced value,
+// since clearing the token disables the guard but still advances the
+// generation to evict sessions authenticated under the old token.
+func (g *Guard) Snapshot() (enabled bool, gen uint64) {
+	if g == nil {
+		return false, 0
+	}
+	if st := g.state.Load(); st != nil {
+		return st.token != "", st.gen
+	}
+	return false, 0
+}
+
 // CheckBearer reports whether an Authorization header value carries the
 // active token as an RFC 6750 bearer credential ("Bearer <token>", scheme
 // case-insensitive). A disabled guard rejects everything; callers must consult

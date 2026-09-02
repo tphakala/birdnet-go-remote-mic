@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ const (
 	devHW1        = "hw:1,0"
 	devHW2        = "hw:2,0"
 	nameAudioMoth = "AudioMoth"
+	testIfaceIP   = "192.168.1.5"
 )
 
 func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
@@ -310,4 +312,70 @@ func TestRunEnumerationWiresDetectionToProvider(t *testing.T) {
 	if len(avail) != 1 || avail[0].ID != devHW2 {
 		t.Errorf("AvailableDevices = %+v, want only the unconfigured hw:2,0", avail)
 	}
+}
+
+func TestCertHostsForCoversDiscoveredDotLocal(t *testing.T) {
+	// The appliance advertises <hostname>.local over DNS-SD, so that name must be
+	// in the certificate SANs: otherwise the discovered https://<host>.local URL
+	// fails verification and the operator falls back to curl -k, which disables
+	// verification entirely and exposes the bearer token to an impersonator.
+	// The duplicate interface IP must collapse to a single SAN, exercising the
+	// add() dedup on the IP path as well as the name path.
+	got := certHostsFor("birdmic", []string{testIfaceIP, testIfaceIP})
+	for _, want := range []string{"localhost", "127.0.0.1", "::1", "birdmic", "birdmic.local", testIfaceIP} {
+		if !slices.Contains(got, want) {
+			t.Errorf("certHostsFor missing %q; got %v", want, got)
+		}
+	}
+	if dupes := duplicates(got); len(dupes) != 0 {
+		t.Errorf("certHostsFor has duplicate SANs %v in %v", dupes, got)
+	}
+}
+
+func TestCertHostsForHostnameAlreadyDotLocal(t *testing.T) {
+	// A host whose name already ends in .local must yield a single .local SAN, not
+	// a duplicate and not birdmic.local.local.
+	got := certHostsFor("birdmic.local", nil)
+	if c := countOf(got, "birdmic.local"); c != 1 {
+		t.Errorf("want exactly one birdmic.local SAN, got %d in %v", c, got)
+	}
+	if slices.Contains(got, "birdmic.local.local") {
+		t.Errorf(".local appended twice: %v", got)
+	}
+}
+
+func TestCertHostsForNoHostname(t *testing.T) {
+	// With no resolvable hostname the loopback SANs still stand and nothing empty
+	// leaks into the list.
+	got := certHostsFor("", nil)
+	if slices.Contains(got, "") {
+		t.Errorf("empty SAN leaked into %v", got)
+	}
+	for _, want := range []string{"localhost", "127.0.0.1", "::1"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("certHostsFor missing loopback SAN %q; got %v", want, got)
+		}
+	}
+}
+
+func countOf(list []string, v string) int {
+	n := 0
+	for _, s := range list {
+		if s == v {
+			n++
+		}
+	}
+	return n
+}
+
+func duplicates(list []string) []string {
+	seen := map[string]bool{}
+	var dupes []string
+	for _, s := range list {
+		if seen[s] {
+			dupes = append(dupes, s)
+		}
+		seen[s] = true
+	}
+	return dupes
 }

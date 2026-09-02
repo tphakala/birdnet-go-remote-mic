@@ -108,6 +108,40 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	}
 }
 
+func TestPatchConfigEmptyDiscoveryKeepsDisabled(t *testing.T) {
+	// A PATCH carrying discovery:{} (the object present, enabled absent) must
+	// leave an explicitly-disabled discovery disabled. Copying the patch's nil
+	// Enabled pointer straight in resets the flag to nil, and a nil discovery
+	// flag defaults ON, silently re-enabling advertisement the operator turned
+	// off. This mirrors the auth branch, which no-ops on an absent token.
+	disabled := false
+	c := baseConfig()
+	c.Discovery.Enabled = &disabled
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store := NewFileConfigStore(path, &c)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	body := &mgmtapi.ConfigPatch{Discovery: &mgmtapi.DiscoverySettings{}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if ok200.Config.Discovery.Enabled == nil || *ok200.Config.Discovery.Enabled {
+		t.Errorf("response discovery.enabled = %v, want &false (empty discovery patch must not re-enable)", ok200.Config.Discovery.Enabled)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if loaded.DiscoveryEnabled() {
+		t.Error("persisted discovery is enabled, want disabled after an empty discovery patch")
+	}
+}
+
 func TestPatchConfigWithReloaderAppliesLive(t *testing.T) {
 	store, _ := tempStore(t)
 	var got config.Config
