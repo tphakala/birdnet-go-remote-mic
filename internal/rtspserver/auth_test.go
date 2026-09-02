@@ -2,11 +2,14 @@ package rtspserver
 
 import (
 	"encoding/base64"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	rtsp "github.com/tphakala/go-audio-stream/rtsp"
 )
 
@@ -213,15 +216,51 @@ func TestAuthRotationChallengesNegotiatingConnection(t *testing.T) {
 	}
 }
 
-// TestAuthEnableEvictsPlayingOpenAccessSession is closure (a) for G3. A session
-// set up and playing while access was open is torn down on its next request
-// once a token is enabled: the request is answered 401, the connection is
-// closed, and the freed track slot is available to a second client. Without the
-// eviction the stream would keep serving audio to a now-unauthenticated client
-// and the single slot would stay held.
+// firstByteIs reports whether the first byte to arrive on conn within timeout
+// equals want. Used to confirm the writer has started sending interleaved RTP
+// frames ('$'-prefixed) to a playing client.
+func firstByteIs(t *testing.T, conn net.Conn, want byte, timeout time.Duration) bool {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	b := make([]byte, 1)
+	n, err := conn.Read(b)
+	return n == 1 && b[0] == want && err == nil
+}
+
+// drainUntilClosed keeps reading conn and reports whether it is torn down
+// (EOF/closed) within timeout. It returns false if the read deadline is reached
+// with the connection still open, i.e. the server kept streaming.
+func drainUntilClosed(t *testing.T, conn net.Conn, timeout time.Duration) bool {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 4096)
+	for {
+		if _, err := conn.Read(buf); err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				return false // deadline hit with the connection still open
+			}
+			return true // EOF / closed: torn down
+		}
+	}
+}
+
+// TestAuthEnableEvictsPlayingOpenAccessSession is closure (a) for G3 and the
+// closure for the round-2 finding that eviction was request-driven. A session
+// set up and playing (a real ChanSource with frames flowing) while access was
+// open is torn down PROACTIVELY once a token is enabled: the RTP flow stops and
+// the connection is closed WITHOUT the client sending any request, and the
+// freed track slot becomes available to a second, authenticated client. It also
+// exercises the mid-session cleanup (SetActive(false), releaseSlot, writer
+// teardown) that the fix relies on. Against the pre-fix code, whose eviction
+// fired only when the client sent a request, the writer keeps streaming and the
+// slot stays held, so both drainUntilClosed and the slot reacquisition fail.
 func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 	g := auth.NewGuard("")
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, Auth: g}, defaultTrack())
+	frames := NewChanSource(256)
+	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Frames: frames}
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
+
 	c1 := dial(t, addr)
 	setup := c1.do(t, "SETUP", trackURL(addr), tcpTransport("0-1"))
 	if setup.StatusCode != 200 {
@@ -233,15 +272,35 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 		t.Fatalf("open-access PLAY: status = %d, want 200", resp.StatusCode)
 	}
 
-	// Enable a token: the playing connection is now unauthenticated.
-	g.Set(testAuthToken)
-	if resp := c1.do(t, "GET_PARAMETER", baseURL(addr), nil); resp.StatusCode != 401 {
-		t.Fatalf("GET_PARAMETER after a token was enabled: status = %d, want 401", resp.StatusCode)
+	// Feed audio continuously so the writer is actively sending RTP. A zero-filled
+	// payload carries no '$' bytes, so the '$' the client sees is the interleaved
+	// frame prefix, not payload data.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
+			}
+		}
+	}()
+
+	// Confirm RTP is actually flowing to this open-access client before enabling
+	// the token: the first byte on the wire is an interleaved-frame marker.
+	if !firstByteIs(t, c1.conn, '$', 2*time.Second) {
+		t.Fatal("no RTP frame reached the open-access client before the token was enabled")
 	}
-	// The connection is torn down after the challenge (state was past init).
-	_ = c1.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := c1.conn.Read(make([]byte, 1)); err == nil {
-		t.Error("connection stayed open after eviction; want it closed")
+
+	// Enable a token. c1 never sends another request, so only proactive eviction
+	// in the writer can stop the stream and tear the connection down.
+	g.Set(testAuthToken)
+	if !drainUntilClosed(t, c1.conn, 3*time.Second) {
+		t.Fatal("open-access session kept streaming after the token was enabled; eviction is request-driven")
 	}
 
 	// The slot the evicted connection held is released, so a second client that
@@ -251,7 +310,7 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 	if resp := c2.do(t, methodDesc, baseURL(addr), answer(t, ch, testAuthToken, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
 		t.Fatalf("c2 auth: status = %d, want 200", resp.StatusCode)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if resp := c2.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); resp.StatusCode == 200 {
 			return

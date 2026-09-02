@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	rtsp "github.com/tphakala/go-audio-stream/rtsp"
@@ -61,10 +62,12 @@ type connSession struct {
 	// current generation; enabling or rotating the token advances the
 	// generation, so a connection authenticated under the old token (or under
 	// open access) is re-challenged and evicted rather than authenticated for
-	// its whole lifetime.
+	// its whole lifetime. authed and authGen are atomics because handle runs on
+	// the read goroutine while runWriter reads them on the writer goroutine to
+	// evict a serving connection proactively.
 	nonce   string
-	authed  bool
-	authGen uint64
+	authed  atomic.Bool
+	authGen atomic.Uint64
 }
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
@@ -182,15 +185,23 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 // longer authorized and gets re-challenged on its next request.
 func (cs *connSession) authorized(req *rtsp.Request) bool {
 	g := cs.srv.cfg.Auth
-	if cs.authed && cs.authGen == g.Generation() {
+	if cs.authed.Load() && cs.authGen.Load() == g.Generation() {
 		return true
 	}
 	if !g.Enabled() {
 		return true
 	}
+	// Snapshot the generation BEFORE running the credential check, then record
+	// that snapshot on success. If the token is rotated between this read and
+	// CheckDigest's own token read, either CheckDigest fails against the new
+	// token, or the recorded generation is older than the verified token and the
+	// connection is simply re-challenged next request. Reading the generation
+	// after the check could instead stamp an old-token answer with the new
+	// generation, authenticating a revoked credential.
+	gen := g.Generation()
 	if cs.nonce != "" && g.CheckDigest(req.Method, req.Header.Get("Authorization"), cs.nonce) {
-		cs.authed = true
-		cs.authGen = g.Generation()
+		cs.authed.Store(true)
+		cs.authGen.Store(gen)
 		return true
 	}
 	return false
