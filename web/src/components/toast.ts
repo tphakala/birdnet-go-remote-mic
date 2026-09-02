@@ -6,6 +6,14 @@ const ICON_ERROR = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" 
 const ICON_OK = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`;
 const ICON_CLOSE = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
 
+// The leading icon per toast type. A lookup keyed by type replaces a nested
+// ternary so a new type is one entry, not another branch.
+const TOAST_ICONS: Record<ToastType, string> = {
+  info: ICON_OK,
+  warn: ICON_WARN,
+  error: ICON_ERROR,
+};
+
 const INFO_TTL_MS = 3200;
 // A failed provisioning, removal or save deserves more than a glance: errors
 // live in an assertive region, stay longer, and can be dismissed by hand.
@@ -24,7 +32,7 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
 
   const icon = document.createElement("span");
   icon.className = "toast-icon";
-  icon.innerHTML = type === "warn" ? ICON_WARN : isError ? ICON_ERROR : ICON_OK; // static, trusted markup
+  icon.innerHTML = TOAST_ICONS[type]; // static, trusted markup
   const msg = document.createElement("span");
   msg.className = "toast-msg";
   msg.textContent = message;
