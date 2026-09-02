@@ -46,6 +46,9 @@ export function initLoginModal(): void {
         input.focus();
         return;
       }
+      // Capture the button's own label rather than hard-coding "Unlock", so the
+      // busy text is restored to whatever the markup actually uses.
+      const origLabel = submit.textContent ?? "Unlock";
       submit.disabled = true;
       submit.setAttribute("aria-busy", "true");
       submit.textContent = "Checking...";
@@ -55,12 +58,18 @@ export function initLoginModal(): void {
           error.textContent = result.message;
           input.select();
         }
+      } catch {
+        // store.login resolves its own errors to {ok:false}; this guards an
+        // unexpected throw so the prompt reports a failure rather than hanging on
+        // "Checking...".
+        error.textContent = "Could not reach the appliance.";
+        input.select();
       } finally {
         submit.disabled = false;
         submit.removeAttribute("aria-busy");
-        submit.textContent = "Unlock";
-        // Re-enabling a disabled focused control drops focus to the body; put
-        // it back on the field so a retry is one keystroke away.
+        submit.textContent = origLabel;
+        // Disabling the focused submit button dropped focus to the body; put it
+        // back on the field so a retry is one keystroke away.
         if (open) input.focus();
       }
     })();

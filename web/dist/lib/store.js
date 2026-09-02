@@ -27,15 +27,35 @@ export class AppStore extends EventTarget {
     // burst of rejected requests (the initial load fires five) opens one prompt
     // and the generic load-error state is suppressed in favor of it.
     loginPending = false;
+    // swapDepth is non-zero while a deliberate token rotation is in progress. The
+    // appliance enforces the new token before it finishes writing the PATCH
+    // response, so an in-flight poll can be rejected with a 401 that carries
+    // EITHER the old or the new token while the swap is landing. During that
+    // window such a 401 is expected and must not stop polling or pop the login
+    // prompt; the rotation caller reloads once setToken has run.
+    swapDepth = 0;
     constructor() {
         super();
         api.onUnauthorized = () => this.onUnauthorized();
         this.initSSE();
     }
+    // beginTokenSwap opens the rotation window; endTokenSwap closes it. The pair
+    // is depth-counted (floored at 0) so overlapping rotations do not close the
+    // window early.
+    beginTokenSwap() {
+        this.swapDepth++;
+    }
+    endTokenSwap() {
+        this.swapDepth = Math.max(0, this.swapDepth - 1);
+    }
     // onUnauthorized reacts to the appliance rejecting the UI's credentials:
     // polling and the SSE stream stop (they would only be rejected again) and the
     // login prompt is asked for, once per outage.
     onUnauthorized() {
+        // A 401 during a deliberate rotation is expected under either token and must
+        // not interrupt polling; the rotation caller resumes once setToken has run.
+        if (this.swapDepth > 0)
+            return;
         if (this.loginPending)
             return;
         this.loginPending = true;
@@ -60,6 +80,13 @@ export class AppStore extends EventTarget {
         this.loginPending = false;
         this.dispatchEvent(new CustomEvent("authok"));
         await this.loadInitial();
+        // loadInitial may have hit a fresh 401 (the token was revoked between the
+        // verifying getStatus and the bulk load), which re-arms loginPending via
+        // onUnauthorized. Resuming polling would only be rejected again, so report
+        // failure and leave the prompt up instead.
+        if (this.loginPending) {
+            return { ok: false, message: "The appliance rejected the token during load. Try again." };
+        }
         this.startPolling();
         return { ok: true, message: "" };
     }
@@ -115,9 +142,12 @@ export class AppStore extends EventTarget {
         return this.loadInitial();
     }
     startPolling(intervalMs = 3000) {
+        // Start the event stream before the early return: if the poll timer is
+        // already running while a prior stop()/start() left SSE stopped, returning
+        // early here would leave the stream down. sse.start() is idempotent.
+        sse.start();
         if (this.pollIntervalTimer !== null)
             return;
-        sse.start();
         this.pollIntervalTimer = window.setInterval(async () => {
             await Promise.allSettled([
                 this.refreshStatus(),

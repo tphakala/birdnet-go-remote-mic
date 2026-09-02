@@ -15,10 +15,13 @@ export class ApiError extends Error {
 export class ApiClient {
     baseUrl;
     token = null;
-    // onUnauthorized fires when the appliance rejects the CURRENT token (a 401
-    // to a request that carried the token in force at response time). A 401 to a
-    // request sent under an older token, mid-rotation, is a stale rejection and
-    // does not fire it, so a poll racing a token swap cannot pop the login prompt.
+    // onUnauthorized fires on a 401. The `used === this.token` guard below only
+    // suppresses a 401 whose RESPONSE is processed after setToken already changed
+    // the token (a request sent under the old token, resolving after the swap).
+    // It cannot suppress a 401 processed while both `used` and `this.token` still
+    // hold the pre-rotation token, which happens because the appliance enforces
+    // the new token before it finishes writing the PATCH response. The store owns
+    // a swap window (beginTokenSwap/endTokenSwap) that covers that remaining gap.
     onUnauthorized = null;
     constructor(baseUrl = "/api/v1") {
         this.baseUrl = baseUrl;

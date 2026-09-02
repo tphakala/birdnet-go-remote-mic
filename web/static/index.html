@@ -136,7 +136,7 @@
     <!-- ================= VIEW 1: DASHBOARD ================= -->
     <section id="view-dashboard" class="view-panel view-container active" aria-label="Live Audio Dashboard">
 
-      <h2 class="visually-hidden" id="rack-heading">Streaming Devices</h2>
+      <h2 class="visually-hidden">Streaming Devices</h2>
       <div class="channel-rack" id="channel-rack">
         <p class="rack-empty" id="rack-empty">Loading devices...</p>
       </div>
@@ -227,9 +227,9 @@
             <label class="field-label" for="sys-auth-token">Access Token</label>
             <div class="auth-token-row">
               <input type="password" class="field-input mono" id="sys-auth-token" autocomplete="new-password" spellcheck="false" aria-describedby="sys-auth-hint sys-auth-error">
-              <button type="button" class="btn btn-secondary" id="btn-auth-reveal" aria-pressed="false" aria-controls="sys-auth-token">Show</button>
-              <button type="button" class="btn btn-secondary" id="btn-auth-copy">Copy</button>
-              <button type="button" class="btn btn-secondary" id="btn-auth-generate">Generate</button>
+              <button type="button" class="btn btn-secondary" id="btn-auth-reveal" aria-label="Show access token" aria-controls="sys-auth-token">Show</button>
+              <button type="button" class="btn btn-secondary" id="btn-auth-copy" aria-label="Copy access token">Copy</button>
+              <button type="button" class="btn btn-secondary" id="btn-auth-generate" aria-label="Generate access token">Generate</button>
             </div>
             <span class="field-hint" id="sys-auth-hint">12 to 128 characters: letters, digits, and . _ ~ - only. Leave it empty to allow open access.</span>
             <span class="field-error auth-error" id="sys-auth-error"></span>

@@ -68,8 +68,12 @@ export class SSEClient {
             this.abortController = new AbortController();
             const headers = new Headers();
             headers.set("Accept", "text/event-stream");
-            if (this.token) {
-                headers.set("Authorization", `Bearer ${this.token}`);
+            // Capture the token this request is sent under so a 401 can be classified:
+            // a rejection of the token still in force is genuine, while a rejection of
+            // a token that has since been rotated is stale and must reconnect instead.
+            const used = this.token;
+            if (used) {
+                headers.set("Authorization", `Bearer ${used}`);
             }
             try {
                 const response = await fetch(this.url, {
@@ -77,14 +81,22 @@ export class SSEClient {
                     signal: this.abortController.signal,
                 });
                 if (response.status === 401) {
-                    // The appliance wants a (different) token. Reconnecting on a timer
-                    // would hammer it with the same rejected credential every 1..10 s, so
-                    // stop here; the store restarts the stream once a token is accepted.
-                    this.isRunning = false;
-                    this.generation++;
-                    this.abortController = null;
-                    this.dispatch("unauthorized", null);
-                    return;
+                    // Release the unread body so the rejected connection is not left open.
+                    void response.body?.cancel();
+                    if (used === this.token) {
+                        // The appliance rejects the token in force. Reconnecting on a timer
+                        // would hammer it with the same rejected credential every 1..10 s,
+                        // so stop; the store restarts the stream once a token is accepted.
+                        this.isRunning = false;
+                        this.generation++;
+                        this.abortController = null;
+                        this.dispatch("unauthorized", null);
+                        return;
+                    }
+                    // The token was rotated while this request was in flight, so the 401
+                    // is against the OLD credential. Do not prompt; fall through to the
+                    // reconnect path so the stream comes back under the current token.
+                    throw new Error("SSE token rotated mid-connect; reconnecting");
                 }
                 if (!response.ok || !response.body) {
                     throw new Error(`SSE HTTP error: ${response.status} ${response.statusText}`);

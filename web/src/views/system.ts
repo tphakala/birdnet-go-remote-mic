@@ -86,8 +86,11 @@ export class SystemView {
     reveal?.addEventListener("click", () => {
       const show = input.type === "password";
       input.type = show ? "text" : "password";
+      // The visible label and the accessible name both swap Show/Hide; there is
+      // no aria-pressed, so the state is carried by the label rather than by a
+      // pressed toggle contradicting a changing label.
       reveal.textContent = show ? "Hide" : "Show";
-      reveal.setAttribute("aria-pressed", String(show));
+      reveal.setAttribute("aria-label", show ? "Hide access token" : "Show access token");
     });
     document.getElementById("btn-auth-copy")?.addEventListener("click", () => {
       const value = input.value.trim();
@@ -107,7 +110,7 @@ export class SystemView {
       input.type = "text";
       if (reveal) {
         reveal.textContent = "Hide";
-        reveal.setAttribute("aria-pressed", "true");
+        reveal.setAttribute("aria-label", "Hide access token");
       }
       input.dispatchEvent(new Event("input"));
       input.focus();
@@ -127,9 +130,13 @@ export class SystemView {
     const token = cfg.auth?.token ?? "";
     if (this.authTokenEl) this.authTokenEl.value = token;
     if (this.authStateEl) {
-      this.authStateEl.textContent = token
+      const stateText = token
         ? "Token required: the API, this UI and the RTSP streams ask for credentials."
         : "Open access: anyone on the network can listen and change settings.";
+      // #sys-auth-state is a role=status region rewritten on every config event;
+      // only write when the text actually changes so a steady state is not
+      // re-announced to screen readers each poll.
+      if (this.authStateEl.textContent !== stateText) this.authStateEl.textContent = stateText;
       this.authStateEl.classList.toggle("locked", !!token);
       this.authStateEl.classList.toggle("open", !token);
     }
@@ -184,15 +191,36 @@ export class SystemView {
       saveBtn.textContent = "Saving...";
     }
     if (discardBtn) discardBtn.disabled = true;
+    // Open the store's rotation window so an in-flight poll rejected while the
+    // appliance is switching tokens (it enforces the new one before the PATCH
+    // response is fully written) does not pop the login prompt over a working
+    // page. It is closed in the finally, after setToken has run.
+    store.beginTokenSwap();
     try {
       const res = await api.patchConfig({ auth: { token } });
-      // The appliance now enforces the new token; adopt it before anything else
-      // runs (see setToken).
-      setToken(token || null);
       this.authDirty = false;
       store.applyConfig(res.config);
-      await Promise.all([store.refreshConfig(), store.refreshStatus()]);
-      showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
+      if (res.restartRequired) {
+        // The appliance saved the token but still enforces the OLD credential
+        // until a restart, so do NOT adopt the new token here: doing so would
+        // make the very next request fail against the still-running old token.
+        // This matches saveNetwork and saveDevice, which also branch on
+        // restartRequired rather than assuming the change is live.
+        // applyConfig above already seeded the authoritative config, so only
+        // refreshStatus is needed (it carries authRequired).
+        await store.refreshStatus();
+        showToast(token
+          ? "Access token saved. Restart the appliance to apply it."
+          : "Open access saved. Restart the appliance to apply it.", "warn");
+      } else {
+        // The change is live; adopt the new token before anything else runs
+        // (see setToken).
+        setToken(token || null);
+        // applyConfig above already seeded the authoritative config, so only
+        // refreshStatus is needed (it carries authRequired).
+        await store.refreshStatus();
+        showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
+      }
     } catch (err: unknown) {
       if (err instanceof ApiError && err.errors && err.errors.length > 0) {
         this.setAuthError(err.errors[0].reason ?? err.title);
@@ -201,6 +229,7 @@ export class SystemView {
         showToast(`Save failed: ${msg}`, "error");
       }
     } finally {
+      store.endTokenSwap();
       this.authSaving = false;
       if (saveBtn) {
         saveBtn.disabled = false;
@@ -208,6 +237,12 @@ export class SystemView {
         saveBtn.textContent = "Save Token";
       }
       if (discardBtn) discardBtn.disabled = false;
+      // Disabling the Save button the user just activated dropped keyboard focus
+      // to <body>; re-enabling does not restore it. After a successful save the
+      // actions bar is hidden, so the token input is the sensible landing spot in
+      // every case. Restore focus explicitly, matching the convention the toggle
+      // and settings paths in dashboard.ts already follow.
+      this.authTokenEl?.focus();
     }
   }
 
