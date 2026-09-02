@@ -1,3 +1,10 @@
+//go:build !windows
+
+// These tests assert Unix file-permission semantics (chmod bits, FileMode.Perm),
+// which Windows does not model, so the file is excluded there. The appliance
+// itself is Linux-only and CI runs on Linux, so the coverage still holds where
+// it matters.
+
 package config
 
 import (
@@ -61,5 +68,19 @@ func TestLoadQuietWhenNoTokenEvenIfReadable(t *testing.T) {
 	}
 	if out := loadCapturingLog(t, path); out != "" {
 		t.Errorf("Load warned on an open-access (no token) file; log = %q", out)
+	}
+}
+
+func TestWarnIfTokenFileReadableMissingPathIsSilent(t *testing.T) {
+	// The warning is best-effort: when the file cannot be stat'd it must degrade
+	// silently rather than log noise or panic.
+	var buf bytes.Buffer
+	oldOut, oldFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
+	warnIfTokenFileReadable(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	if buf.Len() != 0 {
+		t.Errorf("a stat failure must not warn; log = %q", buf.String())
 	}
 }

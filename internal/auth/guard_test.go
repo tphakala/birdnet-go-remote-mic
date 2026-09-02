@@ -120,6 +120,23 @@ func TestNilGuardSnapshot(t *testing.T) {
 	}
 }
 
+func TestZeroValueGuardIsOpenAccess(t *testing.T) {
+	// A guard constructed as a zero value and never routed through Set (its state
+	// pointer still nil) is a never-configured, open-access guard: disabled at
+	// generation 0, exactly as the Snapshot and Generation docs promise for the
+	// never-configured case (distinct from the nil-pointer guard above).
+	var g Guard
+	if enabled, gen := g.Snapshot(); enabled || gen != 0 {
+		t.Errorf("zero-value guard Snapshot = (%v, %d), want (false, 0)", enabled, gen)
+	}
+	if got := g.Generation(); got != 0 {
+		t.Errorf("zero-value guard Generation = %d, want 0", got)
+	}
+	if g.Enabled() {
+		t.Error("zero-value guard must report disabled")
+	}
+}
+
 func TestConcurrentSetAdvancesGenerationOnce(t *testing.T) {
 	// Enabling the token is racy: PatchConfig sets it while the startup reconcile
 	// may set the same token concurrently (the management API is mounted before
