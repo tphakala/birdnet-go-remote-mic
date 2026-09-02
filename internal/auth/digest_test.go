@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"crypto/md5" //nolint:gosec // the test recomputes the Digest response the server checks; Digest is MD5.
-	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -108,9 +106,13 @@ func TestCheckDigestRejections(t *testing.T) {
 		// the appliance advertises MD5 only and must not silently accept a mislabeled
 		// answer.
 		{"non-md5 algorithm", testMethod, base + `, algorithm=SHA-256, response="` + legacyResp + `"`, nonce},
-		// qop=auth requires both nc and cnonce; an empty nc is a forgeable replay
-		// counter, so a missing one must be rejected rather than treated as zero.
-		// The response matches the header as sent, so only the presence check rejects.
+		// qop=auth requires both nc and cnonce as digest inputs; a missing one
+		// leaves the hash inputs incomplete, so it is rejected rather than folded
+		// in as an empty string. This is an input-completeness check, not replay
+		// protection: the server never stores or validates nc as a replay counter
+		// (one nonce is issued per connection, and the server does not track nc
+		// across requests). The response matches the header as sent, so only the
+		// presence check rejects.
 		{"qop auth missing cnonce", testMethod, base + `, qop=auth, nc=` + nc + `, response="` + respNoCnonce + `"`, nonce},
 		{"qop auth missing nc", testMethod, base + `, qop=auth, cnonce="` + cnonce + `", response="` + respNoNc + `"`, nonce},
 	}
@@ -154,25 +156,29 @@ func TestCheckDigestAfterRotation(t *testing.T) {
 // digestResponse recomputes the RFC 7616/2069 response the client would put in
 // its Authorization header, so the acceptance cases below can be assembled by
 // hand (varying whitespace, param order, and qop casing) while still carrying a
-// correct response. Passing "" for qop selects the RFC 2069 legacy form.
+// correct response. Passing "" for qop selects the RFC 2069 legacy form. It
+// calls the package's own md5hex (this is an internal test) rather than
+// re-deriving the MD5 primitive, so the helper cannot silently diverge from the
+// hash CheckDigest uses. The join order still mirrors CheckDigest, but that
+// end-to-end shape is independently checked by the rtsp.Authorize-based
+// acceptance tests above (a separate implementation from go-audio-stream).
 func digestResponse(user, token, method, uri, nonce, nc, cnonce, qop string) string {
-	h := func(s string) string {
-		sum := md5.Sum([]byte(s)) //nolint:gosec // Digest is MD5.
-		return hex.EncodeToString(sum[:])
-	}
-	ha1 := h(user + ":" + Realm + ":" + token)
-	ha2 := h(method + ":" + uri)
+	ha1 := md5hex(user + ":" + Realm + ":" + token)
+	ha2 := md5hex(method + ":" + uri)
 	if qop == "" {
-		return h(ha1 + ":" + nonce + ":" + ha2)
+		return md5hex(ha1 + ":" + nonce + ":" + ha2)
 	}
-	return h(strings.Join([]string{ha1, nonce, nc, cnonce, qop, ha2}, ":"))
+	return md5hex(strings.Join([]string{ha1, nonce, nc, cnonce, qop, ha2}, ":"))
 }
 
 // TestCheckDigestAcceptanceDomain proves the parser accepts RFC-legal header
-// shapes that a second, stricter hand-rolled parser would have rejected:
-// whitespace around "=", any param order, and a qop token in a different case.
-// Each header is built by hand (not via rtsp.Authorize) so the server-side
-// parser is what is under test.
+// shapes a naive hand-rolled parser tends to get wrong: whitespace around "="
+// and a qop token in a different case than the literal "auth". Arbitrary
+// parameter order is exercised too, but unlike the others it is not a shape a
+// reasonable parser would reject (the grammar is unordered), so it stands as a
+// plain regression guard rather than a case the old code failed. Each header is
+// built by hand (not via rtsp.Authorize) so the server-side parser is what is
+// under test.
 func TestCheckDigestAcceptanceDomain(t *testing.T) {
 	g := NewGuard(testToken)
 	nonce := g.NewNonce()

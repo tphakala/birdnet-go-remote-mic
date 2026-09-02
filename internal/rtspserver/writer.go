@@ -38,17 +38,19 @@ func (cs *connSession) runWriter() {
 		if err != nil {
 			return
 		}
-		// Proactive eviction: stop streaming the moment the guard's generation
-		// moves past the one this connection authenticated under (or, for an
-		// open-access session that never authenticated, the moment a token is
-		// enabled). handle() only re-challenges when the client sends a request,
-		// but live555/VLC keepalive with OPTIONS and other clients send only
-		// RTCP, so a request-driven check alone would let such a session stream
-		// on indefinitely after the token changed. Returning here runs the same
-		// teardown as any other writer exit: defer cs.close() cancels the context
-		// and closes the socket, and serveConn's deferred cleanup releases the
-		// track slot.
-		if g := cs.srv.cfg.Auth; g.Enabled() && cs.authGen.Load() != g.Generation() {
+		// Proactive eviction: stop streaming the moment this connection is no
+		// longer authorized under the guard's current generation (the token was
+		// rotated past the one it authenticated under, or, for an open-access
+		// session that never authenticated, a token was just enabled). handle()
+		// only re-challenges when the client sends a request, but live555/VLC
+		// keepalive with OPTIONS and other clients send only RTCP, so a
+		// request-driven check alone would let such a session stream on
+		// indefinitely after the token changed. The enabled state and generation
+		// are read as one Snapshot so a rotation cannot split them. Returning here
+		// runs the same teardown as any other writer exit: defer cs.close()
+		// cancels the context and closes the socket, and serveConn's deferred
+		// cleanup releases the track slot.
+		if enabled, gen := cs.srv.cfg.Auth.Snapshot(); shouldEvict(enabled, gen, cs.authed.Load(), cs.authGen.Load()) {
 			return
 		}
 		if len(frame.Payload) > maxWriterPayload {

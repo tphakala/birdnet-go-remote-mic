@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/hex"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -83,6 +84,65 @@ func TestGeneration(t *testing.T) {
 		if got := g.Generation(); got != s.want {
 			t.Errorf("step %d Set(%q): Generation = %d, want %d", i, s.set, got, s.want)
 		}
+	}
+}
+
+func TestSnapshot(t *testing.T) {
+	// Snapshot returns the enabled state and generation from a single load, so a
+	// caller needing both (the RTSP writer's eviction check, authorized()) sees a
+	// consistent pair. Its (enabled, gen) must track Set the same way Enabled and
+	// Generation do separately.
+	steps := []struct {
+		set         string
+		wantEnabled bool
+		wantGen     uint64
+	}{
+		{"", false, 0},                  // open access from the start
+		{testToken, true, 1},            // enabling advances once
+		{testToken, true, 1},            // same token: idempotent
+		{"rotated-token-0001", true, 2}, // rotating advances
+		{"", false, 3},                  // clearing advances, disables
+	}
+	g := NewGuard("")
+	for i, s := range steps {
+		g.Set(s.set)
+		enabled, gen := g.Snapshot()
+		if enabled != s.wantEnabled || gen != s.wantGen {
+			t.Errorf("step %d Set(%q): Snapshot = (%v, %d), want (%v, %d)", i, s.set, enabled, gen, s.wantEnabled, s.wantGen)
+		}
+	}
+}
+
+func TestNilGuardSnapshot(t *testing.T) {
+	var g *Guard
+	if enabled, gen := g.Snapshot(); enabled || gen != 0 {
+		t.Errorf("nil guard Snapshot = (%v, %d), want (false, 0)", enabled, gen)
+	}
+}
+
+func TestConcurrentSetAdvancesGenerationOnce(t *testing.T) {
+	// Enabling the token is racy: PatchConfig sets it while the startup reconcile
+	// may set the same token concurrently (the management API is mounted before
+	// the reconcile runs). Set moves the token and its generation as one atomic
+	// pair under a compare-and-swap loop, so N concurrent Sets of the SAME new
+	// token must advance the generation exactly once. A store-then-add
+	// implementation could double-count or lose an update; this guards that fix.
+	const goroutines = 64
+	g := NewGuard("")
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			g.Set(testToken)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := g.Generation(); got != 1 {
+		t.Errorf("after %d concurrent Set(sameToken): Generation = %d, want 1", goroutines, got)
 	}
 }
 

@@ -185,20 +185,24 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 // longer authorized and gets re-challenged on its next request.
 func (cs *connSession) authorized(req *rtsp.Request) bool {
 	g := cs.srv.cfg.Auth
-	if cs.authed.Load() && cs.authGen.Load() == g.Generation() {
+	// One Snapshot gives a consistent (enabled, generation) pair. gen is read
+	// BEFORE the credential check below, and that snapshot is what success
+	// records, so the same predicate (authorizedUnder) decides the trusted
+	// fast path here and the writer's proactive eviction.
+	enabled, gen := g.Snapshot()
+	if authorizedUnder(cs.authed.Load(), cs.authGen.Load(), gen) {
 		return true
 	}
-	if !g.Enabled() {
+	if !enabled {
 		return true
 	}
-	// Snapshot the generation BEFORE running the credential check, then record
-	// that snapshot on success. If the token is rotated between this read and
-	// CheckDigest's own token read, either CheckDigest fails against the new
-	// token, or the recorded generation is older than the verified token and the
-	// connection is simply re-challenged next request. Reading the generation
-	// after the check could instead stamp an old-token answer with the new
-	// generation, authenticating a revoked credential.
-	gen := g.Generation()
+	// If the token is rotated between the snapshot above and CheckDigest's own
+	// token read, either CheckDigest fails against the new token, or the stamped
+	// generation is already older than the guard's: the connection is then
+	// re-challenged on its next request, and a playing one is torn down by the
+	// writer's proactive eviction. Reading the generation after the check could
+	// instead stamp an old-token answer with the new generation, authenticating
+	// a revoked credential.
 	if cs.nonce != "" && g.CheckDigest(req.Method, req.Header.Get("Authorization"), cs.nonce) {
 		cs.authed.Store(true)
 		cs.authGen.Store(gen)
