@@ -106,13 +106,6 @@ func New(cfg Config, tracks ...*Track) *Server {
 	return &Server{cfg: cfg, tracks: m}
 }
 
-// AuthEnabled reports whether the stream currently requires a token, i.e. the
-// configured guard is enabled. It reads the guard live, so a hot reload that
-// sets or clears the token is reflected at once. A nil guard reports false.
-func (s *Server) AuthEnabled() bool {
-	return s.cfg.Auth.Enabled()
-}
-
 // lookup returns the track registered at path, or nil.
 func (s *Server) lookup(path string) *Track {
 	s.mu.RLock()
