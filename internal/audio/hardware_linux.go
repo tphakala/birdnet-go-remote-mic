@@ -107,7 +107,7 @@ func rateProbeChannel(supported []int) int {
 // while the device is free.
 //
 // It queries both capture formats (S16LE and S32LE) and keeps the union,
-// because OpenCapture negotiates the capture format automatically (S16
+// because OpenCaptureAt negotiates the capture format automatically (S16
 // preferred, S32 fallback), so a rate a device offers only in S32 is still
 // usable. Any query error (device busy or gone, or a format the device rejects)
 // simply contributes no rates. When nothing in candidates is supported it

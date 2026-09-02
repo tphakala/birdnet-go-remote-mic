@@ -4,18 +4,25 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 )
 
-const devHW2 = "hw:2,0"
+const (
+	devHW1        = "hw:1,0"
+	devHW2        = "hw:2,0"
+	nameAudioMoth = "AudioMoth"
+)
 
 func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 	p := newProvider()
@@ -24,22 +31,22 @@ func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 	// The host exposes hw:1,0 (configured, listed with no probed caps, as
 	// DetectDevices emits it) and hw:2,0 (free, probed).
 	p.setDetected([]audio.DetectedDevice{
-		{ID: "hw:1,0", FriendlyName: "Scarlett"},
-		{ID: devHW2, FriendlyName: "AudioMoth", SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+		{ID: devHW1, FriendlyName: "Scarlett"},
+		{ID: devHW2, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
 	})
 
 	avail := p.AvailableDevices()
 	if len(avail) != 1 || avail[0].ID != devHW2 {
 		t.Fatalf("AvailableDevices = %+v, want only the unconfigured hw:2,0", avail)
 	}
-	if avail[0].FriendlyName != "AudioMoth" || len(avail[0].SupportedRates) != 1 {
+	if avail[0].FriendlyName != nameAudioMoth || len(avail[0].SupportedRates) != 1 {
 		t.Errorf("capabilities not passed through: %+v", avail[0])
 	}
 
 	// DetectedDevice is unfiltered: it returns a configured device too (even with
 	// no caps), so provisioning distinguishes already-configured (409) from
 	// absent (404).
-	if _, ok := p.DetectedDevice("hw:1,0"); !ok {
+	if _, ok := p.DetectedDevice(devHW1); !ok {
 		t.Error("DetectedDevice(configured) = false, want true (unfiltered)")
 	}
 	if _, ok := p.DetectedDevice("hw:9,0"); ok {
@@ -50,7 +57,7 @@ func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 func servingRecord(name, path string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
-			Name: name, Device: "hw:1,0", Path: path,
+			Name: name, Device: devHW1, Path: path,
 			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
 		},
 		state:    mgmtserver.StateServing,
@@ -141,7 +148,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -164,7 +171,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, nil)
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
@@ -178,10 +185,129 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
 	cancel() // trigger graceful shutdown
 	h.Wait()
+}
+
+func TestProviderStatusAuthRequired(t *testing.T) {
+	p := newProvider()
+	if p.Status().AuthRequired {
+		t.Fatal("a fresh provider must report open access")
+	}
+	p.setAuthRequired(true)
+	if !p.Status().AuthRequired {
+		t.Error("setAuthRequired(true) must be reported by Status")
+	}
+}
+
+func TestAnnounceInfosCarryAuth(t *testing.T) {
+	infos, port, err := announceInfos(":8554", []*deviceRuntime{servingRecord("garden", "/garden")}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if port != 8554 {
+		t.Errorf("port = %d, want 8554", port)
+	}
+	if len(infos) != 1 || !infos[0].AuthRequired {
+		t.Errorf("infos = %+v, want one entry with AuthRequired", infos)
+	}
+	if _, _, err := announceInfos("not-an-address", nil, false); err == nil {
+		t.Error("an unparsable listen address must be an error")
+	}
+}
+
+func TestStartManagementEnforcesBearer(t *testing.T) {
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, auth.NewGuard(testAuthToken))
+	if !ok {
+		t.Fatal("management should have started on an ephemeral port")
+	}
+	defer h.Wait()
+	defer cancel()
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
+	get := func(path, bearer string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.addr+path, http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := get("/api/v1/healthz", ""); got != http.StatusOK {
+		t.Errorf("healthz without a token = %d, want 200", got)
+	}
+	if got := get("/api/v1/status", ""); got != http.StatusUnauthorized {
+		t.Errorf("status without a token = %d, want 401", got)
+	}
+	if got := get("/api/v1/status", testAuthToken); got != http.StatusOK {
+		t.Errorf("status with the token = %d, want 200", got)
+	}
+}
+
+// TestRunEnumerationWiresDetectionToProvider drives the enumeration goroutine
+// end to end: DetectDevices is called with the configured-id skip set, its
+// result is published, and the two provider views (unfiltered DetectedDevice,
+// filtered AvailableDevices) reflect it.
+func TestRunEnumerationWiresDetectionToProvider(t *testing.T) {
+	var gotSkip map[string]bool
+	called := make(chan struct{}, 1)
+	prev := detectDevices
+	detectDevices = func(skip map[string]bool) ([]audio.DetectedDevice, error) {
+		gotSkip = skip
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return []audio.DetectedDevice{
+			{ID: devHW1, FriendlyName: "Scarlett"},
+			{ID: devHW2, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+		}, nil
+	}
+	defer func() { detectDevices = prev }()
+
+	p := newProvider()
+	p.enumTrigger = make(chan struct{}, 1)
+	p.setConfiguredIDs(map[string]bool{devHW1: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.runEnumeration(ctx)
+		close(done)
+	}()
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("DetectDevices was not called")
+	}
+	cancel()
+	<-done
+
+	if !gotSkip[devHW1] {
+		t.Errorf("DetectDevices skip set = %v, want the configured hw:1,0", gotSkip)
+	}
+	if _, ok := p.DetectedDevice(devHW1); !ok {
+		t.Error("DetectedDevice(configured) = false, want true (unfiltered view)")
+	}
+	if _, ok := p.DetectedDevice(devHW2); !ok {
+		t.Error("DetectedDevice(free) = false, want true")
+	}
+	avail := p.AvailableDevices()
+	if len(avail) != 1 || avail[0].ID != devHW2 {
+		t.Errorf("AvailableDevices = %+v, want only the unconfigured hw:2,0", avail)
+	}
 }

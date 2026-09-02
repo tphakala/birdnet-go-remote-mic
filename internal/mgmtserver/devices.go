@@ -255,16 +255,20 @@ func slug(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// randRead is the entropy source randomPath draws from; a test swaps it to force
+// a collision and prove the retry loop.
+var randRead = rand.Read
+
 // randomPath returns an RTSP path of the form /<16 hex chars> that is not already
-// in taken. The 64 bits of entropy make the stream URL impractical to guess
-// (security by obscurity for an unauthenticated stream) and collisions vanishing
-// rare; the loop retries the astronomically unlikely collision. A crypto/rand
-// read failure is a fatal environment fault, so it panics rather than returning a
-// guessable fallback.
+// in taken. The 64 bits of entropy make the stream URL impractical to guess,
+// which is the stream's only protection when no token is configured, and
+// collisions vanishingly rare; the loop retries the astronomically unlikely
+// collision. A crypto/rand read failure is a fatal environment fault, so it
+// panics rather than returning a guessable fallback.
 func randomPath(taken map[string]bool) string {
 	for {
 		var buf [8]byte
-		if _, err := rand.Read(buf[:]); err != nil {
+		if _, err := randRead(buf[:]); err != nil {
 			panic(fmt.Sprintf("mgmtserver: crypto/rand failed: %v", err))
 		}
 		p := "/" + hex.EncodeToString(buf[:])
@@ -276,9 +280,13 @@ func randomPath(taken map[string]bool) string {
 
 // chooseParams selects the stream mode, sample rate and channel count for a newly
 // provisioned device. A request field overrides its derived default. When the
-// mode is unspecified it defaults to Opus (48 kHz mono) if the device is known to
-// support that, otherwise raw PCM at the device's best rate. Opus forces 48 kHz
-// mono per its contract.
+// mode is unspecified it defaults to Opus if the device is known to support 48
+// kHz, otherwise raw PCM at the device's best rate. Opus is fixed at 48 kHz, with
+// a deliberate asymmetry between the two overridable stream parameters: an
+// explicit rate is snapped to 48000 (a non-48k rate in auto mode is instead read
+// as "the operator wants PCM"), while an explicit multi-channel selection is
+// passed through unchanged so config.Validate rejects it with a 422 rather than
+// this silently narrowing the request.
 func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode config.Mode, rate int, channels []int) {
 	if req.Mode != nil {
 		mode = config.Mode(string(*req.Mode))
@@ -289,13 +297,28 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 	if req.Channels != nil {
 		channels = config.NormalizeChannels(*req.Channels)
 	}
+	// derived records that the selection is the appliance's default, not the
+	// operator's: an omitted field and an explicit empty array (channels: [])
+	// both leave nothing after normalization, so both fall back below and must
+	// be treated the same way. Keying the Opus narrowing on req.Channels==nil
+	// instead would 422 an explicit [] on a stereo-only device while an omitted
+	// field succeeded.
+	derived := len(channels) == 0
 	if len(channels) == 0 {
 		channels = defaultSelection(d.SupportedChannels)
 	}
 
 	switch mode {
 	case config.ModeOpus:
-		return config.ModeOpus, 48000, opusSelection(channels)
+		// Opus streams exactly one channel. A DERIVED default (the request named
+		// no channels, or an empty array) is narrowed to its first channel, since
+		// the operator asked for Opus rather than a channel set; an EXPLICIT
+		// selection is kept as asked so config.Validate rejects a multi-channel
+		// one with a 422 instead of this silently discarding part of the request.
+		if derived && len(channels) > 1 {
+			channels = channels[:1]
+		}
+		return config.ModeOpus, 48000, channels
 	case config.ModePCM:
 		if rate == 0 {
 			rate = preferRate(d.SupportedRates)
@@ -330,18 +353,6 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 // rate is more forgiving.
 func canOpus(d *AvailableDevice) bool {
 	return slices.Contains(d.SupportedRates, 48000)
-}
-
-// opusSelection reduces a channel selection to the single channel Opus streams.
-// A single-channel request (mono from any channel, e.g. [3]) is honored verbatim
-// rather than silently rewritten to channel 1; a multi-channel selection collapses
-// to its first channel, since Opus is single-channel and config.Validate would
-// otherwise reject len != 1.
-func opusSelection(channels []int) []int {
-	if len(channels) == 1 {
-		return channels
-	}
-	return []int{channels[0]}
 }
 
 // defaultSelection picks a channel selection for a newly provisioned device:

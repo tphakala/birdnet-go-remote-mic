@@ -5,6 +5,7 @@ import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
+import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
@@ -18,6 +19,8 @@ const ICON_WARN =
   '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
 const ICON_COPY =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
+const ICON_LOCK =
+  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
 const ICON_GEAR =
   '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
 
@@ -47,6 +50,8 @@ interface CardEntry {
   // device has a single meter; a stereo (or higher) device has one per channel.
   meters: VUMeter[];
   urlEl: HTMLElement | null;
+  // The "Token" tag on a serving card, hidden while the appliance is open.
+  lockEl: HTMLElement | null;
   statusEl: HTMLElement | null;
   clientsEl: HTMLElement | null;
   droppedEl: HTMLElement | null;
@@ -430,6 +435,15 @@ export class DashboardView {
       const chLabel = channelLabel(d.channels);
       if (chLabel) tags.appendChild(elem("span", "tech-tag", chLabel));
     }
+    let lockEl: HTMLElement | null = null;
+    if (serving) {
+      lockEl = elem("span", "tech-tag lock-tag");
+      lockEl.appendChild(iconSpan(ICON_LOCK));
+      lockEl.appendChild(elem("span", undefined, "Token"));
+      lockEl.title = "Pulling this stream requires the access token";
+      lockEl.hidden = !this.status?.authRequired;
+      tags.appendChild(lockEl);
+    }
     const statusEl = this.buildStatusBadge(d.state);
     tags.appendChild(statusEl);
 
@@ -508,9 +522,16 @@ export class DashboardView {
       strip.appendChild(copyBtn);
       article.appendChild(strip);
 
-      // Meter console: one live VU meter per capture channel. The meters are
-      // decorative real-time visualizations updating ~10 Hz, hidden from the
-      // accessibility tree so they do not spam screen readers.
+      // Meter console: one live VU meter per CAPTURED hardware channel. The
+      // level meter is registered on the raw capture source with the negotiated
+      // hardware channel count and emits a zero-based index per hardware channel
+      // (see the levels handler, which indexes entry.meters by ch.channel), so
+      // the rows are the device's captured channels, not the streamed selection.
+      // Metering happens before channel selection, so a non-contiguous selection
+      // (e.g. streaming only Ch 1 and Ch 3 of a 4-channel card) still shows every
+      // captured channel here, including the ones that are not streamed. The
+      // meters are decorative real-time visualizations updating ~10 Hz, hidden
+      // from the accessibility tree so they do not spam screen readers.
       const channelCount = d.negotiatedChannels ?? d.channels.length;
       const built = this.buildMeterConsole(channelCount);
       meters = built.meters;
@@ -557,7 +578,7 @@ export class DashboardView {
     article.appendChild(settingsWrap);
 
     const entry: CardEntry = {
-      article, gearBtn, serving, meters, urlEl, statusEl, clientsEl, droppedEl,
+      article, gearBtn, serving, meters, urlEl, lockEl, statusEl, clientsEl, droppedEl,
       toggleInput, pendingNote, footerNote,
       device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
     };
@@ -567,9 +588,11 @@ export class DashboardView {
   }
 
   // buildMeterConsole builds the shared dB scale plus one metering row per
-  // capture channel and returns the console element and its VU meters, indexed
-  // by channel. A mono device gets a single unlabeled row (unchanged from the
-  // single-meter layout); a multi-channel device labels each row "Ch N".
+  // captured hardware channel and returns the console element and its VU meters,
+  // indexed by zero-based hardware channel position (the levels event's
+  // ch.channel indexes straight into this array). A mono device gets a single
+  // unlabeled row; a multi-channel device labels each row with its 1-based
+  // hardware channel number ("Ch 2" for the second captured channel).
   private buildMeterConsole(count: number): { console: HTMLElement; meters: VUMeter[] } {
     const meterConsole = elem("div", "meter-console");
     const scale = elem("div", "meter-scale");
@@ -587,8 +610,9 @@ export class DashboardView {
     if (n > 4) meterConsole.classList.add("many-channels");
     for (let c = 0; c < n; c++) {
       const wrapper = elem("div", "meter-track-wrapper");
+      const chNum = c + 1;
       if (multi) {
-        const label = elem("span", "meter-channel-label mono", `Ch ${c + 1}`);
+        const label = elem("span", "meter-channel-label mono", `Ch ${chNum}`);
         label.setAttribute("aria-hidden", "true");
         wrapper.appendChild(label);
       }
@@ -608,7 +632,7 @@ export class DashboardView {
       clipBtn.setAttribute("type", "button");
       clipBtn.setAttribute(
         "aria-label",
-        multi ? `Channel ${c + 1} clip indicator, click to clear` : "Clip indicator, click to clear",
+        multi ? `Channel ${chNum} clip indicator, click to clear` : "Clip indicator, click to clear",
       );
       clipBtn.title = "Click to clear clip latch";
       stats.appendChild(dbReadout);
@@ -717,7 +741,7 @@ export class DashboardView {
       const badge = elem("span", "staged-badge", "Unsaved changes");
       badge.hidden = true;
       const spacer = elem("span", "settings-actions-spacer");
-      const cancelBtn = elem("button", "btn btn-secondary", "Cancel");
+      const cancelBtn = elem("button", "btn btn-secondary", "Cancel") as HTMLButtonElement;
       cancelBtn.setAttribute("type", "button");
       const saveBtn = elem("button", "btn btn-primary", "Save Changes");
       saveBtn.setAttribute("type", "button");
@@ -748,7 +772,7 @@ export class DashboardView {
       }
 
       cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
-      saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn));
+      saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn, cancelBtn));
     }
     entry.expanded = true;
     entry.settingsWrap.hidden = false;
@@ -785,7 +809,7 @@ export class DashboardView {
     entry.settingsForm = null;
   }
 
-  private async saveDevice(entry: CardEntry, btn: HTMLElement): Promise<void> {
+  private async saveDevice(entry: CardEntry, btn: HTMLElement, cancelBtn: HTMLButtonElement): Promise<void> {
     if (btn.getAttribute("aria-disabled") === "true") return;
     const form = entry.settingsForm;
     if (!form) return;
@@ -794,7 +818,11 @@ export class DashboardView {
       return;
     }
     const edited = form.collect();
+    // Show the save in flight and block a second submit or a discard while the
+    // queued PATCH runs; markBusy keeps Save focusable (aria-disabled) while
+    // Cancel, which is not focused, can simply be disabled.
     this.markBusy(btn, "Saving...");
+    cancelBtn.disabled = true;
     try {
       await this.enqueue(async () => {
       // Source the enabled flag and the patch base FRESH inside the queued task:
@@ -821,9 +849,11 @@ export class DashboardView {
       }
       });
     } finally {
-      // Restore the button whether the save succeeded (its panel is torn down, so
-      // this is a harmless no-op on a detached node) or failed (it stays for retry).
+      // Restore the buttons whether the save succeeded (its panel is torn down,
+      // so this is a harmless no-op on detached nodes) or failed (they stay for
+      // retry).
       this.clearBusy(btn, "Save Changes");
+      cancelBtn.disabled = false;
     }
   }
 
@@ -843,6 +873,12 @@ export class DashboardView {
       const url = this.rtspUrl(d);
       entry.urlEl.textContent = url;
       entry.urlEl.title = url;
+    }
+    if (entry.lockEl) {
+      // Guard the write so a steady state is not rewritten on every ~3s poll,
+      // matching the pendingNote convention below.
+      const hideLock = !this.status?.authRequired;
+      if (entry.lockEl.hidden !== hideLock) entry.lockEl.hidden = hideLock;
     }
     if (entry.clientsEl) entry.clientsEl.textContent = d.clientConnected ? "1 connected" : "0 connected";
     if (entry.droppedEl) entry.droppedEl.textContent = String(d.droppedFrames);
@@ -872,10 +908,23 @@ export class DashboardView {
     }
   }
 
+  // handleCopyUrl copies the stream URL. When the appliance requires the access
+  // token and this browser holds it, the copied URL embeds it as RTSP
+  // credentials (rtsp://mic:<token>@host:port/path) so it pastes straight into
+  // BirdNET-Go, ffmpeg or VLC; the displayed URL stays credential-free. The
+  // credentialed form is derived from the displayed URL (which updateCard keeps
+  // current), not from a path captured when the card was built, so a device
+  // path edit is reflected in the copied URL.
   private handleCopyUrl(btn: HTMLElement, urlEl: HTMLElement | null): void {
-    const url = urlEl?.textContent;
-    if (!url || !navigator.clipboard) return;
+    const shown = urlEl?.textContent;
+    if (!shown || !navigator.clipboard) return;
+    let url = shown;
+    const token = this.status?.authRequired ? getToken() : null;
+    if (token) {
+      url = shown.replace("rtsp://", `rtsp://mic:${token}@`);
+    }
     navigator.clipboard.writeText(url).then(() => {
+      if (token) showToast("Stream URL copied with the access token included.");
       btn.classList.add("copied");
       const labelSpan = btn.querySelector<HTMLElement>(".copy-label");
       const orig = labelSpan?.textContent ?? "Copy URL";
@@ -896,6 +945,12 @@ export class DashboardView {
 
     const servingEl = document.getElementById("devices-serving-display");
     if (servingEl) servingEl.textContent = `${this.status.devicesServing} / ${this.status.devicesTotal}`;
+
+    // The open-access notice shows while no token is configured. Guard the write
+    // so this role=status banner is not re-announced on every ~3s poll when its
+    // state is unchanged, matching the pendingNote convention.
+    const banner = document.getElementById("open-access-banner");
+    if (banner && banner.hidden !== this.status.authRequired) banner.hidden = this.status.authRequired;
 
     const badge = document.getElementById("appliance-status-badge");
     const text = document.getElementById("appliance-status-text");

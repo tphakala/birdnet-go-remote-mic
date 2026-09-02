@@ -4,6 +4,10 @@ import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from
 import { confirmDialog } from "../lib/modal.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
+import { generateToken, setToken } from "../lib/auth.js";
+// TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
+// so an obviously invalid token is caught before the round trip.
+const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 export class SystemView {
     tilesEl;
     infoEl;
@@ -15,6 +19,13 @@ export class SystemView {
     netActionsEl;
     discoveryEl;
     netDirty = false;
+    authCardEl;
+    authStateEl;
+    authTokenEl;
+    authErrorEl;
+    authActionsEl;
+    authDirty = false;
+    authSaving = false;
     constructor() {
         this.tilesEl = document.getElementById("sys-tiles");
         this.infoEl = document.getElementById("sys-info");
@@ -23,6 +34,11 @@ export class SystemView {
         this.netCardEl = document.getElementById("sys-network-card");
         this.netActionsEl = document.getElementById("sys-network-actions");
         this.discoveryEl = document.getElementById("sys-discovery-enabled");
+        this.authCardEl = document.getElementById("sys-auth-card");
+        this.authStateEl = document.getElementById("sys-auth-state");
+        this.authTokenEl = document.getElementById("sys-auth-token");
+        this.authErrorEl = document.getElementById("sys-auth-error");
+        this.authActionsEl = document.getElementById("sys-auth-actions");
         const btn = document.getElementById("btn-sys-restart");
         if (btn)
             btn.addEventListener("click", () => triggerApplianceRestart());
@@ -43,6 +59,8 @@ export class SystemView {
             const cfg = e.detail;
             if (!this.netDirty && cfg)
                 this.populateNetwork(cfg);
+            if (!this.authDirty && cfg)
+                this.populateAuth(cfg);
         });
         store.addEventListener("loaderror", (e) => {
             const detail = e.detail;
@@ -50,6 +68,192 @@ export class SystemView {
                 this.renderLoadError(detail.message);
         });
         this.bindNetwork();
+        this.bindAuth();
+    }
+    bindAuth() {
+        const input = this.authTokenEl;
+        if (!input)
+            return;
+        input.addEventListener("input", () => {
+            this.authDirty = true;
+            this.setAuthError("");
+            if (this.authActionsEl)
+                this.authActionsEl.hidden = false;
+        });
+        const reveal = document.getElementById("btn-auth-reveal");
+        reveal?.addEventListener("click", () => {
+            const show = input.type === "password";
+            input.type = show ? "text" : "password";
+            // The visible label and the accessible name both swap Show/Hide; there is
+            // no aria-pressed, so the state is carried by the label rather than by a
+            // pressed toggle contradicting a changing label.
+            reveal.textContent = show ? "Hide" : "Show";
+            reveal.setAttribute("aria-label", show ? "Hide access token" : "Show access token");
+        });
+        document.getElementById("btn-auth-copy")?.addEventListener("click", () => {
+            const value = input.value.trim();
+            if (!value) {
+                showToast("No token to copy: the appliance is on open access.", "warn");
+                return;
+            }
+            if (!navigator.clipboard)
+                return;
+            navigator.clipboard.writeText(value)
+                .then(() => showToast("Access token copied."))
+                .catch(() => showToast("Copy failed", "error"));
+        });
+        document.getElementById("btn-auth-generate")?.addEventListener("click", () => {
+            input.value = generateToken();
+            // Reveal the generated value: the operator needs to see it to copy it into
+            // BirdNET-Go, and a masked random string cannot be verified by eye.
+            input.type = "text";
+            if (reveal) {
+                reveal.textContent = "Hide";
+                reveal.setAttribute("aria-label", "Hide access token");
+            }
+            input.dispatchEvent(new Event("input"));
+            input.focus();
+        });
+        document.getElementById("btn-auth-save")?.addEventListener("click", () => void this.saveAuth());
+        document.getElementById("btn-auth-discard")?.addEventListener("click", () => void this.discardAuth());
+    }
+    setAuthError(message) {
+        if (this.authErrorEl)
+            this.authErrorEl.textContent = message;
+        this.authTokenEl?.setAttribute("aria-invalid", message ? "true" : "false");
+        this.authTokenEl?.closest(".form-field")?.classList.toggle("invalid", !!message);
+    }
+    populateAuth(cfg) {
+        if (this.authCardEl)
+            this.authCardEl.hidden = false;
+        const token = cfg.auth?.token ?? "";
+        if (this.authTokenEl)
+            this.authTokenEl.value = token;
+        if (this.authStateEl) {
+            const stateText = token
+                ? "Token required: the API, this UI and the RTSP streams ask for credentials."
+                : "Open access: anyone on the network can listen and change settings.";
+            // #sys-auth-state is a role=status region rewritten on every config event;
+            // only write when the text actually changes so a steady state is not
+            // re-announced to screen readers each poll.
+            if (this.authStateEl.textContent !== stateText)
+                this.authStateEl.textContent = stateText;
+            this.authStateEl.classList.toggle("locked", !!token);
+            this.authStateEl.classList.toggle("open", !token);
+        }
+        this.setAuthError("");
+        this.authDirty = false;
+        if (this.authActionsEl)
+            this.authActionsEl.hidden = true;
+    }
+    // discardAuth reverts the token field to the saved value, confirming first
+    // when there are unsaved edits so a stray click cannot drop a generated token.
+    async discardAuth() {
+        if (this.authDirty) {
+            const ok = await confirmDialog({
+                title: "Discard changes?",
+                body: "The access token has unsaved changes that will be lost.",
+                confirmLabel: "Discard",
+                danger: true,
+            });
+            if (!ok)
+                return;
+        }
+        const cfg = store.getState().config;
+        if (cfg)
+            this.populateAuth(cfg);
+    }
+    // saveAuth persists the token. Clearing it opens the appliance to the network,
+    // so that path confirms first. On success the UI's own stored token is swapped
+    // synchronously before any follow-up request, so the next poll already carries
+    // the new value and cannot be rejected by the freshly rotated appliance.
+    async saveAuth() {
+        if (this.authSaving || !this.authTokenEl)
+            return;
+        const token = this.authTokenEl.value.trim();
+        if (!TOKEN_RULE.test(token)) {
+            this.setAuthError("Use 12 to 128 characters: letters, digits, and . _ ~ - only.");
+            this.authTokenEl.focus();
+            return;
+        }
+        if (!token) {
+            const ok = await confirmDialog({
+                title: "Allow open access?",
+                body: "Removing the token lets anyone on the network listen to the microphones and change settings.",
+                confirmLabel: "Allow open access",
+                danger: true,
+            });
+            if (!ok)
+                return;
+        }
+        const saveBtn = document.getElementById("btn-auth-save");
+        const discardBtn = document.getElementById("btn-auth-discard");
+        this.authSaving = true;
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.setAttribute("aria-busy", "true");
+            saveBtn.textContent = "Saving...";
+        }
+        if (discardBtn)
+            discardBtn.disabled = true;
+        // Open the store's rotation window so an in-flight poll rejected while the
+        // appliance is switching tokens (it enforces the new one before the PATCH
+        // response is fully written) does not pop the login prompt over a working
+        // page. It is closed in the finally, after setToken has run.
+        store.beginTokenSwap();
+        try {
+            const res = await api.patchConfig({ auth: { token } });
+            this.authDirty = false;
+            store.applyConfig(res.config);
+            // The appliance enforces a patched token immediately, before the reload:
+            // mgmtserver PatchConfig calls guard.Set(token) unconditionally right
+            // after persisting and BEFORE invoking the reloader, so the new token is
+            // live regardless of the outcome. restartRequired is computed only from
+            // whether the reloader succeeded; it says nothing about the token, only
+            // that the rest of the reload did not take effect. So adopt the new token
+            // on both branches, before anything else runs (see setToken): skipping it
+            // would leave the UI holding a credential the appliance no longer accepts.
+            setToken(token || null);
+            // applyConfig above already seeded the authoritative config, so only
+            // refreshStatus is needed (it carries authRequired).
+            await store.refreshStatus();
+            if (res.restartRequired) {
+                // The token is already live; it is the rest of the configuration that
+                // needs a restart before it takes effect.
+                showToast(token
+                    ? "Access token saved and active. Restart the appliance to finish applying the configuration."
+                    : "Open access saved and active. Restart the appliance to finish applying the configuration.", "warn");
+            }
+            else {
+                showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
+            }
+        }
+        catch (err) {
+            if (err instanceof ApiError && err.errors && err.errors.length > 0) {
+                this.setAuthError(err.errors[0].reason ?? err.title);
+            }
+            else {
+                const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
+                showToast(`Save failed: ${msg}`, "error");
+            }
+        }
+        finally {
+            store.endTokenSwap();
+            this.authSaving = false;
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.removeAttribute("aria-busy");
+                saveBtn.textContent = "Save Token";
+            }
+            if (discardBtn)
+                discardBtn.disabled = false;
+            // Disabling the Save button the user just activated dropped keyboard focus
+            // to <body>; re-enabling does not restore it. After a successful save the
+            // actions bar is hidden, so the token input is the sensible landing spot in
+            // every case. Restore focus explicitly, matching the convention the toggle
+            // and settings paths in dashboard.ts already follow.
+            this.authTokenEl?.focus();
+        }
     }
     // renderLoadError swaps the telemetry placeholder for the failure cause and a
     // Retry button so the system view is not stuck loading when /system is

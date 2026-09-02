@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 )
 
@@ -18,6 +19,16 @@ type Config struct {
 	Listen     string        // RTSP listen address (host:port)
 	Timeout    time.Duration // session/idle timeout; defaults to 60s
 	SRInterval time.Duration // RTCP sender report interval; defaults to 5s
+	// Auth is the shared-token guard. A nil or disabled guard means open access;
+	// an enabled one makes every method except OPTIONS require a Digest answer
+	// (RFC 7616, MD5) with the token as the password. A connection stays
+	// authenticated only while the guard's generation is unchanged: enabling or
+	// rotating the token via a hot reload advances the generation, so a
+	// connection authenticated under the old token (or one serving under open
+	// access) is torn down. A session actively streaming is dropped by its
+	// writer as soon as the change lands (proactive, not waiting on the client),
+	// and any other connection is re-challenged on its next request.
+	Auth *auth.Guard
 }
 
 // FrameSource is how the server pulls media: the pipeline pushes frames in, the

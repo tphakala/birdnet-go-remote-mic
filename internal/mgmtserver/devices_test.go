@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -114,6 +115,17 @@ func TestChooseParams(t *testing.T) {
 		// operator asked for; an explicit non-48k rate means they want PCM.
 		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: intPtr(96000)}, config.ModePCM, 96000, []int{1}},
 		{"auto with multi-channel selection falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1, 2)}, config.ModePCM, 48000, []int{1, 2}},
+		// An EXPLICIT multi-channel selection with explicit Opus is kept as asked so
+		// config.Validate rejects it (422) instead of the request being silently
+		// collapsed to one channel.
+		{"explicit opus with explicit multi-channel is not collapsed", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2)}, config.ModeOpus, 48000, []int{1, 2}},
+		// A DERIVED default on a stereo-only device is narrowed to one channel for
+		// Opus: the operator asked for Opus, not for a channel set.
+		{"explicit opus on stereo-only derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
+		// An explicit EMPTY channel array is a derived selection just like an
+		// omitted field, so Opus on a stereo-only device narrows to one channel
+		// instead of 422ing where omitting the field would have succeeded.
+		{"explicit opus with empty channel array derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr()}, config.ModeOpus, 48000, []int{1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -333,5 +345,70 @@ func TestDeleteDeviceUnknownYields404(t *testing.T) {
 	// The seeded device must be untouched (a failed delete does not persist).
 	if got := store.Config(); len(got.Devices) != 1 {
 		t.Errorf("config has %d devices, want 1 (unchanged)", len(got.Devices))
+	}
+}
+
+func TestProvisionDeviceOpusMultiChannelYields422(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameScarlett, SupportedRates: []int{48000}, SupportedChannels: []int{1, 2}},
+	}}
+	s := New(prov, WithConfigStore(store))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2)},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	got, ok := resp.(mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("returned %T, want 422 for an explicit multi-channel Opus selection", resp)
+	}
+	if got.Errors == nil || len(*got.Errors) != 1 || !strings.HasSuffix((*got.Errors)[0].Field, ".channels") {
+		t.Errorf("errors = %+v, want one entry on the channels field", got.Errors)
+	}
+	if len(store.Config().Devices) != 1 {
+		t.Error("a rejected provisioning must not persist a device")
+	}
+}
+
+// TestRandomPathRetriesOnCollision forces the entropy source to return a taken
+// path first, proving the retry loop runs and returns the next, distinct path.
+// It must stay sequential (no t.Parallel): it swaps the package-level randRead.
+func TestRandomPathRetriesOnCollision(t *testing.T) {
+	calls := 0
+	prev := randRead
+	randRead = func(b []byte) (int, error) {
+		calls++
+		fill := byte(0)
+		if calls > 1 {
+			fill = 0xab
+		}
+		for i := range b {
+			b[i] = fill
+		}
+		return len(b), nil
+	}
+	defer func() { randRead = prev }()
+
+	taken := map[string]bool{"/0000000000000000": true}
+	got := randomPath(taken)
+	if got != "/abababababababab" {
+		t.Errorf("randomPath = %q, want the second draw /abababababababab", got)
+	}
+	if calls != 2 {
+		t.Errorf("entropy source called %d times, want 2 (one collision, one retry)", calls)
+	}
+}
+
+func TestDeriveNameFallsBackToDevice(t *testing.T) {
+	t.Parallel()
+	// Neither the friendly name nor the id slugs to anything: the last-resort
+	// base is "device", uniqued like any other base.
+	if got := deriveName("", "---", map[string]bool{}); got != "device" {
+		t.Errorf("deriveName = %q, want device", got)
+	}
+	if got := deriveName("", "---", map[string]bool{"device": true}); got != "device-2" {
+		t.Errorf("deriveName with device taken = %q, want device-2", got)
 	}
 }
