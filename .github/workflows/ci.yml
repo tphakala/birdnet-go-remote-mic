@@ -29,6 +29,8 @@ jobs:
         run: CGO_ENABLED=0 go build ./...
       - name: Build (linux/arm64, CGO disabled)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+      - name: Build (linux/arm 32-bit, CGO disabled)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build ./...
       - name: Test with coverage
         run: go test -race -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
       - name: Upload coverage to Codecov
@@ -43,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        goarch: [amd64, arm64]
+        goarch: [amd64, arm64, arm, '386']
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -54,6 +56,8 @@ jobs:
       - name: Run go vet
         env:
           GOARCH: ${{ matrix.goarch }}
+          GOARM: '6' # ignored for non-arm arches; matches the arm build target
+          CGO_ENABLED: '0' # vet the pure-Go, CGO-off build like the rest of CI
         run: go vet ./...
 
   lint:
