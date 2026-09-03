@@ -15,21 +15,43 @@ const (
 	deviceHW1  = "hw:1,0"
 )
 
-func TestLoadExample(t *testing.T) {
-	c, err := Load("../../config.example.yaml")
+func TestLoadMultiDevice(t *testing.T) {
+	t.Parallel()
+	yaml := `listen: ":8554"
+devices:
+  - name: garden-mic
+    device: "hw:1,0"
+    path: /garden
+    mode: opus
+    rate: 48000
+    channels: [1]
+    format: s16
+  - name: ultrasonic-mic
+    device: "hw:2,0"
+    path: /bat
+    mode: pcm
+    rate: 256000
+    channels: [1]
+    format: s16
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	c, err := Load(path)
 	if err != nil {
-		t.Fatalf("Load(config.example.yaml): %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if len(c.Devices) != 2 {
-		t.Fatalf("example should configure 2 devices, got %d", len(c.Devices))
+		t.Fatalf("want 2 devices, got %d", len(c.Devices))
 	}
 	d := c.Devices[0]
 	if d.Name != nameGarden || d.Mode != ModeOpus || d.Rate != 48000 || d.Device != deviceHW1 || d.Path != pathGarden {
-		t.Errorf("first example device parsed unexpectedly: %+v", d)
+		t.Errorf("first device parsed unexpectedly: %+v", d)
 	}
 	u := c.Devices[1]
 	if u.Name != "ultrasonic-mic" || u.Mode != ModePCM || u.Rate != 256000 || u.Path != "/bat" {
-		t.Errorf("second example device parsed unexpectedly: %+v", u)
+		t.Errorf("second device parsed unexpectedly: %+v", u)
 	}
 }
 

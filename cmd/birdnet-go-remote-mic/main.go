@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -48,34 +47,7 @@ var deviceInUse = audio.DeviceInUse
 var resolveOpenChannels = audio.ResolveOpenChannels
 
 func main() {
-	cfgPath := flag.String("config", "config.yaml", "path to the YAML config file")
-	listDevices := flag.Bool("list-devices", false, "list capture devices and exit")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.Parse()
-
-	switch {
-	case *showVersion:
-		fmt.Println("birdnet-go-remote-mic", version)
-	case *listDevices:
-		if err := printDevices(); err != nil {
-			fatal(err)
-		}
-	default:
-		if err := run(*cfgPath); err != nil {
-			fatal(err)
-		}
-	}
-}
-
-func printDevices() error {
-	devs, err := capture.Devices()
-	if err != nil {
-		return err
-	}
-	for _, d := range devs {
-		fmt.Printf("%-12s %s\n", d.ID, d.Name)
-	}
-	return nil
+	os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // deviceRuntime bundles one configured device's moving parts. A device that
@@ -186,7 +158,7 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 	return nil, err
 }
 
-func run(cfgPath string) error {
+func run(cfgPath string, ov serveOverrides, check bool) error {
 	startTime := time.Now()
 	cfg, err := config.Load(cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -198,6 +170,23 @@ func run(cfgPath string) error {
 		cfg, err = config.Default(), nil
 	}
 	if err != nil {
+		return err
+	}
+
+	// CLI flags override the loaded config (precedence: flag > config > default).
+	applyServeOverrides(&cfg, ov)
+
+	// --check validates the config and reports device presence, then exits without
+	// binding ports or opening capture (for systemd ExecStartPre).
+	if check {
+		return reportCheck(&cfg, os.Stdout)
+	}
+
+	// Re-validate after applying overrides so an invalid override (a bad
+	// --listen or --mgmt-listen) fails fast with a clear config error rather than
+	// a late listener bind failure. config.Load already validated the file, but
+	// the override mutation happens after that.
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
 
@@ -399,9 +388,4 @@ func buildStage(d *config.Device, channels int) (stage pipeline.Stage, payloadTy
 		return pipeline.NewOpus(d.Opus), pipeline.PayloadType(d.Mode)
 	}
 	return pipeline.NewPCM(channels), pipeline.PayloadType(d.Mode)
-}
-
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "birdnet-go-remote-mic:", err)
-	os.Exit(1)
 }

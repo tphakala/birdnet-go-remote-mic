@@ -155,7 +155,7 @@ func Load(path string) (Config, error) {
 			Audio map[string]any `yaml:"audio"`
 		}
 		if yaml.Unmarshal(data, &legacy) == nil && len(legacy.Audio) > 0 {
-			return Config{}, fmt.Errorf("config: %s uses the old single-device format; move the audio settings into a devices: list (see config.example.yaml)", path)
+			return Config{}, fmt.Errorf("config: %s uses the old single-device format; move the audio settings into a devices: list", path)
 		}
 	}
 	c.ApplyDefaults()
@@ -172,9 +172,8 @@ func Load(path string) (Config, error) {
 // other while it holds a shared access token. The check masks every group and
 // other bit (0o077), so a group-writable or world-readable file both trip it:
 // read leaks the secret and write lets a local account replace it. Save writes
-// 0600, but a hand-edited or hand-copied file, or the shipped example an
-// operator pasted a token into, can be wider. The token is the bearer and
-// Digest secret, so a non-owner-only file exposes it to every local account;
+// 0600, but a hand-edited or hand-copied file can be wider. The token is the
+// bearer and Digest secret, so a non-owner-only file exposes it to every local account;
 // the warning steers the operator to chmod 600 rather than silently accepting
 // it.
 func warnIfTokenFileReadable(path string) {
