@@ -16,6 +16,18 @@ BirdNET-Go discovers the mic automatically over mDNS and pulls the stream with
 its native ingest client. No ffmpeg, no third-party media server, no external
 processes: just one binary you control.
 
+## Web UI
+
+![BirdNET-Go Remote Mic dashboard](assets/dashboard.png)
+
+A built-in HTTPS management UI (default `:8443`) shows every capture device at a
+glance: live per-channel level meters, stream state, negotiated rate and channel
+count, the RTSP URL with one-click copy, and dropped-frame counters. The
+**Available Devices** list enumerates capture hardware found on the host that is
+not streaming yet, so you enable a device straight from the browser with no
+config-file editing. The **System** tab covers host information and the Access
+Control card for setting or rotating the shared access token.
+
 ## Status
 
 The capture and streaming core is implemented: capture (via
