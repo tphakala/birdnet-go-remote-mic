@@ -126,6 +126,26 @@ func TestDispatchDeprecatedListDevicesFlag(t *testing.T) {
 	}
 }
 
+// TestDispatchLegacySelectorAnyOrder asserts the deprecated selector flags still
+// work when they follow another flag, matching the old flat parser (e.g.
+// `-config x.yaml -list-devices`).
+func TestDispatchLegacySelectorAnyOrder(t *testing.T) {
+	var listed bool
+	restore := stubListDevices(func(io.Writer) error { listed = true; return nil })
+	var out, errb bytes.Buffer
+	dispatch([]string{flagConfig, cfgPathX, "-list-devices"}, &out, &errb)
+	restore()
+	if !listed {
+		t.Error("-config x -list-devices did not list devices")
+	}
+	out.Reset()
+	errb.Reset()
+	dispatch([]string{flagConfig, cfgPathX, "-version"}, &out, &errb)
+	if !strings.Contains(out.String(), "birdnet-go-remote-mic") {
+		t.Errorf("-config x -version did not print version: %q", out.String())
+	}
+}
+
 var errServeStub = stubError("serve failed")
 
 type stubError string

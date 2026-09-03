@@ -37,7 +37,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return toExit(serveFn(nil, stderr), stderr)
 	}
 	switch args[0] {
-	case "version", "-v", "--version", "-version":
+	case "version":
 		out(stdout, "birdnet-go-remote-mic %s\n", version)
 		return 0
 	case "help", "-h", "--help":
@@ -45,15 +45,26 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "list-devices":
 		return toExit(listDevicesFn(stdout), stderr)
-	case "-list-devices", "--list-devices":
-		out(stderr, "note: -list-devices is deprecated; use `list-devices`\n")
-		return toExit(listDevicesFn(stdout), stderr)
 	case "init":
 		return toExit(runInit(args[1:], stdout, stderr), stderr)
 	case "serve":
 		return toExit(serveFn(args[1:], stderr), stderr)
 	}
 	if strings.HasPrefix(args[0], "-") {
+		// The legacy single-flag forms (-version and the deprecated -list-devices)
+		// are handled here rather than as subcommands. The old flat flag parser
+		// also honored them in any position, so `-config x.yaml -list-devices`
+		// listed devices; preserve that by scanning every arg, not just the first.
+		for _, a := range args {
+			switch a {
+			case "-list-devices", "--list-devices":
+				out(stderr, "note: -list-devices is deprecated; use `list-devices`\n")
+				return toExit(listDevicesFn(stdout), stderr)
+			case "-v", "--version", "-version":
+				out(stdout, "birdnet-go-remote-mic %s\n", version)
+				return 0
+			}
+		}
 		// Bare flags with no subcommand: run the appliance (implicit serve).
 		return toExit(serveFn(args, stderr), stderr)
 	}

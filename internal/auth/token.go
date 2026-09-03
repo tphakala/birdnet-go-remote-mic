@@ -13,6 +13,10 @@ import (
 // band.
 const tokenEntropyBytes = 24
 
+// randRead fills b with cryptographic randomness. It is a package var so a test
+// can inject an entropy failure and exercise the error path.
+var randRead = func(b []byte) (int, error) { return io.ReadFull(rand.Reader, b) }
+
 // GenerateToken returns a fresh random shared access token: 24 bytes of
 // crypto/rand encoded with base64.RawURLEncoding. The RawURL alphabet
 // ([A-Za-z0-9_-]) is a subset of the RFC 3986 unreserved set that ValidToken
@@ -21,7 +25,7 @@ const tokenEntropyBytes = 24
 // swallowed, so a caller never seeds a weak or empty token.
 func GenerateToken() (string, error) {
 	b := make([]byte, tokenEntropyBytes)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return "", fmt.Errorf("read random bytes: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil

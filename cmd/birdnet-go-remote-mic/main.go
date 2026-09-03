@@ -182,6 +182,14 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 		return reportCheck(&cfg, os.Stdout)
 	}
 
+	// Re-validate after applying overrides so an invalid override (a bad
+	// --listen or --mgmt-listen) fails fast with a clear config error rather than
+	// a late listener bind failure. config.Load already validated the file, but
+	// the override mutation happens after that.
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
 	mgmtEnabled := cfg.ManagementEnabled()
 
 	// The level hub taps every device's capture pump and streams per-device

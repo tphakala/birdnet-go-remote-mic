@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -132,6 +133,20 @@ func TestParseServeFlagsUnsetMarksNothing(t *testing.T) {
 func TestParseServeFlagsRejectsPositional(t *testing.T) {
 	if _, _, _, err := parseServeFlags([]string{flagConfig, cfgPathX, "stray"}, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected an error on a stray positional argument")
+	}
+}
+
+// TestServeRejectsInvalidListenOverride asserts an invalid --listen override is
+// caught by re-validation with a clear config error, before any port is bound.
+func TestServeRejectsInvalidListenOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+	err := runServe([]string{flagConfig, path, flagListen, "nothostport"}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected serve to reject an invalid --listen override")
 	}
 }
 

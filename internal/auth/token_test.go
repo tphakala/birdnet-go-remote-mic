@@ -1,6 +1,20 @@
 package auth
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+// TestGenerateTokenReturnsEntropyError asserts a random-source failure is
+// surfaced, never swallowed into a weak or empty token.
+func TestGenerateTokenReturnsEntropyError(t *testing.T) {
+	orig := randRead
+	randRead = func([]byte) (int, error) { return 0, errors.New("no entropy") }
+	defer func() { randRead = orig }()
+	if _, err := GenerateToken(); err == nil {
+		t.Fatal("expected an error when the random source fails")
+	}
+}
 
 // TestGenerateTokenIsValid asserts a generated token passes ValidToken, so a
 // token seeded by `init` is always accepted by the guard.
