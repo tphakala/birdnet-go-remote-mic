@@ -53,9 +53,29 @@ plus path instead.
 
 ## Usage
 
+The appliance is a single binary with a handful of subcommands:
+
+```bash
+birdnet-go-remote-mic list-devices   # enumerate capture devices
+birdnet-go-remote-mic init           # generate the access token, save it, print it
+birdnet-go-remote-mic                # capture and serve (the default; same as `serve`)
+birdnet-go-remote-mic version
+```
+
+Run `serve` or `init` with `-h` for its flags.
+
+### Zero-config first start
+
+With no config file, the appliance boots with defaults and no devices, so the
+web UI comes up empty. Open it and the **Available Devices** list shows the
+host's capture hardware; enable a device there and the appliance writes the
+config file for you. Nothing to hand-edit.
+
+### Config file
+
 One binary per host serves any number of capture devices: each entry in the
 `devices:` list gets its own RTSP path on the shared `listen` port and its own
-mDNS instance. Write a config (see `config.example.yaml`):
+mDNS instance. To configure it by hand instead of using the web UI:
 
 ```yaml
 listen: ":8554"
@@ -82,9 +102,13 @@ devices:
     format: s16
 ```
 
+Serve flags override the loaded config for that run (precedence: flag over
+config over default), which is handy for relocating ports on a host where the
+defaults are taken:
+
 ```bash
-birdnet-go-remote-mic -list-devices          # enumerate capture devices
-birdnet-go-remote-mic -config config.yaml    # capture and serve
+birdnet-go-remote-mic --config config.yaml --listen :8554 --mgmt-listen :8443
+birdnet-go-remote-mic --config config.yaml --check   # validate config, then exit
 ```
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
@@ -94,20 +118,29 @@ Then pull each stream at `rtsp://<host>:8554<path>`, for example
 
 By default the appliance is open: anyone on the network can pull the streams
 and use the management API and web UI. Set a shared access token to require
-credentials everywhere at once:
+credentials everywhere at once.
+
+The quickest way is the `init` subcommand: it generates a strong token, writes
+it into the config, and prints it once.
+
+```bash
+birdnet-go-remote-mic init            # generate, save, and print the token
+birdnet-go-remote-mic init --force    # rotate an existing token
+```
+
+You can also set it by hand:
 
 ```yaml
 auth:
   token: "<replace-with-your-own>"   # 12-128 characters of letters, digits, . _ ~ -
 ```
 
-Generate your own. The value above is a placeholder that deliberately fails
-validation (angle brackets are outside the allowed set), so an unedited config
-refuses to start rather than serving on a token printed in this file. The web UI
-does it for you: go to System, open the Access Control card, and press Generate
-then Save. The change applies immediately, no restart: the running RTSP server
-and API start asking for the token on the next request, and the mDNS TXT record
-switches to `auth=token`.
+The angle-bracket placeholder deliberately fails validation (angle brackets are
+outside the allowed set), so a half-edited config refuses to start rather than
+serving on a non-secret. The web UI does it for you too: go to System, open the
+Access Control card, and press Generate then Save. The change applies
+immediately, no restart: the running RTSP server and API start asking for the
+token on the next request, and the mDNS TXT record switches to `auth=token`.
 Clearing the token returns the appliance to open access. The UI warns with a
 banner while access is open.
 
