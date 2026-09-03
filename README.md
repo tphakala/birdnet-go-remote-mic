@@ -207,7 +207,7 @@ task check   # build (amd64 + arm64 + arm, CGO off), vet (4 arches), lint, gofmt
 ## Design principles
 
 - Pure Go, zero CGO, single static binary. Linux on 64-bit arm64 (Pi Zero 2 W
-  and up) and 32-bit arm (older Pis, built GOARM=6 for ARMv6 reach); amd64 for
+  and up) and 32-bit arm (older Pis, built with GOARM=6 for ARMv6 reach); amd64 for
   development.
 - Reuse the existing [go-audio-stream](https://github.com/tphakala/go-audio-stream)
   transport, codec, and RTP machinery rather than reinventing it. The stream

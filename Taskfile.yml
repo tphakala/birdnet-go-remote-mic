@@ -52,6 +52,9 @@ tasks:
 
   vet:
     desc: Run go vet for the supported 64-bit and 32-bit architectures
+    env:
+      CGO_ENABLED: '0' # vet the pure-Go, CGO-off build
+      GOARM: '6' # ignored for non-arm arches; matches the arm build target
     cmds:
       - GOARCH=amd64 go vet ./...
       - GOARCH=arm64 go vet ./...

@@ -56,6 +56,8 @@ jobs:
       - name: Run go vet
         env:
           GOARCH: ${{ matrix.goarch }}
+          GOARM: '6' # ignored for non-arm arches; matches the arm build target
+          CGO_ENABLED: '0' # vet the pure-Go, CGO-off build like the rest of CI
         run: go vet ./...
 
   lint:
