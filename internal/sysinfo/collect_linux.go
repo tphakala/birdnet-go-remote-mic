@@ -169,7 +169,9 @@ func diskUsage(path string) (total, used int64, ok bool) {
 	// used = Blocks - Bfree (both include root-reserved space) so the figure
 	// matches df's Used; Bavail would exclude reserved blocks from free only,
 	// overstating used by the reserved amount.
-	bsize := st.Bsize
+	// Bsize is int64 on LP64 but int32 on ILP32 (arm, 386); widen once so the
+	// multiplications below are int64 on every architecture.
+	bsize := int64(st.Bsize)
 	total = int64(st.Blocks) * bsize //nolint:gosec // block counts fit int64 on real filesystems
 	free := int64(st.Bfree) * bsize  //nolint:gosec // block counts fit int64 on real filesystems
 	used = total - free

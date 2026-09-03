@@ -9,8 +9,9 @@
 
 A small, pure-Go remote microphone appliance for [BirdNET-Go](https://github.com/tphakala/birdnet-go).
 
-Runs as a single static binary on a Raspberry Pi Zero 2 W (arm64) or similar,
-captures local audio, and streams it over the LAN as standard RTSP/RTP.
+Runs as a single static binary on a Raspberry Pi Zero 2 W (arm64) or an older
+32-bit Pi (arm), captures local audio, and streams it over the LAN as standard
+RTSP/RTP.
 BirdNET-Go discovers the mic automatically over mDNS and pulls the stream with
 its native ingest client. No ffmpeg, no third-party media server, no external
 processes: just one binary you control.
@@ -185,7 +186,7 @@ For a local end-to-end check without hardware, use the ALSA loopback
 ## Development
 
 ```bash
-task check   # build (amd64 + arm64, CGO off), vet, lint, gofmt, race tests
+task check   # build (amd64 + arm64 + arm, CGO off), vet (4 arches), lint, gofmt, race tests
 ```
 
 ## What it does
@@ -205,8 +206,9 @@ task check   # build (amd64 + arm64, CGO off), vet, lint, gofmt, race tests
 
 ## Design principles
 
-- Pure Go, zero CGO, single static binary, arm64 Linux only (32-bit is out of
-  scope).
+- Pure Go, zero CGO, single static binary. Linux on 64-bit arm64 (Pi Zero 2 W
+  and up) and 32-bit arm (older Pis, built GOARM=6 for ARMv6 reach); amd64 for
+  development.
 - Reuse the existing [go-audio-stream](https://github.com/tphakala/go-audio-stream)
   transport, codec, and RTP machinery rather than reinventing it. The stream
   primitives are the inverse of what that library already does on ingest.
