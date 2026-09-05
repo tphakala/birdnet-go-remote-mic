@@ -1748,6 +1748,36 @@ select.field-input {
 .settings-actions-spacer {
   flex: 1;
 }
+/* Stale notice shown in an open device settings form when the saved config
+   changed elsewhere while the form was open. The Reload link rebuilds the form
+   from the current config; Save keeps last-writer-wins. */
+.stale-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--signal-warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--signal-warn);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.btn-link:hover {
+  text-decoration: none;
+}
+.btn-link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-cyan);
+  border-radius: 3px;
+}
 .network-actions {
   display: flex;
   align-items: center;
@@ -1855,6 +1885,13 @@ select.field-input {
 }
 :root[data-theme="light"] .open-access-banner a {
   color: #155e75;
+}
+/* The default --signal-warn (#d97706) is 3.19:1 on the light card ground; use
+   the same darker tone as .auth-state.open for the settings-drift notice and its
+   Reload link so both clear AA in light theme. Dark theme already passes. */
+:root[data-theme="light"] .stale-note,
+:root[data-theme="light"] .btn-link {
+  color: #b45309;
 }
 .auth-token-row {
   display: flex;
