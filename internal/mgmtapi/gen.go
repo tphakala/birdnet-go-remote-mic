@@ -231,7 +231,7 @@ type ConfigPatch struct {
 	// Auth Shared access token settings. The one token gates the management API and web UI (bearer) and the RTSP stream (Digest password).
 	Auth *AuthSettings `json:"auth,omitempty"`
 
-	// Devices Replaces the whole device list when present (per-device merge is not supported).
+	// Devices Replaces the whole device list when present (per-device merge is not supported). An empty array removes every device, matching Config.devices, which also imposes no minItems.
 	Devices *[]DeviceConfig `json:"devices,omitempty"`
 
 	// Discovery mDNS/DNS-SD advertisement settings.
@@ -358,7 +358,7 @@ type DeviceState string
 
 // DiscoverySettings mDNS/DNS-SD advertisement settings.
 type DiscoverySettings struct {
-	// Enabled mDNS/DNS-SD advertisement; defaults to true when absent.
+	// Enabled mDNS/DNS-SD advertisement; defaults to true when absent. In a patch, an absent field (including an empty discovery object) leaves discovery unchanged, mirroring AuthSettings.token.
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
@@ -434,7 +434,7 @@ type Problem struct {
 
 // ProvisionDeviceRequest Request to enable (provision) a detected capture device. Only device is required; the appliance derives sensible defaults for everything else, and any field set here overrides its derived default.
 type ProvisionDeviceRequest struct {
-	// Channels Optional 1-based channel selection to stream, ascending and unique; chosen from the device's capabilities when omitted.
+	// Channels Optional 1-based channel selection to stream, ascending and unique; chosen from the device's capabilities when omitted. An empty array is treated the same as omitting the field: the appliance derives the default selection (so no minItems is imposed).
 	Channels *[]int `json:"channels,omitempty"`
 
 	// Device ALSA capture device id to enable, as reported by GET /devices/available.
