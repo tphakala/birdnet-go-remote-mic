@@ -388,7 +388,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		// would emit one "http: TLS handshake error ... remote error: tls:" line
 		// per attempt. Filter that client-rejection spam while passing every
 		// other server error (including a local TLS misconfiguration) through.
-		ErrorLog: mgmtserver.NewFilteredErrorLog(log.Default().Writer()),
+		ErrorLog: mgmtserver.NewFilteredErrorLog(log.Default()),
 		TLSConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			Certificates: []tls.Certificate{cert},
