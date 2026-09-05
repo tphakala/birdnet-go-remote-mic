@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -164,6 +165,22 @@ func Load(path string) (Config, error) {
 	}
 	if c.Auth.Token != "" {
 		warnIfTokenFileReadable(path)
+	}
+	return c, nil
+}
+
+// LoadOrDefault loads and validates the config at path, or returns a fresh
+// Default() when the file does not exist yet, so first-run callers boot with a
+// usable config without one present. Any other load error (a parse or validation
+// failure) is returned unchanged rather than masked as a default. It is the one
+// place the first-run load-or-default decision lives, shared by serve and init.
+func LoadOrDefault(path string) (Config, error) {
+	c, err := Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Default(), nil
+	}
+	if err != nil {
+		return Config{}, err
 	}
 	return c, nil
 }

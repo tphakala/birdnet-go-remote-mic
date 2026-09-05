@@ -21,6 +21,11 @@ import (
 const (
 	testFmtS16    = "s16"
 	testListenAny = "127.0.0.1:0"
+	testRTSP8554  = ":8554"
+	keyListen     = "listen"
+	keyMgmtListen = "mgmt-listen"
+	keyDiscovery  = "discovery"
+	nameScarlett  = "Scarlett"
 )
 
 // blockingSource is a fake audio.Source whose Read blocks until Close, so a

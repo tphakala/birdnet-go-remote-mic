@@ -328,7 +328,12 @@ func closedMgmt() *mgmt {
 // not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
 // the caller does not mistake a configured-but-dead API for an available
 // diagnostic surface when deciding whether to stay alive with no serving device.
-func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, prov *provider, events http.Handler, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
+// cfg drives the actual listener binds and certificate location, so serve
+// override flags (--mgmt-listen, --cert-dir) take effect for this run. storeCfg
+// is the override-free on-disk config that seeds the persistence store, so a
+// later PATCH /config never bakes an ephemeral override into config.yaml
+// (issue #29).
+func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -352,7 +357,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg *config.Config, pr
 	}
 
 	opts := []mgmtserver.Option{
-		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, cfg)),
+		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, storeCfg)),
 		mgmtserver.WithSystemInfo(prov),
 		mgmtserver.WithRestart(restartFn),
 		mgmtserver.WithAuth(guard),

@@ -160,21 +160,25 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 
 func run(cfgPath string, ov serveOverrides, check bool) error {
 	startTime := time.Now()
-	cfg, err := config.Load(cfgPath)
-	if errors.Is(err, os.ErrNotExist) {
-		// First run with no config file: boot with defaults and no devices so the
-		// web UI comes up and the operator can enumerate the host's capture
-		// hardware and enable devices from there. The first provisioning writes the
-		// config file at cfgPath.
+	// First run with no config file: LoadOrDefault boots with defaults and no
+	// devices so the web UI comes up and the operator can enumerate the host's
+	// capture hardware and enable devices from there; the first provisioning
+	// writes the config file at cfgPath. The stat only surfaces that operator
+	// hint: the load-or-default decision itself lives in config.LoadOrDefault, so
+	// serve and init share one first-run path.
+	if _, statErr := os.Stat(cfgPath); errors.Is(statErr, os.ErrNotExist) {
 		log.Printf("no config file at %s; starting with defaults (enable capture devices from the web UI)", cfgPath)
-		cfg, err = config.Default(), nil
 	}
+	cfg, err := config.LoadOrDefault(cfgPath)
 	if err != nil {
 		return err
 	}
 
-	// CLI flags override the loaded config (precedence: flag > config > default).
-	applyServeOverrides(&cfg, ov)
+	// cfg drives this run's pipeline and listeners with the serve overrides
+	// applied; storeCfg is the override-free config that seeds the persistence
+	// store, so a later PATCH cannot bake an ephemeral override into config.yaml
+	// (issue #29). See splitServeConfig.
+	cfg, storeCfg := splitServeConfig(&cfg, ov)
 
 	// --check validates the config and reports device presence, then exits without
 	// binding ports or opening capture (for systemd ExecStartPre).
@@ -231,24 +235,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// but bails out if the appliance is shutting down or the client disconnects,
 	// so a config patch never hangs.
 	reconcileCh := make(chan reconcileReq)
-	reloader := func(reqCtx context.Context, newCfg config.Config) error {
-		reply := make(chan error, 1)
-		select {
-		case reconcileCh <- reconcileReq{cfg: newCfg, reply: reply}:
-		case <-ctx.Done():
-			return errors.New("appliance is shutting down")
-		case <-reqCtx.Done():
-			return reqCtx.Err()
-		}
-		select {
-		case err := <-reply:
-			return err
-		case <-ctx.Done():
-			return errors.New("appliance is shutting down")
-		case <-reqCtx.Done():
-			return reqCtx.Err()
-		}
-	}
+	reloader := newServeReloader(ctx, reconcileCh, ov)
 
 	// Start the management API before the device-open phase so status and
 	// diagnostics are reachable even if every device fails to open. It reports
@@ -263,7 +250,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, prov, hub.EventsHandler(), stop, reloader, guard)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, hub.EventsHandler(), stop, reloader, guard)
 	}
 	defer func() {
 		stop()
@@ -330,6 +317,56 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 				return fmt.Errorf("rtsp server: %w", serr)
 			}
 			return nil
+		}
+	}
+}
+
+// splitServeConfig derives the two configs a serve run needs from the loaded
+// config: running drives this run's pipeline and listeners with the serve
+// overrides applied, and store is an override-free deep copy that seeds the
+// persistence store. The serve overrides (--listen, --mgmt-listen, --cert-dir,
+// --discovery, --management) are ephemeral for the run: seeding the store from
+// the pre-override snapshot keeps them out of config.yaml, so a later PATCH
+// /config that saves the whole config cannot bake them in (issue #29).
+// newServeReloader re-applies the overrides to the live pipeline on every hot
+// reload, so the running RTSP port and discovery state stay overridden without
+// ever being persisted. Snapshotting before applyServeOverrides is the crux:
+// taken after, store would carry the overrides and the fix would not hold.
+func splitServeConfig(loaded *config.Config, ov serveOverrides) (running, store config.Config) {
+	store = loaded.Clone()
+	running = loaded.Clone()
+	applyServeOverrides(&running, ov)
+	return running, store
+}
+
+// newServeReloader builds the Reloader the management API calls to hot-apply a
+// persisted PATCH /config to the running pipeline. The persisted config the
+// store hands back is free of the serve override flags (they are ephemeral for
+// the run, issue #29), so this re-applies them to the copy that drives the LIVE
+// pipeline: a hot reload then keeps advertising the overridden RTSP port over
+// mDNS and honors a --discovery override, while the on-disk config stays clean.
+// The store already saved that clean config before this runs, so the re-applied
+// overrides never reach disk. It blocks until the run loop applies the change
+// but bails out on appliance shutdown (ctx) or client disconnect (reqCtx), so a
+// patch never hangs.
+func newServeReloader(ctx context.Context, reconcileCh chan<- reconcileReq, ov serveOverrides) mgmtserver.Reloader {
+	return func(reqCtx context.Context, newCfg config.Config) error {
+		applyServeOverrides(&newCfg, ov)
+		reply := make(chan error, 1)
+		select {
+		case reconcileCh <- reconcileReq{cfg: newCfg, reply: reply}:
+		case <-ctx.Done():
+			return errors.New("appliance is shutting down")
+		case <-reqCtx.Done():
+			return reqCtx.Err()
+		}
+		select {
+		case err := <-reply:
+			return err
+		case <-ctx.Done():
+			return errors.New("appliance is shutting down")
+		case <-reqCtx.Done():
+			return reqCtx.Err()
 		}
 	}
 }
