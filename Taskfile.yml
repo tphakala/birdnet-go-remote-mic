@@ -12,15 +12,21 @@ tasks:
     cmds:
       - task --list
 
-  build:
-    desc: Build the appliance binary (CGO disabled, version stamped)
+  # Every target writes an arch-suffixed binary; there is deliberately no bare
+  # bin/birdnet-go-remote-mic, so an out-of-date `scp bin/birdnet-go-remote-mic`
+  # fails loudly instead of silently shipping the amd64 dev build to an ARM Pi.
+  build:amd64:
+    desc: Build for linux/amd64 dev host, CGO off, version stamped (bin/birdnet-go-remote-mic-amd64)
+    aliases: [build]
     env:
       CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: amd64
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic ./cmd/birdnet-go-remote-mic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic-amd64 ./cmd/birdnet-go-remote-mic
 
-  build-arm64:
-    desc: Cross-build for linux/arm64 (the Pi Zero 2 W target)
+  build:arm64:
+    desc: Cross-build for linux/arm64, the Pi Zero 2 W target (bin/birdnet-go-remote-mic-arm64)
     env:
       CGO_ENABLED: '0'
       GOOS: linux
@@ -28,8 +34,8 @@ tasks:
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic-arm64 ./cmd/birdnet-go-remote-mic
 
-  build-arm:
-    desc: Cross-build for linux/arm (32-bit, older Pis; GOARM=6 for ARMv6 reach)
+  build:arm:
+    desc: Cross-build for linux/arm, 32-bit older Pis, GOARM=6 for ARMv6 reach (bin/birdnet-go-remote-mic-arm)
     env:
       CGO_ENABLED: '0'
       GOOS: linux
@@ -147,9 +153,9 @@ tasks:
     desc: Full local gate (build, arm64 + arm builds, vet, lint, api checks, web verify, fmt, race tests)
     cmds:
       - task: web:verify
-      - task: build
-      - task: build-arm64
-      - task: build-arm
+      - task: build:amd64
+      - task: build:arm64
+      - task: build:arm
       - task: vet
       - task: lint
       - task: api:lint
