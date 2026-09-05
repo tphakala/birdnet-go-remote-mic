@@ -226,7 +226,9 @@ func TestProvisionDeviceEmptyChannelsDerivesDefault(t *testing.T) {
 	s := New(prov, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }))
 
 	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
-		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr()},
+		// &[]int{} is an explicit, non-nil empty array (the JSON "channels": []
+		// case), distinct from an omitted field or a nil slice.
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: &[]int{}},
 	})
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)

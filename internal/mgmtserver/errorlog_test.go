@@ -2,6 +2,7 @@ package mgmtserver
 
 import (
 	"bytes"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -90,6 +91,17 @@ func TestFilteredErrorLogPassesGenuineErrors(t *testing.T) {
 	// identical to the default net/http logger.
 	if !regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `).MatchString(got) {
 		t.Errorf("expected an LstdFlags timestamp prefix on passthrough, got %q", got)
+	}
+}
+
+func TestNewFilteredErrorLogNilWriterDefaultsToStderr(t *testing.T) {
+	logger := NewFilteredErrorLog(nil)
+	f, ok := logger.Writer().(*handshakeErrorFilter)
+	if !ok {
+		t.Fatalf("logger writer is %T, want *handshakeErrorFilter", logger.Writer())
+	}
+	if f.w != os.Stderr {
+		t.Errorf("nil writer was not defaulted to os.Stderr, got %v", f.w)
 	}
 }
 
