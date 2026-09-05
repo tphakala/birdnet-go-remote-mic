@@ -130,7 +130,7 @@ func TestInitPreservesExistingDevices(t *testing.T) {
 	cfg := config.Default()
 	cfg.Devices = []config.Device{{
 		Name: "m1", Device: "hw:1,0", Path: "/m1",
-		Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: "s16",
+		Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
 	}}
 	if err := config.Save(path, &cfg); err != nil {
 		t.Fatalf("seed Save: %v", err)

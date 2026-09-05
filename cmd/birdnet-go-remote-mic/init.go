@@ -3,11 +3,9 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
@@ -42,7 +40,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unexpected argument(s): %s", strings.Join(fs.Args(), " "))
 	}
 
-	cfg, err := loadOrDefault(*cfgPath)
+	cfg, err := config.LoadOrDefault(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -80,17 +78,4 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	}
 	out(stdout, "%s\n", token)
 	return nil
-}
-
-// loadOrDefault loads the config at path, or returns a fresh Default() when the
-// file does not exist yet.
-func loadOrDefault(path string) (config.Config, error) {
-	cfg, err := config.Load(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return config.Default(), nil
-	}
-	if err != nil {
-		return config.Config{}, err
-	}
-	return cfg, nil
 }

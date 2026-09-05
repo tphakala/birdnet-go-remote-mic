@@ -4,9 +4,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	capture "github.com/tphakala/go-audio-capture"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
@@ -41,7 +44,7 @@ func TestApplyServeOverridesSetWins(t *testing.T) {
 		listen:     ":7000",
 		mgmtListen: mgmtAddr7,
 		certDir:    "/new",
-		set:        map[string]bool{"listen": true, "mgmt-listen": true, "cert-dir": true},
+		set:        map[string]bool{keyListen: true, keyMgmtListen: true, "cert-dir": true},
 	})
 	if cfg.Listen != ":7000" {
 		t.Errorf("--listen not applied: got %q", cfg.Listen)
@@ -76,7 +79,7 @@ func TestApplyServeOverridesDiscoveryFalse(t *testing.T) {
 	cfg := config.Default()
 	applyServeOverrides(&cfg, serveOverrides{
 		discovery: false,
-		set:       map[string]bool{"discovery": true},
+		set:       map[string]bool{keyDiscovery: true},
 	})
 	if cfg.DiscoveryEnabled() {
 		t.Fatalf("--discovery=false did not disable discovery")
@@ -100,7 +103,7 @@ func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
 	if !check {
 		t.Error("--check should parse to check=true")
 	}
-	for _, k := range []string{"listen", "mgmt-listen", "cert-dir", "management", "discovery"} {
+	for _, k := range []string{keyListen, keyMgmtListen, "cert-dir", "management", keyDiscovery} {
 		if !ov.set[k] {
 			t.Errorf("ov.set[%q] not marked; flag name and set key disagree", k)
 		}
@@ -169,10 +172,74 @@ func TestReportCheckInvalidConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.Devices = []config.Device{{
 		Name: "bad", Device: "hw:9,0", Path: "/b",
-		Mode: config.ModeOpus, Rate: 22050, Channels: []int{1}, Format: "s16",
+		Mode: config.ModeOpus, Rate: 22050, Channels: []int{1}, Format: testFmtS16,
 	}}
 	var out bytes.Buffer
 	if err := reportCheck(&cfg, &out); err == nil {
 		t.Fatal("expected invalid opus rate to fail check")
+	}
+}
+
+// TestReportCheckDevicePresence injects a known host device list through the
+// captureDevices seam so the present and not-found branches run deterministically
+// without ALSA hardware.
+func TestReportCheckDevicePresence(t *testing.T) {
+	orig := captureDevices
+	t.Cleanup(func() { captureDevices = orig })
+	captureDevices = func() ([]capture.DeviceInfo, error) {
+		return []capture.DeviceInfo{{ID: devHW1, Name: nameScarlett}}, nil
+	}
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{
+		{Name: "cam-a", Device: devHW1, Path: "/a", Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16},
+		{Name: "cam-b", Device: "hw:9,0", Path: "/b", Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16},
+	}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	// Bind each status to its device's own line so a present/not-found inversion
+	// cannot pass just because both words appear somewhere in the output.
+	lineFor := func(name string) string {
+		for _, ln := range strings.Split(out.String(), "\n") {
+			if strings.Contains(ln, name) {
+				return ln
+			}
+		}
+		return ""
+	}
+	if l := lineFor("cam-a"); !strings.Contains(l, "present") || strings.Contains(l, "not found") {
+		t.Errorf("cam-a line = %q, want status present", l)
+	}
+	if l := lineFor("cam-b"); !strings.Contains(l, "not found") {
+		t.Errorf("cam-b line = %q, want status not found", l)
+	}
+}
+
+// TestReportCheckProbeUnavailable asserts a wholesale enumeration failure is
+// reported as a probe-unavailable note with every device marked unknown, rather
+// than misreporting present hardware as absent.
+func TestReportCheckProbeUnavailable(t *testing.T) {
+	orig := captureDevices
+	t.Cleanup(func() { captureDevices = orig })
+	captureDevices = func() ([]capture.DeviceInfo, error) {
+		return nil, errors.New("no ALSA")
+	}
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{
+		{Name: "cam-a", Device: devHW1, Path: "/a", Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16},
+	}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "device probe unavailable") {
+		t.Errorf("want a probe-unavailable note, got:\n%s", s)
+	}
+	if !strings.Contains(s, "unknown") {
+		t.Errorf("want unknown status when the probe failed, got:\n%s", s)
 	}
 }

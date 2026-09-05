@@ -22,6 +22,11 @@ var (
 	listDevicesFn = runListDevices
 )
 
+// captureDevices enumerates the host's capture devices. It is a package var so
+// reportCheck (serve --check) and list-devices are testable without ALSA
+// hardware: a test can inject a known device list or a probe failure.
+var captureDevices = capture.Devices
+
 // out writes formatted CLI text to w, discarding the write error: output to
 // stdout or stderr is best-effort, and a failed write there is unrecoverable and
 // not worth surfacing.
@@ -123,7 +128,8 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	fs.Usage = func() {
 		out(stderr, "Usage: birdnet-go-remote-mic [serve] [flags]\n\n"+
 			"Capture local audio and serve it over RTSP. Flags override the config\n"+
-			"file; use --flag=false for the boolean toggles.\n\nFlags:\n")
+			"file for this run only and are never written back to it; use\n"+
+			"--flag=false for the boolean toggles.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	path := fs.String("config", "config.yaml", "path to the YAML config file")
@@ -153,7 +159,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 
 // runListDevices prints the id and label of every capture device on the host.
 func runListDevices(w io.Writer) error {
-	devs, err := capture.Devices()
+	devs, err := captureDevices()
 	if err != nil {
 		return err
 	}
@@ -175,7 +181,7 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 	out(w, "config OK: %d device(s), RTSP %s\n", len(cfg.Devices), cfg.Listen)
 	present := make(map[string]bool)
 	probed := true
-	if devs, derr := capture.Devices(); derr == nil {
+	if devs, derr := captureDevices(); derr == nil {
 		for _, d := range devs {
 			present[d.ID] = true
 		}
@@ -202,7 +208,10 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 // serveOverrides carries the serve subcommand's config-overriding flag values
 // plus the set of flags the operator actually passed. Only passed flags are
 // applied, so an unset flag never clobbers a config value: precedence is
-// flag > config file > built-in default.
+// flag > config file > built-in default. Overrides are ephemeral for the run:
+// they shape the running pipeline and listeners but are never written back to
+// config.yaml, and the reloader re-applies them on every hot reload so a later
+// PATCH /config cannot persist them (issue #29).
 type serveOverrides struct {
 	listen     string
 	mgmtListen string

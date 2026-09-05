@@ -33,7 +33,7 @@ func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 	// The host exposes hw:1,0 (configured, listed with no probed caps, as
 	// DetectDevices emits it) and hw:2,0 (free, probed).
 	p.setDetected([]audio.DetectedDevice{
-		{ID: devHW1, FriendlyName: "Scarlett"},
+		{ID: devHW1, FriendlyName: nameScarlett},
 		{ID: devHW2, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
 	})
 
@@ -80,7 +80,7 @@ func skippedRecord(name, path, errMsg string) *deviceRuntime {
 }
 
 func newProvider() *provider {
-	p := &provider{version: "v1.0.0", start: time.Now(), rtspListen: ":8554"}
+	p := &provider{version: "v1.0.0", start: time.Now(), rtspListen: testRTSP8554}
 	p.setDiscovery(true)
 	return p
 }
@@ -150,7 +150,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -173,7 +173,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil)
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
@@ -187,7 +187,7 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -207,7 +207,7 @@ func TestProviderStatusAuthRequired(t *testing.T) {
 }
 
 func TestAnnounceInfosCarryAuth(t *testing.T) {
-	infos, port, err := announceInfos(":8554", []*deviceRuntime{servingRecord("garden", "/garden")}, true)
+	infos, port, err := announceInfos(testRTSP8554, []*deviceRuntime{servingRecord("garden", "/garden")}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestStartManagementEnforcesBearer(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, newProvider(), nil, nil, nil, auth.NewGuard(testAuthToken))
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, auth.NewGuard(testAuthToken))
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -276,7 +276,7 @@ func TestRunEnumerationWiresDetectionToProvider(t *testing.T) {
 		default:
 		}
 		return []audio.DetectedDevice{
-			{ID: devHW1, FriendlyName: "Scarlett"},
+			{ID: devHW1, FriendlyName: nameScarlett},
 			{ID: devHW2, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
 		}, nil
 	}
