@@ -53,14 +53,20 @@ func (f *handshakeErrorFilter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	// The wrapping logger has no flags of its own, so p is net/http's raw
-	// message plus the single trailing newline that logger added. Strip that
-	// newline and hand the message to dst.Output, which applies dst's prefix,
-	// flags, and timestamp and terminates the line with its own single newline.
-	// The calldepth of 2 is inert here: dst.Output consults it only under
-	// Lshortfile/Llongfile, which log.Default() does not set, and threading
-	// net/http's own caller location back through this extra logger layer would
-	// be fragile, so the passthrough carries dst's timestamp but no file:line.
-	if err := f.dst.Output(2, string(bytes.TrimRight(p, "\n"))); err != nil {
+	// message plus the single trailing newline that logger added. Strip that one
+	// newline (not any the message itself may carry) and hand the message to
+	// dst.Output, which applies dst's prefix, flags, and timestamp and
+	// terminates the line with its own single newline.
+	//
+	// calldepth 2 is a placeholder: dst.Output reads it only under
+	// Lshortfile/Llongfile, which the appliance's log.Default() never sets, so
+	// no file:line is emitted. If an operator did enable those flags the reported
+	// location would be this wrapper frame, not net/http's call site: faithfully
+	// threading the origin through an http.Server.ErrorLog wrapper is not
+	// possible with a stable calldepth (the log frames in between vary by Go
+	// version), and the pre-change code emitted no file:line either, so that is
+	// accepted over a fragile depth.
+	if err := f.dst.Output(2, string(bytes.TrimSuffix(p, []byte("\n")))); err != nil {
 		return 0, err
 	}
 	return len(p), nil

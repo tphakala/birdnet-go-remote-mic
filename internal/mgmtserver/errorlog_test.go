@@ -2,6 +2,7 @@ package mgmtserver
 
 import (
 	"bytes"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -208,5 +209,26 @@ func TestFilterDropsRealNetHTTPHandshakeError(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("real handshake-rejection line was forwarded, want dropped: %q", out.String())
+	}
+}
+
+// failingWriter always fails, to drive the destination logger's write error out
+// through the filter.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("destination write failed") }
+
+func TestFilteredErrorLogSurfacesDestinationWriteError(t *testing.T) {
+	logger := NewFilteredErrorLog(log.New(failingWriter{}, "", 0))
+
+	// A genuine (non-dropped) error line reaches dst.Output, whose writer fails.
+	// The filter must surface that error rather than swallow it, and report zero
+	// bytes written.
+	n, err := logger.Writer().Write([]byte("http: Accept error: too many open files\n"))
+	if err == nil {
+		t.Fatal("expected the destination write error to propagate, got nil")
+	}
+	if n != 0 {
+		t.Errorf("expected n=0 when the destination write fails, got %d", n)
 	}
 }
