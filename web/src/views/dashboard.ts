@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
+import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -42,30 +42,68 @@ function capsSummary(d: AvailableDevice): string {
   return parts.join(" · ");
 }
 
-interface CardEntry {
-  article: HTMLElement;
-  gearBtn: HTMLElement;
-  serving: boolean;
-  // One VU meter per capture channel (empty for a non-serving card). A mono
-  // device has a single meter; a stereo (or higher) device has one per channel.
+// LiveBody holds the nodes of a serving card's body (endpoint strip, meter
+// console, metrics footer). IdleBody holds the nodes of a non-serving card's
+// body (error banner, footer note). Exactly one is present on a card, chosen by
+// its shape; syncCard writes into whichever exists.
+interface LiveBody {
+  urlEl: HTMLElement;
+  clientsEl: HTMLElement;
+  droppedEl: HTMLElement;
+  negotiatedEl: HTMLElement;
+  // One VU meter per captured hardware channel, indexed by zero-based channel.
   meters: VUMeter[];
-  urlEl: HTMLElement | null;
-  // The "Token" tag on a serving card, hidden while the appliance is open.
-  lockEl: HTMLElement | null;
-  statusEl: HTMLElement | null;
-  clientsEl: HTMLElement | null;
-  droppedEl: HTMLElement | null;
+}
+
+interface IdleBody {
+  banner: HTMLElement;
+  bannerIcon: HTMLElement;
+  bannerDesc: HTMLElement;
+  footerNote: HTMLElement;
+}
+
+// CardEntry is the STABLE per-device identity, keyed by the immutable ALSA
+// device id. The <article> and its body are a disposable render swapped only
+// when the card's shape changes (serving with a given channel count, versus
+// idle); everything that must survive a rebuild (the settings panel node, its
+// form, the expanded/dirty state) hangs off the entry, not the article. Every
+// node that shows DEVICE OR CONFIG data is written by exactly one function,
+// syncCard; transient interaction state (the toggle's in-flight checked/busy and
+// the copy button's "Copied!" feedback) is the deliberate exception. buildArticle
+// creates the skeleton with no device data, so a data field syncCard forgets
+// renders blank at development time instead of going silently stale in
+// production, which is the class of bug the old build/update split produced.
+interface CardEntry {
+  id: string; // ALSA device id, immutable, the config-merge key
+  device: Device; // latest runtime view, set by syncCard
+  shape: string; // shapeKey of the currently mounted article
+  article: HTMLElement;
+  // Header nodes, shape-independent (chips and lock are hidden on idle cards
+  // rather than absent, so the header never has to be rebuilt on a shape flip):
+  avatar: HTMLElement;
+  titleEl: HTMLElement;
+  hwEl: HTMLElement;
+  modeTag: HTMLElement;
+  rateTag: HTMLElement;
+  chTag: HTMLElement;
+  lockEl: HTMLElement;
+  statusEl: HTMLElement;
   toggleInput: HTMLInputElement;
-  // Transient banner shown while the desired (config) enabled flag diverges from
-  // the live runtime state, i.e. during the brief moment a config reload is
-  // starting or stopping the device.
+  gearBtn: HTMLElement;
   pendingNote: HTMLElement;
-  // The non-serving footer message, if this card is not serving; updated in
-  // place so an in-session toggle does not leave stale disabled/enabled text.
-  footerNote: HTMLElement | null;
-  device: Device;
+  // Body: exactly one is present, matching the shape.
+  live: LiveBody | null;
+  idle: IdleBody | null;
+  // Settings panel: owned by the entry and moved between article renders, so an
+  // open form survives a card rebuild rather than being torn down under the user.
   settingsWrap: HTMLElement;
   settingsForm: DeviceSettingsForm | null;
+  // The config entry the open form was built from, used to detect an out-of-band
+  // change while the form is open. Excludes enabled (see deviceConfigKey).
+  formSource: DeviceConfig | null;
+  // "Changed elsewhere" notice in the open form's actions bar, shown by
+  // syncSettings when formSource has drifted from the current config.
+  staleNote: HTMLElement | null;
   expanded: boolean;
   dirty: boolean;
 }
@@ -90,9 +128,7 @@ function pendingStop(configEnabled: boolean, state: string): boolean {
 
 const PENDING_STOP_TEXT = "Disabling; this device stops serving shortly.";
 
-// nonServingFooterText is the footer message for a card that is not serving,
-// shared by buildCard and updateCard so an in-session toggle never leaves stale
-// enabled/disabled wording behind.
+// nonServingFooterText is the footer message for a card that is not serving.
 function nonServingFooterText(state: string, configEnabled: boolean): string {
   if (state === "disabled") {
     return configEnabled
@@ -136,8 +172,44 @@ function rtspPort(listen: string | undefined): string {
   return i >= 0 ? listen.slice(i + 1) : listen;
 }
 
+// meterCount is the number of VU meter rows a serving device shows: one per
+// CAPTURED hardware channel (the negotiated count), not per streamed channel.
+function meterCount(d: Device): number {
+  return Math.max(1, d.negotiatedChannels ?? d.channels.length);
+}
+
+// shapeKey names the only genuinely structural facts about a card: whether it
+// has a serving body (endpoint strip + meter console + metrics) or an idle body
+// (error banner + footer), and how many meter rows the serving body has. A
+// change to either forces a rebuild (mount); every other field is a syncCard
+// write on the existing article. Mode is deliberately excluded: the avatar and
+// chips are synced, not rebuilt.
+function shapeKey(d: Device): string {
+  return d.state === "serving" ? `serving:${meterCount(d)}` : "idle";
+}
+
+// deviceConfigKey serialises the settings-relevant fields of a device config in
+// a fixed order so an out-of-band change to an open form can be detected by
+// comparison. It deliberately EXCLUDES enabled: the settings form does not edit
+// the enable flag (the card toggle does, and saveDevice sources it fresh), so a
+// same-tab toggle must not flag the operator's own open form as changed
+// elsewhere.
+function deviceConfigKey(cd: DeviceConfig | undefined): string {
+  if (!cd) return "";
+  return JSON.stringify([
+    cd.name, cd.path, cd.mode, cd.rate,
+    // Guard the spread: the runtime devices payload is normalized to always
+    // carry a channels array (see the store), but a config payload is not, so a
+    // missing or null channels field must not throw here and crash the pass.
+    [...(cd.channels ?? [])], cd.format, cd.opus?.bitrate ?? null,
+  ]);
+}
+
 export class DashboardView {
+  // Cards keyed by immutable ALSA device id (the stable identity). byName maps
+  // device name to entry for the levels stream, whose payload is keyed by name.
   private cards: Map<string, CardEntry> = new Map();
+  private byName: Map<string, CardEntry> = new Map();
   private rack: HTMLElement | null;
   private emptyEl: HTMLElement | null;
   private availableSection: HTMLElement | null;
@@ -168,14 +240,17 @@ export class DashboardView {
   }
 
   private bindEvents(): void {
-    store.addEventListener("devices", (e: Event) => {
-      this.renderDevices((e as CustomEvent<Device[]>).detail);
-    });
+    // The view is a function of store state: devices, status and config each
+    // trigger a full render() that reads store.getState(), rather than each
+    // patching its own subset of the DOM. status is stored first because URLs
+    // and the lock tag depend on it; config now arrives on every poll (see the
+    // store) so an out-of-band change reflects within one interval.
+    store.addEventListener("devices", () => this.render());
+    store.addEventListener("config", () => this.render());
     store.addEventListener("status", (e: Event) => {
       this.status = (e as CustomEvent<ApplianceStatus>).detail;
       this.updateTelemetryFromStatus();
-      // Recompute RTSP URLs now that the listen port is known.
-      this.renderDevices(store.getState().devices);
+      this.render();
     });
     store.addEventListener("system", (e: Event) => {
       this.updateTelemetryFromSystem((e as CustomEvent<SystemInfo>).detail);
@@ -183,10 +258,10 @@ export class DashboardView {
     store.addEventListener("levels", (e: Event) => {
       const levels = (e as CustomEvent<Map<string, DeviceLevels>>).detail;
       levels.forEach((dl, name) => {
-        const entry = this.cards.get(name);
-        if (!entry) return;
+        const entry = this.byName.get(name);
+        if (!entry?.live) return;
         for (const ch of dl.channels) {
-          const meter = entry.meters[ch.channel];
+          const meter = entry.live.meters[ch.channel];
           if (meter) meter.setLevels(ch.rmsDbfs, ch.peakDbfs, ch.clipped);
         }
       });
@@ -211,8 +286,15 @@ export class DashboardView {
     renderLoadError(this.emptyEl, message, "Loading devices...", () => void store.retry());
   }
 
-  private renderDevices(devices: Device[]): void {
+  // render is the single reconcile pass, driven by store state. For each runtime
+  // device it gets or creates the stable entry, rebuilds the article only when
+  // the shape changed, then syncs every field through the one write path. It
+  // then removes gone cards, orders the rack with a diff (no DOM move in steady
+  // state, which is what keeps keyboard focus from being dropped every poll),
+  // rebuilds the name index for the levels stream, and reconciles open forms.
+  private render(): void {
     if (!this.rack) return;
+    const devices = store.getState().devices;
 
     if (this.emptyEl) {
       this.emptyEl.hidden = devices.length > 0;
@@ -224,57 +306,60 @@ export class DashboardView {
       if (devices.length === 0) this.emptyEl.textContent = "No capture devices are configured.";
     }
 
-    const seen = new Set<string>();
-    let clientCount = 0;
-
     // Index the persisted config by ALSA id once per pass so the per-card
-    // reconcile is a Map lookup rather than a linear scan of the config list per
-    // card (an N+1 over the device count).
+    // reconcile is a Map lookup rather than a linear scan of the config list.
     const cfgByDevice = new Map<string, DeviceConfig>();
     for (const cd of store.getState().config?.devices ?? []) cfgByDevice.set(cd.device, cd);
 
+    const seen = new Set<string>();
+    let clientCount = 0;
+
     for (const d of devices) {
-      seen.add(d.name);
+      seen.add(d.device);
       if (d.clientConnected) clientCount++;
 
-      const serving = d.state === "serving";
-      const existing = this.cards.get(d.name);
-
-      // Rebuild the card when it is new or when its serving state flips (which
-      // changes whether a meter console exists). Otherwise update in place so
-      // the live meter keeps running across the 3s device poll.
-      if (!existing || existing.serving !== serving) {
-        if (existing) {
-          existing.meters.forEach((m) => m.destroy());
-          existing.settingsForm?.destroy();
-          existing.article.remove();
-          this.cards.delete(d.name);
-        }
-        this.cards.set(d.name, this.buildCard(d, cfgByDevice));
-      } else {
-        this.updateCard(existing, d, cfgByDevice);
+      let entry = this.cards.get(d.device);
+      if (!entry) {
+        entry = this.newEntry(d);
+        this.cards.set(d.device, entry);
+      } else if (entry.shape !== shapeKey(d)) {
+        this.mount(entry, d);
       }
+      this.syncCard(entry, d, cfgByDevice);
     }
 
     // Remove cards for devices that are gone.
-    for (const [name, entry] of this.cards) {
-      if (!seen.has(name)) {
-        entry.meters.forEach((m) => m.destroy());
+    for (const [id, entry] of this.cards) {
+      if (!seen.has(id)) {
+        entry.live?.meters.forEach((m) => m.destroy());
         entry.settingsForm?.destroy();
         entry.article.remove();
-        this.cards.delete(name);
+        this.cards.delete(id);
       }
     }
 
-    // Keep DOM order aligned with the device list (moves existing nodes,
-    // preserving their meters).
-    for (const d of devices) {
-      const entry = this.cards.get(d.name);
-      if (entry) this.rack.appendChild(entry.article);
+    // Order the rack to match the device list with a diff: only move a node when
+    // it is not already at its target position. Steady state performs no DOM
+    // moves, so focus inside a card is never dropped by re-inserting its node.
+    devices.forEach((d, i) => {
+      const entry = this.cards.get(d.device);
+      if (!entry || !this.rack) return;
+      const current = this.rack.children[i];
+      if (current !== entry.article) this.rack.insertBefore(entry.article, current ?? null);
+    });
+
+    // Rebuild the name index for the levels stream (cards are keyed by id, the
+    // levels payload by name; a rename changes the name but not the id).
+    this.byName.clear();
+    for (const entry of this.cards.values()) this.byName.set(entry.device.name, entry);
+
+    // Reconcile any open settings form against the (possibly refreshed) config.
+    for (const entry of this.cards.values()) {
+      if (entry.expanded) this.syncSettings(entry, cfgByDevice);
     }
 
     const clientsEl = document.getElementById("total-clients-display");
-    if (clientsEl) clientsEl.textContent = String(clientCount);
+    if (clientsEl) setText(clientsEl, String(clientCount));
   }
 
   // renderAvailable lists the host's detected-but-unconfigured capture devices,
@@ -392,60 +477,86 @@ export class DashboardView {
     return `rtsp://${window.location.hostname}:${port}${d.path}`;
   }
 
-  private buildCard(d: Device, cfgByDevice: Map<string, DeviceConfig>): CardEntry {
+  // newEntry creates the stable identity for a device: the settings panel node
+  // (which outlives article rebuilds) and then a first mounted article.
+  private newEntry(d: Device): CardEntry {
+    const settingsWrap = elem("div", "card-settings");
+    settingsWrap.hidden = true;
+    // Partial until mount fills the article and its named nodes; mount is called
+    // immediately below, before the entry escapes to a caller.
+    const entry = {
+      id: d.device,
+      device: d,
+      settingsWrap,
+      settingsForm: null,
+      formSource: null,
+      staleNote: null,
+      expanded: false,
+      dirty: false,
+    } as CardEntry;
+    this.mount(entry, d);
+    return entry;
+  }
+
+  // mount builds (or rebuilds) the article for a device's current shape, moving
+  // the owned settings panel into the new article and preserving keyboard focus
+  // across the swap. It is called once at creation and again whenever shapeKey
+  // changes (serving <-> idle, or a change in the captured channel count).
+  private mount(entry: CardEntry, d: Device): void {
+    const saved = this.captureFocus(entry);
+    const oldArticle = entry.article as HTMLElement | undefined;
+    // The old serving body's meters own canvas rAF loops; stop them before the
+    // article is discarded.
+    entry.live?.meters.forEach((m) => m.destroy());
+
+    this.buildArticle(entry, d);
+    // Move the owned settings panel (and its live form, if open) into the new
+    // article, and restore its expanded visual state.
+    entry.article.appendChild(entry.settingsWrap);
+    if (entry.expanded) {
+      entry.settingsWrap.hidden = false;
+      entry.article.classList.add("expanded");
+    }
+    entry.shape = shapeKey(d);
+
+    // Swap in place if the card was already mounted in the rack; otherwise the
+    // ordering pass in render() inserts it.
+    if (oldArticle?.parentNode) oldArticle.replaceWith(entry.article);
+    this.restoreFocus(entry, saved);
+  }
+
+  // buildArticle creates the DOM skeleton for a device's shape with NO device
+  // data written: header nodes with empty text, chips and lock hidden, toggle
+  // unchecked, the body for the shape. syncCard fills every value immediately
+  // after. Handlers for the toggle and gear close over the stable entry, so they
+  // survive later rebuilds. Trusted static SVG for the copy, lock and gear icons
+  // is assigned here; the avatar icon depends on state and is written by syncCard.
+  private buildArticle(entry: CardEntry, d: Device): void {
     const serving = d.state === "serving";
-    const disabled = d.state === "disabled";
-    const isUltra = d.mode === "pcm";
-    // The toggle reflects the persisted (desired) enabled flag, which can differ
-    // from the runtime state only briefly while a config reload applies. Fall
-    // back to the runtime state only when the config is not loaded.
-    const cfgDev = cfgByDevice.get(d.device);
-    const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
-    // A disabled device is off by intent, not broken: give it a neutral card and
-    // avatar rather than the error styling reserved for a failed/skipped device.
-    const article = elem("article", `rack-card ${serving ? "active-stream" : disabled ? "" : "error-stream"}`);
+    const article = elem("article", "rack-card");
 
     // Header
     const header = elem("div", "rack-header");
     const ident = elem("div", "device-ident");
-    const avatarIcon = serving ? (isUltra ? ICON_ULTRA : ICON_MIC) : disabled ? ICON_MIC : ICON_ERROR;
-    const avatar = iconSpan(avatarIcon, "device-avatar");
-    if (serving && isUltra) avatar.style.color = "var(--ultrasonic-purple)";
-    if (!serving && !disabled) avatar.style.color = "var(--signal-crit)";
+    const avatar = elem("span", "device-avatar");
     const nameBlock = elem("div", "device-name-block");
-    nameBlock.appendChild(elem("span", "device-title", d.name));
-    // Surface the sound card's hardware model (friendlyName) next to the ALSA id
-    // so a device is identifiable by what it physically is, not only its config
-    // name. Omit it when absent (the device id matches no enumerated hardware) or
-    // when it only repeats the configured name (e.g. "loopback" / "Loopback").
-    const hw = d.friendlyName?.trim();
-    const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
-    nameBlock.appendChild(
-      elem("span", "device-path mono", showHw ? `ALSA: ${d.device} · ${hw}` : `ALSA: ${d.device}`),
-    );
+    const titleEl = elem("span", "device-title");
+    const hwEl = elem("span", "device-path mono");
+    nameBlock.appendChild(titleEl);
+    nameBlock.appendChild(hwEl);
     ident.appendChild(avatar);
     ident.appendChild(nameBlock);
 
     const tags = elem("div", "device-tags");
-    if (serving) {
-      const rate = d.negotiatedRate ?? d.rate;
-      const modeTag = elem("span", `tech-tag ${isUltra ? "ultrasonic" : "highlight"}`, modeLabel(d.mode));
-      tags.appendChild(modeTag);
-      tags.appendChild(elem("span", "tech-tag", `${rate.toLocaleString("en-US")} Hz`));
-      const chLabel = channelLabel(d.channels);
-      if (chLabel) tags.appendChild(elem("span", "tech-tag", chLabel));
-    }
-    let lockEl: HTMLElement | null = null;
-    if (serving) {
-      lockEl = elem("span", "tech-tag lock-tag");
-      lockEl.appendChild(iconSpan(ICON_LOCK));
-      lockEl.appendChild(elem("span", undefined, "Token"));
-      lockEl.title = "Pulling this stream requires the access token";
-      lockEl.hidden = !this.status?.authRequired;
-      tags.appendChild(lockEl);
-    }
-    const statusEl = this.buildStatusBadge(d.state);
-    tags.appendChild(statusEl);
+    const modeTag = elem("span", "tech-tag");
+    const rateTag = elem("span", "tech-tag");
+    const chTag = elem("span", "tech-tag");
+    const lockEl = elem("span", "tech-tag lock-tag");
+    lockEl.appendChild(iconSpan(ICON_LOCK));
+    lockEl.appendChild(elem("span", undefined, "Token"));
+    lockEl.title = "Pulling this stream requires the access token";
+    const statusEl = elem("span");
+    tags.append(modeTag, rateTag, chTag, lockEl, statusEl);
 
     // Streaming enable/disable toggle. A disabled device stays configured but is
     // not opened; toggling persists the flag and a config reload applies it at
@@ -455,12 +566,10 @@ export class DashboardView {
     const toggleInput = document.createElement("input");
     toggleInput.type = "checkbox";
     toggleInput.className = "visually-hidden";
-    toggleInput.checked = configEnabled;
     // role=switch + aria-checked announces "switch, on/off" rather than the bare
-    // "checkbox, checked"; keep aria-checked in sync wherever checked changes.
+    // "checkbox, checked"; syncCard keeps aria-checked in sync with checked.
     toggleInput.setAttribute("role", "switch");
-    toggleInput.setAttribute("aria-checked", String(configEnabled));
-    toggleInput.setAttribute("aria-label", `Stream ${d.name}`);
+    toggleInput.dataset.focus = "toggle";
     const toggleTrack = elem("span", "switch-track");
     toggleTrack.appendChild(elem("span", "switch-thumb"));
     // Visible caption so the bare track is not an unlabeled control, matching the
@@ -479,6 +588,7 @@ export class DashboardView {
     gearBtn.setAttribute("type", "button");
     gearBtn.setAttribute("aria-label", "Device settings");
     gearBtn.title = "Device settings";
+    gearBtn.dataset.focus = "gear";
     gearBtn.innerHTML = ICON_GEAR;
     tags.appendChild(gearBtn);
 
@@ -487,34 +597,28 @@ export class DashboardView {
     article.appendChild(header);
 
     // Persistent restart-required banner: shown when the device is still serving
-    // (or attempting to) while the config now disables it, so a toggle made this
-    // session is never silently lost behind a still-live "Serving" card.
+    // while the config now disables it, so a toggle made this session is never
+    // silently lost behind a still-live "Serving" card.
     const pendingNote = elem("div", "pending-restart-note");
     pendingNote.setAttribute("role", "status");
-    const showPending = pendingStop(configEnabled, d.state);
-    pendingNote.textContent = showPending ? PENDING_STOP_TEXT : "";
-    pendingNote.hidden = !showPending;
+    pendingNote.hidden = true;
     article.appendChild(pendingNote);
 
-    let urlEl: HTMLElement | null = null;
-    let meters: VUMeter[] = [];
-    let clientsEl: HTMLElement | null = null;
-    let droppedEl: HTMLElement | null = null;
-    let footerNote: HTMLElement | null = null;
+    let live: LiveBody | null = null;
+    let idle: IdleBody | null = null;
 
     if (serving) {
       // Endpoint strip
       const strip = elem("div", "endpoint-strip");
       const info = elem("div", "endpoint-info");
       info.appendChild(elem("span", "endpoint-label", "RTSP URL:"));
-      const url = this.rtspUrl(d);
-      urlEl = elem("span", "endpoint-url mono", url);
-      urlEl.title = url;
+      const urlEl = elem("span", "endpoint-url mono");
       info.appendChild(urlEl);
       const copyBtn = elem("button", "copy-btn");
       copyBtn.setAttribute("type", "button");
       copyBtn.setAttribute("aria-label", "Copy RTSP stream URL");
       copyBtn.title = "Copy RTSP stream URL";
+      copyBtn.dataset.focus = "copy";
       copyBtn.appendChild(iconSpan(ICON_COPY, "icon-copy"));
       copyBtn.appendChild(elem("span", "copy-label", "Copy URL"));
       copyBtn.addEventListener("click", () => this.handleCopyUrl(copyBtn, urlEl));
@@ -522,19 +626,15 @@ export class DashboardView {
       strip.appendChild(copyBtn);
       article.appendChild(strip);
 
-      // Meter console: one live VU meter per CAPTURED hardware channel. The
-      // level meter is registered on the raw capture source with the negotiated
-      // hardware channel count and emits a zero-based index per hardware channel
-      // (see the levels handler, which indexes entry.meters by ch.channel), so
-      // the rows are the device's captured channels, not the streamed selection.
-      // Metering happens before channel selection, so a non-contiguous selection
-      // (e.g. streaming only Ch 1 and Ch 3 of a 4-channel card) still shows every
-      // captured channel here, including the ones that are not streamed. The
-      // meters are decorative real-time visualizations updating ~10 Hz, hidden
-      // from the accessibility tree so they do not spam screen readers.
-      const channelCount = d.negotiatedChannels ?? d.channels.length;
-      const built = this.buildMeterConsole(channelCount);
-      meters = built.meters;
+      // Meter console: one live VU meter per CAPTURED hardware channel. The level
+      // meter is registered on the raw capture source with the negotiated channel
+      // count and emits a zero-based index per hardware channel (the levels
+      // handler indexes live.meters by ch.channel), so the rows are the device's
+      // captured channels, not the streamed selection. A non-contiguous selection
+      // still shows every captured channel here. The meters are decorative
+      // real-time visualizations updating ~10 Hz, hidden from the accessibility
+      // tree so they do not spam screen readers.
+      const built = this.buildMeterConsole(meterCount(d));
       article.appendChild(built.console);
 
       // Footer
@@ -542,49 +642,62 @@ export class DashboardView {
       const metrics = elem("div", "stream-metrics");
       const clientItem = elem("div", "metric-item");
       clientItem.appendChild(elem("span", undefined, "Clients:"));
-      clientsEl = elem("span", "metric-val mono", d.clientConnected ? "1 connected" : "0 connected");
+      const clientsEl = elem("span", "metric-val mono");
       clientItem.appendChild(clientsEl);
       const dropItem = elem("div", "metric-item");
       dropItem.appendChild(elem("span", undefined, "Dropped Frames:"));
-      droppedEl = elem("span", "metric-val mono", String(d.droppedFrames));
+      const droppedEl = elem("span", "metric-val mono");
       dropItem.appendChild(droppedEl);
       metrics.appendChild(clientItem);
       metrics.appendChild(dropItem);
       footer.appendChild(metrics);
       const negotiated = elem("div");
-      const nr = d.negotiatedRate ?? d.rate;
-      negotiated.appendChild(elem("span", undefined, `Negotiated: ${nr.toLocaleString("en-US")} Hz`));
+      const negotiatedEl = elem("span");
+      negotiated.appendChild(negotiatedEl);
       footer.appendChild(negotiated);
       article.appendChild(footer);
+
+      live = { urlEl, clientsEl, droppedEl, negotiatedEl, meters: built.meters };
     } else {
-      // Error / skipped device
-      if (d.error) {
-        const banner = elem("div", "error-banner");
-        banner.appendChild(iconSpan(d.state === "failed" ? ICON_ERROR : ICON_WARN, "error-banner-icon"));
-        const body = elem("div", "error-banner-body");
-        body.appendChild(elem("span", "error-banner-title", "Device excluded from streaming"));
-        body.appendChild(elem("span", "error-banner-desc", d.error));
-        banner.appendChild(body);
-        article.appendChild(banner);
-      }
+      // Error / skipped / disabled body. The banner is always present and hidden
+      // by syncCard when the device has no error, so an error whose text changes
+      // while the card stays idle is still reflected in place.
+      const banner = elem("div", "error-banner");
+      const bannerIcon = iconSpan(ICON_WARN, "error-banner-icon");
+      const body = elem("div", "error-banner-body");
+      body.appendChild(elem("span", "error-banner-title", "Device excluded from streaming"));
+      const bannerDesc = elem("span", "error-banner-desc");
+      body.appendChild(bannerDesc);
+      banner.appendChild(bannerIcon);
+      banner.appendChild(body);
+      banner.hidden = true;
+      article.appendChild(banner);
+
       const footer = elem("div", "rack-footer");
-      footerNote = elem("span", undefined, nonServingFooterText(d.state, configEnabled));
+      const footerNote = elem("span");
       footer.appendChild(footerNote);
       article.appendChild(footer);
+
+      idle = { banner, bannerIcon, bannerDesc, footerNote };
     }
 
-    const settingsWrap = elem("div", "card-settings");
-    settingsWrap.hidden = true;
-    article.appendChild(settingsWrap);
+    entry.article = article;
+    entry.avatar = avatar;
+    entry.titleEl = titleEl;
+    entry.hwEl = hwEl;
+    entry.modeTag = modeTag;
+    entry.rateTag = rateTag;
+    entry.chTag = chTag;
+    entry.lockEl = lockEl;
+    entry.statusEl = statusEl;
+    entry.toggleInput = toggleInput;
+    entry.gearBtn = gearBtn;
+    entry.pendingNote = pendingNote;
+    entry.live = live;
+    entry.idle = idle;
 
-    const entry: CardEntry = {
-      article, gearBtn, serving, meters, urlEl, lockEl, statusEl, clientsEl, droppedEl,
-      toggleInput, pendingNote, footerNote,
-      device: d, settingsWrap, settingsForm: null, expanded: false, dirty: false,
-    };
     gearBtn.addEventListener("click", () => this.toggleSettings(entry));
-    toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry, toggleInput));
-    return entry;
+    toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry));
   }
 
   // buildMeterConsole builds the shared dB scale plus one metering row per
@@ -635,6 +748,8 @@ export class DashboardView {
         multi ? `Channel ${chNum} clip indicator, click to clear` : "Clip indicator, click to clear",
       );
       clipBtn.title = "Click to clear clip latch";
+      // Focus key so a rebuild that moves focus can restore it to the same row.
+      clipBtn.dataset.focus = `clip-${c}`;
       stats.appendChild(dbReadout);
       stats.appendChild(clipBtn);
       wrapper.appendChild(canvasContainer);
@@ -643,6 +758,130 @@ export class DashboardView {
       meters.push(new VUMeter(canvas, dbReadout, clipBtn));
     }
     return { console: meterConsole, meters };
+  }
+
+  // syncCard is the ONE write path for device and config data. It runs right
+  // after every build and on every render, writing each dynamic field through a
+  // diffed helper (setText / setHidden / classList.toggle) so a steady state
+  // does not dirty the DOM or re-announce a live region. A field that exists in
+  // the DOM but is not written here renders blank, making an omission a visible
+  // defect rather than a silent staleness bug.
+  private syncCard(entry: CardEntry, d: Device, cfgByDevice: Map<string, DeviceConfig>): void {
+    entry.device = d;
+    const serving = d.state === "serving";
+    const disabled = d.state === "disabled";
+    const isUltra = d.mode === "pcm";
+    // The toggle reflects the persisted (desired) enabled flag, which can differ
+    // from the runtime state only briefly while a config reload applies. Fall
+    // back to the runtime state only when the config is not loaded.
+    const cfgDev = cfgByDevice.get(d.device);
+    const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
+
+    // A disabled device is off by intent, not broken: neutral styling; a
+    // failed/skipped device gets the error styling.
+    entry.article.classList.toggle("active-stream", serving);
+    entry.article.classList.toggle("error-stream", !serving && !disabled);
+
+    // Avatar icon depends on state and mode; rewrite innerHTML only when the icon
+    // actually changes (keyed by data-icon) so we do not reparse SVG every poll.
+    const iconKey = serving ? (isUltra ? "ultra" : "mic") : disabled ? "mic" : "error";
+    if (entry.avatar.dataset.icon !== iconKey) {
+      entry.avatar.dataset.icon = iconKey;
+      entry.avatar.innerHTML = serving ? (isUltra ? ICON_ULTRA : ICON_MIC) : disabled ? ICON_MIC : ICON_ERROR;
+    }
+    const avatarColor = serving && isUltra ? "var(--ultrasonic-purple)" : !serving && !disabled ? "var(--signal-crit)" : "";
+    if (entry.avatar.style.color !== avatarColor) entry.avatar.style.color = avatarColor;
+
+    setText(entry.titleEl, d.name);
+    // Surface the sound card's hardware model (friendlyName) next to the ALSA id
+    // so a device is identifiable by what it physically is, not only its config
+    // name. Omit it when absent or when it only repeats the configured name.
+    const hw = d.friendlyName?.trim();
+    const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
+    setText(entry.hwEl, showHw ? `ALSA: ${d.device} · ${hw}` : `ALSA: ${d.device}`);
+
+    // Chips describe the live stream and are shown only while serving.
+    const rate = d.negotiatedRate ?? d.rate;
+    setText(entry.modeTag, modeLabel(d.mode));
+    entry.modeTag.classList.toggle("ultrasonic", isUltra);
+    entry.modeTag.classList.toggle("highlight", !isUltra);
+    setHidden(entry.modeTag, !serving);
+    setText(entry.rateTag, `${rate.toLocaleString("en-US")} Hz`);
+    setHidden(entry.rateTag, !serving);
+    const chLabel = channelLabel(d.channels);
+    setText(entry.chTag, chLabel);
+    setHidden(entry.chTag, !serving || !chLabel);
+    setHidden(entry.lockEl, !serving || !this.status?.authRequired);
+
+    const badge = deviceStateBadge(d.state);
+    if (entry.statusEl.className !== badge.cls) entry.statusEl.className = badge.cls;
+    setText(entry.statusEl, badge.label);
+
+    const toggleAria = `Stream ${d.name}`;
+    if (entry.toggleInput.getAttribute("aria-label") !== toggleAria) entry.toggleInput.setAttribute("aria-label", toggleAria);
+    // Do not fight the user mid-interaction (the input is disabled while a PATCH
+    // is in flight); otherwise keep it in sync with the persisted flag.
+    if (!entry.toggleInput.disabled && entry.toggleInput.checked !== configEnabled) {
+      entry.toggleInput.checked = configEnabled;
+      entry.toggleInput.setAttribute("aria-checked", String(configEnabled));
+    } else if (entry.toggleInput.getAttribute("aria-checked") !== String(entry.toggleInput.checked)) {
+      entry.toggleInput.setAttribute("aria-checked", String(entry.toggleInput.checked));
+    }
+
+    const showPending = pendingStop(configEnabled, d.state);
+    setText(entry.pendingNote, showPending ? PENDING_STOP_TEXT : "");
+    setHidden(entry.pendingNote, !showPending);
+
+    if (entry.live) {
+      const url = this.rtspUrl(d);
+      setText(entry.live.urlEl, url);
+      if (entry.live.urlEl.title !== url) entry.live.urlEl.title = url;
+      setText(entry.live.clientsEl, d.clientConnected ? "1 connected" : "0 connected");
+      setText(entry.live.droppedEl, String(d.droppedFrames));
+      setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz`);
+    }
+    if (entry.idle) {
+      setHidden(entry.idle.banner, !d.error);
+      const bannerKey = d.state === "failed" ? "error" : "warn";
+      if (entry.idle.bannerIcon.dataset.icon !== bannerKey) {
+        entry.idle.bannerIcon.dataset.icon = bannerKey;
+        entry.idle.bannerIcon.innerHTML = d.state === "failed" ? ICON_ERROR : ICON_WARN;
+      }
+      setText(entry.idle.bannerDesc, d.error ?? "");
+      setText(entry.idle.footerNote, nonServingFooterText(d.state, configEnabled));
+    }
+  }
+
+  // captureFocus records where keyboard focus is inside a card before its article
+  // is rebuilt, so restoreFocus can put it back. Focus inside the settings panel
+  // is remembered by element identity (the panel is moved, not rebuilt); focus on
+  // a rebuilt control is remembered by its data-focus key (toggle, gear, copy,
+  // clip-N), which the new article recreates.
+  private captureFocus(entry: CardEntry): { el?: HTMLElement; key?: string } | null {
+    // entry.article is undefined on the first mount (the entry has no rendered
+    // card yet), so treat it as possibly absent rather than trusting the type.
+    const art = entry.article as HTMLElement | undefined;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !art || !art.contains(active)) return null;
+    if (entry.settingsWrap.contains(active)) return { el: active };
+    const key = active.dataset.focus;
+    return key ? { key } : null;
+  }
+
+  private restoreFocus(entry: CardEntry, saved: { el?: HTMLElement; key?: string } | null): void {
+    if (!saved) return;
+    if (saved.el) {
+      // The panel node was moved into the new article and is connected again.
+      if (saved.el.isConnected) saved.el.focus();
+      return;
+    }
+    if (saved.key) {
+      const node = entry.article.querySelector<HTMLElement>(`[data-focus="${saved.key}"]`);
+      // A control that exists only in the serving shape (copy, clip-N) is gone
+      // after a flip to idle; keep focus on the card via the gear rather than
+      // letting it fall to <body>.
+      (node ?? entry.gearBtn).focus();
+    }
   }
 
   // deviceConfigBase is the current device list to patch from: the persisted
@@ -680,9 +919,11 @@ export class DashboardView {
   // stopped in place, other devices keep serving), so it takes effect at once;
   // the toggle reflects the desired state immediately and reverts if the PATCH is
   // rejected.
-  private async handleToggleEnabled(entry: CardEntry, input: HTMLInputElement): Promise<void> {
+  private async handleToggleEnabled(entry: CardEntry): Promise<void> {
+    const input = entry.toggleInput;
     const want = input.checked;
     const id = entry.device.device;
+    const name = entry.device.name;
     // Remember focus before disabling: re-enabling a disabled control drops focus
     // to the body, dumping a keyboard user at the top of the page.
     const hadFocus = document.activeElement === input;
@@ -698,9 +939,7 @@ export class DashboardView {
         const res = await api.patchConfig({ devices: merged });
         // The PATCH persisted. Seed the cached config with the authoritative
         // response before the refresh, so a later queued mutation rebuilds its
-        // base from this change even if the GET refresh below fails (refreshConfig
-        // swallows its error, and the 3s poll never refreshes config, so a stale
-        // base would otherwise let the next full-array PATCH clobber this one).
+        // base from this change even if the GET refresh below fails.
         store.applyConfig(res.config);
         // A refresh failure afterwards must NOT revert the toggle: the change is
         // already applied and reflected in the cached config above.
@@ -708,8 +947,8 @@ export class DashboardView {
         const verb = want ? "Enabled" : "Disabled";
         showToast(
           res.restartRequired
-            ? `${verb} ${entry.device.name}. Restart the appliance to apply.`
-            : `${verb} ${entry.device.name}.`,
+            ? `${verb} ${name}. Restart the appliance to apply.`
+            : `${verb} ${name}.`,
         );
       } catch (err: unknown) {
         // Only a failed PATCH reverts the toggle: the mutation did not persist.
@@ -717,11 +956,15 @@ export class DashboardView {
         input.setAttribute("aria-checked", String(!want));
         this.apiErrorToast(err, "Toggle failed");
       } finally {
-        input.disabled = false;
-        input.removeAttribute("aria-busy");
-        // Return focus to the toggle so re-enabling it does not leave a keyboard
-        // user stranded on the document body.
-        if (hadFocus) input.focus();
+        // Re-read the current toggle: a poll may have rebuilt the card during the
+        // PATCH (a serving<->idle flip, or a captured-channel change) and replaced
+        // the node this closure captured. Clear the busy state and restore focus on
+        // the live node, falling back to the gear if the toggle is gone, so a
+        // keyboard user is never stranded on the document body.
+        const toggle = entry.toggleInput;
+        toggle.disabled = false;
+        toggle.removeAttribute("aria-busy");
+        if (hadFocus) (toggle.isConnected ? toggle : entry.gearBtn).focus();
       }
     });
   }
@@ -740,19 +983,33 @@ export class DashboardView {
       removeBtn.setAttribute("aria-label", `Remove ${entry.device.name}`);
       const badge = elem("span", "staged-badge", "Unsaved changes");
       badge.hidden = true;
+      // Stale notice, shown by syncSettings when the saved config changed under
+      // an open form. A Reload rebuilds the form from the fresh config; Save
+      // keeps last-writer-wins. Hidden until a drift is detected.
+      const staleNote = elem("span", "stale-note");
+      staleNote.setAttribute("role", "status");
+      // The message text is written by syncSettings when drift is detected: a
+      // role=status region announces on a content change, so writing the text is
+      // reliable where merely un-hiding pre-filled text is not.
+      staleNote.appendChild(elem("span", "stale-msg"));
+      const reloadBtn = elem("button", "btn-link", "Reload");
+      reloadBtn.setAttribute("type", "button");
+      reloadBtn.addEventListener("click", () => void this.reloadSettings(entry));
+      staleNote.appendChild(reloadBtn);
+      staleNote.hidden = true;
       const spacer = elem("span", "settings-actions-spacer");
       const cancelBtn = elem("button", "btn btn-secondary", "Cancel") as HTMLButtonElement;
       cancelBtn.setAttribute("type", "button");
       const saveBtn = elem("button", "btn btn-primary", "Save Changes");
       saveBtn.setAttribute("type", "button");
-      actions.append(removeBtn, badge, spacer, cancelBtn, saveBtn);
+      actions.append(removeBtn, badge, staleNote, spacer, cancelBtn, saveBtn);
       removeBtn.addEventListener("click", () => void this.removeDevice(entry, removeBtn));
 
-      // Build from the saved config (source of truth), matched by ALSA id.
-      const cfg = store.getState().config;
-      // Prefer the persisted config (it carries the enabled flag); fall back to
-      // the runtime device projected through deviceToConfig so enabled is always
+      // Build from the saved config (source of truth), matched by ALSA id. Prefer
+      // the persisted config (it carries the enabled flag); fall back to the
+      // runtime device projected through deviceToConfig so enabled is always
       // present and collect() cannot drop it.
+      const cfg = store.getState().config;
       const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? deviceToConfig(entry.device);
       const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; entry.dirty = true; }, {
         friendlyName: entry.device.friendlyName,
@@ -760,6 +1017,9 @@ export class DashboardView {
         supportedChannels: entry.device.supportedChannels,
       });
       entry.settingsForm = form;
+      // Record what the form was built from, so an out-of-band change is detected.
+      entry.formSource = configured;
+      entry.staleNote = staleNote;
       entry.settingsWrap.append(form.element, actions);
 
       // Tell the operator when opening the form silently downgraded an
@@ -807,6 +1067,43 @@ export class DashboardView {
     entry.settingsWrap.textContent = "";
     entry.settingsForm?.destroy();
     entry.settingsForm = null;
+    entry.formSource = null;
+    entry.staleNote = null;
+  }
+
+  // reloadSettings rebuilds the open form from the current config after an
+  // out-of-band change, confirming a discard first if the operator has unsaved
+  // edits. It never rewrites the form under the operator without asking.
+  private async reloadSettings(entry: CardEntry): Promise<void> {
+    if (entry.dirty) {
+      const ok = await confirmDialog({
+        title: "Discard changes?",
+        body: "Reloading replaces your unsaved changes with the current saved settings.",
+        confirmLabel: "Discard and reload",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    this.closeSettings(entry);
+    this.toggleSettings(entry);
+    // The Reload button was just removed with the old form; move focus to the
+    // gear (which survives the rebuild) rather than letting it fall to <body>.
+    entry.gearBtn.focus();
+  }
+
+  // syncSettings shows or hides the "changed elsewhere" notice on an open form by
+  // comparing the config the form was built from against the current config
+  // (excluding enabled). It never mutates the form; the operator chooses Reload
+  // or Save. Called from render() for entries with an open form.
+  private syncSettings(entry: CardEntry, cfgByDevice: Map<string, DeviceConfig>): void {
+    if (!entry.settingsForm || !entry.staleNote) return;
+    const current = cfgByDevice.get(entry.id);
+    const stale = deviceConfigKey(current) !== deviceConfigKey(entry.formSource ?? undefined);
+    // Write the message text (not just toggle visibility) so the role=status
+    // region announces the drift as it appears and clears when resolved.
+    const msg = entry.staleNote.querySelector<HTMLElement>(".stale-msg");
+    if (msg) setText(msg, stale ? "Settings changed elsewhere. Save overwrites them. " : "");
+    setHidden(entry.staleNote, !stale);
   }
 
   private async saveDevice(entry: CardEntry, btn: HTMLElement, cancelBtn: HTMLButtonElement): Promise<void> {
@@ -844,6 +1141,11 @@ export class DashboardView {
         store.applyConfig(res.config);
         await Promise.all([store.refreshConfig(), store.refreshDevices()]);
         showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
+        // closeSettings above destroyed the focused Save button and collapsed the
+        // panel, dropping focus to <body>. Return it to the gear (which survives
+        // any rebuild the refresh triggered, via the stable entry), matching the
+        // Cancel and reload paths so a keyboard user is not stranded at the top.
+        entry.gearBtn.focus();
       } catch (err: unknown) {
         this.apiErrorToast(err, "Save failed");
       }
@@ -857,62 +1159,11 @@ export class DashboardView {
     }
   }
 
-  private buildStatusBadge(state: string): HTMLElement {
-    const badge = deviceStateBadge(state);
-    return elem("span", badge.cls, badge.label);
-  }
-
-  private updateCard(entry: CardEntry, d: Device, cfgByDevice: Map<string, DeviceConfig>): void {
-    entry.device = d;
-    if (entry.statusEl) {
-      const fresh = this.buildStatusBadge(d.state);
-      entry.statusEl.className = fresh.className;
-      entry.statusEl.textContent = fresh.textContent;
-    }
-    if (entry.urlEl) {
-      const url = this.rtspUrl(d);
-      entry.urlEl.textContent = url;
-      entry.urlEl.title = url;
-    }
-    if (entry.lockEl) {
-      // Guard the write so a steady state is not rewritten on every ~3s poll,
-      // matching the pendingNote convention below.
-      const hideLock = !this.status?.authRequired;
-      if (entry.lockEl.hidden !== hideLock) entry.lockEl.hidden = hideLock;
-    }
-    if (entry.clientsEl) entry.clientsEl.textContent = d.clientConnected ? "1 connected" : "0 connected";
-    if (entry.droppedEl) entry.droppedEl.textContent = String(d.droppedFrames);
-
-    // Reconcile the streaming toggle and the pending/footer copy against the
-    // persisted config, so an in-session toggle (or an out-of-band config change)
-    // is reflected without waiting for a serving-state flip and full rebuild.
-    const cfgDev = cfgByDevice.get(d.device);
-    const configEnabled = cfgDev?.enabled ?? runtimeEnabled(d.state);
-    // Do not fight the user mid-interaction (the input is disabled while a PATCH
-    // is in flight); otherwise keep it in sync with the persisted flag.
-    if (!entry.toggleInput.disabled && entry.toggleInput.checked !== configEnabled) {
-      entry.toggleInput.checked = configEnabled;
-      entry.toggleInput.setAttribute("aria-checked", String(configEnabled));
-    }
-    // Guard the live-region and footer writes so a steady state is not
-    // re-written on every ~3s poll (role=status re-announces to screen readers
-    // on any content mutation, and the writes are otherwise wasted).
-    const showPending = pendingStop(configEnabled, d.state);
-    if (showPending === entry.pendingNote.hidden) {
-      entry.pendingNote.hidden = !showPending;
-      entry.pendingNote.textContent = showPending ? PENDING_STOP_TEXT : "";
-    }
-    if (entry.footerNote) {
-      const footerText = nonServingFooterText(d.state, configEnabled);
-      if (entry.footerNote.textContent !== footerText) entry.footerNote.textContent = footerText;
-    }
-  }
-
   // handleCopyUrl copies the stream URL. When the appliance requires the access
   // token and this browser holds it, the copied URL embeds it as RTSP
   // credentials (rtsp://mic:<token>@host:port/path) so it pastes straight into
   // BirdNET-Go, ffmpeg or VLC; the displayed URL stays credential-free. The
-  // credentialed form is derived from the displayed URL (which updateCard keeps
+  // credentialed form is derived from the displayed URL (which syncCard keeps
   // current), not from a path captured when the card was built, so a device
   // path edit is reflected in the copied URL.
   private handleCopyUrl(btn: HTMLElement, urlEl: HTMLElement | null): void {
@@ -948,9 +1199,9 @@ export class DashboardView {
 
     // The open-access notice shows while no token is configured. Guard the write
     // so this role=status banner is not re-announced on every ~3s poll when its
-    // state is unchanged, matching the pendingNote convention.
+    // state is unchanged.
     const banner = document.getElementById("open-access-banner");
-    if (banner && banner.hidden !== this.status.authRequired) banner.hidden = this.status.authRequired;
+    if (banner) setHidden(banner, this.status.authRequired);
 
     const badge = document.getElementById("appliance-status-badge");
     const text = document.getElementById("appliance-status-text");

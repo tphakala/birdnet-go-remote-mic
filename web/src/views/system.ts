@@ -1,6 +1,6 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
-import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError } from "../lib/ui.js";
+import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
@@ -128,15 +128,18 @@ export class SystemView {
   private populateAuth(cfg: Config): void {
     if (this.authCardEl) this.authCardEl.hidden = false;
     const token = cfg.auth?.token ?? "";
-    if (this.authTokenEl) this.authTokenEl.value = token;
+    // Only write when changed: this runs on every 3 s config poll (while not
+    // dirty) and a redundant assignment to a field the operator has revealed is
+    // needless churn.
+    if (this.authTokenEl && this.authTokenEl.value !== token) this.authTokenEl.value = token;
     if (this.authStateEl) {
       const stateText = token
         ? "Token required: the API, this UI and the RTSP streams ask for credentials."
         : "Open access: anyone on the network can listen and change settings.";
       // #sys-auth-state is a role=status region rewritten on every config event;
-      // only write when the text actually changes so a steady state is not
-      // re-announced to screen readers each poll.
-      if (this.authStateEl.textContent !== stateText) this.authStateEl.textContent = stateText;
+      // setText only writes when the text actually changes so a steady state is
+      // not re-announced to screen readers each poll.
+      setText(this.authStateEl, stateText);
       this.authStateEl.classList.toggle("locked", !!token);
       this.authStateEl.classList.toggle("open", !token);
     }
@@ -286,11 +289,18 @@ export class SystemView {
 
   private populateNetwork(cfg: Config): void {
     if (this.netCardEl) this.netCardEl.hidden = false;
+    // Config is polled every 3 s, so only write an input when its value actually
+    // changes: a redundant assignment is wasteful and could disturb a field the
+    // operator is reading. These run only while the form is not dirty (guarded by
+    // the caller), so they never overwrite an in-progress edit.
     const rtsp = document.getElementById("sys-rtsp-listen") as HTMLInputElement | null;
-    if (rtsp) rtsp.value = cfg.listen ?? "";
+    const rtspVal = cfg.listen ?? "";
+    if (rtsp && rtsp.value !== rtspVal) rtsp.value = rtspVal;
     const mgmt = document.getElementById("sys-mgmt-listen") as HTMLInputElement | null;
-    if (mgmt) mgmt.value = cfg.management?.listen ?? "(default)";
-    if (this.discoveryEl) this.discoveryEl.checked = cfg.discovery?.enabled ?? true;
+    const mgmtVal = cfg.management?.listen ?? "(default)";
+    if (mgmt && mgmt.value !== mgmtVal) mgmt.value = mgmtVal;
+    const discovery = cfg.discovery?.enabled ?? true;
+    if (this.discoveryEl && this.discoveryEl.checked !== discovery) this.discoveryEl.checked = discovery;
     this.netDirty = false;
     if (this.netActionsEl) this.netActionsEl.hidden = true;
   }

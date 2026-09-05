@@ -11,6 +11,18 @@ export function elem(tag: string, className?: string, text?: string): HTMLElemen
   return e;
 }
 
+// setText and setHidden write only when the value actually changes. A card is
+// re-synced on every 3 s poll, so an unconditional write would dirty the DOM and,
+// for a role=status live region, re-announce an unchanged message to a screen
+// reader on every tick. These make the diffed-write convention uniform rather
+// than repeating a hand-written guard at each call site.
+export function setText(el: HTMLElement, text: string): void {
+  if (el.textContent !== text) el.textContent = text;
+}
+export function setHidden(el: HTMLElement, hidden: boolean): void {
+  if (el.hidden !== hidden) el.hidden = hidden;
+}
+
 // formatUptime renders a seconds count as a compact human string. Seconds are
 // shown only below one hour, and only when the caller opts in: the dashboard top
 // ribbon passes { seconds: true } so a freshly (re)started appliance shows its
