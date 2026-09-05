@@ -108,6 +108,40 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	}
 }
 
+// An empty (present) devices array removes every device: the operator can strip
+// the appliance back to no capture devices from the UI. This guards the contract
+// (ConfigPatch.devices carries no minItems, matching Config.devices) against a
+// future request validator that would 422 the empty replacement the handler
+// already performs.
+func TestPatchConfigEmptyDevicesRemovesAll(t *testing.T) {
+	// tempStore seeds baseConfig, which has one device.
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	empty := []mgmtapi.DeviceConfig{}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{
+		Body: &mgmtapi.ConfigPatch{Devices: &empty},
+	})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if len(ok200.Config.Devices) != 0 {
+		t.Errorf("response devices = %+v, want none", ok200.Config.Devices)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if len(loaded.Devices) != 0 {
+		t.Errorf("persisted devices = %+v, want none", loaded.Devices)
+	}
+}
+
 func TestPatchConfigEmptyDiscoveryKeepsDisabled(t *testing.T) {
 	// A PATCH carrying discovery:{} (the object present, enabled absent) must
 	// leave an explicitly-disabled discovery disabled. Copying the patch's nil

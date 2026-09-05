@@ -640,7 +640,6 @@ components:
           description: Optional capture sample rate in Hz; chosen from the device's capabilities when omitted.
         channels:
           type: array
-          minItems: 1
           maxItems: 8
           items:
             type: integer
@@ -648,7 +647,9 @@ components:
             maximum: 8
           description: >
             Optional 1-based channel selection to stream, ascending and unique;
-            chosen from the device's capabilities when omitted.
+            chosen from the device's capabilities when omitted. An empty array
+            is treated the same as omitting the field: the appliance derives the
+            default selection (so no minItems is imposed).
 
     StreamMode:
       type: string
@@ -794,7 +795,10 @@ components:
       properties:
         enabled:
           type: boolean
-          description: mDNS/DNS-SD advertisement; defaults to true when absent.
+          description: >
+            mDNS/DNS-SD advertisement; defaults to true when absent. In a
+            patch, an absent field (including an empty discovery object) leaves
+            discovery unchanged, mirroring AuthSettings.token.
 
     AuthSettings:
       type: object
@@ -844,8 +848,8 @@ components:
           type: array
           description: >
             Replaces the whole device list when present (per-device merge
-            is not supported).
-          minItems: 1
+            is not supported). An empty array removes every device, matching
+            Config.devices, which also imposes no minItems.
           maxItems: 32
           items:
             $ref: "#/components/schemas/DeviceConfig"

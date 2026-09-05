@@ -213,6 +213,34 @@ func TestProvisionDeviceHappyPath(t *testing.T) {
 	}
 }
 
+// An explicit empty channels array is a derived selection, exactly like an
+// omitted field: the endpoint accepts it and provisions the appliance's default
+// rather than rejecting it. This guards the contract (ProvisionDeviceRequest.
+// channels carries no minItems) against a future request validator that would
+// otherwise 422 the empty array the handler already supports.
+func TestProvisionDeviceEmptyChannelsDerivesDefault(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+	}}
+	s := New(prov, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }))
+
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr()},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	created, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse)
+	if !ok {
+		t.Fatalf("returned %T, want 201", resp)
+	}
+	// Empty array derives the same default as omitting the field: PCM 384k mono.
+	if created.Mode != mgmtapi.Pcm || created.Rate != 384000 || !slices.Equal(created.Channels, []int{1}) {
+		t.Errorf("created params = (%s, %d, %v), want (pcm, 384000, [1])", created.Mode, created.Rate, created.Channels)
+	}
+}
+
 func TestProvisionDeviceUnknownYields404(t *testing.T) {
 	store, _ := tempStore(t)
 	s := New(&fakeProvider{}, WithConfigStore(store))

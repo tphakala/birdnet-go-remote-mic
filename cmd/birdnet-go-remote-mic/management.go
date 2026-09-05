@@ -383,6 +383,12 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		// /events SSE stream is long-lived and overrides this per-connection with
 		// http.ResponseController write deadlines.
 		WriteTimeout: 30 * time.Second,
+		// A client that does not trust the appliance's self-signed certificate
+		// rejects the handshake and reconnects, and net/http's default logger
+		// would emit one "http: TLS handshake error ... remote error: tls:" line
+		// per attempt. Filter that client-rejection spam while passing every
+		// other server error (including a local TLS misconfiguration) through.
+		ErrorLog: mgmtserver.NewFilteredErrorLog(log.Default().Writer()),
 		TLSConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			Certificates: []tls.Certificate{cert},
