@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"runtime"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/reload"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
@@ -55,6 +57,10 @@ type appliance struct {
 	// guard is the shared-token guard the RTSP and management servers consult;
 	// reconcile swaps its token so a config change applies without a restart.
 	guard *auth.Guard
+	// notifier records device and lifecycle transitions in the notification
+	// center. Onset/Clear/Resolve are idempotent and a nil *Center is a no-op, so
+	// every emission site is safe to reach on every reconcile.
+	notifier notify.Publisher
 
 	// cfg is the configuration currently applied to the pipeline. devices holds
 	// one runtime per configured device keyed by name, in any state (serving,
@@ -85,18 +91,47 @@ type appliance struct {
 	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 }
 
-func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard) *appliance {
+func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard, notifier notify.Publisher) *appliance {
+	// A nil *notify.Center is a no-op Publisher, but an untyped-nil interface is
+	// not: calling a method on it panics. Substitute a typed nil so the emission
+	// sites can call the notifier unconditionally without a per-site nil check.
+	if notifier == nil {
+		notifier = (*notify.Center)(nil)
+	}
 	return &appliance{
 		ctx:       ctx,
 		hub:       hub,
 		srv:       srv,
 		prov:      prov,
 		guard:     guard,
+		notifier:  notifier,
 		hwNames:   map[string]string{},
 		devices:   map[string]*deviceRuntime{},
 		capsCache: map[string]deviceCaps{},
 		pumpDone:  make(chan pumpResult, pumpBacklog),
 		open:      openDeviceRetry,
+	}
+}
+
+// deviceDownKey is the notification-center condition key for a device that is
+// unavailable: it could not be opened, or it died after opening. The open-failed
+// onset, the mid-run failure onset, the recovery clear, and the removed/disabled
+// resolve all share this one key so a down condition has a single identity from
+// onset to clear.
+func deviceDownKey(name string) string { return "device:" + name + ":down" }
+
+// deviceDownOnset builds the error onset for a device that is unavailable, shared
+// by the open-failure and mid-run-death sites so both carry the same severity,
+// category, key and source identity that the recovery clear and the removal or
+// disable resolve pair with.
+func deviceDownOnset(name, title, message string) notify.Notification {
+	return notify.Notification{
+		Severity: notify.SeverityError,
+		Category: notify.CategoryDevice,
+		Key:      deviceDownKey(name),
+		Source:   name,
+		Title:    title,
+		Message:  message,
 	}
 }
 
@@ -209,6 +244,10 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rt, err := a.open(&d, a.hub)
 	if err != nil {
 		log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, err)
+		// Record the open failure as a down-condition onset. Onset is idempotent,
+		// so a device that keeps failing across successive reconciles enters the
+		// condition once, not once per retry.
+		a.notifier.Onset(deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s: %v", dev.Device, err)))
 		return &deviceRuntime{
 			dev:               *dev,
 			state:             mgmtserver.StateSkipped,
@@ -227,6 +266,35 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	go a.pump(rt)
 	log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.dev.Path)
 	return rt
+}
+
+// startDevice opens a device via openAndStart, stores its runtime, and clears the
+// device's down condition when a previously skipped or failed device is now
+// serving. The open-failure onset is emitted inside openAndStart; the recovery
+// clear lives here because it needs the previous record for the name, read before
+// the reassignment. A healthy param-change restart (prev already serving) clears
+// nothing, and Clear is idempotent, so a first start with no prior condition is
+// silent too.
+func (a *appliance) startDevice(dev *config.Device) {
+	prev := a.devices[dev.Name]
+	rt := a.openAndStart(dev)
+	a.devices[dev.Name] = rt
+	if rt.currentState() != mgmtserver.StateServing || prev == nil {
+		return
+	}
+	// A device is "recovered" only when it comes up from a down state (it could
+	// not be opened, or it died after opening). A healthy param-change restart
+	// (prev already serving) is not a recovery. Clear is idempotent, so a
+	// first-time start with no prior condition would be a no-op anyway.
+	if s := prev.currentState(); s == mgmtserver.StateSkipped || s == mgmtserver.StateFailed {
+		// Clear takes the category, source and key from the stored onset, so only
+		// severity, title and message are set here.
+		a.notifier.Clear(deviceDownKey(dev.Name), notify.Notification{
+			Severity: notify.SeverityInfo,
+			Title:    "Device recovered",
+			Message:  fmt.Sprintf("Capturing again at %d Hz, %d ch", rt.rate, rt.channels),
+		})
+	}
 }
 
 // stop tears down a serving device the reconcile deliberately removed or is about
@@ -297,10 +365,10 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 		}
 	}
 	for i := range plan.Restart {
-		a.devices[plan.Restart[i].Name] = a.openAndStart(&plan.Restart[i])
+		a.startDevice(&plan.Restart[i])
 	}
 	for i := range plan.Start {
-		a.devices[plan.Start[i].Name] = a.openAndStart(&plan.Start[i])
+		a.startDevice(&plan.Start[i])
 	}
 
 	a.reconcileRecords(newCfg)
@@ -345,6 +413,12 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		// may already be published to the provider, whose HTTP handlers read
 		// deviceRuntime.dev and friendlyName without a lock, so mutating those
 		// fields here would race a concurrent GET /devices.
+		//
+		// A device disabled while it was down (skipped or failed) never reaches the
+		// recovery clear, so resolve its condition here before the fresh disabled
+		// record replaces it. Resolve is a no-op when the key is not active, so a
+		// healthy device being disabled emits nothing.
+		a.notifier.Resolve(deviceDownKey(d.Name), "device disabled")
 		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: a.hwNames[d.Device]}
 	}
 	for name, rt := range a.devices {
@@ -357,6 +431,11 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		if rt.currentState() == mgmtserver.StateServing && !rt.superseded {
 			a.stop(rt)
 		}
+		// A device removed from the configuration while it was down never reaches
+		// the recovery clear either, so resolve its condition before it is dropped.
+		// A serving or already-recovered device has no active down key, so this is
+		// a no-op for it.
+		a.notifier.Resolve(deviceDownKey(name), "device removed from the configuration")
 		delete(a.devices, name)
 	}
 }
@@ -390,6 +469,9 @@ func (a *appliance) onPumpDone(res pumpResult) {
 		a.lastPumpErr = res.err
 		res.rt.markFailed(res.err)
 		log.Printf("device %q failed: %v; %s returns 404 until reload", res.rt.dev.Name, res.err, res.rt.dev.Path)
+		// A device that died after opening enters the same down condition as one
+		// that never opened. Onset is idempotent against a re-entry.
+		a.notifier.Onset(deviceDownOnset(res.rt.dev.Name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path returns 404 until the next config save", res.err)))
 	}
 	a.publish(&a.cfg)
 }

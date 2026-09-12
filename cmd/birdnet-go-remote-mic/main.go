@@ -237,7 +237,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard)
+	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard, center)
 
 	// reconcileCh carries a runtime config reload from an API handler goroutine to
 	// the run loop, which owns the pipeline. The reloader closure handed to the
@@ -310,6 +310,16 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 		select {
 		case <-ctx.Done():
 			log.Print("shutting down")
+			// Best-effort shutdown entry: a client that stays connected to the
+			// notification stream through the drain sees why the stream ends. The
+			// ring is cleared on the next boot, so this is the last entry of the run.
+			center.Publish(notify.Notification{
+				Severity: notify.SeverityInfo,
+				Category: notify.CategorySystem,
+				Kind:     notify.KindEvent,
+				Title:    "Shutting down",
+				Message:  "Appliance shutting down",
+			})
 			return nil
 		case req := <-reconcileCh:
 			app.reconcile(&req.cfg)

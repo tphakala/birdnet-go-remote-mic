@@ -20,6 +20,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtcert"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 	"github.com/tphakala/birdnet-go-remote-mic/web"
 )
@@ -333,7 +334,7 @@ func closedMgmt() *mgmt {
 // is the override-free on-disk config that seeds the persistence store, so a
 // later PATCH /config never bakes an ephemeral override into config.yaml
 // (issue #29).
-func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, notifications mgmtserver.Snapshotter, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
+func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, center *notify.Center, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -373,8 +374,11 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	if events != nil {
 		opts = append(opts, mgmtserver.WithEventStream(events))
 	}
-	if notifications != nil {
-		opts = append(opts, mgmtserver.WithNotifications(notifications))
+	// The notification center is both the snapshot source for GET /notifications
+	// and the publisher the management-side emitters (config reload, restart,
+	// auth change) write to, so wire both faces from the one object.
+	if center != nil {
+		opts = append(opts, mgmtserver.WithNotifications(center), mgmtserver.WithNotifier(center))
 	}
 
 	srv := &http.Server{

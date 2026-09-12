@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
 // restartFlushDelay lets the 202 response flush to the client before the restart
@@ -81,6 +82,17 @@ func (s *Server) PostSystemRestart(_ context.Context, _ mgmtapi.PostSystemRestar
 			StatusCode: http.StatusNotImplemented,
 			Body:       problem(http.StatusNotImplemented, "not implemented", "restart control is not available"),
 		}, nil
+	}
+	// Record the restart request before the flush delay so the entry reaches a
+	// connected notification stream ahead of the shutdown that ends it.
+	if s.notifier != nil {
+		s.notifier.Publish(notify.Notification{
+			Severity: notify.SeverityInfo,
+			Category: notify.CategorySystem,
+			Kind:     notify.KindEvent,
+			Title:    "Restart requested",
+			Message:  "A restart was requested from the management API",
+		})
 	}
 	go func() {
 		defer func() {

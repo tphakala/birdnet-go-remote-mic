@@ -37,6 +37,15 @@ func WithNotifications(src Snapshotter) Option {
 	}
 }
 
+// WithNotifier mounts p as the sink the management-side emitters publish to: a
+// config reload failure, a restart-required condition, an auth change on PATCH
+// /config, and a restart request. Omit this option to leave those emissions off,
+// the same pattern as WithReloader. A typed-nil *notify.Center is accepted and
+// acts as a no-op publisher.
+func WithNotifier(p notify.Publisher) Option {
+	return func(s *Server) { s.notifier = p }
+}
+
 // ListNotifications handles GET /notifications. Without a mounted source it
 // reports 501.
 func (s *Server) ListNotifications(_ context.Context, _ mgmtapi.ListNotificationsRequestObject) (mgmtapi.ListNotificationsResponseObject, error) {
