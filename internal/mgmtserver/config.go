@@ -232,11 +232,17 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 			}
 		} else {
 			restartRequired = false
-			// The running pipeline now matches the persisted config, so retract any
-			// restart-required condition an earlier failed hot reload raised. Resolve
-			// is a no-op when the condition is not active.
+			// The running pipeline now matches the persisted config, so clear any
+			// restart-required condition an earlier failed hot reload raised. This is
+			// a normal condition end (the change applied), not a vanished subject, so
+			// Clear carries a specific message rather than Resolve's generic one.
+			// Clear is a no-op when the condition is not active.
 			if s.notifier != nil {
-				s.notifier.Resolve(configRestartKey, "the configuration was applied live; no restart is needed")
+				s.notifier.Clear(configRestartKey, notify.Notification{
+					Severity: notify.SeverityInfo,
+					Title:    "Restart no longer required",
+					Message:  "The configuration was applied live, so the pending restart is no longer needed.",
+				})
 			}
 		}
 	}
