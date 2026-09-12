@@ -5,6 +5,7 @@ import type {
   ConfigPatch,
   ConfigUpdateResult,
   Device,
+  NotificationSnapshot,
   ProvisionDeviceRequest,
   RestartResult,
   SystemInfo,
@@ -139,6 +140,10 @@ export class ApiClient {
 
   public async getSystem(): Promise<SystemInfo> {
     return this.request<SystemInfo>("/system");
+  }
+
+  public async getNotifications(): Promise<NotificationSnapshot> {
+    return this.request<NotificationSnapshot>("/notifications");
   }
 
   public async postSystemRestart(): Promise<RestartResult> {

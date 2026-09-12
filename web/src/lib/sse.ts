@@ -1,5 +1,3 @@
-import type { LevelsEvent } from "./types.js";
-
 export type SSEEventHandler = (eventName: string, data: unknown) => void;
 
 export class SSEClient {
@@ -179,13 +177,18 @@ export class SSEClient {
       return;
     }
 
-    if (eventName === "levels" && dataStr) {
+    // Any other named event that carries a JSON data payload is dispatched under
+    // its own name. Listeners subscribe to the names they know ("levels",
+    // "notification") and ignore the rest, which is what the SSE contract asks
+    // of clients; an unknown event is harmless. Any traffic resets the heartbeat
+    // so an active stream is not torn down as idle.
+    if (dataStr) {
       try {
-        const payload = JSON.parse(dataStr) as LevelsEvent;
+        const payload: unknown = JSON.parse(dataStr);
         this.resetHeartbeat();
-        this.dispatch("levels", payload);
+        this.dispatch(eventName, payload);
       } catch (err) {
-        console.error("Failed to parse levels SSE payload:", err);
+        console.error(`Failed to parse SSE payload for event "${eventName}":`, err);
       }
     }
   }

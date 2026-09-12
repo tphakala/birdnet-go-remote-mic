@@ -25,6 +25,9 @@ coverage.txt
 # Local tool caches
 cache/
 
+# Web UI test build output (web:test compiles here before node --test)
+web/.test-out/
+
 # CodeGraph index database (local code intelligence)
 .codegraph/
 

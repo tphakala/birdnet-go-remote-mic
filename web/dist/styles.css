@@ -1624,6 +1624,204 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   to { opacity: 0; transform: translateY(12px); }
 }
 
+/* Notification center: the header bell badge and its popover panel. All colors
+   come from the shared tokens, so both themes are covered without overrides. */
+.notif-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The visible count overlay on the bell. It is decorative (aria-hidden); the
+   count reaches assistive tech through the adjacent polite live region. */
+.notif-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--signal-crit);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bg-page);
+  pointer-events: none;
+}
+
+.notif-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(70vh, 520px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 1500;
+  overflow: hidden;
+}
+
+.notif-panel:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-lg), 0 0 0 2px var(--accent-cyan);
+}
+
+.notif-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.notif-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.notif-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notif-panel-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.notif-panel-close {
+  width: 26px;
+  height: 26px;
+}
+
+.notif-body {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.notif-active {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notif-active:not(:empty) {
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.notif-group-head {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--signal-crit);
+  padding: 2px 4px;
+}
+
+.notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notif-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.notif-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  border-left: 3px solid var(--border-base);
+}
+
+.notif-row.notif-error { border-left-color: var(--signal-crit); }
+.notif-row.notif-warning { border-left-color: var(--signal-warn); }
+.notif-row.notif-info { border-left-color: var(--signal-ok); }
+
+.notif-row-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.notif-row.notif-error .notif-row-icon { color: var(--signal-crit); }
+.notif-row.notif-warning .notif-row-icon { color: var(--signal-warn); }
+.notif-row.notif-info .notif-row-icon { color: var(--signal-ok); }
+
+.notif-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif-row-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notif-row-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.notif-row-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.notif-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 3px 0;
+}
+
+.notif-chip {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+  line-height: 15px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-active);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.notif-chip-source {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font-mono);
+}
+
+.notif-row-msg {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 /* Responsive Rules */
 @media (max-width: 768px) {
   .instrument-header {
