@@ -333,8 +333,13 @@ func TestRemovedTrack404(t *testing.T) {
 // the read goroutine to write and the test goroutine to read.
 type recordingListener struct {
 	mu    sync.Mutex
-	conns []string
+	conns []connEvent
 	disc  []discEvent
+}
+
+type connEvent struct {
+	path   string
+	remote string
 }
 
 type discEvent struct {
@@ -346,7 +351,7 @@ type discEvent struct {
 func (r *recordingListener) ClientConnected(path, remote string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.conns = append(r.conns, path)
+	r.conns = append(r.conns, connEvent{path: path, remote: remote})
 }
 
 func (r *recordingListener) ClientDisconnected(path, remote string, reason DisconnectReason) {
@@ -359,6 +364,12 @@ func (r *recordingListener) connectCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.conns)
+}
+
+func (r *recordingListener) connects() []connEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]connEvent(nil), r.conns...)
 }
 
 func (r *recordingListener) disconnects() []discEvent {
@@ -409,15 +420,21 @@ func TestListenerConnectThenTeardown(t *testing.T) {
 	c := dial(t, addr)
 
 	sess := setupAndPlay(t, c, addr)
+	// The server sees the client's local address as the remote. Capture it before
+	// any close so the connect and disconnect events can be checked against it.
+	wantRemote := c.conn.LocalAddr().String()
 	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "a connect on PLAY")
+	if got := rec.connects()[0]; got.path != testPath || got.remote != wantRemote {
+		t.Errorf("connect = %+v, want path %q remote %q", got, testPath, wantRemote)
+	}
 
 	if r := c.do(t, "TEARDOWN", baseURL(addr), sess); r.StatusCode != 200 {
 		t.Fatalf("TEARDOWN = %d", r.StatusCode)
 	}
 	waitFor(t, func() bool { return len(rec.disconnects()) == 1 }, 2*time.Second, "a disconnect on TEARDOWN")
 	d := rec.disconnects()[0]
-	if d.path != testPath {
-		t.Errorf("disconnect path = %q, want %q", d.path, testPath)
+	if d.path != testPath || d.remote != wantRemote {
+		t.Errorf("disconnect = %+v, want path %q remote %q", d, testPath, wantRemote)
 	}
 	if d.reason != DisconnectTeardown {
 		t.Errorf("disconnect reason = %v, want teardown", d.reason)
@@ -430,12 +447,20 @@ func TestListenerDisconnectOnConnectionDrop(t *testing.T) {
 	c := dial(t, addr)
 
 	setupAndPlay(t, c, addr)
+	wantRemote := c.conn.LocalAddr().String() // capture before the drop closes the conn
 	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "a connect on PLAY")
+	if got := rec.connects()[0]; got.remote != wantRemote {
+		t.Errorf("connect remote = %q, want %q", got.remote, wantRemote)
+	}
 
 	_ = c.conn.Close() // abrupt drop, no TEARDOWN
 	waitFor(t, func() bool { return len(rec.disconnects()) == 1 }, 2*time.Second, "a disconnect on the dropped connection")
-	if got := rec.disconnects()[0].reason; got != DisconnectReadError {
-		t.Errorf("disconnect reason = %v, want read error", got)
+	d := rec.disconnects()[0]
+	if d.reason != DisconnectReadError {
+		t.Errorf("disconnect reason = %v, want read error", d.reason)
+	}
+	if d.remote != wantRemote {
+		t.Errorf("disconnect remote = %q, want %q", d.remote, wantRemote)
 	}
 }
 
@@ -448,7 +473,11 @@ func TestListenerDisconnectOnEviction(t *testing.T) {
 	c := dial(t, addr)
 
 	setupAndPlay(t, c, addr)
+	wantRemote := c.conn.LocalAddr().String()
 	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "a connect on PLAY")
+	if got := rec.connects()[0]; got.remote != wantRemote {
+		t.Errorf("connect remote = %q, want %q", got.remote, wantRemote)
+	}
 
 	// Feed audio continuously so the writer loops and checks shouldEvict.
 	stop := make(chan struct{})
@@ -469,8 +498,12 @@ func TestListenerDisconnectOnEviction(t *testing.T) {
 	// Enabling a token evicts the open-access session proactively in the writer.
 	g.Set(testAuthToken)
 	waitFor(t, func() bool { return len(rec.disconnects()) == 1 }, 3*time.Second, "a disconnect on eviction")
-	if got := rec.disconnects()[0].reason; got != DisconnectEvicted {
-		t.Errorf("disconnect reason = %v, want evicted", got)
+	d := rec.disconnects()[0]
+	if d.reason != DisconnectEvicted {
+		t.Errorf("disconnect reason = %v, want evicted", d.reason)
+	}
+	if d.remote != wantRemote {
+		t.Errorf("disconnect remote = %q, want %q", d.remote, wantRemote)
 	}
 }
 
