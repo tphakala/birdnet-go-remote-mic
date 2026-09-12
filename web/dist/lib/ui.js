@@ -48,6 +48,10 @@ export function formatUptime(totalSeconds, opts = {}) {
 // time for server clock skew before calling, so this stays a pure, browser-free
 // formatter. A future-dated instant (small forward skew) clamps to "just now".
 export function formatRelative(fromMs, toMs) {
+    // An unparseable timestamp (Date.parse -> NaN) would otherwise fall through
+    // every threshold to "NaN ago"; render nothing instead.
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs))
+        return "";
     const s = Math.floor(Math.max(0, toMs - fromMs) / 1000);
     if (s < 10)
         return "just now";

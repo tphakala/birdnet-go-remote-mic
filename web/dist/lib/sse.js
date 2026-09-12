@@ -1,3 +1,7 @@
+// Event names the client synthesizes internally (from the connect loop) and the
+// store routes on. A server event reusing one would be misrouted into the
+// connection/auth state machine, so the generic wire dispatch refuses them.
+const RESERVED_EVENTS = new Set(["connected", "disconnected", "unauthorized", "heartbeat"]);
 export class SSEClient {
     url;
     token = null;
@@ -165,12 +169,18 @@ export class SSEClient {
         // Any other named event that carries a JSON data payload is dispatched under
         // its own name. Listeners subscribe to the names they know ("levels",
         // "notification") and ignore the rest, which is what the SSE contract asks
-        // of clients; an unknown event is harmless. Any traffic resets the heartbeat
-        // so an active stream is not torn down as idle.
+        // of clients; an unknown event is harmless.
         if (dataStr) {
+            // A received frame means the stream is alive, so reset the heartbeat
+            // before anything below can return; a malformed or reserved-name frame
+            // must not let an active connection look idle and get torn down.
+            this.resetHeartbeat();
+            if (RESERVED_EVENTS.has(eventName)) {
+                console.warn(`Ignoring SSE event with reserved name "${eventName}"`);
+                return;
+            }
             try {
                 const payload = JSON.parse(dataStr);
-                this.resetHeartbeat();
                 this.dispatch(eventName, payload);
             }
             catch (err) {

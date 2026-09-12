@@ -201,3 +201,134 @@ test("a malformed server time leaves the clock offset at zero", () => {
   applySnapshot(s, { bootId: "boot-a", serverTime: "not-a-date", nextId: 2, notifications: [notif({ id: 1 })] }, 10_000);
   assert.equal(s.serverOffsetMs, 0);
 });
+
+test("applySnapshot computes a non-zero serverOffsetMs from the server clock skew", () => {
+  const s = initialState();
+  // Server clock reads 5s behind the browser's nowMs at snapshot time.
+  const nowMs = Date.parse("2026-09-12T14:00:05Z");
+  applySnapshot(
+    s,
+    { bootId: "boot-a", serverTime: "2026-09-12T14:00:00Z", nextId: 2, notifications: [notif({ id: 1 })] },
+    nowMs,
+  );
+  assert.equal(s.serverOffsetMs, 5000);
+});
+
+test("snapshot pruning drops ids aged out of the ring even when a pinned active condition holds a low id", () => {
+  const s = initialState();
+  applySnapshot(
+    s,
+    snap({
+      notifications: [
+        notif({ id: 1, kind: "onset", key: "dev:mic", severity: "error", title: "Mic failed" }),
+        notif({ id: 2 }),
+        notif({ id: 3 }),
+        notif({ id: 4 }),
+        notif({ id: 5 }),
+      ],
+      nextId: 6,
+    }),
+    Date.now(),
+  );
+  assert.deepEqual([...s.items.keys()].sort((a, b) => a - b), [1, 2, 3, 4, 5]);
+
+  // Reconnect: the ring advanced and ids 2,3 aged out, but the active onset
+  // (id 1) is still pinned into the snapshot at its low id. Pruning must still
+  // drop 2 and 3 even though they sit above the oldest id present (1).
+  applySnapshot(
+    s,
+    snap({
+      notifications: [
+        notif({ id: 1, kind: "onset", key: "dev:mic", severity: "error", title: "Mic failed" }),
+        notif({ id: 4 }),
+        notif({ id: 5 }),
+        notif({ id: 6 }),
+      ],
+      nextId: 7,
+    }),
+    Date.now(),
+  );
+  assert.deepEqual([...s.items.keys()].sort((a, b) => a - b), [1, 4, 5, 6]);
+});
+
+test("nextId is monotonic within a boot so a stale snapshot does not cause a spurious gap", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ notifications: [notif({ id: 1 })], nextId: 2 }), Date.now());
+  assert.equal(applyLive(s, notif({ id: 2 })).gap, false); // advances nextId to 3
+  assert.equal(s.nextId, 3);
+  // A snapshot taken before that live event (nextId 2) must not roll nextId back.
+  applySnapshot(s, snap({ notifications: [notif({ id: 1 })], nextId: 2 }), Date.now());
+  assert.equal(s.nextId, 3);
+  assert.equal(applyLive(s, notif({ id: 3 })).gap, false); // next id is not a spurious gap
+});
+
+test("clearAll keeps active conditions visible and zeroes unread", () => {
+  const s = initialState();
+  applySnapshot(
+    s,
+    snap({
+      notifications: [
+        notif({ id: 1, kind: "onset", key: "dev:mic", severity: "error", title: "Mic failed" }),
+        notif({ id: 2, title: "history" }),
+        notif({ id: 3, title: "history" }),
+      ],
+      nextId: 4,
+    }),
+    Date.now(),
+  );
+  clearAll(s);
+  assert.equal(s.dismissed.has(1), false); // active onset stays visible
+  assert.equal(s.dismissed.has(2), true);
+  assert.equal(s.dismissed.has(3), true);
+  assert.deepEqual(activeConditions(s).map((n) => n.id), [1]);
+  assert.equal(unreadCount(s), 0);
+});
+
+test("a dismissed id does not toast even as a fresh live error above the watermark", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ notifications: [notif({ id: 1 })] }), Date.now()); // watermark 0
+  s.dismissed.add(2); // id 2 was dismissed before its live frame arrives
+  const r = applyLive(s, notif({ id: 2, severity: "error" }));
+  assert.equal(r.isNewError, false);
+});
+
+test("activeConditions returns multiple active onsets ascending by id regardless of input order", () => {
+  const s = initialState();
+  applySnapshot(
+    s,
+    snap({
+      notifications: [
+        notif({ id: 3, kind: "onset", key: "host:temp", title: "Hot" }),
+        notif({ id: 1, kind: "onset", key: "dev:mic", title: "Mic failed" }),
+      ],
+      nextId: 4,
+    }),
+    Date.now(),
+  );
+  assert.deepEqual(activeConditions(s).map((n) => n.id), [1, 3]);
+});
+
+test("activeConditions ignores a keyless onset", () => {
+  const s = initialState();
+  applySnapshot(
+    s,
+    snap({
+      notifications: [
+        notif({ id: 1, kind: "onset", title: "no key" }),
+        notif({ id: 2, kind: "onset", key: "dev:mic", title: "Mic failed" }),
+      ],
+      nextId: 3,
+    }),
+    Date.now(),
+  );
+  assert.deepEqual(activeConditions(s).map((n) => n.id), [2]);
+});
+
+test("serialize persists only the read-state subset, never items", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] }), Date.now());
+  markAllRead(s);
+  s.dismissed.add(2);
+  const raw = JSON.parse(serialize(s)) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(raw).sort(), ["bootId", "dismissed", "readWatermark"]);
+});

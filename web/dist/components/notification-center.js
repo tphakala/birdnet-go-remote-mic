@@ -12,6 +12,13 @@ const SEVERITY_TO_TOAST = {
     warning: "warn",
     info: "info",
 };
+// Spoken severity prefix: the icon is aria-hidden and color is not announced, so
+// a screen reader would otherwise not hear whether a row is an error or info.
+const SEVERITY_LABEL = {
+    error: "Error",
+    warning: "Warning",
+    info: "Info",
+};
 export class NotificationCenter {
     store;
     bell;
@@ -60,7 +67,7 @@ export class NotificationCenter {
         closeBtn.setAttribute("type", "button");
         closeBtn.setAttribute("aria-label", "Close notifications");
         closeBtn.innerHTML = ICON_CLOSE; // static, trusted markup
-        closeBtn.addEventListener("click", () => this.close());
+        closeBtn.addEventListener("click", () => this.close(true));
         actions.append(readBtn, clearBtn, closeBtn);
         head.append(title, actions);
         this.activeEl = elem("div", "notif-active");
@@ -113,7 +120,10 @@ export class NotificationCenter {
         icon.innerHTML = TOAST_ICONS[SEVERITY_TO_TOAST[n.severity]] ?? TOAST_ICONS.info; // trusted markup
         const main = elem("div", "notif-row-main");
         const top = elem("div", "notif-row-top");
-        top.append(elem("span", "notif-row-title", n.title));
+        const title = elem("span", "notif-row-title");
+        title.append(elem("span", "visually-hidden", `${SEVERITY_LABEL[n.severity]}: `));
+        title.append(document.createTextNode(n.title));
+        top.append(title);
         const time = elem("time", "notif-row-time", formatRelative(Date.parse(n.time) + offsetMs, nowMs));
         time.setAttribute("datetime", n.time);
         top.append(time);
@@ -129,7 +139,7 @@ export class NotificationCenter {
     }
     toggle() {
         if (this.isOpen)
-            this.close();
+            this.close(true);
         else
             this.open();
     }
@@ -147,7 +157,11 @@ export class NotificationCenter {
         window.addEventListener("hashchange", this.onHashChange);
         this.panel.focus();
     }
-    close() {
+    // restoreFocus returns focus to the bell; pass it only for deliberate
+    // dismissals (Escape, the close button, the bell toggle). An outside click or
+    // a route change must NOT pull focus to the bell, or it would steal focus from
+    // whatever the user just clicked (e.g. an input elsewhere on the page).
+    close(restoreFocus = false) {
         if (!this.isOpen)
             return;
         this.isOpen = false;
@@ -156,7 +170,8 @@ export class NotificationCenter {
         document.removeEventListener("click", this.onDocClick, true);
         document.removeEventListener("keydown", this.onKeydown);
         window.removeEventListener("hashchange", this.onHashChange);
-        this.bell.focus();
+        if (restoreFocus)
+            this.bell.focus();
     }
     onDocClick = (e) => {
         const target = e.target;
@@ -169,7 +184,7 @@ export class NotificationCenter {
     onKeydown = (e) => {
         if (e.key === "Escape") {
             e.stopPropagation();
-            this.close();
+            this.close(true);
         }
     };
     onHashChange = () => {

@@ -1,7 +1,8 @@
-// Pure reconcile logic for the notification center. No DOM, no fetch, no
-// localStorage, no timers: every function is a transform over plain values, so
-// the whole thing is unit-tested with node:test and no browser. The stateful
-// shell (lib/notifications.ts) owns I/O and calls into here.
+// I/O-free reconcile logic for the notification center. No DOM, no fetch, no
+// localStorage, no timers: every function is a transform over a CoreState value
+// (mutated in place and returned), so the whole thing is unit-tested with
+// node:test and no browser. The stateful shell (lib/notifications.ts) owns I/O
+// and calls into here.
 //
 // The model: the server's ring and active-condition set are the truth. A client
 // bootstraps from a snapshot, applies live events as hints, and re-syncs from a
@@ -60,26 +61,35 @@ export function applySnapshot(
   }
   state.bootId = snap.bootId;
 
-  let oldest = Number.POSITIVE_INFINITY;
+  const present = new Set<number>();
   for (const n of snap.notifications) {
     state.items.set(n.id, n);
-    if (n.id < oldest) oldest = n.id;
+    present.add(n.id);
   }
-  state.nextId = snap.nextId;
+
+  // nextId is monotonic within a boot. A snapshot taken before a live event we
+  // already folded in reports a lower nextId; rolling state.nextId back to it
+  // would make that already-seen id (or the next one) read as a gap. Keep the
+  // larger. A boot change legitimately restarts the sequence.
+  state.nextId = bootChanged ? snap.nextId : Math.max(state.nextId, snap.nextId);
 
   const serverMs = Date.parse(snap.serverTime);
   state.serverOffsetMs = Number.isNaN(serverMs) ? 0 : nowMs - serverMs;
 
-  // The snapshot is authoritative: entries below the oldest id it reports have
-  // aged out of the ring (pinned active conditions are always included, so they
-  // keep the floor low enough to survive). Prune items and dismissed ids in
-  // lockstep to that floor so neither grows without bound and an aged-out entry
-  // cannot resurrect as unread once its dismissed flag is forgotten.
+  // The snapshot is authoritative for every id below snap.nextId: any such id it
+  // omits has aged out of the ring or been cleared. This must compare against
+  // nextId, NOT the oldest id present: a long-lived pinned active condition
+  // keeps a low id in the snapshot while the ring floor moves far past it, so an
+  // oldest-based floor would never prune the ids in that gap and they would leak
+  // forever and inflate the unread count. Ids at or above nextId are live
+  // arrivals that landed after the snapshot was taken, so they are kept. Prune
+  // items and the dismissed set in lockstep (dismissed to whatever items remain)
+  // so neither grows without bound and a dropped entry cannot resurrect.
   for (const [id] of state.items) {
-    if (id < oldest) state.items.delete(id);
+    if (id < snap.nextId && !present.has(id)) state.items.delete(id);
   }
   for (const id of state.dismissed) {
-    if (id < oldest) state.dismissed.delete(id);
+    if (!state.items.has(id)) state.dismissed.delete(id);
   }
 
   return { state, bootChanged };
@@ -146,12 +156,19 @@ export function markAllRead(state: CoreState): CoreState {
   return state;
 }
 
-// clearAll dismisses every known entry so the panel list empties. Dismissal
-// rather than deletion means a redisplay cannot resurrect a cleared entry, and
-// the dismissed set is what gets pruned against future snapshots. Unread falls
-// to zero because the count excludes dismissed ids.
+// clearAll empties the history list and zeroes the badge, but deliberately
+// keeps currently-active conditions visible: an operator clicking Clear to tidy
+// up must not lose sight of a device that is still failed. It dismisses every
+// entry except the active-condition onsets (dismissal, not deletion, so a
+// redisplay cannot resurrect a cleared entry) and marks everything read so the
+// unread count drops to zero. The active onsets stay undismissed and unread-
+// excluded-by-watermark, so the panel shows only what is still ongoing.
 export function clearAll(state: CoreState): CoreState {
-  for (const [id] of state.items) state.dismissed.add(id);
+  const activeIds = new Set(activeConditions(state).map((n) => n.id));
+  for (const [id] of state.items) {
+    if (!activeIds.has(id)) state.dismissed.add(id);
+  }
+  markAllRead(state);
   return state;
 }
 

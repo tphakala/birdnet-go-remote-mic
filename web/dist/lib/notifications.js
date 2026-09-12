@@ -13,9 +13,28 @@ import { applyLive, applySnapshot, clearAll as coreClearAll, deserialize, initia
 const STORAGE_KEY = "remote-mic-notifications";
 // Coalesce the burst of refetches a gap can trigger into one snapshot request.
 const GAP_RELOAD_DELAY_MS = 400;
+// On a stable connection with no reconnect or gap, applySnapshot never runs to
+// prune, so live events accumulate unbounded. Once the client holds more than
+// this (comfortably above the server's ~100-entry ring) a reload re-syncs and
+// prunes back down. The server ring is the real bound; this just triggers it.
+const MAX_LIVE_ITEMS = 200;
+// isSnapshot rejects a response that is not a notification snapshot. A proxy or
+// captive portal can answer a 200 with a non-JSON body, which api.request
+// surfaces as a string; folding that into applySnapshot would reset the read
+// state on a bogus bootId and then throw iterating a missing notifications array.
+function isSnapshot(v) {
+    if (typeof v !== "object" || v === null)
+        return false;
+    const s = v;
+    return typeof s.bootId === "string" && Number.isFinite(s.nextId) && Array.isArray(s.notifications);
+}
 export class NotificationStore extends EventTarget {
     state;
     gapReloadTimer = null;
+    // Monotonic generation for snapshot loads. The explicit startup load and the
+    // connection-event load race; a GET that resolves after a newer load started
+    // must not fold its now-stale snapshot over the fresher state.
+    loadEpoch = 0;
     constructor() {
         super();
         this.state = this.readPersisted();
@@ -35,12 +54,21 @@ export class NotificationStore extends EventTarget {
     // when no source is mounted, a 401 handled by the shared auth flow, or a
     // transient error) is swallowed so the bell keeps working from its last state.
     async load() {
+        const epoch = ++this.loadEpoch;
         let snap;
         try {
             snap = await api.getNotifications();
         }
         catch (err) {
             console.warn("Failed to load notifications:", err);
+            return;
+        }
+        // A newer load() started while this GET was in flight; its result is fresher,
+        // so drop this one rather than roll the state back to an older snapshot.
+        if (epoch !== this.loadEpoch)
+            return;
+        if (!isSnapshot(snap)) {
+            console.warn("Ignoring malformed notifications snapshot");
             return;
         }
         applySnapshot(this.state, snap, Date.now());
@@ -61,15 +89,19 @@ export class NotificationStore extends EventTarget {
         if (name !== "notification")
             return;
         // Defend against a malformed payload: the contract guarantees the shape, but
-        // a bad frame must not poison the state with a NaN id.
-        if (!data || typeof data !== "object" || typeof data.id !== "number") {
+        // a bad frame must not poison the state with a missing or non-numeric id.
+        if (!data || typeof data !== "object" || !Number.isFinite(data.id)) {
             return;
         }
         const n = data;
         const { gap, isNewError } = applyLive(this.state, n);
+        // Fall back to the title so an error that carries no message still toasts
+        // readable text rather than a bare icon.
         if (isNewError)
-            showToast(n.message, "error");
-        if (gap)
+            showToast(n.message || n.title, "error");
+        // Reload on a detected gap (re-sync dropped events) or once the in-memory set
+        // has grown past its bound on a long-lived connection (re-sync prunes it).
+        if (gap || this.state.items.size > MAX_LIVE_ITEMS)
             this.scheduleReload();
         this.persist();
         this.emitChange();

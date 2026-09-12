@@ -1624,8 +1624,10 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   to { opacity: 0; transform: translateY(12px); }
 }
 
-/* Notification center: the header bell badge and its popover panel. All colors
-   come from the shared tokens, so both themes are covered without overrides. */
+/* Notification center: the header bell badge and its popover panel. Colors come
+   from the shared tokens, with two exceptions tuned for AA contrast: the unread
+   badge uses a fixed darkened red with white text, and the active-issues heading
+   takes one light-theme override. */
 .notif-wrap {
   position: relative;
   display: inline-flex;
@@ -1641,7 +1643,9 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   height: 16px;
   padding: 0 4px;
   border-radius: var(--radius-full);
-  background: var(--signal-crit);
+  /* Darkened red (not --signal-crit): white text on it clears AA (~6.5:1) at
+     this small size, which white on --signal-crit does not. */
+  background: #b91c1c;
   color: #fff;
   font-size: 10px;
   font-weight: 700;
@@ -1727,6 +1731,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   letter-spacing: 0.5px;
   color: var(--signal-crit);
   padding: 2px 4px;
+}
+
+/* On the white light-theme panel, --signal-crit (#dc2626) is just under AA for
+   this small bold text; a darker red clears it. Dark theme keeps --signal-crit,
+   which has enough contrast on the dark panel. */
+:root[data-theme="light"] .notif-group-head {
+  color: #b91c1c;
 }
 
 .notif-list {
