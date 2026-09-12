@@ -1,15 +1,10 @@
 package levels
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"io"
 	"math"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -165,73 +160,6 @@ func TestLevelsEventMatchesContract(t *testing.T) {
 	}
 }
 
-// startTestHub runs a hub with a fast cadence for streaming tests.
-func startTestHub(t *testing.T) *Hub {
-	t.Helper()
-	h := NewHub()
-	h.interval = 10 * time.Millisecond
-	h.heartbeat = 20 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go h.Run(ctx)
-	return h
-}
-
-func TestEventsHandlerStreamsLevels(t *testing.T) {
-	h := startTestHub(t)
-	h.Meter(nameGarden, 1)
-
-	srv := httptest.NewServer(h.EventsHandler())
-	defer srv.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, http.NoBody)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET events: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
-		t.Fatalf("content-type = %q, want text/event-stream", ct)
-	}
-
-	name, data := readEvent(t, resp.Body)
-	if name != "levels" {
-		t.Fatalf("first event = %q, want levels", name)
-	}
-	var le mgmtapi.LevelsEvent
-	if err := json.Unmarshal([]byte(data), &le); err != nil {
-		t.Fatalf("levels data: %v", err)
-	}
-	if len(le.Devices) != 1 || le.Devices[0].Name != nameGarden {
-		t.Fatalf("devices = %+v, want one garden", le.Devices)
-	}
-}
-
-func TestEventsHandlerHeartbeatSurvivesLevelsFilter(t *testing.T) {
-	h := startTestHub(t)
-	h.Meter(nameGarden, 1)
-
-	srv := httptest.NewServer(h.EventsHandler())
-	defer srv.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	// Subscribe to a type that never fires; heartbeat must still arrive.
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"?events=nonexistent", http.NoBody)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET events: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	name, _ := readEvent(t, resp.Body)
-	if name != "heartbeat" {
-		t.Fatalf("first event = %q, want heartbeat (levels filtered out)", name)
-	}
-}
-
 func TestSubscribeTracksCount(t *testing.T) {
 	h := NewHub()
 	if got := h.subs.Load(); got != 0 {
@@ -267,6 +195,44 @@ func TestSubscribeResetsResidualMeters(t *testing.T) {
 	d := m.sample("x")
 	if d.Channels[0].PeakDbfs != dbfsFloor || d.Channels[0].RmsDbfs != dbfsFloor || d.Channels[0].Clipped {
 		t.Errorf("residual not cleared on re-subscribe: %+v", d)
+	}
+}
+
+// TestRunBroadcastsLevels drives the sampler loop end to end: Run samples every
+// meter each tick and broadcasts a marshaled levels event to each subscriber.
+// The SSE transport moved to internal/sse, so this is the only coverage of
+// Hub.Run (the 10 Hz sampler, whose heartbeat case this change removed) and
+// Hub.broadcast; without it a regression in the subscriber gate or the fan-out
+// would ship green.
+func TestRunBroadcastsLevels(t *testing.T) {
+	h := NewHub()
+	h.interval = 5 * time.Millisecond
+	m := h.Meter(nameGarden, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+
+	// Subscribing flips subs to 1, so the sampler starts broadcasting; before
+	// this the tick hits the subs==0 gate and does nothing.
+	ch, unsub := h.Subscribe()
+	defer unsub()
+	m.Observe(pcm(repeat(16384, 480)...))
+
+	select {
+	case ev := <-ch:
+		if ev.Name != "levels" {
+			t.Fatalf("broadcast event name = %q, want levels", ev.Name)
+		}
+		var le mgmtapi.LevelsEvent
+		if err := json.Unmarshal(ev.Data, &le); err != nil {
+			t.Fatalf("levels data: %v", err)
+		}
+		if len(le.Devices) != 1 || le.Devices[0].Name != nameGarden {
+			t.Fatalf("devices = %+v, want one garden", le.Devices)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no levels event broadcast within timeout")
 	}
 }
 
@@ -384,28 +350,4 @@ func TestLevelsEventMultiChannelContract(t *testing.T) {
 	}
 	approx(t, chans[0].RmsDbfs, -6.0206, 0.01, "left rms via contract")
 	approx(t, chans[1].RmsDbfs, dbfsFloor, 0.001, "right rms via contract (silent)")
-}
-
-// readEvent reads one SSE event (its type and data) from r.
-func readEvent(t *testing.T, r io.Reader) (name, data string) {
-	t.Helper()
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.HasPrefix(line, "event: "):
-			name = strings.TrimPrefix(line, "event: ")
-		case strings.HasPrefix(line, "data: "):
-			data = strings.TrimPrefix(line, "data: ")
-		case line == "":
-			if name != "" {
-				return name, data
-			}
-		}
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan SSE: %v", err)
-	}
-	t.Fatal("stream ended before a full event")
-	return "", ""
 }

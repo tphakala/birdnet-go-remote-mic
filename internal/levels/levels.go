@@ -1,22 +1,22 @@
-// Package levels measures per-device audio levels and streams them to clients
-// over Server-Sent Events. A cheap peak/RMS tap runs in each capture pump
+// Package levels measures per-device audio levels and fans them out to
+// subscribers as levels events. A cheap peak/RMS tap runs in each capture pump
 // (Meter.Observe), a single central sampler reads and resets the meters at a
-// fixed cadence, and a fan-out hub broadcasts the result to every connected SSE
-// client. The package is platform-neutral: it never touches ALSA or the RTSP
-// path, only raw S16LE bytes and HTTP.
+// fixed cadence, and a fan-out hub broadcasts the result to every subscriber.
+// The hub is an sse.Source; the SSE HTTP transport itself lives in internal/sse.
+// The package is platform-neutral: it never touches ALSA, the RTSP path, or
+// HTTP, only raw S16LE bytes.
 package levels
 
 import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"math"
-	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
 )
 
 // dbfsFloor is the reported minimum; JSON cannot carry negative infinity, so
@@ -29,10 +29,6 @@ const fullScale = 32768.0
 
 // defaultInterval is the levels sampling and emit cadence (10 Hz).
 const defaultInterval = 100 * time.Millisecond
-
-// defaultHeartbeat is how often an idle stream emits a heartbeat so clients can
-// detect a dead server and proxies keep the connection open.
-const defaultHeartbeat = 15 * time.Second
 
 // ChannelLevels is one capture channel's audio levels over the last measurement
 // window. The JSON tags match the OpenAPI ChannelLevels schema exactly.
@@ -199,11 +195,10 @@ func rmsDbfs(sumSq, count uint64) float64 {
 	return dbfs(rms)
 }
 
-// Event is one SSE event: a type name and its already-marshaled JSON data.
-type Event struct {
-	Name string
-	Data []byte
-}
+// Event is one SSE event. It aliases sse.Event so the hub satisfies sse.Source
+// and existing callers keep using levels.Event unchanged; the wire format and
+// JSON contract are untouched.
+type Event = sse.Event
 
 type subscriber struct {
 	ch chan Event
@@ -218,8 +213,7 @@ type namedMeter struct {
 // single reader-resetter of the meters, so SSE clients never race each other
 // for a measurement window.
 type Hub struct {
-	interval  time.Duration
-	heartbeat time.Duration
+	interval time.Duration
 
 	subs atomic.Int32
 
@@ -228,12 +222,15 @@ type Hub struct {
 	subList map[*subscriber]struct{}
 }
 
-// NewHub returns a hub with the default 10 Hz cadence and 15 s heartbeat.
+// Hub is an sse.Source: it fans marshaled levels events to SSE subscribers. The
+// heartbeat lives on the SSE connection, not here.
+var _ sse.Source = (*Hub)(nil)
+
+// NewHub returns a hub with the default 10 Hz sampling cadence.
 func NewHub() *Hub {
 	return &Hub{
-		interval:  defaultInterval,
-		heartbeat: defaultHeartbeat,
-		subList:   make(map[*subscriber]struct{}),
+		interval: defaultInterval,
+		subList:  make(map[*subscriber]struct{}),
 	}
 }
 
@@ -267,13 +264,12 @@ func (h *Hub) RemoveMeter(name string) {
 	}
 }
 
-// Run drives the sampler until ctx is cancelled. Sampling and heartbeats are
-// skipped while no client is subscribed, so an idle appliance does no work.
+// Run drives the sampler until ctx is cancelled. Sampling is skipped while no
+// client is subscribed, so an idle appliance does no work. Heartbeats are the
+// SSE connection's job (sse.Handler), not the hub's.
 func (h *Hub) Run(ctx context.Context) {
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
-	hb := time.NewTicker(h.heartbeat)
-	defer hb.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -283,11 +279,6 @@ func (h *Hub) Run(ctx context.Context) {
 				continue
 			}
 			h.broadcast(h.levelsEvent())
-		case <-hb.C:
-			if h.subs.Load() == 0 {
-				continue
-			}
-			h.broadcast(Event{Name: "heartbeat", Data: []byte("{}")})
 		}
 	}
 }
@@ -347,77 +338,5 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 	}
 }
 
-// EventsHandler returns the SSE HTTP handler for GET /events. It is mounted
-// beside the generated management API handler.
-func (h *Hub) EventsHandler() http.Handler {
-	return http.HandlerFunc(h.serveEvents)
-}
-
-func (h *Hub) serveEvents(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	filter := parseEventFilter(r.URL.Query().Get("events"))
-
-	hdr := w.Header()
-	hdr.Set("Content-Type", "text/event-stream")
-	hdr.Set("Cache-Control", "no-cache")
-	hdr.Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	rc := http.NewResponseController(w)
-	ch, cancel := h.Subscribe()
-	defer cancel()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case ev := <-ch:
-			if !filter.allows(ev.Name) {
-				continue
-			}
-			// A bounded per-write deadline keeps a stuck client from parking the
-			// writer forever without killing the long-lived stream the way the
-			// server's WriteTimeout would.
-			_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, ev.Data); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
-	}
-}
-
-// eventFilter decides which event types a client receives. Heartbeats are
-// always delivered so an idle connection stays alive regardless of the filter.
-type eventFilter struct {
-	all   bool
-	names map[string]bool
-}
-
-func parseEventFilter(q string) eventFilter {
-	if strings.TrimSpace(q) == "" {
-		return eventFilter{all: true}
-	}
-	names := make(map[string]bool)
-	for _, p := range strings.Split(q, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			names[p] = true
-		}
-	}
-	if len(names) == 0 {
-		return eventFilter{all: true}
-	}
-	return eventFilter{names: names}
-}
-
-func (f eventFilter) allows(name string) bool {
-	if name == "heartbeat" {
-		return true
-	}
-	return f.all || f.names[name]
-}
+// The SSE HTTP handler lives in internal/sse; cmd wires sse.Handler(hub) onto
+// GET /events. The hub is only the levels Source.

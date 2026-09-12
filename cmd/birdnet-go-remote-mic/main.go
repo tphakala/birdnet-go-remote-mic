@@ -30,6 +30,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
 
@@ -250,7 +251,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, hub.EventsHandler(), stop, reloader, guard)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub), stop, reloader, guard)
 	}
 	defer func() {
 		stop()
