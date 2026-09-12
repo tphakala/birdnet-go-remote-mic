@@ -29,6 +29,41 @@ type Config struct {
 	// writer as soon as the change lands (proactive, not waiting on the client),
 	// and any other connection is re-challenged on its next request.
 	Auth *auth.Guard
+
+	// Listener, when non-nil, observes playing-client connect and disconnect
+	// transitions (see Listener). A nil Listener disables the hooks; the cmd
+	// adapter supplies one that turns them into notification-center entries with
+	// flap suppression.
+	Listener Listener
+}
+
+// DisconnectReason explains why a playing client's RTSP session ended; it is
+// passed to Listener.ClientDisconnected.
+type DisconnectReason int
+
+const (
+	// DisconnectReadError is the zero value and the catch-all: a dropped
+	// connection, an idle timeout, or a server shutdown that closes the socket. A
+	// session that ends without a more specific cause (an explicit TEARDOWN or a
+	// token-change eviction) reports it.
+	DisconnectReadError DisconnectReason = iota
+	// DisconnectTeardown is the client sending an explicit TEARDOWN.
+	DisconnectTeardown
+	// DisconnectEvicted is the writer dropping the client because the access
+	// token changed (see shouldEvict); the reason is decided on the writer
+	// goroutine and recorded before the socket closes.
+	DisconnectEvicted
+)
+
+// Listener observes the RTSP playing-client lifecycle: a client starts playing
+// on its first PLAY (ClientConnected) and its session ends at connection
+// cleanup (ClientDisconnected). Both methods run on the session's read
+// goroutine, so an implementation must return promptly and must not block. Only
+// a session that reached PLAY reports a disconnect; a SETUP that never played
+// reports nothing.
+type Listener interface {
+	ClientConnected(path, remote string)
+	ClientDisconnected(path, remote string, reason DisconnectReason)
 }
 
 // FrameSource is how the server pulls media: the pipeline pushes frames in, the
