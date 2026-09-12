@@ -147,7 +147,7 @@ func TestStartManagementSeedsStoreFromPreOverrideConfig(t *testing.T) {
 	storeCfg := fileCfg.Clone()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h, ok := startManagement(ctx, path, &running, &storeCfg, newProvider(), nil, nil, nil, auth.NewGuard(""))
+	h, ok := startManagement(ctx, path, &running, &storeCfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(""))
 	if !ok {
 		t.Fatal("management did not start")
 	}

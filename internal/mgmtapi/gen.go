@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/oapi-codegen/runtime"
 )
@@ -97,6 +98,75 @@ const (
 func (e HealthStatus) Valid() bool {
 	switch e {
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationCategory.
+const (
+	NotificationCategoryAudio  NotificationCategory = "audio"
+	NotificationCategoryConfig NotificationCategory = "config"
+	NotificationCategoryDevice NotificationCategory = "device"
+	NotificationCategoryStream NotificationCategory = "stream"
+	NotificationCategorySystem NotificationCategory = "system"
+)
+
+// Valid indicates whether the value is a known member of the NotificationCategory enum.
+func (e NotificationCategory) Valid() bool {
+	switch e {
+	case NotificationCategoryAudio:
+		return true
+	case NotificationCategoryConfig:
+		return true
+	case NotificationCategoryDevice:
+		return true
+	case NotificationCategoryStream:
+		return true
+	case NotificationCategorySystem:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationKind.
+const (
+	Clear NotificationKind = "clear"
+	Event NotificationKind = "event"
+	Onset NotificationKind = "onset"
+)
+
+// Valid indicates whether the value is a known member of the NotificationKind enum.
+func (e NotificationKind) Valid() bool {
+	switch e {
+	case Clear:
+		return true
+	case Event:
+		return true
+	case Onset:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationSeverity.
+const (
+	Error   NotificationSeverity = "error"
+	Info    NotificationSeverity = "info"
+	Warning NotificationSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the NotificationSeverity enum.
+func (e NotificationSeverity) Valid() bool {
+	switch e {
+	case Error:
+		return true
+	case Info:
+		return true
+	case Warning:
 		return true
 	default:
 		return false
@@ -417,6 +487,85 @@ type NetworkInterface struct {
 	Up bool `json:"up"`
 }
 
+// Notification One notification entry.
+type Notification struct {
+	// BootId Identity of the process run that produced this entry. Ids restart at 1 each boot, so a client resets its read state when bootId changes.
+	//
+	//
+	// Examples: 4a2b1c8e9f0d3e5a
+	BootId string `json:"bootId"`
+
+	// Category The subsystem a notification concerns.
+	Category NotificationCategory `json:"category"`
+
+	// Id Monotonic per-boot id, assigned in publish order.
+	//
+	// Examples: 42
+	Id int64 `json:"id"`
+
+	// Key Condition identity, present on onset and clear entries and absent on discrete events. A clear pairs with its onset by key.
+	//
+	//
+	// Examples: device:garden:down
+	Key *string `json:"key,omitempty"`
+
+	// Kind event is a discrete one-off; onset marks a condition becoming active and clear marks it becoming inactive, paired by key.
+	Kind NotificationKind `json:"kind"`
+
+	// Message One-sentence detail naming the specific device, path or value.
+	Message string `json:"message"`
+
+	// Severity error is a fault needing attention; warning is a degraded state; info is routine. Only error notifications raise a client toast.
+	Severity NotificationSeverity `json:"severity"`
+
+	// Source The subject (device name, RTSP path, or remote address).
+	//
+	// Examples: garden
+	Source *string `json:"source,omitempty"`
+
+	// Time When the entry was published (appliance wall clock).
+	//
+	// Examples: 2026-09-12T11:03:00Z
+	Time time.Time `json:"time"`
+
+	// Title Short noun label.
+	//
+	// Examples: Device failed
+	Title string `json:"title"`
+}
+
+// NotificationCategory The subsystem a notification concerns.
+type NotificationCategory string
+
+// NotificationKind event is a discrete one-off; onset marks a condition becoming active and clear marks it becoming inactive, paired by key.
+type NotificationKind string
+
+// NotificationSeverity error is a fault needing attention; warning is a degraded state; info is routine. Only error notifications raise a client toast.
+type NotificationSeverity string
+
+// NotificationSnapshot The full current notification state a client bootstraps and re-syncs from.
+type NotificationSnapshot struct {
+	// BootId Identity of the current process run.
+	//
+	// Examples: 4a2b1c8e9f0d3e5a
+	BootId string `json:"bootId"`
+
+	// NextId The id the next published notification will take. A streamed id at or beyond a previously seen nextId with earlier ids missing means a dropped event; the client refetches this snapshot.
+	//
+	//
+	// Examples: 43
+	NextId int64 `json:"nextId"`
+
+	// Notifications History and active conditions, ascending by id.
+	Notifications []Notification `json:"notifications"`
+
+	// ServerTime The appliance's wall-clock time when the snapshot was taken, so a client can correct relative timestamps for clock skew.
+	//
+	//
+	// Examples: 2026-09-12T11:03:00Z
+	ServerTime time.Time `json:"serverTime"`
+}
+
 // OpusSettings Opus encoder settings, used only when mode is opus.
 type OpusSettings struct {
 	// Bitrate Encoder bitrate in bits per second; 0 selects the encoder default.
@@ -698,6 +847,11 @@ type ClientInterface interface {
 	//   LevelsEvent covering every serving device. Peak and RMS are
 	//   measured over the window since the previous event; meter
 	//   ballistics (decay, peak hold) are the client's job.
+	// - `notification`: emitted when a notification is raised, with one
+	//   Notification as data. The stream is best effort: there is no replay,
+	//   `Last-Event-ID` is ignored, and a client re-syncs from GET
+	//   /notifications on connect, on reconnect, and whenever it detects an
+	//   id gap.
 	// - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 	//   idle connections stay alive and clients can detect a dead
 	//   server. Sent as a named event (not an SSE comment) so simple
@@ -725,6 +879,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /healthz (the `GetHealth` operationId).
 	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListNotifications List notifications
+	//
+	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+	//
+	// Corresponds with GET /notifications (the `ListNotifications` operationId).
+	ListNotifications(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetStatus Appliance status
 	//
@@ -919,6 +1080,11 @@ func (c *Client) GetDevice(ctx context.Context, name string, reqEditors ...Reque
 //     LevelsEvent covering every serving device. Peak and RMS are
 //     measured over the window since the previous event; meter
 //     ballistics (decay, peak hold) are the client's job.
+//   - `notification`: emitted when a notification is raised, with one
+//     Notification as data. The stream is best effort: there is no replay,
+//     `Last-Event-ID` is ignored, and a client re-syncs from GET
+//     /notifications on connect, on reconnect, and whenever it detects an
+//     id gap.
 //   - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 //     idle connections stay alive and clients can detect a dead
 //     server. Sent as a named event (not an SSE comment) so simple
@@ -957,6 +1123,23 @@ func (c *Client) StreamEvents(ctx context.Context, params *StreamEventsParams, r
 // Corresponds with GET /healthz (the `GetHealth` operationId).
 func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHealthRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListNotifications List notifications
+//
+// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+//
+// Corresponds with GET /notifications (the `ListNotifications` operationId).
+func (c *Client) ListNotifications(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListNotificationsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -1328,6 +1511,33 @@ func NewGetHealthRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewListNotificationsRequest constructs an http.Request for the ListNotifications method
+func NewListNotificationsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/notifications")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetStatusRequest constructs an http.Request for the GetStatus method
 func NewGetStatusRequest(server string) (*http.Request, error) {
 	var err error
@@ -1544,6 +1754,11 @@ type ClientWithResponsesInterface interface {
 	//   LevelsEvent covering every serving device. Peak and RMS are
 	//   measured over the window since the previous event; meter
 	//   ballistics (decay, peak hold) are the client's job.
+	// - `notification`: emitted when a notification is raised, with one
+	//   Notification as data. The stream is best effort: there is no replay,
+	//   `Last-Event-ID` is ignored, and a client re-syncs from GET
+	//   /notifications on connect, on reconnect, and whenever it detects an
+	//   id gap.
 	// - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 	//   idle connections stay alive and clients can detect a dead
 	//   server. Sent as a named event (not an SSE comment) so simple
@@ -1575,6 +1790,15 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /healthz (the `GetHealth` operationId).
 	GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
+
+	// ListNotificationsWithResponse List notifications
+	//
+	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /notifications (the `ListNotifications` operationId).
+	ListNotificationsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListNotificationsResponse, error)
 
 	// GetStatusWithResponse Appliance status
 	//
@@ -2064,6 +2288,54 @@ func (r GetHealthResponse) ContentType() string {
 	return ""
 }
 
+type ListNotificationsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NotificationSnapshot
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListNotificationsResponse) GetJSON200() *NotificationSnapshot {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r ListNotificationsResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r ListNotificationsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListNotificationsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListNotificationsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListNotificationsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type GetStatusResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -2353,6 +2625,11 @@ func (c *ClientWithResponses) GetDeviceWithResponse(ctx context.Context, name st
 //     LevelsEvent covering every serving device. Peak and RMS are
 //     measured over the window since the previous event; meter
 //     ballistics (decay, peak hold) are the client's job.
+//   - `notification`: emitted when a notification is raised, with one
+//     Notification as data. The stream is best effort: there is no replay,
+//     `Last-Event-ID` is ignored, and a client re-syncs from GET
+//     /notifications on connect, on reconnect, and whenever it detects an
+//     id gap.
 //   - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 //     idle connections stay alive and clients can detect a dead
 //     server. Sent as a named event (not an SSE comment) so simple
@@ -2395,6 +2672,21 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 		return nil, err
 	}
 	return ParseGetHealthResponse(rsp)
+}
+
+// ListNotificationsWithResponse List notifications
+//
+// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /notifications (the `ListNotifications` operationId).
+func (c *ClientWithResponses) ListNotificationsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListNotificationsResponse, error) {
+	rsp, err := c.ListNotifications(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListNotificationsResponse(rsp)
 }
 
 // GetStatusWithResponse Appliance status
@@ -2770,6 +3062,39 @@ func ParseGetHealthResponse(rsp *http.Response) (*GetHealthResponse, error) {
 	return response, nil
 }
 
+// ParseListNotificationsResponse parses an HTTP response from a ListNotificationsWithResponse call
+func ParseListNotificationsResponse(rsp *http.Response) (*ListNotificationsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListNotificationsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NotificationSnapshot
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetStatusResponse parses an HTTP response from a GetStatusWithResponse call
 func ParseGetStatusResponse(rsp *http.Response) (*GetStatusResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -2898,6 +3223,9 @@ type ServerInterface interface {
 	// GetHealth Liveness probe
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// ListNotifications List notifications
+	// (GET /notifications)
+	ListNotifications(w http.ResponseWriter, r *http.Request)
 	// GetStatus Appliance status
 	// (GET /status)
 	GetStatus(w http.ResponseWriter, r *http.Request)
@@ -3087,6 +3415,20 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// ListNotifications operation middleware
+func (siw *ServerInterfaceWrapper) ListNotifications(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNotifications(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetStatus operation middleware
 func (siw *ServerInterfaceWrapper) GetStatus(w http.ResponseWriter, r *http.Request) {
 
@@ -3257,6 +3599,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/devices/{name}", wrapper.DeleteDevice)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/devices/{name}", wrapper.GetDevice)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/events", wrapper.StreamEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notifications", wrapper.ListNotifications)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/config", wrapper.GetConfig)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/config", wrapper.PatchConfig)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system", wrapper.GetSystem)
@@ -3722,6 +4065,44 @@ func (response GetHealth200JSONResponse) VisitGetHealthResponse(w http.ResponseW
 	return err
 }
 
+type ListNotificationsRequestObject struct {
+}
+
+type ListNotificationsResponseObject interface {
+	VisitListNotificationsResponse(w http.ResponseWriter) error
+}
+
+type ListNotifications200JSONResponse NotificationSnapshot
+
+func (response ListNotifications200JSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListNotificationsdefaultApplicationProblemPlusJSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetStatusRequestObject struct {
 }
 
@@ -3865,6 +4246,9 @@ type StrictServerInterface interface {
 	// GetHealth Liveness probe
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// ListNotifications List notifications
+	// (GET /notifications)
+	ListNotifications(ctx context.Context, request ListNotificationsRequestObject) (ListNotificationsResponseObject, error)
 	// GetStatus Appliance status
 	// (GET /status)
 	GetStatus(ctx context.Context, request GetStatusRequestObject) (GetStatusResponseObject, error)
@@ -4144,6 +4528,30 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetHealthResponseObject); ok {
 		if err := validResponse.VisitGetHealthResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListNotifications operation middleware
+func (sh *strictHandler) ListNotifications(w http.ResponseWriter, r *http.Request) {
+	var request ListNotificationsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListNotifications(ctx, request.(ListNotificationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListNotifications")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListNotificationsResponseObject); ok {
+		if err := validResponse.VisitListNotificationsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

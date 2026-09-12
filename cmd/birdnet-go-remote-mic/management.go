@@ -333,7 +333,7 @@ func closedMgmt() *mgmt {
 // is the override-free on-disk config that seeds the persistence store, so a
 // later PATCH /config never bakes an ephemeral override into config.yaml
 // (issue #29).
-func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
+func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, notifications mgmtserver.Snapshotter, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
 	certDir := cfg.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(cfgPath)
@@ -372,6 +372,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	}
 	if events != nil {
 		opts = append(opts, mgmtserver.WithEventStream(events))
+	}
+	if notifications != nil {
+		opts = append(opts, mgmtserver.WithNotifications(notifications))
 	}
 
 	srv := &http.Server{

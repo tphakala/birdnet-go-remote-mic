@@ -338,5 +338,5 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 	}
 }
 
-// The SSE HTTP handler lives in internal/sse; cmd wires sse.Handler(hub) onto
+// The SSE HTTP handler lives in internal/sse; cmd wires sse.Handler(hub, center) onto
 // GET /events. The hub is only the levels Source.

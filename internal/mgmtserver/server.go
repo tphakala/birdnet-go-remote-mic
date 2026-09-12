@@ -105,13 +105,14 @@ type Provider interface {
 
 // Server implements mgmtapi.StrictServerInterface over a Provider.
 type Server struct {
-	provider    Provider
-	eventStream http.Handler
-	configStore ConfigStore
-	system      SystemProvider
-	restartFn   func()
-	reloader    Reloader
-	staticFS    fs.FS
+	provider      Provider
+	eventStream   http.Handler
+	configStore   ConfigStore
+	system        SystemProvider
+	notifications Snapshotter
+	restartFn     func()
+	reloader      Reloader
+	staticFS      fs.FS
 	// guard gates the API routes with the shared bearer token; nil or disabled
 	// means open access.
 	guard *auth.Guard

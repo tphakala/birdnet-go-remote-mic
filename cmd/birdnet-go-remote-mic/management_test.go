@@ -5,18 +5,22 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
 const (
@@ -150,7 +154,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -173,7 +177,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
@@ -187,12 +191,61 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
 	cancel() // trigger graceful shutdown
 	h.Wait()
+}
+
+func TestStartManagementServesNotifications(t *testing.T) {
+	// End-to-end wiring: a center handed to startManagement is reachable at GET
+	// /api/v1/notifications, and its startup entry is already in the snapshot.
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	center := notify.NewCenter()
+	center.Publish(notify.Started("v-test"))
+
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, center, nil, nil, nil)
+	if !ok {
+		t.Fatal("management should have started on an ephemeral port")
+	}
+	defer h.Wait()
+	defer cancel()
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.addr+"/api/v1/notifications", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET notifications: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var snap mgmtapi.NotificationSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.BootId != center.BootID() {
+		t.Errorf("bootId = %q, want %q", snap.BootId, center.BootID())
+	}
+	if len(snap.Notifications) != 1 {
+		t.Fatalf("notifications = %+v, want one started entry", snap.Notifications)
+	}
+	n := snap.Notifications[0]
+	if n.Category != mgmtapi.NotificationCategorySystem || n.Kind != mgmtapi.Event {
+		t.Errorf("started entry category/kind wrong: %+v", n)
+	}
+	if !strings.Contains(n.Message, "v-test") {
+		t.Errorf("message %q does not name the version", n.Message)
+	}
 }
 
 func TestProviderStatusAuthRequired(t *testing.T) {
@@ -226,7 +279,7 @@ func TestStartManagementEnforcesBearer(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, auth.NewGuard(testAuthToken))
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken))
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}

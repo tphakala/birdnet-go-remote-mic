@@ -28,6 +28,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
@@ -202,6 +203,14 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// registered as each device is wrapped.
 	hub := levels.NewHub()
 
+	// The notification center holds the appliance's in-memory event history and
+	// active conditions and streams them over SSE beside levels. The startup
+	// entry is published before the management API comes up, so it is already in
+	// the first snapshot a client fetches. Later PRs wire the emitters and
+	// monitors that publish device, stream, config and host-health entries.
+	center := notify.NewCenter()
+	center.Publish(notify.Started(version))
+
 	prov := &provider{
 		version:     version,
 		start:       startTime,
@@ -251,7 +260,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	if mgmtEnabled {
 		// Sample host CPU utilization for GET /system only while the API serves.
 		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub), stop, reloader, guard)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard)
 	}
 	defer func() {
 		stop()
