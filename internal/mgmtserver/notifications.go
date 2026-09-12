@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"context"
 	"net/http"
+	"reflect"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
@@ -17,11 +18,23 @@ type Snapshotter interface {
 }
 
 // WithNotifications mounts src as the source for GET /notifications. Omit this
-// option to leave the endpoint returning 501. Pass a live source; do not pass a
-// typed-nil pointer (for example a nil *notify.Center), which mounts a non-nil
-// interface and makes the endpoint serve an empty snapshot rather than 501.
+// option, pass nil, or pass a typed-nil pointer (for example a nil
+// *notify.Center) to leave the endpoint returning 501: a typed-nil is detected
+// and treated as unmounted rather than mounting a non-nil interface that would
+// serve an empty snapshot.
 func WithNotifications(src Snapshotter) Option {
-	return func(s *Server) { s.notifications = src }
+	return func(s *Server) {
+		// A typed-nil pointer is a non-nil interface, so guard against it here;
+		// otherwise ListNotifications would call Snapshot on a nil receiver and
+		// serve an empty snapshot instead of 501.
+		if src == nil {
+			return
+		}
+		if rv := reflect.ValueOf(src); rv.Kind() == reflect.Pointer && rv.IsNil() {
+			return
+		}
+		s.notifications = src
+	}
 }
 
 // ListNotifications handles GET /notifications. Without a mounted source it

@@ -105,21 +105,22 @@ func TestOnsetEmptyKeyRejected(t *testing.T) {
 	}
 }
 
-func TestClearInheritsOnsetIdentity(t *testing.T) {
+func TestClearTakesOnsetIdentity(t *testing.T) {
 	c := NewCenter()
 	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Source: testDeviceSource, Title: testDownTitle})
-	// Clear with category and source left blank: the clear entry inherits them
-	// from the onset, so it never carries an empty required category.
-	if !c.Clear(testDeviceKey, Notification{Severity: SeverityInfo, Title: "recovered"}) {
+	// A clear's category and source always come from the onset (they are the
+	// condition's identity, fixed by its key), overriding whatever the caller
+	// passes, so an onset and its clear can never disagree for the same key.
+	if !c.Clear(testDeviceKey, Notification{Severity: SeverityInfo, Category: CategorySystem, Source: "wrong", Title: "recovered"}) {
 		t.Fatal("Clear returned false, want true")
 	}
 	snap := c.Snapshot()
 	last := snap.Notifications[len(snap.Notifications)-1]
 	if last.Category != CategoryDevice {
-		t.Errorf("clear category = %q, want inherited %q", last.Category, CategoryDevice)
+		t.Errorf("clear category = %q, want onset's %q", last.Category, CategoryDevice)
 	}
 	if last.Source != testDeviceSource {
-		t.Errorf("clear source = %q, want inherited garden", last.Source)
+		t.Errorf("clear source = %q, want onset's %q", last.Source, testDeviceSource)
 	}
 }
 
@@ -237,6 +238,28 @@ func TestBroadcastDropsOnFullWithoutBlocking(t *testing.T) {
 	}
 	if got := len(ch); got != subscriberBuffer {
 		t.Fatalf("buffered = %d, want %d (excess dropped)", got, subscriberBuffer)
+	}
+}
+
+func TestPublishSkipsBroadcastOnMarshalFailure(t *testing.T) {
+	// A time whose year is outside [0,9999] is the only input that makes
+	// json.Marshal fail. A real clock never produces it, but the stream must
+	// degrade gracefully: the ring still records the entry (the snapshot is the
+	// source of truth) and no broken event reaches subscribers.
+	badClock := func() time.Time { return time.Date(10001, 1, 1, 0, 0, 0, 0, time.UTC) }
+	c := NewCenter(WithClock(badClock))
+	ch, cancel := c.Subscribe()
+	defer cancel()
+	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "x"})
+	// The entry is in the ring despite the marshal failure.
+	if got := len(c.Snapshot().Notifications); got != 1 {
+		t.Errorf("ring entries = %d, want 1 (entry recorded despite marshal failure)", got)
+	}
+	// No broken event was broadcast to the subscriber.
+	select {
+	case ev := <-ch:
+		t.Errorf("a broken event was broadcast: %+v", ev)
+	default:
 	}
 }
 

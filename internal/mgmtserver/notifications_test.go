@@ -55,6 +55,32 @@ func TestNotificationWireParity(t *testing.T) {
 	}
 }
 
+func TestWithNotificationsRejectsNilSources(t *testing.T) {
+	// Both an untyped nil and a typed-nil pointer must leave the endpoint
+	// unmounted (501), never mount a non-nil interface that serves an empty
+	// snapshot on a nil receiver.
+	cases := map[string]Option{
+		"untyped nil": WithNotifications(nil),
+		"typed nil":   WithNotifications((*notify.Center)(nil)),
+	}
+	for name, opt := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := New(&fakeProvider{}, opt)
+			resp, err := s.ListNotifications(context.Background(), mgmtapi.ListNotificationsRequestObject{})
+			if err != nil {
+				t.Fatalf("ListNotifications: %v", err)
+			}
+			p, ok := resp.(mgmtapi.ListNotificationsdefaultApplicationProblemPlusJSONResponse)
+			if !ok {
+				t.Fatalf("ListNotifications returned %T, want default problem", resp)
+			}
+			if p.StatusCode != 501 {
+				t.Errorf("status = %d, want 501", p.StatusCode)
+			}
+		})
+	}
+}
+
 func TestListNotificationsNotImplementedWithoutSource(t *testing.T) {
 	s := New(&fakeProvider{})
 	resp, err := s.ListNotifications(context.Background(), mgmtapi.ListNotificationsRequestObject{})

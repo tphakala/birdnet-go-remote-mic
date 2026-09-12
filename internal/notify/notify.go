@@ -244,9 +244,15 @@ func (c *Center) publishLocked(n *Notification) {
 	n.BootID = c.bootID
 	n.Time = c.clock()
 	c.ring.push(n)
-	// Marshal once. Every field is a string, an enum, or a time, so it cannot
-	// fail; the error is ignored to match the levels stream's convention.
-	data, _ := json.Marshal(n)
+	// Marshal once. This fails only for a time whose year is outside [0,9999],
+	// which a real clock never produces. The entry is already in the ring so the
+	// snapshot still serves it, and the stream event is best effort, so on that
+	// impossible-in-practice failure just skip the broadcast rather than emit a
+	// broken event.
+	data, err := json.Marshal(n)
+	if err != nil {
+		return
+	}
 	ev := sse.Event{Name: notificationEvent, Data: data}
 	for s := range c.subs {
 		select {
@@ -312,15 +318,12 @@ func (c *Center) Clear(key string, n Notification) bool {
 	delete(c.active, key)
 	n.Key = key
 	n.Kind = KindClear
-	// Inherit the onset's identity when the caller left it blank, so a clear
-	// always carries the same category and source as the condition it ends. A
-	// clear with an empty category would violate the required schema enum.
-	if n.Category == "" {
-		n.Category = onset.Category
-	}
-	if n.Source == "" {
-		n.Source = onset.Source
-	}
+	// Category and source are the condition's identity, fixed by its key across
+	// onset and clear, so always take them from the onset. This keeps the clear
+	// event and snapshot entry consistent with the onset for the same key and
+	// never lets a clear carry an empty required category.
+	n.Category = onset.Category
+	n.Source = onset.Source
 	c.publishLocked(&n)
 	return true
 }
