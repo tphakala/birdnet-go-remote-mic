@@ -6,10 +6,14 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	rtsp "github.com/tphakala/go-audio-stream/rtsp"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 )
 
 var testSDP = []byte("v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns= \r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\n" +
@@ -322,5 +326,172 @@ func TestRemovedTrack404(t *testing.T) {
 	c := dial(t, addr)
 	if r := c.do(t, "DESCRIBE", baseURL(addr), nil); r.StatusCode != 404 {
 		t.Errorf("DESCRIBE removed track = %d, want 404", r.StatusCode)
+	}
+}
+
+// recordingListener captures the Listener callbacks the server makes, safe for
+// the read goroutine to write and the test goroutine to read.
+type recordingListener struct {
+	mu    sync.Mutex
+	conns []string
+	disc  []discEvent
+}
+
+type discEvent struct {
+	path   string
+	remote string
+	reason DisconnectReason
+}
+
+func (r *recordingListener) ClientConnected(path, remote string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.conns = append(r.conns, path)
+}
+
+func (r *recordingListener) ClientDisconnected(path, remote string, reason DisconnectReason) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.disc = append(r.disc, discEvent{path: path, remote: remote, reason: reason})
+}
+
+func (r *recordingListener) connectCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.conns)
+}
+
+func (r *recordingListener) disconnects() []discEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]discEvent(nil), r.disc...)
+}
+
+// waitFor polls cond until it holds or the timeout elapses, so a test can wait
+// on an event delivered from the server's read goroutine without a fixed sleep.
+func waitFor(t *testing.T, cond func() bool, timeout time.Duration, what string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// playingTrack is a track with a live frame source, so a PLAY starts the writer
+// and the listener sees a connect.
+func playingTrack() *Track {
+	return &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Frames: NewChanSource(64)}
+}
+
+// setupAndPlay runs SETUP then PLAY on c and returns the session header, failing
+// the test on any non-200.
+func setupAndPlay(t *testing.T, c *client, addr string) rtsp.Header {
+	t.Helper()
+	setup := c.do(t, "SETUP", trackURL(addr), tcpTransport("0-1"))
+	if setup.StatusCode != 200 {
+		t.Fatalf("SETUP = %d", setup.StatusCode)
+	}
+	sess := rtsp.Header{}
+	sess.Set("Session", setup.Header.Get("Session"))
+	if r := c.do(t, "PLAY", baseURL(addr), sess); r.StatusCode != 200 {
+		t.Fatalf("PLAY = %d", r.StatusCode)
+	}
+	return sess
+}
+
+func TestListenerConnectThenTeardown(t *testing.T) {
+	rec := &recordingListener{}
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, playingTrack())
+	c := dial(t, addr)
+
+	sess := setupAndPlay(t, c, addr)
+	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "a connect on PLAY")
+
+	if r := c.do(t, "TEARDOWN", baseURL(addr), sess); r.StatusCode != 200 {
+		t.Fatalf("TEARDOWN = %d", r.StatusCode)
+	}
+	waitFor(t, func() bool { return len(rec.disconnects()) == 1 }, 2*time.Second, "a disconnect on TEARDOWN")
+	d := rec.disconnects()[0]
+	if d.path != testPath {
+		t.Errorf("disconnect path = %q, want %q", d.path, testPath)
+	}
+	if d.reason != DisconnectTeardown {
+		t.Errorf("disconnect reason = %v, want teardown", d.reason)
+	}
+}
+
+func TestListenerDisconnectOnConnectionDrop(t *testing.T) {
+	rec := &recordingListener{}
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, playingTrack())
+	c := dial(t, addr)
+
+	setupAndPlay(t, c, addr)
+	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "a connect on PLAY")
+
+	_ = c.conn.Close() // abrupt drop, no TEARDOWN
+	waitFor(t, func() bool { return len(rec.disconnects()) == 1 }, 2*time.Second, "a disconnect on the dropped connection")
+	if got := rec.disconnects()[0].reason; got != DisconnectReadError {
+		t.Errorf("disconnect reason = %v, want read error", got)
+	}
+}
+
+func TestListenerDisconnectOnEviction(t *testing.T) {
+	rec := &recordingListener{}
+	g := auth.NewGuard("")
+	frames := NewChanSource(256)
+	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Frames: frames}
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g, Listener: rec}, track)
+	c := dial(t, addr)
+
+	setupAndPlay(t, c, addr)
+	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "a connect on PLAY")
+
+	// Feed audio continuously so the writer loops and checks shouldEvict.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
+			}
+		}
+	}()
+
+	// Enabling a token evicts the open-access session proactively in the writer.
+	g.Set(testAuthToken)
+	waitFor(t, func() bool { return len(rec.disconnects()) == 1 }, 3*time.Second, "a disconnect on eviction")
+	if got := rec.disconnects()[0].reason; got != DisconnectEvicted {
+		t.Errorf("disconnect reason = %v, want evicted", got)
+	}
+}
+
+func TestListenerSetupOnlyEmitsNothing(t *testing.T) {
+	rec := &recordingListener{}
+	track := playingTrack()
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, track)
+	c := dial(t, addr)
+
+	if r := c.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); r.StatusCode != 200 {
+		t.Fatalf("SETUP = %d", r.StatusCode)
+	}
+	// A SETUP claims the track slot; dropping the connection releases it. Waiting
+	// on that release confirms the deferred cleanup ran, so the assertions below
+	// are not racing it.
+	_ = c.conn.Close()
+	waitFor(t, func() bool { return !track.ClientConnected() }, 2*time.Second, "the slot to be released after cleanup")
+	if rec.connectCount() != 0 {
+		t.Errorf("a SETUP that never played emitted %d connects, want 0", rec.connectCount())
+	}
+	if n := len(rec.disconnects()); n != 0 {
+		t.Errorf("a SETUP that never played emitted %d disconnects, want 0", n)
 	}
 }

@@ -237,7 +237,11 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard, center)
+	// The stream-events adapter turns RTSP client connect and disconnect
+	// callbacks into notification-center entries, collapsing the churn of a
+	// repeatedly reconnecting client into a single flapping warning.
+	streamListener := newStreamEvents(center, nil)
+	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard, Listener: streamListener}), prov, guard, center)
 
 	// reconcileCh carries a runtime config reload from an API handler goroutine to
 	// the run loop, which owns the pipeline. The reloader closure handed to the

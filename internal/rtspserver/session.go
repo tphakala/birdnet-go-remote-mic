@@ -53,6 +53,11 @@ type connSession struct {
 	startTS  uint32
 	hasSlot  bool
 	writing  bool // the media writer goroutine is running
+	// teardown records that the client sent an explicit TEARDOWN, so the
+	// disconnect cleanup can distinguish it from a dropped connection. Written
+	// and read only on the read goroutine (handle and serveConn's deferred
+	// cleanup), so it needs no atomic.
+	teardown bool
 
 	// nonce is the Digest nonce issued to this connection on its first
 	// challenge; answers are accepted only under it, so a captured Authorization
@@ -68,6 +73,11 @@ type connSession struct {
 	nonce   string
 	authed  atomic.Bool
 	authGen atomic.Uint64
+	// evictReason is set by the writer goroutine to DisconnectEvicted before it
+	// returns on a token-change eviction, then read by serveConn's deferred
+	// cleanup after the socket closes; the atomic carries that value across the
+	// two goroutines. Its zero value is DisconnectReadError.
+	evictReason atomic.Int32
 }
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
@@ -81,6 +91,20 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 			cs.track.releaseSlot()
 		}
 		cs.close()
+		// A session that reached PLAY reports its end to the listener; a SETUP
+		// that never played (writing false) reports nothing. An eviction recorded
+		// by the writer wins; otherwise an explicit TEARDOWN, else a dropped
+		// connection or idle timeout.
+		if cs.writing {
+			reason := DisconnectReadError
+			switch {
+			case DisconnectReason(cs.evictReason.Load()) == DisconnectEvicted:
+				reason = DisconnectEvicted
+			case cs.teardown:
+				reason = DisconnectTeardown
+			}
+			cs.notifyDisconnected(reason)
+		}
 	}()
 
 	buf := make([]byte, 0, 8192)
@@ -167,6 +191,7 @@ func (cs *connSession) handle(req *rtsp.Request) (fatal bool) {
 	case "GET_PARAMETER":
 		cs.respondSession(req, 200, "OK")
 	case "TEARDOWN":
+		cs.teardown = true
 		cs.respondSession(req, 200, "OK")
 		return true
 	default:
@@ -321,7 +346,25 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 	// client sees RTP-Info's starting seq/rtptime before the first packet.
 	if startWriter && cs.track.Frames != nil && !cs.writing {
 		cs.writing = true
+		cs.notifyConnected()
 		go cs.runWriter()
+	}
+}
+
+// notifyConnected reports a new playing client to the configured listener, if
+// any. Called on the read goroutine at the first PLAY, once cs.track is bound.
+func (cs *connSession) notifyConnected() {
+	if l := cs.srv.cfg.Listener; l != nil {
+		l.ClientConnected(cs.track.Path, cs.conn.RemoteAddr().String())
+	}
+}
+
+// notifyDisconnected reports a playing client's session ending to the configured
+// listener, if any. Called on the read goroutine from serveConn's deferred
+// cleanup.
+func (cs *connSession) notifyDisconnected(reason DisconnectReason) {
+	if l := cs.srv.cfg.Listener; l != nil {
+		l.ClientDisconnected(cs.track.Path, cs.conn.RemoteAddr().String(), reason)
 	}
 }
 

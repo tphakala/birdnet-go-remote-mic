@@ -51,6 +51,9 @@ func (cs *connSession) runWriter() {
 		// cancels the context and closes the socket, and serveConn's deferred
 		// cleanup releases the track slot.
 		if enabled, gen := cs.srv.cfg.Auth.Snapshot(); shouldEvict(enabled, gen, cs.authed.Load(), cs.authGen.Load()) {
+			// Record why this session ends so serveConn's cleanup reports an
+			// eviction rather than a plain dropped connection.
+			cs.evictReason.Store(int32(DisconnectEvicted))
 			return
 		}
 		if len(frame.Payload) > maxWriterPayload {
