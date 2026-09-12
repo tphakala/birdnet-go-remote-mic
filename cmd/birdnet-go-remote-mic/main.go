@@ -237,7 +237,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard)
+	app := newAppliance(ctx, hub, rtspserver.New(rtspserver.Config{Listen: cfg.Listen, Auth: guard}), prov, guard, center)
 
 	// reconcileCh carries a runtime config reload from an API handler goroutine to
 	// the run loop, which owns the pipeline. The reloader closure handed to the
@@ -301,6 +301,24 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	go func() { srvErr <- app.srv.ListenAndServe(ctx) }()
 	log.Printf("serving %d device(s) on %s", app.serving(), cfg.Listen)
 
+	// shutdown logs and publishes the best-effort shutdown entry, so a client that
+	// stays connected to the notification stream through the drain sees why the
+	// stream ends. The ring is cleared on the next boot, so this is the last entry
+	// of the run. It runs on either exit path a signal can take: the ctx.Done case,
+	// and the srvErr case, because a cancelled ctx makes ListenAndServe close its
+	// listener and return nil, so both cases become ready at once and select may
+	// pick srvErr; without publishing here that race would drop the entry.
+	shutdown := func() {
+		log.Print("shutting down")
+		center.Publish(notify.Notification{
+			Severity: notify.SeverityInfo,
+			Category: notify.CategorySystem,
+			Kind:     notify.KindEvent,
+			Title:    "Shutting down",
+			Message:  "Appliance shutting down",
+		})
+	}
+
 	// The run loop owns the pipeline. It applies config reloads from the API,
 	// retires devices that die (their track 404s while the rest keep serving), and
 	// exits on shutdown or a fatal server error. While the API is serving the
@@ -309,7 +327,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Print("shutting down")
+			shutdown()
 			return nil
 		case req := <-reconcileCh:
 			app.reconcile(&req.cfg)
@@ -326,6 +344,10 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 			if serr != nil {
 				return fmt.Errorf("rtsp server: %w", serr)
 			}
+			// A nil error means ListenAndServe returned only because ctx was
+			// cancelled (its Accept loop returns nil solely on a cancelled listener),
+			// so this is a shutdown that raced ahead of the ctx.Done case above.
+			shutdown()
 			return nil
 		}
 	}

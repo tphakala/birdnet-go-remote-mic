@@ -10,7 +10,14 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
+
+// configRestartKey is the notification-center condition key for a persisted
+// configuration change that could not be hot-applied and needs a restart. It has
+// no matching clear: a restart empties the ring, so the condition simply does not
+// return after the next boot.
+const configRestartKey = "config:restart"
 
 // ConfigStore reads and persists the appliance configuration for the config
 // endpoints. When no store is mounted, GET and PATCH /config return 501. Its
@@ -179,8 +186,22 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	// (or one whose reload below fails) would leave the API answering as if it
 	// were still open access. Set is idempotent, so cmd's own reconcile guard
 	// applying the same token again is harmless.
+	//
+	// The auth-changed notification is derived here, not in the reconcile: Set
+	// advances the generation only on an actual token change, and this handler's
+	// Set runs before the reconcile's idempotent one, so comparing the generation
+	// around this Set is the only place that can observe the transition.
 	if s.guard != nil {
+		// Snapshot reads (enabled, generation) as one consistent atomic pair, so the
+		// before/after comparison cannot tear across a concurrent token change. The
+		// generation advances only on an actual token change, so an unchanged token
+		// emits nothing.
+		wasEnabled, genBefore := s.guard.Snapshot()
 		s.guard.Set(cur.Auth.Token)
+		nowEnabled, genAfter := s.guard.Snapshot()
+		if genAfter != genBefore && s.notifier != nil {
+			s.notifier.Publish(authChangedNotification(wasEnabled, nowEnabled))
+		}
 	}
 
 	// With a reloader mounted, apply the persisted change to the running pipeline
@@ -188,18 +209,84 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	// GET /devices) means the change is persisted but not live, so fall back to
 	// reporting that a restart is needed to apply it.
 	restartRequired := true
+	// reloadIndeterminate marks a reload error caused by the request being canceled
+	// (the PATCH client disconnected) or timing out. The reload request is enqueued
+	// before the wait, so the run loop may have applied the change anyway: the
+	// outcome is unknown, and it is not a config defect. Such an error must not
+	// raise a "reload failed" event or a "restart required" condition that a later,
+	// still-connected client would read as a real fault. restartRequired still
+	// reflects it in the (already-abandoned) response.
+	reloadIndeterminate := false
 	if s.reloader != nil {
 		if err := s.reloader(ctx, cur); err != nil {
 			log.Printf("mgmtserver: config persisted but hot reload failed: %v (a restart will apply it)", err)
+			reloadIndeterminate = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			if s.notifier != nil && !reloadIndeterminate {
+				s.notifier.Publish(notify.Notification{
+					Severity: notify.SeverityError,
+					Category: notify.CategoryConfig,
+					Kind:     notify.KindEvent,
+					Title:    "Config reload failed",
+					Message:  "Configuration was saved but could not be applied live: " + err.Error() + "; a restart is needed to apply it",
+				})
+			}
 		} else {
 			restartRequired = false
+			// The running pipeline now matches the persisted config, so clear any
+			// restart-required condition an earlier failed hot reload raised. This is
+			// a normal condition end (the change applied), not a vanished subject, so
+			// Clear carries a specific message rather than Resolve's generic one.
+			// Clear is a no-op when the condition is not active.
+			if s.notifier != nil {
+				s.notifier.Clear(configRestartKey, notify.Notification{
+					Severity: notify.SeverityInfo,
+					Title:    "Restart no longer required",
+					Message:  "The configuration was applied live, so the pending restart is no longer needed.",
+				})
+			}
 		}
+	}
+	// A change that could not be hot-applied (no reloader, or a genuine reload
+	// failure, but not an indeterminate cancellation) leaves the running pipeline
+	// out of sync with the persisted config until a restart. Onset is idempotent,
+	// so repeated restart-needing patches raise the condition once.
+	if restartRequired && !reloadIndeterminate && s.notifier != nil {
+		s.notifier.Onset(notify.Notification{
+			Severity: notify.SeverityWarning,
+			Category: notify.CategoryConfig,
+			Key:      configRestartKey,
+			Title:    "Restart required",
+			Message:  "A configuration change was saved but needs a restart to take effect",
+		})
 	}
 
 	return mgmtapi.PatchConfig200JSONResponse{
 		Config:          configToWire(&cur),
 		RestartRequired: restartRequired,
 	}, nil
+}
+
+// authChangedNotification builds the config.auth_changed event from the guard's
+// enabled state before and after a token change. The generation moved, so the
+// token is not unchanged: it was enabled (open to protected), disabled (protected
+// to open), or rotated (a new token while it stayed protected).
+func authChangedNotification(wasEnabled, nowEnabled bool) notify.Notification {
+	var msg string
+	switch {
+	case !wasEnabled && nowEnabled:
+		msg = "Access token enabled; the RTSP stream and the management API now require it"
+	case wasEnabled && !nowEnabled:
+		msg = "Access token disabled; the RTSP stream and the management API are now open on the network"
+	default:
+		msg = "Access token rotated; streaming clients must reconnect with the new token"
+	}
+	return notify.Notification{
+		Severity: notify.SeverityInfo,
+		Category: notify.CategoryConfig,
+		Kind:     notify.KindEvent,
+		Title:    "Access control changed",
+		Message:  msg,
+	}
 }
 
 // validationProblem renders a *config.ValidationError as an RFC 9457

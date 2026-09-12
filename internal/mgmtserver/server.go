@@ -15,6 +15,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
 // BasePath is the API version prefix all routes are mounted under.
@@ -110,6 +111,7 @@ type Server struct {
 	configStore   ConfigStore
 	system        SystemProvider
 	notifications Snapshotter
+	notifier      notify.Publisher
 	restartFn     func()
 	reloader      Reloader
 	staticFS      fs.FS

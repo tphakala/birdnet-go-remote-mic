@@ -14,6 +14,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
 )
@@ -133,7 +134,10 @@ func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFun
 	// actually protected.
 	guard := auth.NewGuard("")
 	srv := rtspserver.New(rtspserver.Config{Listen: testListenAny, Auth: guard})
-	app := newAppliance(ctx, levels.NewHub(), srv, &provider{version: "test", start: time.Now()}, guard)
+	// A real Center is the notifier so the emission tests assert against its
+	// Snapshot and Active state, exercising the same idempotency the production
+	// wiring relies on. Tests read it back via app.notifier.(*notify.Center).
+	app := newAppliance(ctx, levels.NewHub(), srv, &provider{version: "test", start: time.Now()}, guard, notify.NewCenter())
 	app.open = fakeOpener(log)
 	return app, log, cancel
 }
