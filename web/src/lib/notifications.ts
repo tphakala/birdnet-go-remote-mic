@@ -44,7 +44,10 @@ function isSnapshot(v: unknown): v is NotificationSnapshot {
     typeof s.serverTime === "string" &&
     Number.isFinite(s.nextId) &&
     Array.isArray(s.notifications) &&
-    s.notifications.every(isNotification)
+    // Every entry must be well-formed AND belong to the snapshot's own boot, so
+    // a snapshot cannot label itself one boot while carrying another boot's
+    // entries (which would persist as stale history or active conditions).
+    s.notifications.every((n) => isNotification(n) && n.bootId === s.bootId)
   );
 }
 

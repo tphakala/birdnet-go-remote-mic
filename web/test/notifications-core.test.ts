@@ -347,11 +347,25 @@ test("applyLive signals resync and leaves state untouched on a bootId mismatch",
   assert.equal(s.bootId, "boot-a");
 });
 
-test("applyLive does not resync before the first snapshot (bootId still null)", () => {
+test("applyLive adopts the boot identity before the first snapshot instead of resyncing", () => {
   const s = initialState();
   const r = applyLive(s, notif({ id: 1, bootId: "boot-x" }));
   assert.equal(r.resync, false);
   assert.equal(s.items.size, 1);
+  assert.equal(s.bootId, "boot-x");
+});
+
+test("a pre-snapshot live event does not merge into a later different-boot snapshot", () => {
+  const s = initialState();
+  applyLive(s, notif({ id: 1, bootId: "boot-a" })); // adopts boot-a
+  const { bootChanged } = applySnapshot(
+    s,
+    snap({ bootId: "boot-b", notifications: [notif({ id: 1, bootId: "boot-b", title: "fresh" })] }),
+    Date.now(),
+  );
+  assert.equal(bootChanged, true);
+  assert.equal(s.items.size, 1);
+  assert.equal([...s.items.values()][0]?.title, "fresh"); // the boot-a event was dropped
 });
 
 test("isNotification accepts a well-formed notification and rejects malformed ones", () => {
@@ -374,4 +388,20 @@ test("isNotification accepts a well-formed notification and rejects malformed on
     isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t" }),
     false,
   ); // missing message
+  assert.equal(
+    isNotification({ id: 1.5, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    false,
+  ); // fractional id
+  assert.equal(
+    isNotification({ id: 0, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    false,
+  ); // id below 1
+  assert.equal(
+    isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m", key: 5 }),
+    false,
+  ); // non-string key
+  assert.equal(
+    isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m", key: "dev:mic", source: "mic0" }),
+    true,
+  ); // valid with string key and source
 });

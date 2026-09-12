@@ -110,7 +110,12 @@ export function applyLive(
   state: CoreState,
   n: Notification,
 ): { state: CoreState; gap: boolean; isNewError: boolean; resync: boolean } {
-  if (state.bootId !== null && n.bootId !== state.bootId) {
+  if (state.bootId === null) {
+    // First event before any snapshot: adopt its boot identity now, so a later
+    // snapshot from a different boot is recognized as a boot change and resets,
+    // rather than being merged into this event's history with a stale nextId.
+    state.bootId = n.bootId;
+  } else if (n.bootId !== state.bootId) {
     return { state, gap: false, isNewError: false, resync: true };
   }
 
@@ -229,13 +234,21 @@ export function isNotification(v: unknown): v is Notification {
   if (typeof v !== "object" || v === null) return false;
   const n = v as Record<string, unknown>;
   return (
-    Number.isFinite(n.id) &&
+    // ids are positive integers assigned in sequence; applyLive does nextId and
+    // gap arithmetic with this value, so a fractional or unsafe id is rejected.
+    typeof n.id === "number" &&
+    Number.isSafeInteger(n.id) &&
+    n.id >= 1 &&
     typeof n.bootId === "string" &&
     typeof n.time === "string" &&
     (n.severity === "error" || n.severity === "warning" || n.severity === "info") &&
     typeof n.category === "string" &&
     typeof n.kind === "string" &&
     typeof n.title === "string" &&
-    typeof n.message === "string"
+    typeof n.message === "string" &&
+    // key (condition identity, a Map key) and source (rendered) are optional but
+    // must be strings when present, or they would break matching or rendering.
+    (n.key === undefined || typeof n.key === "string") &&
+    (n.source === undefined || typeof n.source === "string")
   );
 }
