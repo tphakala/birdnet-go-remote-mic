@@ -490,12 +490,17 @@ type NetworkInterface struct {
 // Notification One notification entry.
 type Notification struct {
 	// BootId Identity of the process run that produced this entry. Ids restart at 1 each boot, so a client resets its read state when bootId changes.
+	//
+	//
+	// Examples: 4a2b1c8e9f0d3e5a
 	BootId string `json:"bootId"`
 
 	// Category The subsystem a notification concerns.
 	Category NotificationCategory `json:"category"`
 
 	// Id Monotonic per-boot id, assigned in publish order.
+	//
+	// Examples: 42
 	Id int64 `json:"id"`
 
 	// Key Condition identity, present on onset and clear entries and absent on discrete events. A clear pairs with its onset by key.
@@ -519,6 +524,8 @@ type Notification struct {
 	Source *string `json:"source,omitempty"`
 
 	// Time When the entry was published (appliance wall clock).
+	//
+	// Examples: 2026-09-12T11:03:00Z
 	Time time.Time `json:"time"`
 
 	// Title Short noun label.
@@ -539,15 +546,23 @@ type NotificationSeverity string
 // NotificationSnapshot The full current notification state a client bootstraps and re-syncs from.
 type NotificationSnapshot struct {
 	// BootId Identity of the current process run.
+	//
+	// Examples: 4a2b1c8e9f0d3e5a
 	BootId string `json:"bootId"`
 
 	// NextId The id the next published notification will take. A streamed id at or beyond a previously seen nextId with earlier ids missing means a dropped event; the client refetches this snapshot.
+	//
+	//
+	// Examples: 43
 	NextId int64 `json:"nextId"`
 
 	// Notifications History and active conditions, ascending by id.
 	Notifications []Notification `json:"notifications"`
 
 	// ServerTime The appliance's wall-clock time when the snapshot was taken, so a client can correct relative timestamps for clock skew.
+	//
+	//
+	// Examples: 2026-09-12T11:03:00Z
 	ServerTime time.Time `json:"serverTime"`
 }
 

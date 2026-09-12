@@ -787,15 +787,18 @@ components:
           format: int64
           minimum: 1
           description: Monotonic per-boot id, assigned in publish order.
+          examples: [42]
         bootId:
           type: string
           description: >
             Identity of the process run that produced this entry. Ids restart at
             1 each boot, so a client resets its read state when bootId changes.
+          examples: ["4a2b1c8e9f0d3e5a"]
         time:
           type: string
           format: date-time
           description: When the entry was published (appliance wall clock).
+          examples: ["2026-09-12T11:03:00Z"]
         severity:
           $ref: "#/components/schemas/NotificationSeverity"
         category:
@@ -828,12 +831,14 @@ components:
         bootId:
           type: string
           description: Identity of the current process run.
+          examples: ["4a2b1c8e9f0d3e5a"]
         serverTime:
           type: string
           format: date-time
           description: >
             The appliance's wall-clock time when the snapshot was taken, so a
             client can correct relative timestamps for clock skew.
+          examples: ["2026-09-12T11:03:00Z"]
         nextId:
           type: integer
           format: int64
@@ -842,6 +847,7 @@ components:
             The id the next published notification will take. A streamed id at or
             beyond a previously seen nextId with earlier ids missing means a
             dropped event; the client refetches this snapshot.
+          examples: [43]
         notifications:
           type: array
           items:

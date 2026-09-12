@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	testDeviceKey = "device:garden:down"
-	testDownTitle = "down"
+	testDeviceKey    = "device:garden:down"
+	testDownTitle    = "down"
+	testDeviceSource = "garden"
 )
 
 // fixedClock returns a clock function pinned at t for deterministic stamps.
@@ -80,11 +81,45 @@ func TestOnsetIdempotentAndActive(t *testing.T) {
 
 func TestActiveSortedByID(t *testing.T) {
 	c := NewCenter()
-	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: "device:a:down", Title: "a"})  // id 1
-	c.Onset(Notification{Severity: SeverityWarning, Category: CategoryAudio, Key: "audio:b:quiet", Title: "b"}) // id 2
+	// Three conditions so the ascending assertion has real power: map iteration
+	// is randomized, so with three entries an unsorted Active() reliably fails.
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: "device:a:down", Title: "a"})   // id 1
+	c.Onset(Notification{Severity: SeverityWarning, Category: CategoryAudio, Key: "audio:b:quiet", Title: "b"})  // id 2
+	c.Onset(Notification{Severity: SeverityWarning, Category: CategoryStream, Key: "stream:c:flap", Title: "c"}) // id 3
 	active := c.Active()
-	if got := ids(active); !equalIDs(got, []uint64{1, 2}) {
-		t.Fatalf("Active() ids = %v, want [1 2] (ascending)", got)
+	if got := ids(active); !equalIDs(got, []uint64{1, 2, 3}) {
+		t.Fatalf("Active() ids = %v, want [1 2 3] (ascending)", got)
+	}
+}
+
+func TestOnsetEmptyKeyRejected(t *testing.T) {
+	c := NewCenter()
+	if c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Title: "no key"}) {
+		t.Fatal("Onset with an empty key returned true, want false")
+	}
+	if len(c.Active()) != 0 {
+		t.Error("empty-key Onset registered an active condition")
+	}
+	if len(c.Snapshot().Notifications) != 0 {
+		t.Error("empty-key Onset published an entry")
+	}
+}
+
+func TestClearInheritsOnsetIdentity(t *testing.T) {
+	c := NewCenter()
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Source: testDeviceSource, Title: testDownTitle})
+	// Clear with category and source left blank: the clear entry inherits them
+	// from the onset, so it never carries an empty required category.
+	if !c.Clear(testDeviceKey, Notification{Severity: SeverityInfo, Title: "recovered"}) {
+		t.Fatal("Clear returned false, want true")
+	}
+	snap := c.Snapshot()
+	last := snap.Notifications[len(snap.Notifications)-1]
+	if last.Category != CategoryDevice {
+		t.Errorf("clear category = %q, want inherited %q", last.Category, CategoryDevice)
+	}
+	if last.Source != testDeviceSource {
+		t.Errorf("clear source = %q, want inherited garden", last.Source)
 	}
 }
 
@@ -116,7 +151,7 @@ func TestResolve(t *testing.T) {
 	if c.Resolve(testDeviceKey, "gone") {
 		t.Fatal("Resolve of an inactive key returned true, want false")
 	}
-	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Source: "garden", Title: testDownTitle})
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Source: testDeviceSource, Title: testDownTitle})
 	if !c.Resolve(testDeviceKey, "device removed or disabled") {
 		t.Fatal("Resolve of an active key returned false, want true")
 	}
@@ -131,8 +166,13 @@ func TestResolve(t *testing.T) {
 	if last.Severity != SeverityInfo || last.Message != "device removed or disabled" {
 		t.Errorf("resolve entry severity/message = %q/%q", last.Severity, last.Message)
 	}
+	// The title reads neutrally ("Cleared"), not "Resolved": a vanished subject
+	// was removed, not recovered.
+	if last.Title != "Cleared" {
+		t.Errorf("resolve title = %q, want Cleared", last.Title)
+	}
 	// It reuses the onset's category and source.
-	if last.Category != CategoryDevice || last.Source != "garden" {
+	if last.Category != CategoryDevice || last.Source != testDeviceSource {
 		t.Errorf("resolve entry category/source = %q/%q, want device/garden", last.Category, last.Source)
 	}
 }
@@ -263,8 +303,15 @@ func TestNewBootIDFallbackOnRandFailure(t *testing.T) {
 	randRead = func([]byte) (int, error) { return 0, errors.New("no entropy") }
 	defer func() { randRead = orig }()
 	c := NewCenter()
-	if len(c.BootID()) != bootIDBytes*2 {
-		t.Fatalf("fallback bootID %q length = %d, want %d", c.BootID(), len(c.BootID()), bootIDBytes*2)
+	id := c.BootID()
+	if len(id) != bootIDBytes*2 {
+		t.Fatalf("fallback bootID %q length = %d, want %d", id, len(id), bootIDBytes*2)
+	}
+	// The fallback derives from the clock, so it must be a real non-zero value.
+	// Asserting length alone would still pass if the fallback body were deleted
+	// (an all-zero [8]byte also hex-encodes to 16 chars).
+	if id == strings.Repeat("0", bootIDBytes*2) {
+		t.Fatal("fallback bootID is all zeros; the fallback body did not run")
 	}
 }
 

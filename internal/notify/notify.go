@@ -7,11 +7,12 @@
 package notify
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -59,10 +60,13 @@ const (
 	KindClear Kind = "clear"
 )
 
-// Notification is one entry in the center. ID, BootID and Time are stamped by
-// the Center at publish time; callers fill the rest. Key identifies a condition
-// (empty for discrete events) and Source names the subject (device name, track
-// path, remote address) so the UI can render it as a chip.
+// Notification is one entry in the center. ID, BootID and Time are always
+// stamped by the Center at publish time. The condition methods also set Kind
+// (Onset sets onset; Clear and Resolve set clear) and Clear sets Key from its
+// key argument; a caller of Publish fills every remaining field itself. Key
+// identifies a condition (empty for discrete events) and Source names the
+// subject (device name, track path, remote address) so the UI can render it as
+// a chip.
 type Notification struct {
 	ID       uint64    `json:"id"`
 	BootID   string    `json:"bootId"`
@@ -266,12 +270,17 @@ func (c *Center) Publish(n Notification) {
 
 // Onset records the start of a condition keyed by n.Key. It is idempotent: a
 // duplicate onset for an already-active key publishes nothing and returns false,
-// so a monitor restart or a re-run reconcile cannot double-enter a condition. A
-// nil Center returns false.
+// so a monitor restart or a re-run reconcile cannot double-enter a condition. An
+// empty key, or a nil Center, publishes nothing and returns false.
 //
 //nolint:gocritic // Notification by value is the Publisher contract; publishing is not a hot path.
 func (c *Center) Onset(n Notification) bool {
 	if c == nil {
+		return false
+	}
+	// A condition must be keyed: an empty key would collide in the active map and
+	// cannot pair with a later Clear. Reject it rather than register active[""].
+	if n.Key == "" {
 		return false
 	}
 	c.mu.Lock()
@@ -296,12 +305,22 @@ func (c *Center) Clear(key string, n Notification) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, active := c.active[key]; !active {
+	onset, active := c.active[key]
+	if !active {
 		return false
 	}
 	delete(c.active, key)
 	n.Key = key
 	n.Kind = KindClear
+	// Inherit the onset's identity when the caller left it blank, so a clear
+	// always carries the same category and source as the condition it ends. A
+	// clear with an empty category would violate the required schema enum.
+	if n.Category == "" {
+		n.Category = onset.Category
+	}
+	if n.Source == "" {
+		n.Source = onset.Source
+	}
 	c.publishLocked(&n)
 	return true
 }
@@ -327,7 +346,7 @@ func (c *Center) Resolve(key, reason string) bool {
 		Kind:     KindClear,
 		Key:      key,
 		Source:   onset.Source,
-		Title:    "Resolved",
+		Title:    "Cleared",
 		Message:  reason,
 	}
 	c.publishLocked(&n)
@@ -356,7 +375,7 @@ func (c *Center) Snapshot() Snapshot {
 			entries = append(entries, onset)
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	slices.SortFunc(entries, func(a, b Notification) int { return cmp.Compare(a.ID, b.ID) })
 	return Snapshot{
 		BootID:        c.bootID,
 		ServerTime:    c.clock(),
@@ -377,7 +396,7 @@ func (c *Center) Active() []Notification {
 	for k := range c.active {
 		out = append(out, c.active[k])
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b Notification) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 

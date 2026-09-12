@@ -16,8 +16,10 @@ type Snapshotter interface {
 	Snapshot() notify.Snapshot
 }
 
-// WithNotifications mounts src as the source for GET /notifications. Without it
-// the endpoint returns 501.
+// WithNotifications mounts src as the source for GET /notifications. Omit this
+// option to leave the endpoint returning 501. Pass a live source; do not pass a
+// typed-nil pointer (for example a nil *notify.Center), which mounts a non-nil
+// interface and makes the endpoint serve an empty snapshot rather than 501.
 func WithNotifications(src Snapshotter) Option {
 	return func(s *Server) { s.notifications = src }
 }
