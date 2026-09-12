@@ -14,11 +14,12 @@ import {
   clearAll as coreClearAll,
   deserialize,
   initialState,
+  isNotification,
   markAllRead as coreMarkAllRead,
   serialize,
   type CoreState,
 } from "./notifications-core.js";
-import type { Notification, NotificationSnapshot } from "./types.js";
+import type { NotificationSnapshot } from "./types.js";
 
 // Persisted per browser. Only the read state is stored (see serialize); the
 // items are always rebuilt from the server, so the key stays small.
@@ -38,16 +39,25 @@ const MAX_LIVE_ITEMS = 200;
 function isSnapshot(v: unknown): v is NotificationSnapshot {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<NotificationSnapshot>;
-  return typeof s.bootId === "string" && Number.isFinite(s.nextId) && Array.isArray(s.notifications);
+  return (
+    typeof s.bootId === "string" &&
+    typeof s.serverTime === "string" &&
+    Number.isFinite(s.nextId) &&
+    Array.isArray(s.notifications) &&
+    s.notifications.every(isNotification)
+  );
 }
 
 export class NotificationStore extends EventTarget {
   private state: CoreState;
   private gapReloadTimer: number | null = null;
-  // Monotonic generation for snapshot loads. The explicit startup load and the
-  // connection-event load race; a GET that resolves after a newer load started
-  // must not fold its now-stale snapshot over the fresher state.
-  private loadEpoch = 0;
+  // load() sequencing. loadSeq tickets each call; appliedSeq records the highest
+  // ticket whose snapshot was actually applied. A load applies only when no newer
+  // load has applied yet, and appliedSeq advances only after a successful apply,
+  // so a newer load that FAILS cannot discard an older load's valid snapshot
+  // (while a newer load that SUCCEEDS still wins over an older, slower one).
+  private loadSeq = 0;
+  private appliedSeq = 0;
 
   constructor() {
     super();
@@ -71,7 +81,7 @@ export class NotificationStore extends EventTarget {
   // when no source is mounted, a 401 handled by the shared auth flow, or a
   // transient error) is swallowed so the bell keeps working from its last state.
   public async load(): Promise<void> {
-    const epoch = ++this.loadEpoch;
+    const seq = ++this.loadSeq;
     let snap: unknown;
     try {
       snap = await api.getNotifications();
@@ -79,14 +89,16 @@ export class NotificationStore extends EventTarget {
       console.warn("Failed to load notifications:", err);
       return;
     }
-    // A newer load() started while this GET was in flight; its result is fresher,
-    // so drop this one rather than roll the state back to an older snapshot.
-    if (epoch !== this.loadEpoch) return;
+    // Skip only if a strictly newer load has ALREADY applied its snapshot; a
+    // newer load that merely started (and may still fail) must not discard this
+    // valid result.
+    if (seq <= this.appliedSeq) return;
     if (!isSnapshot(snap)) {
       console.warn("Ignoring malformed notifications snapshot");
       return;
     }
     applySnapshot(this.state, snap, Date.now());
+    this.appliedSeq = seq;
     this.persist();
     this.emitChange();
   }
@@ -105,13 +117,19 @@ export class NotificationStore extends EventTarget {
 
   private onSSE(name: string, data: unknown): void {
     if (name !== "notification") return;
-    // Defend against a malformed payload: the contract guarantees the shape, but
-    // a bad frame must not poison the state with a missing or non-numeric id.
-    if (!data || typeof data !== "object" || !Number.isFinite((data as Notification).id)) {
+    // Reject a malformed frame outright: every field the UI renders or keys on
+    // must be present and well-typed, or it would render "undefined" labels or
+    // break the condition logic.
+    if (!isNotification(data)) return;
+    const n = data;
+    const { gap, isNewError, resync } = applyLive(this.state, n);
+    // A frame from a different boot means the appliance restarted; do not fold it
+    // into the old boot's state, just reload a fresh snapshot (which resets on
+    // the boot change) without persisting or emitting the mismatched frame.
+    if (resync) {
+      this.scheduleReload();
       return;
     }
-    const n = data as Notification;
-    const { gap, isNewError } = applyLive(this.state, n);
     // Fall back to the title so an error that carries no message still toasts
     // readable text rather than a bare icon.
     if (isNewError) showToast(n.message || n.title, "error");

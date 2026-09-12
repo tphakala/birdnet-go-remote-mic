@@ -184,7 +184,10 @@ export class NotificationCenter {
     onKeydown = (e) => {
         if (e.key === "Escape") {
             e.stopPropagation();
-            this.close(true);
+            // The handler is on document and the panel has no focus trap, so Escape
+            // can fire while focus is elsewhere on the page. Return focus to the bell
+            // only when focus is actually inside the panel; otherwise leave it be.
+            this.close(this.panel.contains(document.activeElement));
         }
     };
     onHashChange = () => {

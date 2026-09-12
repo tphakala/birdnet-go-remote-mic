@@ -12,6 +12,7 @@ import {
   clearAll,
   deserialize,
   initialState,
+  isNotification,
   markAllRead,
   serialize,
   unreadCount,
@@ -331,4 +332,46 @@ test("serialize persists only the read-state subset, never items", () => {
   s.dismissed.add(2);
   const raw = JSON.parse(serialize(s)) as Record<string, unknown>;
   assert.deepEqual(Object.keys(raw).sort(), ["bootId", "dismissed", "readWatermark"]);
+});
+
+test("applyLive signals resync and leaves state untouched on a bootId mismatch", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ bootId: "boot-a", notifications: [notif({ id: 1 })] }), Date.now());
+  const sizeBefore = s.items.size;
+  // A restart: the new boot sends id 1, which would collide with the old id 1.
+  const r = applyLive(s, notif({ id: 1, bootId: "boot-b", severity: "error", title: "new boot" }));
+  assert.equal(r.resync, true);
+  assert.equal(r.gap, false);
+  assert.equal(r.isNewError, false);
+  assert.equal(s.items.size, sizeBefore); // state untouched; the shell reloads
+  assert.equal(s.bootId, "boot-a");
+});
+
+test("applyLive does not resync before the first snapshot (bootId still null)", () => {
+  const s = initialState();
+  const r = applyLive(s, notif({ id: 1, bootId: "boot-x" }));
+  assert.equal(r.resync, false);
+  assert.equal(s.items.size, 1);
+});
+
+test("isNotification accepts a well-formed notification and rejects malformed ones", () => {
+  assert.equal(isNotification(notif({ id: 1 })), true);
+  assert.equal(isNotification(null), false);
+  assert.equal(isNotification("nope"), false);
+  assert.equal(
+    isNotification({ id: "x", bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    false,
+  ); // non-numeric id
+  assert.equal(
+    isNotification({ id: 1, bootId: "b", time: "t", severity: "critical", category: "system", kind: "event", title: "t", message: "m" }),
+    false,
+  ); // off-enum severity
+  assert.equal(
+    isNotification({ id: 1, time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    false,
+  ); // missing bootId
+  assert.equal(
+    isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t" }),
+    false,
+  ); // missing message
 });

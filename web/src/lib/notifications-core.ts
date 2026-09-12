@@ -95,16 +95,25 @@ export function applySnapshot(
   return { state, bootChanged };
 }
 
-// applyLive folds one streamed event into the state. gap is true when the id
-// jumped past the one expected next, meaning an event was dropped and the shell
-// should re-sync from a fresh snapshot. isNewError is the toast trigger: a
-// genuinely new error-severity entry that is unread and not dismissed. A
-// duplicate (already known, for instance replayed after an SSE reconnect) sets
-// neither, and the id-keyed map means it cannot double count.
+// applyLive folds one streamed event into the state. resync is true when the
+// frame's bootId differs from ours: the appliance restarted, its ids restart
+// from 1 and would collide with our current ones (a new id 1 looking like a
+// duplicate of an old id 1, with no gap reported), so the state is left
+// untouched and the shell must reload a fresh snapshot (applySnapshot then
+// resets on the boot change). gap is true when the id jumped past the one
+// expected next, meaning an event was dropped and the shell should re-sync.
+// isNewError is the toast trigger: a genuinely new error-severity entry that is
+// unread and not dismissed. A duplicate (already known, for instance replayed
+// after an SSE reconnect) sets neither, and the id-keyed map means it cannot
+// double count.
 export function applyLive(
   state: CoreState,
   n: Notification,
-): { state: CoreState; gap: boolean; isNewError: boolean } {
+): { state: CoreState; gap: boolean; isNewError: boolean; resync: boolean } {
+  if (state.bootId !== null && n.bootId !== state.bootId) {
+    return { state, gap: false, isNewError: false, resync: true };
+  }
+
   const known = state.items.has(n.id);
   const gap = n.id > state.nextId;
   const isNewError =
@@ -116,7 +125,7 @@ export function applyLive(
   state.items.set(n.id, n);
   if (n.id >= state.nextId) state.nextId = n.id + 1;
 
-  return { state, gap, isNewError };
+  return { state, gap, isNewError, resync: false };
 }
 
 // unreadCount is the badge number: entries above the read watermark that have
@@ -205,4 +214,28 @@ export function deserialize(json: string | null): CoreState {
     return initialState();
   }
   return state;
+}
+
+// isNotification validates an untrusted value against the Notification contract.
+// The UI indexes severity (icon and toast), renders title/message/category/
+// source, and keys condition logic on kind, so a frame missing a field or
+// carrying an off-contract severity would render "undefined" or misbehave. A
+// malformed live frame or snapshot entry is rejected rather than folded in.
+// severity is checked against the enum; category and kind stay lenient strings
+// (an unknown kind is simply not treated as a condition, an unknown category is
+// a harmless chip), which tolerates the server adding a value without a client
+// release.
+export function isNotification(v: unknown): v is Notification {
+  if (typeof v !== "object" || v === null) return false;
+  const n = v as Record<string, unknown>;
+  return (
+    Number.isFinite(n.id) &&
+    typeof n.bootId === "string" &&
+    typeof n.time === "string" &&
+    (n.severity === "error" || n.severity === "warning" || n.severity === "info") &&
+    typeof n.category === "string" &&
+    typeof n.kind === "string" &&
+    typeof n.title === "string" &&
+    typeof n.message === "string"
+  );
 }
