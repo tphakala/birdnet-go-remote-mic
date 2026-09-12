@@ -43,6 +43,28 @@ export function formatUptime(totalSeconds, opts = {}) {
         return `${m}m ${String(Math.floor(totalSeconds % 60)).padStart(2, "0")}s`;
     return `${m}m`;
 }
+// formatRelative renders the age of an event as a compact "N ago" string, given
+// two epoch-millisecond instants (the event and now). Callers correct the event
+// time for server clock skew before calling, so this stays a pure, browser-free
+// formatter. A future-dated instant (small forward skew) clamps to "just now".
+export function formatRelative(fromMs, toMs) {
+    // An unparseable timestamp (Date.parse -> NaN) would otherwise fall through
+    // every threshold to "NaN ago"; render nothing instead.
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs))
+        return "";
+    const s = Math.floor(Math.max(0, toMs - fromMs) / 1000);
+    if (s < 10)
+        return "just now";
+    if (s < 60)
+        return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60)
+        return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24)
+        return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+}
 // modeLabel maps a stream mode to its display label.
 export function modeLabel(mode) {
     return mode === "pcm" ? "PCM L16" : "OPUS";

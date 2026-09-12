@@ -133,12 +133,26 @@ tasks:
     cmds:
       - npx -p html-validate@11.10.0 html-validate -c web/.htmlvalidate.json web/static/index.html
 
+  web:test:
+    desc: Compile and run the pure notification-core unit tests (node:test)
+    cmds:
+      # A second tsconfig emits src + test to web/.test-out preserving structure,
+      # so the compiled test resolves ../src/... the same as the source tree. The
+      # package.json pins ESM resolution for node --test. Zero new dependencies.
+      # Clean first (like web:build) so a renamed or deleted test cannot leave a
+      # stale compiled file behind that node --test would still run.
+      - rm -rf web/.test-out
+      - npx -p typescript@7.0.2 tsc -p web/tsconfig.test.json
+      - printf '{"type":"module"}' > web/.test-out/package.json
+      - node --test web/.test-out/test/
+
   web:verify:
     desc: Fail if web/dist is out of date relative to web/src or web/static
     cmds:
       - task: web:typecheck
       - task: web:lint
       - task: web:a11y
+      - task: web:test
       - task: web:build
       - |
         # Fail on any modified OR untracked file under web/dist (a freshly

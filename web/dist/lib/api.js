@@ -102,6 +102,9 @@ export class ApiClient {
     async getSystem() {
         return this.request("/system");
     }
+    async getNotifications() {
+        return this.request("/notifications");
+    }
     async postSystemRestart() {
         return this.request("/system/restart", {
             method: "POST",

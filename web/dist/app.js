@@ -2,7 +2,8 @@ import { router } from "./lib/router.js";
 import { store } from "./lib/store.js";
 import { DashboardView } from "./views/dashboard.js";
 import { SystemView } from "./views/system.js";
-import { triggerApplianceRestart } from "./components/restart-modal.js";
+import { NotificationStore } from "./lib/notifications.js";
+import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 class App {
@@ -11,12 +12,19 @@ class App {
         this.initNav();
         this.initViews();
         initLoginModal();
+        // Construct the notification store (and its bell) before polling starts so
+        // its "connection" subscription is in place when startPolling opens the SSE
+        // stream; the store re-syncs the snapshot on every (re)connect.
+        const notifications = new NotificationStore();
+        new NotificationCenter(notifications);
         router.init();
         // Push a stored token into the clients before the first request so a
         // token-gated appliance loads without a prompt on a returning browser.
         applyStoredToken();
         store.loadInitial();
         store.startPolling();
+        // Load the snapshot immediately too, independent of SSE connect timing.
+        void notifications.load();
     }
     initTheme() {
         const savedTheme = localStorage.getItem("remote-mic-theme") || "dark";
@@ -40,9 +48,6 @@ class App {
                 }
             });
         });
-        const restartBtn = document.getElementById("header-restart-btn");
-        if (restartBtn)
-            restartBtn.addEventListener("click", () => triggerApplianceRestart());
     }
     initViews() {
         new DashboardView();

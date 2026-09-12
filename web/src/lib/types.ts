@@ -194,3 +194,40 @@ export interface ValidationErrorItem {
 export interface ValidationProblem extends Problem {
   errors?: ValidationErrorItem[];
 }
+
+// Notification severity ranks an entry for the UI: error raises a toast,
+// warning and info are badge-only. Matches NotificationSeverity in openapi.yaml.
+export type NotificationSeverity = "error" | "warning" | "info";
+// Notification category groups an entry by the subsystem it concerns.
+export type NotificationCategory = "device" | "audio" | "stream" | "system" | "config";
+// Notification kind distinguishes a one-off event from the onset and clear of a
+// condition. A clear pairs with its onset by key.
+export type NotificationKind = "event" | "onset" | "clear";
+
+// Notification is one entry in the center (GET /notifications and the
+// `notification` SSE event). id is a monotonic per-boot integer; key is present
+// on onset and clear entries and absent on discrete events; source names the
+// subject (device name, track path, remote address) for a chip.
+export interface Notification {
+  id: number;
+  bootId: string;
+  time: string;
+  severity: NotificationSeverity;
+  category: NotificationCategory;
+  kind: NotificationKind;
+  key?: string;
+  source?: string;
+  title: string;
+  message: string;
+}
+
+// NotificationSnapshot is the full current state a client bootstraps and
+// re-syncs from: the boot identity, the server wall clock (for clock-skew
+// correction on an RTC-less host), the next id that will be assigned, and every
+// ring entry merged with every active condition, ascending by id.
+export interface NotificationSnapshot {
+  bootId: string;
+  serverTime: string;
+  nextId: number;
+  notifications: Notification[];
+}
