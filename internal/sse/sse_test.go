@@ -49,12 +49,15 @@ var _ Source = (*fakeSource)(nil)
 // deadline was set. It implements http.Flusher and SetWriteDeadline so
 // http.NewResponseController drives it.
 type ctrlWriter struct {
-	hdr         http.Header
-	code        int
-	buf         bytes.Buffer
-	writeErr    error
-	flushed     bool
-	deadlineSet bool
+	hdr           http.Header
+	code          int
+	buf           bytes.Buffer
+	writeErr      error
+	flushErr      error
+	flushErrAfter int // let this many flushes succeed before flushErr kicks in
+	flushes       int
+	flushed       bool
+	deadlineSet   bool
 }
 
 func (c *ctrlWriter) Header() http.Header {
@@ -70,7 +73,20 @@ func (c *ctrlWriter) Write(p []byte) (int, error) {
 	}
 	return c.buf.Write(p)
 }
-func (c *ctrlWriter) Flush()                           { c.flushed = true }
+func (c *ctrlWriter) Flush() { c.flushed = true }
+
+// FlushError makes http.NewResponseController(c).Flush() observe a flush error
+// (the native net/http writers expose FlushError, which the controller prefers
+// over Flush). It counts flushes so a test can let the initial post-header flush
+// succeed and fail a later per-event flush via flushErrAfter.
+func (c *ctrlWriter) FlushError() error {
+	c.flushed = true
+	c.flushes++
+	if c.flushErr != nil && c.flushes > c.flushErrAfter {
+		return c.flushErr
+	}
+	return nil
+}
 func (c *ctrlWriter) SetWriteDeadline(time.Time) error { c.deadlineSet = true; return nil }
 
 // noFlushRecorder is a ResponseWriter that does NOT implement http.Flusher, to
@@ -311,12 +327,54 @@ func TestServeHTTPEndsStreamOnHeartbeatWriteError(t *testing.T) {
 	}
 }
 
+func TestServeHTTPEndsStreamOnFlushError(t *testing.T) {
+	fake := newFakeSource(4)
+	// Let the initial post-header flush succeed, then fail the first event flush.
+	cw := &ctrlWriter{flushErr: errors.New("flush failed"), flushErrAfter: 1}
+	h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
+
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(cw, req); close(done) }()
+
+	fake.emit(Event{Name: evLevels, Data: []byte("{}")})
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not end when a flush failed")
+	}
+	if !fake.wasCancelled() {
+		t.Fatal("source must be unsubscribed when a flush fails")
+	}
+}
+
+func TestServeHTTPStopsWhenInitialFlushFails(t *testing.T) {
+	fake := newFakeSource(1)
+	// flushErrAfter defaults to 0, so the initial post-header flush already fails.
+	cw := &ctrlWriter{flushErr: errors.New("client gone")}
+	h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
+
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(cw, req); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return when the initial flush failed")
+	}
+	// The handler returns before subscribing, so no source was ever registered.
+	if fake.wasCancelled() {
+		t.Fatal("no source should be subscribed when the initial flush fails")
+	}
+}
+
 func TestWriteEventSuccess(t *testing.T) {
 	cw := &ctrlWriter{}
 	rc := http.NewResponseController(cw)
 	h := &handler{writeTimeout: time.Second}
 
-	if !h.writeEvent(cw, rc, cw, Event{Name: evLevels, Data: []byte(`{"a":1}`)}) {
+	if !h.writeEvent(cw, rc, Event{Name: evLevels, Data: []byte(`{"a":1}`)}) {
 		t.Fatal("writeEvent should return true on success")
 	}
 	if got, want := cw.buf.String(), "event: levels\ndata: {\"a\":1}\n\n"; got != want {
@@ -335,7 +393,7 @@ func TestWriteEventReturnsFalseOnError(t *testing.T) {
 	rc := http.NewResponseController(cw)
 	h := &handler{writeTimeout: time.Second}
 
-	if h.writeEvent(cw, rc, cw, Event{Name: "x", Data: []byte("{}")}) {
+	if h.writeEvent(cw, rc, Event{Name: "x", Data: []byte("{}")}) {
 		t.Fatal("writeEvent should return false on write error")
 	}
 	if !cw.deadlineSet {

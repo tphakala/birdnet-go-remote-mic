@@ -75,8 +75,7 @@ type handler struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		// A real HTTP/1.1 or HTTP/2 server always supports flushing; this branch
 		// only guards a ResponseWriter that cannot stream, reported as the same
 		// RFC 9457 problem+json shape as the rest of the API.
@@ -91,7 +90,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Cache-Control", "no-cache")
 	hdr.Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+
+	// Flush through the ResponseController so a failed flush is observed rather
+	// than dropped: the native net/http writers implement FlushError, so this
+	// reports a client that has already gone before the first event.
+	rc := http.NewResponseController(w)
+	if err := rc.Flush(); err != nil {
+		return
+	}
 
 	// Bind the forwarders to a context we cancel on return, so every forward
 	// goroutine is torn down when ServeHTTP exits, regardless of how the caller
@@ -115,7 +121,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go forward(ctx, ch, merged)
 	}
 
-	rc := http.NewResponseController(w)
 	hb := time.NewTicker(h.heartbeat)
 	defer hb.Stop()
 	for {
@@ -126,11 +131,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !filter.allows(ev.Name) {
 				continue
 			}
-			if !h.writeEvent(w, rc, flusher, ev) {
+			if !h.writeEvent(w, rc, ev) {
 				return
 			}
 		case <-hb.C:
-			if !h.writeEvent(w, rc, flusher, Event{Name: heartbeatName, Data: []byte("{}")}) {
+			if !h.writeEvent(w, rc, Event{Name: heartbeatName, Data: []byte("{}")}) {
 				return
 			}
 		}
@@ -156,14 +161,18 @@ func forward(ctx context.Context, in <-chan Event, out chan<- Event) {
 	}
 }
 
-// writeEvent writes one event with a bounded per-write deadline and flushes. It
-// returns false on any write error so the caller ends the stream.
-func (h *handler) writeEvent(w http.ResponseWriter, rc *http.ResponseController, flusher http.Flusher, ev Event) bool {
+// writeEvent writes one event with a bounded per-write deadline and flushes,
+// both through the ResponseController so a broken connection surfaces as an
+// error. It returns false on any write or flush error so the caller ends the
+// stream.
+func (h *handler) writeEvent(w http.ResponseWriter, rc *http.ResponseController, ev Event) bool {
 	_ = rc.SetWriteDeadline(time.Now().Add(h.writeTimeout))
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, ev.Data); err != nil {
 		return false
 	}
-	flusher.Flush()
+	if err := rc.Flush(); err != nil {
+		return false
+	}
 	return true
 }
 
