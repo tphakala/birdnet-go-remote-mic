@@ -157,8 +157,9 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 		}
 		// A notifications block merges field by field: only the present fields (and
 		// present nested objects) change, so {"host":{"cpuPercent":95}} touches one
-		// threshold and leaves the rest as stored. ApplyDefaults below refills any
-		// field left at zero and Validate range-checks the merged result.
+		// threshold and leaves the rest as stored. mergeNotifications preserves
+		// presence, so ApplyDefaults below fills only fields left absent while an
+		// explicitly supplied out-of-range value is kept for Validate to reject.
 		if patch.Notifications != nil {
 			mergeNotifications(&cur.Notifications, patch.Notifications)
 		}
