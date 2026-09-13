@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -131,12 +132,51 @@ func TestHostCPUOnsetHysteresisGapAndClear(t *testing.T) {
 	if rec.isActive(hostCPUKey) || rec.clearCount(hostCPUKey) != 1 {
 		t.Fatal("cpu not cleared after 60 s under 75%")
 	}
+	// The clear message reads "at or below" the clear threshold, not "under": the
+	// active comparison is strictly greater-than, so equality clears too.
+	if msg := rec.clearMessage(hostCPUKey); !strings.Contains(msg, "back at or below 75%") {
+		t.Errorf("cpu clear message = %q, want it to name being at or below 75%%", msg)
+	}
 
 	// Inside the gap while inactive never onsets.
 	r.setCPU(85)
 	pollEvery(h, c, 10*time.Second, 30)
 	if rec.onsetCount(hostCPUKey) != 1 {
 		t.Errorf("cpu onsets = %d, want 1 (85%% is below the onset threshold)", rec.onsetCount(hostCPUKey))
+	}
+}
+
+// TestHostCPUBoundaryEquality pins the onset (>=) and clear (>) comparisons at
+// their exact thresholds: 90% onsets, 75% clears.
+func TestHostCPUBoundaryEquality(t *testing.T) {
+	r := &fakeHost{}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(r, nil, rec, hostSettings(), c)
+
+	// Exactly at the onset threshold (90) onsets: the inactive comparison is >=.
+	r.setCPU(90)
+	h.poll()
+	pollEvery(h, c, 10*time.Second, 5)
+	if rec.isActive(hostCPUKey) {
+		t.Fatal("cpu onset before the dwell at exactly 90%")
+	}
+	pollEvery(h, c, 10*time.Second, 1)
+	if !rec.isActive(hostCPUKey) {
+		t.Fatal("cpu did not onset at exactly 90% (>= boundary)")
+	}
+
+	// Exactly at the clear threshold (75) clears: the active comparison is >, so
+	// equality is not "over" and the clear run runs.
+	r.setCPU(75)
+	h.poll()
+	pollEvery(h, c, 10*time.Second, 5)
+	if !rec.isActive(hostCPUKey) {
+		t.Fatal("cpu cleared before the dwell at exactly 75%")
+	}
+	pollEvery(h, c, 10*time.Second, 1)
+	if rec.isActive(hostCPUKey) {
+		t.Fatal("cpu did not clear at exactly 75% (> boundary means equality clears)")
 	}
 }
 
@@ -218,15 +258,58 @@ func TestHostTempDiskVoltMem(t *testing.T) {
 			}
 			tc.recover(r)
 			h.poll()
-			pollEvery(h, c, 10*time.Second, 6)
+			pollEvery(h, c, 10*time.Second, 5)
+			if !rec.isActive(tc.key) {
+				t.Fatal("cleared before the clear dwell")
+			}
+			pollEvery(h, c, 10*time.Second, 1)
 			if rec.isActive(tc.key) || rec.clearCount(tc.key) != 1 {
-				t.Fatalf("not cleared after recovery (clears = %d)", rec.clearCount(tc.key))
+				t.Fatalf("not cleared at the clear dwell (clears = %d)", rec.clearCount(tc.key))
 			}
 		})
 	}
 }
 
-func TestHostUnavailableReadingsNeverRaiseOrClear(t *testing.T) {
+// TestHostMemClearReachableWithHighFreePercent pins H2: with a high MemFreePercent
+// the uncapped clear level limit*1.25 exceeds total, so available memory could
+// never reach it and the low-memory warning would never clear. The cap (halfway
+// between the limit and total) keeps it reachable.
+func TestHostMemClearReachableWithHighFreePercent(t *testing.T) {
+	const gib = int64(1) << 30
+	r := &fakeHost{}
+	rec := newRecPub()
+	c := newClk()
+	s := hostSettings()
+	s.Host.MemFreePercent = p(85) // limit = 870 MiB; 1.25x = 1088 MiB > 1 GiB total
+	h := newHostT(r, nil, rec, s, c)
+
+	// Raise: 1 GiB host with 50% available (below the 85% limit).
+	r.mu.Lock()
+	r.memTotal, r.memAvail, r.memOK = gib, gib/2, true
+	r.mu.Unlock()
+	h.poll()
+	pollEvery(h, c, 10*time.Second, 6)
+	if !rec.isActive(hostMemKey) {
+		t.Fatal("low-memory not active after the dwell")
+	}
+
+	// Recover to 95% available: above the capped clear level (halfway to total) but
+	// below the uncapped 1088 MiB, so it clears only because of the cap.
+	r.mu.Lock()
+	r.memAvail = gib * 95 / 100
+	r.mu.Unlock()
+	h.poll()
+	pollEvery(h, c, 10*time.Second, 5)
+	if !rec.isActive(hostMemKey) {
+		t.Fatal("cleared before the 60 s clear dwell")
+	}
+	pollEvery(h, c, 10*time.Second, 1)
+	if rec.isActive(hostMemKey) || rec.clearCount(hostMemKey) != 1 {
+		t.Fatalf("low-memory did not clear at 95%% available (clears=%d)", rec.clearCount(hostMemKey))
+	}
+}
+
+func TestHostUnavailableReadings(t *testing.T) {
 	r := &fakeHost{} // every reading ok=false
 	rec := newRecPub()
 	c := newClk()
@@ -261,10 +344,26 @@ func TestHostUnavailableReadingsNeverRaiseOrClear(t *testing.T) {
 		t.Error("a still-missing sensor raised or resolved again")
 	}
 
-	// A zero total is treated as unavailable rather than dividing by zero.
+	// The sensor-gone resolve reset the hysteresis, so a reading that returns and
+	// stays over must serve a fresh full dwell before it re-onsets (pins the Reset:
+	// without it the machine would stay active and never publish a second onset).
+	r.setCPU(99)
+	h.poll()
+	pollEvery(h, c, 10*time.Second, 5)
+	if rec.isActive(hostCPUKey) {
+		t.Fatal("cpu re-onset before a fresh 60 s dwell after the sensor returned")
+	}
+	pollEvery(h, c, 10*time.Second, 1)
+	if !rec.isActive(hostCPUKey) || rec.onsetCount(hostCPUKey) != 2 {
+		t.Fatalf("cpu did not re-onset after the sensor returned and a full dwell (onsets=%d)", rec.onsetCount(hostCPUKey))
+	}
+
+	// A zero total is treated as unavailable rather than dividing by zero. The disk
+	// fixture reports used>0 with total 0 so the total>0 guard actually matters:
+	// without it usedPct would be +Inf, which is >= the threshold and would onset.
 	r.mu.Lock()
 	r.memTotal, r.memAvail, r.memOK = 0, 0, true
-	r.diskTotal, r.diskUse, r.diskOK = 0, 0, true
+	r.diskTotal, r.diskUse, r.diskOK = 0, 1<<30, true
 	r.mu.Unlock()
 	pollEvery(h, c, 10*time.Second, 30)
 	if rec.isActive(hostMemKey) || rec.isActive(hostDiskKey) {
@@ -301,12 +400,15 @@ func TestHostDisabledResolvesAllAndReadsNothing(t *testing.T) {
 	r := &fakeHost{}
 	r.setCPU(99)
 	drops := uint64(0)
+	srcCalls := 0
 	var mu sync.Mutex
 	src := func() []DeviceDrops {
 		mu.Lock()
 		defer mu.Unlock()
+		srcCalls++
 		return []DeviceDrops{{Name: nameGarden, Dropped: drops}}
 	}
+	dropsKey := streamDropsKey(nameGarden)
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(r, src, rec, hostSettings(), c)
@@ -318,7 +420,7 @@ func TestHostDisabledResolvesAllAndReadsNothing(t *testing.T) {
 		mu.Unlock()
 		h.poll()
 	}
-	if !rec.isActive(hostCPUKey) || !rec.isActive(streamDropsKey(nameGarden)) {
+	if !rec.isActive(hostCPUKey) || !rec.isActive(dropsKey) {
 		t.Fatal("cpu and drops not both active before disable")
 	}
 
@@ -327,28 +429,51 @@ func TestHostDisabledResolvesAllAndReadsNothing(t *testing.T) {
 	h.Apply(&s)
 	c.advance(10 * time.Second)
 	h.poll()
-	if rec.resolveCount(hostCPUKey) != 1 || rec.resolveCount(streamDropsKey(nameGarden)) != 1 {
+	if rec.resolveCount(hostCPUKey) != 1 || rec.resolveCount(dropsKey) != 1 {
 		t.Fatal("disable did not resolve every active condition")
 	}
-	before := r.readCount()
+	readsBefore := r.readCount()
+	mu.Lock()
+	callsBefore := srcCalls
+	mu.Unlock()
 	pollEvery(h, c, 10*time.Second, 20)
-	if r.readCount() != before {
-		t.Errorf("disabled monitor read the host %d times", r.readCount()-before)
+	if r.readCount() != readsBefore {
+		t.Errorf("disabled monitor read the host %d times", r.readCount()-readsBefore)
+	}
+	mu.Lock()
+	callsAfter := srcCalls
+	mu.Unlock()
+	if callsAfter != callsBefore {
+		t.Errorf("disabled monitor called the drop source %d times", callsAfter-callsBefore)
 	}
 	if rec.onsetCount(hostCPUKey) != 1 {
 		t.Error("onset while disabled")
 	}
 
-	// Re-enable starts fresh: the full dwell is needed again.
+	// Re-enable starts fresh: the full dwell is needed again, and resolveAll cleared
+	// the device drop state, so the drops condition must re-baseline and re-onset
+	// too rather than staying silently stuck.
 	h.Apply(new(hostSettings()))
 	c.advance(10 * time.Second)
-	h.poll()
+	mu.Lock()
+	drops += 100
+	mu.Unlock()
+	h.poll() // fresh baseline for the device after clear(h.devs)
 	if rec.isActive(hostCPUKey) {
 		t.Fatal("re-enable onset immediately, want a fresh dwell")
 	}
-	pollEvery(h, c, 10*time.Second, 6)
+	for range 6 {
+		c.advance(10 * time.Second)
+		mu.Lock()
+		drops += 100
+		mu.Unlock()
+		h.poll()
+	}
 	if !rec.isActive(hostCPUKey) || rec.onsetCount(hostCPUKey) != 2 {
 		t.Error("cpu did not re-onset after re-enable and a full dwell")
+	}
+	if !rec.isActive(dropsKey) || rec.onsetCount(dropsKey) != 2 {
+		t.Errorf("drops did not re-onset after re-enable (onsets=%d); clear(h.devs) not pinned", rec.onsetCount(dropsKey))
 	}
 }
 
@@ -426,6 +551,27 @@ func TestHostDropsOnsetAndClear(t *testing.T) {
 	}
 }
 
+// TestHostDropsRateBoundary pins the onset comparison (> dropsPerSecond): a
+// steady exactly 1.0 frames/s never onsets.
+func TestHostDropsRateBoundary(t *testing.T) {
+	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Dropped: 0}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+
+	h.poll() // baseline
+	// Exactly 1.0 frames/s (10 dropped per 10 s poll) is not over the threshold.
+	for range 10 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 10
+		h.poll()
+	}
+	if rec.isActive(key) || rec.onsetCount(key) != 0 {
+		t.Fatalf("drops onset at exactly 1.0 frames/s (onsets=%d), want 0 (> boundary)", rec.onsetCount(key))
+	}
+}
+
 func TestHostDropsCounterResetAndDeviceRemoval(t *testing.T) {
 	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Dropped: 0}}}
 	rec := newRecPub()
@@ -481,6 +627,186 @@ func TestHostDropsCounterResetAndDeviceRemoval(t *testing.T) {
 	}
 }
 
+// TestHostPendingOnsetRunAbandonedByReadingGap pins H1: a pending onset run must
+// not survive a gap in the readings, so a single available reading after the gap
+// cannot complete an onset from readings taken minutes apart.
+func TestHostPendingOnsetRunAbandonedByReadingGap(t *testing.T) {
+	r := &fakeHost{}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(r, nil, rec, hostSettings(), c)
+
+	// A pending onset run: 95% for 50 s (short of the 60 s dwell).
+	r.setCPU(95)
+	h.poll()
+	pollEvery(h, c, 10*time.Second, 5)
+	if rec.isActive(hostCPUKey) {
+		t.Fatal("cpu onset before 60 s")
+	}
+	// The sensor is unavailable for ten minutes.
+	r.mu.Lock()
+	r.cpuOK = false
+	r.mu.Unlock()
+	pollEvery(h, c, 10*time.Second, 60)
+	// One available 95% reading must NOT complete the onset off the stale run.
+	r.setCPU(95)
+	pollEvery(h, c, 10*time.Second, 1)
+	if rec.isActive(hostCPUKey) {
+		t.Fatal("cpu onset from a single reading after a gap; the pending run was not abandoned")
+	}
+	// A fresh contiguous 60 s of over readings onsets.
+	pollEvery(h, c, 10*time.Second, 6)
+	if !rec.isActive(hostCPUKey) {
+		t.Fatal("cpu did not onset after a fresh 60 s of available readings")
+	}
+}
+
+// TestHostDropsClearRunSurvivesCounterRestartAtCompletion pins H1: when a device
+// restarts with a fresh (smaller) counter on the very poll the clear dwell
+// completes, the clear must still fire at 60 s, not be skipped and pushed to 70 s.
+func TestHostDropsClearRunSurvivesCounterRestartAtCompletion(t *testing.T) {
+	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Dropped: 1000}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+
+	h.poll() // baseline at t=0
+	for range 4 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 50 // 5 frames/s, onsets by 30 s
+		h.poll()
+	}
+	if !rec.isActive(key) {
+		t.Fatal("drops not active before the clear run")
+	}
+	// Drops stop: the clear run begins on the first no-drop poll (t=50 s) and
+	// reaches its 60 s dwell at t=110 s. Feed six no-drop polls (t=50..100 s).
+	for range 6 {
+		c.advance(10 * time.Second)
+		h.poll()
+	}
+	if !rec.isActive(key) {
+		t.Fatal("drops cleared before the clear dwell")
+	}
+	// At t=110 s the device restarts with a fresh, smaller counter exactly as the
+	// clear dwell completes. The clear must still fire on this poll.
+	feed.devs[0].Dropped = 5
+	c.advance(10 * time.Second)
+	h.poll()
+	if rec.clearCount(key) != 1 || rec.isActive(key) {
+		t.Fatalf("drops did not clear at 60 s when the counter restarted on the clear poll (clears=%d)", rec.clearCount(key))
+	}
+}
+
+// TestHostDropsPendingRunAbandonedByAbsentBlip pins H1: a device that blips absent
+// for one poll (within the presence grace) while a drops onset run is pending must
+// have that run abandoned, so it cannot onset off the stale start time when it
+// returns.
+func TestHostDropsPendingRunAbandonedByAbsentBlip(t *testing.T) {
+	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Dropped: 0}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+
+	h.poll() // baseline t=0
+	// A pending onset run: 5 frames/s, but only 20 s in (short of the 30 s dwell).
+	for range 2 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 50
+		h.poll()
+	}
+	if rec.isActive(key) {
+		t.Fatal("drops onset before the 30 s dwell")
+	}
+	// The device blips absent for a single poll (within the presence grace).
+	saved := feed.devs
+	feed.devs = nil
+	c.advance(10 * time.Second)
+	h.poll()
+	// It returns, still dropping. The onset must NOT fire off the stale pending run:
+	// the absent poll abandoned it, so a fresh 30 s is required.
+	feed.devs = saved
+	feed.devs[0].Dropped += 50
+	c.advance(10 * time.Second)
+	h.poll()
+	if rec.isActive(key) {
+		t.Fatal("drops onset from a stale pending run across an absent blip")
+	}
+}
+
+// TestHostDropsAbsentPresentAbsentKeepsCondition pins the missed=0 reset on a
+// present poll: an active condition survives an absent/present/absent sequence
+// without being resolved, because the present poll resets the missed counter.
+func TestHostDropsAbsentPresentAbsentKeepsCondition(t *testing.T) {
+	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Dropped: 0}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+
+	h.poll() // baseline
+	for range 4 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 100
+		h.poll()
+	}
+	if !rec.isActive(key) {
+		t.Fatal("drops not active")
+	}
+	saved := feed.devs
+	feed.devs = nil // absent: missed -> 1
+	c.advance(10 * time.Second)
+	h.poll()
+	feed.devs = saved // present: missed reset to 0
+	c.advance(10 * time.Second)
+	h.poll()
+	feed.devs = nil // absent again: missed -> 1, still under the grace
+	c.advance(10 * time.Second)
+	h.poll()
+	if rec.resolveCount(key) != 0 {
+		t.Fatalf("device resolved despite a present poll between absences (resolves=%d)", rec.resolveCount(key))
+	}
+	if !rec.isActive(key) {
+		t.Fatal("condition lost across an absent/present/absent sequence")
+	}
+}
+
+// TestHostDropsStopServingMidClearRunResolves covers a device that leaves
+// Serving while its drops condition is part way through the clear run: it must end
+// with the grace resolve, not a clear claiming its client caught up.
+func TestHostDropsStopServingMidClearRunResolves(t *testing.T) {
+	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Dropped: 0}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+
+	h.poll() // baseline
+	for range 4 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 100
+		h.poll()
+	}
+	if !rec.isActive(key) {
+		t.Fatal("drops not active")
+	}
+	// Drops stop: the clear run starts and advances 50 s, just short of the dwell.
+	pollEvery(h, c, 10*time.Second, 6)
+	if !rec.isActive(key) {
+		t.Fatal("drops cleared before the device stopped serving")
+	}
+	feed.devs = nil // stopped serving
+	pollEvery(h, c, 10*time.Second, 2)
+	if rec.clearCount(key) != 0 {
+		t.Errorf("absent device got a clear (clears=%d), want only the grace resolve", rec.clearCount(key))
+	}
+	if rec.resolveCount(key) != 1 {
+		t.Errorf("resolves = %d, want 1 (device stopped)", rec.resolveCount(key))
+	}
+}
+
 func TestHostNilPublisherAndReadersDoNotPanic(t *testing.T) {
 	s := hostSettings()
 	h := NewHost(nil, nil, nil, &s)
@@ -494,26 +820,27 @@ func TestHostNilPublisherAndReadersDoNotPanic(t *testing.T) {
 	pollEvery(h, c, 10*time.Second, 7)
 }
 
+// TestRunHostStopsOnCancel drives RunHost's own goroutine under synctest: it must
+// poll on its ticker, and it must return promptly when the context is cancelled.
+// The bubble fails the test if the goroutine is still blocked when it returns.
 func TestRunHostStopsOnCancel(t *testing.T) {
-	s := hostSettings()
-	ctx, cancel := context.WithCancel(context.Background())
-	h := RunHost(ctx, &fakeHost{}, nil, newRecPub(), &s)
-	if h == nil {
-		t.Fatal("RunHost returned nil")
-	}
-	cancel()
+	synctest.Test(t, func(t *testing.T) {
+		r := &fakeHost{}
+		r.setCPU(50) // an available reading, so a poll actually reads the host
+		s := hostSettings()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel() // ensure the goroutine unblocks even if an assertion fails
+		h := RunHost(ctx, r, nil, newRecPub(), &s)
+		if h == nil {
+			t.Fatal("RunHost returned nil")
+		}
+		// Let one tick fire, then drain: the goroutine must have polled the reader.
+		time.Sleep(hostPollInterval + time.Second)
+		synctest.Wait()
+		if r.readCount() == 0 {
+			t.Fatal("RunHost goroutine did not poll the reader")
+		}
+		cancel()
+		synctest.Wait() // the goroutine must observe ctx.Done and return
+	})
 }
-
-func TestGroupApplyFansOut(t *testing.T) {
-	a, b := &recMonitors{}, &recMonitors{}
-	g := Group{a, nil, b}
-	s := hostSettings()
-	g.Apply(&s)
-	if a.n != 1 || b.n != 1 {
-		t.Errorf("Group.Apply calls = %d, %d; want 1, 1", a.n, b.n)
-	}
-}
-
-type recMonitors struct{ n int }
-
-func (r *recMonitors) Apply(*Settings) { r.n++ }

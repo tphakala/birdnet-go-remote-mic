@@ -1,9 +1,10 @@
 // Package sysinfo gathers host hardware facts and live system metrics (CPU,
-// memory, storage, temperature, network) for the management API's GET /system
-// endpoint. It reads only /proc, /sys, /etc/os-release, and statfs-family
-// syscalls, so it stays pure Go with no cgo. The parsers here are
-// platform-neutral and unit-tested; the file and syscall reads that feed them
-// live in the Linux-only collector.
+// memory, storage, temperature, undervoltage, network) for two consumers: the
+// management API's GET /system endpoint and the host-health condition monitor. It
+// reads only /proc, /sys, /etc/os-release, and statfs-family syscalls, so it stays
+// pure Go with no cgo. The parsers here are platform-neutral and unit-tested; the
+// exported readers and the file and syscall reads that feed them are Linux-only
+// (they live in the Linux-only collector).
 package sysinfo
 
 import (

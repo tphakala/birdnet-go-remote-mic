@@ -26,9 +26,10 @@ const (
 	zeroClearAfter  = 5 * time.Second
 	quietClearAfter = 30 * time.Second
 	clipClearAfter  = 30 * time.Second
-	// devicePresenceGrace is how many consecutive windows a device may be missing
-	// from the levels event before the monitor resolves its conditions and drops
-	// it. Two tolerates a one-window blip during a hot-reload card swap.
+	// devicePresenceGrace is how many consecutive evaluations a device may be
+	// missing before a monitor resolves its conditions and drops it (levels windows
+	// for the signal monitor, polls for the host monitor). Two tolerates a
+	// one-evaluation blip during a hot-reload card swap.
 	devicePresenceGrace = 2
 )
 
@@ -73,13 +74,16 @@ func (st *deviceState) resetClip() {
 // Signal is the audio-signal condition monitor. It is fed one structured levels
 // event per window through a hub tap and raises stuck-at-zero, very-quiet, and
 // clipping conditions per device with hysteresis. Settings are swapped atomically
-// by Apply; the tap goroutine reads them each window and performs every state
-// change itself, so Apply never races the tap.
+// by Apply; the tap goroutine reads them each window and performs every per-device
+// state change itself, so Apply never races the tap for that state (Apply itself
+// only takes the tap lock to attach or detach).
 //
 // When started by RunSignal the tap is attached only while the monitors are
-// enabled. A registered tap counts as a hub subscriber and keeps every meter
-// running on the capture hot path, so with notifications off the monitor detaches
-// and metering costs nothing unless a browser is watching levels.
+// enabled, and detaches after the first window it observes while disabled, so that
+// window can resolve the active conditions first. A registered tap counts as a hub
+// subscriber and keeps every meter running on the capture hot path, so with
+// notifications off the monitor detaches and metering costs nothing unless a
+// browser is watching levels.
 type Signal struct {
 	pub   notify.Publisher
 	clock func() time.Time
@@ -132,12 +136,13 @@ func NewSignal(center notify.Publisher, s *Settings, opts ...SignalOption) *Sign
 	return sig
 }
 
-// Apply swaps the settings the monitor evaluates against. It only stores the
-// pointer: the tap goroutine notices the change on its next window and resolves
-// or re-arms conditions there, so a reconcile on the run loop never touches the
-// monitor's per-device state concurrently with the tap. An enable re-attaches a
-// detached tap; a disable is left to the tap goroutine, which resolves every
-// condition on its next window and only then detaches.
+// Apply swaps the settings the monitor evaluates against and, on an enable,
+// re-attaches a detached tap. It does not touch per-device condition state: the
+// tap goroutine notices the change on its next window and resolves or re-arms
+// conditions there, so a reconcile on the run loop never touches the monitor's
+// per-device state concurrently with the tap. A disable is left to the tap
+// goroutine, which resolves every condition on its next window and only then
+// detaches.
 func (s *Signal) Apply(set *Settings) {
 	cp := *set
 	// Store before attach takes the lock: detach re-checks the stored settings
@@ -152,7 +157,9 @@ func (s *Signal) Apply(set *Settings) {
 // RunSignal builds the monitor, attaches it to the hub as a tap while the monitors
 // are enabled, and detaches it for good when ctx is done. It returns the monitor
 // so the caller can hand it to the appliance as its Monitors (reconcile then
-// re-arms it via Apply).
+// re-arms it via Apply). The hub must run at least as long as ctx: a disable is
+// resolved by the tap on its next window, so the hub has to keep sampling for that
+// window to arrive.
 func RunSignal(ctx context.Context, hub *levels.Hub, center notify.Publisher, s *Settings) *Signal {
 	sig := NewSignal(center, s)
 	sig.hub = hub

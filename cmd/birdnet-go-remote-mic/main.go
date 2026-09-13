@@ -276,6 +276,10 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// Drive the level sampler for the lifetime of the process.
 	go hub.Run(ctx)
 
+	// Log once at startup if this host exposes no readable rpi_volt hwmon, so an
+	// operator knows undervoltage alerts are unavailable here.
+	logUndervoltageSupport()
+
 	// Start the condition monitors. The signal monitor taps the level hub (so it
 	// must come up after the hub is running) and raises stuck-at-zero, very-quiet,
 	// and clipping conditions per device; the host monitor polls CPU, memory,
@@ -284,7 +288,6 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// them with the current thresholds and per-device quiet opt-outs, without
 	// restarting any device.
 	monSettings := monitor.SettingsFrom(&cfg)
-	logUndervoltageSupport()
 	app.monitors = monitor.Group{
 		monitor.RunSignal(ctx, hub, center, &monSettings),
 		monitor.RunHost(ctx, hostReader{sampler: prov.sampler, dataPath: prov.dataPath}, prov.dropCounters, center, &monSettings),

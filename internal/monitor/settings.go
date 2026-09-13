@@ -53,7 +53,9 @@ type Monitors interface {
 }
 
 // Group fans Apply out to several monitors, so the appliance holds the signal
-// and host monitors behind its single Monitors handle. Nil members are skipped.
+// and host monitors behind its single Monitors handle. Untyped-nil members are
+// skipped; never store a typed-nil monitor, whose Apply would run on a nil
+// receiver and panic.
 type Group []Monitors
 
 // Apply forwards s to every non-nil monitor in the group.

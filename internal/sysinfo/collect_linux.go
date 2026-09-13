@@ -172,7 +172,9 @@ func ReadMem() (total, avail int64, ok bool) {
 	return total, avail, true
 }
 
-// DiskUsage returns total and used bytes of the filesystem holding path.
+// DiskUsage returns total and used bytes of the filesystem holding path. ok is
+// false when path is empty or the statfs syscall fails (a missing or unmounted
+// path).
 func DiskUsage(path string) (total, used int64, ok bool) {
 	if path == "" {
 		return 0, 0, false
@@ -200,8 +202,9 @@ func DiskUsage(path string) (total, used int64, ok bool) {
 
 // ReadTemp returns the SoC/CPU temperature in Celsius. It prefers a thermal
 // zone whose type names a CPU or SoC sensor, falling back to the first readable
-// zone. ok is false when no thermal zone is exposed.
-func ReadTemp() (float64, bool) {
+// zone. ok is false when no thermal zone is exposed or none can be read and
+// parsed.
+func ReadTemp() (celsius float64, ok bool) {
 	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
 	candidates := make([]tempCandidate, 0, len(zones))
 	for _, tempPath := range zones {
@@ -226,13 +229,17 @@ func ReadTemp() (float64, bool) {
 const sysClassHwmon = "/sys/class/hwmon"
 
 // undervoltHwmonName is the hwmon device name the Raspberry Pi firmware driver
-// registers; its in0_lcrit_alarm reports undervoltage right now.
+// registers. Its in0_lcrit_alarm exposes the firmware's sticky undervoltage bit,
+// which the driver samples about every 2 s, so a set alarm means undervoltage
+// occurred within the last driver poll rather than at this instant.
 const undervoltHwmonName = "rpi_volt"
 
-// ReadUndervoltage reports whether the Raspberry Pi is undervolted right now,
-// from the rpi_volt hwmon's in0_lcrit_alarm. The attribute is world readable, so
-// this works as an unprivileged user. ok is false on hosts without that hwmon
-// device or when the attribute cannot be read or parsed.
+// ReadUndervoltage reports whether the Raspberry Pi has been undervolted within
+// the last driver poll, from the rpi_volt hwmon's in0_lcrit_alarm. That alarm is
+// the firmware's sticky bit, sampled by the driver about every 2 s, so it is a
+// recent reading rather than an instantaneous one. The attribute is world
+// readable, so this works as an unprivileged user. ok is false on hosts without
+// that hwmon device or when the attribute cannot be read or parsed.
 func ReadUndervoltage() (now, ok bool) {
 	return readUndervoltage(sysClassHwmon)
 }
@@ -242,11 +249,11 @@ func ReadUndervoltage() (now, ok bool) {
 func readUndervoltage(root string) (now, ok bool) {
 	names, _ := filepath.Glob(filepath.Join(root, "hwmon*", "name"))
 	for _, namePath := range names {
-		b, err := os.ReadFile(namePath) //nolint:gosec // path from a fixed /sys glob
+		b, err := os.ReadFile(namePath) //nolint:gosec // path from a glob under the caller-supplied hwmon root (/sys/class/hwmon in production)
 		if err != nil || strings.TrimSpace(string(b)) != undervoltHwmonName {
 			continue
 		}
-		ab, err := os.ReadFile(filepath.Join(filepath.Dir(namePath), "in0_lcrit_alarm")) //nolint:gosec // sibling of a fixed /sys glob match
+		ab, err := os.ReadFile(filepath.Join(filepath.Dir(namePath), "in0_lcrit_alarm")) //nolint:gosec // sibling of a glob match under the caller-supplied hwmon root (/sys/class/hwmon in production)
 		if err != nil {
 			return false, false
 		}

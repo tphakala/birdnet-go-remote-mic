@@ -426,9 +426,10 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 // client connected, and registering the first consumer of either kind resets
 // residual meters the same way the first SSE subscriber does. The fn runs on the
 // sampler goroutine outside the hub lock and must not block (the signal monitor
-// only reads the event and publishes to the notification center). The event's
-// devices slice is freshly allocated each window; a tap must treat it as
-// read-only.
+// reads the event and publishes to the notification center). Because fn runs
+// outside h.mu, a tap may call its own cancel from inside fn without deadlocking.
+// The event's devices slice is freshly allocated each window; a tap must treat it
+// as read-only.
 func (h *Hub) Tap(fn func(LevelsEvent)) (cancel func()) {
 	t := &tap{fn: fn}
 	h.mu.Lock()

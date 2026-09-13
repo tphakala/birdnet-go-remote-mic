@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 )
 
 func TestProviderDropCounters(t *testing.T) {
@@ -13,13 +14,20 @@ func TestProviderDropCounters(t *testing.T) {
 	if got := p.dropCounters(); len(got) != 0 {
 		t.Fatalf("dropCounters before setDevices = %v, want empty", got)
 	}
-	a := &deviceRuntime{dev: config.Device{Name: "orchard"}}
+	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, state: mgmtserver.StateServing}
 	a.dropped.Store(42)
-	b := &deviceRuntime{dev: config.Device{Name: "bats"}}
-	p.setDevices([]*deviceRuntime{a, b})
+	b := &deviceRuntime{dev: config.Device{Name: "bats"}, state: mgmtserver.StateServing}
+	// A disabled and a failed device carry (possibly frozen) counters but must be
+	// excluded, so the monitor sees them go absent and resolves any active drops
+	// condition rather than clearing it with a misleading "client keeping up".
+	disabled := &deviceRuntime{dev: config.Device{Name: "attic"}, state: mgmtserver.StateDisabled}
+	disabled.dropped.Store(99)
+	failed := &deviceRuntime{dev: config.Device{Name: "cellar"}, state: mgmtserver.StateFailed}
+	failed.dropped.Store(7)
+	p.setDevices([]*deviceRuntime{a, disabled, b, failed})
 	got := p.dropCounters()
 	if len(got) != 2 || got[0].Name != "orchard" || got[0].Dropped != 42 || got[1].Name != "bats" || got[1].Dropped != 0 {
-		t.Errorf("dropCounters = %+v", got)
+		t.Errorf("dropCounters = %+v, want only the two serving devices", got)
 	}
 }
 

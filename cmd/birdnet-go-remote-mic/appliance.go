@@ -407,7 +407,7 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	// Re-arm the condition monitors with the new thresholds and per-device
 	// quiet-alert opt-outs. Apply swaps the immutable settings value the monitors
 	// read each tick; it never restarts a device, so a threshold change moves no
-	// capture. A nil monitors (none wired yet) is a no-op.
+	// capture. A nil monitors (a test that wires none) is a no-op.
 	if a.monitors != nil {
 		s := monitor.SettingsFrom(newCfg)
 		a.monitors.Apply(&s)

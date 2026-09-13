@@ -61,3 +61,30 @@ func TestSettingsFromEnabledExplicitOff(t *testing.T) {
 		t.Errorf("QuietAlert = %v, want empty (no devices)", s.QuietAlert)
 	}
 }
+
+// recMonitors records how many times Apply was called and the last pointer it
+// received, so a test can assert Group forwards the exact settings pointer.
+type recMonitors struct {
+	n    int
+	last *Settings
+}
+
+func (r *recMonitors) Apply(s *Settings) {
+	r.n++
+	r.last = s
+}
+
+// TestGroupApplyFansOut checks Group.Apply forwards the settings to every non-nil
+// member, skips nil members, and hands each the very pointer it was given.
+func TestGroupApplyFansOut(t *testing.T) {
+	a, b := &recMonitors{}, &recMonitors{}
+	g := Group{a, nil, b}
+	s := hostSettings()
+	g.Apply(&s)
+	if a.n != 1 || b.n != 1 {
+		t.Errorf("Group.Apply calls = %d, %d; want 1, 1", a.n, b.n)
+	}
+	if a.last != &s || b.last != &s {
+		t.Error("Group.Apply forwarded a different pointer than it was given")
+	}
+}
