@@ -28,6 +28,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
@@ -273,6 +274,20 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 
 	// Drive the level sampler for the lifetime of the process.
 	go hub.Run(ctx)
+
+	// Start the audio-signal condition monitor: it taps the level hub (so it must
+	// come up after the hub is running) and raises stuck-at-zero, very-quiet, and
+	// clipping conditions per device. Handing it to the appliance as its Monitors
+	// makes every reconcile re-arm it with the current thresholds and per-device
+	// quiet opt-outs, without restarting any device.
+	signalSettings := monitor.SettingsFrom(&cfg)
+	app.monitors = monitor.RunSignal(ctx, hub, center, &signalSettings)
+
+	// Sweep stale client-flap warnings: the connect-driven detector only clears on
+	// the next connect after the quiet window, which a client that settles into a
+	// steady connection or gives up never sends, so a periodic sweep ages the
+	// warning out (and drops the path when its device is removed).
+	go streamListener.Run(ctx)
 
 	// Build the initial pipeline by reconciling from an empty state to the loaded
 	// config: this opens every enabled device, records disabled and skipped ones,

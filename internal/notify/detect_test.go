@@ -209,6 +209,106 @@ func TestFlapDenseBurstStaysBoundedAndClears(t *testing.T) {
 	}
 }
 
+func TestHysteresisActiveAndSetEnterAfter(t *testing.T) {
+	t0 := time.Unix(1_000_000, 0)
+	h := NewHysteresis(30*time.Second, 5*time.Second)
+	if h.Active() {
+		t.Fatal("Active() = true on a fresh hysteresis, want false")
+	}
+	// A pending onset run is in progress but not yet met.
+	if got := h.Observe(t0, true); got != TransitionNone {
+		t.Fatalf("first over: got %s, want none", transitionName(got))
+	}
+	if h.Active() {
+		t.Fatal("Active() = true during a pending run, want false")
+	}
+	// Shorten the onset dwell below the elapsed run: the next observation onsets
+	// without discarding the run's start, and Active() then reports true.
+	h.SetEnterAfter(0)
+	if got := h.Observe(t0.Add(time.Second), true); got != TransitionOnset {
+		t.Fatalf("after shortening enterAfter: got %s, want onset", transitionName(got))
+	}
+	if !h.Active() {
+		t.Error("Active() = false after onset, want true")
+	}
+}
+
+func TestFlapSweepClearsIdleFlap(t *testing.T) {
+	t0 := time.Unix(2_000_000, 0)
+	f := NewFlap(3, 60*time.Second, 5*time.Minute)
+	for i := 0; i < 3; i++ {
+		f.Event(t0.Add(time.Duration(i) * time.Second))
+	}
+	if got := f.Event(t0.Add(3 * time.Second)); got != TransitionOnset {
+		t.Fatalf("4th event: got %s, want onset", transitionName(got))
+	}
+	if !f.Active() {
+		t.Fatal("Active() = false after onset, want true")
+	}
+	last := t0.Add(3 * time.Second)
+	// Before quiet elapses since the last event, a sweep is a no-op.
+	if got := f.Sweep(last.Add(5*time.Minute - time.Second)); got != TransitionNone {
+		t.Fatalf("sweep before quiet: got %s, want none", transitionName(got))
+	}
+	if !f.Active() {
+		t.Fatal("Active() = false before quiet elapsed, want true")
+	}
+	// Once quiet has elapsed since the last event with no further event, the
+	// sweep ages the flap out (the client settled or gave up, so Event never
+	// fires the reactive clear).
+	if got := f.Sweep(last.Add(5 * time.Minute)); got != TransitionClear {
+		t.Fatalf("sweep after quiet: got %s, want clear", transitionName(got))
+	}
+	if f.Active() {
+		t.Error("Active() = true after sweep clear, want false")
+	}
+	// A second sweep is a no-op: the flap is already cleared.
+	if got := f.Sweep(last.Add(10 * time.Minute)); got != TransitionNone {
+		t.Fatalf("sweep when inactive: got %s, want none", transitionName(got))
+	}
+	// After a sweep clear the window is fresh, so a new burst must build up again
+	// before another onset.
+	if got := f.Event(last.Add(10 * time.Minute)); got != TransitionNone {
+		t.Fatalf("first event after sweep clear: got %s, want none", transitionName(got))
+	}
+}
+
+func TestFlapActiveAndSweepInactiveAreNoops(t *testing.T) {
+	t0 := time.Unix(2_000_000, 0)
+	f := NewFlap(3, 60*time.Second, 5*time.Minute)
+	if f.Active() {
+		t.Fatal("Active() = true on a fresh flap, want false")
+	}
+	if got := f.Sweep(t0); got != TransitionNone {
+		t.Fatalf("sweep on an inactive flap: got %s, want none", transitionName(got))
+	}
+}
+
+func TestFlapIdle(t *testing.T) {
+	t0 := time.Unix(2_000_000, 0)
+	f := NewFlap(3, 60*time.Second, 5*time.Minute)
+	if !f.Idle(t0) {
+		t.Error("a fresh flap with no events should be idle")
+	}
+	// An event puts a sample in the window: not idle until it ages out.
+	f.Event(t0)
+	if f.Idle(t0.Add(30 * time.Second)) {
+		t.Error("a flap with an in-window event should not be idle")
+	}
+	if !f.Idle(t0.Add(61 * time.Second)) {
+		t.Error("a flap whose only event has aged out of the window should be idle")
+	}
+	// An active flap is never idle.
+	f2 := NewFlap(1, 60*time.Second, 5*time.Minute)
+	f2.Event(t0)
+	if got := f2.Event(t0.Add(time.Second)); got != TransitionOnset {
+		t.Fatalf("expected onset, got %s", transitionName(got))
+	}
+	if f2.Idle(t0.Add(2 * time.Second)) {
+		t.Error("an active flap must not be idle")
+	}
+}
+
 func TestFlapReset(t *testing.T) {
 	t0 := time.Unix(2_000_000, 0)
 	f := NewFlap(1, time.Minute, time.Minute)

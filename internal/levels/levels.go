@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"log"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -19,9 +20,15 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
 )
 
-// dbfsFloor is the reported minimum; JSON cannot carry negative infinity, so
-// silence and anything quieter clamps here.
-const dbfsFloor = -99.0
+// FloorDbfs is the reported minimum; JSON cannot carry negative infinity, so
+// silence and anything quieter clamps here. It is exported so the signal monitor
+// can compare a channel peak against the same floor (a peak of exactly this value
+// is digital zero) instead of re-typing the literal, which would silently break
+// that exact-equality check if the floor ever changed.
+const FloorDbfs = -99.0
+
+// dbfsFloor is the internal alias for the exported floor.
+const dbfsFloor = FloorDbfs
 
 // fullScale is |math.MinInt16|: the divisor that maps a full-scale sample to
 // 0 dBFS. A full-scale negative sample (-32768) has magnitude 32768.
@@ -204,6 +211,16 @@ type subscriber struct {
 	ch chan Event
 }
 
+// tap is one in-process structured-levels consumer. Unlike a subscriber, a tap
+// receives the LevelsEvent value directly on the sampler goroutine (no SSE
+// marshal, no channel, no fan-out buffer), so a consumer like the signal monitor
+// reads every window's levels allocation-free. A registered tap counts as a
+// subscriber, so the meters accumulate and the sampler runs even when no SSE
+// client is connected.
+type tap struct {
+	fn func(LevelsEvent)
+}
+
 type namedMeter struct {
 	name  string
 	meter *Meter
@@ -220,6 +237,7 @@ type Hub struct {
 	mu      sync.Mutex
 	meters  []namedMeter
 	subList map[*subscriber]struct{}
+	taps    map[*tap]struct{}
 }
 
 // Hub is an sse.Source: it fans marshaled levels events to SSE subscribers. The
@@ -231,6 +249,7 @@ func NewHub() *Hub {
 	return &Hub{
 		interval: defaultInterval,
 		subList:  make(map[*subscriber]struct{}),
+		taps:     make(map[*tap]struct{}),
 	}
 }
 
@@ -270,6 +289,9 @@ func (h *Hub) RemoveMeter(name string) {
 func (h *Hub) Run(ctx context.Context) {
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
+	// taps is reused across ticks and touched only by this goroutine, so a steady
+	// state with a fixed tap set does not allocate the tap slice here.
+	var taps []func(LevelsEvent)
 	for {
 		select {
 		case <-ctx.Done():
@@ -278,22 +300,81 @@ func (h *Hub) Run(ctx context.Context) {
 			if h.subs.Load() == 0 {
 				continue
 			}
-			h.broadcast(h.levelsEvent())
+			ev, refreshed, hasSSE := h.sample(taps)
+			taps = refreshed
+			// Deliver the structured event to in-process taps first (on this
+			// goroutine, outside the hub lock, so a slow tap cannot block
+			// RemoveMeter/Subscribe/Tap; each call is panic-isolated so one bad tap
+			// does not crash the sampler). Then marshal and fan out to SSE only when
+			// a client is actually connected: a registered tap keeps subs>0, so
+			// without this gate an appliance with no browser open would marshal a
+			// levels event every tick and discard it against an empty subscriber set.
+			for _, fn := range taps {
+				h.deliverTap(fn, ev)
+			}
+			if hasSSE {
+				h.broadcast(marshalLevels(ev))
+			}
 		}
 	}
+}
+
+// sample builds this window's structured levels event and refreshes dst with a
+// snapshot of the registered tap functions, both under one lock so the meter set
+// and the tap set are consistent for the window. It appends into dst (reused by
+// the sampler goroutine) to avoid a per-tick allocation for the tap slice; the
+// returned slice aliases dst's backing array. The devices slice is freshly
+// allocated, so it is safe to hand to taps and to marshal after the lock. hasSSE
+// reports whether any SSE subscriber is connected, so the caller can skip the
+// marshal and broadcast when only an in-process tap is registered.
+func (h *Hub) sample(dst []func(LevelsEvent)) (ev LevelsEvent, taps []func(LevelsEvent), hasSSE bool) {
+	h.mu.Lock()
+	devs := h.sampleDevicesLocked()
+	taps = dst[:0]
+	for t := range h.taps {
+		taps = append(taps, t.fn)
+	}
+	hasSSE = len(h.subList) > 0
+	h.mu.Unlock()
+	return LevelsEvent{Devices: devs}, taps, hasSSE
+}
+
+// deliverTap invokes one tap, recovering from a panic so a misbehaving in-process
+// consumer degrades to a dropped window rather than crashing the sampler
+// goroutine, which would take the whole appliance (RTSP and management) down with
+// it. It runs outside the hub lock.
+func (h *Hub) deliverTap(fn func(LevelsEvent), ev LevelsEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("levels: tap panicked, dropping window: %v", r)
+		}
+	}()
+	fn(ev)
+}
+
+// sampleDevicesLocked snapshots every meter into a fresh per-device slice. The
+// caller holds h.mu.
+func (h *Hub) sampleDevicesLocked() []DeviceLevels {
+	devs := make([]DeviceLevels, 0, len(h.meters))
+	for i := range h.meters {
+		devs = append(devs, h.meters[i].meter.sample(h.meters[i].name))
+	}
+	return devs
 }
 
 // levelsEvent snapshots every meter into a marshaled levels event.
 func (h *Hub) levelsEvent() Event {
 	h.mu.Lock()
-	devs := make([]DeviceLevels, 0, len(h.meters))
-	for i := range h.meters {
-		devs = append(devs, h.meters[i].meter.sample(h.meters[i].name))
-	}
+	devs := h.sampleDevicesLocked()
 	h.mu.Unlock()
-	// Cannot fail: every field is a clamped scalar (dbfs/rmsDbfs keep the floats
-	// finite, no NaN or Inf) plus a string and a bool.
-	data, _ := json.Marshal(LevelsEvent{Devices: devs})
+	return marshalLevels(LevelsEvent{Devices: devs})
+}
+
+// marshalLevels renders a structured levels event as the SSE wire event. The
+// marshal cannot fail: every field is a clamped finite scalar (dbfs/rmsDbfs keep
+// the floats finite, no NaN or Inf) plus a string and a bool.
+func marshalLevels(le LevelsEvent) Event {
+	data, _ := json.Marshal(le)
 	return Event{Name: "levels", Data: data}
 }
 
@@ -316,7 +397,7 @@ func (h *Hub) broadcast(ev Event) {
 func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 	s := &subscriber{ch: make(chan Event, 8)}
 	h.mu.Lock()
-	first := len(h.subList) == 0
+	first := len(h.subList) == 0 && len(h.taps) == 0
 	h.subList[s] = struct{}{}
 	if first {
 		// The sampler stops draining the meters while no client is subscribed,
@@ -332,6 +413,39 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 		once.Do(func() {
 			h.mu.Lock()
 			delete(h.subList, s)
+			h.mu.Unlock()
+			h.subs.Add(-1)
+		})
+	}
+}
+
+// Tap registers an in-process consumer that receives every window's structured
+// LevelsEvent directly on the sampler goroutine, and returns an idempotent
+// cancel that unregisters it. A tap counts as a subscriber: it increments the
+// subscriber gate so the meters accumulate and the sampler runs even with no SSE
+// client connected, and registering the first consumer of either kind resets
+// residual meters the same way the first SSE subscriber does. The fn runs on the
+// sampler goroutine outside the hub lock and must not block (the signal monitor
+// only reads the event and publishes to the notification center). The event's
+// devices slice is freshly allocated each window; a tap must treat it as
+// read-only.
+func (h *Hub) Tap(fn func(LevelsEvent)) (cancel func()) {
+	t := &tap{fn: fn}
+	h.mu.Lock()
+	first := len(h.subList) == 0 && len(h.taps) == 0
+	h.taps[t] = struct{}{}
+	if first {
+		for i := range h.meters {
+			h.meters[i].meter.reset()
+		}
+	}
+	h.mu.Unlock()
+	h.subs.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			delete(h.taps, t)
 			h.mu.Unlock()
 			h.subs.Add(-1)
 		})

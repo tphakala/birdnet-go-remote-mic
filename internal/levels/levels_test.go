@@ -318,6 +318,152 @@ func TestMeterDefaultsToMono(t *testing.T) {
 	}
 }
 
+// TestRunIdleGateActivatesOnlyWithConsumer exercises the sampler's idle gate: it
+// hits the subs==0 branch and does no work while nothing is registered, then wakes
+// and invokes a tap once a consumer registers (subs>0).
+func TestRunIdleGateActivatesOnlyWithConsumer(t *testing.T) {
+	h := NewHub()
+	h.interval = 2 * time.Millisecond
+	h.Meter("x", 1)
+	var calls atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+
+	// Phase 1: no consumer. Many ticks fire against the subs==0 idle gate and do
+	// nothing (this exercises the continue branch).
+	time.Sleep(20 * time.Millisecond)
+
+	// Phase 2: register a tap. subs>0, so the sampler wakes and invokes it.
+	tapCancel := h.Tap(func(LevelsEvent) { calls.Add(1) })
+	defer tapCancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("sampler never invoked the tap after a consumer registered")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestTapPanicIsolationKeepsSamplerAlive checks that a panicking tap is recovered
+// so it degrades to a dropped window instead of crashing the sampler goroutine (a
+// panic there would take the whole appliance down). A sibling tap keeps receiving.
+func TestTapPanicIsolationKeepsSamplerAlive(t *testing.T) {
+	h := NewHub()
+	h.interval = 5 * time.Millisecond
+	m := h.Meter(nameGarden, 1)
+	got := make(chan LevelsEvent, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+
+	badCancel := h.Tap(func(LevelsEvent) { panic("boom") })
+	defer badCancel()
+	goodCancel := h.Tap(func(ev LevelsEvent) {
+		select {
+		case got <- ev:
+		default:
+		}
+	})
+	defer goodCancel()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.Observe(pcm(repeat(16384, 480)...))
+		select {
+		case <-got:
+			return // the good tap keeps receiving despite the panicking sibling
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("panicking tap starved the sampler; the good tap never fired")
+}
+
+// TestTapDrivesSamplerWithoutSSEClient checks that a registered tap alone keeps
+// the sampler running and the meters accumulating even with no SSE subscriber,
+// and that the tap receives the structured per-window levels event. This is the
+// property the signal monitor relies on: it observes levels continuously without
+// a browser open.
+func TestTapDrivesSamplerWithoutSSEClient(t *testing.T) {
+	h := NewHub()
+	h.interval = 5 * time.Millisecond
+	m := h.Meter(nameGarden, 1)
+
+	got := make(chan LevelsEvent, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+
+	// No Subscribe: the only consumer is the tap. It must still make subs>0 so the
+	// sampler ticks and the meter accumulates.
+	unsub := h.Tap(func(ev LevelsEvent) {
+		select {
+		case got <- ev:
+		default:
+		}
+	})
+	defer unsub()
+
+	// Use a wall-clock deadline as the loop bound rather than a select case, so a
+	// data receive and the timeout can never both be ready in the same select and
+	// race to a spurious failure.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.Observe(pcm(repeat(16384, 480)...))
+		select {
+		case ev := <-got:
+			if len(ev.Devices) == 1 && ev.Devices[0].Name == nameGarden &&
+				ev.Devices[0].Channels[0].RmsDbfs > -50 {
+				return // a real signal reached the tap: success
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("no levels event with signal delivered to tap within timeout")
+}
+
+// TestTapCancelUnregisters checks the subscriber-gate bookkeeping: a tap
+// increments subs, its cancel decrements it, and the cancel is idempotent.
+func TestTapCancelUnregisters(t *testing.T) {
+	h := NewHub()
+	if got := h.subs.Load(); got != 0 {
+		t.Fatalf("initial subs = %d, want 0", got)
+	}
+	unsub := h.Tap(func(LevelsEvent) {})
+	if got := h.subs.Load(); got != 1 {
+		t.Fatalf("after Tap subs = %d, want 1", got)
+	}
+	unsub()
+	if got := h.subs.Load(); got != 0 {
+		t.Fatalf("after cancel subs = %d, want 0", got)
+	}
+	unsub() // idempotent
+	if got := h.subs.Load(); got != 0 {
+		t.Fatalf("double cancel subs = %d, want 0", got)
+	}
+}
+
+// TestTapFirstConsumerResetsResidualMeters checks that a tap registering as the
+// first consumer clears residual left in a meter while nothing was subscribed,
+// exactly as the first SSE subscriber does.
+func TestTapFirstConsumerResetsResidualMeters(t *testing.T) {
+	h := NewHub()
+	m := h.Meter("x", 1)
+
+	// Leave residual in the meter while no consumer drains it.
+	_, cancel := h.Subscribe()
+	m.Observe(pcm(repeat(math.MaxInt16, 256)...))
+	cancel() // subs=0
+
+	unsub := h.Tap(func(LevelsEvent) {}) // first consumer again: must reset m
+	defer unsub()
+	d := m.sample("x")
+	if d.Channels[0].PeakDbfs != dbfsFloor || d.Channels[0].Clipped {
+		t.Errorf("residual not cleared when a tap is the first consumer: %+v", d)
+	}
+}
+
 // TestLevelsEventMultiChannelContract drives a 2-channel meter through the SSE
 // marshal and asserts the per-channel array survives the wire contract with more
 // than one element and in order. The single-channel contract test cannot catch a
