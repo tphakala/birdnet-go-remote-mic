@@ -372,6 +372,302 @@ func TestWireDeviceToConfigDoesNotAliasEnabled(t *testing.T) {
 	}
 }
 
+func TestGetConfigMaterializesNotifications(t *testing.T) {
+	store, _ := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+	resp, err := s.GetConfig(context.Background(), mgmtapi.GetConfigRequestObject{})
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	got, ok := resp.(mgmtapi.GetConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("GetConfig returned %T, want 200", resp)
+	}
+	n := got.Notifications
+	// enabled is absent in the config yet must materialize to true.
+	if n.Enabled == nil || !*n.Enabled {
+		t.Errorf("notifications.enabled = %v, want &true", n.Enabled)
+	}
+	if n.Audio == nil || n.Audio.QuietDbfs == nil || *n.Audio.QuietDbfs != -60 {
+		t.Errorf("audio.quietDbfs not materialized: %+v", n.Audio)
+	}
+	if n.Host == nil || n.Host.CpuPercent == nil || *n.Host.CpuPercent != 90 {
+		t.Errorf("host.cpuPercent not materialized: %+v", n.Host)
+	}
+	if n.Host.MemFreeMiB == nil || *n.Host.MemFreeMiB != 64 {
+		t.Errorf("host.memFreeMiB = %v, want &64", n.Host.MemFreeMiB)
+	}
+	// The per-device quiet-alert flag materializes to true as well.
+	if got.Devices[0].QuietAlert == nil || !*got.Devices[0].QuietAlert {
+		t.Errorf("device quietAlert = %v, want &true", got.Devices[0].QuietAlert)
+	}
+}
+
+func TestPatchConfigNotificationsPartialMerge(t *testing.T) {
+	store, path := tempStore(t)
+	reloaded := false
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error {
+		reloaded = true
+		return nil
+	}))
+
+	// A partial block touches only host.cpuPercent; audio and every other host
+	// field stay at their defaults, and no device is affected.
+	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(95)},
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if !reloaded {
+		t.Error("reloader was not invoked for a notifications change")
+	}
+	if ok200.RestartRequired {
+		t.Error("restartRequired = true, want false (a notifications change hot-applies)")
+	}
+	h := ok200.Config.Notifications.Host
+	if h == nil || h.CpuPercent == nil || *h.CpuPercent != 95 {
+		t.Fatalf("cpuPercent = %+v, want &95", h)
+	}
+	if h.CpuClearPercent == nil || *h.CpuClearPercent != 75 {
+		t.Errorf("cpuClearPercent = %v, want &75 (unchanged by the partial merge)", h.CpuClearPercent)
+	}
+	if h.DiskPercent == nil || *h.DiskPercent != 90 {
+		t.Errorf("diskPercent = %v, want &90 (unchanged)", h.DiskPercent)
+	}
+	// The whole audio block must survive a host-only patch at its defaults.
+	if a := ok200.Config.Notifications.Audio; a == nil || a.QuietDbfs == nil || *a.QuietDbfs != -60 {
+		t.Errorf("audio block changed by a host-only patch: %+v", a)
+	}
+	if len(ok200.Config.Devices) != 1 || ok200.Config.Devices[0].Name != devGarden {
+		t.Errorf("devices changed by a notifications-only patch: %+v", ok200.Config.Devices)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if loaded.Notifications.Host.CPUPercent == nil || *loaded.Notifications.Host.CPUPercent != 95 ||
+		loaded.Notifications.Host.CPUClearPercent == nil || *loaded.Notifications.Host.CPUClearPercent != 75 {
+		t.Errorf("persisted host = %+v, want cpu 95 / cpuClear 75", loaded.Notifications.Host)
+	}
+}
+
+func TestPatchConfigNotificationsMergesEveryField(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	on := true
+	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
+		Enabled: &on,
+		Audio: &mgmtapi.AudioAlertSettings{
+			QuietDbfs:         ptr(-50),
+			QuietSeconds:      ptr(1200),
+			ZeroSeconds:       ptr(45),
+			ClipPercent:       ptr(30),
+			ClipWindowSeconds: ptr(15),
+		},
+		Host: &mgmtapi.HostAlertSettings{
+			CpuPercent:       ptr(85),
+			CpuClearPercent:  ptr(70),
+			TempCelsius:      ptr(75),
+			TempClearCelsius: ptr(70),
+			DiskPercent:      ptr(88),
+			DiskClearPercent: ptr(80),
+			MemFreePercent:   ptr(15),
+			MemFreeMiB:       ptr(128),
+		},
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+
+	// Pin every wire-output threshold against the distinctive inputs, not just the
+	// persisted config: the monitors read the config, but the web UI reads this
+	// wire response, so a wrong-source bug in notificationsToWire would ship the
+	// wrong value to the UI while the persisted-config assertions below still pass.
+	eq := func(name string, got *int, want int) {
+		t.Helper()
+		if got == nil || *got != want {
+			t.Errorf("wire %s = %v, want %d", name, got, want)
+		}
+	}
+	if wa := ok200.Config.Notifications.Audio; wa == nil {
+		t.Error("wire audio block is nil")
+	} else {
+		eq("audio.quietDbfs", wa.QuietDbfs, -50)
+		eq("audio.quietSeconds", wa.QuietSeconds, 1200)
+		eq("audio.zeroSeconds", wa.ZeroSeconds, 45)
+		eq("audio.clipPercent", wa.ClipPercent, 30)
+		eq("audio.clipWindowSeconds", wa.ClipWindowSeconds, 15)
+	}
+	if wh := ok200.Config.Notifications.Host; wh == nil {
+		t.Error("wire host block is nil")
+	} else {
+		eq("host.cpuPercent", wh.CpuPercent, 85)
+		eq("host.cpuClearPercent", wh.CpuClearPercent, 70)
+		eq("host.tempCelsius", wh.TempCelsius, 75)
+		eq("host.tempClearCelsius", wh.TempClearCelsius, 70)
+		eq("host.diskPercent", wh.DiskPercent, 88)
+		eq("host.diskClearPercent", wh.DiskClearPercent, 80)
+		eq("host.memFreePercent", wh.MemFreePercent, 15)
+		eq("host.memFreeMiB", wh.MemFreeMiB, 128)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	la := loaded.Notifications.Audio
+	eq("persisted audio.quietDbfs", la.QuietDbfs, -50)
+	eq("persisted audio.quietSeconds", la.QuietSeconds, 1200)
+	eq("persisted audio.zeroSeconds", la.ZeroSeconds, 45)
+	eq("persisted audio.clipPercent", la.ClipPercent, 30)
+	eq("persisted audio.clipWindowSeconds", la.ClipWindowSeconds, 15)
+	lh := loaded.Notifications.Host
+	eq("persisted host.cpuPercent", lh.CPUPercent, 85)
+	eq("persisted host.cpuClearPercent", lh.CPUClearPercent, 70)
+	eq("persisted host.tempCelsius", lh.TempCelsius, 75)
+	eq("persisted host.tempClearCelsius", lh.TempClearCelsius, 70)
+	eq("persisted host.diskPercent", lh.DiskPercent, 88)
+	eq("persisted host.diskClearPercent", lh.DiskClearPercent, 80)
+	eq("persisted host.memFreePercent", lh.MemFreePercent, 15)
+	eq("persisted host.memFreeMiB", lh.MemFreeMiB, 128)
+}
+
+func TestPatchConfigNotificationsClearNotBelowOnsetYields422(t *testing.T) {
+	store, _ := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(50), CpuClearPercent: ptr(60)},
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	vp, ok := resp.(mgmtapi.PatchConfig422ApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 422 validation problem", resp)
+	}
+	if vp.Errors == nil || len(*vp.Errors) != 1 {
+		t.Fatalf("errors = %+v, want one entry", vp.Errors)
+	}
+	if (*vp.Errors)[0].Field != "notifications.host.cpu_clear_percent" {
+		t.Errorf("error field = %q, want notifications.host.cpu_clear_percent", (*vp.Errors)[0].Field)
+	}
+}
+
+func TestPatchConfigRejectsExplicitZeroThreshold(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	// An explicitly supplied out-of-range 0 must be rejected with a 422, not
+	// silently rewritten to the default by ApplyDefaults. cpuPercent's range is
+	// 1..100, so a present 0 is invalid and its presence must survive the merge
+	// and ApplyDefaults to reach Validate.
+	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(0)},
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	vp, ok := resp.(mgmtapi.PatchConfig422ApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 422 for an explicit zero threshold", resp)
+	}
+	if vp.Errors == nil || len(*vp.Errors) != 1 || (*vp.Errors)[0].Field != "notifications.host.cpu_percent" {
+		t.Errorf("errors = %+v, want one for notifications.host.cpu_percent", vp.Errors)
+	}
+	// A rejected patch must not be persisted: the file must still not exist.
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("a rejected patch wrote the config file (stat err = %v); want it absent", statErr)
+	}
+}
+
+func TestPatchConfigNotificationsEnabledToggle(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	off := false
+	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{Enabled: &off}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if ok200.Config.Notifications.Enabled == nil || *ok200.Config.Notifications.Enabled {
+		t.Errorf("response notifications.enabled = %v, want &false", ok200.Config.Notifications.Enabled)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if loaded.NotificationsEnabled() {
+		t.Error("persisted notifications still enabled, want disabled after the toggle")
+	}
+}
+
+func TestPatchConfigQuietAlertPersists(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	off := false
+	devs := []mgmtapi.DeviceConfig{{
+		Name: devGarden, Device: devHW1, Path: pathGarden,
+		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
+		Opus:       &mgmtapi.OpusSettings{Bitrate: ptr(96000)},
+		QuietAlert: &off,
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	ok200, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 200", resp)
+	}
+	if ok200.Config.Devices[0].QuietAlert == nil || *ok200.Config.Devices[0].QuietAlert {
+		t.Errorf("response device quietAlert = %v, want &false", ok200.Config.Devices[0].QuietAlert)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if loaded.Devices[0].QuietAlertEnabled() {
+		t.Error("persisted device quietAlert is on, want off")
+	}
+}
+
+func TestWireDeviceToConfigDoesNotAliasQuietAlert(t *testing.T) {
+	// Parity with the Enabled alias test: mutating the request's QuietAlert
+	// pointer after mapping must not change the mapped config.
+	flag := false
+	req := &mgmtapi.DeviceConfig{
+		Name: devGarden, Device: devHW1, Path: pathGarden,
+		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
+		QuietAlert: &flag,
+	}
+	out := wireDeviceToConfig(req)
+	*req.QuietAlert = true
+	if out.QuietAlert == nil || *out.QuietAlert {
+		t.Errorf("wireDeviceToConfig aliased QuietAlert: out.QuietAlert=%v after mutating the request", out.QuietAlert)
+	}
+}
+
 func TestGetConfigMaterializesDisabledDevice(t *testing.T) {
 	off := false
 	c := baseConfig()

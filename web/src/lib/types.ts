@@ -24,6 +24,10 @@ export interface DeviceConfig {
   // A disabled device stays configured but is not opened until re-enabled and
   // the appliance restarts.
   enabled?: boolean;
+  // Whether the device raises the very-quiet audio condition; defaults to true
+  // when absent. Set false for a device expected to be silent for long stretches
+  // (a bat microphone by day). Stuck-at-zero and clipping are unaffected.
+  quietAlert?: boolean;
 }
 
 export interface DiscoverySettings {
@@ -44,19 +48,54 @@ export interface AuthSettings {
   token?: string;
 }
 
+// AudioAlertSettings holds the audio-signal condition thresholds. In a read
+// every field is materialized; in a patch an absent field leaves it unchanged.
+export interface AudioAlertSettings {
+  quietDbfs?: number;
+  quietSeconds?: number;
+  zeroSeconds?: number;
+  clipPercent?: number;
+  clipWindowSeconds?: number;
+}
+
+// HostAlertSettings holds the host-health condition thresholds. Each clear
+// threshold must sit below its onset to keep a hysteresis gap.
+export interface HostAlertSettings {
+  cpuPercent?: number;
+  cpuClearPercent?: number;
+  tempCelsius?: number;
+  tempClearCelsius?: number;
+  diskPercent?: number;
+  diskClearPercent?: number;
+  memFreePercent?: number;
+  memFreeMiB?: number;
+}
+
+// NotificationSettings configures the condition monitors behind the notification
+// center. In a read every field is materialized; in a patch an absent field (or
+// an absent nested object) leaves the current value unchanged, so a partial
+// block like { host: { cpuPercent: 95 } } touches only that field.
+export interface NotificationSettings {
+  enabled?: boolean;
+  audio?: AudioAlertSettings;
+  host?: HostAlertSettings;
+}
+
 export interface Config {
   listen: string;
   discovery?: DiscoverySettings;
   management?: ManagementSettings;
   auth?: AuthSettings;
+  notifications?: NotificationSettings;
   devices: DeviceConfig[];
 }
 
-// Only discovery, auth and devices are patchable; the server ignores anything
-// else (see api/openapi.yaml ConfigPatch).
+// Only discovery, auth, notifications and devices are patchable; the server
+// ignores anything else (see api/openapi.yaml ConfigPatch).
 export interface ConfigPatch {
   discovery?: DiscoverySettings;
   auth?: AuthSettings;
+  notifications?: NotificationSettings;
   devices?: DeviceConfig[];
 }
 

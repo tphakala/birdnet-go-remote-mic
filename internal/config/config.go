@@ -47,11 +47,12 @@ const (
 
 // Config is the whole configuration surface.
 type Config struct {
-	Listen     string     `yaml:"listen"`
-	Discovery  Discovery  `yaml:"discovery"`
-	Management Management `yaml:"management"`
-	Auth       Auth       `yaml:"auth,omitempty"`
-	Devices    []Device   `yaml:"devices"`
+	Listen        string        `yaml:"listen"`
+	Discovery     Discovery     `yaml:"discovery"`
+	Management    Management    `yaml:"management"`
+	Auth          Auth          `yaml:"auth,omitempty"`
+	Notifications Notifications `yaml:"notifications,omitempty"`
+	Devices       []Device      `yaml:"devices"`
 }
 
 // Auth configures the shared access token that gates the management API and
@@ -64,6 +65,118 @@ type Auth struct {
 // AuthRequired reports whether a token is set, so clients must authenticate.
 func (c *Config) AuthRequired() bool {
 	return c.Auth.Token != ""
+}
+
+// Notifications configures the condition monitors behind the notification
+// center. Every field is a pointer so presence is preserved: an absent field
+// (nil) is filled with its default by ApplyDefaults, while an explicitly
+// provided value (including an out-of-range one such as 0) survives to Validate
+// and is rejected. The clear-side durations are constants in the monitors, not
+// config.
+type Notifications struct {
+	Enabled *bool       `yaml:"enabled,omitempty"` // default on
+	Audio   AudioAlerts `yaml:"audio,omitempty"`
+	Host    HostAlerts  `yaml:"host,omitempty"`
+}
+
+// Default threshold values, shared by ApplyDefaults (fills an absent field) and
+// validate (the effective value of an absent field), so the two never drift.
+const (
+	defAudioQuietDbfs         = -60
+	defAudioQuietSeconds      = 600
+	defAudioZeroSeconds       = 30
+	defAudioClipPercent       = 20
+	defAudioClipWindowSeconds = 10
+	defHostCPUPercent         = 90
+	defHostCPUClearPercent    = 75
+	defHostTempCelsius        = 80
+	defHostTempClearCelsius   = 75
+	defHostDiskPercent        = 90
+	defHostDiskClearPercent   = 85
+	defHostMemFreePercent     = 10
+	defHostMemFreeMiB         = 64
+)
+
+// AudioAlerts holds the audio-signal condition thresholds. Each field is a
+// pointer: nil means "unset, fill the default", a set value is validated as
+// given (so an explicit out-of-range value is rejected, not silently defaulted).
+type AudioAlerts struct {
+	QuietDbfs         *int `yaml:"quiet_dbfs,omitempty"`          // default -60; -99..-1
+	QuietSeconds      *int `yaml:"quiet_seconds,omitempty"`       // default 600; 10..86400
+	ZeroSeconds       *int `yaml:"zero_seconds,omitempty"`        // default 30; 5..3600
+	ClipPercent       *int `yaml:"clip_percent,omitempty"`        // default 20; 1..100
+	ClipWindowSeconds *int `yaml:"clip_window_seconds,omitempty"` // default 10; 1..600
+}
+
+// HostAlerts holds the host-health condition thresholds. Each clear threshold
+// must sit below its onset to keep a real hysteresis gap (a clear at or above
+// the onset would chatter). Each field is a pointer: nil means "unset, fill the
+// default", a set value is validated as given.
+type HostAlerts struct {
+	CPUPercent       *int `yaml:"cpu_percent,omitempty"`        // default 90; 1..100
+	CPUClearPercent  *int `yaml:"cpu_clear_percent,omitempty"`  // default 75; 1..99, below cpu_percent
+	TempCelsius      *int `yaml:"temp_celsius,omitempty"`       // default 80; 30..120
+	TempClearCelsius *int `yaml:"temp_clear_celsius,omitempty"` // default 75; 1..119, below temp_celsius
+	DiskPercent      *int `yaml:"disk_percent,omitempty"`       // default 90; 1..100
+	DiskClearPercent *int `yaml:"disk_clear_percent,omitempty"` // default 85; 1..99, below disk_percent
+	MemFreePercent   *int `yaml:"mem_free_percent,omitempty"`   // default 10; 1..90
+	MemFreeMiB       *int `yaml:"mem_free_mib,omitempty"`       // default 64; 1..65536
+}
+
+// intOr returns *p, or def when p is nil. It gives the effective value of a
+// threshold: an absent (nil) field reads as its default; a set field (including
+// an out-of-range 0) reads as its literal value so validate can reject it.
+func intOr(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// cloneIntPtr returns a copy of p with its own backing storage (nil stays nil).
+func cloneIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// clone returns a deep copy of n: every pointer field (Enabled and all thresholds)
+// gets its own backing storage, so a caller mutating the copy cannot alias the
+// original. Used by Config.Clone, where a shallow struct copy would share the
+// threshold pointers.
+func (n *Notifications) clone() Notifications {
+	out := Notifications{
+		Audio: AudioAlerts{
+			QuietDbfs:         cloneIntPtr(n.Audio.QuietDbfs),
+			QuietSeconds:      cloneIntPtr(n.Audio.QuietSeconds),
+			ZeroSeconds:       cloneIntPtr(n.Audio.ZeroSeconds),
+			ClipPercent:       cloneIntPtr(n.Audio.ClipPercent),
+			ClipWindowSeconds: cloneIntPtr(n.Audio.ClipWindowSeconds),
+		},
+		Host: HostAlerts{
+			CPUPercent:       cloneIntPtr(n.Host.CPUPercent),
+			CPUClearPercent:  cloneIntPtr(n.Host.CPUClearPercent),
+			TempCelsius:      cloneIntPtr(n.Host.TempCelsius),
+			TempClearCelsius: cloneIntPtr(n.Host.TempClearCelsius),
+			DiskPercent:      cloneIntPtr(n.Host.DiskPercent),
+			DiskClearPercent: cloneIntPtr(n.Host.DiskClearPercent),
+			MemFreePercent:   cloneIntPtr(n.Host.MemFreePercent),
+			MemFreeMiB:       cloneIntPtr(n.Host.MemFreeMiB),
+		},
+	}
+	if n.Enabled != nil {
+		v := *n.Enabled
+		out.Enabled = &v
+	}
+	return out
+}
+
+// NotificationsEnabled reports whether the condition monitors run (the default).
+// An absent block or an absent enabled flag both default on.
+func (c *Config) NotificationsEnabled() bool {
+	return c.Notifications.Enabled == nil || *c.Notifications.Enabled
 }
 
 // Management configures the HTTPS management API. Enabled is a pointer so an
@@ -94,12 +207,23 @@ type Device struct {
 	// config (and is shown in the UI) but is not opened; toggling it takes effect
 	// at once via a config reload, which starts or stops the device in place.
 	Enabled *bool `yaml:"enabled,omitempty"`
+	// QuietAlert is a pointer so an absent value defaults on: the device raises
+	// the very-quiet audio condition unless explicitly opted out (for a bat
+	// microphone that is silent by day). Stuck-at-zero and clipping are
+	// unaffected by this flag.
+	QuietAlert *bool `yaml:"quiet_alert,omitempty"`
 }
 
 // IsEnabled reports whether the device is captured and streamed. A device with
 // no explicit enabled flag defaults on.
 func (d *Device) IsEnabled() bool {
 	return d.Enabled == nil || *d.Enabled
+}
+
+// QuietAlertEnabled reports whether the device raises the very-quiet audio
+// condition. A device with no explicit quiet_alert flag defaults on.
+func (d *Device) QuietAlertEnabled() bool {
+	return d.QuietAlert == nil || *d.QuietAlert
 }
 
 // Discovery configures mDNS/DNS-SD advertisement. Enabled is a pointer so an
@@ -234,6 +358,32 @@ func (c *Config) ApplyDefaults() {
 			d.Path = "/stream"
 		}
 	}
+
+	// Notification thresholds: a nil field is unset, so fill its default. An
+	// explicit value (even an out-of-range 0) is left non-nil for Validate to
+	// reject rather than being silently overwritten. Enabled and the per-device
+	// QuietAlert stay nil (both default on) so an unset flag is omitted from the
+	// saved YAML, matching Discovery/Management.
+	n := &c.Notifications
+	fill := func(p **int, def int) {
+		if *p == nil {
+			v := def
+			*p = &v
+		}
+	}
+	fill(&n.Audio.QuietDbfs, defAudioQuietDbfs)
+	fill(&n.Audio.QuietSeconds, defAudioQuietSeconds)
+	fill(&n.Audio.ZeroSeconds, defAudioZeroSeconds)
+	fill(&n.Audio.ClipPercent, defAudioClipPercent)
+	fill(&n.Audio.ClipWindowSeconds, defAudioClipWindowSeconds)
+	fill(&n.Host.CPUPercent, defHostCPUPercent)
+	fill(&n.Host.CPUClearPercent, defHostCPUClearPercent)
+	fill(&n.Host.TempCelsius, defHostTempCelsius)
+	fill(&n.Host.TempClearCelsius, defHostTempClearCelsius)
+	fill(&n.Host.DiskPercent, defHostDiskPercent)
+	fill(&n.Host.DiskClearPercent, defHostDiskClearPercent)
+	fill(&n.Host.MemFreePercent, defHostMemFreePercent)
+	fill(&n.Host.MemFreeMiB, defHostMemFreeMiB)
 }
 
 // Validate checks every field, returning the first *ValidationError found. The
@@ -250,6 +400,18 @@ func (c *Config) Validate() error {
 	if reason := auth.ValidToken(c.Auth.Token); reason != "" {
 		return &ValidationError{"auth.token", reason}
 	}
+	if err := c.validateDevices(); err != nil {
+		return err
+	}
+	if err := c.Notifications.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateDevices checks the device list: the count cap, each device's fields,
+// and the uniqueness of names, paths and device ids.
+func (c *Config) validateDevices() error {
 	// An empty device list is valid: on first run the appliance boots with no
 	// configured devices so the web UI can enumerate the host's capture hardware
 	// and let the operator enable devices from there. The management API keeps the
@@ -324,6 +486,77 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// reasonPercent1To100 is the shared validation reason for the percent thresholds
+// bounded to the inclusive 1..100 range (clip, cpu and disk onset percentages).
+const reasonPercent1To100 = "must be between 1 and 100"
+
+// validate range-checks the notification thresholds using each field's effective
+// value: a nil (absent) field reads as its default, which is always valid, while
+// a set field is checked as given, so an explicit out-of-range value (such as 0)
+// is rejected instead of being silently defaulted. It therefore does not depend
+// on ApplyDefaults having run first. Each clear threshold must sit below its
+// onset so the hysteresis gap is real; a clear at or above the onset would
+// chatter the condition.
+func (n *Notifications) validate() error {
+	a := &n.Audio
+	if v := intOr(a.QuietDbfs, defAudioQuietDbfs); v < -99 || v > -1 {
+		return &ValidationError{"notifications.audio.quiet_dbfs", "must be between -99 and -1"}
+	}
+	if v := intOr(a.QuietSeconds, defAudioQuietSeconds); v < 10 || v > 86400 {
+		return &ValidationError{"notifications.audio.quiet_seconds", "must be between 10 and 86400"}
+	}
+	if v := intOr(a.ZeroSeconds, defAudioZeroSeconds); v < 5 || v > 3600 {
+		return &ValidationError{"notifications.audio.zero_seconds", "must be between 5 and 3600"}
+	}
+	if v := intOr(a.ClipPercent, defAudioClipPercent); v < 1 || v > 100 {
+		return &ValidationError{"notifications.audio.clip_percent", reasonPercent1To100}
+	}
+	if v := intOr(a.ClipWindowSeconds, defAudioClipWindowSeconds); v < 1 || v > 600 {
+		return &ValidationError{"notifications.audio.clip_window_seconds", "must be between 1 and 600"}
+	}
+	h := &n.Host
+	cpu := intOr(h.CPUPercent, defHostCPUPercent)
+	if cpu < 1 || cpu > 100 {
+		return &ValidationError{"notifications.host.cpu_percent", reasonPercent1To100}
+	}
+	cpuClear := intOr(h.CPUClearPercent, defHostCPUClearPercent)
+	if cpuClear < 1 || cpuClear > 99 {
+		return &ValidationError{"notifications.host.cpu_clear_percent", "must be between 1 and 99"}
+	}
+	if cpuClear >= cpu {
+		return &ValidationError{"notifications.host.cpu_clear_percent", "must be below cpu_percent"}
+	}
+	temp := intOr(h.TempCelsius, defHostTempCelsius)
+	if temp < 30 || temp > 120 {
+		return &ValidationError{"notifications.host.temp_celsius", "must be between 30 and 120"}
+	}
+	tempClear := intOr(h.TempClearCelsius, defHostTempClearCelsius)
+	if tempClear < 1 || tempClear > 119 {
+		return &ValidationError{"notifications.host.temp_clear_celsius", "must be between 1 and 119"}
+	}
+	if tempClear >= temp {
+		return &ValidationError{"notifications.host.temp_clear_celsius", "must be below temp_celsius"}
+	}
+	disk := intOr(h.DiskPercent, defHostDiskPercent)
+	if disk < 1 || disk > 100 {
+		return &ValidationError{"notifications.host.disk_percent", reasonPercent1To100}
+	}
+	diskClear := intOr(h.DiskClearPercent, defHostDiskClearPercent)
+	if diskClear < 1 || diskClear > 99 {
+		return &ValidationError{"notifications.host.disk_clear_percent", "must be between 1 and 99"}
+	}
+	if diskClear >= disk {
+		return &ValidationError{"notifications.host.disk_clear_percent", "must be below disk_percent"}
+	}
+	if v := intOr(h.MemFreePercent, defHostMemFreePercent); v < 1 || v > 90 {
+		return &ValidationError{"notifications.host.mem_free_percent", "must be between 1 and 90"}
+	}
+	if v := intOr(h.MemFreeMiB, defHostMemFreeMiB); v < 1 || v > 65536 {
+		return &ValidationError{"notifications.host.mem_free_mib", "must be between 1 and 65536"}
+	}
+	return nil
+}
+
 // validatePath reports why an RTSP path is invalid, or "" when it is fine.
 func validatePath(p string) string {
 	switch {
@@ -342,11 +575,11 @@ func validatePath(p string) string {
 	}
 }
 
-// Clone returns a deep copy of c. The Devices slice and every *bool field (the
-// discovery and management enabled flags, and each device's Enabled flag) get
-// their own backing storage, so a caller may mutate the copy (for example
-// ApplyDefaults over a patched device list) without racing a concurrent reader
-// of the original.
+// Clone returns a deep copy of c. The Devices slice and every pointer field (the
+// discovery, management and notifications enabled flags, each device's Enabled
+// and QuietAlert flags, and the notification thresholds) get their own backing
+// storage, so a caller may mutate the copy (for example ApplyDefaults over a
+// patched device list) without racing a concurrent reader of the original.
 func (c *Config) Clone() Config {
 	out := *c
 	if c.Discovery.Enabled != nil {
@@ -357,16 +590,24 @@ func (c *Config) Clone() Config {
 		v := *c.Management.Enabled
 		out.Management.Enabled = &v
 	}
+	// Notifications carries pointer fields (Enabled plus the presence-aware
+	// thresholds); the struct assignment above only shallow-copied them, so give
+	// the whole block its own backing storage.
+	out.Notifications = c.Notifications.clone()
 	if c.Devices != nil {
 		out.Devices = make([]Device, len(c.Devices))
 		copy(out.Devices, c.Devices)
-		// Device carries reference types (a *bool Enabled and a []int Channels);
+		// Device carries reference types (the *bool Enabled and QuietAlert flags, and a []int Channels);
 		// give each copy its own backing storage so a caller mutating the clone
 		// cannot race or alias the original.
 		for i := range c.Devices {
 			if c.Devices[i].Enabled != nil {
 				v := *c.Devices[i].Enabled
 				out.Devices[i].Enabled = &v
+			}
+			if c.Devices[i].QuietAlert != nil {
+				v := *c.Devices[i].QuietAlert
+				out.Devices[i].QuietAlert = &v
 			}
 			out.Devices[i].Channels = slices.Clone(c.Devices[i].Channels)
 		}

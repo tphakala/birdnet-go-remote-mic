@@ -13,6 +13,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/reload"
@@ -89,6 +90,14 @@ type appliance struct {
 	// inject a fake capture source instead of opening real ALSA hardware; in
 	// production it is openDeviceRetry.
 	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
+
+	// monitors re-arms the condition monitors at the end of every reconcile so a
+	// threshold or per-device quiet-alert change applies without a restart. It is
+	// nil until the monitors are wired (a later change), and a nil monitors is a
+	// no-op here; tests inject a recording fake. When the real monitors are wired,
+	// assign a non-nil value: a typed-nil concrete stored in this interface would
+	// pass the != nil guard below and call Apply on a nil receiver.
+	monitors monitor.Monitors
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard, notifier notify.Publisher) *appliance {
@@ -393,6 +402,15 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	// rebuilds the whole set.
 	if !plan.Empty() || newCfg.DiscoveryEnabled() != prevDiscovery || newCfg.AuthRequired() != prevAuth {
 		a.restartAnnounce()
+	}
+
+	// Re-arm the condition monitors with the new thresholds and per-device
+	// quiet-alert opt-outs. Apply swaps the immutable settings value the monitors
+	// read each tick; it never restarts a device, so a threshold change moves no
+	// capture. A nil monitors (none wired yet) is a no-op.
+	if a.monitors != nil {
+		s := monitor.SettingsFrom(newCfg)
+		a.monitors.Apply(&s)
 	}
 }
 
