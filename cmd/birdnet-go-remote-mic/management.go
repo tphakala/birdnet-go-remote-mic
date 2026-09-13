@@ -42,9 +42,11 @@ type provider struct {
 	// auth is whether a shared access token is configured. Atomic for the same
 	// reason as discovery: the reconcile loop writes it, GET /status reads it.
 	auth     atomic.Bool
-	dataPath string // filesystem path whose storage usage /system reports
-	sampler  *sysinfo.Sampler
-	devices  atomic.Pointer[[]*deviceRuntime]
+	dataPath string // filesystem path whose storage usage /system and the host-health disk check report
+	// sampler tracks host CPU utilization. It is always created (not gated on the
+	// management API) and shared by GET /system and the host-health monitor.
+	sampler *sysinfo.Sampler
+	devices atomic.Pointer[[]*deviceRuntime]
 	// detected is the last enumerated set of host capture devices with their
 	// probed capabilities, refreshed by the background enumeration goroutine.
 	// AvailableDevices filters out the ones the config already lists. Atomic

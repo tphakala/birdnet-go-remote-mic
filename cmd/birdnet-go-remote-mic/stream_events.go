@@ -45,15 +45,11 @@ type streamEvents struct {
 	// rather than wait the production flapSweepInterval.
 	sweepInterval time.Duration
 
-	mu    sync.Mutex
-	paths map[string]*pathFlap
-}
-
-// pathFlap is one path's flap detector. Whether the path is currently flapping
-// (and so per-connection infos are suppressed) is read straight from the
-// detector via Flap.Active.
-type pathFlap struct {
-	flap *notify.Flap
+	mu sync.Mutex
+	// paths holds each path's flap detector. Whether a path is currently flapping
+	// (and so per-connection infos are suppressed) is read straight from the
+	// detector via Flap.Active.
+	paths map[string]*notify.Flap
 }
 
 // newStreamEvents builds the adapter over pub. A nil clock uses time.Now; tests
@@ -67,7 +63,7 @@ func newStreamEvents(pub notify.Publisher, clock func() time.Time) *streamEvents
 	if clock == nil {
 		clock = time.Now
 	}
-	return &streamEvents{pub: pub, clock: clock, sweepInterval: flapSweepInterval, paths: map[string]*pathFlap{}}
+	return &streamEvents{pub: pub, clock: clock, sweepInterval: flapSweepInterval, paths: map[string]*notify.Flap{}}
 }
 
 // streamFlapKey is the condition key for a path's flapping-client warning. It
@@ -78,15 +74,15 @@ func streamFlapKey(path string) string { return "stream:" + path + ":flap" }
 // address the client connected from.
 func streamSource(path, remote string) string { return path + " from " + remote }
 
-// pathState returns path's flap state, creating it on first use. The caller
+// pathFlap returns path's flap detector, creating it on first use. The caller
 // holds s.mu.
-func (s *streamEvents) pathState(path string) *pathFlap {
-	st := s.paths[path]
-	if st == nil {
-		st = &pathFlap{flap: notify.NewFlap(flapMax, flapWindow, flapQuiet)}
-		s.paths[path] = st
+func (s *streamEvents) pathFlap(path string) *notify.Flap {
+	f := s.paths[path]
+	if f == nil {
+		f = notify.NewFlap(flapMax, flapWindow, flapQuiet)
+		s.paths[path] = f
 	}
-	return st
+	return f
 }
 
 // ClientConnected records a client starting to play on path. It feeds the path's
@@ -97,8 +93,8 @@ func (s *streamEvents) pathState(path string) *pathFlap {
 func (s *streamEvents) ClientConnected(path, remote string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.pathState(path)
-	switch st.flap.Event(s.clock()) {
+	flap := s.pathFlap(path)
+	switch flap.Event(s.clock()) {
 	case notify.TransitionOnset:
 		s.pub.Onset(notify.Notification{
 			Severity: notify.SeverityWarning,
@@ -112,7 +108,7 @@ func (s *streamEvents) ClientConnected(path, remote string) {
 		s.pub.Clear(streamFlapKey(path), flapSettled(path))
 		s.pub.Publish(clientConnected(path, remote))
 	case notify.TransitionNone:
-		if !st.flap.Active() {
+		if !flap.Active() {
 			s.pub.Publish(clientConnected(path, remote))
 		}
 	}
@@ -129,7 +125,7 @@ func (s *streamEvents) ClientDisconnected(path, remote string, reason rtspserver
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pathState(path).flap.Active() {
+	if s.pathFlap(path).Active() {
 		return
 	}
 	s.pub.Publish(clientDisconnected(path, remote, reason))
@@ -160,11 +156,11 @@ func (s *streamEvents) Run(ctx context.Context) {
 func (s *streamEvents) sweep(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for path, st := range s.paths {
-		if st.flap.Sweep(now) == notify.TransitionClear {
+	for path, flap := range s.paths {
+		if flap.Sweep(now) == notify.TransitionClear {
 			s.pub.Clear(streamFlapKey(path), flapSettled(path))
 		}
-		if st.flap.Idle(now) {
+		if flap.Idle(now) {
 			delete(s.paths, path)
 		}
 	}

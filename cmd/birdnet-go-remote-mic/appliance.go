@@ -92,11 +92,11 @@ type appliance struct {
 	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 
 	// monitors re-arms the condition monitors at the end of every reconcile so a
-	// threshold or per-device quiet-alert change applies without a restart. It is
-	// nil until the monitors are wired (a later change), and a nil monitors is a
-	// no-op here; tests inject a recording fake. When the real monitors are wired,
-	// assign a non-nil value: a typed-nil concrete stored in this interface would
-	// pass the != nil guard below and call Apply on a nil receiver.
+	// threshold or per-device quiet-alert change applies without a restart. run()
+	// assigns a monitor.Group of the signal and host monitors; a nil monitors (a
+	// test that wires none) is a no-op here, and tests may inject a recording
+	// fake. Never store a typed-nil concrete: it would pass the != nil guard below
+	// and call Apply on a nil receiver.
 	monitors monitor.Monitors
 }
 
@@ -407,7 +407,7 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	// Re-arm the condition monitors with the new thresholds and per-device
 	// quiet-alert opt-outs. Apply swaps the immutable settings value the monitors
 	// read each tick; it never restarts a device, so a threshold change moves no
-	// capture. A nil monitors (none wired yet) is a no-op.
+	// capture. A nil monitors (a test that wires none) is a no-op.
 	if a.monitors != nil {
 		s := monitor.SettingsFrom(newCfg)
 		a.monitors.Apply(&s)

@@ -1,11 +1,8 @@
 // Package monitor holds the condition monitors behind the notification center
-// and the settings seam that feeds them from configuration.
-//
-// This first piece is pure plumbing: the immutable Settings value, the
-// SettingsFrom builder that derives it from a config, and the small Monitors
-// interface the appliance calls on every reload. The signal and host monitors
-// (and their evaluation logic) arrive in later changes; nothing here evaluates a
-// condition yet.
+// and the settings seam that feeds them from configuration: the immutable
+// Settings value, the SettingsFrom builder that derives it from a config, the
+// Monitors interface the appliance calls on every reload, the audio Signal
+// monitor, and the Host health monitor.
 package monitor
 
 import "github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -53,4 +50,19 @@ func SettingsFrom(cfg *config.Config) Settings {
 // Monitors is a no-op, so the appliance can run before any monitor exists.
 type Monitors interface {
 	Apply(s *Settings)
+}
+
+// Group fans Apply out to several monitors, so the appliance holds the signal
+// and host monitors behind its single Monitors handle. Untyped-nil members are
+// skipped; never store a typed-nil monitor, whose Apply would run on a nil
+// receiver and panic.
+type Group []Monitors
+
+// Apply forwards s to every non-nil monitor in the group.
+func (g Group) Apply(s *Settings) {
+	for _, m := range g {
+		if m != nil {
+			m.Apply(s)
+		}
+	}
 }

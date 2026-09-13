@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,16 +20,17 @@ const nameGarden = "garden"
 // It is mutex-guarded because the RunSignal integration test drives it from the
 // hub sampler goroutine; the table tests call the monitor directly.
 type recPub struct {
-	mu       sync.Mutex
-	onsets   []notify.Notification
-	clears   []string
-	resolves []resolveCall
-	active   map[string]bool
+	mu        sync.Mutex
+	onsets    []notify.Notification
+	clears    []string
+	clearMsgs map[string]string // last clear message per key
+	resolves  []resolveCall
+	active    map[string]bool
 }
 
 type resolveCall struct{ key, reason string }
 
-func newRecPub() *recPub { return &recPub{active: map[string]bool{}} }
+func newRecPub() *recPub { return &recPub{clearMsgs: map[string]string{}, active: map[string]bool{}} }
 
 func (r *recPub) Publish(notify.Notification) {}
 
@@ -45,7 +47,7 @@ func (r *recPub) Onset(n notify.Notification) bool {
 }
 
 //nolint:gocritic // Notification by value is the Publisher contract; the fake must match it.
-func (r *recPub) Clear(key string, _ notify.Notification) bool {
+func (r *recPub) Clear(key string, n notify.Notification) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.active[key] {
@@ -53,6 +55,7 @@ func (r *recPub) Clear(key string, _ notify.Notification) bool {
 	}
 	delete(r.active, key)
 	r.clears = append(r.clears, key)
+	r.clearMsgs[key] = n.Message
 	return true
 }
 
@@ -95,6 +98,13 @@ func (r *recPub) clearCount(key string) int {
 		}
 	}
 	return n
+}
+
+// clearMessage returns the message of the last Clear recorded for key.
+func (r *recPub) clearMessage(key string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.clearMsgs[key]
 }
 
 func (r *recPub) resolveCount(key string) int {
@@ -823,5 +833,140 @@ func TestRunSignalDrivesMonitorFromHub(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("hub.Run did not stop after cancel")
+	}
+}
+
+// attached reports whether the monitor currently holds a hub tap.
+func (s *Signal) attached() bool {
+	s.tapMu.Lock()
+	defer s.tapMu.Unlock()
+	return s.cancel != nil
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestRunSignalTapFollowsEnabled drives the tap lifecycle against a real hub:
+// disabled at start attaches nothing, an enable attaches and evaluates, a disable
+// resolves on the next window and then detaches, a re-enable re-attaches, and
+// shutdown detaches for good so a later Apply cannot re-attach.
+func TestRunSignalTapFollowsEnabled(t *testing.T) {
+	hub := levels.NewHub()
+	hub.Meter("x", 1)
+	rec := newRecPub()
+	s := baseSettings()
+	s.Audio.ZeroSeconds = p(0)
+	s.Enabled = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := RunSignal(ctx, hub, rec, &s)
+	// Count the windows the tap actually processes. Wrapping the clock is race-free
+	// here: the monitor starts disabled, so no tap is attached and the tap goroutine
+	// is not yet reading sig.clock.
+	var windows atomic.Int64
+	sig.clock = func() time.Time { windows.Add(1); return time.Now() }
+
+	done := make(chan struct{})
+	go func() { hub.Run(ctx); close(done) }()
+
+	if sig.attached() {
+		t.Fatal("disabled monitor attached a tap at start")
+	}
+
+	on := s
+	on.Enabled = true
+	sig.Apply(&on)
+	if !sig.attached() {
+		t.Fatal("enable did not attach the tap")
+	}
+	// A second Apply while already attached must not attach a second tap: attach is
+	// idempotent. A leaked second tap would double the window count per hub tick.
+	sig.Apply(&on)
+	if !sig.attached() {
+		t.Fatal("second enable dropped the tap")
+	}
+	waitFor(t, "zero onset after enable", func() bool { return rec.isActive(audioZeroKey("x")) })
+
+	off := on
+	off.Enabled = false
+	sig.Apply(&off)
+	waitFor(t, "detach after disable", func() bool { return !sig.attached() })
+	if rec.resolveCount(audioZeroKey("x")) != 1 {
+		t.Fatalf("disable resolves = %d, want 1 before detaching", rec.resolveCount(audioZeroKey("x")))
+	}
+	// Once detached the tap must stop processing windows entirely, with no leaked
+	// second tap from the repeated Apply: sample, wait five hub windows (~500 ms),
+	// and expect no further increments.
+	settled := windows.Load()
+	time.Sleep(500 * time.Millisecond)
+	if got := windows.Load(); got != settled {
+		t.Errorf("tap processed %d windows after detach, want 0 (leaked tap?)", got-settled)
+	}
+
+	sig.Apply(&on)
+	if !sig.attached() {
+		t.Fatal("re-enable did not re-attach the tap")
+	}
+	waitFor(t, "zero re-onset after re-enable", func() bool { return rec.onsetCount(audioZeroKey("x")) == 2 })
+
+	cancel()
+	waitFor(t, "detach on shutdown", func() bool { return !sig.attached() })
+	sig.Apply(&on)
+	if sig.attached() {
+		t.Error("Apply after shutdown re-attached the tap")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub.Run did not stop after cancel")
+	}
+}
+
+// TestSignalApplyWithoutHubNeverAttaches covers a directly driven monitor: Apply
+// and a disabled window must not try to attach or detach a nil hub.
+func TestSignalApplyWithoutHubNeverAttaches(t *testing.T) {
+	rec := newRecPub()
+	c := newClk()
+	sig := newSignalT(rec, baseSettings(), c)
+	s := baseSettings()
+	sig.Apply(&s)
+	s.Enabled = false
+	sig.Apply(&s)
+	sig.observe(evt(dev(nameGarden, floorDbfs)))
+	// The real guard here is that the Apply and observe calls above did not panic on
+	// the nil hub; this assertion cannot fail on its own, because a hubless attach
+	// and detach are always no-ops.
+	if sig.attached() {
+		t.Error("hubless monitor attached a tap")
+	}
+}
+
+// TestRunSignalDetachRechecksEnabled pins the re-check inside detach(): a detach
+// must not remove the tap while the settings are still enabled, since an Apply may
+// have re-enabled the monitor since the window that decided to detach. The hub is
+// not run, so no tap fires and the re-check is exercised deterministically.
+func TestRunSignalDetachRechecksEnabled(t *testing.T) {
+	hub := levels.NewHub()
+	rec := newRecPub()
+	s := baseSettings() // enabled
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := RunSignal(ctx, hub, rec, &s)
+	if !sig.attached() {
+		t.Fatal("enabled monitor did not attach at start")
+	}
+	sig.detach() // settings still enabled: must be a no-op
+	if !sig.attached() {
+		t.Error("detach removed the tap while the monitor was still enabled")
 	}
 }

@@ -1,9 +1,10 @@
 // Package sysinfo gathers host hardware facts and live system metrics (CPU,
-// memory, storage, temperature, network) for the management API's GET /system
-// endpoint. It reads only /proc, /sys, /etc/os-release, and statfs-family
-// syscalls, so it stays pure Go with no cgo. The parsers here are
-// platform-neutral and unit-tested; the file and syscall reads that feed them
-// live in the Linux-only collector.
+// memory, storage, temperature, undervoltage, network) for two consumers: the
+// management API's GET /system endpoint and the host-health condition monitor. It
+// reads only /proc, /sys, /etc/os-release, and statfs-family syscalls, so it stays
+// pure Go with no cgo. The parsers here are platform-neutral and unit-tested; the
+// exported readers and the file and syscall reads that feed them are Linux-only
+// (they live in the Linux-only collector).
 package sysinfo
 
 import (
@@ -58,10 +59,24 @@ func parseCPUModel(data []byte) string {
 }
 
 // parseMemInfo returns total and used bytes from /proc/meminfo. used is total
-// minus MemAvailable, clamped at zero.
+// minus MemAvailable, clamped at zero, and stays zero when MemAvailable is absent.
 func parseMemInfo(data []byte) (total, used int64, ok bool) {
+	total, avail, haveAvail, ok := parseMemAvailable(data)
+	if !ok {
+		return 0, 0, false
+	}
+	if haveAvail {
+		used = max(total-avail, 0)
+	}
+	return total, used, true
+}
+
+// parseMemAvailable returns MemTotal and MemAvailable in bytes from
+// /proc/meminfo. ok is false without MemTotal; haveAvail is false when the
+// kernel does not report MemAvailable.
+func parseMemAvailable(data []byte) (total, avail int64, haveAvail, ok bool) {
 	var totalKB, availKB int64
-	var haveTotal, haveAvail bool
+	var haveTotal bool
 	for line := range strings.SplitSeq(string(data), "\n") {
 		key, val, found := strings.Cut(line, ":")
 		if !found {
@@ -75,16 +90,22 @@ func parseMemInfo(data []byte) (total, used int64, ok bool) {
 		}
 	}
 	if !haveTotal {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
-	total = totalKB * 1024
-	if haveAvail {
-		used = (totalKB - availKB) * 1024
-		if used < 0 {
-			used = 0
-		}
+	return totalKB * 1024, availKB * 1024, haveAvail, true
+}
+
+// parseAlarm parses a hwmon alarm attribute ("0" or "1", trailing newline
+// allowed). ok is false for anything else.
+func parseAlarm(data []byte) (set, ok bool) {
+	switch strings.TrimSpace(string(data)) {
+	case "0":
+		return false, true
+	case "1":
+		return true, true
+	default:
+		return false, false
 	}
-	return total, used, true
 }
 
 // parseFirstInt parses the first whitespace-delimited integer of s, e.g.
