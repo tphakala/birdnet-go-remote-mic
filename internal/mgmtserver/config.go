@@ -109,8 +109,9 @@ func WithReloader(fn Reloader) Option {
 }
 
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
-// Only discovery, the access token and the device list are patchable; an absent
-// field is left unchanged, and a present devices array replaces the whole list.
+// Only discovery, the access token, the notifications block and the device list
+// are patchable; an absent field is left unchanged, and a present devices array
+// replaces the whole list.
 // The merged configuration must validate as a whole. With a reloader mounted the
 // change is applied to the running pipeline in place (restartRequired=false);
 // without one it is persisted but takes effect only after a restart.
@@ -124,7 +125,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	patch := request.Body
 	// An empty patch changes nothing: report the current config without
 	// rewriting the file and without claiming a restart is pending.
-	if patch == nil || (patch.Discovery == nil && patch.Auth == nil && patch.Devices == nil) {
+	if patch == nil || (patch.Discovery == nil && patch.Auth == nil && patch.Notifications == nil && patch.Devices == nil) {
 		cur := s.configStore.Config()
 		return mgmtapi.PatchConfig200JSONResponse{
 			Config:          configToWire(&cur),
@@ -153,6 +154,13 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 		// the token (open access), which Validate accepts.
 		if patch.Auth != nil && patch.Auth.Token != nil {
 			cur.Auth.Token = *patch.Auth.Token
+		}
+		// A notifications block merges field by field: only the present fields (and
+		// present nested objects) change, so {"host":{"cpuPercent":95}} touches one
+		// threshold and leaves the rest as stored. ApplyDefaults below refills any
+		// field left at zero and Validate range-checks the merged result.
+		if patch.Notifications != nil {
+			mergeNotifications(&cur.Notifications, patch.Notifications)
 		}
 		if patch.Devices != nil {
 			devs := make([]config.Device, 0, len(*patch.Devices))
@@ -324,8 +332,9 @@ func configToWire(c *config.Config) mgmtapi.Config {
 		// "open access" rather than a null it must reinterpret. Returning it to
 		// an authenticated caller (who already holds it) is not an escalation, and
 		// the Access Control card needs it to show what to paste into BirdNET-Go.
-		Auth:    mgmtapi.AuthSettings{Token: ptr(c.Auth.Token)},
-		Devices: devs,
+		Auth:          mgmtapi.AuthSettings{Token: ptr(c.Auth.Token)},
+		Notifications: notificationsToWire(c),
+		Devices:       devs,
 	}
 	if c.Management.Listen != "" {
 		out.Management.Listen = ptr(c.Management.Listen)
@@ -334,6 +343,90 @@ func configToWire(c *config.Config) mgmtapi.Config {
 		out.Management.CertDir = ptr(c.Management.CertDir)
 	}
 	return out
+}
+
+// notificationsToWire maps the notifications block to the generated wire type,
+// materializing every field (the enabled flag to its effective boolean, each
+// threshold to its stored value) so the web UI sees concrete values rather than
+// nulls it must reinterpret. The config is already defaulted, so the thresholds
+// are non-zero.
+func notificationsToWire(c *config.Config) mgmtapi.NotificationSettings {
+	n := &c.Notifications
+	return mgmtapi.NotificationSettings{
+		Enabled: ptr(c.NotificationsEnabled()),
+		Audio: &mgmtapi.AudioAlertSettings{
+			QuietDbfs:         ptr(n.Audio.QuietDbfs),
+			QuietSeconds:      ptr(n.Audio.QuietSeconds),
+			ZeroSeconds:       ptr(n.Audio.ZeroSeconds),
+			ClipPercent:       ptr(n.Audio.ClipPercent),
+			ClipWindowSeconds: ptr(n.Audio.ClipWindowSeconds),
+		},
+		Host: &mgmtapi.HostAlertSettings{
+			CpuPercent:       ptr(n.Host.CPUPercent),
+			CpuClearPercent:  ptr(n.Host.CPUClearPercent),
+			TempCelsius:      ptr(n.Host.TempCelsius),
+			TempClearCelsius: ptr(n.Host.TempClearCelsius),
+			DiskPercent:      ptr(n.Host.DiskPercent),
+			DiskClearPercent: ptr(n.Host.DiskClearPercent),
+			MemFreePercent:   ptr(n.Host.MemFreePercent),
+			MemFreeMiB:       ptr(n.Host.MemFreeMiB),
+		},
+	}
+}
+
+// mergeNotifications applies the present fields of a notifications patch onto the
+// current config block, leaving absent fields (and absent nested objects)
+// unchanged. Every wire field is optional (a pointer), so a partial patch merges
+// only what it carries; a value written here that happens to be zero is refilled
+// to the default by the ApplyDefaults the caller runs next.
+func mergeNotifications(dst *config.Notifications, p *mgmtapi.NotificationSettings) {
+	if p.Enabled != nil {
+		v := *p.Enabled
+		dst.Enabled = &v
+	}
+	if a := p.Audio; a != nil {
+		if a.QuietDbfs != nil {
+			dst.Audio.QuietDbfs = *a.QuietDbfs
+		}
+		if a.QuietSeconds != nil {
+			dst.Audio.QuietSeconds = *a.QuietSeconds
+		}
+		if a.ZeroSeconds != nil {
+			dst.Audio.ZeroSeconds = *a.ZeroSeconds
+		}
+		if a.ClipPercent != nil {
+			dst.Audio.ClipPercent = *a.ClipPercent
+		}
+		if a.ClipWindowSeconds != nil {
+			dst.Audio.ClipWindowSeconds = *a.ClipWindowSeconds
+		}
+	}
+	if h := p.Host; h != nil {
+		if h.CpuPercent != nil {
+			dst.Host.CPUPercent = *h.CpuPercent
+		}
+		if h.CpuClearPercent != nil {
+			dst.Host.CPUClearPercent = *h.CpuClearPercent
+		}
+		if h.TempCelsius != nil {
+			dst.Host.TempCelsius = *h.TempCelsius
+		}
+		if h.TempClearCelsius != nil {
+			dst.Host.TempClearCelsius = *h.TempClearCelsius
+		}
+		if h.DiskPercent != nil {
+			dst.Host.DiskPercent = *h.DiskPercent
+		}
+		if h.DiskClearPercent != nil {
+			dst.Host.DiskClearPercent = *h.DiskClearPercent
+		}
+		if h.MemFreePercent != nil {
+			dst.Host.MemFreePercent = *h.MemFreePercent
+		}
+		if h.MemFreeMiB != nil {
+			dst.Host.MemFreeMiB = *h.MemFreeMiB
+		}
+	}
 }
 
 // deviceConfigToWire maps one configured device to the generated wire type.
@@ -350,9 +443,10 @@ func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 	if d.Mode == config.ModeOpus {
 		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(d.Opus.Bitrate)}
 	}
-	// Materialize the default-on Enabled flag to a concrete boolean so the web UI
-	// sees a definite value rather than a null it must reinterpret.
+	// Materialize the default-on Enabled and QuietAlert flags to concrete booleans
+	// so the web UI sees definite values rather than nulls it must reinterpret.
 	out.Enabled = ptr(d.IsEnabled())
+	out.QuietAlert = ptr(d.QuietAlertEnabled())
 	return out
 }
 
@@ -380,6 +474,12 @@ func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 	if d.Enabled != nil {
 		v := *d.Enabled
 		out.Enabled = &v
+	}
+	// QuietAlert follows the same rule as Enabled: absent defaults on, a present
+	// value is copied into fresh storage rather than aliasing the request body.
+	if d.QuietAlert != nil {
+		v := *d.QuietAlert
+		out.QuietAlert = &v
 	}
 	return out
 }

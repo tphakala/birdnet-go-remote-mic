@@ -857,7 +857,7 @@ components:
     Config:
       type: object
       description: The appliance configuration (defaults applied).
-      required: [listen, discovery, management, auth, devices]
+      required: [listen, discovery, management, auth, notifications, devices]
       properties:
         listen:
           type: string
@@ -868,6 +868,8 @@ components:
           $ref: "#/components/schemas/ManagementSettings"
         auth:
           $ref: "#/components/schemas/AuthSettings"
+        notifications:
+          $ref: "#/components/schemas/NotificationSettings"
         devices:
           type: array
           maxItems: 32
@@ -913,6 +915,13 @@ components:
             Whether this device is captured and streamed; defaults to true
             when absent. Set false to keep it configured but not opened. A
             change is hot-applied without a restart.
+        quietAlert:
+          type: boolean
+          description: >
+            Whether this device raises the very-quiet audio condition; defaults
+            to true when absent. Set false for a device expected to be silent
+            for long stretches (a bat microphone by day). Stuck-at-zero and
+            clipping conditions are unaffected.
 
     DiscoverySettings:
       type: object
@@ -959,6 +968,103 @@ components:
             Directory where the self-signed certificate and key are
             persisted; defaults to the config file's directory.
 
+    NotificationSettings:
+      type: object
+      description: >
+        Condition-monitor settings behind the notification center. In a read
+        every field is materialized to its effective value; in a patch an absent
+        field (or an absent nested object) leaves the current value unchanged, so
+        a partial block like {"host":{"cpuPercent":95}} touches only that field.
+      properties:
+        enabled:
+          type: boolean
+          description: >
+            Whether the condition monitors run; defaults to true when absent.
+            Disabling them stops the audio-signal and host-health conditions but
+            leaves device-failure, client and config events publishing.
+        audio:
+          $ref: "#/components/schemas/AudioAlertSettings"
+        host:
+          $ref: "#/components/schemas/HostAlertSettings"
+
+    AudioAlertSettings:
+      type: object
+      description: Audio-signal condition thresholds.
+      properties:
+        quietDbfs:
+          type: integer
+          minimum: -99
+          maximum: -1
+          description: Peak level below which the input counts as very quiet (dBFS). Default -60.
+        quietSeconds:
+          type: integer
+          minimum: 10
+          maximum: 86400
+          description: Seconds below quietDbfs before the very-quiet warning raises. Default 600.
+        zeroSeconds:
+          type: integer
+          minimum: 5
+          maximum: 3600
+          description: Seconds at digital zero before the no-signal warning raises. Default 30.
+        clipPercent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Percentage of clipped windows within the clip window that raises the clipping warning. Default 20.
+        clipWindowSeconds:
+          type: integer
+          minimum: 1
+          maximum: 600
+          description: Window in seconds over which clipping is measured. Default 10.
+
+    HostAlertSettings:
+      type: object
+      description: >
+        Host-health condition thresholds. Each clear threshold must sit below
+        its onset to keep a hysteresis gap (a clear at or above the onset would
+        chatter the condition).
+      properties:
+        cpuPercent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: CPU usage percent that raises the warning. Default 90.
+        cpuClearPercent:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: CPU usage percent below which the warning clears; must be below cpuPercent. Default 75.
+        tempCelsius:
+          type: integer
+          minimum: 30
+          maximum: 120
+          description: Temperature in Celsius that raises the warning. Default 80.
+        tempClearCelsius:
+          type: integer
+          minimum: 1
+          maximum: 119
+          description: Temperature in Celsius below which the warning clears; must be below tempCelsius. Default 75.
+        diskPercent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Disk-used percent that raises the warning. Default 90.
+        diskClearPercent:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: Disk-used percent below which the warning clears; must be below diskPercent. Default 85.
+        memFreePercent:
+          type: integer
+          minimum: 1
+          maximum: 90
+          description: Available-memory percent below which the warning raises. Default 10.
+        memFreeMiB:
+          type: integer
+          minimum: 1
+          maximum: 65536
+          description: Available memory in MiB below which the warning raises. Default 64.
+
     ConfigPatch:
       type: object
       description: >
@@ -969,6 +1075,8 @@ components:
           $ref: "#/components/schemas/DiscoverySettings"
         auth:
           $ref: "#/components/schemas/AuthSettings"
+        notifications:
+          $ref: "#/components/schemas/NotificationSettings"
         devices:
           type: array
           description: >

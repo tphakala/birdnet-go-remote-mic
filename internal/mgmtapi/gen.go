@@ -217,6 +217,24 @@ type ApplianceStatus struct {
 	Version string `json:"version"`
 }
 
+// AudioAlertSettings Audio-signal condition thresholds.
+type AudioAlertSettings struct {
+	// ClipPercent Percentage of clipped windows within the clip window that raises the clipping warning. Default 20.
+	ClipPercent *int `json:"clipPercent,omitempty"`
+
+	// ClipWindowSeconds Window in seconds over which clipping is measured. Default 10.
+	ClipWindowSeconds *int `json:"clipWindowSeconds,omitempty"`
+
+	// QuietDbfs Peak level below which the input counts as very quiet (dBFS). Default -60.
+	QuietDbfs *int `json:"quietDbfs,omitempty"`
+
+	// QuietSeconds Seconds below quietDbfs before the very-quiet warning raises. Default 600.
+	QuietSeconds *int `json:"quietSeconds,omitempty"`
+
+	// ZeroSeconds Seconds at digital zero before the no-signal warning raises. Default 30.
+	ZeroSeconds *int `json:"zeroSeconds,omitempty"`
+}
+
 // AuthSettings Shared access token settings. The one token gates the management API and web UI (bearer) and the RTSP stream (Digest password).
 type AuthSettings struct {
 	// Token The shared access token: 12 to 128 characters from the URL unreserved set [A-Za-z0-9._~-], or empty for open access. In a patch, an absent field leaves the token unchanged and an empty string disables authentication. Reads return the configured value (empty when open) to the authenticated caller.
@@ -294,6 +312,9 @@ type Config struct {
 
 	// Management HTTPS management API settings.
 	Management ManagementSettings `json:"management"`
+
+	// Notifications Condition-monitor settings behind the notification center. In a read every field is materialized to its effective value; in a patch an absent field (or an absent nested object) leaves the current value unchanged, so a partial block like {"host":{"cpuPercent":95}} touches only that field.
+	Notifications NotificationSettings `json:"notifications"`
 }
 
 // ConfigPatch A partial configuration update. Only the fields present are changed; the result must validate as a whole configuration.
@@ -306,6 +327,9 @@ type ConfigPatch struct {
 
 	// Discovery mDNS/DNS-SD advertisement settings.
 	Discovery *DiscoverySettings `json:"discovery,omitempty"`
+
+	// Notifications Condition-monitor settings behind the notification center. In a read every field is materialized to its effective value; in a patch an absent field (or an absent nested object) leaves the current value unchanged, so a partial block like {"host":{"cpuPercent":95}} touches only that field.
+	Notifications *NotificationSettings `json:"notifications,omitempty"`
 }
 
 // ConfigUpdateResult Outcome of a persisted configuration update.
@@ -406,7 +430,10 @@ type DeviceConfig struct {
 	// Opus Opus encoder settings, used only when mode is opus.
 	Opus *OpusSettings `json:"opus,omitempty"`
 	Path string        `json:"path"`
-	Rate int           `json:"rate"`
+
+	// QuietAlert Whether this device raises the very-quiet audio condition; defaults to true when absent. Set false for a device expected to be silent for long stretches (a bat microphone by day). Stuck-at-zero and clipping conditions are unaffected.
+	QuietAlert *bool `json:"quietAlert,omitempty"`
+	Rate       int   `json:"rate"`
 }
 
 // DeviceConfigFormat defines model for DeviceConfig.Format.
@@ -444,6 +471,33 @@ type Health struct {
 
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
+
+// HostAlertSettings Host-health condition thresholds. Each clear threshold must sit below its onset to keep a hysteresis gap (a clear at or above the onset would chatter the condition).
+type HostAlertSettings struct {
+	// CpuClearPercent CPU usage percent below which the warning clears; must be below cpuPercent. Default 75.
+	CpuClearPercent *int `json:"cpuClearPercent,omitempty"`
+
+	// CpuPercent CPU usage percent that raises the warning. Default 90.
+	CpuPercent *int `json:"cpuPercent,omitempty"`
+
+	// DiskClearPercent Disk-used percent below which the warning clears; must be below diskPercent. Default 85.
+	DiskClearPercent *int `json:"diskClearPercent,omitempty"`
+
+	// DiskPercent Disk-used percent that raises the warning. Default 90.
+	DiskPercent *int `json:"diskPercent,omitempty"`
+
+	// MemFreeMiB Available memory in MiB below which the warning raises. Default 64.
+	MemFreeMiB *int `json:"memFreeMiB,omitempty"`
+
+	// MemFreePercent Available-memory percent below which the warning raises. Default 10.
+	MemFreePercent *int `json:"memFreePercent,omitempty"`
+
+	// TempCelsius Temperature in Celsius that raises the warning. Default 80.
+	TempCelsius *int `json:"tempCelsius,omitempty"`
+
+	// TempClearCelsius Temperature in Celsius below which the warning clears; must be below tempCelsius. Default 75.
+	TempClearCelsius *int `json:"tempClearCelsius,omitempty"`
+}
 
 // LevelsEvent The payload of one `levels` SSE event: audio levels for every serving device, measured over the window since the previous event.
 type LevelsEvent struct {
@@ -539,6 +593,18 @@ type NotificationCategory string
 
 // NotificationKind event is a discrete one-off; onset marks a condition becoming active and clear marks it becoming inactive, paired by key.
 type NotificationKind string
+
+// NotificationSettings Condition-monitor settings behind the notification center. In a read every field is materialized to its effective value; in a patch an absent field (or an absent nested object) leaves the current value unchanged, so a partial block like {"host":{"cpuPercent":95}} touches only that field.
+type NotificationSettings struct {
+	// Audio Audio-signal condition thresholds.
+	Audio *AudioAlertSettings `json:"audio,omitempty"`
+
+	// Enabled Whether the condition monitors run; defaults to true when absent. Disabling them stops the audio-signal and host-health conditions but leaves device-failure, client and config events publishing.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Host Host-health condition thresholds. Each clear threshold must sit below its onset to keep a hysteresis gap (a clear at or above the onset would chatter the condition).
+	Host *HostAlertSettings `json:"host,omitempty"`
+}
 
 // NotificationSeverity error is a fault needing attention; warning is a degraded state; info is routine. Only error notifications raise a client toast.
 type NotificationSeverity string

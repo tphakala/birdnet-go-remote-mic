@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,12 @@ const (
 	pathGarden = "/garden"
 	formatS16  = "s16"
 	deviceHW1  = "hw:1,0"
+
+	// Repeated validation field paths, extracted so the TestValidateNotifications
+	// table does not trip goconst on the clear-threshold cases.
+	fieldCPUClear  = "notifications.host.cpu_clear_percent"
+	fieldTempClear = "notifications.host.temp_clear_celsius"
+	fieldDiskClear = "notifications.host.disk_clear_percent"
 )
 
 func TestLoadMultiDevice(t *testing.T) {
@@ -174,7 +181,7 @@ func TestManagementEnabledDefault(t *testing.T) {
 }
 
 func validBase() Config {
-	return Config{
+	c := Config{
 		Listen:     ":8554",
 		Management: Management{Listen: ":8443"},
 		Devices: []Device{
@@ -182,6 +189,11 @@ func validBase() Config {
 			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: []int{1}, Format: formatS16},
 		},
 	}
+	// Apply defaults so the notifications block is populated: Validate runs after
+	// ApplyDefaults in production (Load, PATCH), and a zero threshold block is out
+	// of range, so a "valid base" must carry the defaulted thresholds.
+	c.ApplyDefaults()
+	return c
 }
 
 func TestDeviceIsEnabled(t *testing.T) {
@@ -322,5 +334,174 @@ func TestValidate(t *testing.T) {
 				t.Errorf("want valid, got %v", err)
 			}
 		})
+	}
+}
+
+func TestNotificationsEnabledDefault(t *testing.T) {
+	t.Parallel()
+	c := Config{}
+	if !c.NotificationsEnabled() {
+		t.Error("notifications should default to enabled when the block is absent")
+	}
+	off := false
+	c.Notifications.Enabled = &off
+	if c.NotificationsEnabled() {
+		t.Error("notifications should be off when explicitly disabled")
+	}
+	on := true
+	c.Notifications.Enabled = &on
+	if !c.NotificationsEnabled() {
+		t.Error("notifications should be on when explicitly enabled")
+	}
+}
+
+func TestDeviceQuietAlertEnabled(t *testing.T) {
+	t.Parallel()
+	tru, fls := true, false
+	cases := []struct {
+		name string
+		flag *bool
+		want bool
+	}{
+		{"absent defaults on", nil, true},
+		{"explicit true", &tru, true},
+		{"explicit false", &fls, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := Device{QuietAlert: tc.flag}
+			if got := d.QuietAlertEnabled(); got != tc.want {
+				t.Errorf("QuietAlertEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyDefaultsFillsNotifications(t *testing.T) {
+	t.Parallel()
+	c := Config{} // every notification field zero
+	c.ApplyDefaults()
+	n := c.Notifications
+	if !c.NotificationsEnabled() {
+		t.Error("NotificationsEnabled() = false after defaults, want on (Enabled left nil)")
+	}
+	if n.Enabled != nil {
+		t.Errorf("ApplyDefaults set Enabled = %v, want nil (omitted from YAML, defaults on)", n.Enabled)
+	}
+	wantAudio := AudioAlerts{QuietDbfs: -60, QuietSeconds: 600, ZeroSeconds: 30, ClipPercent: 20, ClipWindowSeconds: 10}
+	if n.Audio != wantAudio {
+		t.Errorf("audio defaults = %+v, want %+v", n.Audio, wantAudio)
+	}
+	wantHost := HostAlerts{CPUPercent: 90, CPUClearPercent: 75, TempCelsius: 80, TempClearCelsius: 75, DiskPercent: 90, DiskClearPercent: 85, MemFreePercent: 10, MemFreeMiB: 64}
+	if n.Host != wantHost {
+		t.Errorf("host defaults = %+v, want %+v", n.Host, wantHost)
+	}
+	// The defaults must themselves validate (clear thresholds below their onsets).
+	if err := c.Validate(); err != nil {
+		t.Errorf("defaulted notifications should validate, got %v", err)
+	}
+	// Idempotent: a second pass changes nothing.
+	before := c.Notifications
+	c.ApplyDefaults()
+	if c.Notifications != before {
+		t.Errorf("ApplyDefaults not idempotent: %+v -> %+v", before, c.Notifications)
+	}
+}
+
+func TestValidateNotifications(t *testing.T) {
+	// Each case starts from a defaulted, valid config (validBase applies defaults),
+	// mutates one threshold to an out-of-range or non-hysteretic value, and asserts
+	// the exact dotted field path. An empty wantField means the mutation is valid.
+	tests := []struct {
+		name      string
+		mutate    func(*Config)
+		wantField string
+	}{
+		{"defaults valid", func(*Config) {}, ""},
+		{"quiet_dbfs too low", func(c *Config) { c.Notifications.Audio.QuietDbfs = -100 }, "notifications.audio.quiet_dbfs"},
+		{"quiet_dbfs too high", func(c *Config) { c.Notifications.Audio.QuietDbfs = 0 }, "notifications.audio.quiet_dbfs"},
+		{"quiet_seconds too low", func(c *Config) { c.Notifications.Audio.QuietSeconds = 9 }, "notifications.audio.quiet_seconds"},
+		{"quiet_seconds too high", func(c *Config) { c.Notifications.Audio.QuietSeconds = 86401 }, "notifications.audio.quiet_seconds"},
+		{"zero_seconds too low", func(c *Config) { c.Notifications.Audio.ZeroSeconds = 4 }, "notifications.audio.zero_seconds"},
+		{"zero_seconds too high", func(c *Config) { c.Notifications.Audio.ZeroSeconds = 3601 }, "notifications.audio.zero_seconds"},
+		{"clip_percent too low", func(c *Config) { c.Notifications.Audio.ClipPercent = 0 }, "notifications.audio.clip_percent"},
+		{"clip_percent too high", func(c *Config) { c.Notifications.Audio.ClipPercent = 101 }, "notifications.audio.clip_percent"},
+		{"clip_window too low", func(c *Config) { c.Notifications.Audio.ClipWindowSeconds = 0 }, "notifications.audio.clip_window_seconds"},
+		{"clip_window too high", func(c *Config) { c.Notifications.Audio.ClipWindowSeconds = 601 }, "notifications.audio.clip_window_seconds"},
+		{"cpu_percent too low", func(c *Config) { c.Notifications.Host.CPUPercent = 0 }, "notifications.host.cpu_percent"},
+		{"cpu_percent too high", func(c *Config) { c.Notifications.Host.CPUPercent = 101 }, "notifications.host.cpu_percent"},
+		{"cpu_clear out of range", func(c *Config) { c.Notifications.Host.CPUClearPercent = 100 }, fieldCPUClear},
+		{"cpu_clear below min (zero)", func(c *Config) { c.Notifications.Host.CPUClearPercent = 0 }, fieldCPUClear},
+		{"cpu_clear not below onset", func(c *Config) {
+			c.Notifications.Host.CPUPercent = 50
+			c.Notifications.Host.CPUClearPercent = 60
+		}, fieldCPUClear},
+		{"cpu_clear equals onset", func(c *Config) {
+			c.Notifications.Host.CPUPercent = 50
+			c.Notifications.Host.CPUClearPercent = 50
+		}, fieldCPUClear},
+		{"temp_celsius too low", func(c *Config) { c.Notifications.Host.TempCelsius = 29 }, "notifications.host.temp_celsius"},
+		{"temp_celsius too high", func(c *Config) { c.Notifications.Host.TempCelsius = 121 }, "notifications.host.temp_celsius"},
+		{"temp_clear out of range", func(c *Config) { c.Notifications.Host.TempClearCelsius = 120 }, fieldTempClear},
+		{"temp_clear below min (zero)", func(c *Config) { c.Notifications.Host.TempClearCelsius = 0 }, fieldTempClear},
+		{"temp_clear not below onset", func(c *Config) { c.Notifications.Host.TempClearCelsius = 85 }, fieldTempClear},
+		{"temp_clear equals onset", func(c *Config) { c.Notifications.Host.TempClearCelsius = 80 }, fieldTempClear},
+		{"disk_percent too low", func(c *Config) { c.Notifications.Host.DiskPercent = 0 }, "notifications.host.disk_percent"},
+		{"disk_percent too high", func(c *Config) { c.Notifications.Host.DiskPercent = 101 }, "notifications.host.disk_percent"},
+		{"disk_clear below min (negative)", func(c *Config) { c.Notifications.Host.DiskClearPercent = -1 }, fieldDiskClear},
+		{"disk_clear below min (zero)", func(c *Config) { c.Notifications.Host.DiskClearPercent = 0 }, fieldDiskClear},
+		{"disk_clear above max", func(c *Config) { c.Notifications.Host.DiskClearPercent = 100 }, fieldDiskClear},
+		{"disk_clear not below onset", func(c *Config) { c.Notifications.Host.DiskClearPercent = 95 }, fieldDiskClear},
+		{"disk_clear equals onset", func(c *Config) { c.Notifications.Host.DiskClearPercent = 90 }, fieldDiskClear},
+		{"mem_free_percent too low", func(c *Config) { c.Notifications.Host.MemFreePercent = 0 }, "notifications.host.mem_free_percent"},
+		{"mem_free_percent too high", func(c *Config) { c.Notifications.Host.MemFreePercent = 91 }, "notifications.host.mem_free_percent"},
+		{"mem_free_mib too low", func(c *Config) { c.Notifications.Host.MemFreeMiB = 0 }, "notifications.host.mem_free_mib"},
+		{"mem_free_mib too high", func(c *Config) { c.Notifications.Host.MemFreeMiB = 65537 }, "notifications.host.mem_free_mib"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := validBase()
+			tt.mutate(&c)
+			err := c.Validate()
+			if tt.wantField == "" {
+				if err != nil {
+					t.Errorf("want valid, got %v", err)
+				}
+				return
+			}
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Validate() = %v, want a *ValidationError for %q", err, tt.wantField)
+			}
+			if verr.Field != tt.wantField {
+				t.Errorf("field = %q, want %q (reason: %s)", verr.Field, tt.wantField, verr.Reason)
+			}
+		})
+	}
+}
+
+func TestCloneDeepCopiesNotificationsEnabled(t *testing.T) {
+	t.Parallel()
+	on := true
+	c := validBase()
+	c.Notifications.Enabled = &on
+	clone := c.Clone()
+	*clone.Notifications.Enabled = false
+	if !*c.Notifications.Enabled {
+		t.Error("Clone aliased Notifications.Enabled; mutating the clone changed the original")
+	}
+}
+
+func TestCloneDeepCopiesDeviceQuietAlert(t *testing.T) {
+	t.Parallel()
+	off := false
+	c := validBase()
+	c.Devices[0].QuietAlert = &off
+	clone := c.Clone()
+	*clone.Devices[0].QuietAlert = true
+	if *c.Devices[0].QuietAlert {
+		t.Error("Clone aliased Device.QuietAlert; mutating the clone changed the original")
 	}
 }

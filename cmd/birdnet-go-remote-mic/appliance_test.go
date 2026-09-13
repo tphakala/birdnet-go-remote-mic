@@ -14,6 +14,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
@@ -311,6 +312,50 @@ func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
 	}
 	if app.prov.Status().AuthRequired {
 		t.Error("reconcile with an empty token must report open access")
+	}
+}
+
+// recordingMonitors is a fake monitor.Monitors that records each Apply so a
+// reconcile test can assert the settings it re-armed the monitors with.
+type recordingMonitors struct {
+	calls []monitor.Settings
+}
+
+func (r *recordingMonitors) Apply(s *monitor.Settings) { r.calls = append(r.calls, *s) }
+
+func TestApplianceReconcileAppliesMonitorSettings(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	rec := &recordingMonitors{}
+	app.monitors = rec
+
+	cfg := config.Config{Devices: []config.Device{testDevice("a", "hw:0", "/a", 48000)}}
+	cfg.ApplyDefaults()
+	app.reconcile(&cfg)
+	if len(rec.calls) != 1 {
+		t.Fatalf("Apply calls after first reconcile = %d, want 1", len(rec.calls))
+	}
+	rt := app.devices["a"]
+
+	// Change only a notification threshold: Apply is re-armed with the new value
+	// and no device is restarted, because the reload plan is empty.
+	cfg.Notifications.Host.CPUPercent = 95
+	app.reconcile(&cfg)
+	if len(rec.calls) != 2 {
+		t.Fatalf("Apply calls after a threshold change = %d, want 2", len(rec.calls))
+	}
+	last := rec.calls[1]
+	if last.Host.CPUPercent != 95 {
+		t.Errorf("re-armed Host.CPUPercent = %d, want 95", last.Host.CPUPercent)
+	}
+	if !last.QuietAlert["a"] {
+		t.Error("re-armed QuietAlert[a] = false, want true (default on)")
+	}
+	if app.devices["a"] != rt {
+		t.Error("a notification-only change restarted the device, want no restart")
+	}
+	if app.serving() != 1 {
+		t.Errorf("serving = %d after a threshold change, want 1 (unchanged)", app.serving())
 	}
 }
 
