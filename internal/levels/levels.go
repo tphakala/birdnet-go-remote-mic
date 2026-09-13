@@ -298,6 +298,11 @@ func (h *Hub) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if h.subs.Load() == 0 {
+				// Drop references to any now-canceled tap so its closure can be
+				// garbage-collected rather than lingering in the reused backing
+				// array until the next sampled tick or until Run exits.
+				clear(taps)
+				taps = taps[:0]
 				continue
 			}
 			ev, refreshed, hasSSE := h.sample(taps)
@@ -330,6 +335,9 @@ func (h *Hub) Run(ctx context.Context) {
 func (h *Hub) sample(dst []func(LevelsEvent)) (ev LevelsEvent, taps []func(LevelsEvent), hasSSE bool) {
 	h.mu.Lock()
 	devs := h.sampleDevicesLocked()
+	// Zero the reused backing before rebuilding so a shrunk tap set does not retain
+	// a canceled callback beyond the new length.
+	clear(dst)
 	taps = dst[:0]
 	for t := range h.taps {
 		taps = append(taps, t.fn)

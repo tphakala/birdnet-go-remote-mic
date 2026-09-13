@@ -353,12 +353,13 @@ func TestTapPanicIsolationKeepsSamplerAlive(t *testing.T) {
 	h := NewHub()
 	h.interval = 5 * time.Millisecond
 	m := h.Meter(nameGarden, 1)
+	var panicked atomic.Int32
 	got := make(chan LevelsEvent, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go h.Run(ctx)
 
-	badCancel := h.Tap(func(LevelsEvent) { panic("boom") })
+	badCancel := h.Tap(func(LevelsEvent) { panicked.Add(1); panic("boom") })
 	defer badCancel()
 	goodCancel := h.Tap(func(ev LevelsEvent) {
 		select {
@@ -368,16 +369,22 @@ func TestTapPanicIsolationKeepsSamplerAlive(t *testing.T) {
 	})
 	defer goodCancel()
 
+	// Require a good delivery that lands AFTER the bad tap has panicked at least
+	// once. Taps run in map order, so a good event can arrive before the bad tap
+	// panics on the first tick; discarding those proves the sampler survived the
+	// recovery path rather than merely that the good tap ran first.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		m.Observe(pcm(repeat(16384, 480)...))
 		select {
 		case <-got:
-			return // the good tap keeps receiving despite the panicking sibling
+			if panicked.Load() > 0 {
+				return // sampler kept delivering after recovering a tap panic
+			}
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatal("panicking tap starved the sampler; the good tap never fired")
+	t.Fatal("panicking tap starved the sampler; no good event arrived after a recovered panic")
 }
 
 // TestTapDrivesSamplerWithoutSSEClient checks that a registered tap alone keeps
