@@ -207,8 +207,8 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// The notification center holds the appliance's in-memory event history and
 	// active conditions and streams them over SSE beside levels. The startup
 	// entry is published before the management API comes up, so it is already in
-	// the first snapshot a client fetches. Later PRs wire the emitters and
-	// monitors that publish device, stream, config and host-health entries.
+	// the first snapshot a client fetches. The device, stream, and config
+	// emitters and the signal and host condition monitors publish to it.
 	center := notify.NewCenter()
 	center.Publish(notify.Started(version))
 
@@ -262,9 +262,10 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
 	mgmtServing := false
+	// Sample host CPU utilization for GET /system and the host-health monitor. One
+	// /proc/stat read every two seconds, so it runs whether or not the API serves.
+	prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
 	if mgmtEnabled {
-		// Sample host CPU utilization for GET /system only while the API serves.
-		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
 		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard)
 	}
 	defer func() {
@@ -275,13 +276,19 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// Drive the level sampler for the lifetime of the process.
 	go hub.Run(ctx)
 
-	// Start the audio-signal condition monitor: it taps the level hub (so it must
-	// come up after the hub is running) and raises stuck-at-zero, very-quiet, and
-	// clipping conditions per device. Handing it to the appliance as its Monitors
-	// makes every reconcile re-arm it with the current thresholds and per-device
-	// quiet opt-outs, without restarting any device.
-	signalSettings := monitor.SettingsFrom(&cfg)
-	app.monitors = monitor.RunSignal(ctx, hub, center, &signalSettings)
+	// Start the condition monitors. The signal monitor taps the level hub (so it
+	// must come up after the hub is running) and raises stuck-at-zero, very-quiet,
+	// and clipping conditions per device; the host monitor polls CPU, memory,
+	// temperature, disk, undervoltage, and each device's dropped-frame rate.
+	// Handing both to the appliance as its Monitors makes every reconcile re-arm
+	// them with the current thresholds and per-device quiet opt-outs, without
+	// restarting any device.
+	monSettings := monitor.SettingsFrom(&cfg)
+	logUndervoltageSupport()
+	app.monitors = monitor.Group{
+		monitor.RunSignal(ctx, hub, center, &monSettings),
+		monitor.RunHost(ctx, hostReader{sampler: prov.sampler, dataPath: prov.dataPath}, prov.dropCounters, center, &monSettings),
+	}
 
 	// Sweep stale client-flap warnings: the connect-driven detector only clears on
 	// the next connect after the quiet window, which a client that settles into a

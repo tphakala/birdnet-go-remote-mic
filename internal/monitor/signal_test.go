@@ -825,3 +825,95 @@ func TestRunSignalDrivesMonitorFromHub(t *testing.T) {
 		t.Fatal("hub.Run did not stop after cancel")
 	}
 }
+
+// attached reports whether the monitor currently holds a hub tap.
+func (s *Signal) attached() bool {
+	s.tapMu.Lock()
+	defer s.tapMu.Unlock()
+	return s.cancel != nil
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestRunSignalTapFollowsEnabled drives the tap lifecycle against a real hub:
+// disabled at start attaches nothing, an enable attaches and evaluates, a disable
+// resolves on the next window and then detaches, a re-enable re-attaches, and
+// shutdown detaches for good so a later Apply cannot re-attach.
+func TestRunSignalTapFollowsEnabled(t *testing.T) {
+	hub := levels.NewHub()
+	hub.Meter("x", 1)
+	rec := newRecPub()
+	s := baseSettings()
+	s.Audio.ZeroSeconds = p(0)
+	s.Enabled = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := RunSignal(ctx, hub, rec, &s)
+	done := make(chan struct{})
+	go func() { hub.Run(ctx); close(done) }()
+
+	if sig.attached() {
+		t.Fatal("disabled monitor attached a tap at start")
+	}
+
+	on := s
+	on.Enabled = true
+	sig.Apply(&on)
+	if !sig.attached() {
+		t.Fatal("enable did not attach the tap")
+	}
+	waitFor(t, "zero onset after enable", func() bool { return rec.isActive(audioZeroKey("x")) })
+
+	off := on
+	off.Enabled = false
+	sig.Apply(&off)
+	waitFor(t, "detach after disable", func() bool { return !sig.attached() })
+	if rec.resolveCount(audioZeroKey("x")) != 1 {
+		t.Fatalf("disable resolves = %d, want 1 before detaching", rec.resolveCount(audioZeroKey("x")))
+	}
+
+	sig.Apply(&on)
+	if !sig.attached() {
+		t.Fatal("re-enable did not re-attach the tap")
+	}
+	waitFor(t, "zero re-onset after re-enable", func() bool { return rec.onsetCount(audioZeroKey("x")) == 2 })
+
+	cancel()
+	waitFor(t, "detach on shutdown", func() bool { return !sig.attached() })
+	sig.Apply(&on)
+	if sig.attached() {
+		t.Error("Apply after shutdown re-attached the tap")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub.Run did not stop after cancel")
+	}
+}
+
+// TestSignalApplyWithoutHubNeverAttaches covers a directly driven monitor: Apply
+// and a disabled window must not try to attach or detach a nil hub.
+func TestSignalApplyWithoutHubNeverAttaches(t *testing.T) {
+	rec := newRecPub()
+	c := newClk()
+	sig := newSignalT(rec, baseSettings(), c)
+	s := baseSettings()
+	sig.Apply(&s)
+	s.Enabled = false
+	sig.Apply(&s)
+	sig.observe(evt(dev(nameGarden, floorDbfs)))
+	if sig.attached() {
+		t.Error("hubless monitor attached a tap")
+	}
+}

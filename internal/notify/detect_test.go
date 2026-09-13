@@ -79,6 +79,7 @@ func TestHysteresis(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := NewHysteresis(tc.enterAfter, tc.clearAfter)
 			for i, s := range tc.steps {
 				if got := h.Observe(t0.Add(s.at), s.over); got != s.want {
@@ -166,6 +167,7 @@ func TestFlap(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := NewFlap(tc.max, tc.window, tc.quiet)
 			for i, s := range tc.steps {
 				if got := f.Event(t0.Add(s.at)); got != s.want {

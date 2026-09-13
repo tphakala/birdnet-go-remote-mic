@@ -57,6 +57,37 @@ Buffers:          100000 kB
 	}
 }
 
+func TestParseMemAvailable(t *testing.T) {
+	total, avail, haveAvail, ok := parseMemAvailable([]byte("MemTotal: 4000 kB\nMemAvailable: 1000 kB\n"))
+	if !ok || !haveAvail || total != 4000*1024 || avail != 1000*1024 {
+		t.Errorf("parseMemAvailable = (%d, %d, %v, %v)", total, avail, haveAvail, ok)
+	}
+	if _, _, haveAvail, ok := parseMemAvailable([]byte("MemTotal: 4000 kB\n")); !ok || haveAvail {
+		t.Errorf("no MemAvailable: haveAvail = %v ok = %v, want false true", haveAvail, ok)
+	}
+	if _, _, _, ok := parseMemAvailable([]byte("MemAvailable: 1 kB\n")); ok {
+		t.Error("ok = true without MemTotal")
+	}
+}
+
+func TestParseAlarm(t *testing.T) {
+	tests := []struct {
+		in      string
+		set, ok bool
+	}{
+		{"0\n", false, true},
+		{"1\n", true, true},
+		{"1", true, true},
+		{"", false, false},
+		{"2\n", false, false},
+	}
+	for _, tc := range tests {
+		if set, ok := parseAlarm([]byte(tc.in)); set != tc.set || ok != tc.ok {
+			t.Errorf("parseAlarm(%q) = (%v, %v), want (%v, %v)", tc.in, set, ok, tc.set, tc.ok)
+		}
+	}
+}
+
 func TestParseCPUStat(t *testing.T) {
 	// user nice system idle iowait irq softirq steal
 	data := []byte("cpu  100 0 50 800 40 0 10 0\ncpu0 50 0 25 400 20 0 5 0\n")

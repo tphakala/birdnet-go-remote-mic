@@ -144,10 +144,10 @@ func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
 			si.MemTotal, si.MemUsed = total, used
 		}
 	}
-	if total, used, ok := diskUsage(dataPath); ok {
+	if total, used, ok := DiskUsage(dataPath); ok {
 		si.DiskTotal, si.DiskUsed = total, used
 	}
-	if c, ok := readTemp(); ok {
+	if c, ok := ReadTemp(); ok {
 		si.TempCelsius = &c
 	}
 	if p, ok := sampler.Percent(); ok {
@@ -157,8 +157,23 @@ func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
 	return si
 }
 
-// diskUsage returns total and used bytes of the filesystem holding path.
-func diskUsage(path string) (total, used int64, ok bool) {
+// ReadMem returns total and available memory in bytes from /proc/meminfo. ok is
+// false when the file is unreadable or lacks MemTotal or MemAvailable, so a
+// caller judging free memory never mistakes a missing figure for zero.
+func ReadMem() (total, avail int64, ok bool) {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, false
+	}
+	total, avail, haveAvail, ok := parseMemAvailable(b)
+	if !ok || !haveAvail {
+		return 0, 0, false
+	}
+	return total, avail, true
+}
+
+// DiskUsage returns total and used bytes of the filesystem holding path.
+func DiskUsage(path string) (total, used int64, ok bool) {
 	if path == "" {
 		return 0, 0, false
 	}
@@ -183,10 +198,10 @@ func diskUsage(path string) (total, used int64, ok bool) {
 	return total, used, true
 }
 
-// readTemp returns the SoC/CPU temperature in Celsius. It prefers a thermal
+// ReadTemp returns the SoC/CPU temperature in Celsius. It prefers a thermal
 // zone whose type names a CPU or SoC sensor, falling back to the first readable
 // zone. ok is false when no thermal zone is exposed.
-func readTemp() (float64, bool) {
+func ReadTemp() (float64, bool) {
 	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
 	candidates := make([]tempCandidate, 0, len(zones))
 	for _, tempPath := range zones {
@@ -205,6 +220,39 @@ func readTemp() (float64, bool) {
 		candidates = append(candidates, tempCandidate{Type: typ, Celsius: c})
 	}
 	return selectTemp(candidates)
+}
+
+// sysClassHwmon is the base directory of the kernel's hardware-monitor devices.
+const sysClassHwmon = "/sys/class/hwmon"
+
+// undervoltHwmonName is the hwmon device name the Raspberry Pi firmware driver
+// registers; its in0_lcrit_alarm reports undervoltage right now.
+const undervoltHwmonName = "rpi_volt"
+
+// ReadUndervoltage reports whether the Raspberry Pi is undervolted right now,
+// from the rpi_volt hwmon's in0_lcrit_alarm. The attribute is world readable, so
+// this works as an unprivileged user. ok is false on hosts without that hwmon
+// device or when the attribute cannot be read or parsed.
+func ReadUndervoltage() (now, ok bool) {
+	return readUndervoltage(sysClassHwmon)
+}
+
+// readUndervoltage probes root/hwmon*/name for the rpi_volt device rather than a
+// fixed index, because hwmonN numbering is assigned at boot and is not stable.
+func readUndervoltage(root string) (now, ok bool) {
+	names, _ := filepath.Glob(filepath.Join(root, "hwmon*", "name"))
+	for _, namePath := range names {
+		b, err := os.ReadFile(namePath) //nolint:gosec // path from a fixed /sys glob
+		if err != nil || strings.TrimSpace(string(b)) != undervoltHwmonName {
+			continue
+		}
+		ab, err := os.ReadFile(filepath.Join(filepath.Dir(namePath), "in0_lcrit_alarm")) //nolint:gosec // sibling of a fixed /sys glob match
+		if err != nil {
+			return false, false
+		}
+		return parseAlarm(ab)
+	}
+	return false, false
 }
 
 // readInterfaces lists non-loopback network interfaces with their addresses and

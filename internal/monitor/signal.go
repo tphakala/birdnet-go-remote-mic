@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -74,10 +75,22 @@ func (st *deviceState) resetClip() {
 // clipping conditions per device with hysteresis. Settings are swapped atomically
 // by Apply; the tap goroutine reads them each window and performs every state
 // change itself, so Apply never races the tap.
+//
+// When started by RunSignal the tap is attached only while the monitors are
+// enabled. A registered tap counts as a hub subscriber and keeps every meter
+// running on the capture hot path, so with notifications off the monitor detaches
+// and metering costs nothing unless a browser is watching levels.
 type Signal struct {
 	pub   notify.Publisher
 	clock func() time.Time
 	set   atomic.Pointer[Settings]
+
+	// hub, cancel, and closed manage the tap attachment under tapMu. hub is nil for
+	// a monitor driven directly (tests), which never attaches or detaches.
+	tapMu  sync.Mutex
+	hub    *levels.Hub
+	cancel func()
+	closed bool
 
 	// states and applied are owned by the tap goroutine (observe/reconcile).
 	states  map[string]*deviceState
@@ -122,23 +135,66 @@ func NewSignal(center notify.Publisher, s *Settings, opts ...SignalOption) *Sign
 // Apply swaps the settings the monitor evaluates against. It only stores the
 // pointer: the tap goroutine notices the change on its next window and resolves
 // or re-arms conditions there, so a reconcile on the run loop never touches the
-// monitor's per-device state concurrently with the tap.
+// monitor's per-device state concurrently with the tap. An enable re-attaches a
+// detached tap; a disable is left to the tap goroutine, which resolves every
+// condition on its next window and only then detaches.
 func (s *Signal) Apply(set *Settings) {
 	cp := *set
+	// Store before attach takes the lock: detach re-checks the stored settings
+	// under the same lock, so either it sees this enable and keeps the tap, or it
+	// has already detached and attach below sees no tap and re-attaches.
 	s.set.Store(&cp)
+	if cp.Enabled {
+		s.attach()
+	}
 }
 
-// RunSignal builds the monitor, registers it as a hub tap, and cancels the tap
-// when ctx is done. It returns the monitor so the caller can hand it to the
-// appliance as its Monitors (reconcile then re-arms it via Apply).
+// RunSignal builds the monitor, attaches it to the hub as a tap while the monitors
+// are enabled, and detaches it for good when ctx is done. It returns the monitor
+// so the caller can hand it to the appliance as its Monitors (reconcile then
+// re-arms it via Apply).
 func RunSignal(ctx context.Context, hub *levels.Hub, center notify.Publisher, s *Settings) *Signal {
 	sig := NewSignal(center, s)
-	cancel := hub.Tap(sig.observe)
+	sig.hub = hub
+	if sig.set.Load().Enabled {
+		sig.attach()
+	}
 	go func() {
 		<-ctx.Done()
-		cancel()
+		sig.tapMu.Lock()
+		defer sig.tapMu.Unlock()
+		sig.closed = true
+		if sig.cancel != nil {
+			sig.cancel()
+			sig.cancel = nil
+		}
 	}()
 	return sig
+}
+
+// attach registers the tap if the monitor is hub-driven, not yet attached, and
+// not shut down.
+func (s *Signal) attach() {
+	s.tapMu.Lock()
+	defer s.tapMu.Unlock()
+	if s.hub == nil || s.cancel != nil || s.closed {
+		return
+	}
+	s.cancel = s.hub.Tap(s.observe)
+}
+
+// detach unregisters the tap unless an Apply re-enabled the monitors since the
+// window that decided to detach. It runs on the tap goroutine from inside the tap
+// callback, which is safe: the hub calls taps outside its lock, and the tap's
+// cancel only takes that lock to delete the registration.
+func (s *Signal) detach() {
+	s.tapMu.Lock()
+	defer s.tapMu.Unlock()
+	if s.cancel == nil || s.set.Load().Enabled {
+		return
+	}
+	s.cancel()
+	s.cancel = nil
 }
 
 // observe evaluates one window. It runs on the hub sampler goroutine.
@@ -159,6 +215,11 @@ func (s *Signal) observe(ev levels.LevelsEvent) {
 		}
 	}
 	s.ageOutAbsent(set.Enabled)
+	if !set.Enabled {
+		// Conditions are resolved (reconcile above) and nothing is evaluated while
+		// disabled, so stop paying for metering until an Apply re-enables.
+		s.detach()
+	}
 }
 
 // reconcile applies a settings change since the last window on the tap goroutine:

@@ -370,14 +370,6 @@ func (h *Hub) sampleDevicesLocked() []DeviceLevels {
 	return devs
 }
 
-// levelsEvent snapshots every meter into a marshaled levels event.
-func (h *Hub) levelsEvent() Event {
-	h.mu.Lock()
-	devs := h.sampleDevicesLocked()
-	h.mu.Unlock()
-	return marshalLevels(LevelsEvent{Devices: devs})
-}
-
 // marshalLevels renders a structured levels event as the SSE wire event. The
 // marshal cannot fail: every field is a clamped finite scalar (dbfs/rmsDbfs keep
 // the floats finite, no NaN or Inf) plus a string and a bool.
