@@ -19,7 +19,7 @@ func TestSettingsFromMapsEveryField(t *testing.T) {
 			Host:  config.HostAlerts{CPUPercent: p(85), CPUClearPercent: p(70), TempCelsius: p(75), TempClearCelsius: p(70), DiskPercent: p(88), DiskClearPercent: p(80), MemFreePercent: p(15), MemFreeMiB: p(128)},
 		},
 		Devices: []config.Device{
-			{Name: "garden"},                // no quiet_alert flag -> armed (default on)
+			{Name: nameGarden},              // no quiet_alert flag -> armed (default on)
 			{Name: "bat", QuietAlert: &off}, // opted out
 		},
 	}
@@ -41,7 +41,7 @@ func TestSettingsFromMapsEveryField(t *testing.T) {
 	if len(s.QuietAlert) != 2 {
 		t.Fatalf("QuietAlert = %v, want two entries", s.QuietAlert)
 	}
-	if !s.QuietAlert["garden"] {
+	if !s.QuietAlert[nameGarden] {
 		t.Error("QuietAlert[garden] = false, want true (default on)")
 	}
 	if s.QuietAlert["bat"] {

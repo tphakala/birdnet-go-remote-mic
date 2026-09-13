@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -21,6 +22,14 @@ const (
 	flapMax    = 3
 	flapWindow = 60 * time.Second
 	flapQuiet  = 5 * time.Minute
+	// flapSweepInterval is how often Run ages out flap warnings whose client has
+	// settled or gone away. Flap.Event only clears on the next connect after the
+	// quiet window, and a client that recovers into a steady connection (its
+	// reconnect lands inside the quiet window and is suppressed) or gives up
+	// entirely sends no such connect, so without this sweep the warning would stay
+	// pinned. The interval only bounds how long past flapQuiet a stale warning
+	// lingers, so it is coarse.
+	flapSweepInterval = 30 * time.Second
 )
 
 // streamEvents adapts rtspserver's playing-client callbacks into notification
@@ -32,17 +41,19 @@ const (
 type streamEvents struct {
 	pub   notify.Publisher
 	clock func() time.Time
+	// sweepInterval is how often Run sweeps; a field so a test can shorten it
+	// rather than wait the production flapSweepInterval.
+	sweepInterval time.Duration
 
 	mu    sync.Mutex
 	paths map[string]*pathFlap
 }
 
-// pathFlap is one path's flap detector plus the derived active flag. notify.Flap
-// exposes no accessor for its active state, so the adapter tracks it here to
-// decide whether a disconnect should be suppressed.
+// pathFlap is one path's flap detector. Whether the path is currently flapping
+// (and so per-connection infos are suppressed) is read straight from the
+// detector via Flap.Active.
 type pathFlap struct {
-	flap     *notify.Flap
-	flapping bool
+	flap *notify.Flap
 }
 
 // newStreamEvents builds the adapter over pub. A nil clock uses time.Now; tests
@@ -56,7 +67,7 @@ func newStreamEvents(pub notify.Publisher, clock func() time.Time) *streamEvents
 	if clock == nil {
 		clock = time.Now
 	}
-	return &streamEvents{pub: pub, clock: clock, paths: map[string]*pathFlap{}}
+	return &streamEvents{pub: pub, clock: clock, sweepInterval: flapSweepInterval, paths: map[string]*pathFlap{}}
 }
 
 // streamFlapKey is the condition key for a path's flapping-client warning. It
@@ -89,7 +100,6 @@ func (s *streamEvents) ClientConnected(path, remote string) {
 	st := s.pathState(path)
 	switch st.flap.Event(s.clock()) {
 	case notify.TransitionOnset:
-		st.flapping = true
 		s.pub.Onset(notify.Notification{
 			Severity: notify.SeverityWarning,
 			Category: notify.CategoryStream,
@@ -99,15 +109,10 @@ func (s *streamEvents) ClientConnected(path, remote string) {
 			Message:  fmt.Sprintf("A client keeps reconnecting to %s; the per-connection notifications are suppressed until it settles", path),
 		})
 	case notify.TransitionClear:
-		st.flapping = false
-		s.pub.Clear(streamFlapKey(path), notify.Notification{
-			Severity: notify.SeverityInfo,
-			Title:    "Client stopped reconnecting",
-			Message:  fmt.Sprintf("The client on %s has settled", path),
-		})
+		s.pub.Clear(streamFlapKey(path), flapSettled(path))
 		s.pub.Publish(clientConnected(path, remote))
 	case notify.TransitionNone:
-		if !st.flapping {
+		if !st.flap.Active() {
 			s.pub.Publish(clientConnected(path, remote))
 		}
 	}
@@ -124,10 +129,58 @@ func (s *streamEvents) ClientDisconnected(path, remote string, reason rtspserver
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pathState(path).flapping {
+	if s.pathState(path).flap.Active() {
 		return
 	}
 	s.pub.Publish(clientDisconnected(path, remote, reason))
+}
+
+// Run ages out flap warnings whose client has settled or gone away, and prunes
+// idle paths, on a fixed interval until ctx is done. Flap.Event only clears on
+// the next connect after the quiet window; a client that recovers into a steady
+// connection or gives up never sends that connect, so without this sweep the
+// warning would stay pinned for the rest of the process. A device removed by a
+// hot reload while flapping is handled the same way: no more connects arrive, the
+// quiet window elapses, and the sweep clears and drops the path.
+func (s *streamEvents) Run(ctx context.Context) {
+	ticker := time.NewTicker(s.sweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.sweep(s.clock())
+		}
+	}
+}
+
+// sweep clears any flap whose quiet window has elapsed with no further connect
+// and drops paths whose detector has gone idle.
+func (s *streamEvents) sweep(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for path, st := range s.paths {
+		if st.flap.Sweep(now) == notify.TransitionClear {
+			s.pub.Clear(streamFlapKey(path), flapSettled(path))
+		}
+		if st.flap.Idle(now) {
+			delete(s.paths, path)
+		}
+	}
+}
+
+// flapSettled builds the info body for a flap clear; Center.Clear fills the key,
+// category, and source from the matching onset.
+func flapSettled(path string) notify.Notification {
+	return notify.Notification{
+		Severity: notify.SeverityInfo,
+		Title:    "Client stopped reconnecting",
+		// Neutral wording: the flap ends either by the client settling into a
+		// steady connection or by giving up entirely, and the sweep clear cannot
+		// tell which, so it must not imply the client is still connected.
+		Message: fmt.Sprintf("The client on %s stopped rapidly reconnecting", path),
+	}
 }
 
 // clientConnected builds the info entry for a client that started playing. Kind

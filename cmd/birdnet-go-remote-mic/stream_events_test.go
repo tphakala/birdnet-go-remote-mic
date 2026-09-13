@@ -3,7 +3,9 @@
 package main
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,35 +34,48 @@ type recordedNote struct {
 
 // recordedPub is a notify.Publisher that records every call, so a test can
 // assert both what was published and, by their absence, what was suppressed. Its
-// Onset and Clear always report success, matching a fresh key transitioning.
+// Onset and Clear always report success, matching a fresh key transitioning. It
+// is mutex-guarded so the Run sweep test can drive it from Run's goroutine while
+// the test polls; the single-threaded tests are unaffected.
 type recordedPub struct {
+	mu    sync.Mutex
 	notes []recordedNote
 }
 
 //nolint:gocritic // Notification by value is the Publisher contract; the fake must match the interface signature.
 func (p *recordedPub) Publish(n notify.Notification) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.notes = append(p.notes, recordedNote{op: opPublish, n: n})
 }
 
 //nolint:gocritic // Notification by value is the Publisher contract; the fake must match the interface signature.
 func (p *recordedPub) Onset(n notify.Notification) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.notes = append(p.notes, recordedNote{op: opOnset, key: n.Key, n: n})
 	return true
 }
 
 //nolint:gocritic // Notification by value is the Publisher contract; the fake must match the interface signature.
 func (p *recordedPub) Clear(key string, n notify.Notification) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.notes = append(p.notes, recordedNote{op: opClear, key: key, n: n})
 	return true
 }
 
 func (p *recordedPub) Resolve(key, reason string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.notes = append(p.notes, recordedNote{op: opResolve, key: key})
 	return true
 }
 
 // countTitles tallies notes with the given op whose Title matches.
 func (p *recordedPub) countTitles(op, title string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	n := 0
 	for i := range p.notes {
 		if p.notes[i].op == op && p.notes[i].n.Title == title {
@@ -70,11 +85,14 @@ func (p *recordedPub) countTitles(op, title string) int {
 	return n
 }
 
-// lastByOp returns the last recorded note with the given op, or nil.
+// lastByOp returns a copy of the last recorded note with the given op, or nil.
 func (p *recordedPub) lastByOp(op string) *recordedNote {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for i := len(p.notes) - 1; i >= 0; i-- {
 		if p.notes[i].op == op {
-			return &p.notes[i]
+			cp := p.notes[i]
+			return &cp
 		}
 	}
 	return nil
@@ -218,6 +236,110 @@ func TestStreamEventsFlapClearsAfterQuiet(t *testing.T) {
 	clearNote := pub.lastByOp(opClear)
 	if clearNote == nil || clearNote.key != streamFlapKey(evPath) {
 		t.Fatalf("clear = %+v, want key %q", clearNote, streamFlapKey(evPath))
+	}
+}
+
+// TestStreamEventsSweepClearsSettledFlap covers the flap-clear fix: a client that
+// stops reconnecting (settles into a steady connection or gives up) sends no
+// further connect, so Flap.Event never clears the warning. The periodic sweep
+// ages it out once the quiet window elapses, and drops the path.
+func TestStreamEventsSweepClearsSettledFlap(t *testing.T) {
+	pub := &recordedPub{}
+	now := time.Unix(0, 0)
+	se := newStreamEvents(pub, func() time.Time { return now })
+
+	for range flapMax + 1 {
+		se.ClientConnected(evPath, evRemote)
+		now = now.Add(time.Second)
+	}
+	// A sweep before the quiet window elapses does nothing.
+	se.sweep(now)
+	if got := pub.countTitles(opClear, "Client stopped reconnecting"); got != 0 {
+		t.Fatalf("premature sweep clear = %d, want 0", got)
+	}
+	// After the quiet window with no reconnect, the sweep clears the warning.
+	now = now.Add(flapQuiet + time.Second)
+	se.sweep(now)
+	if got := pub.countTitles(opClear, "Client stopped reconnecting"); got != 1 {
+		t.Fatalf("sweep clear = %d, want 1", got)
+	}
+	clearNote := pub.lastByOp(opClear)
+	if clearNote == nil || clearNote.key != streamFlapKey(evPath) {
+		t.Fatalf("sweep clear = %+v, want key %q", clearNote, streamFlapKey(evPath))
+	}
+	// The now-idle path is pruned so the map does not retain it.
+	if len(se.paths) != 0 {
+		t.Errorf("path not pruned after sweep clear: paths = %d, want 0", len(se.paths))
+	}
+}
+
+// TestStreamEventsSweepPrunesIdlePaths proves the sweep drops a path whose flap
+// detector has gone idle (its window aged out) even though it never flapped, so a
+// removed device does not leave an entry behind.
+func TestStreamEventsSweepPrunesIdlePaths(t *testing.T) {
+	pub := &recordedPub{}
+	now := time.Unix(0, 0)
+	se := newStreamEvents(pub, func() time.Time { return now })
+
+	se.ClientConnected(evPath, evRemote) // one connect: a partial window, no flap
+	if len(se.paths) != 1 {
+		t.Fatalf("paths = %d, want 1 after a connect", len(se.paths))
+	}
+	// Sweeping while the window is still live keeps the path.
+	se.sweep(now)
+	if len(se.paths) != 1 {
+		t.Fatalf("path pruned too early: paths = %d, want 1", len(se.paths))
+	}
+	// Once the window has aged out the idle path is pruned, and nothing is cleared
+	// (it never flapped).
+	now = now.Add(flapWindow + time.Second)
+	se.sweep(now)
+	if len(se.paths) != 0 {
+		t.Errorf("idle path not pruned: paths = %d, want 0", len(se.paths))
+	}
+	if got := pub.countTitles(opClear, "Client stopped reconnecting"); got != 0 {
+		t.Errorf("a never-flapped path published %d clears, want 0", got)
+	}
+}
+
+// TestStreamEventsRunSweepsSettledFlap drives the periodic Run loop end to end: a
+// settled flap is cleared by the sweep on a tick, and the loop stops on cancel.
+func TestStreamEventsRunSweepsSettledFlap(t *testing.T) {
+	pub := &recordedPub{}
+	var mu sync.Mutex
+	cur := time.Unix(0, 0)
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return cur }
+	advance := func(d time.Duration) { mu.Lock(); cur = cur.Add(d); mu.Unlock() }
+
+	se := newStreamEvents(pub, clock)
+	se.sweepInterval = 5 * time.Millisecond
+
+	// Onset a flap synchronously (no Run goroutine yet), then let the quiet window
+	// pass with no further connect so the sweep will clear it.
+	for range flapMax + 1 {
+		se.ClientConnected(evPath, evRemote)
+		advance(time.Second)
+	}
+	advance(flapQuiet + time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { se.Run(ctx); close(done) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for pub.countTitles(opClear, "Client stopped reconnecting") == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("Run did not sweep the settled flap")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop on cancel")
 	}
 }
 

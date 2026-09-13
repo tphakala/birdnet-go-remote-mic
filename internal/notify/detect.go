@@ -82,6 +82,16 @@ func (h *Hysteresis) Reset() {
 	h.since = time.Time{}
 }
 
+// Active reports whether the condition is currently raised.
+func (h *Hysteresis) Active() bool { return h.active }
+
+// SetEnterAfter updates the onset dwell time so a monitor with a hot-reloadable
+// threshold can apply a changed duration on its next evaluation without losing
+// state: a pending onset run keeps its start time (a shortened duration can onset
+// on the next observation; a lengthened one simply waits longer), and an
+// already-active condition is untouched. The clear dwell stays fixed.
+func (h *Hysteresis) SetEnterAfter(d time.Duration) { h.enterAfter = d }
+
 // Flap detects a rapid burst of repeated events: while inactive, more than max
 // events within a sliding window of length window raises an onset; while active,
 // the first event after a gap of at least quiet clears it and begins a fresh
@@ -109,7 +119,7 @@ func NewFlap(maxEvents int, window, quiet time.Duration) *Flap {
 // to itself, so it cannot also exceed max (unless max is below one, which is not
 // a valid flap threshold).
 func (f *Flap) Event(now time.Time) Transition {
-	if f.active && !f.last.IsZero() && now.Sub(f.last) >= f.quiet {
+	if f.quietGapElapsed(now) {
 		// A quiet gap since the previous event: the burst has ended. Clear, and
 		// treat this event as the first of a possible new window.
 		f.active = false
@@ -150,4 +160,48 @@ func (f *Flap) Reset() {
 	f.active = false
 	f.events = f.events[:0]
 	f.last = time.Time{}
+}
+
+// Sweep ages out an active flap that ended without another event: when the
+// condition is active and quiet has elapsed since the last event, it clears,
+// resets to a fresh window, and reports TransitionClear; otherwise it reports
+// TransitionNone. Event only clears on the first event after a quiet gap, but
+// that event never arrives when a flapping client settles into a steady
+// connection (its recovery lands inside the quiet window and is suppressed) or
+// gives up entirely; a caller sweeps periodically so the warning still clears.
+func (f *Flap) Sweep(now time.Time) Transition {
+	if f.quietGapElapsed(now) {
+		f.Reset()
+		return TransitionClear
+	}
+	return TransitionNone
+}
+
+// quietGapElapsed reports whether an active flap has seen no event for at least
+// the quiet window, i.e. the burst has ended. Both the reactive clear in Event
+// and the time-driven clear in Sweep key off this same condition.
+func (f *Flap) quietGapElapsed(now time.Time) bool {
+	return f.active && !f.last.IsZero() && now.Sub(f.last) >= f.quiet
+}
+
+// Active reports whether a flap is currently raised. A caller that suppresses
+// per-event notifications while flapping reads this rather than mirroring the
+// state in a separate flag.
+func (f *Flap) Active() bool { return f.active }
+
+// Idle reports whether the detector is inactive and holds no events still inside
+// its window as of now (events already aged out are ignored). A caller that keeps
+// one detector per subject drops the idle ones to bound its map without losing a
+// partial window that is still building toward an onset.
+func (f *Flap) Idle(now time.Time) bool {
+	if f.active {
+		return false
+	}
+	cutoff := now.Add(-f.window)
+	for _, t := range f.events {
+		if !t.Before(cutoff) {
+			return false
+		}
+	}
+	return true
 }
