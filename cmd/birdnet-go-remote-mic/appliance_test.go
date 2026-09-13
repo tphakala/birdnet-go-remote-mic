@@ -337,16 +337,19 @@ func TestApplianceReconcileAppliesMonitorSettings(t *testing.T) {
 	}
 	rt := app.devices["a"]
 
-	// Change only a notification threshold: Apply is re-armed with the new value
-	// and no device is restarted, because the reload plan is empty.
-	cfg.Notifications.Host.CPUPercent = 95
+	// Change only a notification threshold. Replace the pointer (rather than
+	// deref-assigning) so the first call's recorded Settings, which shares the old
+	// pointer, is not aliased. Apply is re-armed with the new value and no device
+	// is restarted, because the reload plan is empty.
+	newCPU := 95
+	cfg.Notifications.Host.CPUPercent = &newCPU
 	app.reconcile(&cfg)
 	if len(rec.calls) != 2 {
 		t.Fatalf("Apply calls after a threshold change = %d, want 2", len(rec.calls))
 	}
 	last := rec.calls[1]
-	if last.Host.CPUPercent != 95 {
-		t.Errorf("re-armed Host.CPUPercent = %d, want 95", last.Host.CPUPercent)
+	if last.Host.CPUPercent == nil || *last.Host.CPUPercent != 95 {
+		t.Errorf("re-armed Host.CPUPercent = %v, want 95", last.Host.CPUPercent)
 	}
 	if !last.QuietAlert["a"] {
 		t.Error("re-armed QuietAlert[a] = false, want true (default on)")

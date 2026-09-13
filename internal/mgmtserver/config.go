@@ -348,28 +348,29 @@ func configToWire(c *config.Config) mgmtapi.Config {
 // notificationsToWire maps the notifications block to the generated wire type,
 // materializing every field (the enabled flag to its effective boolean, each
 // threshold to its stored value) so the web UI sees concrete values rather than
-// nulls it must reinterpret. The config is already defaulted, so the thresholds
-// are non-zero.
+// nulls it must reinterpret. configToWire is only called on a config from the
+// store, which is always defaulted, so every threshold pointer is non-nil; each
+// is copied into fresh wire storage so the response never aliases the config.
 func notificationsToWire(c *config.Config) mgmtapi.NotificationSettings {
 	n := &c.Notifications
 	return mgmtapi.NotificationSettings{
 		Enabled: ptr(c.NotificationsEnabled()),
 		Audio: &mgmtapi.AudioAlertSettings{
-			QuietDbfs:         ptr(n.Audio.QuietDbfs),
-			QuietSeconds:      ptr(n.Audio.QuietSeconds),
-			ZeroSeconds:       ptr(n.Audio.ZeroSeconds),
-			ClipPercent:       ptr(n.Audio.ClipPercent),
-			ClipWindowSeconds: ptr(n.Audio.ClipWindowSeconds),
+			QuietDbfs:         ptr(*n.Audio.QuietDbfs),
+			QuietSeconds:      ptr(*n.Audio.QuietSeconds),
+			ZeroSeconds:       ptr(*n.Audio.ZeroSeconds),
+			ClipPercent:       ptr(*n.Audio.ClipPercent),
+			ClipWindowSeconds: ptr(*n.Audio.ClipWindowSeconds),
 		},
 		Host: &mgmtapi.HostAlertSettings{
-			CpuPercent:       ptr(n.Host.CPUPercent),
-			CpuClearPercent:  ptr(n.Host.CPUClearPercent),
-			TempCelsius:      ptr(n.Host.TempCelsius),
-			TempClearCelsius: ptr(n.Host.TempClearCelsius),
-			DiskPercent:      ptr(n.Host.DiskPercent),
-			DiskClearPercent: ptr(n.Host.DiskClearPercent),
-			MemFreePercent:   ptr(n.Host.MemFreePercent),
-			MemFreeMiB:       ptr(n.Host.MemFreeMiB),
+			CpuPercent:       ptr(*n.Host.CPUPercent),
+			CpuClearPercent:  ptr(*n.Host.CPUClearPercent),
+			TempCelsius:      ptr(*n.Host.TempCelsius),
+			TempClearCelsius: ptr(*n.Host.TempClearCelsius),
+			DiskPercent:      ptr(*n.Host.DiskPercent),
+			DiskClearPercent: ptr(*n.Host.DiskClearPercent),
+			MemFreePercent:   ptr(*n.Host.MemFreePercent),
+			MemFreeMiB:       ptr(*n.Host.MemFreeMiB),
 		},
 	}
 }
@@ -377,8 +378,10 @@ func notificationsToWire(c *config.Config) mgmtapi.NotificationSettings {
 // mergeNotifications applies the present fields of a notifications patch onto the
 // current config block, leaving absent fields (and absent nested objects)
 // unchanged. Every wire field is optional (a pointer), so a partial patch merges
-// only what it carries; a value written here that happens to be zero is refilled
-// to the default by the ApplyDefaults the caller runs next.
+// only what it carries. A present value is copied into fresh storage (so the
+// config never aliases the request body) and its presence is preserved: an
+// explicitly supplied out-of-range value such as 0 is kept rather than treated
+// as unset, so ApplyDefaults leaves it and Validate rejects it with a 422.
 func mergeNotifications(dst *config.Notifications, p *mgmtapi.NotificationSettings) {
 	if p.Enabled != nil {
 		v := *p.Enabled
@@ -386,45 +389,45 @@ func mergeNotifications(dst *config.Notifications, p *mgmtapi.NotificationSettin
 	}
 	if a := p.Audio; a != nil {
 		if a.QuietDbfs != nil {
-			dst.Audio.QuietDbfs = *a.QuietDbfs
+			dst.Audio.QuietDbfs = ptr(*a.QuietDbfs)
 		}
 		if a.QuietSeconds != nil {
-			dst.Audio.QuietSeconds = *a.QuietSeconds
+			dst.Audio.QuietSeconds = ptr(*a.QuietSeconds)
 		}
 		if a.ZeroSeconds != nil {
-			dst.Audio.ZeroSeconds = *a.ZeroSeconds
+			dst.Audio.ZeroSeconds = ptr(*a.ZeroSeconds)
 		}
 		if a.ClipPercent != nil {
-			dst.Audio.ClipPercent = *a.ClipPercent
+			dst.Audio.ClipPercent = ptr(*a.ClipPercent)
 		}
 		if a.ClipWindowSeconds != nil {
-			dst.Audio.ClipWindowSeconds = *a.ClipWindowSeconds
+			dst.Audio.ClipWindowSeconds = ptr(*a.ClipWindowSeconds)
 		}
 	}
 	if h := p.Host; h != nil {
 		if h.CpuPercent != nil {
-			dst.Host.CPUPercent = *h.CpuPercent
+			dst.Host.CPUPercent = ptr(*h.CpuPercent)
 		}
 		if h.CpuClearPercent != nil {
-			dst.Host.CPUClearPercent = *h.CpuClearPercent
+			dst.Host.CPUClearPercent = ptr(*h.CpuClearPercent)
 		}
 		if h.TempCelsius != nil {
-			dst.Host.TempCelsius = *h.TempCelsius
+			dst.Host.TempCelsius = ptr(*h.TempCelsius)
 		}
 		if h.TempClearCelsius != nil {
-			dst.Host.TempClearCelsius = *h.TempClearCelsius
+			dst.Host.TempClearCelsius = ptr(*h.TempClearCelsius)
 		}
 		if h.DiskPercent != nil {
-			dst.Host.DiskPercent = *h.DiskPercent
+			dst.Host.DiskPercent = ptr(*h.DiskPercent)
 		}
 		if h.DiskClearPercent != nil {
-			dst.Host.DiskClearPercent = *h.DiskClearPercent
+			dst.Host.DiskClearPercent = ptr(*h.DiskClearPercent)
 		}
 		if h.MemFreePercent != nil {
-			dst.Host.MemFreePercent = *h.MemFreePercent
+			dst.Host.MemFreePercent = ptr(*h.MemFreePercent)
 		}
 		if h.MemFreeMiB != nil {
-			dst.Host.MemFreeMiB = *h.MemFreeMiB
+			dst.Host.MemFreeMiB = ptr(*h.MemFreeMiB)
 		}
 	}
 }

@@ -6,14 +6,17 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
 
+// p returns a pointer to n, for building the presence-aware threshold fields.
+func p(n int) *int { return &n }
+
 func TestSettingsFromMapsEveryField(t *testing.T) {
 	t.Parallel()
 	off := false
 	cfg := config.Config{
 		Notifications: config.Notifications{
 			// Enabled left nil: defaults on.
-			Audio: config.AudioAlerts{QuietDbfs: -50, QuietSeconds: 1200, ZeroSeconds: 45, ClipPercent: 30, ClipWindowSeconds: 15},
-			Host:  config.HostAlerts{CPUPercent: 85, CPUClearPercent: 70, TempCelsius: 75, TempClearCelsius: 70, DiskPercent: 88, DiskClearPercent: 80, MemFreePercent: 15, MemFreeMiB: 128},
+			Audio: config.AudioAlerts{QuietDbfs: p(-50), QuietSeconds: p(1200), ZeroSeconds: p(45), ClipPercent: p(30), ClipWindowSeconds: p(15)},
+			Host:  config.HostAlerts{CPUPercent: p(85), CPUClearPercent: p(70), TempCelsius: p(75), TempClearCelsius: p(70), DiskPercent: p(88), DiskClearPercent: p(80), MemFreePercent: p(15), MemFreeMiB: p(128)},
 		},
 		Devices: []config.Device{
 			{Name: "garden"},                // no quiet_alert flag -> armed (default on)
@@ -24,11 +27,16 @@ func TestSettingsFromMapsEveryField(t *testing.T) {
 	if !s.Enabled {
 		t.Error("Enabled = false, want true (absent flag defaults on)")
 	}
-	if s.Audio != cfg.Notifications.Audio {
-		t.Errorf("Audio = %+v, want %+v", s.Audio, cfg.Notifications.Audio)
+	// Every threshold is carried through. SettingsFrom is called with a defaulted
+	// config, so each pointer is non-nil; here they are all set explicitly.
+	if *s.Audio.QuietDbfs != -50 || *s.Audio.QuietSeconds != 1200 || *s.Audio.ZeroSeconds != 45 ||
+		*s.Audio.ClipPercent != 30 || *s.Audio.ClipWindowSeconds != 15 {
+		t.Errorf("Audio = %+v, want the input thresholds", s.Audio)
 	}
-	if s.Host != cfg.Notifications.Host {
-		t.Errorf("Host = %+v, want %+v", s.Host, cfg.Notifications.Host)
+	if *s.Host.CPUPercent != 85 || *s.Host.CPUClearPercent != 70 || *s.Host.TempCelsius != 75 ||
+		*s.Host.TempClearCelsius != 70 || *s.Host.DiskPercent != 88 || *s.Host.DiskClearPercent != 80 ||
+		*s.Host.MemFreePercent != 15 || *s.Host.MemFreeMiB != 128 {
+		t.Errorf("Host = %+v, want the input thresholds", s.Host)
 	}
 	if len(s.QuietAlert) != 2 {
 		t.Fatalf("QuietAlert = %v, want two entries", s.QuietAlert)

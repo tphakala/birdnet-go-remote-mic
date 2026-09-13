@@ -15,11 +15,12 @@ const (
 	formatS16  = "s16"
 	deviceHW1  = "hw:1,0"
 
-	// Repeated validation field paths, extracted so the TestValidateNotifications
-	// table does not trip goconst on the clear-threshold cases.
-	fieldCPUClear  = "notifications.host.cpu_clear_percent"
-	fieldTempClear = "notifications.host.temp_clear_celsius"
-	fieldDiskClear = "notifications.host.disk_clear_percent"
+	// Repeated validation field paths, extracted so the notification tests do not
+	// trip goconst on the cpu and clear-threshold cases.
+	fieldCPUPercent = "notifications.host.cpu_percent"
+	fieldCPUClear   = "notifications.host.cpu_clear_percent"
+	fieldTempClear  = "notifications.host.temp_clear_celsius"
+	fieldDiskClear  = "notifications.host.disk_clear_percent"
 )
 
 func TestLoadMultiDevice(t *testing.T) {
@@ -378,9 +379,20 @@ func TestDeviceQuietAlertEnabled(t *testing.T) {
 	}
 }
 
+// ptrInt returns a pointer to n, for building presence-aware threshold fields.
+func ptrInt(n int) *int { return &n }
+
+// wantInt fails unless p is non-nil and *p == want.
+func wantInt(t *testing.T, label string, p *int, want int) {
+	t.Helper()
+	if p == nil || *p != want {
+		t.Errorf("%s = %v, want %d", label, p, want)
+	}
+}
+
 func TestApplyDefaultsFillsNotifications(t *testing.T) {
 	t.Parallel()
-	c := Config{} // every notification field zero
+	c := Config{} // every notification field nil (unset)
 	c.ApplyDefaults()
 	n := c.Notifications
 	if !c.NotificationsEnabled() {
@@ -389,75 +401,116 @@ func TestApplyDefaultsFillsNotifications(t *testing.T) {
 	if n.Enabled != nil {
 		t.Errorf("ApplyDefaults set Enabled = %v, want nil (omitted from YAML, defaults on)", n.Enabled)
 	}
-	wantAudio := AudioAlerts{QuietDbfs: -60, QuietSeconds: 600, ZeroSeconds: 30, ClipPercent: 20, ClipWindowSeconds: 10}
-	if n.Audio != wantAudio {
-		t.Errorf("audio defaults = %+v, want %+v", n.Audio, wantAudio)
-	}
-	wantHost := HostAlerts{CPUPercent: 90, CPUClearPercent: 75, TempCelsius: 80, TempClearCelsius: 75, DiskPercent: 90, DiskClearPercent: 85, MemFreePercent: 10, MemFreeMiB: 64}
-	if n.Host != wantHost {
-		t.Errorf("host defaults = %+v, want %+v", n.Host, wantHost)
-	}
+	wantInt(t, "audio.quiet_dbfs", n.Audio.QuietDbfs, -60)
+	wantInt(t, "audio.quiet_seconds", n.Audio.QuietSeconds, 600)
+	wantInt(t, "audio.zero_seconds", n.Audio.ZeroSeconds, 30)
+	wantInt(t, "audio.clip_percent", n.Audio.ClipPercent, 20)
+	wantInt(t, "audio.clip_window_seconds", n.Audio.ClipWindowSeconds, 10)
+	wantInt(t, "host.cpu_percent", n.Host.CPUPercent, 90)
+	wantInt(t, "host.cpu_clear_percent", n.Host.CPUClearPercent, 75)
+	wantInt(t, "host.temp_celsius", n.Host.TempCelsius, 80)
+	wantInt(t, "host.temp_clear_celsius", n.Host.TempClearCelsius, 75)
+	wantInt(t, "host.disk_percent", n.Host.DiskPercent, 90)
+	wantInt(t, "host.disk_clear_percent", n.Host.DiskClearPercent, 85)
+	wantInt(t, "host.mem_free_percent", n.Host.MemFreePercent, 10)
+	wantInt(t, "host.mem_free_mib", n.Host.MemFreeMiB, 64)
 	// The defaults must themselves validate (clear thresholds below their onsets).
 	if err := c.Validate(); err != nil {
 		t.Errorf("defaulted notifications should validate, got %v", err)
 	}
-	// Idempotent: a second pass changes nothing.
+	// Idempotent: a second pass leaves every (now non-nil) field unchanged.
 	before := c.Notifications
 	c.ApplyDefaults()
 	if c.Notifications != before {
-		t.Errorf("ApplyDefaults not idempotent: %+v -> %+v", before, c.Notifications)
+		t.Error("ApplyDefaults not idempotent: a second pass replaced a threshold pointer")
+	}
+}
+
+// TestValidateRejectsExplicitZeroAfterDefaults covers the production order
+// (decode then ApplyDefaults then Validate): an explicitly provided out-of-range
+// value survives ApplyDefaults (which only fills nil) and is rejected by Validate,
+// rather than being silently overwritten with the default.
+func TestValidateRejectsExplicitZeroAfterDefaults(t *testing.T) {
+	t.Parallel()
+	c := validBase()
+	c.Notifications.Host.CPUPercent = ptrInt(0) // explicit, out of range
+	c.ApplyDefaults()                           // must NOT overwrite the explicit 0
+	if c.Notifications.Host.CPUPercent == nil || *c.Notifications.Host.CPUPercent != 0 {
+		t.Fatalf("ApplyDefaults overwrote an explicit 0: %v", c.Notifications.Host.CPUPercent)
+	}
+	err := c.Validate()
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Field != fieldCPUPercent {
+		t.Fatalf("Validate() = %v, want a cpu_percent error for an explicit 0", err)
+	}
+}
+
+// TestValidateRejectsExplicitZeroViaLoad exercises the same through the real file
+// path: a YAML threshold of 0 loads, defaults, and fails validation.
+func TestValidateRejectsExplicitZeroViaLoad(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "cfg.yaml")
+	yaml := "listen: \":8554\"\nnotifications:\n  host:\n    cpu_percent: 0\ndevices: []\n"
+	if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(p)
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Field != fieldCPUPercent {
+		t.Fatalf("Load with cpu_percent: 0 = %v, want a cpu_percent validation error", err)
 	}
 }
 
 func TestValidateNotifications(t *testing.T) {
-	// Each case starts from a defaulted, valid config (validBase applies defaults),
-	// mutates one threshold to an out-of-range or non-hysteretic value, and asserts
-	// the exact dotted field path. An empty wantField means the mutation is valid.
+	// Each case starts from a defaulted, valid config (validBase applies defaults,
+	// so every threshold pointer is non-nil), deref-assigns one threshold to an
+	// out-of-range or non-hysteretic value, and asserts the exact dotted field
+	// path. An empty wantField means the mutation is valid.
 	tests := []struct {
 		name      string
 		mutate    func(*Config)
 		wantField string
 	}{
 		{"defaults valid", func(*Config) {}, ""},
-		{"quiet_dbfs too low", func(c *Config) { c.Notifications.Audio.QuietDbfs = -100 }, "notifications.audio.quiet_dbfs"},
-		{"quiet_dbfs too high", func(c *Config) { c.Notifications.Audio.QuietDbfs = 0 }, "notifications.audio.quiet_dbfs"},
-		{"quiet_seconds too low", func(c *Config) { c.Notifications.Audio.QuietSeconds = 9 }, "notifications.audio.quiet_seconds"},
-		{"quiet_seconds too high", func(c *Config) { c.Notifications.Audio.QuietSeconds = 86401 }, "notifications.audio.quiet_seconds"},
-		{"zero_seconds too low", func(c *Config) { c.Notifications.Audio.ZeroSeconds = 4 }, "notifications.audio.zero_seconds"},
-		{"zero_seconds too high", func(c *Config) { c.Notifications.Audio.ZeroSeconds = 3601 }, "notifications.audio.zero_seconds"},
-		{"clip_percent too low", func(c *Config) { c.Notifications.Audio.ClipPercent = 0 }, "notifications.audio.clip_percent"},
-		{"clip_percent too high", func(c *Config) { c.Notifications.Audio.ClipPercent = 101 }, "notifications.audio.clip_percent"},
-		{"clip_window too low", func(c *Config) { c.Notifications.Audio.ClipWindowSeconds = 0 }, "notifications.audio.clip_window_seconds"},
-		{"clip_window too high", func(c *Config) { c.Notifications.Audio.ClipWindowSeconds = 601 }, "notifications.audio.clip_window_seconds"},
-		{"cpu_percent too low", func(c *Config) { c.Notifications.Host.CPUPercent = 0 }, "notifications.host.cpu_percent"},
-		{"cpu_percent too high", func(c *Config) { c.Notifications.Host.CPUPercent = 101 }, "notifications.host.cpu_percent"},
-		{"cpu_clear out of range", func(c *Config) { c.Notifications.Host.CPUClearPercent = 100 }, fieldCPUClear},
-		{"cpu_clear below min (zero)", func(c *Config) { c.Notifications.Host.CPUClearPercent = 0 }, fieldCPUClear},
+		{"quiet_dbfs too low", func(c *Config) { *c.Notifications.Audio.QuietDbfs = -100 }, "notifications.audio.quiet_dbfs"},
+		{"quiet_dbfs too high", func(c *Config) { *c.Notifications.Audio.QuietDbfs = 0 }, "notifications.audio.quiet_dbfs"},
+		{"quiet_seconds too low", func(c *Config) { *c.Notifications.Audio.QuietSeconds = 9 }, "notifications.audio.quiet_seconds"},
+		{"quiet_seconds too high", func(c *Config) { *c.Notifications.Audio.QuietSeconds = 86401 }, "notifications.audio.quiet_seconds"},
+		{"zero_seconds too low", func(c *Config) { *c.Notifications.Audio.ZeroSeconds = 4 }, "notifications.audio.zero_seconds"},
+		{"zero_seconds too high", func(c *Config) { *c.Notifications.Audio.ZeroSeconds = 3601 }, "notifications.audio.zero_seconds"},
+		{"clip_percent too low", func(c *Config) { *c.Notifications.Audio.ClipPercent = 0 }, "notifications.audio.clip_percent"},
+		{"clip_percent too high", func(c *Config) { *c.Notifications.Audio.ClipPercent = 101 }, "notifications.audio.clip_percent"},
+		{"clip_window too low", func(c *Config) { *c.Notifications.Audio.ClipWindowSeconds = 0 }, "notifications.audio.clip_window_seconds"},
+		{"clip_window too high", func(c *Config) { *c.Notifications.Audio.ClipWindowSeconds = 601 }, "notifications.audio.clip_window_seconds"},
+		{"cpu_percent too low", func(c *Config) { *c.Notifications.Host.CPUPercent = 0 }, fieldCPUPercent},
+		{"cpu_percent too high", func(c *Config) { *c.Notifications.Host.CPUPercent = 101 }, fieldCPUPercent},
+		{"cpu_clear out of range", func(c *Config) { *c.Notifications.Host.CPUClearPercent = 100 }, fieldCPUClear},
+		{"cpu_clear below min (zero)", func(c *Config) { *c.Notifications.Host.CPUClearPercent = 0 }, fieldCPUClear},
 		{"cpu_clear not below onset", func(c *Config) {
-			c.Notifications.Host.CPUPercent = 50
-			c.Notifications.Host.CPUClearPercent = 60
+			*c.Notifications.Host.CPUPercent = 50
+			*c.Notifications.Host.CPUClearPercent = 60
 		}, fieldCPUClear},
 		{"cpu_clear equals onset", func(c *Config) {
-			c.Notifications.Host.CPUPercent = 50
-			c.Notifications.Host.CPUClearPercent = 50
+			*c.Notifications.Host.CPUPercent = 50
+			*c.Notifications.Host.CPUClearPercent = 50
 		}, fieldCPUClear},
-		{"temp_celsius too low", func(c *Config) { c.Notifications.Host.TempCelsius = 29 }, "notifications.host.temp_celsius"},
-		{"temp_celsius too high", func(c *Config) { c.Notifications.Host.TempCelsius = 121 }, "notifications.host.temp_celsius"},
-		{"temp_clear out of range", func(c *Config) { c.Notifications.Host.TempClearCelsius = 120 }, fieldTempClear},
-		{"temp_clear below min (zero)", func(c *Config) { c.Notifications.Host.TempClearCelsius = 0 }, fieldTempClear},
-		{"temp_clear not below onset", func(c *Config) { c.Notifications.Host.TempClearCelsius = 85 }, fieldTempClear},
-		{"temp_clear equals onset", func(c *Config) { c.Notifications.Host.TempClearCelsius = 80 }, fieldTempClear},
-		{"disk_percent too low", func(c *Config) { c.Notifications.Host.DiskPercent = 0 }, "notifications.host.disk_percent"},
-		{"disk_percent too high", func(c *Config) { c.Notifications.Host.DiskPercent = 101 }, "notifications.host.disk_percent"},
-		{"disk_clear below min (negative)", func(c *Config) { c.Notifications.Host.DiskClearPercent = -1 }, fieldDiskClear},
-		{"disk_clear below min (zero)", func(c *Config) { c.Notifications.Host.DiskClearPercent = 0 }, fieldDiskClear},
-		{"disk_clear above max", func(c *Config) { c.Notifications.Host.DiskClearPercent = 100 }, fieldDiskClear},
-		{"disk_clear not below onset", func(c *Config) { c.Notifications.Host.DiskClearPercent = 95 }, fieldDiskClear},
-		{"disk_clear equals onset", func(c *Config) { c.Notifications.Host.DiskClearPercent = 90 }, fieldDiskClear},
-		{"mem_free_percent too low", func(c *Config) { c.Notifications.Host.MemFreePercent = 0 }, "notifications.host.mem_free_percent"},
-		{"mem_free_percent too high", func(c *Config) { c.Notifications.Host.MemFreePercent = 91 }, "notifications.host.mem_free_percent"},
-		{"mem_free_mib too low", func(c *Config) { c.Notifications.Host.MemFreeMiB = 0 }, "notifications.host.mem_free_mib"},
-		{"mem_free_mib too high", func(c *Config) { c.Notifications.Host.MemFreeMiB = 65537 }, "notifications.host.mem_free_mib"},
+		{"temp_celsius too low", func(c *Config) { *c.Notifications.Host.TempCelsius = 29 }, "notifications.host.temp_celsius"},
+		{"temp_celsius too high", func(c *Config) { *c.Notifications.Host.TempCelsius = 121 }, "notifications.host.temp_celsius"},
+		{"temp_clear out of range", func(c *Config) { *c.Notifications.Host.TempClearCelsius = 120 }, fieldTempClear},
+		{"temp_clear below min (zero)", func(c *Config) { *c.Notifications.Host.TempClearCelsius = 0 }, fieldTempClear},
+		{"temp_clear not below onset", func(c *Config) { *c.Notifications.Host.TempClearCelsius = 85 }, fieldTempClear},
+		{"temp_clear equals onset", func(c *Config) { *c.Notifications.Host.TempClearCelsius = 80 }, fieldTempClear},
+		{"disk_percent too low", func(c *Config) { *c.Notifications.Host.DiskPercent = 0 }, "notifications.host.disk_percent"},
+		{"disk_percent too high", func(c *Config) { *c.Notifications.Host.DiskPercent = 101 }, "notifications.host.disk_percent"},
+		{"disk_clear below min (negative)", func(c *Config) { *c.Notifications.Host.DiskClearPercent = -1 }, fieldDiskClear},
+		{"disk_clear below min (zero)", func(c *Config) { *c.Notifications.Host.DiskClearPercent = 0 }, fieldDiskClear},
+		{"disk_clear above max", func(c *Config) { *c.Notifications.Host.DiskClearPercent = 100 }, fieldDiskClear},
+		{"disk_clear not below onset", func(c *Config) { *c.Notifications.Host.DiskClearPercent = 95 }, fieldDiskClear},
+		{"disk_clear equals onset", func(c *Config) { *c.Notifications.Host.DiskClearPercent = 90 }, fieldDiskClear},
+		{"mem_free_percent too low", func(c *Config) { *c.Notifications.Host.MemFreePercent = 0 }, "notifications.host.mem_free_percent"},
+		{"mem_free_percent too high", func(c *Config) { *c.Notifications.Host.MemFreePercent = 91 }, "notifications.host.mem_free_percent"},
+		{"mem_free_mib too low", func(c *Config) { *c.Notifications.Host.MemFreeMiB = 0 }, "notifications.host.mem_free_mib"},
+		{"mem_free_mib too high", func(c *Config) { *c.Notifications.Host.MemFreeMiB = 65537 }, "notifications.host.mem_free_mib"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -491,6 +544,34 @@ func TestCloneDeepCopiesNotificationsEnabled(t *testing.T) {
 	*clone.Notifications.Enabled = false
 	if !*c.Notifications.Enabled {
 		t.Error("Clone aliased Notifications.Enabled; mutating the clone changed the original")
+	}
+}
+
+func TestCloneDeepCopiesNotificationThresholds(t *testing.T) {
+	t.Parallel()
+	c := validBase() // ApplyDefaults populated every threshold pointer
+	clone := c.Clone()
+	// Mutating a cloned threshold must not reach through to the original's storage.
+	*clone.Notifications.Host.CPUPercent = 42
+	*clone.Notifications.Audio.QuietDbfs = -10
+	if *c.Notifications.Host.CPUPercent == 42 || *c.Notifications.Audio.QuietDbfs == -10 {
+		t.Error("Clone aliased a notification threshold; mutating the clone changed the original")
+	}
+}
+
+// TestNotificationsZeroValueValidatesAndClones covers the nil-pointer paths:
+// validate reads an absent (nil) threshold as its default (so a zero-value block
+// validates) and clone leaves a nil threshold nil. These paths are otherwise only
+// reached when Validate/Clone run on an un-defaulted config.
+func TestNotificationsZeroValueValidatesAndClones(t *testing.T) {
+	t.Parallel()
+	var n Notifications // every threshold pointer and Enabled nil
+	if err := n.validate(); err != nil {
+		t.Errorf("zero-value Notifications.validate() = %v, want nil (nil reads as the default)", err)
+	}
+	clone := n.clone()
+	if clone.Enabled != nil || clone.Audio.QuietDbfs != nil || clone.Host.CPUPercent != nil || clone.Host.MemFreeMiB != nil {
+		t.Errorf("clone of a zero-value Notifications should keep nil pointers, got %+v", clone)
 	}
 }
 

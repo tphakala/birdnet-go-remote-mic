@@ -451,7 +451,8 @@ func TestPatchConfigNotificationsPartialMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload persisted config: %v", err)
 	}
-	if loaded.Notifications.Host.CPUPercent != 95 || loaded.Notifications.Host.CPUClearPercent != 75 {
+	if loaded.Notifications.Host.CPUPercent == nil || *loaded.Notifications.Host.CPUPercent != 95 ||
+		loaded.Notifications.Host.CPUClearPercent == nil || *loaded.Notifications.Host.CPUClearPercent != 75 {
 		t.Errorf("persisted host = %+v, want cpu 95 / cpuClear 75", loaded.Notifications.Host)
 	}
 }
@@ -526,14 +527,21 @@ func TestPatchConfigNotificationsMergesEveryField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload persisted config: %v", err)
 	}
-	wantAudio := config.AudioAlerts{QuietDbfs: -50, QuietSeconds: 1200, ZeroSeconds: 45, ClipPercent: 30, ClipWindowSeconds: 15}
-	if loaded.Notifications.Audio != wantAudio {
-		t.Errorf("persisted audio = %+v, want %+v", loaded.Notifications.Audio, wantAudio)
-	}
-	wantHost := config.HostAlerts{CPUPercent: 85, CPUClearPercent: 70, TempCelsius: 75, TempClearCelsius: 70, DiskPercent: 88, DiskClearPercent: 80, MemFreePercent: 15, MemFreeMiB: 128}
-	if loaded.Notifications.Host != wantHost {
-		t.Errorf("persisted host = %+v, want %+v", loaded.Notifications.Host, wantHost)
-	}
+	la := loaded.Notifications.Audio
+	eq("persisted audio.quietDbfs", la.QuietDbfs, -50)
+	eq("persisted audio.quietSeconds", la.QuietSeconds, 1200)
+	eq("persisted audio.zeroSeconds", la.ZeroSeconds, 45)
+	eq("persisted audio.clipPercent", la.ClipPercent, 30)
+	eq("persisted audio.clipWindowSeconds", la.ClipWindowSeconds, 15)
+	lh := loaded.Notifications.Host
+	eq("persisted host.cpuPercent", lh.CPUPercent, 85)
+	eq("persisted host.cpuClearPercent", lh.CPUClearPercent, 70)
+	eq("persisted host.tempCelsius", lh.TempCelsius, 75)
+	eq("persisted host.tempClearCelsius", lh.TempClearCelsius, 70)
+	eq("persisted host.diskPercent", lh.DiskPercent, 88)
+	eq("persisted host.diskClearPercent", lh.DiskClearPercent, 80)
+	eq("persisted host.memFreePercent", lh.MemFreePercent, 15)
+	eq("persisted host.memFreeMiB", lh.MemFreeMiB, 128)
 }
 
 func TestPatchConfigNotificationsClearNotBelowOnsetYields422(t *testing.T) {
@@ -556,6 +564,34 @@ func TestPatchConfigNotificationsClearNotBelowOnsetYields422(t *testing.T) {
 	}
 	if (*vp.Errors)[0].Field != "notifications.host.cpu_clear_percent" {
 		t.Errorf("error field = %q, want notifications.host.cpu_clear_percent", (*vp.Errors)[0].Field)
+	}
+}
+
+func TestPatchConfigRejectsExplicitZeroThreshold(t *testing.T) {
+	store, path := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+
+	// An explicitly supplied out-of-range 0 must be rejected with a 422, not
+	// silently rewritten to the default by ApplyDefaults. cpuPercent's range is
+	// 1..100, so a present 0 is invalid and its presence must survive the merge
+	// and ApplyDefaults to reach Validate.
+	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(0)},
+	}}
+	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	vp, ok := resp.(mgmtapi.PatchConfig422ApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("PatchConfig returned %T, want 422 for an explicit zero threshold", resp)
+	}
+	if vp.Errors == nil || len(*vp.Errors) != 1 || (*vp.Errors)[0].Field != "notifications.host.cpu_percent" {
+		t.Errorf("errors = %+v, want one for notifications.host.cpu_percent", vp.Errors)
+	}
+	// A rejected patch must not be persisted: the file must still not exist.
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("a rejected patch wrote the config file (stat err = %v); want it absent", statErr)
 	}
 }
 

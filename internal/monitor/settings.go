@@ -19,8 +19,9 @@ type Settings struct {
 	// monitors resolve their active conditions and stop evaluating; the discrete
 	// emitters (device failures, client and config events) keep publishing.
 	Enabled bool
-	// Audio and Host carry the materialized thresholds from the config's
-	// notifications block.
+	// Audio and Host carry the thresholds from the config's notifications block.
+	// Their fields are pointers; SettingsFrom is called with a defaulted config,
+	// so every threshold pointer is non-nil and safe to dereference.
 	Audio config.AudioAlerts
 	Host  config.HostAlerts
 	// QuietAlert maps a device name to whether its very-quiet audio condition is
