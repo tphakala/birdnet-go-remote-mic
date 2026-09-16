@@ -244,6 +244,36 @@
           </div>
         </div>
 
+        <!-- Condition-monitor notification thresholds (from live /config) -->
+        <div class="config-section-card" id="sys-notifications-card" hidden>
+          <div class="section-head">
+            <div>
+              <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"></path><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"></path></svg><span>Notifications</span></h2>
+              <span class="section-desc">Thresholds for the audio-signal and host-health condition monitors behind the notification bell. Changes apply immediately; no restart needed. Turning the monitors off still leaves device, client and config events publishing.</span>
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="sys-notify-enabled">Condition monitors</label>
+            <label class="switch-control">
+              <input type="checkbox" id="sys-notify-enabled" class="visually-hidden">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span style="font-size: 12px; font-weight: 500;">Run the audio-signal and host-health monitors</span>
+            </label>
+            <span class="field-hint">When off, the no-signal, very-quiet, clipping and host-health alerts are suppressed.</span>
+          </div>
+          <div class="form-group-title">Audio signal</div>
+          <div class="form-grid-2col" id="sys-notify-audio-fields"></div>
+          <div class="form-group-title">Host health</div>
+          <div class="form-grid-2col" id="sys-notify-host-fields"></div>
+          <span class="field-error" id="sys-notify-error" role="alert"></span>
+          <div class="network-actions" id="sys-notify-actions" hidden>
+            <span class="staged-badge">Unsaved changes</span>
+            <span class="network-actions-spacer"></span>
+            <button type="button" class="btn btn-secondary" id="btn-notify-discard">Discard</button>
+            <button type="button" class="btn btn-primary" id="btn-notify-save">Save Changes</button>
+          </div>
+        </div>
+
         <!-- Per-device stream status (from live /devices) -->
         <div class="client-card">
           <div class="section-head">

@@ -77,8 +77,8 @@ function channelLabel(channels) {
         return `Ch ${channels[0]}`;
     return "Ch " + channels.join("+");
 }
-// The runtime device carries all configured fields; project it to the config
-// shape as a fallback base for the device-list patch.
+// The runtime device carries the runtime-visible configured fields; project it
+// to the config shape as a fallback base for the device-list patch.
 function deviceToConfig(d) {
     const c = {
         name: d.name, device: d.device, path: d.path, mode: d.mode,
@@ -87,6 +87,12 @@ function deviceToConfig(d) {
     };
     if (d.opus)
         c.opus = d.opus;
+    // quietAlert is intentionally omitted: the runtime Device carries no such
+    // field, so there is no value to project. This fallback base is used only when
+    // GET /config has not loaded; the normal base comes from cfg.devices, which
+    // materializes quietAlert to a concrete bool and preserves an opt-out. On the
+    // degraded path an opted-out device falls back to the default (alert on) on
+    // save, which is the safe direction and unrecoverable without the config.
     return c;
 }
 function rtspPort(listen) {
@@ -114,7 +120,10 @@ function shapeKey(d) {
 // comparison. It deliberately EXCLUDES enabled: the settings form does not edit
 // the enable flag (the card toggle does, and saveDevice sources it fresh), so a
 // same-tab toggle must not flag the operator's own open form as changed
-// elsewhere.
+// elsewhere. quietAlert IS included: the settings form edits it, so an
+// out-of-band change to it should raise the "changed elsewhere" notice like
+// every other form field. It is normalised with `?? true` (the backend
+// absent-default) so an absent value and an explicit true hash identically.
 function deviceConfigKey(cd) {
     if (!cd)
         return "";
@@ -124,6 +133,7 @@ function deviceConfigKey(cd) {
         // carry a channels array (see the store), but a config payload is not, so a
         // missing or null channels field must not throw here and crash the pass.
         [...(cd.channels ?? [])], cd.format, cd.opus?.bitrate ?? null,
+        cd.quietAlert ?? true,
     ]);
 }
 export class DashboardView {

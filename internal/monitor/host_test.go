@@ -180,6 +180,68 @@ func TestHostCPUBoundaryEquality(t *testing.T) {
 	}
 }
 
+// TestHostOnsetBoundaryEquality pins the onset comparisons at their exact
+// thresholds. Temp and disk onset on >= (equality raises); memory onsets on a
+// strict avail < limit (equality does NOT raise), the opposite polarity, so both
+// sides of that boundary are checked.
+func TestHostOnsetBoundaryEquality(t *testing.T) {
+	const gib = int64(1) << 30
+
+	// raiseDwell sets a boundary reading and asserts it onsets exactly at its dwell.
+	raiseDwell := func(t *testing.T, key string, enterAfter time.Duration, set func(*fakeHost)) {
+		t.Helper()
+		r := &fakeHost{}
+		rec := newRecPub()
+		c := newClk()
+		h := newHostT(r, nil, rec, hostSettings(), c)
+		set(r)
+		h.poll()
+		c.advance(enterAfter - time.Second)
+		h.poll()
+		if rec.isActive(key) {
+			t.Fatal("onset before the dwell at the exact boundary")
+		}
+		c.advance(time.Second)
+		h.poll()
+		if !rec.isActive(key) {
+			t.Fatal("did not onset at the exact boundary after the dwell")
+		}
+	}
+
+	t.Run("temp at exactly the threshold onsets", func(t *testing.T) {
+		t.Parallel()
+		raiseDwell(t, hostTempKey, tempEnterAfter, func(f *fakeHost) { f.temp, f.tempOK = 80, true })
+	})
+	t.Run("disk at exactly the threshold onsets", func(t *testing.T) {
+		t.Parallel()
+		raiseDwell(t, hostDiskKey, diskEnterAfter, func(f *fakeHost) {
+			f.diskTotal, f.diskUse, f.diskOK = 100*gib, 90*gib, true // exactly 90%
+		})
+	})
+	t.Run("memory one byte below the limit onsets", func(t *testing.T) {
+		t.Parallel()
+		// 512 MiB host: the 64 MiB floor beats 10% (51 MiB), so the limit is 64 MiB.
+		raiseDwell(t, hostMemKey, memEnterAfter, func(f *fakeHost) {
+			f.memTotal, f.memAvail, f.memOK = 512<<20, (64<<20)-1, true
+		})
+	})
+	t.Run("memory at exactly the limit does not onset", func(t *testing.T) {
+		t.Parallel()
+		r := &fakeHost{}
+		rec := newRecPub()
+		c := newClk()
+		h := newHostT(r, nil, rec, hostSettings(), c)
+		r.mu.Lock()
+		r.memTotal, r.memAvail, r.memOK = 512<<20, 64<<20, true // avail == limit; onset is strict <
+		r.mu.Unlock()
+		h.poll()
+		pollEvery(h, c, 10*time.Second, 12) // well past the 60 s dwell
+		if rec.isActive(hostMemKey) || rec.onsetCount(hostMemKey) != 0 {
+			t.Fatalf("low-memory onset at avail == limit (onsets=%d), want none", rec.onsetCount(hostMemKey))
+		}
+	})
+}
+
 func TestHostTempDiskVoltMem(t *testing.T) {
 	const gib = int64(1) << 30
 	tests := []struct {
