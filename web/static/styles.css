@@ -1109,6 +1109,14 @@ body {
   display: block;
 }
 
+/* The Notifications card's form-level error sits outside a .form-field (it
+   carries a 422 reason not tied to one input), so reveal it whenever it holds
+   text rather than via a parent .invalid toggle. */
+#sys-notify-error:not(:empty) {
+  display: block;
+  margin-top: 4px;
+}
+
 /* Per-channel selection: a wrap row of checkbox chips (Ch1..ChN). */
 .channel-select {
   display: flex;

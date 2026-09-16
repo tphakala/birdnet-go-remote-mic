@@ -139,7 +139,7 @@ func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
 		CPUModel: staticInfo.cpuModel,
 		CPUCores: staticInfo.cpuCores,
 	}
-	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
+	if b, err := os.ReadFile(procMeminfo); err == nil {
 		if total, used, ok := parseMemInfo(b); ok {
 			si.MemTotal, si.MemUsed = total, used
 		}
@@ -157,11 +157,24 @@ func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
 	return si
 }
 
+// procMeminfo is the kernel memory-info pseudo-file. ReadMem passes it to readMem
+// so the parsing and the "no MemAvailable" branch are testable against a fixture
+// without a fixed /proc path; production always reads this file.
+const procMeminfo = "/proc/meminfo"
+
 // ReadMem returns total and available memory in bytes from /proc/meminfo. ok is
 // false when the file is unreadable or lacks MemTotal or MemAvailable, so a
 // caller judging free memory never mistakes a missing figure for zero.
 func ReadMem() (total, avail int64, ok bool) {
-	b, err := os.ReadFile("/proc/meminfo")
+	return readMem(procMeminfo)
+}
+
+// readMem is ReadMem's seam: it parses total and available memory from the
+// meminfo file at path. ok is false when the file is unreadable, lacks MemTotal,
+// or lacks MemAvailable (a kernel before 3.14), so the reject-when-absent branch
+// can be exercised in a test.
+func readMem(path string) (total, avail int64, ok bool) {
+	b, err := os.ReadFile(path) //nolint:gosec // /proc/meminfo in production; a test fixture otherwise
 	if err != nil {
 		return 0, 0, false
 	}
@@ -255,9 +268,16 @@ func readUndervoltage(root string) (now, ok bool) {
 		}
 		ab, err := os.ReadFile(filepath.Join(filepath.Dir(namePath), "in0_lcrit_alarm")) //nolint:gosec // sibling of a glob match under the caller-supplied hwmon root (/sys/class/hwmon in production)
 		if err != nil {
-			return false, false
+			// This rpi_volt match's alarm is unreadable. The kernel can register
+			// more than one hwmon under the same name, so try any further match
+			// rather than reporting the sensor absent on the first bad one (real
+			// firmware registers exactly one, so this is defensive).
+			continue
 		}
-		return parseAlarm(ab)
+		if set, parsed := parseAlarm(ab); parsed {
+			return set, true
+		}
+		// Unparseable alarm: fall through to any further rpi_volt match.
 	}
 	return false, false
 }

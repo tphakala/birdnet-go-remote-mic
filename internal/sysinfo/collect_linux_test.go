@@ -127,6 +127,17 @@ func TestReadUndervoltage(t *testing.T) {
 		{"empty hwmon root", nil, false, false},
 		{"alarm file missing", []hwmon{{"hwmon3", undervoltHwmonName, nil}}, false, false},
 		{"alarm file unparsable", []hwmon{{"hwmon3", undervoltHwmonName, str("garbage")}}, false, false},
+		// A host can register more than one rpi_volt hwmon; a bad first match must
+		// not abort the probe. Glob returns the dirs sorted, so the lower-numbered
+		// (bad) entry is tried before the higher-numbered (valid) one.
+		{"first rpi_volt unparsable, second valid set", []hwmon{
+			{"hwmon6", undervoltHwmonName, str("garbage")},
+			{"hwmon7", undervoltHwmonName, str("1\n")},
+		}, true, true},
+		{"first rpi_volt alarm missing, second valid clear", []hwmon{
+			{"hwmon8", undervoltHwmonName, nil},
+			{"hwmon9", undervoltHwmonName, str("0\n")},
+		}, false, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,13 +160,17 @@ func TestReadUndervoltage(t *testing.T) {
 	})
 	t.Run("unreadable alarm file", func(t *testing.T) {
 		t.Parallel()
-		if os.Geteuid() == 0 {
-			t.Skip("root reads a mode 0000 file")
-		}
 		root := t.TempDir()
 		writeHwmon(t, root, "hwmon5", undervoltHwmonName, str("1\n"))
-		if err := os.Chmod(filepath.Join(root, "hwmon5", "in0_lcrit_alarm"), 0o000); err != nil {
+		alarmPath := filepath.Join(root, "hwmon5", "in0_lcrit_alarm")
+		if err := os.Chmod(alarmPath, 0o000); err != nil {
 			t.Fatal(err)
+		}
+		// Probe the actual permission rather than only euid 0: a non-root process
+		// with CAP_DAC_OVERRIDE can also read a mode 0000 file and would not
+		// exercise the unreadable path, so skip when the file is in fact readable.
+		if _, err := os.ReadFile(alarmPath); err == nil { //nolint:gosec // deliberate readability probe of the test fixture
+			t.Skip("process can read a mode 0000 file; cannot exercise the unreadable path")
 		}
 		if now, ok := readUndervoltage(root); now || ok {
 			t.Errorf("readUndervoltage(unreadable) = (%v, %v), want (false, false)", now, ok)
@@ -163,10 +178,57 @@ func TestReadUndervoltage(t *testing.T) {
 	})
 }
 
+// TestReadMemSeam exercises readMem against fixtures, in particular the
+// reject-when-MemAvailable-absent branch that ReadMem's fixed /proc path cannot
+// reach deterministically.
+func TestReadMemSeam(t *testing.T) {
+	write := func(t *testing.T, content string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "meminfo")
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	t.Run("total and available present", func(t *testing.T) {
+		t.Parallel()
+		p := write(t, "MemTotal:       16384 kB\nMemFree:         1000 kB\nMemAvailable:    8192 kB\n")
+		total, avail, ok := readMem(p)
+		if !ok || total != 16384*1024 || avail != 8192*1024 {
+			t.Errorf("readMem = (%d, %d, %v), want (%d, %d, true)", total, avail, ok, 16384*1024, 8192*1024)
+		}
+	})
+	t.Run("MemAvailable absent rejects", func(t *testing.T) {
+		t.Parallel()
+		// A kernel before 3.14 reports no MemAvailable; readMem must reject rather
+		// than mistake the missing figure for zero available memory.
+		p := write(t, "MemTotal:       16384 kB\nMemFree:         1000 kB\n")
+		if _, _, ok := readMem(p); ok {
+			t.Error("readMem ok = true without MemAvailable, want false")
+		}
+	})
+	t.Run("MemTotal absent rejects", func(t *testing.T) {
+		t.Parallel()
+		p := write(t, "MemAvailable:    8192 kB\n")
+		if _, _, ok := readMem(p); ok {
+			t.Error("readMem ok = true without MemTotal, want false")
+		}
+	})
+	t.Run("missing file rejects", func(t *testing.T) {
+		t.Parallel()
+		if _, _, ok := readMem(filepath.Join(t.TempDir(), "absent")); ok {
+			t.Error("readMem ok = true for a missing file, want false")
+		}
+	})
+}
+
 func TestReadMemAndTempSmoke(t *testing.T) {
 	total, avail, ok := ReadMem()
 	if !ok {
-		t.Fatal("ReadMem ok = false on a Linux host")
+		// ReadMem documents ok=false as expected when /proc/meminfo lacks
+		// MemAvailable (kernels before 3.14), so the smoke test must not fail the
+		// build on such a host; the seam test covers the parsing deterministically.
+		t.Skip("ReadMem reports no MemAvailable (kernel < 3.14); nothing to assert here")
 	}
 	if total <= 0 || avail < 0 || avail > total {
 		t.Errorf("ReadMem = (%d, %d), want 0 <= avail <= total, total > 0", total, avail)

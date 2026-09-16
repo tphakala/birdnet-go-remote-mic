@@ -48,6 +48,7 @@ export class DeviceSettingsForm {
     bitrateHidden;
     modeHidden;
     bitrateField;
+    quietAlertEl;
     rateDrop;
     device;
     hardware;
@@ -171,6 +172,38 @@ export class DeviceSettingsForm {
         this.describe(bitrate.container, bitrateHint.id);
         this.bitrateField.hidden = modeInitial !== "opus";
         grid.appendChild(this.bitrateField);
+        // Very-quiet alert opt-out. Defaults on (quietAlert absent means true); turn
+        // it off for a device expected to be silent for long stretches (a bat mic by
+        // day) so it does not raise the very-quiet warning. Stuck-at-zero and
+        // clipping are unaffected. Stored via collect() as DeviceConfig.quietAlert.
+        const quietField = elem("div", "form-field");
+        const quietId = `set-${uid}-quiet`;
+        const quietLabel = this.label("Very Quiet Alert");
+        quietLabel.setAttribute("for", quietId);
+        quietField.appendChild(quietLabel);
+        const quietSwitch = elem("label", "switch-control");
+        this.quietAlertEl = document.createElement("input");
+        this.quietAlertEl.type = "checkbox";
+        this.quietAlertEl.id = quietId;
+        this.quietAlertEl.className = "visually-hidden";
+        this.quietAlertEl.checked = d.quietAlert ?? true;
+        const quietHintId = `${quietId}-hint`;
+        this.quietAlertEl.setAttribute("aria-describedby", quietHintId);
+        this.quietAlertEl.addEventListener("change", () => {
+            if (this.ready)
+                this.onDirty();
+        });
+        const track = elem("span", "switch-track");
+        track.appendChild(elem("span", "switch-thumb"));
+        const quietText = elem("span", undefined, "Warn when this device stays very quiet");
+        quietText.style.fontSize = "12px";
+        quietText.style.fontWeight = "500";
+        quietSwitch.appendChild(this.quietAlertEl);
+        quietSwitch.appendChild(track);
+        quietSwitch.appendChild(quietText);
+        quietField.appendChild(quietSwitch);
+        quietField.appendChild(this.hint("On by default. Turn off for a device expected to be silent for long stretches; the no-signal and clipping alerts still apply.", quietHintId));
+        grid.appendChild(quietField);
         this.element.appendChild(grid);
         this.modeHidden.addEventListener("change", () => {
             const isOpus = this.modeHidden.value === "opus";
@@ -242,6 +275,9 @@ export class DeviceSettingsForm {
             // but saveDevice replaces the whole device entry in the PATCH, so dropping
             // it here would silently re-enable a disabled device on save.
             enabled: this.device.enabled,
+            // The very-quiet alert opt-out is written explicitly (true is equivalent
+            // to absent), so toggling it off persists quietAlert:false.
+            quietAlert: this.quietAlertEl.checked,
         };
         if (mode === "opus") {
             dev.opus = { bitrate: Number(this.bitrateHidden.value) || MIN_BITRATE };

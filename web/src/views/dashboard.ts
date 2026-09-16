@@ -154,8 +154,8 @@ function channelLabel(channels: number[]): string {
   return "Ch " + channels.join("+");
 }
 
-// The runtime device carries all configured fields; project it to the config
-// shape as a fallback base for the device-list patch.
+// The runtime device carries the runtime-visible configured fields; project it
+// to the config shape as a fallback base for the device-list patch.
 function deviceToConfig(d: Device): DeviceConfig {
   const c: DeviceConfig = {
     name: d.name, device: d.device, path: d.path, mode: d.mode,
@@ -163,6 +163,11 @@ function deviceToConfig(d: Device): DeviceConfig {
     enabled: runtimeEnabled(d.state),
   };
   if (d.opus) c.opus = d.opus;
+  // quietAlert is intentionally omitted: the runtime Device carries no such
+  // field, so there is no value to project. This projection is a render/seed
+  // fallback only; the mutating device PATCH paths (handleToggleEnabled,
+  // saveDevice) refuse to run until GET /config has loaded, so quietAlert is
+  // never persisted from this fallback and an existing opt-out cannot be reset.
   return c;
 }
 
@@ -193,7 +198,10 @@ function shapeKey(d: Device): string {
 // comparison. It deliberately EXCLUDES enabled: the settings form does not edit
 // the enable flag (the card toggle does, and saveDevice sources it fresh), so a
 // same-tab toggle must not flag the operator's own open form as changed
-// elsewhere.
+// elsewhere. quietAlert IS included: the settings form edits it, so an
+// out-of-band change to it should raise the "changed elsewhere" notice like
+// every other form field. It is normalised with `?? true` (the backend
+// absent-default) so an absent value and an explicit true hash identically.
 function deviceConfigKey(cd: DeviceConfig | undefined): string {
   if (!cd) return "";
   return JSON.stringify([
@@ -202,6 +210,7 @@ function deviceConfigKey(cd: DeviceConfig | undefined): string {
     // carry a channels array (see the store), but a config payload is not, so a
     // missing or null channels field must not throw here and crash the pass.
     [...(cd.channels ?? [])], cd.format, cd.opus?.bitrate ?? null,
+    cd.quietAlert ?? true,
   ]);
 }
 
@@ -924,6 +933,17 @@ export class DashboardView {
     const want = input.checked;
     const id = entry.device.device;
     const name = entry.device.name;
+    // Refuse to mutate the device list from the runtime fallback: until GET
+    // /config has loaded, deviceConfigBase() projects via deviceToConfig, which
+    // omits config-only fields (quietAlert), so a full-array PATCH would reset
+    // every device's opt-out. config only ever goes null -> loaded, so checking
+    // here is equivalent to checking inside the queued task.
+    if (!store.getState().config) {
+      input.checked = !want;
+      input.setAttribute("aria-checked", String(!want));
+      showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
+      return;
+    }
     // Remember focus before disabling: re-enabling a disabled control drops focus
     // to the body, dumping a keyboard user at the top of the page.
     const hadFocus = document.activeElement === input;
@@ -1112,6 +1132,14 @@ export class DashboardView {
     if (!form) return;
     if (!form.validate()) {
       showToast("Fix the highlighted fields before saving.", "warn");
+      return;
+    }
+    // Refuse to save from the runtime fallback: until GET /config has loaded,
+    // deviceConfigBase() projects via deviceToConfig, which omits config-only
+    // fields (quietAlert), so this full-array PATCH would reset every device's
+    // opt-out. config only ever goes null -> loaded.
+    if (!store.getState().config) {
+      showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
       return;
     }
     const edited = form.collect();
