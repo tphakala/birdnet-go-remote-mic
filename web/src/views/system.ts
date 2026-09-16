@@ -161,7 +161,10 @@ export class SystemView {
   private markNotifyDirty(key?: string): void {
     this.notifyDirty = true;
     if (this.notifyActionsEl) this.notifyActionsEl.hidden = false;
-    if (key) this.notifyFields.get(key)?.classList.remove("invalid");
+    if (key) {
+      this.notifyFields.get(key)?.classList.remove("invalid");
+      this.notifyInputs.get(key)?.setAttribute("aria-invalid", "false");
+    }
     if (this.notifyErrorEl) this.notifyErrorEl.textContent = "";
   }
 
@@ -174,7 +177,10 @@ export class SystemView {
   }
 
   private clearNotifyErrors(): void {
-    for (const field of this.notifyFields.values()) field.classList.remove("invalid");
+    for (const [key, input] of this.notifyInputs) {
+      this.notifyFields.get(key)?.classList.remove("invalid");
+      input.setAttribute("aria-invalid", "false");
+    }
     if (this.notifyErrorEl) this.notifyErrorEl.textContent = "";
   }
 
@@ -235,6 +241,7 @@ export class SystemView {
       this.clearNotifyErrors();
       for (const key of invalid) {
         this.notifyFields.get(key)?.classList.add("invalid");
+        this.notifyInputs.get(key)?.setAttribute("aria-invalid", "true");
         const errEl = document.getElementById(`sys-notify-${key}-err`);
         if (errEl) errEl.textContent = "Enter a whole number.";
       }
@@ -294,9 +301,10 @@ export class SystemView {
       const reason = item.reason ?? err.title;
       if (spec) {
         this.notifyFields.get(spec.key)?.classList.add("invalid");
+        const input = this.notifyInputs.get(spec.key);
+        input?.setAttribute("aria-invalid", "true");
         const errEl = document.getElementById(`sys-notify-${spec.key}-err`);
         if (errEl) errEl.textContent = reason;
-        const input = this.notifyInputs.get(spec.key);
         input?.focus();
         return;
       }
