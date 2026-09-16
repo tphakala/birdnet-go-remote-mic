@@ -88,11 +88,10 @@ function deviceToConfig(d) {
     if (d.opus)
         c.opus = d.opus;
     // quietAlert is intentionally omitted: the runtime Device carries no such
-    // field, so there is no value to project. This fallback base is used only when
-    // GET /config has not loaded; the normal base comes from cfg.devices, which
-    // materializes quietAlert to a concrete bool and preserves an opt-out. On the
-    // degraded path an opted-out device falls back to the default (alert on) on
-    // save, which is the safe direction and unrecoverable without the config.
+    // field, so there is no value to project. This projection is a render/seed
+    // fallback only; the mutating device PATCH paths (handleToggleEnabled,
+    // saveDevice) refuse to run until GET /config has loaded, so quietAlert is
+    // never persisted from this fallback and an existing opt-out cannot be reset.
     return c;
 }
 function rtspPort(listen) {
@@ -829,6 +828,17 @@ export class DashboardView {
         const want = input.checked;
         const id = entry.device.device;
         const name = entry.device.name;
+        // Refuse to mutate the device list from the runtime fallback: until GET
+        // /config has loaded, deviceConfigBase() projects via deviceToConfig, which
+        // omits config-only fields (quietAlert), so a full-array PATCH would reset
+        // every device's opt-out. config only ever goes null -> loaded, so checking
+        // here is equivalent to checking inside the queued task.
+        if (!store.getState().config) {
+            input.checked = !want;
+            input.setAttribute("aria-checked", String(!want));
+            showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
+            return;
+        }
         // Remember focus before disabling: re-enabling a disabled control drops focus
         // to the body, dumping a keyboard user at the top of the page.
         const hadFocus = document.activeElement === input;
@@ -1014,6 +1024,14 @@ export class DashboardView {
             return;
         if (!form.validate()) {
             showToast("Fix the highlighted fields before saving.", "warn");
+            return;
+        }
+        // Refuse to save from the runtime fallback: until GET /config has loaded,
+        // deviceConfigBase() projects via deviceToConfig, which omits config-only
+        // fields (quietAlert), so this full-array PATCH would reset every device's
+        // opt-out. config only ever goes null -> loaded.
+        if (!store.getState().config) {
+            showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
             return;
         }
         const edited = form.collect();

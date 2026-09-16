@@ -10,6 +10,7 @@ import {
   buildNotificationsPatch,
   fieldForServerPath,
   parseThreshold,
+  unparsedThresholds,
 } from "../src/lib/notification-settings-core.js";
 
 test("NOTIFY_FIELDS covers the five audio and eight host thresholds with unique keys and paths", () => {
@@ -58,6 +59,23 @@ test("buildNotificationsPatch omits a field whose box does not parse and drops a
   assert.equal(patch.enabled, true);
   assert.equal(patch.audio, undefined, "no audio field parsed, so the sub-object is dropped");
   assert.deepEqual(patch.host, { cpuPercent: 95 });
+});
+
+test("unparsedThresholds flags blank and non-integer boxes, in display order, and is empty when all parse", () => {
+  const good: Record<string, string> = {};
+  for (const f of NOTIFY_FIELDS) good[f.key] = String(f.min);
+  assert.deepEqual(unparsedThresholds(good), [], "all valid -> no invalid keys");
+
+  const bad = { ...good, quietDbfs: "", cpuPercent: "12.5", diskPercent: "abc" };
+  // NOTIFY_FIELDS order is audio (quietDbfs first) then host (cpuPercent before
+  // diskPercent), so the returned order is display order, which the caller uses
+  // to focus the first offending input.
+  assert.deepEqual(unparsedThresholds(bad), ["quietDbfs", "cpuPercent", "diskPercent"]);
+
+  // A missing key (not in the map at all) is treated as unparsed, not skipped.
+  const missing: Record<string, string> = { ...good };
+  delete missing.memFreeMiB;
+  assert.deepEqual(unparsedThresholds(missing), ["memFreeMiB"]);
 });
 
 test("fieldForServerPath resolves every catalogue path and the paired clear paths, null otherwise", () => {

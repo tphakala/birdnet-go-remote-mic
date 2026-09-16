@@ -82,6 +82,15 @@ export function buildNotificationsPatch(enabled, values) {
         patch.host = host;
     return patch;
 }
+// unparsedThresholds returns the field keys whose raw input does not parse to a
+// whole number (a blank or non-integer box). The card rejects the save when any
+// is present rather than letting buildNotificationsPatch omit the field: the
+// server treats an absent field as unchanged, so an omitted field would report
+// "applied" while silently keeping its old value. Order follows NOTIFY_FIELDS so
+// the caller can focus the first offending input in display order.
+export function unparsedThresholds(values) {
+    return NOTIFY_FIELDS.filter((f) => parseThreshold(values[f.key] ?? "") === null).map((f) => f.key);
+}
 // fieldForServerPath maps a 422 validation field path to its spec so the view
 // can mark the offending input, or null for a path the card does not own (a
 // device or auth error routed elsewhere). Matching is exact on the dotted snake

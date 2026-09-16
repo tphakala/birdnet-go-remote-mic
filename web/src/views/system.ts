@@ -9,6 +9,7 @@ import {
   NOTIFY_FIELDS,
   buildNotificationsPatch,
   fieldForServerPath,
+  unparsedThresholds,
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.js";
 import type { ApplianceStatus, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
@@ -116,7 +117,10 @@ export class SystemView {
     input.min = String(spec.min);
     input.max = String(spec.max);
     input.step = "1";
-    input.inputMode = "numeric";
+    // Only hint the digits-only keypad for non-negative fields: a numeric
+    // inputMode omits the minus sign on mobile, which would block editing a
+    // negative-bounded field (quietDbfs, min -99); its default keyboard keeps it.
+    if (spec.min >= 0) input.inputMode = "numeric";
     input.setAttribute("aria-describedby", `${id}-err ${id}-hint`);
     input.addEventListener("input", () => this.markNotifyDirty(spec.key));
     field.appendChild(input);
@@ -222,6 +226,24 @@ export class SystemView {
     if (this.notifySaving) return;
     const values: Record<string, string> = {};
     for (const [key, input] of this.notifyInputs) values[key] = input.value;
+    // Reject a blank or non-integer box before sending: the server treats an
+    // absent field as unchanged, so omitting it (buildNotificationsPatch's
+    // defensive behavior) would report "applied" while silently keeping the old
+    // value. Mark the offending inputs and abort instead.
+    const invalid = unparsedThresholds(values);
+    if (invalid.length > 0) {
+      this.clearNotifyErrors();
+      for (const key of invalid) {
+        this.notifyFields.get(key)?.classList.add("invalid");
+        const errEl = document.getElementById(`sys-notify-${key}-err`);
+        if (errEl) errEl.textContent = "Enter a whole number.";
+      }
+      if (this.notifyErrorEl) {
+        this.notifyErrorEl.textContent = "Some thresholds are blank or not whole numbers.";
+      }
+      this.notifyInputs.get(invalid[0])?.focus();
+      return;
+    }
     const patch = buildNotificationsPatch(this.notifyEnabledEl?.checked ?? true, values);
     const saveBtn = document.getElementById("btn-notify-save") as HTMLButtonElement | null;
     const discardBtn = document.getElementById("btn-notify-discard") as HTMLButtonElement | null;
