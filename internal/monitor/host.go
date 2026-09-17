@@ -219,6 +219,11 @@ func (h *Host) poll() {
 	now := h.clock()
 	set := h.set.Load()
 	prev := h.applied
+	// Unlike Signal.reconcile (which the hub runs as a tap that levels.deliverTap
+	// recovers, so a mid-resolve publisher panic is retried on the next window),
+	// poll runs on RunHost's own ticker goroutine with no panic-recovering wrapper:
+	// a publisher panic below is fatal, not retried. So there is no retry to skip,
+	// and the order of this assignment relative to resolveAll does not matter here.
 	h.applied = set
 	if !set.Enabled {
 		if prev == nil || prev.Enabled {

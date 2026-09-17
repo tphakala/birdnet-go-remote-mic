@@ -820,13 +820,9 @@ func TestRunSignalDrivesMonitorFromHub(t *testing.T) {
 	done := make(chan struct{})
 	go func() { hub.Run(ctx); close(done) }()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !rec.isActive(audioZeroKey("x")) {
-		if time.Now().After(deadline) {
-			t.Fatal("monitor never raised the zero condition through the hub tap")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, "zero condition raised through the hub tap", func() bool {
+		return rec.isActive(audioZeroKey("x"))
+	})
 
 	cancel()
 	select {
@@ -968,5 +964,144 @@ func TestRunSignalDetachRechecksEnabled(t *testing.T) {
 	sig.detach() // settings still enabled: must be a no-op
 	if !sig.attached() {
 		t.Error("detach removed the tap while the monitor was still enabled")
+	}
+}
+
+// panicPub is a recPub that panics once on the first Resolve of a chosen key, to
+// simulate a publisher fault mid-resolve (the hub recovers a tap panic in
+// production).
+type panicPub struct {
+	*recPub
+	panicKey string
+	panicked bool
+}
+
+func (p *panicPub) Resolve(key, reason string) bool {
+	if key == p.panicKey && !p.panicked {
+		p.panicked = true
+		panic("simulated publisher panic during resolve")
+	}
+	return p.recPub.Resolve(key, reason)
+}
+
+// TestSignalReconcileRetriesResolveAfterPublisherPanic pins the reconcile ordering
+// fix: reconcile must advance s.applied only after the resolve work completes, so a
+// recovered publisher panic mid-resolve leaves s.applied unadvanced and the next
+// window re-runs the reconcile and finishes the (idempotent) resolves. Before the
+// fix s.applied advanced first, so the retry saw prev==set and skipped the
+// remaining resolves, pinning a condition active forever.
+func TestSignalReconcileRetriesResolveAfterPublisherPanic(t *testing.T) {
+	rec := &panicPub{recPub: newRecPub(), panicKey: audioQuietKey("b")}
+	c := newClk()
+	s := baseSettings()
+	s.Audio.ZeroSeconds = p(0)  // zero onsets on the first floor window
+	s.Audio.QuietSeconds = p(0) // quiet onsets on the first quiet window
+	sig := NewSignal(rec, &s, WithClock(c.now))
+
+	// Onset zero on device a and quiet on device b under the enabled settings.
+	sig.observe(evt(dev("a", floorDbfs), dev("b", -70)))
+	if !rec.isActive(audioZeroKey("a")) || !rec.isActive(audioQuietKey("b")) {
+		t.Fatalf("setup: want zero(a) and quiet(b) active, got zero=%v quiet=%v",
+			rec.isActive(audioZeroKey("a")), rec.isActive(audioQuietKey("b")))
+	}
+	enabled := sig.applied // the currently applied (enabled) settings pointer
+
+	// Disable: the reconcile resolves everything this monitor owns. The publisher
+	// panics once on b's quiet Resolve; recover it here the way the hub's tap
+	// delivery does in production.
+	off := s
+	off.Enabled = false
+	func() {
+		defer func() { _ = recover() }()
+		sig.reconcile(&off)
+	}()
+
+	// The panic must have left s.applied unadvanced, or the next window would treat
+	// the disable as already reconciled and skip the outstanding resolves.
+	if sig.applied != enabled {
+		t.Fatal("reconcile advanced s.applied past a mid-resolve panic; the retry will skip the remaining resolves")
+	}
+
+	// The next window retries: the one-shot panic is spent, so every condition
+	// resolves and none is left pinned active.
+	sig.reconcile(&off)
+	if rec.isActive(audioQuietKey("b")) {
+		t.Error("b's quiet condition stayed active after a publisher panic aborted the first resolve run")
+	}
+	if rec.isActive(audioZeroKey("a")) {
+		t.Error("a's zero condition stayed active after the retry")
+	}
+	// Idempotency: each key resolves exactly once across the aborted run and the
+	// retry. resolveCount counts only was-active resolves, so a retry that
+	// re-resolves an already-cleared key is a no-op and does not double-publish.
+	if got := rec.resolveCount(audioZeroKey("a")); got != 1 {
+		t.Errorf("zero(a) resolveCount = %d, want 1 (retry must not double-resolve an already-cleared key)", got)
+	}
+	if got := rec.resolveCount(audioQuietKey("b")); got != 1 {
+		t.Errorf("quiet(b) resolveCount = %d, want 1", got)
+	}
+}
+
+// reenablePub is a recPub that re-enables the monitor from inside its Resolve, once,
+// to drive the reentrant "Apply during the disabled window" path.
+type reenablePub struct {
+	*recPub
+	sig          *Signal
+	reenableWith *Settings
+}
+
+func (r *reenablePub) Resolve(key, reason string) bool {
+	ok := r.recPub.Resolve(key, reason)
+	if r.reenableWith != nil {
+		set := r.reenableWith
+		r.reenableWith = nil
+		r.sig.Apply(set) // reentrant: store-before-attach, then detach's re-check keeps the tap
+	}
+	return ok
+}
+
+// TestRunSignalApplyReentrantEnableKeepsTap covers a publisher whose Resolve
+// re-enables the monitor from inside the disabled window (reconcile -> resolveAll
+// -> Resolve -> Apply(enable)). It pins two properties. First, that the reentrant
+// Apply does not deadlock: the tap mutex is not held during Resolve, so Apply can
+// take it to re-attach. Second, that the reentrant enable survives the disabled
+// window: observe's trailing detach re-checks the stored settings, finds them
+// enabled, keeps the tap, and the enable is not lost.
+//
+// This does NOT cover the concurrent store-vs-attach ordering inside Apply (the
+// run-loop-Apply-versus-tap-detach race is a separate concurrency invariant). This
+// test is single-goroutine and reentrant, so the Apply here finds the tap already
+// attached and its attach is a no-op regardless of the store/attach order. The hub
+// is not Run, so the tap never fires and the windows are driven by hand.
+func TestRunSignalApplyReentrantEnableKeepsTap(t *testing.T) {
+	hub := levels.NewHub()
+	s := baseSettings()
+	s.Audio.ZeroSeconds = p(0) // zero onsets on the first floor window
+	rec := &reenablePub{recPub: newRecPub()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := RunSignal(ctx, hub, rec, &s)
+	rec.sig = sig
+	if !sig.attached() {
+		t.Fatal("enabled monitor did not attach at start")
+	}
+
+	sig.observe(evt(dev(nameGarden, floorDbfs)))
+	if !rec.isActive(audioZeroKey(nameGarden)) {
+		t.Fatal("setup: zero condition did not onset")
+	}
+
+	off := s
+	off.Enabled = false
+	sig.Apply(&off)
+	on := s // enabled
+	rec.reenableWith = &on
+	sig.observe(evt(dev(nameGarden, floorDbfs)))
+
+	if !sig.attached() {
+		t.Error("a reentrant Apply(enable) during the disabled window left the tap detached")
+	}
+	if !sig.set.Load().Enabled {
+		t.Error("the reentrant enable was lost")
 	}
 }

@@ -139,7 +139,7 @@ func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
 		CPUModel: staticInfo.cpuModel,
 		CPUCores: staticInfo.cpuCores,
 	}
-	if b, err := os.ReadFile(procMeminfo); err == nil {
+	if b, ok := readMeminfoFile(procMeminfo); ok {
 		if total, used, ok := parseMemInfo(b); ok {
 			si.MemTotal, si.MemUsed = total, used
 		}
@@ -174,8 +174,8 @@ func ReadMem() (total, avail int64, ok bool) {
 // or lacks MemAvailable (a kernel before 3.14), so the reject-when-absent branch
 // can be exercised in a test.
 func readMem(path string) (total, avail int64, ok bool) {
-	b, err := os.ReadFile(path) //nolint:gosec // /proc/meminfo in production; a test fixture otherwise
-	if err != nil {
+	b, ok := readMeminfoFile(path)
+	if !ok {
 		return 0, 0, false
 	}
 	total, avail, haveAvail, ok := parseMemAvailable(b)
@@ -183,6 +183,18 @@ func readMem(path string) (total, avail int64, ok bool) {
 		return 0, 0, false
 	}
 	return total, avail, true
+}
+
+// readMeminfoFile reads the kernel meminfo pseudo-file at path, returning its bytes
+// and whether the read succeeded. Collect and readMem share it so the read and
+// its gosec exception live in one place; each keeps its own parser (parseMemInfo
+// derives used memory, parseMemAvailable derives available).
+func readMeminfoFile(path string) ([]byte, bool) {
+	b, err := os.ReadFile(path) //nolint:gosec // /proc/meminfo in production; a test fixture otherwise
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 // DiskUsage returns total and used bytes of the filesystem holding path. ok is
