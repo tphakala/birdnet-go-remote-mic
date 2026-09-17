@@ -905,11 +905,18 @@ func TestHostDropsRebaselineOnGenerationChange(t *testing.T) {
 	if rec.onsetCount(key) != 1 {
 		t.Fatalf("generation change raised a fresh onset from a cross-runtime delta (onsets=%d)", rec.onsetCount(key))
 	}
-	// The clear run started on the rebaseline poll: 60 s of no drops under gen 2 clears.
-	pollEvery(h, c, 10*time.Second, 1)
-	pollEvery(h, c, 10*time.Second, 6)
+	// The rebaseline observed no drops at the restart poll, so the clear run started
+	// there and, with a 60 s dwell, clears at exactly the 6th no-drop poll. This
+	// budget pins the Gen CONDITION, not just its adoption: a counter-backwards-only
+	// implementation would read the 4800-frame cross-runtime delta as "over" at the
+	// restart poll, hold the condition, and only start the clear run one poll later,
+	// so it would still be active here and fail this assertion.
+	for range 6 {
+		c.advance(10 * time.Second)
+		h.poll()
+	}
 	if rec.isActive(key) || rec.clearCount(key) != 1 {
-		t.Fatalf("drops did not clear after the restarted runtime stopped dropping (clears=%d)", rec.clearCount(key))
+		t.Fatalf("drops did not clear 60 s after the generation-change rebaseline (clears=%d, active=%v); the Gen condition is not pinned", rec.clearCount(key), rec.isActive(key))
 	}
 
 	// The tracker must now be baselined on gen 2: a genuinely dropping gen-2 runtime

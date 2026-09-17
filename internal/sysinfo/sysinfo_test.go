@@ -181,9 +181,15 @@ func TestSelectTemp(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := selectTemp(tc.in)
+			// Exercise the production selector directly (probeTemp uses selectTempIndex
+			// and recovers the celsius from the winning index).
+			idx, _, ok := selectTempIndex(tc.in)
+			var got float64
+			if ok {
+				got = tc.in[idx].Celsius
+			}
 			if ok != tc.wantOK || got != tc.want {
-				t.Errorf("selectTemp = %v, %v; want %v, %v", got, ok, tc.want, tc.wantOK)
+				t.Errorf("selectTempIndex = %v, %v; want %v, %v", got, ok, tc.want, tc.wantOK)
 			}
 		})
 	}

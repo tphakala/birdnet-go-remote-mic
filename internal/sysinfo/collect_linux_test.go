@@ -289,6 +289,22 @@ func TestCachedSensor(t *testing.T) {
 	if v, ok := cs.read(); !ok || v != 44 || probes != 3 || reads != 2 {
 		t.Fatalf("stale re-probe = (%d,%v) probes=%d reads=%d, want (44,true) probes=3 reads=2", v, ok, probes, reads)
 	}
+	// 6) A cached read that fails AND a same-tick probe that also fails (a transient
+	//    error on a previously-good sensor) returns unavailable but must NOT arm the
+	//    backoff, because a path was cached on entry.
+	readOK, probeFound = false, false
+	if v, ok := cs.read(); ok || v != 0 || probes != 4 || reads != 3 {
+		t.Fatalf("transient double-fail = (%d,%v) probes=%d reads=%d, want (0,false) probes=4 reads=3", v, ok, probes, reads)
+	}
+	// 7) Because step 6 did not arm the backoff, the next poll re-probes immediately
+	//    and recovers, though it is well within the 60 s window a from-empty miss
+	//    would have set. If step 6 wrongly armed the backoff, this read would be
+	//    throttled (no probe) and return unavailable.
+	now = now.Add(10 * time.Second)
+	probeFound, probePath, probeVal = true, "sensorB", 55
+	if v, ok := cs.read(); !ok || v != 55 || probes != 5 {
+		t.Fatalf("post-transient recovery = (%d,%v) probes=%d, want (55,true) probes=5; the backoff was wrongly armed on a just-invalidated cache", v, ok, probes)
+	}
 }
 
 // TestCachedSensorFallbackNotCached pins the uncached-fallback path: a probe that
@@ -426,6 +442,23 @@ func TestReadAlarmAt(t *testing.T) {
 	t.Run("valid rpi_volt alarm", func(t *testing.T) {
 		if now, ok := readAlarmAt(alarmPath); !ok || !now {
 			t.Fatalf("readAlarmAt = (%v, %v), want (true, true)", now, ok)
+		}
+	})
+	t.Run("clear rpi_volt alarm pins the value", func(t *testing.T) {
+		// A cleared alarm must read (false, true), not be collapsed to unavailable:
+		// pins that readAlarmAt returns parseAlarm's value on the cached re-read path.
+		d := filepath.Join(t.TempDir(), "hwmon0")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "name"), []byte(undervoltHwmonName+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "in0_lcrit_alarm"), []byte("0\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if now, ok := readAlarmAt(filepath.Join(d, "in0_lcrit_alarm")); !ok || now {
+			t.Fatalf("readAlarmAt(clear) = (%v, %v), want (false, true)", now, ok)
 		}
 	})
 	t.Run("rejects a device whose name is no longer rpi_volt", func(t *testing.T) {

@@ -222,9 +222,10 @@ func DiskUsage(path string) (total, used int64, ok bool) {
 // path.
 //
 // The cached path is re-resolved immediately when a cached read fails (the device
-// renumbered or vanished). While no sensor is found at all, the scan is repeated
-// no more often than backoff, so a host without the sensor is not walked on every
-// poll.
+// renumbered or briefly unreadable), and that re-resolution is never throttled, so
+// a transient read blip recovers on the next poll. The backoff applies only when
+// nothing is cached and a scan still finds no sensor, so a host without the sensor
+// is not walked on every poll.
 type cachedSensor[R any] struct {
 	mu        sync.Mutex
 	clock     func() time.Time
@@ -239,7 +240,8 @@ func (c *cachedSensor[R]) read() (R, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var zero R
-	if c.path != "" {
+	hadPath := c.path != ""
+	if hadPath {
 		if r, ok := c.readAt(c.path); ok {
 			return r, true
 		}
@@ -248,12 +250,19 @@ func (c *cachedSensor[R]) read() (R, bool) {
 		c.path = ""
 	}
 	now := c.clock()
-	if now.Before(c.nextProbe) {
+	// The backoff throttles re-scanning only while nothing is cached, so a host
+	// without the sensor is not walked on every poll. A path cached on entry is
+	// exempt from both the backoff gate and arming it: a transient read failure that
+	// just invalidated a good sensor must recover on the next poll (as the old
+	// stateless reader did), not stay dark for the whole backoff window.
+	if !hadPath && now.Before(c.nextProbe) {
 		return zero, false
 	}
 	path, r, ok := c.probe()
 	if !ok {
-		c.nextProbe = now.Add(c.backoff)
+		if !hadPath {
+			c.nextProbe = now.Add(c.backoff)
+		}
 		return zero, false
 	}
 	c.path = path
@@ -305,6 +314,13 @@ func readTempAt(tempPath string) (float64, bool) {
 // fallback pick: a fallback reading is still returned, but left uncached so a
 // CPU/SoC zone whose driver loads later is picked up on the next poll instead of
 // being masked by a locked-in fallback. ok is false when no zone can be read.
+//
+// Among several CPU/SoC zones the first by glob order wins, and once one is cached
+// the reader stays on it (readTempAt re-verifies only that its type is still
+// CPU/SoC, not that it is still the lowest-indexed one). So a transient read error
+// on the preferred zone during this one probe can leave a sibling CPU/SoC zone
+// cached instead; that is accepted, since every CPU/SoC zone reports an equally
+// valid SoC temperature for the health monitor.
 func probeTemp(root string) (path string, celsius float64, ok bool) {
 	zones, _ := filepath.Glob(filepath.Join(root, "thermal_zone*", "temp"))
 	candidates := make([]tempCandidate, 0, len(zones))

@@ -190,17 +190,6 @@ type tempCandidate struct {
 	Celsius float64
 }
 
-// selectTemp picks the SoC/CPU temperature from the readable thermal zones,
-// preferring a zone whose type names a CPU or SoC sensor and otherwise falling
-// back to the first zone. ok is false when there are no candidates.
-func selectTemp(candidates []tempCandidate) (float64, bool) {
-	i, _, ok := selectTempIndex(candidates)
-	if !ok {
-		return 0, false
-	}
-	return candidates[i].Celsius, true
-}
-
 // selectTempIndex returns the index of the preferred thermal zone: the first
 // whose type names a CPU or SoC sensor, else the first readable zone. preferred
 // is true only in the former case. ok is false when there are no candidates.
