@@ -244,6 +244,19 @@ func (h *Host) resolveAll(reason string) {
 	clear(h.devs)
 }
 
+// overWithGap is the value side of a host condition's hysteresis, shared by the
+// CPU, temperature, and disk conditions. While inactive a reading counts as
+// "over" at or above the onset threshold; while active it stays over until it
+// falls to or below the lower clear threshold. The >= / > asymmetry gives the
+// value a gap on top of the duration dwell, so a reading sitting between clear
+// and onset holds an active condition without raising a fresh one.
+func overWithGap(active bool, value, onsetLevel, clearLevel float64) bool {
+	if active {
+		return value > clearLevel
+	}
+	return value >= onsetLevel
+}
+
 // evaluateHost drives the five host conditions for this tick. Each condition
 // judges "over" against its onset threshold while inactive and against its
 // (lower) clear threshold while active, so the value has a hysteresis gap on top
@@ -252,52 +265,69 @@ func (h *Host) evaluateHost(now time.Time, set *Settings) {
 	hs := &set.Host
 
 	pct, ok := h.reader.CPU()
-	h.cpu.observe(h, now, ok, func() bool {
-		if h.cpu.h.Active() {
-			return pct > float64(intVal(hs.CPUClearPercent))
-		}
-		return pct >= float64(intVal(hs.CPUPercent))
-	}, func() notify.Notification { return cpuOnset(intVal(hs.CPUPercent)) },
-		"CPU load back to normal", fmt.Sprintf("CPU usage is back at or below %d%%", intVal(hs.CPUClearPercent)))
+	h.cpu.observe(h, now, ok,
+		func() bool {
+			return overWithGap(h.cpu.h.Active(), pct, float64(intVal(hs.CPUPercent)), float64(intVal(hs.CPUClearPercent)))
+		},
+		func() notify.Notification { return cpuOnset(intVal(hs.CPUPercent)) },
+		func() notify.Notification {
+			return conditionClear("CPU load back to normal", fmt.Sprintf("CPU usage is back at or below %d%%", intVal(hs.CPUClearPercent)))
+		})
 
 	total, avail, ok := h.reader.Mem()
-	h.mem.observe(h, now, ok && total > 0, func() bool {
-		// One onset limit: the larger of the percentage and absolute floors, so
-		// the stricter one wins on every memory size.
-		limit := max(total/100*int64(intVal(hs.MemFreePercent)), int64(intVal(hs.MemFreeMiB))<<20)
-		if h.mem.h.Active() {
-			// Cap the clear level so it stays reachable: halfway between the limit
-			// and total, since available memory can never exceed total.
-			clearLimit := limit + limit/memClearGapDivisor
-			clearLimit = min(clearLimit, limit+(total-limit)/2)
-			return avail < clearLimit
-		}
-		return avail < limit
-	}, func() notify.Notification { return memOnset(avail, total) },
-		"Memory recovered", "Available memory is back above the low-memory threshold")
+	h.mem.observe(h, now, ok && total > 0,
+		func() bool {
+			// One onset limit: the larger of the percentage and absolute floors, so
+			// the stricter one wins on every memory size.
+			limit := max(total/100*int64(intVal(hs.MemFreePercent)), int64(intVal(hs.MemFreeMiB))<<20)
+			if h.mem.h.Active() {
+				// Cap the clear level so it stays reachable: halfway between the limit
+				// and total, since available memory can never exceed total.
+				clearLimit := limit + limit/memClearGapDivisor
+				clearLimit = min(clearLimit, limit+(total-limit)/2)
+				return avail < clearLimit
+			}
+			return avail < limit
+		},
+		func() notify.Notification { return memOnset(avail, total) },
+		func() notify.Notification {
+			return conditionClear("Memory recovered", "Available memory is back above the low-memory threshold")
+		})
 
 	c, ok := h.reader.Temp()
-	h.temp.observe(h, now, ok, func() bool {
-		if h.temp.h.Active() {
-			return c > float64(intVal(hs.TempClearCelsius))
-		}
-		return c >= float64(intVal(hs.TempCelsius))
-	}, func() notify.Notification { return tempOnset(c, intVal(hs.TempCelsius)) },
-		"Temperature back to normal", fmt.Sprintf("SoC temperature is back at or below %d C", intVal(hs.TempClearCelsius)))
+	h.temp.observe(h, now, ok,
+		func() bool {
+			return overWithGap(h.temp.h.Active(), c, float64(intVal(hs.TempCelsius)), float64(intVal(hs.TempClearCelsius)))
+		},
+		func() notify.Notification { return tempOnset(c, intVal(hs.TempCelsius)) },
+		func() notify.Notification {
+			return conditionClear("Temperature back to normal", fmt.Sprintf("SoC temperature is back at or below %d C", intVal(hs.TempClearCelsius)))
+		})
 
+	// usedPct is computed once here (only when the reading is valid, so a zero
+	// total never divides) and shared by the over and onset closures.
 	dTotal, used, ok := h.reader.Disk()
-	h.disk.observe(h, now, ok && dTotal > 0, func() bool {
-		usedPct := float64(used) * 100 / float64(dTotal)
-		if h.disk.h.Active() {
-			return usedPct > float64(intVal(hs.DiskClearPercent))
-		}
-		return usedPct >= float64(intVal(hs.DiskPercent))
-	}, func() notify.Notification { return diskOnset(float64(used) * 100 / float64(dTotal)) },
-		"Disk space recovered", fmt.Sprintf("Disk usage is back at or below %d%%", intVal(hs.DiskClearPercent)))
+	diskOK := ok && dTotal > 0
+	var usedPct float64
+	if diskOK {
+		usedPct = float64(used) * 100 / float64(dTotal)
+	}
+	h.disk.observe(h, now, diskOK,
+		func() bool {
+			return overWithGap(h.disk.h.Active(), usedPct, float64(intVal(hs.DiskPercent)), float64(intVal(hs.DiskClearPercent)))
+		},
+		func() notify.Notification { return diskOnset(usedPct) },
+		func() notify.Notification {
+			return conditionClear("Disk space recovered", fmt.Sprintf("Disk usage is back at or below %d%%", intVal(hs.DiskClearPercent)))
+		})
 
 	uv, ok := h.reader.Undervoltage()
-	h.vt.observe(h, now, ok, func() bool { return uv }, voltOnset,
-		"Power supply recovered", fmt.Sprintf("No undervoltage detected for %s", humanDuration(int(voltClearAfter/time.Second))))
+	h.vt.observe(h, now, ok,
+		func() bool { return uv },
+		voltOnset,
+		func() notify.Notification {
+			return conditionClear("Power supply recovered", fmt.Sprintf("No undervoltage detected for %s", humanDuration(int(voltClearAfter/time.Second))))
+		})
 }
 
 // observe feeds one reading to the condition. For an active condition an
@@ -307,7 +337,7 @@ func (h *Host) evaluateHost(now time.Time, set *Settings) {
 // alert. While inactive, an unavailable reading abandons any pending onset run,
 // so an onset always needs a contiguous run of available over readings and an
 // absent sensor never raises. over is evaluated only for an available reading.
-func (c *hostCond) observe(h *Host, now time.Time, ok bool, over func() bool, onset func() notify.Notification, clearTitle, clearMsg string) {
+func (c *hostCond) observe(h *Host, now time.Time, ok bool, over func() bool, mkOnset, mkClear func() notify.Notification) {
 	if !ok {
 		if c.h.Active() {
 			if !c.lastOK.IsZero() && now.Sub(c.lastOK) >= c.clearAfter {
@@ -322,17 +352,18 @@ func (c *hostCond) observe(h *Host, now time.Time, ok bool, over func() bool, on
 		return
 	}
 	c.lastOK = now
-	h.transition(c.h.Observe(now, over()), c.key, onset, clearTitle, clearMsg)
+	h.transition(c.h.Observe(now, over()), c.key, mkOnset, mkClear)
 }
 
-// transition publishes the onset or clear a Hysteresis reported. onset is built
-// lazily so the steady state (no transition) formats no message.
-func (h *Host) transition(tr notify.Transition, key string, onset func() notify.Notification, clearTitle, clearMsg string) {
+// transition publishes the onset or clear a Hysteresis reported. Both onset and
+// clear are built lazily, so the steady state (no transition) formats no message
+// and a poll that does not transition allocates none.
+func (h *Host) transition(tr notify.Transition, key string, mkOnset, mkClear func() notify.Notification) {
 	switch tr {
 	case notify.TransitionOnset:
-		h.pub.Onset(onset())
+		h.pub.Onset(mkOnset())
 	case notify.TransitionClear:
-		h.pub.Clear(key, signalClear(clearTitle, clearMsg))
+		h.pub.Clear(key, mkClear())
 	case notify.TransitionNone:
 	}
 }
@@ -367,7 +398,7 @@ func (h *Host) evaluateDrops(now time.Time) {
 			name := d.Name
 			h.transition(st.h.Observe(now, false), streamDropsKey(name),
 				func() notify.Notification { return dropsOnset(name, 0) },
-				"Client keeping up", name+" is no longer dropping frames")
+				func() notify.Notification { return dropsClearFor(name) })
 			continue
 		}
 		delta := d.Dropped - st.prev
@@ -384,7 +415,7 @@ func (h *Host) evaluateDrops(now time.Time) {
 		name := d.Name
 		h.transition(st.h.Observe(now, over), streamDropsKey(name),
 			func() notify.Notification { return dropsOnset(name, rate) },
-			"Client keeping up", name+" is no longer dropping frames")
+			func() notify.Notification { return dropsClearFor(name) })
 	}
 	for name, st := range h.devs {
 		if st.seen {
@@ -443,4 +474,11 @@ func dropsOnset(name string, rate float64) notify.Notification {
 		Title:    "Client not keeping up",
 		Message:  fmt.Sprintf("Client not keeping up: %s is dropping %.1f frames/s", name, rate),
 	}
+}
+
+// dropsClearFor builds the clear body for a device's dropped-frame condition,
+// shared by the counter-restart and normal-rate paths in evaluateDrops. It is
+// symmetric with dropsOnset.
+func dropsClearFor(name string) notify.Notification {
+	return conditionClear("Client keeping up", name+" is no longer dropping frames")
 }
