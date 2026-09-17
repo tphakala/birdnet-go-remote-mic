@@ -490,8 +490,10 @@ func clipOnset(name string, clipPercent int) notify.Notification {
 	}
 }
 
-// conditionClear builds the info body for a condition clear; Center.Clear fills in
-// the key, category, and source from the matching onset.
+// conditionClear builds the info body for a condition clear: severity, title,
+// and message. Center.Clear stamps the key from its own key argument and copies
+// the category and source from the matching onset, so the caller supplies only
+// the human-readable text here.
 func conditionClear(title, message string) notify.Notification {
 	return notify.Notification{Severity: notify.SeverityInfo, Title: title, Message: message}
 }
