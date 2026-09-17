@@ -505,12 +505,11 @@ func TestLevelsEventMultiChannelContract(t *testing.T) {
 	approx(t, chans[1].RmsDbfs, dbfsFloor, 0.001, "right rms via contract (silent)")
 }
 
-// levelsEvent snapshots every meter into a marshaled levels event, the same
-// sample-then-marshal path the sampler takes, for tests that assert on the wire
-// payload without running the sampler goroutine.
+// levelsEvent snapshots every meter into a marshaled levels event through the real
+// sample() path, for tests that assert on the wire payload without running the
+// sampler goroutine. Going through sample() (rather than re-implementing it) keeps
+// these wire-payload assertions sensitive to a future change in sample().
 func (h *Hub) levelsEvent() Event {
-	h.mu.Lock()
-	devs := h.sampleDevicesLocked()
-	h.mu.Unlock()
-	return marshalLevels(LevelsEvent{Devices: devs})
+	ev, _, _ := h.sample(nil)
+	return marshalLevels(ev)
 }
