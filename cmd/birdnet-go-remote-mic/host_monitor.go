@@ -32,11 +32,13 @@ func (r hostReader) Disk() (total, used int64, ok bool) {
 }
 
 // dropCounters returns the cumulative dropped-frame count of every SERVING device
-// for the host monitor. A device that is disabled, skipped, or failed is omitted,
-// so the monitor sees it go absent and resolves any active drops condition after
-// the presence grace ("device stopped") rather than clearing it with a misleading
-// "client keeping up" message. A restarted device gets a fresh runtime whose
-// counter starts at zero; the monitor rebaselines on a counter that goes backwards.
+// for the host monitor, tagged with the runtime's Gen so the monitor can tell a
+// restarted runtime from its predecessor. A device that is disabled, skipped, or
+// failed is omitted, so the monitor sees it go absent and resolves any active drops
+// condition after the presence grace ("device stopped") rather than clearing it
+// with a misleading "client keeping up" message. A restarted device gets a fresh
+// runtime with a new Gen and a counter that starts at zero; the monitor rebaselines
+// when the Gen changes, falling back to a counter that goes backwards.
 func (p *provider) dropCounters() []monitor.DeviceDrops {
 	recs := p.deviceList()
 	out := make([]monitor.DeviceDrops, 0, len(recs))
@@ -44,7 +46,7 @@ func (p *provider) dropCounters() []monitor.DeviceDrops {
 		if rt.currentState() != mgmtserver.StateServing {
 			continue
 		}
-		out = append(out, monitor.DeviceDrops{Name: rt.dev.Name, Dropped: rt.dropped.Load()})
+		out = append(out, monitor.DeviceDrops{Name: rt.dev.Name, Gen: rt.gen, Dropped: rt.dropped.Load()})
 	}
 	return out
 }

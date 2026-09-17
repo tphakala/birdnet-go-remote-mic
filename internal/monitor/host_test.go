@@ -869,6 +869,69 @@ func TestHostDropsStopServingMidClearRunResolves(t *testing.T) {
 	}
 }
 
+// TestHostDropsRebaselineOnGenerationChange pins the runtime-generation
+// rebaseline: when a device restarts with a fresh runtime (a new Gen) whose
+// counter has already climbed past the old value between polls, the monitor must
+// rebaseline on the Gen change rather than diff two runtimes' counters (which
+// would count a cross-runtime delta the counter-went-backwards heuristic cannot
+// see). Crucially the tracker must adopt the new Gen, so a genuinely dropping
+// fresh runtime can still onset instead of rebaselining on every poll forever.
+func TestHostDropsRebaselineOnGenerationChange(t *testing.T) {
+	feed := &dropFeed{devs: []DeviceDrops{{Name: nameGarden, Gen: 1, Dropped: 0}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+
+	h.poll() // baseline: gen 1, prev 0
+	for range 4 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 50 // 5 frames/s under gen 1, onsets by 30 s
+		h.poll()
+	}
+	if !rec.isActive(key) {
+		t.Fatal("drops not active under gen 1")
+	}
+
+	// Restart: a fresh runtime (gen 2) whose counter has already climbed FORWARD
+	// past the old prev (200) between polls. The counter-went-backwards heuristic
+	// cannot see this restart; only the Gen change can. The poll must rebaseline
+	// and observe no drops (starting the clear run), not count the 4800-frame
+	// cross-runtime delta as a fresh onset.
+	feed.devs[0].Gen = 2
+	feed.devs[0].Dropped = 5000
+	c.advance(10 * time.Second)
+	h.poll()
+	if rec.onsetCount(key) != 1 {
+		t.Fatalf("generation change raised a fresh onset from a cross-runtime delta (onsets=%d)", rec.onsetCount(key))
+	}
+	// The rebaseline observed no drops at the restart poll, so the clear run started
+	// there and, with a 60 s dwell, clears at exactly the 6th no-drop poll. This
+	// budget pins the Gen CONDITION, not just its adoption: a counter-backwards-only
+	// implementation would read the 4800-frame cross-runtime delta as "over" at the
+	// restart poll, hold the condition, and only start the clear run one poll later,
+	// so it would still be active here and fail this assertion.
+	for range 6 {
+		c.advance(10 * time.Second)
+		h.poll()
+	}
+	if rec.isActive(key) || rec.clearCount(key) != 1 {
+		t.Fatalf("drops did not clear 60 s after the generation-change rebaseline (clears=%d, active=%v); the Gen condition is not pinned", rec.clearCount(key), rec.isActive(key))
+	}
+
+	// The tracker must now be baselined on gen 2: a genuinely dropping gen-2 runtime
+	// onsets again. If st.gen had not been adopted on the rebaseline, every poll
+	// would rebaseline and the condition could never fire.
+	for range 4 {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 50 // 5 frames/s under gen 2
+		h.poll()
+	}
+	if !rec.isActive(key) || rec.onsetCount(key) != 2 {
+		t.Fatalf("gen-2 runtime did not re-onset (onsets=%d); st.gen was not adopted on rebaseline", rec.onsetCount(key))
+	}
+}
+
 func TestHostNilPublisherAndReadersDoNotPanic(t *testing.T) {
 	s := hostSettings()
 	h := NewHost(nil, nil, nil, &s)

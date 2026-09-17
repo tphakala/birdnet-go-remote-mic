@@ -79,10 +79,16 @@ type HostReader interface {
 }
 
 // DeviceDrops is one device's cumulative dropped-frame counter as the host
-// monitor polls it. The counter may go backwards when the device restarts with a
-// fresh runtime; the monitor rebaselines rather than reporting a negative rate.
+// monitor polls it, tagged with the identity (Gen) of the runtime the counter
+// belongs to. A restart hands the device a fresh runtime whose counter starts at
+// zero and a new Gen; the monitor rebaselines when Gen changes, so it never
+// reports a negative rate and never under-reports when the fresh counter has
+// already climbed past the old value between two polls. Gen zero (the source did
+// not supply one) disables the Gen check and leaves the counter-went-backwards
+// heuristic as the sole restart signal.
 type DeviceDrops struct {
 	Name    string
+	Gen     uint64
 	Dropped uint64
 }
 
@@ -106,11 +112,14 @@ func newHostCond(key string, enterAfter, clearAfter time.Duration) *hostCond {
 	return &hostCond{key: key, h: notify.NewHysteresis(enterAfter, clearAfter), clearAfter: clearAfter}
 }
 
-// dropState is one device's dropped-frame rate state.
+// dropState is one device's dropped-frame rate state. gen is the identity of the
+// runtime prev belongs to, so a restart (a new gen) rebaselines instead of
+// diffing two runtimes' counters.
 type dropState struct {
 	h      *notify.Hysteresis
 	prev   uint64
 	prevAt time.Time
+	gen    uint64
 	missed int
 	seen   bool
 }
@@ -383,18 +392,22 @@ func (h *Host) evaluateDrops(now time.Time) {
 			// about the current rate.
 			h.devs[d.Name] = &dropState{
 				h:    notify.NewHysteresis(dropsEnterAfter, dropsClearAfter),
-				prev: d.Dropped, prevAt: now, seen: true,
+				prev: d.Dropped, prevAt: now, gen: d.Gen, seen: true,
 			}
 			continue
 		}
 		st.seen, st.missed = true, 0
-		if d.Dropped < st.prev {
-			// The counter went backwards: the device restarted with a fresh runtime.
-			// Rebaseline, then observe no drops for this poll: a fresh runtime has no
+		if d.Gen != st.gen || d.Dropped < st.prev {
+			// A fresh runtime: either its identity changed (a restart the counter did
+			// not have to reveal, e.g. the new counter already passed the old value
+			// between polls) or, absent a Gen, the counter went backwards. Rebaseline
+			// prev AND gen, then observe no drops for this poll: a fresh runtime has no
 			// evidence of drops yet, so an active condition's clear run keeps
 			// advancing and a pending onset run is abandoned, instead of skipping the
-			// observation and letting a run survive the restart.
-			st.prev, st.prevAt = d.Dropped, now
+			// observation and letting a run survive the restart. Rebaselining gen here
+			// is essential: without it a restarted device would rebaseline on every
+			// subsequent poll and its drop condition would never fire again.
+			st.prev, st.prevAt, st.gen = d.Dropped, now, d.Gen
 			name := d.Name
 			h.transition(st.h.Observe(now, false), streamDropsKey(name),
 				func() notify.Notification { return dropsOnset(name, 0) },
