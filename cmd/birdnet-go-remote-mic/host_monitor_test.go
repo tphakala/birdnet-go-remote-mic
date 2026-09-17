@@ -60,13 +60,21 @@ func TestHostReaderAdapter(t *testing.T) {
 	if mOK != wOK || mTotal != wTotal {
 		t.Errorf("Mem adapter = (%d, %v), sysinfo.ReadMem = (%d, %v); adapter must delegate", mTotal, mOK, wTotal, wOK)
 	}
-	if _, adTempOK := r.Temp(); adTempOK != secondOK(sysinfo.ReadTemp()) {
-		t.Errorf("Temp adapter ok=%v, sysinfo.ReadTemp ok=%v; adapter must delegate", adTempOK, secondOK(sysinfo.ReadTemp()))
+	// Temperature and undervoltage are best-effort sensors with no stable value to
+	// compare between two separate samples: a transient cached-read reprobe or an
+	// undervoltage transition could legitimately differ the two readings even though
+	// the adapter delegates correctly. So assert only that the adapter's availability
+	// matches its sysinfo reader (a sensor does not appear or vanish within the test);
+	// the stable Disk and Mem totals above carry the swapped-wiring proof.
+	_, adTempOK := r.Temp()
+	_, siTempOK := sysinfo.ReadTemp()
+	if adTempOK != siTempOK {
+		t.Errorf("Temp adapter ok=%v, sysinfo.ReadTemp ok=%v; adapter must delegate", adTempOK, siTempOK)
 	}
-	adUV, adUVOK := r.Undervoltage()
-	siUV, siUVOK := sysinfo.ReadUndervoltage()
-	if adUV != siUV || adUVOK != siUVOK {
-		t.Errorf("Undervoltage adapter = (%v, %v), sysinfo.ReadUndervoltage = (%v, %v); adapter must delegate", adUV, adUVOK, siUV, siUVOK)
+	_, adUVOK := r.Undervoltage()
+	_, siUVOK := sysinfo.ReadUndervoltage()
+	if adUVOK != siUVOK {
+		t.Errorf("Undervoltage adapter ok=%v, sysinfo.ReadUndervoltage ok=%v; adapter must delegate", adUVOK, siUVOK)
 	}
 
 	// A zero-value adapter (no data path) reports disk unavailable, not a panic.
@@ -74,7 +82,3 @@ func TestHostReaderAdapter(t *testing.T) {
 		t.Error("Disk with no data path ok, want false")
 	}
 }
-
-// secondOK returns the ok flag of a (value, ok) reader result, so the adapter's
-// temperature availability can be compared without pinning the drifting value.
-func secondOK(_ float64, ok bool) bool { return ok }
