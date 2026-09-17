@@ -194,16 +194,37 @@ type tempCandidate struct {
 // preferring a zone whose type names a CPU or SoC sensor and otherwise falling
 // back to the first zone. ok is false when there are no candidates.
 func selectTemp(candidates []tempCandidate) (float64, bool) {
-	if len(candidates) == 0 {
+	i, _, ok := selectTempIndex(candidates)
+	if !ok {
 		return 0, false
 	}
+	return candidates[i].Celsius, true
+}
+
+// selectTempIndex returns the index of the preferred thermal zone: the first
+// whose type names a CPU or SoC sensor, else the first readable zone. preferred
+// is true only in the former case. ok is false when there are no candidates.
+// probeTemp uses the index to recover the winning zone's path, and preferred to
+// decide whether the pick is stable enough to cache (a fallback pick is not: a
+// CPU/SoC zone whose driver loads later must still be able to win).
+func selectTempIndex(candidates []tempCandidate) (idx int, preferred, ok bool) {
+	if len(candidates) == 0 {
+		return 0, false, false
+	}
 	for i := range candidates {
-		t := strings.ToLower(candidates[i].Type)
-		if strings.Contains(t, "cpu") || strings.Contains(t, "soc") {
-			return candidates[i].Celsius, true
+		if isPreferredTempType(candidates[i].Type) {
+			return i, true, true
 		}
 	}
-	return candidates[0].Celsius, true
+	return 0, false, true
+}
+
+// isPreferredTempType reports whether a thermal zone's type names a CPU or SoC
+// sensor, the zones ReadTemp prefers over a generic fallback. It is also the
+// identity check the cached reader re-runs, so a renumbered zone is not trusted.
+func isPreferredTempType(typ string) bool {
+	t := strings.ToLower(typ)
+	return strings.Contains(t, "cpu") || strings.Contains(t, "soc")
 }
 
 // parseMilliCelsius parses a /sys thermal-zone temp file ("48123\n" -> 48.123).

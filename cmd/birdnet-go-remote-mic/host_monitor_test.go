@@ -7,6 +7,7 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
 
 func TestProviderDropCounters(t *testing.T) {
@@ -32,21 +33,44 @@ func TestProviderDropCounters(t *testing.T) {
 }
 
 func TestHostReaderAdapter(t *testing.T) {
-	r := hostReader{dataPath: t.TempDir()}
+	dir := t.TempDir()
+	r := hostReader{dataPath: dir}
+
+	// CPU with a nil sampler is unavailable, not a panic.
 	if _, ok := r.CPU(); ok {
 		t.Error("CPU ok with a nil sampler, want false")
 	}
-	if total, _, ok := r.Disk(); !ok || total <= 0 {
-		t.Errorf("Disk on a temp dir = (%d, %v), want a positive total", total, ok)
+
+	// Each method must delegate to its sysinfo counterpart, so a swapped wiring is
+	// caught rather than passing a shape-only check. Compare against the underlying
+	// reader called on the same input: totals (disk, mem) are stable across the two
+	// back-to-back calls, while availability and temperature can drift, so only the
+	// stable figures and the ok flags are pinned.
+	adTotal, _, adOK := r.Disk()
+	siTotal, _, siOK := sysinfo.DiskUsage(dir)
+	if adOK != siOK || adTotal != siTotal {
+		t.Errorf("Disk adapter = (%d, %v), sysinfo.DiskUsage = (%d, %v); adapter must delegate", adTotal, adOK, siTotal, siOK)
 	}
-	if total, avail, ok := r.Mem(); !ok || total <= 0 || avail > total {
-		t.Errorf("Mem = (%d, %d, %v)", total, avail, ok)
+	mTotal, _, mOK := r.Mem()
+	wTotal, _, wOK := sysinfo.ReadMem()
+	if mOK != wOK || mTotal != wTotal {
+		t.Errorf("Mem adapter = (%d, %v), sysinfo.ReadMem = (%d, %v); adapter must delegate", mTotal, mOK, wTotal, wOK)
 	}
-	// Temperature and undervoltage depend on the host's sensors; they must only
-	// not panic here.
-	r.Temp()
-	r.Undervoltage()
+	if _, adTempOK := r.Temp(); adTempOK != secondOK(sysinfo.ReadTemp()) {
+		t.Errorf("Temp adapter ok=%v, sysinfo.ReadTemp ok=%v; adapter must delegate", adTempOK, secondOK(sysinfo.ReadTemp()))
+	}
+	adUV, adUVOK := r.Undervoltage()
+	siUV, siUVOK := sysinfo.ReadUndervoltage()
+	if adUV != siUV || adUVOK != siUVOK {
+		t.Errorf("Undervoltage adapter = (%v, %v), sysinfo.ReadUndervoltage = (%v, %v); adapter must delegate", adUV, adUVOK, siUV, siUVOK)
+	}
+
+	// A zero-value adapter (no data path) reports disk unavailable, not a panic.
 	if _, _, ok := (hostReader{}).Disk(); ok {
 		t.Error("Disk with no data path ok, want false")
 	}
 }
+
+// secondOK returns the ok flag of a (value, ok) reader result, so the adapter's
+// temperature availability can be compared without pinning the drifting value.
+func secondOK(_ float64, ok bool) bool { return ok }

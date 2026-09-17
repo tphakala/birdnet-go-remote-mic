@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -236,7 +237,220 @@ func TestReadMemAndTempSmoke(t *testing.T) {
 	if c, ok := ReadTemp(); ok && (c < -40 || c > 150) {
 		t.Errorf("ReadTemp = %v, implausible", c)
 	}
+	// Drive the cached undervoltage sensor too: its reading is host-dependent
+	// (unavailable off a Raspberry Pi), so only require that the call is safe.
+	ReadUndervoltage()
 	if _, _, ok := DiskUsage(""); ok {
 		t.Error("DiskUsage(\"\") ok = true, want false")
 	}
+}
+
+// TestCachedSensor drives the cache/probe/backoff state machine with an
+// instrumented probe and readAt and a manual clock, so every transition is
+// asserted without touching sysfs.
+func TestCachedSensor(t *testing.T) {
+	now := time.Unix(0, 0)
+	var (
+		probes, reads      int
+		probeFound, readOK bool
+		probePath          string
+		probeVal, readVal  int
+	)
+	cs := &cachedSensor[int]{
+		clock:   func() time.Time { return now },
+		backoff: time.Minute,
+		readAt:  func(string) (int, bool) { reads++; return readVal, readOK },
+		probe:   func() (string, int, bool) { probes++; return probePath, probeVal, probeFound },
+	}
+
+	// 1) Nothing cached, probe finds nothing: not ok, and the backoff is armed.
+	if v, ok := cs.read(); ok || v != 0 || probes != 1 || reads != 0 {
+		t.Fatalf("miss = (%d,%v) probes=%d reads=%d, want (0,false) probes=1 reads=0", v, ok, probes, reads)
+	}
+	// 2) Within the backoff window: no re-probe.
+	now = now.Add(30 * time.Second)
+	if v, ok := cs.read(); ok || v != 0 || probes != 1 {
+		t.Fatalf("within backoff re-probed: (%d,%v) probes=%d, want (0,false) probes=1", v, ok, probes)
+	}
+	// 3) Past the backoff, the probe finds the sensor: cache the path, no readAt.
+	now = now.Add(31 * time.Second)
+	probeFound, probePath, probeVal = true, "sensorA", 42
+	if v, ok := cs.read(); !ok || v != 42 || probes != 2 || reads != 0 {
+		t.Fatalf("post-backoff probe = (%d,%v) probes=%d reads=%d, want (42,true) probes=2 reads=0", v, ok, probes, reads)
+	}
+	// 4) Cache hit: readAt only, no probe.
+	readOK, readVal = true, 43
+	if v, ok := cs.read(); !ok || v != 43 || probes != 2 || reads != 1 {
+		t.Fatalf("cache hit = (%d,%v) probes=%d reads=%d, want (43,true) probes=2 reads=1", v, ok, probes, reads)
+	}
+	// 5) The cached read fails (path went stale): invalidate and re-probe now, not
+	//    throttled by the backoff.
+	readOK, probeVal = false, 44
+	if v, ok := cs.read(); !ok || v != 44 || probes != 3 || reads != 2 {
+		t.Fatalf("stale re-probe = (%d,%v) probes=%d reads=%d, want (44,true) probes=3 reads=2", v, ok, probes, reads)
+	}
+}
+
+// TestCachedSensorFallbackNotCached pins the uncached-fallback path: a probe that
+// returns ok with an empty path yields the reading but is never cached, so a later
+// preferred sensor is not masked and readAt is never consulted.
+func TestCachedSensorFallbackNotCached(t *testing.T) {
+	now := time.Unix(0, 0)
+	probes := 0
+	cs := &cachedSensor[int]{
+		clock:   func() time.Time { return now },
+		backoff: time.Minute,
+		readAt:  func(string) (int, bool) { t.Fatal("readAt called for an uncached fallback reading"); return 0, false },
+		probe:   func() (string, int, bool) { probes++; return "", 5, true },
+	}
+	for i := range 3 {
+		now = now.Add(10 * time.Second)
+		if v, ok := cs.read(); !ok || v != 5 {
+			t.Fatalf("read %d = (%d,%v), want (5,true)", i, v, ok)
+		}
+	}
+	if probes != 3 {
+		t.Fatalf("fallback probed %d times over 3 reads, want 3 (never cached)", probes)
+	}
+}
+
+// writeZone creates root/<zone>/temp with milli milli-Celsius and, when typ is
+// non-empty, root/<zone>/type.
+func writeZone(t *testing.T, root, zone, typ string, milli int) {
+	t.Helper()
+	d := filepath.Join(root, zone)
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "temp"), []byte(strconv.Itoa(milli)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if typ != "" {
+		if err := os.WriteFile(filepath.Join(d, "type"), []byte(typ+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestProbeTemp(t *testing.T) {
+	t.Run("prefers a cpu/soc zone and returns its path", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		writeZone(t, root, "thermal_zone0", "acpitz", 40000)
+		writeZone(t, root, "thermal_zone1", "cpu-thermal", 55000)
+		path, c, ok := probeTemp(root)
+		if !ok || c != 55 || path != filepath.Join(root, "thermal_zone1", "temp") {
+			t.Fatalf("probeTemp = (%q, %v, %v), want the cpu zone at 55 C", path, c, ok)
+		}
+	})
+	t.Run("returns a fallback reading uncached (empty path)", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		writeZone(t, root, "thermal_zone0", "battery", 25000)
+		path, c, ok := probeTemp(root)
+		if !ok || c != 25 || path != "" {
+			t.Fatalf("probeTemp fallback = (%q, %v, %v), want (\"\", 25, true)", path, c, ok)
+		}
+	})
+	t.Run("no readable zone", func(t *testing.T) {
+		t.Parallel()
+		if path, _, ok := probeTemp(filepath.Join(t.TempDir(), "absent")); ok || path != "" {
+			t.Fatalf("probeTemp(absent) = (%q, _, %v), want not ok", path, ok)
+		}
+	})
+	t.Run("skips unreadable and unparseable zones", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		// zone0: temp is a directory, so ReadFile fails (unreadable entry).
+		if err := os.MkdirAll(filepath.Join(root, "thermal_zone0", "temp"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// zone1: a non-numeric temp fails to parse.
+		writeZone(t, root, "thermal_zone1", "acpitz", 0)
+		if err := os.WriteFile(filepath.Join(root, "thermal_zone1", "temp"), []byte("garbage\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// zone2: the one good CPU zone, the expected winner.
+		writeZone(t, root, "thermal_zone2", "cpu-thermal", 50000)
+		path, c, ok := probeTemp(root)
+		if !ok || c != 50 || path != filepath.Join(root, "thermal_zone2", "temp") {
+			t.Fatalf("probeTemp = (%q, %v, %v), want the cpu zone at 50 C after skipping the bad zones", path, c, ok)
+		}
+	})
+}
+
+func TestReadTempAt(t *testing.T) {
+	root := t.TempDir()
+	writeZone(t, root, "thermal_zone0", "cpu-thermal", 48000)
+	tempPath := filepath.Join(root, "thermal_zone0", "temp")
+
+	t.Run("valid cpu zone", func(t *testing.T) {
+		if c, ok := readTempAt(tempPath); !ok || c != 48 {
+			t.Fatalf("readTempAt = (%v, %v), want (48, true)", c, ok)
+		}
+	})
+	t.Run("rejects a zone whose type is no longer cpu/soc", func(t *testing.T) {
+		// A driver reload renumbered zone0 onto a different device.
+		if err := os.WriteFile(filepath.Join(root, "thermal_zone0", "type"), []byte("battery\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := readTempAt(tempPath); ok {
+			t.Error("readTempAt trusted a zone whose type is no longer cpu/soc")
+		}
+	})
+	t.Run("rejects a missing type", func(t *testing.T) {
+		if _, ok := readTempAt(filepath.Join(t.TempDir(), "thermal_zone0", "temp")); ok {
+			t.Error("readTempAt ok for a missing zone")
+		}
+	})
+	t.Run("rejects an unreadable temp", func(t *testing.T) {
+		d := filepath.Join(t.TempDir(), "thermal_zone0")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "type"), []byte("cpu\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := readTempAt(filepath.Join(d, "temp")); ok {
+			t.Error("readTempAt ok with a missing temp file")
+		}
+	})
+}
+
+func TestReadAlarmAt(t *testing.T) {
+	str := func(s string) *string { return &s }
+	root := t.TempDir()
+	writeHwmon(t, root, "hwmon0", undervoltHwmonName, str("1\n"))
+	alarmPath := filepath.Join(root, "hwmon0", "in0_lcrit_alarm")
+
+	t.Run("valid rpi_volt alarm", func(t *testing.T) {
+		if now, ok := readAlarmAt(alarmPath); !ok || !now {
+			t.Fatalf("readAlarmAt = (%v, %v), want (true, true)", now, ok)
+		}
+	})
+	t.Run("rejects a device whose name is no longer rpi_volt", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(root, "hwmon0", "name"), []byte("coretemp\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := readAlarmAt(alarmPath); ok {
+			t.Error("readAlarmAt trusted a hwmon whose name is no longer rpi_volt")
+		}
+	})
+	t.Run("rejects a missing device", func(t *testing.T) {
+		if _, ok := readAlarmAt(filepath.Join(t.TempDir(), "hwmon0", "in0_lcrit_alarm")); ok {
+			t.Error("readAlarmAt ok for a missing device")
+		}
+	})
+	t.Run("rejects an unreadable alarm", func(t *testing.T) {
+		d := filepath.Join(t.TempDir(), "hwmon0")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "name"), []byte(undervoltHwmonName+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := readAlarmAt(filepath.Join(d, "in0_lcrit_alarm")); ok {
+			t.Error("readAlarmAt ok with a missing alarm file")
+		}
+	})
 }

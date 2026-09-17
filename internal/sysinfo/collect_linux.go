@@ -213,13 +213,102 @@ func DiskUsage(path string) (total, used int64, ok bool) {
 	return total, used, true
 }
 
-// ReadTemp returns the SoC/CPU temperature in Celsius. It prefers a thermal
-// zone whose type names a CPU or SoC sensor, falling back to the first readable
-// zone. ok is false when no thermal zone is exposed or none can be read and
-// parsed.
-func ReadTemp() (celsius float64, ok bool) {
-	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
+// cachedSensor resolves a /sys sensor path lazily and caches it, so a periodic
+// reader (the 10 s host-health poll) re-reads one known file instead of
+// re-scanning the sysfs tree on every tick. R is the reading type: float64 for a
+// temperature, bool for the undervoltage alarm. It is safe for concurrent use;
+// the management /system handler and the monitor poll goroutine both read
+// temperature. The mutex is held across the sysfs read, which is fine off any hot
+// path.
+//
+// The cached path is re-resolved immediately when a cached read fails (the device
+// renumbered or vanished). While no sensor is found at all, the scan is repeated
+// no more often than backoff, so a host without the sensor is not walked on every
+// poll.
+type cachedSensor[R any] struct {
+	mu        sync.Mutex
+	clock     func() time.Time
+	backoff   time.Duration
+	readAt    func(path string) (R, bool)        // read+parse a known sensor path
+	probe     func() (path string, r R, ok bool) // scan for the sensor path + reading
+	path      string                             // resolved path, "" until first found
+	nextProbe time.Time                          // earliest re-scan while nothing is cached
+}
+
+func (c *cachedSensor[R]) read() (R, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var zero R
+	if c.path != "" {
+		if r, ok := c.readAt(c.path); ok {
+			return r, true
+		}
+		// The cached path went stale (renumbered or removed): drop it and re-probe
+		// now, since the sensor may still exist elsewhere in the tree.
+		c.path = ""
+	}
+	now := c.clock()
+	if now.Before(c.nextProbe) {
+		return zero, false
+	}
+	path, r, ok := c.probe()
+	if !ok {
+		c.nextProbe = now.Add(c.backoff)
+		return zero, false
+	}
+	c.path = path
+	return r, true
+}
+
+// sensorBackoff bounds how often a cachedSensor re-scans sysfs while the sensor is
+// absent. The host monitor polls every 10 s; a host with no thermal zone or no
+// rpi_volt hwmon is walked at most once a minute rather than on every poll.
+const sensorBackoff = 60 * time.Second
+
+// sysClassThermal is the base directory of the kernel's thermal zones.
+const sysClassThermal = "/sys/class/thermal"
+
+var defaultTempSensor = &cachedSensor[float64]{
+	clock:   time.Now,
+	backoff: sensorBackoff,
+	readAt:  readTempAt,
+	probe:   func() (string, float64, bool) { return probeTemp(sysClassThermal) },
+}
+
+// ReadTemp returns the SoC/CPU temperature in Celsius. It prefers a thermal zone
+// whose type names a CPU or SoC sensor, falling back to the first readable zone.
+// ok is false when no thermal zone is exposed or none can be read and parsed. The
+// resolved zone path is cached (see cachedSensor), so the periodic host poll
+// re-reads one file rather than re-scanning every zone.
+func ReadTemp() (celsius float64, ok bool) { return defaultTempSensor.read() }
+
+// readTempAt reads a cached thermal zone for cachedSensor. It first re-reads the
+// zone's type and rejects the cached path unless it still names a CPU/SoC sensor,
+// so a driver reload that renumbered the zones forces a fresh probe rather than
+// trusting a path that now points at a different device. ok is false on any read,
+// identity, or parse failure.
+func readTempAt(tempPath string) (float64, bool) {
+	tb, err := os.ReadFile(filepath.Join(filepath.Dir(tempPath), "type")) //nolint:gosec // sibling of a path resolved by probeTemp under /sys/class/thermal
+	if err != nil || !isPreferredTempType(strings.TrimSpace(string(tb))) {
+		return 0, false
+	}
+	b, err := os.ReadFile(tempPath) //nolint:gosec // path resolved by probeTemp under /sys/class/thermal
+	if err != nil {
+		return 0, false
+	}
+	return parseMilliCelsius(b)
+}
+
+// probeTemp scans root for thermal zones and returns the reading of the preferred
+// zone (a CPU/SoC zone, else the first readable one). The returned path is the
+// zone's temp file when the pick is a CPU/SoC zone (cacheable), and empty for a
+// fallback pick: a fallback reading is still returned, but left uncached so a
+// CPU/SoC zone whose driver loads later is picked up on the next poll instead of
+// being masked by a locked-in fallback. ok is false when no zone can be read.
+func probeTemp(root string) (path string, celsius float64, ok bool) {
+	zones, _ := filepath.Glob(filepath.Join(root, "thermal_zone*", "temp"))
 	candidates := make([]tempCandidate, 0, len(zones))
+	paths := make([]string, 0, len(zones))
 	for _, tempPath := range zones {
 		b, err := os.ReadFile(tempPath) //nolint:gosec // path from a fixed /sys glob
 		if err != nil {
@@ -234,8 +323,16 @@ func ReadTemp() (celsius float64, ok bool) {
 			typ = strings.TrimSpace(string(tb))
 		}
 		candidates = append(candidates, tempCandidate{Type: typ, Celsius: c})
+		paths = append(paths, tempPath)
 	}
-	return selectTemp(candidates)
+	i, preferred, ok := selectTempIndex(candidates)
+	if !ok {
+		return "", 0, false
+	}
+	if !preferred {
+		return "", candidates[i].Celsius, true
+	}
+	return paths[i], candidates[i].Celsius, true
 }
 
 // sysClassHwmon is the base directory of the kernel's hardware-monitor devices.
@@ -247,39 +344,72 @@ const sysClassHwmon = "/sys/class/hwmon"
 // occurred within the last driver poll rather than at this instant.
 const undervoltHwmonName = "rpi_volt"
 
+var defaultVoltSensor = &cachedSensor[bool]{
+	clock:   time.Now,
+	backoff: sensorBackoff,
+	readAt:  readAlarmAt,
+	probe:   func() (string, bool, bool) { return probeUndervoltage(sysClassHwmon) },
+}
+
 // ReadUndervoltage reports whether the Raspberry Pi has been undervolted within
 // the last driver poll, from the rpi_volt hwmon's in0_lcrit_alarm. That alarm is
 // the firmware's sticky bit, sampled by the driver about every 2 s, so it is a
 // recent reading rather than an instantaneous one. The attribute is world
 // readable, so this works as an unprivileged user. ok is false on hosts without
-// that hwmon device or when the attribute cannot be read or parsed.
-func ReadUndervoltage() (now, ok bool) {
-	return readUndervoltage(sysClassHwmon)
+// that hwmon device or when the attribute cannot be read or parsed. The resolved
+// alarm path is cached (see cachedSensor), so the periodic host poll re-reads one
+// file rather than re-globbing every hwmon.
+func ReadUndervoltage() (now, ok bool) { return defaultVoltSensor.read() }
+
+// readAlarmAt reads a cached rpi_volt in0_lcrit_alarm for cachedSensor. It first
+// re-reads the sibling name and rejects the cached path unless it still reads
+// rpi_volt, so a driver reload that renumbered the hwmon devices forces a fresh
+// probe rather than trusting a path that now points at a different device. ok is
+// false on any read, identity, or parse failure.
+func readAlarmAt(alarmPath string) (now, ok bool) {
+	nb, err := os.ReadFile(filepath.Join(filepath.Dir(alarmPath), "name")) //nolint:gosec // sibling of a path resolved by probeUndervoltage under /sys/class/hwmon
+	if err != nil || strings.TrimSpace(string(nb)) != undervoltHwmonName {
+		return false, false
+	}
+	b, err := os.ReadFile(alarmPath) //nolint:gosec // path resolved by probeUndervoltage under /sys/class/hwmon
+	if err != nil {
+		return false, false
+	}
+	return parseAlarm(b)
 }
 
-// readUndervoltage probes root/hwmon*/name for the rpi_volt device rather than a
-// fixed index, because hwmonN numbering is assigned at boot and is not stable.
-func readUndervoltage(root string) (now, ok bool) {
+// probeUndervoltage scans root/hwmon*/name for the rpi_volt device (rather than a
+// fixed index, because hwmonN numbering is assigned at boot and is not stable) and
+// returns its in0_lcrit_alarm path and current value. It tries every rpi_volt
+// match, skipping one whose alarm is unreadable or unparseable, because the kernel
+// can register more than one hwmon under the same name (real firmware registers
+// exactly one, so this is defensive). ok is false when no readable rpi_volt alarm
+// is found.
+func probeUndervoltage(root string) (path string, now, ok bool) {
 	names, _ := filepath.Glob(filepath.Join(root, "hwmon*", "name"))
 	for _, namePath := range names {
 		b, err := os.ReadFile(namePath) //nolint:gosec // path from a glob under the caller-supplied hwmon root (/sys/class/hwmon in production)
 		if err != nil || strings.TrimSpace(string(b)) != undervoltHwmonName {
 			continue
 		}
-		ab, err := os.ReadFile(filepath.Join(filepath.Dir(namePath), "in0_lcrit_alarm")) //nolint:gosec // sibling of a glob match under the caller-supplied hwmon root (/sys/class/hwmon in production)
+		alarmPath := filepath.Join(filepath.Dir(namePath), "in0_lcrit_alarm")
+		ab, err := os.ReadFile(alarmPath) //nolint:gosec // sibling of a glob match under the caller-supplied hwmon root (/sys/class/hwmon in production)
 		if err != nil {
-			// This rpi_volt match's alarm is unreadable. The kernel can register
-			// more than one hwmon under the same name, so try any further match
-			// rather than reporting the sensor absent on the first bad one (real
-			// firmware registers exactly one, so this is defensive).
 			continue
 		}
 		if set, parsed := parseAlarm(ab); parsed {
-			return set, true
+			return alarmPath, set, true
 		}
 		// Unparseable alarm: fall through to any further rpi_volt match.
 	}
-	return false, false
+	return "", false, false
+}
+
+// readUndervoltage is probeUndervoltage without the resolved path: a stateless
+// seam the table test drives against a fake hwmon root.
+func readUndervoltage(root string) (now, ok bool) {
+	_, now, ok = probeUndervoltage(root)
+	return
 }
 
 // readInterfaces lists non-loopback network interfaces with their addresses and

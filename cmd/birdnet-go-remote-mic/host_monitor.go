@@ -44,7 +44,7 @@ func (p *provider) dropCounters() []monitor.DeviceDrops {
 		if rt.currentState() != mgmtserver.StateServing {
 			continue
 		}
-		out = append(out, monitor.DeviceDrops{Name: rt.dev.Name, Dropped: rt.dropped.Load()})
+		out = append(out, monitor.DeviceDrops{Name: rt.dev.Name, Gen: rt.gen, Dropped: rt.dropped.Load()})
 	}
 	return out
 }

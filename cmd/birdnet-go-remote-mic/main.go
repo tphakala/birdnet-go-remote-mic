@@ -70,7 +70,13 @@ type deviceRuntime struct {
 	friendlyName      string
 	supportedRates    []int
 	supportedChannels []int
-	dropped           atomic.Uint64
+	// gen is a process-unique identity for this runtime instance, assigned at
+	// creation (see runtimeGen). A restart builds a fresh runtime with a fresh gen,
+	// so the host monitor rebaselines the dropped-frame counter on the change even
+	// when the new runtime's counter has already climbed past the old value. Static
+	// per run; read without a lock, like dev.Name.
+	gen     uint64
+	dropped atomic.Uint64
 
 	mu    sync.Mutex
 	state mgmtserver.DeviceState
@@ -83,6 +89,12 @@ type deviceRuntime struct {
 	// Set and read only on the run-loop goroutine.
 	superseded bool
 }
+
+// runtimeGen hands out a process-unique generation to each serving deviceRuntime
+// so the host monitor can tell one runtime from its restarted successor. Only
+// openDevice (the sole builder of a serving runtime) draws from it; skipped and
+// disabled records keep gen 0 and never reach the drop monitor.
+var runtimeGen atomic.Uint64
 
 // openDevice opens and starts capture for one configured device at the
 // resolved hardware channel count openCh and builds its pipeline stage, SDP, and
@@ -108,6 +120,7 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 	frames := rtspserver.NewChanSource(64)
 	return &deviceRuntime{
 		dev:      *dev,
+		gen:      runtimeGen.Add(1),
 		src:      src,
 		stage:    stage,
 		frames:   frames,
