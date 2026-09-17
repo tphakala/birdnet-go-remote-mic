@@ -234,17 +234,24 @@ func (s *Signal) observe(ev levels.LevelsEvent) {
 // off resolves only that device's quiet condition.
 func (s *Signal) reconcile(set *Settings) {
 	prev := s.applied
-	s.applied = set
 	// Nothing to reconcile on the first window, or when Apply has not swapped the
 	// pointer since the last window (the steady state: same pointer every tick).
 	if prev == nil || prev == set {
+		s.applied = set
 		return
 	}
+	// Advance s.applied only after the resolve work below completes. A recovered
+	// publisher panic mid-resolve (the hub recovers a tap panic) then leaves
+	// s.applied at prev, so the next window re-runs this reconcile and finishes the
+	// resolves, all of which are idempotent. An explicit assignment, not a defer:
+	// a defer would run on the panic unwind and re-introduce the skip.
 	if prev.Enabled && !set.Enabled {
 		s.resolveAll("notifications disabled")
+		s.applied = set
 		return
 	}
 	if !set.Enabled {
+		s.applied = set
 		return
 	}
 	for name, st := range s.states {
@@ -258,6 +265,7 @@ func (s *Signal) reconcile(set *Settings) {
 			st.quiet.Reset()
 		}
 	}
+	s.applied = set
 }
 
 // resolveAll clears every active condition this monitor owns and resets state, so

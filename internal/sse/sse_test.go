@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,25 +23,77 @@ const (
 	evNotification = "notification"
 )
 
-// fakeSource is a test Source with a manually driven channel and cancel
-// tracking, so a test can assert the Handler unsubscribed when the stream ends.
-// Every Subscribe returns the SAME channel and shares one cancel flag, so it is
-// for single-subscription use only; a two-connection test needs one fakeSource
-// per connection, or the real levels.Hub (which mints an independent channel per
-// Subscribe).
+// fakeSource is a test Source that mints a fresh buffered channel per Subscribe
+// and fans every emit out to all live subscriptions, so one fakeSource can back
+// several concurrent Handler connections (like the real levels.Hub). It tracks the
+// live subscription count so a test can wait until a connection has subscribed
+// before emitting, and records whether any cancel ran so a test can assert the
+// Handler unsubscribed when a stream ended.
 type fakeSource struct {
-	ch           chan Event
+	buf          int
+	mu           sync.Mutex
+	subs         map[chan Event]struct{}
 	cancelCalled atomic.Bool
 }
 
-func newFakeSource(buf int) *fakeSource { return &fakeSource{ch: make(chan Event, buf)} }
-
-func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
-	return f.ch, func() { f.cancelCalled.Store(true) }
+func newFakeSource(buf int) *fakeSource {
+	return &fakeSource{buf: buf, subs: make(map[chan Event]struct{})}
 }
 
-func (f *fakeSource) emit(ev Event)      { f.ch <- ev }
+func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
+	ch := make(chan Event, f.buf)
+	f.mu.Lock()
+	f.subs[ch] = struct{}{}
+	f.mu.Unlock()
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			f.mu.Lock()
+			delete(f.subs, ch)
+			f.mu.Unlock()
+			f.cancelCalled.Store(true)
+		})
+	}
+}
+
+// emit fans one event out to every live subscription. It snapshots the channels
+// under the lock and sends outside it, so a concurrent cancel never blocks behind
+// a send. Each send is non-blocking: a subscriber whose buffer is full drops the
+// event, matching the real Hub.broadcast rather than stalling the producer. The
+// test buffers are ample, so nothing is actually dropped here. An emit with no
+// live subscription is dropped, so a test that needs the event delivered calls
+// waitSubscribed first.
+func (f *fakeSource) emit(ev Event) {
+	f.mu.Lock()
+	chs := make([]chan Event, 0, len(f.subs))
+	for ch := range f.subs {
+		chs = append(chs, ch)
+	}
+	f.mu.Unlock()
+	for _, ch := range chs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
 func (f *fakeSource) wasCancelled() bool { return f.cancelCalled.Load() }
+
+func (f *fakeSource) subCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.subs)
+}
+
+// waitSubscribed blocks until at least n subscriptions are live, so an emit that
+// must reach a connection is not sent before the Handler has subscribed (the
+// Handler subscribes after flushing the response header, which is what unblocks
+// the client's GET).
+func (f *fakeSource) waitSubscribed(t *testing.T, n int) {
+	t.Helper()
+	waitFor(t, func() bool { return f.subCount() >= n }, 2*time.Second)
+}
 
 var _ Source = (*fakeSource)(nil)
 
@@ -174,6 +227,7 @@ func TestHandlerStreamsEventsInOrder(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	rd := newSSEReader(resp.Body)
 
+	fake.waitSubscribed(t, 1)
 	fake.emit(Event{Name: evLevels, Data: []byte(`{"n":1}`)})
 	fake.emit(Event{Name: evLevels, Data: []byte(`{"n":2}`)})
 
@@ -210,6 +264,7 @@ func TestHandlerHeartbeatSurvivesFilter(t *testing.T) {
 	resp := openStream(t, srv.URL+"?events=nonexistent")
 	defer func() { _ = resp.Body.Close() }()
 	rd := newSSEReader(resp.Body)
+	fake.waitSubscribed(t, 1)
 	fake.emit(Event{Name: evLevels, Data: []byte("{}")})
 
 	if n, _ := rd.next(t); n != heartbeatName {
@@ -227,6 +282,8 @@ func TestHandlerTwoSourcesInterleaveWithoutLoss(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	rd := newSSEReader(resp.Body)
 
+	a.waitSubscribed(t, 1)
+	b.waitSubscribed(t, 1)
 	const each = 4
 	for i := 0; i < each; i++ {
 		a.emit(Event{Name: evLevels, Data: []byte("{}")})
@@ -240,6 +297,40 @@ func TestHandlerTwoSourcesInterleaveWithoutLoss(t *testing.T) {
 	}
 	if counts[evLevels] != each || counts[evNotification] != each {
 		t.Fatalf("counts = %v, want %d each", counts, each)
+	}
+}
+
+// TestHandlerFansOutToConcurrentConnections opens two connections to one Handler
+// over one multi-subscription source and asserts each connection independently
+// receives every event: the Handler mints a private forward path per request, so
+// one connection cannot starve or steal another's events.
+func TestHandlerFansOutToConcurrentConnections(t *testing.T) {
+	fake := newFakeSource(8)
+	h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 32}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	respA := openStream(t, srv.URL)
+	defer func() { _ = respA.Body.Close() }()
+	respB := openStream(t, srv.URL)
+	defer func() { _ = respB.Body.Close() }()
+	rdA, rdB := newSSEReader(respA.Body), newSSEReader(respB.Body)
+
+	// Both connections must be subscribed before the first emit, or the fan-out would
+	// miss the connection that had not subscribed yet.
+	fake.waitSubscribed(t, 2)
+
+	const n = 3
+	for i := 0; i < n; i++ {
+		fake.emit(Event{Name: evLevels, Data: []byte("{}")})
+	}
+	for i := 0; i < n; i++ {
+		if name, _ := rdA.next(t); name != evLevels {
+			t.Fatalf("connection A event %d = %q, want levels", i, name)
+		}
+		if name, _ := rdB.next(t); name != evLevels {
+			t.Fatalf("connection B event %d = %q, want levels", i, name)
+		}
 	}
 }
 
@@ -297,6 +388,7 @@ func TestServeHTTPEndsStreamOnWriteError(t *testing.T) {
 	done := make(chan struct{})
 	go func() { h.ServeHTTP(cw, req); close(done) }()
 
+	fake.waitSubscribed(t, 1)
 	fake.emit(Event{Name: evLevels, Data: []byte("{}")})
 	select {
 	case <-done:
@@ -337,6 +429,7 @@ func TestServeHTTPEndsStreamOnFlushError(t *testing.T) {
 	done := make(chan struct{})
 	go func() { h.ServeHTTP(cw, req); close(done) }()
 
+	fake.waitSubscribed(t, 1)
 	fake.emit(Event{Name: evLevels, Data: []byte("{}")})
 	select {
 	case <-done:
