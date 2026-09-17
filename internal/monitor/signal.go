@@ -304,7 +304,7 @@ func (s *Signal) evaluate(st *deviceState, now time.Time, d *levels.DeviceLevels
 	case notify.TransitionOnset:
 		s.pub.Onset(zeroOnset(d.Name, intVal(set.Audio.ZeroSeconds)))
 	case notify.TransitionClear:
-		s.pub.Clear(audioZeroKey(d.Name), signalClear("Signal restored", d.Name+" is producing audio again"))
+		s.pub.Clear(audioZeroKey(d.Name), conditionClear("Signal restored", d.Name+" is producing audio again"))
 	case notify.TransitionNone:
 	}
 
@@ -314,7 +314,7 @@ func (s *Signal) evaluate(st *deviceState, now time.Time, d *levels.DeviceLevels
 		case notify.TransitionOnset:
 			s.pub.Onset(quietOnset(d.Name, intVal(set.Audio.QuietDbfs), intVal(set.Audio.QuietSeconds)))
 		case notify.TransitionClear:
-			s.pub.Clear(audioQuietKey(d.Name), signalClear("Input level recovered", d.Name+" is back above the quiet threshold"))
+			s.pub.Clear(audioQuietKey(d.Name), conditionClear("Input level recovered", d.Name+" is back above the quiet threshold"))
 		case notify.TransitionNone:
 		}
 	}
@@ -347,7 +347,7 @@ func (s *Signal) evaluateClip(st *deviceState, now time.Time, clipped bool, name
 
 	if st.clipActive {
 		if !st.lastClip.IsZero() && now.Sub(st.lastClip) >= clipClearAfter {
-			s.pub.Clear(audioClipKey(name), signalClear("Clipping stopped", name+" is no longer clipping"))
+			s.pub.Clear(audioClipKey(name), conditionClear("Clipping stopped", name+" is no longer clipping"))
 			// Flush the window so a re-onset waits for a fresh full window. Without
 			// this, a clip window longer than the constant clear dwell still holds
 			// the pre-clear clipped samples, which would immediately re-onset and
@@ -490,9 +490,11 @@ func clipOnset(name string, clipPercent int) notify.Notification {
 	}
 }
 
-// signalClear builds the info body for a condition clear; Center.Clear fills in
-// the key, category, and source from the matching onset.
-func signalClear(title, message string) notify.Notification {
+// conditionClear builds the info body for a condition clear: severity, title,
+// and message. Center.Clear stamps the key from its own key argument and copies
+// the category and source from the matching onset, so the caller supplies only
+// the human-readable text here.
+func conditionClear(title, message string) notify.Notification {
 	return notify.Notification{Severity: notify.SeverityInfo, Title: title, Message: message}
 }
 
