@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -71,12 +72,28 @@ type provider struct {
 	// before the API starts serving and never mutated, so a plain field read from
 	// handler goroutines is safe. Empty when no serve override is active.
 	overrides []mgmtserver.ConfigOverride
-	// certInfo and certPEM describe the management listener's TLS certificate for
-	// the certificate endpoints. Both are set once in startManagement before the
-	// server begins serving and never mutated (the certificate is immutable for
-	// the process lifetime), so a plain field read from handler goroutines is safe.
-	certInfo mgmtserver.CertificateInfo
-	certPEM  []byte
+	// cert holds the management listener's current certificate: the metadata for
+	// the certificate endpoints, the public PEM, and the parsed pair the TLS
+	// GetCertificate callback serves. It is one atomic pointer to an immutable
+	// snapshot, so a handler read and a TLS handshake never observe a mix of two
+	// certificates. An operator regenerate or install swaps it under certMu, which
+	// serializes the persist-then-swap so two writers cannot interleave.
+	cert   atomic.Pointer[certState]
+	certMu sync.Mutex
+	// certPath and keyPath are where the certificate pair is persisted, set in
+	// startManagement. Regenerate and Install write here (and the pin marker
+	// derived from certPath) before swapping the live certificate.
+	certPath string
+	keyPath  string
+}
+
+// certState is one immutable certificate snapshot the provider publishes through
+// its atomic pointer. Its fields are never mutated after Store: a rotation builds
+// a fresh certState and swaps the pointer, so a reader keeps a consistent view.
+type certState struct {
+	info mgmtserver.CertificateInfo
+	pem  []byte
+	tls  *tls.Certificate
 }
 
 // discoveryEnabled reports the current mDNS-advertisement flag.
@@ -95,6 +112,7 @@ var (
 	_ mgmtserver.Provider       = (*provider)(nil)
 	_ mgmtserver.SystemProvider = (*provider)(nil)
 	_ mgmtserver.CertProvider   = (*provider)(nil)
+	_ mgmtserver.CertManager    = (*provider)(nil)
 )
 
 // System gathers host hardware facts and live metrics for GET /system.
@@ -102,22 +120,42 @@ func (p *provider) System() mgmtserver.SystemInfo {
 	return sysinfo.Collect(p.dataPath, p.sampler)
 }
 
-// setCertificate records the management certificate's public metadata and its
-// PEM body for the certificate endpoints. It is called once during startup,
-// before the server serves, so the fields are safe to read without a lock. It
-// takes info by pointer because mgmtserver.CertificateInfo is a large value.
-func (p *provider) setCertificate(info *mgmtserver.CertificateInfo, pemBytes []byte) {
-	p.certInfo = *info
-	p.certPEM = pemBytes
+// setCertificate describes cert, records its public metadata and chain PEM, and
+// publishes the new snapshot through the atomic pointer. It sets Managed from the
+// pin marker (an operator-installed certificate is pinned). It publishes ONLY on
+// success: if the metadata cannot be described or the chain cannot be encoded it
+// returns the error and leaves the previous snapshot in place, so a runtime
+// rotation error never swaps the live certificate to one with blank metadata.
+// The startup caller installs a raw-certificate fallback separately (see
+// startManagement) so a describe failure at boot still leaves TLS serving.
+// Rotation callers hold certMu around setCertificate so the persisted pair and
+// the published snapshot stay in step.
+func (p *provider) setCertificate(cert *tls.Certificate) error {
+	info, err := mgmtcert.Describe(cert)
+	if err != nil {
+		return err
+	}
+	pemBytes, err := mgmtcert.ChainPEM(cert)
+	if err != nil {
+		return err
+	}
+	ci := toCertInfo(&info)
+	ci.Managed = !mgmtcert.Pinned(p.certPath)
+	p.cert.Store(&certState{info: ci, pem: pemBytes, tls: cert})
+	return nil
 }
 
 // Certificate returns the management listener's certificate metadata for
 // GET /system/certificate. The SAN slices are copied so a caller cannot mutate
-// the shared stored value.
+// the shared stored value. It returns the zero value before setCertificate runs.
 func (p *provider) Certificate() mgmtserver.CertificateInfo {
-	ci := p.certInfo
-	ci.DNSNames = append([]string(nil), p.certInfo.DNSNames...)
-	ci.IPAddresses = append([]string(nil), p.certInfo.IPAddresses...)
+	st := p.cert.Load()
+	if st == nil {
+		return mgmtserver.CertificateInfo{}
+	}
+	ci := st.info
+	ci.DNSNames = append([]string(nil), st.info.DNSNames...)
+	ci.IPAddresses = append([]string(nil), st.info.IPAddresses...)
 	return ci
 }
 
@@ -125,7 +163,68 @@ func (p *provider) Certificate() mgmtserver.CertificateInfo {
 // GET /system/certificate/pem. It never returns the private key, and returns a
 // copy so a caller cannot mutate the shared stored bytes.
 func (p *provider) CertificatePEM() []byte {
-	return append([]byte(nil), p.certPEM...)
+	st := p.cert.Load()
+	if st == nil {
+		return nil
+	}
+	return append([]byte(nil), st.pem...)
+}
+
+// tlsCertificate is the management listener's tls.Config.GetCertificate callback:
+// it returns the current certificate for every new handshake, so a regenerate or
+// install applies to new connections without a restart. Connections already open
+// keep the certificate they handshook with. It never returns (nil, nil), which
+// crypto/tls would treat as "no certificate available" and fail the handshake
+// with an opaque error.
+func (p *provider) tlsCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	st := p.cert.Load()
+	if st == nil {
+		return nil, errors.New("management certificate not loaded")
+	}
+	return st.tls, nil
+}
+
+// Regenerate replaces the certificate with a fresh self-signed one covering the
+// auto-detected names plus extraSANs, persists it, clears any operator pin, and
+// swaps it into the live listener for new connections. It validates extraSANs
+// first, returning a *mgmtcert.ValidationError for a bad entry without touching
+// the certificate.
+func (p *provider) Regenerate(extraSANs []string) (mgmtserver.CertificateInfo, error) {
+	if err := mgmtcert.ValidateHosts(extraSANs); err != nil {
+		return mgmtserver.CertificateInfo{}, err
+	}
+	p.certMu.Lock()
+	defer p.certMu.Unlock()
+	hosts := appendUniqueHosts(certHosts(), extraSANs)
+	cert, err := mgmtcert.Regenerate(p.certPath, p.keyPath, hosts)
+	if err != nil {
+		return mgmtserver.CertificateInfo{}, err
+	}
+	if err := p.setCertificate(&cert); err != nil {
+		return mgmtserver.CertificateInfo{}, err
+	}
+	log.Printf("management certificate regenerated (%d SANs, fingerprint %s)", len(hosts), p.cert.Load().info.FingerprintSHA256)
+	return p.Certificate(), nil
+}
+
+// Install replaces the certificate with the operator-supplied pair after
+// validation, persists it, pins it so the appliance never regenerates it, and
+// swaps it into the live listener for new connections. It returns a
+// *mgmtcert.ValidationError when the pair is rejected. The private key is never
+// logged or returned.
+func (p *provider) Install(certPEM, keyPEM []byte) (mgmtserver.CertificateInfo, error) {
+	p.certMu.Lock()
+	defer p.certMu.Unlock()
+	cert, err := mgmtcert.Install(p.certPath, p.keyPath, certPEM, keyPEM)
+	if err != nil {
+		return mgmtserver.CertificateInfo{}, err
+	}
+	if err := p.setCertificate(&cert); err != nil {
+		return mgmtserver.CertificateInfo{}, err
+	}
+	st := p.cert.Load()
+	log.Printf("management certificate installed (subject %q, fingerprint %s)", st.info.Subject, st.info.FingerprintSHA256)
+	return p.Certificate(), nil
 }
 
 // setDevices publishes the final record list once the open loop has built it.
@@ -384,6 +483,11 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	}
 	certPath := filepath.Join(certDir, "mgmt-cert.pem")
 	keyPath := filepath.Join(certDir, "mgmt-key.pem")
+	// setCertificate reads certPath to decide the Managed flag (a pin marker sits
+	// beside it), and Regenerate/Install write here, so publish the paths before
+	// the certificate is prepared.
+	prov.certPath = certPath
+	prov.keyPath = keyPath
 
 	cert, err := mgmtcert.Ensure(certPath, keyPath, certHosts())
 	if err != nil {
@@ -391,18 +495,17 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		return closedMgmt(), false
 	}
 
-	// Describe the certificate for the read-only certificate endpoints. A failure
-	// here is not fatal: the API still serves, but the certificate endpoints stay
-	// unmounted and return 501, so a describe fault never takes the appliance down.
-	certMounted := false
-	if info, derr := mgmtcert.Describe(&cert); derr != nil {
-		log.Printf("management certificate metadata unavailable: %v (certificate endpoints disabled)", derr)
-	} else if pemBytes, perr := mgmtcert.LeafPEM(&cert); perr != nil {
-		log.Printf("management certificate PEM unavailable: %v (certificate endpoints disabled)", perr)
-	} else {
-		ci := toCertInfo(&info)
-		prov.setCertificate(&ci, pemBytes)
-		certMounted = true
+	// Publish the certificate as the snapshot the TLS GetCertificate callback
+	// serves and the certificate endpoints read. setCertificate publishes only on
+	// success; if its metadata cannot be described, install a raw-certificate
+	// fallback here so the listener still has a certificate to present via
+	// GetCertificate (the API stays up) while the certificate endpoints stay
+	// unmounted and return 501. A metadata fault never takes the appliance down.
+	certMounted := true
+	if serr := prov.setCertificate(&cert); serr != nil {
+		log.Printf("management certificate metadata unavailable: %v (certificate endpoints disabled)", serr)
+		certMounted = false
+		prov.cert.Store(&certState{tls: &cert})
 	}
 
 	// Bind synchronously so a listen failure (for example the port already in
@@ -421,7 +524,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		mgmtserver.WithAuth(guard),
 	}
 	if certMounted {
-		opts = append(opts, mgmtserver.WithCertificate(prov))
+		opts = append(opts, mgmtserver.WithCertificateManager(prov))
 	}
 	if reloader != nil {
 		opts = append(opts, mgmtserver.WithReloader(reloader))
@@ -457,8 +560,14 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		// other server error (including a local TLS misconfiguration) through.
 		ErrorLog: mgmtserver.NewFilteredErrorLog(log.Default()),
 		TLSConfig: &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			Certificates: []tls.Certificate{cert},
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: prov.tlsCertificate,
+			// Disable TLS session resumption so a certificate swap (regenerate or
+			// install) reaches every connection. A resumed session would keep the
+			// certificate context established before the swap, and GetCertificate is
+			// not consulted for it. The management listener is low-traffic, so the
+			// lost resumption is negligible.
+			SessionTicketsDisabled: true,
 		},
 	}
 
@@ -472,14 +581,15 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	}()
 
 	go func() {
-		// Serve over the already-bound listener wrapped for TLS from the
-		// configured certificate.
+		// Serve over the already-bound listener wrapped for TLS from the provider's
+		// current certificate (via TLSConfig.GetCertificate), so an operator
+		// regenerate or install reaches new connections without a restart.
 		if serr := srv.Serve(tls.NewListener(ln, srv.TLSConfig)); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
 			log.Printf("management API stopped: %v (RTSP serving continues)", serr)
 		}
 	}()
 
-	log.Printf("management API on https://%s%s (self-signed cert at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
+	log.Printf("management API on https://%s%s (certificate at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
 	return &mgmt{done: done, addr: ln.Addr().String()}, true
 }
 
@@ -516,6 +626,29 @@ func certHosts() []string {
 		}
 	}
 	return certHostsFor(host, ips)
+}
+
+// appendUniqueHosts returns base followed by the entries of extra not already
+// present, preserving order and dropping duplicates and blanks. Regenerate uses
+// it to add operator-supplied SANs on top of the auto-detected set without
+// repeating a name the detection already found.
+func appendUniqueHosts(base, extra []string) []string {
+	seen := make(map[string]bool, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	add := func(h string) {
+		if h == "" || seen[h] {
+			return
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	for _, h := range base {
+		add(h)
+	}
+	for _, h := range extra {
+		add(h)
+	}
+	return out
 }
 
 // certHostsFor builds the certificate SANs from the host's name and its

@@ -217,15 +217,18 @@
           </div>
         </div>
 
-        <!-- Management TLS certificate: read-only metadata and PEM download for client trust (from GET /system/certificate) -->
+        <!-- Management TLS certificate: metadata and PEM download for client trust (GET /system/certificate),
+             plus regenerating the self-signed certificate (POST /system/certificate/regenerate) and installing
+             an operator-supplied one (PUT /system/certificate). Both apply live; no restart. -->
         <div class="config-section-card" id="sys-cert-card" hidden>
           <div class="section-head">
             <div>
               <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="m9 12 2 2 4-4"></path></svg><span>Management Certificate</span></h2>
-              <span class="section-desc">The TLS certificate this management listener presents. Compare the fingerprint against your browser and download the certificate to trust it in a client. The private key is never exposed.</span>
+              <span class="section-desc">The TLS certificate this management listener presents. Compare the fingerprint against your browser and download the certificate to trust it in a client. You can also regenerate the self-signed certificate or install your own; either applies to new connections at once, no restart needed. The private key is never exposed.</span>
             </div>
           </div>
           <dl class="info-grid" id="sys-cert-info"></dl>
+          <p class="cfg-empty" id="sys-cert-error" hidden></p>
           <div class="form-field">
             <label class="field-label" for="sys-cert-fingerprint">SHA-256 Fingerprint</label>
             <div class="auth-token-row">
@@ -237,6 +240,34 @@
           <div class="network-actions">
             <span class="network-actions-spacer"></span>
             <button type="button" class="btn btn-secondary" id="btn-cert-download">Download PEM</button>
+          </div>
+          <div class="form-group-title">Regenerate self-signed certificate</div>
+          <div class="form-field">
+            <label class="field-label" for="sys-cert-extra-sans">Extra names (SANs)</label>
+            <input type="text" class="field-input mono" id="sys-cert-extra-sans" autocomplete="off" spellcheck="false" placeholder="mic.lan, 192.168.1.20" aria-describedby="sys-cert-extra-sans-hint sys-cert-extra-sans-error">
+            <span class="field-error" id="sys-cert-extra-sans-error"></span>
+            <span class="field-hint" id="sys-cert-extra-sans-hint">Optional extra DNS names or IP addresses for the new certificate, separated by commas or spaces.</span>
+          </div>
+          <div class="network-actions">
+            <span class="network-actions-spacer"></span>
+            <button type="button" class="btn btn-secondary" id="btn-cert-regenerate">Regenerate</button>
+          </div>
+          <div class="form-group-title">Install a custom certificate</div>
+          <div class="form-field">
+            <label class="field-label" for="sys-cert-pem">Certificate (PEM)</label>
+            <textarea class="field-input mono cert-pem" id="sys-cert-pem" rows="6" autocomplete="off" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="sys-cert-pem-hint sys-cert-pem-error"></textarea>
+            <span class="field-error" id="sys-cert-pem-error"></span>
+            <span class="field-hint" id="sys-cert-pem-hint">The certificate the management listener will present.</span>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="sys-cert-key">Private key (PEM)</label>
+            <textarea class="field-input mono cert-pem" id="sys-cert-key" rows="6" autocomplete="off" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----" aria-describedby="sys-cert-key-hint sys-cert-key-error"></textarea>
+            <span class="field-error" id="sys-cert-key-error"></span>
+            <span class="field-hint" id="sys-cert-key-hint">The private key matching the certificate. It is cleared from this page after every installation attempt, including a failed one; paste it again before retrying.</span>
+          </div>
+          <div class="network-actions">
+            <span class="network-actions-spacer"></span>
+            <button type="button" class="btn btn-danger" id="btn-cert-install">Install</button>
           </div>
         </div>
 

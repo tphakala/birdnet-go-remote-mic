@@ -124,6 +124,7 @@ type Server struct {
 	configStore   ConfigStore
 	system        SystemProvider
 	cert          CertProvider
+	certMgr       CertManager
 	notifications Snapshotter
 	notifier      notify.Publisher
 	restartFn     func()

@@ -2,6 +2,8 @@ import type {
   ApplianceStatus,
   AvailableDevice,
   CertificateInfo,
+  CertificateInstallRequest,
+  CertificateRegenerateRequest,
   Config,
   ConfigPatch,
   ConfigUpdateResult,
@@ -152,6 +154,26 @@ export class ApiClient {
   // token is still attached, which a bare link navigation could not do.
   public async getCertificatePem(): Promise<string> {
     return this.request<string>("/system/certificate/pem");
+  }
+
+  // installCertificate replaces the management certificate with an operator-
+  // supplied certificate and key. The appliance applies it live and returns the
+  // new metadata; a 422 carries per-field errors (certPem, keyPem).
+  public async installCertificate(req: CertificateInstallRequest): Promise<CertificateInfo> {
+    return this.request<CertificateInfo>("/system/certificate", {
+      method: "PUT",
+      body: JSON.stringify(req),
+    });
+  }
+
+  // regenerateCertificate asks the appliance to mint a fresh self-signed
+  // certificate, optionally with extra SANs, and apply it live. The contract
+  // requires a JSON body, so the default {} guarantees one is always sent.
+  public async regenerateCertificate(req: CertificateRegenerateRequest = {}): Promise<CertificateInfo> {
+    return this.request<CertificateInfo>("/system/certificate/regenerate", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
   }
 
   public async getNotifications(): Promise<NotificationSnapshot> {

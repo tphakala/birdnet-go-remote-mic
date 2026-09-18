@@ -189,7 +189,7 @@ func writeExpiredPair(t *testing.T, certPath, keyPath string) *big.Int {
 	if err != nil {
 		t.Fatalf("create cert: %v", err)
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: der})
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatalf("marshal key: %v", err)

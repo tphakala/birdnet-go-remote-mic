@@ -111,6 +111,24 @@ export class ApiClient {
     async getCertificatePem() {
         return this.request("/system/certificate/pem");
     }
+    // installCertificate replaces the management certificate with an operator-
+    // supplied certificate and key. The appliance applies it live and returns the
+    // new metadata; a 422 carries per-field errors (certPem, keyPem).
+    async installCertificate(req) {
+        return this.request("/system/certificate", {
+            method: "PUT",
+            body: JSON.stringify(req),
+        });
+    }
+    // regenerateCertificate asks the appliance to mint a fresh self-signed
+    // certificate, optionally with extra SANs, and apply it live. The contract
+    // requires a JSON body, so the default {} guarantees one is always sent.
+    async regenerateCertificate(req = {}) {
+        return this.request("/system/certificate/regenerate", {
+            method: "POST",
+            body: JSON.stringify(req),
+        });
+    }
     async getNotifications() {
         return this.request("/notifications");
     }

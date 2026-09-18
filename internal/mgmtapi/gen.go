@@ -294,6 +294,9 @@ type CertificateInfo struct {
 	// Issuer Certificate issuer distinguished name.
 	Issuer string `json:"issuer"`
 
+	// Managed Whether the appliance manages this certificate (a self-signed certificate it generated and will regenerate on an address change or expiry). False when an operator installed a custom certificate, which the appliance then never replaces automatically.
+	Managed bool `json:"managed"`
+
 	// NotAfter End of the certificate validity window.
 	NotAfter time.Time `json:"notAfter"`
 
@@ -307,6 +310,26 @@ type CertificateInfo struct {
 	//
 	// Examples: CN=birdnet-go-remote-mic
 	Subject string `json:"subject"`
+}
+
+// CertificateInstallRequest A custom certificate and its private key to install on the management listener. Validated before anything is written; on success the pair is persisted and served to new TLS connections without a restart. The private key is write-only and never returned by any endpoint.
+type CertificateInstallRequest struct {
+	// CertPem PEM-encoded certificate, leaf first, with any intermediate chain certificates after it. Must carry at least one subject alternative name and be valid now (not expired and not before its start).
+	//
+	//
+	// Examples: -----BEGIN CERTIFICATE-----
+	// ...
+	// -----END CERTIFICATE-----
+	CertPem string `json:"certPem"`
+
+	// KeyPem PEM-encoded unencrypted private key matching the certificate (PKCS#8, PKCS#1 RSA, or SEC1 EC). Write-only: never returned by any endpoint.
+	KeyPem string `json:"keyPem"`
+}
+
+// CertificateRegenerateRequest Options for regenerating the self-signed management certificate. The regenerated certificate always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); extraSans adds further names on top.
+type CertificateRegenerateRequest struct {
+	// ExtraSans Extra DNS names or IP addresses to add to the subject alternative names, for names the auto-detection cannot see.
+	ExtraSans *[]string `json:"extraSans,omitempty"`
 }
 
 // ChannelLevels One capture channel's audio levels over the last window.
@@ -806,6 +829,12 @@ type PatchConfigJSONRequestBody = ConfigPatch
 // ProvisionDeviceJSONRequestBody defines body for ProvisionDevice for application/json ContentType.
 type ProvisionDeviceJSONRequestBody = ProvisionDeviceRequest
 
+// PutSystemCertificateJSONRequestBody defines body for PutSystemCertificate for application/json ContentType.
+type PutSystemCertificateJSONRequestBody = CertificateInstallRequest
+
+// RegenerateSystemCertificateJSONRequestBody defines body for RegenerateSystemCertificate for application/json ContentType.
+type RegenerateSystemCertificateJSONRequestBody = CertificateRegenerateRequest
+
 // RequestEditorFn is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
 
@@ -1022,12 +1051,48 @@ type ClientInterface interface {
 	// Corresponds with GET /system/certificate (the `GetSystemCertificate` operationId).
 	GetSystemCertificate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PutSystemCertificateWithBody Install a custom management TLS certificate
+	//
+	// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+	PutSystemCertificateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutSystemCertificate Install a custom management TLS certificate
+	//
+	// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+	PutSystemCertificate(ctx context.Context, body PutSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetSystemCertificatePem Download the management TLS certificate (PEM)
 	//
 	// The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
 	//
 	// Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
 	GetSystemCertificatePem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RegenerateSystemCertificateWithBody Regenerate the self-signed management certificate
+	//
+	// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+	RegenerateSystemCertificateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RegenerateSystemCertificate Regenerate the self-signed management certificate
+	//
+	// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+	RegenerateSystemCertificate(ctx context.Context, body RegenerateSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PostSystemRestart Request an appliance restart
 	//
@@ -1329,6 +1394,44 @@ func (c *Client) GetSystemCertificate(ctx context.Context, reqEditors ...Request
 	return c.Client.Do(req)
 }
 
+// PutSystemCertificateWithBody Install a custom management TLS certificate
+//
+// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+func (c *Client) PutSystemCertificateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutSystemCertificateRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutSystemCertificate Install a custom management TLS certificate
+//
+// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+func (c *Client) PutSystemCertificate(ctx context.Context, body PutSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutSystemCertificateRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // GetSystemCertificatePem Download the management TLS certificate (PEM)
 //
 // The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
@@ -1336,6 +1439,44 @@ func (c *Client) GetSystemCertificate(ctx context.Context, reqEditors ...Request
 // Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
 func (c *Client) GetSystemCertificatePem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSystemCertificatePemRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RegenerateSystemCertificateWithBody Regenerate the self-signed management certificate
+//
+// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+func (c *Client) RegenerateSystemCertificateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRegenerateSystemCertificateRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RegenerateSystemCertificate Regenerate the self-signed management certificate
+//
+// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+func (c *Client) RegenerateSystemCertificate(ctx context.Context, body RegenerateSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRegenerateSystemCertificateRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1781,6 +1922,46 @@ func NewGetSystemCertificateRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewPutSystemCertificateRequest calls the generic PutSystemCertificate builder with application/json body
+func NewPutSystemCertificateRequest(server string, body PutSystemCertificateJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutSystemCertificateRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPutSystemCertificateRequestWithBody constructs an http.Request for the PutSystemCertificate method, with any body, and a specified content type
+func NewPutSystemCertificateRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/certificate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetSystemCertificatePemRequest constructs an http.Request for the GetSystemCertificatePem method
 func NewGetSystemCertificatePemRequest(server string) (*http.Request, error) {
 	var err error
@@ -1804,6 +1985,46 @@ func NewGetSystemCertificatePemRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewRegenerateSystemCertificateRequest calls the generic RegenerateSystemCertificate builder with application/json body
+func NewRegenerateSystemCertificateRequest(server string, body RegenerateSystemCertificateJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRegenerateSystemCertificateRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewRegenerateSystemCertificateRequestWithBody constructs an http.Request for the RegenerateSystemCertificate method, with any body, and a specified content type
+func NewRegenerateSystemCertificateRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/certificate/regenerate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -2043,6 +2264,24 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /system/certificate (the `GetSystemCertificate` operationId).
 	GetSystemCertificateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemCertificateResponse, error)
 
+	// PutSystemCertificateWithBodyWithResponse Install a custom management TLS certificate
+	//
+	// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+	PutSystemCertificateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutSystemCertificateResponse, error)
+
+	// PutSystemCertificateWithResponse Install a custom management TLS certificate
+	//
+	// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+	PutSystemCertificateWithResponse(ctx context.Context, body PutSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSystemCertificateResponse, error)
+
 	// GetSystemCertificatePemWithResponse Download the management TLS certificate (PEM)
 	//
 	// The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
@@ -2051,6 +2290,24 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
 	GetSystemCertificatePemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemCertificatePemResponse, error)
+
+	// RegenerateSystemCertificateWithBodyWithResponse Regenerate the self-signed management certificate
+	//
+	// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+	RegenerateSystemCertificateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RegenerateSystemCertificateResponse, error)
+
+	// RegenerateSystemCertificateWithResponse Regenerate the self-signed management certificate
+	//
+	// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+	RegenerateSystemCertificateWithResponse(ctx context.Context, body RegenerateSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*RegenerateSystemCertificateResponse, error)
 
 	// PostSystemRestartWithResponse Request an appliance restart
 	//
@@ -2714,6 +2971,61 @@ func (r GetSystemCertificateResponse) ContentType() string {
 	return ""
 }
 
+type PutSystemCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *CertificateInfo
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationProblem
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutSystemCertificateResponse) GetJSON200() *CertificateInfo {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r PutSystemCertificateResponse) GetApplicationproblemJSON422() *ValidationProblem {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r PutSystemCertificateResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r PutSystemCertificateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PutSystemCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutSystemCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PutSystemCertificateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type GetSystemCertificatePemResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -2749,6 +3061,61 @@ func (r GetSystemCertificatePemResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetSystemCertificatePemResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RegenerateSystemCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *CertificateInfo
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ValidationProblem
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r RegenerateSystemCertificateResponse) GetJSON200() *CertificateInfo {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r RegenerateSystemCertificateResponse) GetApplicationproblemJSON422() *ValidationProblem {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r RegenerateSystemCertificateResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r RegenerateSystemCertificateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r RegenerateSystemCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RegenerateSystemCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RegenerateSystemCertificateResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -3057,6 +3424,36 @@ func (c *ClientWithResponses) GetSystemCertificateWithResponse(ctx context.Conte
 	return ParseGetSystemCertificateResponse(rsp)
 }
 
+// PutSystemCertificateWithBodyWithResponse Install a custom management TLS certificate
+//
+// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+func (c *ClientWithResponses) PutSystemCertificateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutSystemCertificateResponse, error) {
+	rsp, err := c.PutSystemCertificateWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutSystemCertificateResponse(rsp)
+}
+
+// PutSystemCertificateWithResponse Install a custom management TLS certificate
+//
+// Replace the management listener's certificate with an operator-supplied certificate and private key. The pair is validated first (the key matches the certificate, it is currently valid, it carries a subject alternative name, and it is usable for server authentication); nothing is written on a validation failure. On success the pair is persisted to the certificate directory and served to new TLS connections at once, without a restart; connections already open keep the previous certificate until they reconnect. The installed certificate is pinned, so the appliance never regenerates it automatically. The private key is never returned by any endpoint. A browser may warn on its next load until the new certificate is trusted.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /system/certificate (the `PutSystemCertificate` operationId).
+func (c *ClientWithResponses) PutSystemCertificateWithResponse(ctx context.Context, body PutSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*PutSystemCertificateResponse, error) {
+	rsp, err := c.PutSystemCertificate(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutSystemCertificateResponse(rsp)
+}
+
 // GetSystemCertificatePemWithResponse Download the management TLS certificate (PEM)
 //
 // The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
@@ -3070,6 +3467,36 @@ func (c *ClientWithResponses) GetSystemCertificatePemWithResponse(ctx context.Co
 		return nil, err
 	}
 	return ParseGetSystemCertificatePemResponse(rsp)
+}
+
+// RegenerateSystemCertificateWithBodyWithResponse Regenerate the self-signed management certificate
+//
+// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+func (c *ClientWithResponses) RegenerateSystemCertificateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RegenerateSystemCertificateResponse, error) {
+	rsp, err := c.RegenerateSystemCertificateWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRegenerateSystemCertificateResponse(rsp)
+}
+
+// RegenerateSystemCertificateWithResponse Regenerate the self-signed management certificate
+//
+// Generate a fresh self-signed certificate for the management listener and serve it to new TLS connections at once, without a restart. It always covers the auto-detected names (loopback, the hostname, the hostname.local mDNS name, and the LAN IP addresses); any extraSans are added on top. This replaces a previously installed custom certificate and clears its pin, returning the appliance to self-managed certificates. Connections already open keep the previous certificate until they reconnect, and a browser may warn on its next load until the new certificate is trusted.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /system/certificate/regenerate (the `RegenerateSystemCertificate` operationId).
+func (c *ClientWithResponses) RegenerateSystemCertificateWithResponse(ctx context.Context, body RegenerateSystemCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*RegenerateSystemCertificateResponse, error) {
+	rsp, err := c.RegenerateSystemCertificate(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRegenerateSystemCertificateResponse(rsp)
 }
 
 // PostSystemRestartWithResponse Request an appliance restart
@@ -3547,6 +3974,46 @@ func ParseGetSystemCertificateResponse(rsp *http.Response) (*GetSystemCertificat
 	return response, nil
 }
 
+// ParsePutSystemCertificateResponse parses an HTTP response from a PutSystemCertificateWithResponse call
+func ParsePutSystemCertificateResponse(rsp *http.Response) (*PutSystemCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutSystemCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest CertificateInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationProblem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetSystemCertificatePemResponse parses an HTTP response from a GetSystemCertificatePemWithResponse call
 func ParseGetSystemCertificatePemResponse(rsp *http.Response) (*GetSystemCertificatePemResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -3561,6 +4028,46 @@ func ParseGetSystemCertificatePemResponse(rsp *http.Response) (*GetSystemCertifi
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRegenerateSystemCertificateResponse parses an HTTP response from a RegenerateSystemCertificateWithResponse call
+func ParseRegenerateSystemCertificateResponse(rsp *http.Response) (*RegenerateSystemCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RegenerateSystemCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest CertificateInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ValidationProblem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest Problem
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -3647,9 +4154,15 @@ type ServerInterface interface {
 	// GetSystemCertificate Management TLS certificate metadata
 	// (GET /system/certificate)
 	GetSystemCertificate(w http.ResponseWriter, r *http.Request)
+	// PutSystemCertificate Install a custom management TLS certificate
+	// (PUT /system/certificate)
+	PutSystemCertificate(w http.ResponseWriter, r *http.Request)
 	// GetSystemCertificatePem Download the management TLS certificate (PEM)
 	// (GET /system/certificate/pem)
 	GetSystemCertificatePem(w http.ResponseWriter, r *http.Request)
+	// RegenerateSystemCertificate Regenerate the self-signed management certificate
+	// (POST /system/certificate/regenerate)
+	RegenerateSystemCertificate(w http.ResponseWriter, r *http.Request)
 	// PostSystemRestart Request an appliance restart
 	// (POST /system/restart)
 	PostSystemRestart(w http.ResponseWriter, r *http.Request)
@@ -3889,11 +4402,39 @@ func (siw *ServerInterfaceWrapper) GetSystemCertificate(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// PutSystemCertificate operation middleware
+func (siw *ServerInterfaceWrapper) PutSystemCertificate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutSystemCertificate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSystemCertificatePem operation middleware
 func (siw *ServerInterfaceWrapper) GetSystemCertificatePem(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetSystemCertificatePem(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RegenerateSystemCertificate operation middleware
+func (siw *ServerInterfaceWrapper) RegenerateSystemCertificate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RegenerateSystemCertificate(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4051,7 +4592,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system", wrapper.GetSystem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/restart", wrapper.PostSystemRestart)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system/certificate", wrapper.GetSystemCertificate)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/system/certificate", wrapper.PutSystemCertificate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system/certificate/pem", wrapper.GetSystemCertificatePem)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/certificate/regenerate", wrapper.RegenerateSystemCertificate)
 
 	return m
 }
@@ -4665,6 +5208,59 @@ func (response GetSystemCertificatedefaultApplicationProblemPlusJSONResponse) Vi
 	return err
 }
 
+type PutSystemCertificateRequestObject struct {
+	Body *PutSystemCertificateJSONRequestBody
+}
+
+type PutSystemCertificateResponseObject interface {
+	VisitPutSystemCertificateResponse(w http.ResponseWriter) error
+}
+
+type PutSystemCertificate200JSONResponse CertificateInfo
+
+func (response PutSystemCertificate200JSONResponse) VisitPutSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSystemCertificate422ApplicationProblemPlusJSONResponse ValidationProblem
+
+func (response PutSystemCertificate422ApplicationProblemPlusJSONResponse) VisitPutSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSystemCertificatedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PutSystemCertificatedefaultApplicationProblemPlusJSONResponse) VisitPutSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetSystemCertificatePemRequestObject struct {
 }
 
@@ -4698,6 +5294,59 @@ type GetSystemCertificatePemdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetSystemCertificatePemdefaultApplicationProblemPlusJSONResponse) VisitGetSystemCertificatePemResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateSystemCertificateRequestObject struct {
+	Body *RegenerateSystemCertificateJSONRequestBody
+}
+
+type RegenerateSystemCertificateResponseObject interface {
+	VisitRegenerateSystemCertificateResponse(w http.ResponseWriter) error
+}
+
+type RegenerateSystemCertificate200JSONResponse CertificateInfo
+
+func (response RegenerateSystemCertificate200JSONResponse) VisitRegenerateSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateSystemCertificate422ApplicationProblemPlusJSONResponse ValidationProblem
+
+func (response RegenerateSystemCertificate422ApplicationProblemPlusJSONResponse) VisitRegenerateSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateSystemCertificatedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RegenerateSystemCertificatedefaultApplicationProblemPlusJSONResponse) VisitRegenerateSystemCertificateResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -4788,9 +5437,15 @@ type StrictServerInterface interface {
 	// GetSystemCertificate Management TLS certificate metadata
 	// (GET /system/certificate)
 	GetSystemCertificate(ctx context.Context, request GetSystemCertificateRequestObject) (GetSystemCertificateResponseObject, error)
+	// PutSystemCertificate Install a custom management TLS certificate
+	// (PUT /system/certificate)
+	PutSystemCertificate(ctx context.Context, request PutSystemCertificateRequestObject) (PutSystemCertificateResponseObject, error)
 	// GetSystemCertificatePem Download the management TLS certificate (PEM)
 	// (GET /system/certificate/pem)
 	GetSystemCertificatePem(ctx context.Context, request GetSystemCertificatePemRequestObject) (GetSystemCertificatePemResponseObject, error)
+	// RegenerateSystemCertificate Regenerate the self-signed management certificate
+	// (POST /system/certificate/regenerate)
+	RegenerateSystemCertificate(ctx context.Context, request RegenerateSystemCertificateRequestObject) (RegenerateSystemCertificateResponseObject, error)
 	// PostSystemRestart Request an appliance restart
 	// (POST /system/restart)
 	PostSystemRestart(ctx context.Context, request PostSystemRestartRequestObject) (PostSystemRestartResponseObject, error)
@@ -5167,6 +5822,37 @@ func (sh *strictHandler) GetSystemCertificate(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// PutSystemCertificate operation middleware
+func (sh *strictHandler) PutSystemCertificate(w http.ResponseWriter, r *http.Request) {
+	var request PutSystemCertificateRequestObject
+
+	var body PutSystemCertificateJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutSystemCertificate(ctx, request.(PutSystemCertificateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutSystemCertificate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutSystemCertificateResponseObject); ok {
+		if err := validResponse.VisitPutSystemCertificateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetSystemCertificatePem operation middleware
 func (sh *strictHandler) GetSystemCertificatePem(w http.ResponseWriter, r *http.Request) {
 	var request GetSystemCertificatePemRequestObject
@@ -5184,6 +5870,37 @@ func (sh *strictHandler) GetSystemCertificatePem(w http.ResponseWriter, r *http.
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetSystemCertificatePemResponseObject); ok {
 		if err := validResponse.VisitGetSystemCertificatePemResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RegenerateSystemCertificate operation middleware
+func (sh *strictHandler) RegenerateSystemCertificate(w http.ResponseWriter, r *http.Request) {
+	var request RegenerateSystemCertificateRequestObject
+
+	var body RegenerateSystemCertificateJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RegenerateSystemCertificate(ctx, request.(RegenerateSystemCertificateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RegenerateSystemCertificate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RegenerateSystemCertificateResponseObject); ok {
+		if err := validResponse.VisitRegenerateSystemCertificateResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
