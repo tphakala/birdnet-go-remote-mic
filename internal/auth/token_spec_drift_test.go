@@ -44,6 +44,21 @@ func TestTokenRuleMatchesOpenAPIPattern(t *testing.T) {
 			t.Errorf("token %q: OpenAPI pattern accepts=%v, Go ValidToken accepts=%v; the two token rules have drifted", tok, specOK, goOK)
 		}
 	}
+
+	// Exhaustive character-class check: a token of twelve copies of one ASCII byte
+	// must be accepted by the OpenAPI pattern exactly when ValidToken accepts it,
+	// for every byte. The fixed cases above cannot see a drift on a character none
+	// of them exercises (if one rule stopped accepting, say, 'q', every fixed case
+	// would still agree); this loop catches a character-class drift on any single
+	// character. Length is held at the valid 12 so only the character class varies.
+	for b := 0; b < 0x80; b++ {
+		tok := strings.Repeat(string([]byte{byte(b)}), 12)
+		specOK := re.MatchString(tok)
+		goOK := ValidToken(tok) == ""
+		if specOK != goOK {
+			t.Errorf("12x byte 0x%02x (%q): OpenAPI pattern accepts=%v, Go ValidToken accepts=%v; the token rules drifted on this character", b, string(rune(b)), specOK, goOK)
+		}
+	}
 }
 
 // openAPITokenPattern extracts components.schemas.AuthSettings.properties.token.pattern
