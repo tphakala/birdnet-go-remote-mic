@@ -59,7 +59,7 @@ func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
 // emit fans one event out to every live subscription. It snapshots the channels
 // under the lock and sends outside it, so a concurrent cancel never blocks behind
 // a send. Each send is non-blocking: a subscriber whose buffer is full drops the
-// event, matching the real Hub.broadcast rather than stalling the producer. The
+// event, matching the real Broadcaster.Broadcast rather than stalling the producer. The
 // test buffers are ample, so nothing is actually dropped here. An emit with no
 // live subscription is dropped, so a test that needs the event delivered calls
 // waitSubscribed first.

@@ -25,6 +25,13 @@ const SEVERITY_LABEL: Record<NotificationSeverity, string> = {
   info: "Info",
 };
 
+// RESTAMP_MS is how often an open panel refreshes its relative "N ago" times.
+// renderPanel stamps them once per render and only re-renders on a store change,
+// so without this a panel left open with no new events would freeze its times.
+// Low frequency is fine: times are minute-resolution above a minute, and a
+// passive panel does not need second-accurate updates.
+const RESTAMP_MS = 15_000;
+
 export class NotificationCenter {
   private readonly store: NotificationStore;
   private bell!: HTMLElement;
@@ -35,6 +42,9 @@ export class NotificationCenter {
   private listEl!: HTMLElement;
   private emptyEl!: HTMLElement;
   private isOpen = false;
+  // Handle for the interval that refreshes relative times while the panel is
+  // open; null when the panel is closed.
+  private timeTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(store: NotificationStore) {
     this.store = store;
@@ -132,6 +142,13 @@ export class NotificationCenter {
     setHidden(this.emptyEl, active.length > 0 || history.length > 0);
   }
 
+  // relTime renders one event's ISO timestamp as a relative "N ago" string,
+  // correcting for server clock skew. Shared by the initial render and the
+  // open-panel restamp so the two cannot drift.
+  private relTime(iso: string, offsetMs: number, nowMs: number): string {
+    return formatRelative(Date.parse(iso) + offsetMs, nowMs);
+  }
+
   private renderRow(n: Notification, nowMs: number, offsetMs: number): HTMLElement {
     const row = elem("div", `notif-row notif-${n.severity}`);
 
@@ -146,7 +163,7 @@ export class NotificationCenter {
     title.append(elem("span", "visually-hidden", `${SEVERITY_LABEL[n.severity]}: `));
     title.append(document.createTextNode(n.title));
     top.append(title);
-    const time = elem("time", "notif-row-time", formatRelative(Date.parse(n.time) + offsetMs, nowMs));
+    const time = elem("time", "notif-row-time", this.relTime(n.time, offsetMs, nowMs));
     time.setAttribute("datetime", n.time);
     top.append(time);
 
@@ -159,6 +176,19 @@ export class NotificationCenter {
 
     row.append(icon, main);
     return row;
+  }
+
+  // restampTimes refreshes the "N ago" text of every row's <time> element from
+  // its datetime attribute, so a panel left open keeps its relative times
+  // current without a full re-render (which would disturb scroll and focus).
+  private restampTimes(): void {
+    const nowMs = Date.now();
+    const offsetMs = this.store.getState().serverOffsetMs;
+    const times = this.panel.querySelectorAll<HTMLElement>("time.notif-row-time");
+    times.forEach((t) => {
+      const iso = t.getAttribute("datetime");
+      if (iso) setText(t, this.relTime(iso, offsetMs, nowMs));
+    });
   }
 
   private toggle(): void {
@@ -177,6 +207,12 @@ export class NotificationCenter {
     document.addEventListener("click", this.onDocClick, true);
     document.addEventListener("keydown", this.onKeydown);
     window.addEventListener("hashchange", this.onHashChange);
+    // Close when a keyboard user Tabs focus off the panel onto page content
+    // behind it; the capture-phase click handler only covers pointer users.
+    this.panel.addEventListener("focusout", this.onFocusOut);
+    // Keep the relative "N ago" times from freezing while the panel sits open
+    // with no store change to drive a re-render.
+    this.timeTimer = setInterval(() => this.restampTimes(), RESTAMP_MS);
     this.panel.focus();
   }
 
@@ -192,6 +228,11 @@ export class NotificationCenter {
     document.removeEventListener("click", this.onDocClick, true);
     document.removeEventListener("keydown", this.onKeydown);
     window.removeEventListener("hashchange", this.onHashChange);
+    this.panel.removeEventListener("focusout", this.onFocusOut);
+    if (this.timeTimer !== null) {
+      clearInterval(this.timeTimer);
+      this.timeTimer = null;
+    }
     if (restoreFocus) this.bell.focus();
   }
 
@@ -210,6 +251,19 @@ export class NotificationCenter {
       // only when focus is actually inside the panel; otherwise leave it be.
       this.close(this.panel.contains(document.activeElement));
     }
+  };
+
+  private readonly onFocusOut = (e: FocusEvent): void => {
+    const next = e.relatedTarget as Node | null;
+    // Keep the panel open when focus stays inside it or moves to the bell, and
+    // when focus leaves the document entirely (relatedTarget null, e.g. the
+    // window blurred) so alt-tabbing away does not dismiss it. Close only when
+    // focus lands on page content behind the panel, mirroring the outside-click
+    // close for keyboard users who Tab past the last control. No restoreFocus:
+    // focus has already moved on, so pulling it back to the bell would fight it.
+    if (!next) return;
+    if (this.panel.contains(next) || this.bell.contains(next)) return;
+    this.close();
   };
 
   private readonly onHashChange = (): void => {

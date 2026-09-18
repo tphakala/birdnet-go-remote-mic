@@ -126,15 +126,13 @@ const (
 // force the fallback path.
 var randRead = rand.Read
 
-// subscriber is one SSE consumer's delivery channel.
-type subscriber struct {
-	ch chan sse.Event
-}
-
-// Center is the notification center: a bounded ring of discrete history, a
-// pinned map of active conditions, and the SSE subscriber set, all under one
-// mutex. IDs are assigned and broadcast under that mutex, so every subscriber
-// sees strictly increasing IDs; a slow subscriber sees gaps, never reordering.
+// Center is the notification center: a bounded ring of discrete history and a
+// pinned map of active conditions under one mutex, plus a shared sse.Broadcaster
+// for the SSE fan-out. An ID is assigned and the entry broadcast while c.mu is
+// held, so every subscriber sees strictly increasing IDs; a slow subscriber
+// sees gaps, never reordering. On the publish path the broadcaster's lock is
+// taken while c.mu is held (c.mu -> broadcaster mutex), so publishing stays
+// ID-ordered; Subscribe takes only the broadcaster's own lock, not c.mu.
 type Center struct {
 	clock    func() time.Time
 	capacity int
@@ -144,7 +142,7 @@ type Center struct {
 	nextID uint64
 	ring   *ring
 	active map[string]Notification
-	subs   map[*subscriber]struct{}
+	bc     *sse.Broadcaster
 }
 
 // Option configures a Center.
@@ -176,7 +174,7 @@ func NewCenter(opts ...Option) *Center {
 		clock:    time.Now,
 		capacity: defaultCapacity,
 		active:   make(map[string]Notification),
-		subs:     make(map[*subscriber]struct{}),
+		bc:       sse.NewBroadcaster(subscriberBuffer),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -211,27 +209,17 @@ func (c *Center) BootID() string {
 }
 
 // Subscribe registers an SSE consumer and returns its event channel plus a
-// cancel func that unregisters it. The channel is never closed; cancel just
-// removes the subscriber under the mutex so a late broadcast cannot send on a
-// closed channel. It satisfies sse.Source.
+// cancel func that unregisters it. The shared sse.Broadcaster owns the
+// subscriber set: channel buffering, drop-on-full delivery, an idempotent
+// cancel, and the never-closed-channel contract. Center adds only the
+// nil-receiver guard. It satisfies sse.Source.
 func (c *Center) Subscribe() (events <-chan sse.Event, cancel func()) {
 	if c == nil {
 		// Keep the nil-Center contract: a nil channel blocks forever in the
 		// handler's select (it never delivers), and cancel is a no-op.
 		return nil, func() {}
 	}
-	s := &subscriber{ch: make(chan sse.Event, subscriberBuffer)}
-	c.mu.Lock()
-	c.subs[s] = struct{}{}
-	c.mu.Unlock()
-	var once sync.Once
-	return s.ch, func() {
-		once.Do(func() {
-			c.mu.Lock()
-			delete(c.subs, s)
-			c.mu.Unlock()
-		})
-	}
+	return c.bc.Subscribe()
 }
 
 // publishLocked stamps n in place with the next ID, the boot id and the clock
@@ -254,12 +242,9 @@ func (c *Center) publishLocked(n *Notification) {
 		return
 	}
 	ev := sse.Event{Name: notificationEvent, Data: data}
-	for s := range c.subs {
-		select {
-		case s.ch <- ev:
-		default:
-		}
-	}
+	// Broadcast while c.mu is held so the fan-out order matches ID order; the
+	// broadcaster takes its own lock underneath (c.mu -> broadcaster mutex).
+	c.bc.Broadcast(ev)
 }
 
 // Publish records a discrete event. A nil Center drops it.
