@@ -49,6 +49,7 @@ test("parseExtraSans rejects a wildcard, an empty label, a bad IP and an overlon
     ["mic.lan.", "mic.lan."],
     ["1:::2", "1:::2"],
     ["1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:7:8:9"],
+    ["192.0.2.1::", "192.0.2.1::"],
     [long, long],
   ];
   for (const [input, token] of bad) {
@@ -56,6 +57,12 @@ test("parseExtraSans rejects a wildcard, an empty label, a bad IP and an overlon
     assert.deepEqual(r.sans, [], `${input}: list is empty on error`);
     assert.equal(r.error, `${token} is not a valid DNS name or IP address`);
   }
+});
+
+test("parseExtraSans keeps an IPv4-mapped IPv6 address whose dotted quad ends the input", () => {
+  const r = parseExtraSans("::ffff:192.0.2.1");
+  assert.equal(r.error, null);
+  assert.deepEqual(r.sans, ["::ffff:192.0.2.1"]);
 });
 
 test("parseExtraSans names the first invalid token and stops there", () => {

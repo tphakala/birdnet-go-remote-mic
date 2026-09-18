@@ -29,7 +29,9 @@ function isIPv6(s) {
     for (let i = 0; i < groups.length; i++) {
         const g = groups[i];
         if (g.includes(".")) {
-            if (i !== groups.length - 1 || !isIPv4(g))
+            // The dotted quad must be the last group AND end the input: "::" splitting
+            // drops an empty trailing half, so "192.0.2.1::" would otherwise pass.
+            if (i !== groups.length - 1 || !s.endsWith(g) || !isIPv4(g))
                 return false;
             count += 2;
         }

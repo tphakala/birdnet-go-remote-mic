@@ -110,16 +110,19 @@ export class SystemView {
   private certKeyEl: HTMLTextAreaElement | null;
   private certKeyErrorEl: HTMLElement | null;
   // cert is the management certificate metadata. It changes at runtime: the
-  // panel fetches it on the first status event, re-fetches after a regenerate
-  // or install (the appliance swaps the certificate live, no restart), and
-  // retries a transient load failure on later polls. certPending guards
-  // concurrent loads; certUnavailable is set on a 501 so a permanently-unmounted
-  // endpoint is not polled forever; certBusy guards the regenerate and install
-  // actions against re-entry (they share it: both replace the certificate).
+  // panel fetches it on every status poll (a regenerate, an install, or an
+  // external change swaps the certificate live, no restart) and re-fetches
+  // after a regenerate or install. certPending guards concurrent loads;
+  // certUnavailable is set on a 501 so a permanently-unmounted endpoint is not
+  // polled forever; certBusy guards the regenerate and install actions against
+  // re-entry (they share it: both replace the certificate). certGen is bumped
+  // by each successful mutation so a GET that was already in flight when the
+  // mutation completed is discarded instead of overwriting the fresh metadata.
   private cert: CertificateInfo | null = null;
   private certPending = false;
   private certUnavailable = false;
   private certBusy = false;
+  private certGen = 0;
   // certFailures counts consecutive load failures; at CERT_LOAD_ERROR_THRESHOLD
   // the card shows the load-error region (role=alert) once. certErrorShown keeps
   // later silent retries from re-rendering, and so re-announcing, that region.
@@ -188,11 +191,11 @@ export class SystemView {
       this.renderInfo();
       this.renderOverrides();
       // The first status event is the certificate load trigger (the token, if
-      // any, is settled by now) and each later one retries a transient failure;
-      // a 501 sets certUnavailable to stop retrying. Once loaded it is not
-      // re-polled here: a regenerate or install re-fetches it itself, and those
-      // are the only runtime changes.
-      if (!this.cert && !this.certUnavailable) void this.loadCertificate();
+      // any, is settled by now) and each later one refreshes the metadata so
+      // the panel does not go stale after a regenerate, an install, or a
+      // change made outside this page; a 501 sets certUnavailable to stop
+      // polling the endpoint.
+      if (!this.certUnavailable) void this.loadCertificate();
     });
     store.addEventListener("devices", (e: Event) => {
       this.renderDeviceRows((e as CustomEvent<Device[]>).detail);
@@ -293,30 +296,43 @@ export class SystemView {
     }
   }
 
+  // clearCertLoadError resets the load-failure state and swaps the load-error
+  // region back for the info grid. Fresh metadata from any source (a poll, the
+  // Retry button, a regenerate or an install) routes through here so the card
+  // never keeps showing a stale error over data it now has.
+  private clearCertLoadError(): void {
+    this.certFailures = 0;
+    this.certErrorShown = false;
+    if (this.certErrorEl) {
+      this.certErrorEl.hidden = true;
+      this.certErrorEl.removeAttribute("role");
+      this.certErrorEl.textContent = "";
+    }
+    if (this.certInfoEl) this.certInfoEl.hidden = false;
+  }
+
   // loadCertificate fetches the management certificate metadata. It is
-  // re-callable: the first status event, each later poll while a load keeps
-  // failing, the Retry button, and a regenerate or install (to reconcile the
-  // panel with what the appliance now serves) all route through here. A 501
-  // means the endpoints are not mounted (the appliance could not read its
-  // certificate), so it stops retrying. Any other failure counts toward
-  // CERT_LOAD_ERROR_THRESHOLD, at which the card surfaces its load-error region
-  // exactly once; the polls keep retrying silently after that (the panel
-  // self-heals) without re-rendering, and so re-announcing, the alert.
+  // re-callable: every status poll, the Retry button, and a regenerate or
+  // install (to reconcile the panel with what the appliance now serves) all
+  // route through here. A 501 means the endpoints are not mounted (the
+  // appliance could not read its certificate), so it stops retrying. Any other
+  // failure counts toward CERT_LOAD_ERROR_THRESHOLD, at which the card surfaces
+  // its load-error region exactly once; the polls keep retrying silently after
+  // that (the panel self-heals) without re-rendering, and so re-announcing, the
+  // alert. A response that resolves after a mutation bumped certGen is stale
+  // (it describes the certificate that was just replaced) and is dropped.
   private async loadCertificate(): Promise<void> {
     if (this.certPending) return;
     this.certPending = true;
+    const gen = this.certGen;
     try {
-      this.cert = await api.getCertificate();
-      this.certFailures = 0;
-      this.certErrorShown = false;
-      if (this.certErrorEl) {
-        this.certErrorEl.hidden = true;
-        this.certErrorEl.removeAttribute("role");
-        this.certErrorEl.textContent = "";
-      }
-      if (this.certInfoEl) this.certInfoEl.hidden = false;
+      const info = await api.getCertificate();
+      if (this.certGen !== gen) return;
+      this.cert = info;
+      this.clearCertLoadError();
       this.renderCertificate();
     } catch (err: unknown) {
+      if (this.certGen !== gen) return;
       if (err instanceof ApiError && err.status === 501) {
         this.certUnavailable = true;
         return;
@@ -425,11 +441,21 @@ export class SystemView {
       // The contract requires a JSON body, so no extras still sends {}.
       const info = await api.regenerateCertificate(parsed.sans.length ? { extraSans: parsed.sans } : {});
       this.cert = info;
+      this.certGen++;
+      this.clearCertLoadError();
       this.renderCertificate();
       void this.loadCertificate();
       showToast("Certificate regenerated and applied to new connections. Download and trust the new certificate where needed.");
     } catch (err: unknown) {
-      const item = err instanceof ApiError ? err.errors?.find((e) => e.field?.startsWith("extraSans")) : undefined;
+      if (!(err instanceof ApiError)) {
+        // A transport failure (the connection dropped mid-request) says nothing
+        // about whether the appliance already applied the change; reconcile
+        // from the server instead of reporting a failure that may not be one.
+        showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
+        void this.loadCertificate();
+        return;
+      }
+      const item = err.errors?.find((e) => e.field?.startsWith("extraSans"));
       if (item) {
         this.setCertFieldError(this.certSansEl, this.certSansErrorEl, item.reason ?? apiErrorMessage(err));
         this.certSansEl?.focus();
@@ -474,13 +500,23 @@ export class SystemView {
       this.setCertFieldError(this.certPemEl, this.certPemErrorEl, "");
       this.setCertFieldError(this.certKeyEl, this.certKeyErrorEl, "");
       this.cert = info;
+      this.certGen++;
+      this.clearCertLoadError();
       this.renderCertificate();
       void this.loadCertificate();
       showToast("Custom certificate installed and applied to new connections.");
     } catch (err: unknown) {
+      if (!(err instanceof ApiError)) {
+        // Same as regenerate: a dropped connection leaves the outcome unknown,
+        // so reconcile rather than claim a failure. The key textarea is still
+        // cleared in finally.
+        showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
+        void this.loadCertificate();
+        return;
+      }
       let pemBad = false;
       let keyBad = false;
-      if (err instanceof ApiError && err.errors) {
+      if (err.errors) {
         for (const item of err.errors) {
           const reason = item.reason ?? apiErrorMessage(err);
           if (item.field === "certPem") {

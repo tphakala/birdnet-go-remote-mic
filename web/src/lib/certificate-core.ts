@@ -37,7 +37,9 @@ function isIPv6(s: string): boolean {
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
     if (g.includes(".")) {
-      if (i !== groups.length - 1 || !isIPv4(g)) return false;
+      // The dotted quad must be the last group AND end the input: "::" splitting
+      // drops an empty trailing half, so "192.0.2.1::" would otherwise pass.
+      if (i !== groups.length - 1 || !s.endsWith(g) || !isIPv4(g)) return false;
       count += 2;
     } else {
       if (!/^[0-9A-Fa-f]{1,4}$/.test(g)) return false;

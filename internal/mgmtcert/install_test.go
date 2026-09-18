@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -225,6 +226,54 @@ func TestInstallPersistsPairAndPins(t *testing.T) {
 		t.Fatalf("stat key: %v", err)
 	} else if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("key perms = %o, want 600", perm)
+	}
+}
+
+func TestInstallPersistsChainWithoutKeyMaterial(t *testing.T) {
+	// A certPEM that (by operator mistake) also contains a PRIVATE KEY block must
+	// never be written verbatim to the 0644 cert file. Install persists the
+	// re-encoded chain, so the cert file carries only certificate blocks.
+	// Sabotage target: writing ChainPEM(&cert) instead of the raw certPEM.
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	leafPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) { c.DNSNames = []string{customExampleSAN} })
+	// Simulate the operator pasting the key into the certificate field too.
+	bundled := append(append([]byte(nil), leafPEM...), keyPEM...)
+	if _, err := Install(certPath, keyPath, bundled, keyPEM); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	onDisk, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read cert file: %v", err)
+	}
+	if strings.Contains(string(onDisk), "PRIVATE KEY") {
+		t.Error("cert file contains private key material; Install must persist only certificate blocks")
+	}
+}
+
+func TestRegenerateKeepsPinOnGenerateFailure(t *testing.T) {
+	// If generation fails, the pin must remain so the previously pinned pair is not
+	// left eligible for replacement on the next restart. Sabotage target:
+	// generating before removing the pin (the old order removed the pin first).
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) { c.DNSNames = []string{customExampleSAN} })
+	if _, err := Install(certPath, keyPath, certPEM, keyPEM); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if !Pinned(certPath) {
+		t.Fatal("precondition: Install should have pinned the pair")
+	}
+	// Direct the key write under certPath (a regular file), so generate's key write
+	// fails and the whole regeneration errors.
+	badKeyPath := filepath.Join(certPath, "key.pem")
+	if _, err := Regenerate(certPath, badKeyPath, []string{localhost}); err == nil {
+		t.Fatal("Regenerate should have failed with an unwritable key path")
+	}
+	if !Pinned(certPath) {
+		t.Error("pin was cleared despite a generation failure")
 	}
 }
 

@@ -74,10 +74,17 @@ func Pinned(certPath string) bool {
 // pair to certPath/keyPath, and clears any operator pin so the appliance manages
 // the certificate again. It returns the parsed keypair.
 func Regenerate(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
+	// Generate first, then clear the pin only on success. If generation fails, the
+	// previous pair stays pinned (still served, and Ensure keeps reusing it) rather
+	// than being left unpinned and eligible for replacement on the next restart.
+	cert, err := generate(certPath, keyPath, hosts)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
 	if err := os.Remove(PinPath(certPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return tls.Certificate{}, fmt.Errorf("clear certificate pin: %w", err)
 	}
-	return generate(certPath, keyPath, hosts)
+	return cert, nil
 }
 
 // Install validates an operator-supplied certificate and private key, persists
@@ -89,11 +96,19 @@ func Install(certPath, keyPath string, certPEM, keyPEM []byte) (tls.Certificate,
 	if err != nil {
 		return tls.Certificate{}, err
 	}
+	// Persist the re-encoded certificate chain, not the raw request bytes: a
+	// private-key block accidentally pasted into the certificate field would
+	// otherwise be written to the world-readable (0644) certificate file. ChainPEM
+	// emits only the certificate blocks of the validated pair.
+	chainPEM, err := ChainPEM(&cert)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
 	// Write the public certificate, then the private key, then the pin marker. A
 	// crash after the key but before the marker leaves an unpinned custom pair that
 	// the next start regenerates away; the operator re-installs. The alternative
 	// (marker first) could pin a half-written pair, which is worse.
-	if err := atomicfile.Write(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
+	if err := atomicfile.Write(certPath, chainPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
 		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
 	}
 	if err := atomicfile.Write(keyPath, keyPEM, 0o600); err != nil {

@@ -562,6 +562,12 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		TLSConfig: &tls.Config{
 			MinVersion:     tls.VersionTLS12,
 			GetCertificate: prov.tlsCertificate,
+			// Disable TLS session resumption so a certificate swap (regenerate or
+			// install) reaches every connection. A resumed session would keep the
+			// certificate context established before the swap, and GetCertificate is
+			// not consulted for it. The management listener is low-traffic, so the
+			// lost resumption is negligible.
+			SessionTicketsDisabled: true,
 		},
 	}
 
