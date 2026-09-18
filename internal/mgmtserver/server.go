@@ -48,6 +48,19 @@ type ApplianceStatus struct {
 	AuthRequired   bool
 	DevicesServing int
 	DevicesTotal   int
+	// Overrides lists the config fields whose effective (running) value differs
+	// from the persisted config because a serve CLI flag overrode it. Empty when
+	// no serve overrides are active for this run.
+	Overrides []ConfigOverride
+}
+
+// ConfigOverride is one config field a serve CLI flag overrode for this run:
+// the value in force now (Effective) and the value the config file holds
+// (Persisted), which a restart without the flag would use.
+type ConfigOverride struct {
+	Field     string
+	Effective string
+	Persisted string
 }
 
 // DeviceStatus is one device's configuration plus its runtime state. Config
@@ -110,6 +123,7 @@ type Server struct {
 	eventStream   http.Handler
 	configStore   ConfigStore
 	system        SystemProvider
+	cert          CertProvider
 	notifications Snapshotter
 	notifier      notify.Publisher
 	restartFn     func()
@@ -208,7 +222,7 @@ func (s *Server) GetHealth(_ context.Context, _ mgmtapi.GetHealthRequestObject) 
 // GetStatus handles GET /status.
 func (s *Server) GetStatus(_ context.Context, _ mgmtapi.GetStatusRequestObject) (mgmtapi.GetStatusResponseObject, error) {
 	st := s.provider.Status()
-	return mgmtapi.GetStatus200JSONResponse{
+	resp := mgmtapi.GetStatus200JSONResponse{
 		Version:          st.Version,
 		UptimeSeconds:    int64(st.Uptime.Seconds()),
 		RtspListen:       st.RTSPListen,
@@ -216,7 +230,19 @@ func (s *Server) GetStatus(_ context.Context, _ mgmtapi.GetStatusRequestObject) 
 		AuthRequired:     st.AuthRequired,
 		DevicesServing:   st.DevicesServing,
 		DevicesTotal:     st.DevicesTotal,
-	}, nil
+	}
+	if len(st.Overrides) > 0 {
+		ovs := make([]mgmtapi.ConfigOverride, 0, len(st.Overrides))
+		for i := range st.Overrides {
+			ovs = append(ovs, mgmtapi.ConfigOverride{
+				Field:     st.Overrides[i].Field,
+				Effective: st.Overrides[i].Effective,
+				Persisted: st.Overrides[i].Persisted,
+			})
+		}
+		resp.Overrides = &ovs
+	}
+	return resp, nil
 }
 
 // ListDevices handles GET /devices.

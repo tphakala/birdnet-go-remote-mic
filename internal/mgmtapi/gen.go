@@ -205,6 +205,9 @@ type ApplianceStatus struct {
 	// DiscoveryEnabled Whether mDNS/DNS-SD advertisement is on.
 	DiscoveryEnabled bool `json:"discoveryEnabled"`
 
+	// Overrides Serve-time CLI flag overrides in force for this run. Each entry names a config field whose effective (running) value differs from the persisted config file value because a serve flag (--listen, --mgmt-listen, --cert-dir, --management, --discovery) overrode it. Absent or empty when no serve overrides are active.
+	Overrides *[]ConfigOverride `json:"overrides,omitempty"`
+
 	// RtspListen The RTSP listener address (host:port as configured).
 	//
 	// Examples: :8554
@@ -275,6 +278,37 @@ type AvailableDevice struct {
 // AvailableDeviceState Always "available"; the device is detected but not configured.
 type AvailableDeviceState string
 
+// CertificateInfo Public metadata for the management listener's TLS certificate. Never includes private key material.
+type CertificateInfo struct {
+	// DnsNames Subject alternative name DNS entries.
+	DnsNames []string `json:"dnsNames"`
+
+	// FingerprintSha256 SHA-256 fingerprint of the DER certificate, colon-separated uppercase hex.
+	//
+	// Examples: AB:CD:EF
+	FingerprintSha256 string `json:"fingerprintSha256"`
+
+	// IpAddresses Subject alternative name IP entries.
+	IpAddresses []string `json:"ipAddresses"`
+
+	// Issuer Certificate issuer distinguished name.
+	Issuer string `json:"issuer"`
+
+	// NotAfter End of the certificate validity window.
+	NotAfter time.Time `json:"notAfter"`
+
+	// NotBefore Start of the certificate validity window.
+	NotBefore time.Time `json:"notBefore"`
+
+	// SelfSigned Whether the certificate is self-signed (subject equals issuer).
+	SelfSigned bool `json:"selfSigned"`
+
+	// Subject Certificate subject distinguished name.
+	//
+	// Examples: CN=birdnet-go-remote-mic
+	Subject string `json:"subject"`
+}
+
 // ChannelLevels One capture channel's audio levels over the last window.
 type ChannelLevels struct {
 	// Channel Zero-based capture channel index.
@@ -315,6 +349,20 @@ type Config struct {
 
 	// Notifications Condition-monitor settings behind the notification center. In a read every field is materialized to its effective value; in a patch an absent field (or an absent nested object) leaves the current value unchanged, so a partial block like {"host":{"cpuPercent":95}} touches only that field.
 	Notifications NotificationSettings `json:"notifications"`
+}
+
+// ConfigOverride One config field overridden by a serve CLI flag for this run. The effective value is in force now; the persisted value is what the config file holds and what a restart without the flag would use.
+type ConfigOverride struct {
+	// Effective Value in force for this run (from the serve flag).
+	Effective string `json:"effective"`
+
+	// Field Dotted config path of the overridden field.
+	//
+	// Examples: listen, management.listen
+	Field string `json:"field"`
+
+	// Persisted Value stored in the config file.
+	Persisted string `json:"persisted"`
 }
 
 // ConfigPatch A partial configuration update. Only the fields present are changed; the result must validate as a whole configuration.
@@ -967,6 +1015,20 @@ type ClientInterface interface {
 	// Corresponds with GET /system (the `GetSystem` operationId).
 	GetSystem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSystemCertificate Management TLS certificate metadata
+	//
+	// Public metadata for the certificate the management listener presents: subject, issuer, whether it is self-signed, its subject alternative names, its validity window, and its SHA-256 fingerprint. Never returns private key material. Use it to verify the certificate before trusting it, and /system/certificate/pem to import it into a client trust store.
+	//
+	// Corresponds with GET /system/certificate (the `GetSystemCertificate` operationId).
+	GetSystemCertificate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSystemCertificatePem Download the management TLS certificate (PEM)
+	//
+	// The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
+	//
+	// Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
+	GetSystemCertificatePem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// PostSystemRestart Request an appliance restart
 	//
 	// Requests a graceful shutdown and restart of the appliance process. The server responds 202 Accepted, flushes in-flight responses, and initiates a graceful exit.
@@ -1240,6 +1302,40 @@ func (c *Client) GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (
 // Corresponds with GET /system (the `GetSystem` operationId).
 func (c *Client) GetSystem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSystemRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSystemCertificate Management TLS certificate metadata
+//
+// Public metadata for the certificate the management listener presents: subject, issuer, whether it is self-signed, its subject alternative names, its validity window, and its SHA-256 fingerprint. Never returns private key material. Use it to verify the certificate before trusting it, and /system/certificate/pem to import it into a client trust store.
+//
+// Corresponds with GET /system/certificate (the `GetSystemCertificate` operationId).
+func (c *Client) GetSystemCertificate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSystemCertificateRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSystemCertificatePem Download the management TLS certificate (PEM)
+//
+// The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
+//
+// Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
+func (c *Client) GetSystemCertificatePem(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSystemCertificatePemRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -1658,6 +1754,60 @@ func NewGetSystemRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetSystemCertificateRequest constructs an http.Request for the GetSystemCertificate method
+func NewGetSystemCertificateRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/certificate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSystemCertificatePemRequest constructs an http.Request for the GetSystemCertificatePem method
+func NewGetSystemCertificatePemRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/certificate/pem")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewPostSystemRestartRequest constructs an http.Request for the PostSystemRestart method
 func NewPostSystemRestartRequest(server string) (*http.Request, error) {
 	var err error
@@ -1883,6 +2033,24 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /system (the `GetSystem` operationId).
 	GetSystemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemResponse, error)
+
+	// GetSystemCertificateWithResponse Management TLS certificate metadata
+	//
+	// Public metadata for the certificate the management listener presents: subject, issuer, whether it is self-signed, its subject alternative names, its validity window, and its SHA-256 fingerprint. Never returns private key material. Use it to verify the certificate before trusting it, and /system/certificate/pem to import it into a client trust store.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /system/certificate (the `GetSystemCertificate` operationId).
+	GetSystemCertificateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemCertificateResponse, error)
+
+	// GetSystemCertificatePemWithResponse Download the management TLS certificate (PEM)
+	//
+	// The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
+	GetSystemCertificatePemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemCertificatePemResponse, error)
 
 	// PostSystemRestartWithResponse Request an appliance restart
 	//
@@ -2498,6 +2666,95 @@ func (r GetSystemResponse) ContentType() string {
 	return ""
 }
 
+type GetSystemCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *CertificateInfo
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetSystemCertificateResponse) GetJSON200() *CertificateInfo {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r GetSystemCertificateResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r GetSystemCertificateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSystemCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSystemCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSystemCertificateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetSystemCertificatePemResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r GetSystemCertificatePemResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r GetSystemCertificatePemResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSystemCertificatePemResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSystemCertificatePemResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSystemCertificatePemResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type PostSystemRestartResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -2783,6 +3040,36 @@ func (c *ClientWithResponses) GetSystemWithResponse(ctx context.Context, reqEdit
 		return nil, err
 	}
 	return ParseGetSystemResponse(rsp)
+}
+
+// GetSystemCertificateWithResponse Management TLS certificate metadata
+//
+// Public metadata for the certificate the management listener presents: subject, issuer, whether it is self-signed, its subject alternative names, its validity window, and its SHA-256 fingerprint. Never returns private key material. Use it to verify the certificate before trusting it, and /system/certificate/pem to import it into a client trust store.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /system/certificate (the `GetSystemCertificate` operationId).
+func (c *ClientWithResponses) GetSystemCertificateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemCertificateResponse, error) {
+	rsp, err := c.GetSystemCertificate(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSystemCertificateResponse(rsp)
+}
+
+// GetSystemCertificatePemWithResponse Download the management TLS certificate (PEM)
+//
+// The management listener's certificate, PEM-encoded, so an operator can import it into a client trust store. This is the public certificate only; the private key is never exposed.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /system/certificate/pem (the `GetSystemCertificatePem` operationId).
+func (c *ClientWithResponses) GetSystemCertificatePemWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSystemCertificatePemResponse, error) {
+	rsp, err := c.GetSystemCertificatePem(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSystemCertificatePemResponse(rsp)
 }
 
 // PostSystemRestartWithResponse Request an appliance restart
@@ -3227,6 +3514,65 @@ func ParseGetSystemResponse(rsp *http.Response) (*GetSystemResponse, error) {
 	return response, nil
 }
 
+// ParseGetSystemCertificateResponse parses an HTTP response from a GetSystemCertificateWithResponse call
+func ParseGetSystemCertificateResponse(rsp *http.Response) (*GetSystemCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSystemCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest CertificateInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSystemCertificatePemResponse parses an HTTP response from a GetSystemCertificatePemWithResponse call
+func ParseGetSystemCertificatePemResponse(rsp *http.Response) (*GetSystemCertificatePemResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSystemCertificatePemResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParsePostSystemRestartResponse parses an HTTP response from a PostSystemRestartWithResponse call
 func ParsePostSystemRestartResponse(rsp *http.Response) (*PostSystemRestartResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -3298,6 +3644,12 @@ type ServerInterface interface {
 	// GetSystem Host system information
 	// (GET /system)
 	GetSystem(w http.ResponseWriter, r *http.Request)
+	// GetSystemCertificate Management TLS certificate metadata
+	// (GET /system/certificate)
+	GetSystemCertificate(w http.ResponseWriter, r *http.Request)
+	// GetSystemCertificatePem Download the management TLS certificate (PEM)
+	// (GET /system/certificate/pem)
+	GetSystemCertificatePem(w http.ResponseWriter, r *http.Request)
 	// PostSystemRestart Request an appliance restart
 	// (POST /system/restart)
 	PostSystemRestart(w http.ResponseWriter, r *http.Request)
@@ -3523,6 +3875,34 @@ func (siw *ServerInterfaceWrapper) GetSystem(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// GetSystemCertificate operation middleware
+func (siw *ServerInterfaceWrapper) GetSystemCertificate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSystemCertificate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSystemCertificatePem operation middleware
+func (siw *ServerInterfaceWrapper) GetSystemCertificatePem(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSystemCertificatePem(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PostSystemRestart operation middleware
 func (siw *ServerInterfaceWrapper) PostSystemRestart(w http.ResponseWriter, r *http.Request) {
 
@@ -3670,6 +4050,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/config", wrapper.PatchConfig)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system", wrapper.GetSystem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/restart", wrapper.PostSystemRestart)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system/certificate", wrapper.GetSystemCertificate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system/certificate/pem", wrapper.GetSystemCertificatePem)
 
 	return m
 }
@@ -4245,6 +4627,88 @@ func (response GetSystemdefaultApplicationProblemPlusJSONResponse) VisitGetSyste
 	return err
 }
 
+type GetSystemCertificateRequestObject struct {
+}
+
+type GetSystemCertificateResponseObject interface {
+	VisitGetSystemCertificateResponse(w http.ResponseWriter) error
+}
+
+type GetSystemCertificate200JSONResponse CertificateInfo
+
+func (response GetSystemCertificate200JSONResponse) VisitGetSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSystemCertificatedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetSystemCertificatedefaultApplicationProblemPlusJSONResponse) VisitGetSystemCertificateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSystemCertificatePemRequestObject struct {
+}
+
+type GetSystemCertificatePemResponseObject interface {
+	VisitGetSystemCertificatePemResponse(w http.ResponseWriter) error
+}
+
+type GetSystemCertificatePem200ApplicationxPemFileResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetSystemCertificatePem200ApplicationxPemFileResponse) VisitGetSystemCertificatePemResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetSystemCertificatePemdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetSystemCertificatePemdefaultApplicationProblemPlusJSONResponse) VisitGetSystemCertificatePemResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PostSystemRestartRequestObject struct {
 }
 
@@ -4321,6 +4785,12 @@ type StrictServerInterface interface {
 	// GetSystem Host system information
 	// (GET /system)
 	GetSystem(ctx context.Context, request GetSystemRequestObject) (GetSystemResponseObject, error)
+	// GetSystemCertificate Management TLS certificate metadata
+	// (GET /system/certificate)
+	GetSystemCertificate(ctx context.Context, request GetSystemCertificateRequestObject) (GetSystemCertificateResponseObject, error)
+	// GetSystemCertificatePem Download the management TLS certificate (PEM)
+	// (GET /system/certificate/pem)
+	GetSystemCertificatePem(ctx context.Context, request GetSystemCertificatePemRequestObject) (GetSystemCertificatePemResponseObject, error)
 	// PostSystemRestart Request an appliance restart
 	// (POST /system/restart)
 	PostSystemRestart(ctx context.Context, request PostSystemRestartRequestObject) (PostSystemRestartResponseObject, error)
@@ -4666,6 +5136,54 @@ func (sh *strictHandler) GetSystem(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetSystemResponseObject); ok {
 		if err := validResponse.VisitGetSystemResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSystemCertificate operation middleware
+func (sh *strictHandler) GetSystemCertificate(w http.ResponseWriter, r *http.Request) {
+	var request GetSystemCertificateRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSystemCertificate(ctx, request.(GetSystemCertificateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSystemCertificate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSystemCertificateResponseObject); ok {
+		if err := validResponse.VisitGetSystemCertificateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSystemCertificatePem operation middleware
+func (sh *strictHandler) GetSystemCertificatePem(w http.ResponseWriter, r *http.Request) {
+	var request GetSystemCertificatePemRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSystemCertificatePem(ctx, request.(GetSystemCertificatePemRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSystemCertificatePem")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSystemCertificatePemResponseObject); ok {
+		if err := validResponse.VisitGetSystemCertificatePemResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

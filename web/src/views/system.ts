@@ -12,7 +12,24 @@ import {
   unparsedThresholds,
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.js";
-import type { ApplianceStatus, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
+
+// OVERRIDE_LABELS maps a serve-override's dotted config field to an operator-
+// facing label. An unmapped field falls back to its dotted path.
+const OVERRIDE_LABELS: Record<string, string> = {
+  listen: "RTSP listen address",
+  "management.listen": "Management listen address",
+  "management.certDir": "Certificate directory",
+  "management.enabled": "Management API",
+  "discovery.enabled": "mDNS discovery",
+};
+
+// formatCertTime renders an RFC 3339 timestamp in the operator's locale, falling
+// back to the raw string if it does not parse.
+function formatCertTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
 
 // TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
 // so an obviously invalid token is caught before the round trip.
@@ -70,6 +87,20 @@ export class SystemView {
   private netActionsEl: HTMLElement | null;
   private discoveryEl: HTMLInputElement | null;
   private netDirty = false;
+  private overridesEl: HTMLElement | null;
+  // Signature of the override set last rendered into the #sys-overrides live
+  // region, so a 3s status poll that changes nothing does not re-announce it.
+  private lastOverridesSig: string | null = null;
+
+  private certCardEl: HTMLElement | null;
+  private certInfoEl: HTMLElement | null;
+  private certFingerprintEl: HTMLInputElement | null;
+  // cert is the management certificate metadata, fetched once (it is immutable
+  // for the process lifetime). certPending guards concurrent loads; certUnavailable
+  // is set on a 501 so a permanently-unmounted endpoint is not polled forever.
+  private cert: CertificateInfo | null = null;
+  private certPending = false;
+  private certUnavailable = false;
 
   private authCardEl: HTMLElement | null;
   private authStateEl: HTMLElement | null;
@@ -107,8 +138,13 @@ export class SystemView {
     this.notifyActionsEl = document.getElementById("sys-notify-actions");
     this.notifyEnabledEl = document.getElementById("sys-notify-enabled") as HTMLInputElement | null;
     this.notifyErrorEl = document.getElementById("sys-notify-error");
+    this.overridesEl = document.getElementById("sys-overrides");
+    this.certCardEl = document.getElementById("sys-cert-card");
+    this.certInfoEl = document.getElementById("sys-cert-info");
+    this.certFingerprintEl = document.getElementById("sys-cert-fingerprint") as HTMLInputElement | null;
     const btn = document.getElementById("btn-sys-restart") as HTMLButtonElement | null;
     if (btn) btn.addEventListener("click", () => triggerApplianceRestart());
+    this.bindCertificate();
 
     store.addEventListener("system", (e: Event) => {
       this.system = (e as CustomEvent<SystemInfo>).detail;
@@ -119,6 +155,11 @@ export class SystemView {
       this.status = (e as CustomEvent<ApplianceStatus>).detail;
       this.renderTiles();
       this.renderInfo();
+      this.renderOverrides();
+      // The certificate is immutable, so fetch it once. This first status event is
+      // the load trigger (the token, if any, is settled by now) and each later one
+      // retries a transient failure; a 501 sets certUnavailable to stop retrying.
+      if (!this.cert && !this.certUnavailable) void this.loadCertificate();
     });
     store.addEventListener("devices", (e: Event) => {
       this.renderDeviceRows((e as CustomEvent<Device[]>).detail);
@@ -159,6 +200,115 @@ export class SystemView {
     // preventScroll: the smooth scroll above already positions the card; a focus
     // scroll would fight it with an instant jump.
     this.authTokenEl?.focus({ preventScroll: true });
+  }
+
+  private bindCertificate(): void {
+    document.getElementById("btn-cert-copy")?.addEventListener("click", () => {
+      const value = this.cert?.fingerprintSha256;
+      if (!value || !navigator.clipboard) return;
+      navigator.clipboard.writeText(value)
+        .then(() => showToast("Fingerprint copied."))
+        .catch(() => showToast("Copy failed", "error"));
+    });
+    document.getElementById("btn-cert-download")?.addEventListener("click", () => void this.downloadCertificate());
+  }
+
+  // renderOverrides shows or hides the serve-overrides note on the Network card.
+  // Each entry explains why a config-view (persisted) value differs from what the
+  // appliance is actually running (effective), because a serve CLI flag overrode
+  // it for this run. Empty or absent means no override is active.
+  private renderOverrides(): void {
+    if (!this.overridesEl) return;
+    const overrides = this.status?.overrides ?? [];
+    // Rebuild only when the set actually changes. This runs on every 3s status
+    // poll and #sys-overrides is a role=status live region, so an unconditional
+    // rebuild would re-announce the unchanged note to a screen reader each tick.
+    // Mirrors populateAuth's setText guard on #sys-auth-state.
+    const sig = overrides.map((o) => `${o.field}=${o.effective}|${o.persisted}`).join("\n");
+    if (sig === this.lastOverridesSig) return;
+    this.lastOverridesSig = sig;
+    this.overridesEl.textContent = "";
+    if (overrides.length === 0) {
+      this.overridesEl.hidden = true;
+      return;
+    }
+    this.overridesEl.hidden = false;
+    this.overridesEl.appendChild(elem("span", "staged-badge", "Serve overrides active"));
+    for (const o of overrides) {
+      const label = OVERRIDE_LABELS[o.field] ?? o.field;
+      const persisted = o.persisted === "" ? "(default)" : o.persisted;
+      this.overridesEl.appendChild(
+        elem("span", "override-line", `${label}: serving ${o.effective} (config file: ${persisted})`),
+      );
+    }
+  }
+
+  // loadCertificate fetches the management certificate metadata once. A 501 means
+  // the endpoints are not mounted (the appliance could not read its certificate),
+  // so it stops retrying; any other failure is left transient for a later retry.
+  private async loadCertificate(): Promise<void> {
+    if (this.certPending) return;
+    this.certPending = true;
+    try {
+      this.cert = await api.getCertificate();
+      this.renderCertificate();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 501) this.certUnavailable = true;
+    } finally {
+      this.certPending = false;
+    }
+  }
+
+  // renderCertificate fills the certificate panel. The certificate is immutable,
+  // so this runs once (unlike the diffed telemetry renders) and rebuilds the grid.
+  private renderCertificate(): void {
+    const cert = this.cert;
+    if (!cert || !this.certCardEl || !this.certInfoEl) return;
+    this.certCardEl.hidden = false;
+    const rows: Array<[string, string]> = [
+      ["Type", cert.selfSigned ? "Self-issued (subject matches issuer)" : "CA-issued (distinct issuer)"],
+      ["Subject", cert.subject],
+      ["Issuer", cert.issuer],
+      ["Valid from", formatCertTime(cert.notBefore)],
+      ["Valid until", formatCertTime(cert.notAfter)],
+      ["DNS names", cert.dnsNames.length ? cert.dnsNames.join(", ") : "-"],
+      ["IP addresses", cert.ipAddresses.length ? cert.ipAddresses.join(", ") : "-"],
+    ];
+    this.certInfoEl.textContent = "";
+    for (const [k, v] of rows) {
+      this.certInfoEl.appendChild(elem("dt", "info-key", k));
+      this.certInfoEl.appendChild(elem("dd", "info-val mono", v));
+    }
+    if (this.certFingerprintEl) this.certFingerprintEl.value = cert.fingerprintSha256;
+  }
+
+  // downloadCertificate fetches the PEM (bearer-authenticated, so a bare link
+  // could not) and saves it via a Blob object URL. The public certificate only;
+  // the private key is never fetched.
+  private async downloadCertificate(): Promise<void> {
+    const btn = document.getElementById("btn-cert-download") as HTMLButtonElement | null;
+    // setBusy keeps the button focusable (aria-disabled, not disabled), so guard
+    // re-entry against a keyboard re-activation while the fetch is in flight.
+    if (btn?.getAttribute("aria-disabled") === "true") return;
+    if (btn) setBusy(btn, "Preparing...");
+    try {
+      const pem = await api.getCertificatePem();
+      const url = URL.createObjectURL(new Blob([pem], { type: "application/x-pem-file" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "birdnet-go-remote-mic-mgmt.pem";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoke on the next tick: revoking synchronously right after click() can
+      // cancel the download before the navigation starts in some browsers.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      showToast("Certificate downloaded.");
+    } catch (err: unknown) {
+      showToast(`Download failed: ${apiErrorMessage(err)}`, "error");
+    } finally {
+      if (btn) clearBusy(btn, "Download PEM");
+    }
   }
 
   // buildNotifyField builds one threshold input (label, number input with the

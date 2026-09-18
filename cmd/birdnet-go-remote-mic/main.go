@@ -234,6 +234,11 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	}
 	prov.setDiscovery(cfg.DiscoveryEnabled())
 	prov.setAuthRequired(cfg.AuthRequired())
+	// Snapshot which config fields a serve CLI flag overrode for this run, so the
+	// web UI can explain why the config view (persisted values) diverges from the
+	// running listeners and discovery state (effective values). cfg is the running
+	// config and storeCfg the override-free persisted config (see splitServeConfig).
+	prov.overrides = buildOverrides(&cfg, &storeCfg, ov)
 
 	// One shared access token gates the RTSP stream (Digest) and the management
 	// API and web UI (Bearer). The guard is consulted per request and swapped by
@@ -414,6 +419,29 @@ func splitServeConfig(loaded *config.Config, ov serveOverrides) (running, store 
 	running = loaded.Clone()
 	applyServeOverrides(&running, ov)
 	return running, store
+}
+
+// buildOverrides reports the config fields a serve CLI flag overrode for this
+// run, comparing the running config against the override-free persisted config.
+// Only a flag that was actually given AND changed the value yields an entry, so
+// a flag set to the same value the config file already holds lights nothing. The
+// booleans are rendered with strconv.FormatBool so effective and persisted share
+// one string type the UI renders directly.
+func buildOverrides(running, store *config.Config, ov serveOverrides) []mgmtserver.ConfigOverride {
+	var out []mgmtserver.ConfigOverride
+	add := func(set bool, field, effective, persisted string) {
+		if set && effective != persisted {
+			out = append(out, mgmtserver.ConfigOverride{Field: field, Effective: effective, Persisted: persisted})
+		}
+	}
+	add(ov.set["listen"], "listen", running.Listen, store.Listen)
+	add(ov.set["mgmt-listen"], "management.listen", running.Management.Listen, store.Management.Listen)
+	add(ov.set["cert-dir"], "management.certDir", running.Management.CertDir, store.Management.CertDir)
+	add(ov.set["management"], "management.enabled",
+		strconv.FormatBool(running.ManagementEnabled()), strconv.FormatBool(store.ManagementEnabled()))
+	add(ov.set["discovery"], "discovery.enabled",
+		strconv.FormatBool(running.DiscoveryEnabled()), strconv.FormatBool(store.DiscoveryEnabled()))
+	return out
 }
 
 // newServeReloader builds the Reloader the management API calls to hot-apply a

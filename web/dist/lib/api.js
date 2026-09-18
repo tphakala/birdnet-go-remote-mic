@@ -102,6 +102,15 @@ export class ApiClient {
     async getSystem() {
         return this.request("/system");
     }
+    async getCertificate() {
+        return this.request("/system/certificate");
+    }
+    // getCertificatePem returns the PEM-encoded public certificate as text. The
+    // response is not JSON, so request() returns its body verbatim; the bearer
+    // token is still attached, which a bare link navigation could not do.
+    async getCertificatePem() {
+        return this.request("/system/certificate/pem");
+    }
     async getNotifications() {
         return this.request("/notifications");
     }

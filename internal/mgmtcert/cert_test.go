@@ -24,7 +24,7 @@ func TestEnsureGeneratesAndPersists(t *testing.T) {
 	certPath := filepath.Join(dir, "cert.pem")
 	keyPath := filepath.Join(dir, "key.pem")
 
-	got, err := Ensure(certPath, keyPath, []string{localhost, "127.0.0.1"})
+	got, err := Ensure(certPath, keyPath, []string{localhost, loopbackIP})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestEnsureGeneratesAndPersists(t *testing.T) {
 	if err := leaf.VerifyHostname(localhost); err != nil {
 		t.Errorf("hostname localhost not covered: %v", err)
 	}
-	if len(leaf.IPAddresses) == 0 || !leaf.IPAddresses[0].Equal(net.ParseIP("127.0.0.1")) {
+	if len(leaf.IPAddresses) == 0 || !leaf.IPAddresses[0].Equal(net.ParseIP(loopbackIP)) {
 		t.Errorf("IP SAN 127.0.0.1 not present, got %v", leaf.IPAddresses)
 	}
 }

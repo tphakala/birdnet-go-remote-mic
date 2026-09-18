@@ -104,6 +104,15 @@ export interface ConfigUpdateResult {
   restartRequired: boolean;
 }
 
+// ConfigOverride names one config field a serve CLI flag overrode for this run:
+// the value in force now (effective) versus what the config file holds
+// (persisted). Present only when the two differ.
+export interface ConfigOverride {
+  field: string;
+  effective: string;
+  persisted: string;
+}
+
 export interface ApplianceStatus {
   version: string;
   uptimeSeconds: number;
@@ -114,6 +123,22 @@ export interface ApplianceStatus {
   authRequired: boolean;
   devicesServing: number;
   devicesTotal: number;
+  // Config fields a serve CLI flag overrode for this run; absent or empty when
+  // none are active.
+  overrides?: ConfigOverride[];
+}
+
+// CertificateInfo is the public metadata of the management listener's TLS
+// certificate (GET /system/certificate). It never carries private key material.
+export interface CertificateInfo {
+  subject: string;
+  issuer: string;
+  selfSigned: boolean;
+  dnsNames: string[];
+  ipAddresses: string[];
+  notBefore: string;
+  notAfter: string;
+  fingerprintSha256: string;
 }
 
 export interface Device {

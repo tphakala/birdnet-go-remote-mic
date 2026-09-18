@@ -187,6 +187,7 @@
               <span class="section-desc">Appliance-wide streaming and discovery settings. The mDNS advertisement changes as soon as you save; the listen addresses are read at startup, so changing those in the config file needs a restart.</span>
             </div>
           </div>
+          <div class="override-note" id="sys-overrides" role="status" hidden></div>
           <div class="form-grid-2col">
             <div class="form-field">
               <label class="field-label" for="sys-rtsp-listen">RTSP Server Listen Address</label>
@@ -213,6 +214,29 @@
             <span class="network-actions-spacer"></span>
             <button type="button" class="btn btn-secondary" id="btn-network-discard">Discard</button>
             <button type="button" class="btn btn-primary" id="btn-network-save">Save Changes</button>
+          </div>
+        </div>
+
+        <!-- Management TLS certificate: read-only metadata and PEM download for client trust (from GET /system/certificate) -->
+        <div class="config-section-card" id="sys-cert-card" hidden>
+          <div class="section-head">
+            <div>
+              <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="m9 12 2 2 4-4"></path></svg><span>Management Certificate</span></h2>
+              <span class="section-desc">The TLS certificate this management listener presents. Compare the fingerprint against your browser and download the certificate to trust it in a client. The private key is never exposed.</span>
+            </div>
+          </div>
+          <dl class="info-grid" id="sys-cert-info"></dl>
+          <div class="form-field">
+            <label class="field-label" for="sys-cert-fingerprint">SHA-256 Fingerprint</label>
+            <div class="auth-token-row">
+              <input type="text" class="field-input mono" id="sys-cert-fingerprint" readonly spellcheck="false" aria-describedby="sys-cert-fingerprint-hint">
+              <button type="button" class="btn btn-secondary" id="btn-cert-copy" aria-label="Copy certificate fingerprint">Copy</button>
+            </div>
+            <span class="field-hint" id="sys-cert-fingerprint-hint">Verify this matches the certificate your client shows before trusting it.</span>
+          </div>
+          <div class="network-actions">
+            <span class="network-actions-spacer"></span>
+            <button type="button" class="btn btn-secondary" id="btn-cert-download">Download PEM</button>
           </div>
         </div>
 
