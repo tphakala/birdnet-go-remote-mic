@@ -130,8 +130,9 @@ var randRead = rand.Read
 // pinned map of active conditions under one mutex, plus a shared sse.Broadcaster
 // for the SSE fan-out. An ID is assigned and the entry broadcast while c.mu is
 // held, so every subscriber sees strictly increasing IDs; a slow subscriber
-// sees gaps, never reordering. The broadcaster has its own lock, always taken
-// under c.mu (c.mu -> broadcaster mutex), so publishing stays ordered.
+// sees gaps, never reordering. On the publish path the broadcaster's lock is
+// taken while c.mu is held (c.mu -> broadcaster mutex), so publishing stays
+// ID-ordered; Subscribe takes only the broadcaster's own lock, not c.mu.
 type Center struct {
 	clock    func() time.Time
 	capacity int

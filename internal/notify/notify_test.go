@@ -379,7 +379,11 @@ func TestHandlerMultiplexesNotificationsAndLevels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close body: %v", err)
+		}
+	}()
 
 	// The stream is best effort: a notification published before the handler
 	// subscribes is dropped by design (the snapshot is the source of truth). Wait

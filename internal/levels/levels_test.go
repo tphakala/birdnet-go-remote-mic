@@ -202,8 +202,8 @@ func TestSubscribeResetsResidualMeters(t *testing.T) {
 // meter each tick and broadcasts a marshaled levels event to each subscriber.
 // The SSE transport moved to internal/sse, so this is the only coverage of
 // Hub.Run (the 10 Hz sampler, whose heartbeat case this change removed) and
-// Hub.broadcast; without it a regression in the subscriber gate or the fan-out
-// would ship green.
+// the shared sse.Broadcaster fan-out (h.bc.Broadcast); without it a regression
+// in the subscriber gate or the fan-out would ship green.
 func TestRunBroadcastsLevels(t *testing.T) {
 	h := NewHub()
 	h.interval = 5 * time.Millisecond

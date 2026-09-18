@@ -1354,14 +1354,17 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   transform: translateY(1px) scale(0.97);
 }
 
-/* Keyboard focus ring for buttons, matching the accent ring on .btn-link,
-   .toast-dismiss and the other controls. Applies app-wide (predates the
-   notification center): before this, .btn and .icon-btn fell back to the UA
-   default ring, which is faint on dark surfaces. */
+/* Keyboard focus ring for buttons, applied app-wide (predates the notification
+   center): before this, .btn and .icon-btn fell back to the faint UA default
+   ring on dark surfaces. Rendered as an outline, not a box-shadow, so it stays
+   visible in forced-colors / Windows High Contrast mode, coexists with the
+   variant :hover box-shadows instead of being clobbered by them, and the offset
+   keeps it distinct from the accent fill on .btn-primary. Mirrors the
+   .switch-control focus pattern already used in this file. */
 .btn:focus-visible,
 .icon-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-cyan);
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
 }
 
 .btn-primary {

@@ -78,11 +78,29 @@ func TestBroadcasterCancelUnsubscribes(t *testing.T) {
 
 func TestBroadcasterCancelIdempotent(t *testing.T) {
 	b := NewBroadcaster(4)
-	_, cancel := b.Subscribe()
-	cancel()
-	cancel() // second call must be a no-op, not a panic or a double-delete
-	if got := b.Len(); got != 0 {
-		t.Fatalf("Len after double cancel = %d, want 0", got)
+	_, cancel1 := b.Subscribe()
+	ch2, cancel2 := b.Subscribe()
+	defer cancel2()
+
+	cancel1()
+	cancel1() // second call must be a no-op, not a panic or a double-delete
+
+	// The double-cancel must remove only the first subscriber, leaving the
+	// second in the set rather than clearing or corrupting it.
+	if got := b.Len(); got != 1 {
+		t.Fatalf("Len after double cancel of the first subscriber = %d, want 1", got)
+	}
+
+	// The surviving second subscriber still receives a subsequent broadcast,
+	// proving the double-cancel did not corrupt the subscriber set.
+	b.Broadcast(testEvent("after"))
+	select {
+	case got := <-ch2:
+		if got.Name != "after" {
+			t.Fatalf("second subscriber got %q, want after", got.Name)
+		}
+	default:
+		t.Fatal("second subscriber received nothing after the double cancel")
 	}
 }
 

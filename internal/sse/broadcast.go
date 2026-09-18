@@ -3,9 +3,11 @@ package sse
 import "sync"
 
 // defaultBroadcastBuffer is the per-subscriber channel depth a Broadcaster uses
-// when the caller passes a non-positive buffer. It matches the handler's merge
-// buffer so a producer that does not care about depth gets a sensible default.
-const defaultBroadcastBuffer = 32
+// when the caller passes a non-positive buffer. It is defined as
+// defaultMergeBuffer (in sse.go) so the two cannot drift: a producer that does
+// not care about depth gets the same sensible default as the handler's merge
+// buffer.
+const defaultBroadcastBuffer = defaultMergeBuffer
 
 // subscriber is one consumer's delivery channel. It is unexported: a consumer
 // only ever holds the receive end and the cancel func Subscribe hands back.
@@ -17,7 +19,7 @@ type subscriber struct {
 // with drop-on-full delivery. It owns the subscriber set and its own mutex, so
 // a producer that used to hand-roll the set (a "subscriber{ ch }" plus a
 // "map[*subscriber]struct{}" under a lock, a non-blocking broadcast, and a
-// sync.Once cancel that never closes the channel) embeds one instead. The
+// sync.Once cancel that never closes the channel) holds one instead. The
 // legitimate per-producer state stays at the producer: the levels hub keeps its
 // atomic subscriber gate and first-subscriber meter reset, the notification
 // center keeps its nil-receiver guard.
@@ -35,9 +37,11 @@ type Broadcaster struct {
 var _ Source = (*Broadcaster)(nil)
 
 // NewBroadcaster returns a ready Broadcaster whose subscriber channels are
-// buffered to buffer entries. A non-positive buffer falls back to the default;
-// the buffer absorbs a burst, and a slow consumer that fills it drops events
-// rather than stalling Broadcast.
+// buffered to buffer entries. A Broadcaster must be constructed with
+// NewBroadcaster: the zero value has a nil subscriber map and panics on
+// Subscribe. A non-positive buffer falls back to the default; the buffer
+// absorbs a burst, and a slow consumer that fills it drops events rather than
+// stalling Broadcast.
 func NewBroadcaster(buffer int) *Broadcaster {
 	if buffer <= 0 {
 		buffer = defaultBroadcastBuffer
@@ -83,9 +87,11 @@ func (b *Broadcaster) Broadcast(ev Event) {
 	b.mu.Unlock()
 }
 
-// Len reports the current number of subscribers. A producer uses it to gate
-// work when no client is connected; a test uses it to assert subscribe and
-// cancel bookkeeping.
+// Len reports the current number of subscribers. It is a bookkeeping accessor
+// that tests use to assert subscribe and cancel bookkeeping; no production code
+// gates on it. Producers that need a connected-client count keep their own (the
+// levels hub gates its sampler on an atomic subscriber count) rather than
+// calling Len.
 func (b *Broadcaster) Len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

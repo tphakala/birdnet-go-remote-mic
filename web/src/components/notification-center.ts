@@ -142,6 +142,13 @@ export class NotificationCenter {
     setHidden(this.emptyEl, active.length > 0 || history.length > 0);
   }
 
+  // relTime renders one event's ISO timestamp as a relative "N ago" string,
+  // correcting for server clock skew. Shared by the initial render and the
+  // open-panel restamp so the two cannot drift.
+  private relTime(iso: string, offsetMs: number, nowMs: number): string {
+    return formatRelative(Date.parse(iso) + offsetMs, nowMs);
+  }
+
   private renderRow(n: Notification, nowMs: number, offsetMs: number): HTMLElement {
     const row = elem("div", `notif-row notif-${n.severity}`);
 
@@ -156,7 +163,7 @@ export class NotificationCenter {
     title.append(elem("span", "visually-hidden", `${SEVERITY_LABEL[n.severity]}: `));
     title.append(document.createTextNode(n.title));
     top.append(title);
-    const time = elem("time", "notif-row-time", formatRelative(Date.parse(n.time) + offsetMs, nowMs));
+    const time = elem("time", "notif-row-time", this.relTime(n.time, offsetMs, nowMs));
     time.setAttribute("datetime", n.time);
     top.append(time);
 
@@ -180,7 +187,7 @@ export class NotificationCenter {
     const times = this.panel.querySelectorAll<HTMLElement>("time.notif-row-time");
     times.forEach((t) => {
       const iso = t.getAttribute("datetime");
-      if (iso) setText(t, formatRelative(Date.parse(iso) + offsetMs, nowMs));
+      if (iso) setText(t, this.relTime(iso, offsetMs, nowMs));
     });
   }
 
