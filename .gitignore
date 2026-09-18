@@ -1,5 +1,7 @@
 # Build artifacts
 /bin/
+# Bare binary from `go build ./cmd/birdnet-go-remote-mic` (Taskfile builds go to /bin/).
+/birdnet-go-remote-mic
 *.exe
 *.test
 *.out

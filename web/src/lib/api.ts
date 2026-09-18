@@ -1,6 +1,7 @@
 import type {
   ApplianceStatus,
   AvailableDevice,
+  CertificateInfo,
   Config,
   ConfigPatch,
   ConfigUpdateResult,
@@ -140,6 +141,17 @@ export class ApiClient {
 
   public async getSystem(): Promise<SystemInfo> {
     return this.request<SystemInfo>("/system");
+  }
+
+  public async getCertificate(): Promise<CertificateInfo> {
+    return this.request<CertificateInfo>("/system/certificate");
+  }
+
+  // getCertificatePem returns the PEM-encoded public certificate as text. The
+  // response is not JSON, so request() returns its body verbatim; the bearer
+  // token is still attached, which a bare link navigation could not do.
+  public async getCertificatePem(): Promise<string> {
+    return this.request<string>("/system/certificate/pem");
   }
 
   public async getNotifications(): Promise<NotificationSnapshot> {

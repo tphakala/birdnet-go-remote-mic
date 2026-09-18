@@ -407,6 +407,47 @@ paths:
         default:
           $ref: "#/components/responses/Problem"
 
+  /system/certificate:
+    get:
+      operationId: getSystemCertificate
+      tags: [system]
+      summary: Management TLS certificate metadata
+      description: >
+        Public metadata for the certificate the management listener presents:
+        subject, issuer, whether it is self-signed, its subject alternative
+        names, its validity window, and its SHA-256 fingerprint. Never returns
+        private key material. Use it to verify the certificate before trusting
+        it, and /system/certificate/pem to import it into a client trust store.
+      responses:
+        "200":
+          description: Current management certificate metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateInfo"
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /system/certificate/pem:
+    get:
+      operationId: getSystemCertificatePem
+      tags: [system]
+      summary: Download the management TLS certificate (PEM)
+      description: >
+        The management listener's certificate, PEM-encoded, so an operator can
+        import it into a client trust store. This is the public certificate
+        only; the private key is never exposed.
+      responses:
+        "200":
+          description: The PEM-encoded public certificate.
+          content:
+            application/x-pem-file:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Problem"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -481,6 +522,83 @@ components:
           type: integer
           minimum: 0
           description: Devices in the configuration, whatever their state.
+        overrides:
+          type: array
+          description: >
+            Serve-time CLI flag overrides in force for this run. Each entry
+            names a config field whose effective (running) value differs from
+            the persisted config file value because a serve flag (--listen,
+            --mgmt-listen, --cert-dir, --management, --discovery) overrode it.
+            Absent or empty when no serve overrides are active.
+          items:
+            $ref: "#/components/schemas/ConfigOverride"
+
+    ConfigOverride:
+      type: object
+      description: >
+        One config field overridden by a serve CLI flag for this run. The
+        effective value is in force now; the persisted value is what the config
+        file holds and what a restart without the flag would use.
+      required: [field, effective, persisted]
+      properties:
+        field:
+          type: string
+          description: Dotted config path of the overridden field.
+          examples: ["listen", "management.listen"]
+        effective:
+          type: string
+          description: Value in force for this run (from the serve flag).
+        persisted:
+          type: string
+          description: Value stored in the config file.
+
+    CertificateInfo:
+      type: object
+      description: >
+        Public metadata for the management listener's TLS certificate. Never
+        includes private key material.
+      required:
+        - subject
+        - issuer
+        - selfSigned
+        - dnsNames
+        - ipAddresses
+        - notBefore
+        - notAfter
+        - fingerprintSha256
+      properties:
+        subject:
+          type: string
+          description: Certificate subject distinguished name.
+          examples: ["CN=birdnet-go-remote-mic"]
+        issuer:
+          type: string
+          description: Certificate issuer distinguished name.
+        selfSigned:
+          type: boolean
+          description: Whether the certificate is self-signed (subject equals issuer).
+        dnsNames:
+          type: array
+          description: Subject alternative name DNS entries.
+          items:
+            type: string
+        ipAddresses:
+          type: array
+          description: Subject alternative name IP entries.
+          items:
+            type: string
+        notBefore:
+          type: string
+          format: date-time
+          description: Start of the certificate validity window.
+        notAfter:
+          type: string
+          format: date-time
+          description: End of the certificate validity window.
+        fingerprintSha256:
+          type: string
+          description: SHA-256 fingerprint of the DER certificate, colon-separated uppercase hex.
+          examples: ["AB:CD:EF"]
 
     Device:
       type: object

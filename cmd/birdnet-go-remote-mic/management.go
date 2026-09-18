@@ -66,6 +66,17 @@ type provider struct {
 	// its capture open begins and the two never contend for the same id. Atomic
 	// because reconcile stores it while the enumeration goroutine reads it.
 	configured atomic.Pointer[map[string]bool]
+	// overrides names the config fields a serve CLI flag overrode for this run,
+	// as a startup snapshot of the running-vs-persisted divergence. It is set once
+	// before the API starts serving and never mutated, so a plain field read from
+	// handler goroutines is safe. Empty when no serve override is active.
+	overrides []mgmtserver.ConfigOverride
+	// certInfo and certPEM describe the management listener's TLS certificate for
+	// the certificate endpoints. Both are set once in startManagement before the
+	// server begins serving and never mutated (the certificate is immutable for
+	// the process lifetime), so a plain field read from handler goroutines is safe.
+	certInfo mgmtserver.CertificateInfo
+	certPEM  []byte
 }
 
 // discoveryEnabled reports the current mDNS-advertisement flag.
@@ -83,12 +94,29 @@ func (p *provider) setAuthRequired(v bool) { p.auth.Store(v) }
 var (
 	_ mgmtserver.Provider       = (*provider)(nil)
 	_ mgmtserver.SystemProvider = (*provider)(nil)
+	_ mgmtserver.CertProvider   = (*provider)(nil)
 )
 
 // System gathers host hardware facts and live metrics for GET /system.
 func (p *provider) System() mgmtserver.SystemInfo {
 	return sysinfo.Collect(p.dataPath, p.sampler)
 }
+
+// setCertificate records the management certificate's public metadata and its
+// PEM body for the certificate endpoints. It is called once during startup,
+// before the server serves, so the fields are safe to read without a lock.
+func (p *provider) setCertificate(info mgmtserver.CertificateInfo, pemBytes []byte) {
+	p.certInfo = info
+	p.certPEM = pemBytes
+}
+
+// Certificate returns the management listener's certificate metadata for
+// GET /system/certificate.
+func (p *provider) Certificate() mgmtserver.CertificateInfo { return p.certInfo }
+
+// CertificatePEM returns the PEM-encoded public certificate for
+// GET /system/certificate/pem. It never returns the private key.
+func (p *provider) CertificatePEM() []byte { return p.certPEM }
 
 // setDevices publishes the final record list once the open loop has built it.
 func (p *provider) setDevices(d []*deviceRuntime) { p.devices.Store(&d) }
@@ -119,6 +147,7 @@ func (p *provider) Status() mgmtserver.ApplianceStatus {
 		AuthRequired:     p.auth.Load(),
 		DevicesServing:   serving,
 		DevicesTotal:     len(devices),
+		Overrides:        p.overrides,
 	}
 }
 
@@ -352,6 +381,19 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		return closedMgmt(), false
 	}
 
+	// Describe the certificate for the read-only certificate endpoints. A failure
+	// here is not fatal: the API still serves, but the certificate endpoints stay
+	// unmounted and return 501, so a describe fault never takes the appliance down.
+	certMounted := false
+	if info, derr := mgmtcert.Describe(&cert); derr != nil {
+		log.Printf("management certificate metadata unavailable: %v (certificate endpoints disabled)", derr)
+	} else if pemBytes, perr := mgmtcert.LeafPEM(&cert); perr != nil {
+		log.Printf("management certificate PEM unavailable: %v (certificate endpoints disabled)", perr)
+	} else {
+		prov.setCertificate(toCertInfo(info), pemBytes)
+		certMounted = true
+	}
+
 	// Bind synchronously so a listen failure (for example the port already in
 	// use) is observed here and reported through ok, rather than being swallowed
 	// asynchronously inside the serve goroutine.
@@ -366,6 +408,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		mgmtserver.WithSystemInfo(prov),
 		mgmtserver.WithRestart(restartFn),
 		mgmtserver.WithAuth(guard),
+	}
+	if certMounted {
+		opts = append(opts, mgmtserver.WithCertificate(prov))
 	}
 	if reloader != nil {
 		opts = append(opts, mgmtserver.WithReloader(reloader))
@@ -425,6 +470,21 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 
 	log.Printf("management API on https://%s%s (self-signed cert at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
 	return &mgmt{done: done, addr: ln.Addr().String()}, true
+}
+
+// toCertInfo adapts the mgmtcert metadata into the mgmtserver domain type, so
+// mgmtcert stays free of any dependency on the HTTP-server package.
+func toCertInfo(info mgmtcert.Info) mgmtserver.CertificateInfo {
+	return mgmtserver.CertificateInfo{
+		Subject:           info.Subject,
+		Issuer:            info.Issuer,
+		SelfSigned:        info.SelfSigned,
+		DNSNames:          info.DNSNames,
+		IPAddresses:       info.IPAddresses,
+		NotBefore:         info.NotBefore,
+		NotAfter:          info.NotAfter,
+		FingerprintSHA256: info.FingerprintSHA256,
+	}
 }
 
 // certHosts returns the SANs to embed in the self-signed certificate: loopback,

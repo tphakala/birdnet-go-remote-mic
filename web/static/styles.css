@@ -1348,6 +1348,20 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   50% { opacity: 0.65; }
 }
 
+/* The serve-overrides indicator on the Network card. Layout only, with no color
+   declarations, so it does not regress Windows high-contrast / forced-colors
+   mode: the emphasis is carried by the .staged-badge inside it, and the per-field
+   lines are plain text that inherits the card's foreground color. */
+.override-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .action-buttons {
   display: flex;
   align-items: center;

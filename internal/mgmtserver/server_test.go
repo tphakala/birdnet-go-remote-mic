@@ -124,6 +124,43 @@ func TestGetStatusMapsFields(t *testing.T) {
 	if st.DevicesServing != 2 || st.DevicesTotal != 3 {
 		t.Errorf("device counts wrong: serving=%d total=%d", st.DevicesServing, st.DevicesTotal)
 	}
+	// With no serve overrides the optional array is omitted (nil), not an empty
+	// array, so a run without overrides sends no overrides key.
+	if st.Overrides != nil {
+		t.Errorf("overrides = %v, want nil when none are active", st.Overrides)
+	}
+}
+
+func TestGetStatusMapsOverrides(t *testing.T) {
+	s := New(&fakeProvider{status: ApplianceStatus{
+		Version:    testVersion,
+		RTSPListen: rtspAddr,
+		Overrides: []ConfigOverride{
+			{Field: "listen", Effective: ":9000", Persisted: rtspAddr},
+			{Field: "discovery.enabled", Effective: "false", Persisted: "true"},
+		},
+	}})
+	resp, err := s.GetStatus(context.Background(), mgmtapi.GetStatusRequestObject{})
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	st, ok := resp.(mgmtapi.GetStatus200JSONResponse)
+	if !ok {
+		t.Fatalf("GetStatus returned %T, want GetStatus200JSONResponse", resp)
+	}
+	if st.Overrides == nil {
+		t.Fatal("overrides = nil, want two entries")
+	}
+	ovs := *st.Overrides
+	if len(ovs) != 2 {
+		t.Fatalf("overrides len = %d, want 2", len(ovs))
+	}
+	if ovs[0].Field != "listen" || ovs[0].Effective != ":9000" || ovs[0].Persisted != rtspAddr {
+		t.Errorf("overrides[0] = %+v", ovs[0])
+	}
+	if ovs[1].Field != "discovery.enabled" || ovs[1].Effective != "false" || ovs[1].Persisted != "true" {
+		t.Errorf("overrides[1] = %+v", ovs[1])
+	}
 }
 
 func TestListDevicesMapsServingOpus(t *testing.T) {
