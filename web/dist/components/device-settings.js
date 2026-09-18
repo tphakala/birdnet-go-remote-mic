@@ -231,6 +231,17 @@ export class DeviceSettingsForm {
     loadNotice() {
         return this.loadCoercion;
     }
+    // focusFirstInvalid moves keyboard focus to the first field validate() flagged
+    // invalid, so a rejected save lands the user on what needs fixing rather than
+    // leaving focus on the Save button. It targets the field's focusable control: a
+    // text input, a dropdown trigger, or the first channel checkbox.
+    focusFirstInvalid() {
+        const field = this.element.querySelector(".form-field.invalid");
+        if (!field)
+            return;
+        const target = field.querySelector('input:not([type="hidden"]):not(.visually-hidden), .dropdown-trigger');
+        target?.focus();
+    }
     validate() {
         const mode = this.modeHidden.value;
         const rate = Number(this.rateHidden.value);
@@ -405,8 +416,14 @@ export class DeviceSettingsForm {
     // aria-label names it) instead of being an unexplained checkbox quirk. It is
     // the single writer of both, so buildChannelSelect sets neither.
     applyChannelMode(mode) {
+        const single = mode === "opus";
         this.chHint.textContent = this.channelHint(mode);
-        this.channelsGroup.setAttribute("aria-label", mode === "opus" ? "Capture channel to stream (Opus streams one channel)" : "Capture channels to stream");
+        // Opus is single-select (the change handler clears the others). Flag the
+        // group so the stylesheet renders it as a radio-like "pick one" set (pill
+        // chips, round indicator), making the single-select behaviour visible rather
+        // than an unexplained checkbox quirk.
+        this.channelsGroup.classList.toggle("single-select", single);
+        this.channelsGroup.setAttribute("aria-label", single ? "Capture channel to stream (Opus streams one channel)" : "Capture channels to stream");
     }
     error(id) {
         const e = elem("span", "field-error");

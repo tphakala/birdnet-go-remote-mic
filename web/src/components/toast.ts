@@ -43,11 +43,30 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
   toast.append(icon, msg);
 
   let timer = 0;
+  let removed = false;
   const remove = (): void => {
+    if (removed) return;
+    removed = true;
     window.clearTimeout(timer);
     toast.style.animation = "toast-out 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards";
     window.setTimeout(() => toast.remove(), 250);
   };
+  // Pause the auto-dismiss while the pointer is over the toast OR focus is inside
+  // it, so a keyboard user tabbing to the dismiss button (or anyone reading a
+  // hovered toast) is not raced by the timer. The two holds are tracked
+  // independently and the timer only restarts once BOTH are released: dropping one
+  // (the mouse leaves) while the other still holds (focus is inside) must not
+  // re-arm the dismiss under the user.
+  let hovered = false;
+  let focused = false;
+  const disarm = (): void => window.clearTimeout(timer);
+  const rearm = (): void => {
+    if (!removed && !hovered && !focused) timer = window.setTimeout(remove, ttl);
+  };
+  toast.addEventListener("mouseenter", () => { hovered = true; disarm(); });
+  toast.addEventListener("mouseleave", () => { hovered = false; rearm(); });
+  toast.addEventListener("focusin", () => { focused = true; disarm(); });
+  toast.addEventListener("focusout", () => { focused = false; rearm(); });
 
   if (isError) {
     const dismiss = document.createElement("button");
@@ -60,5 +79,5 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
   }
 
   container.appendChild(toast);
-  timer = window.setTimeout(remove, ttl);
+  rearm();
 }

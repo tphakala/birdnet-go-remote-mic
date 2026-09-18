@@ -199,18 +199,32 @@ func readMeminfoFile(path string) ([]byte, bool) {
 
 // DiskUsage returns total and used bytes of the filesystem holding path. ok is
 // false when path is empty or the statfs syscall fails (a missing or unmounted
-// path).
+// path). used matches df's Used (it counts root-reserved space as used); the
+// host monitor judges its percentage against available space via DiskUsageDetail.
 func DiskUsage(path string) (total, used int64, ok bool) {
+	total, used, _, ok = DiskUsageDetail(path)
+	return total, used, ok
+}
+
+// DiskUsageDetail returns total, used, and available bytes of the filesystem
+// holding path. ok is false when path is empty or the statfs syscall fails.
+//
+// used is Blocks-Bfree (both include root-reserved space) so it matches df's
+// Used, and total is the raw filesystem size: GET /system reports these two so
+// its figures line up with df. avail is Bavail, the space actually writable by an
+// unprivileged process (it excludes the root-reserved blocks, 5% by default on
+// ext4). The host-health disk condition judges used/(used+avail), which matches
+// df's Use% column, so it does not fire "disk almost full" at, say, 95% of raw
+// size while the unprivileged service still has reserved-free headroom, nor stay
+// quiet once unprivileged writes are already failing.
+func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 	if path == "" {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	// used = Blocks - Bfree (both include root-reserved space) so the figure
-	// matches df's Used; Bavail would exclude reserved blocks from free only,
-	// overstating used by the reserved amount.
 	// Bsize is int32 on ILP32 (arm, 386) and int64 on LP64; widen once so the
 	// multiplications below are int64 on every architecture. The conversion is
 	// required on 32-bit; unconvert only sees the 64-bit build, where it is a
@@ -218,11 +232,68 @@ func DiskUsage(path string) (total, used int64, ok bool) {
 	bsize := int64(st.Bsize)         //nolint:unconvert // required on 32-bit where Bsize is int32
 	total = int64(st.Blocks) * bsize //nolint:gosec // block counts fit int64 on real filesystems
 	free := int64(st.Bfree) * bsize  //nolint:gosec // block counts fit int64 on real filesystems
+	avail = int64(st.Bavail) * bsize //nolint:gosec // block counts fit int64 on real filesystems
 	used = total - free
 	if used < 0 {
 		used = 0
 	}
-	return total, used, true
+	if avail < 0 {
+		avail = 0
+	}
+	return total, used, avail, true
+}
+
+// HostCPU reads host CPU utilization by diffing /proc/stat over the caller's own
+// polling interval. Unlike Sampler it runs no goroutine: the host monitor calls
+// Read once per 10 s poll, so the figure is the average load across the full poll
+// window rather than a 2 s sub-window snapshot, and a failed read reports ok=false
+// so the monitor's sensor-gone resolve works for CPU as it does for the other
+// sensors. It is owned by the single host-monitor poll goroutine, so it needs no
+// lock.
+type HostCPU struct {
+	read                func() (idle, total uint64, ok bool)
+	prevIdle, prevTotal uint64
+	// primed is set only after a successful read has seeded prev. A read that fails
+	// at construction must not leave prev at zero: the kernel counters are since
+	// boot, so diffing the next reading against zero would report utilization since
+	// boot rather than over the poll window. While unprimed, Read seeds prev from
+	// its own reading and reports ok=false for that poll.
+	primed bool
+}
+
+// NewHostCPU returns a HostCPU reading the real /proc/stat. It primes the counters
+// once so the first poll can produce a value; if that read fails, the first Read
+// primes instead and reports ok=false.
+func NewHostCPU() *HostCPU { return newHostCPU(readCPUStat) }
+
+// newHostCPU is the seam: it builds a HostCPU over an injectable /proc/stat reader
+// so the prime/diff state machine is testable without a fixed file.
+func newHostCPU(read func() (idle, total uint64, ok bool)) *HostCPU {
+	c := &HostCPU{read: read}
+	if idle, total, ok := read(); ok {
+		c.prevIdle, c.prevTotal, c.primed = idle, total, true
+	}
+	return c
+}
+
+// Read reads /proc/stat and returns utilization since the previous Read (or since
+// construction for the first). ok is false on a read failure, before the reader is
+// primed, or when no time elapsed between readings (no basis for a ratio).
+func (c *HostCPU) Read() (float64, bool) {
+	if c == nil {
+		return 0, false
+	}
+	idle, total, ok := c.read()
+	if !ok {
+		return 0, false
+	}
+	if !c.primed {
+		c.prevIdle, c.prevTotal, c.primed = idle, total, true
+		return 0, false
+	}
+	pct, valid := cpuBusyPercent(c.prevIdle, c.prevTotal, idle, total)
+	c.prevIdle, c.prevTotal = idle, total
+	return pct, valid
 }
 
 // cachedSensor resolves a /sys sensor path lazily and caches it, so a periodic

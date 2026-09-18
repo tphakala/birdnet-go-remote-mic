@@ -1,6 +1,6 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
-import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setText } from "../lib/ui.js";
+import { apiErrorMessage, clearBusy, deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setBusy, setFieldError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
@@ -16,6 +16,13 @@ export class SystemView {
     rowsEl;
     system = null;
     status = null;
+    // Stable per-poll nodes for the diffed telemetry renders: resource tiles keyed
+    // by tile key, System-Information rows keyed by label, and Stream-Status rows
+    // keyed by ALSA device id. Built once, updated in place, added/removed on change.
+    tileEls = new Map();
+    infoRows = new Map();
+    deviceRows = new Map();
+    deviceEmptyRow = null;
     netCardEl;
     netActionsEl;
     discoveryEl;
@@ -83,10 +90,33 @@ export class SystemView {
             const detail = e.detail;
             if (detail.systemFailed)
                 this.renderLoadError(detail.message);
+            // A config-only failure leaves the network/access/notification cards hidden
+            // with no other signal. Surface it so the miss is not invisible; polling
+            // recovers the config on a later tick and the cards then appear.
+            if (detail.configFailed && !detail.systemFailed) {
+                showToast("Could not load the network, access and notification settings. Retrying shortly.", "warn");
+            }
+        });
+        // The open-access banner links to the System view; once it is shown, bring
+        // the Access Control card into view and focus its token field so a keyboard
+        // user lands on the action rather than at the top of the page.
+        document.querySelector("#open-access-banner a")?.addEventListener("click", () => {
+            requestAnimationFrame(() => this.focusAuthCard());
         });
         this.bindNetwork();
         this.bindAuth();
         this.bindNotifications();
+    }
+    // focusAuthCard scrolls the Access Control card into view and moves focus to
+    // the token field. Used by the open-access banner link so following it lands on
+    // the control that resolves the warning.
+    focusAuthCard() {
+        if (!this.authCardEl || this.authCardEl.hidden)
+            return;
+        this.authCardEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        // preventScroll: the smooth scroll above already positions the card; a focus
+        // scroll would fight it with an instant jump.
+        this.authTokenEl?.focus({ preventScroll: true });
     }
     // buildNotifyField builds one threshold input (label, number input with the
     // contract's min/max, error, hint) into its group container and records the
@@ -213,6 +243,10 @@ export class SystemView {
         const cfg = store.getState().config;
         if (cfg)
             this.populateNotifications(cfg);
+        // populateNotifications hid the actions bar holding the Discard button focus
+        // was on, dropping it to <body>. Return focus to the card's stable top
+        // control, matching saveNotifications.
+        this.notifyEnabledEl?.focus();
     }
     // saveNotifications persists the whole notifications block. On a 422 it marks
     // the offending input (mapping the server's field path via the core helper) so
@@ -231,11 +265,7 @@ export class SystemView {
         if (invalid.length > 0) {
             this.clearNotifyErrors();
             for (const key of invalid) {
-                this.notifyFields.get(key)?.classList.add("invalid");
-                this.notifyInputs.get(key)?.setAttribute("aria-invalid", "true");
-                const errEl = document.getElementById(`sys-notify-${key}-err`);
-                if (errEl)
-                    errEl.textContent = "Enter a whole number.";
+                setFieldError(this.notifyFields.get(key) ?? null, this.notifyInputs.get(key), document.getElementById(`sys-notify-${key}-err`), "Enter a whole number.");
             }
             if (this.notifyErrorEl) {
                 this.notifyErrorEl.textContent = "Some thresholds are blank or not whole numbers.";
@@ -247,11 +277,10 @@ export class SystemView {
         const saveBtn = document.getElementById("btn-notify-save");
         const discardBtn = document.getElementById("btn-notify-discard");
         this.notifySaving = true;
-        if (saveBtn) {
-            saveBtn.disabled = true;
-            saveBtn.setAttribute("aria-busy", "true");
-            saveBtn.textContent = "Saving...";
-        }
+        // Busy affordance that keeps Save focusable (see setBusy); notifySaving guards
+        // re-entry.
+        if (saveBtn)
+            setBusy(saveBtn, "Saving...");
         if (discardBtn)
             discardBtn.disabled = true;
         this.clearNotifyErrors();
@@ -278,11 +307,8 @@ export class SystemView {
         }
         finally {
             this.notifySaving = false;
-            if (saveBtn) {
-                saveBtn.disabled = false;
-                saveBtn.removeAttribute("aria-busy");
-                saveBtn.textContent = "Save Changes";
-            }
+            if (saveBtn)
+                clearBusy(saveBtn, "Save Changes");
             if (discardBtn)
                 discardBtn.disabled = false;
         }
@@ -313,6 +339,22 @@ export class SystemView {
         const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
         showToast(`Save failed: ${msg}`, "error");
     }
+    // setAuthReveal shows or hides the token field and keeps the reveal button's
+    // label and accessible name in step. It is the single source of the reveal
+    // state, used by the reveal toggle, Generate (reveals), and a successful save
+    // (re-hides), so the state is never written in two places that could diverge.
+    setAuthReveal(show) {
+        if (this.authTokenEl)
+            this.authTokenEl.type = show ? "text" : "password";
+        const reveal = document.getElementById("btn-auth-reveal");
+        if (reveal) {
+            // The visible label and the accessible name both swap Show/Hide; there is
+            // no aria-pressed, so the state is carried by the label rather than by a
+            // pressed toggle contradicting a changing label.
+            reveal.textContent = show ? "Hide" : "Show";
+            reveal.setAttribute("aria-label", show ? "Hide access token" : "Show access token");
+        }
+    }
     bindAuth() {
         const input = this.authTokenEl;
         if (!input)
@@ -323,37 +365,42 @@ export class SystemView {
             if (this.authActionsEl)
                 this.authActionsEl.hidden = false;
         });
-        const reveal = document.getElementById("btn-auth-reveal");
-        reveal?.addEventListener("click", () => {
-            const show = input.type === "password";
-            input.type = show ? "text" : "password";
-            // The visible label and the accessible name both swap Show/Hide; there is
-            // no aria-pressed, so the state is carried by the label rather than by a
-            // pressed toggle contradicting a changing label.
-            reveal.textContent = show ? "Hide" : "Show";
-            reveal.setAttribute("aria-label", show ? "Hide access token" : "Show access token");
+        // The card is not a <form>, so Enter in the token field would do nothing.
+        // Wire it to Save, matching the muscle memory of a single-field form.
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                void this.saveAuth();
+            }
+        });
+        document.getElementById("btn-auth-reveal")?.addEventListener("click", () => {
+            this.setAuthReveal(input.type === "password");
         });
         document.getElementById("btn-auth-copy")?.addEventListener("click", () => {
             const value = input.value.trim();
             if (!value) {
-                showToast("No token to copy: the appliance is on open access.", "warn");
+                // An empty field the operator just cleared is not (yet) open access; only
+                // a saved empty token is. Distinguish the two so the message is accurate.
+                showToast(this.authDirty
+                    ? "Nothing to copy: the token field is empty. Save to switch to open access."
+                    : "No token to copy: the appliance is on open access.", "warn");
                 return;
             }
             if (!navigator.clipboard)
                 return;
             navigator.clipboard.writeText(value)
-                .then(() => showToast("Access token copied."))
+                // Flag an unsaved value: Generate hands out a token before it is saved,
+                // and copying it into BirdNET-Go before saving here would lock players out.
+                .then(() => showToast(this.authDirty
+                ? "Access token copied. It is not saved yet: save it here before the players use it."
+                : "Access token copied."))
                 .catch(() => showToast("Copy failed", "error"));
         });
         document.getElementById("btn-auth-generate")?.addEventListener("click", () => {
             input.value = generateToken();
             // Reveal the generated value: the operator needs to see it to copy it into
             // BirdNET-Go, and a masked random string cannot be verified by eye.
-            input.type = "text";
-            if (reveal) {
-                reveal.textContent = "Hide";
-                reveal.setAttribute("aria-label", "Hide access token");
-            }
+            this.setAuthReveal(true);
             input.dispatchEvent(new Event("input"));
             input.focus();
         });
@@ -361,10 +408,7 @@ export class SystemView {
         document.getElementById("btn-auth-discard")?.addEventListener("click", () => void this.discardAuth());
     }
     setAuthError(message) {
-        if (this.authErrorEl)
-            this.authErrorEl.textContent = message;
-        this.authTokenEl?.setAttribute("aria-invalid", message ? "true" : "false");
-        this.authTokenEl?.closest(".form-field")?.classList.toggle("invalid", !!message);
+        setFieldError(this.authTokenEl?.closest(".form-field") ?? null, this.authTokenEl, this.authErrorEl, message);
     }
     populateAuth(cfg) {
         if (this.authCardEl)
@@ -407,6 +451,12 @@ export class SystemView {
         const cfg = store.getState().config;
         if (cfg)
             this.populateAuth(cfg);
+        // Re-mask the token: Generate reveals it as plaintext, and discarding must not
+        // leave the restored saved secret on screen.
+        this.setAuthReveal(false);
+        // populateAuth hid the actions bar holding the Discard button focus was on,
+        // dropping it to <body>; return focus to the token field, matching saveAuth.
+        this.authTokenEl?.focus();
     }
     // saveAuth persists the token. Clearing it opens the appliance to the network,
     // so that path confirms first. On success the UI's own stored token is swapped
@@ -434,11 +484,10 @@ export class SystemView {
         const saveBtn = document.getElementById("btn-auth-save");
         const discardBtn = document.getElementById("btn-auth-discard");
         this.authSaving = true;
-        if (saveBtn) {
-            saveBtn.disabled = true;
-            saveBtn.setAttribute("aria-busy", "true");
-            saveBtn.textContent = "Saving...";
-        }
+        // Busy affordance that keeps Save focusable (aria-disabled, not disabled), so
+        // it does not steal keyboard focus; the authSaving guard blocks re-entry.
+        if (saveBtn)
+            setBusy(saveBtn, "Saving...");
         if (discardBtn)
             discardBtn.disabled = true;
         // Open the store's rotation window so an in-flight poll rejected while the
@@ -472,24 +521,27 @@ export class SystemView {
             else {
                 showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
             }
+            // Re-hide the token after a successful save: it may have been revealed to
+            // copy it, and leaving a saved secret in plain sight is needless exposure.
+            this.setAuthReveal(false);
         }
         catch (err) {
             if (err instanceof ApiError && err.errors && err.errors.length > 0) {
                 this.setAuthError(err.errors[0].reason ?? err.title);
             }
             else {
-                const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
-                showToast(`Save failed: ${msg}`, "error");
+                // A non-validation failure (network drop, a lost response) is ambiguous:
+                // the appliance applies the token BEFORE it finishes writing the PATCH
+                // response, so the new credential may already be in force even though this
+                // call looks failed. Warn rather than imply nothing changed.
+                showToast(`Could not confirm the token change: ${apiErrorMessage(err)}. The new token may already be in force; if this UI locks you out, reload and sign in with it.`, "warn");
             }
         }
         finally {
             store.endTokenSwap();
             this.authSaving = false;
-            if (saveBtn) {
-                saveBtn.disabled = false;
-                saveBtn.removeAttribute("aria-busy");
-                saveBtn.textContent = "Save Token";
-            }
+            if (saveBtn)
+                clearBusy(saveBtn, "Save Token");
             if (discardBtn)
                 discardBtn.disabled = false;
             // Disabling the Save button the user just activated dropped keyboard focus
@@ -507,6 +559,9 @@ export class SystemView {
         if (!this.tilesEl)
             return;
         this.tilesEl.textContent = "";
+        // The tiles were just detached, so drop their stale refs; otherwise a later
+        // renderTiles would reuse detached nodes and the diffed pass would not rebuild.
+        this.tileEls.clear();
         const p = elem("p", "cfg-empty");
         this.tilesEl.appendChild(p);
         renderLoadError(p, message, "Loading system telemetry...", () => void store.retry());
@@ -538,6 +593,9 @@ export class SystemView {
         const cfg = store.getState().config;
         if (cfg)
             this.populateNetwork(cfg);
+        // populateNetwork hid the actions bar holding the Discard button focus was on,
+        // dropping it to <body>; return focus to the discovery toggle.
+        this.discoveryEl?.focus();
     }
     populateNetwork(cfg) {
         if (this.netCardEl)
@@ -562,68 +620,145 @@ export class SystemView {
             this.netActionsEl.hidden = true;
     }
     async saveNetwork() {
+        const saveBtn = document.getElementById("btn-network-save");
+        const discardBtn = document.getElementById("btn-network-discard");
+        // setBusy keeps Save focusable, so guard re-entry against a keyboard
+        // re-activation while the PATCH is in flight, matching the Access Control save.
+        if (saveBtn?.getAttribute("aria-disabled") === "true")
+            return;
+        if (saveBtn)
+            setBusy(saveBtn, "Saving...");
+        if (discardBtn)
+            discardBtn.disabled = true;
         try {
             const res = await api.patchConfig({ discovery: { enabled: this.discoveryEl?.checked ?? true } });
             this.netDirty = false;
+            // Seed the cached config with the authoritative PATCH response, matching the
+            // auth/notify/device save paths, so a later queued read builds from this
+            // change instead of a stale base.
+            store.applyConfig(res.config);
             if (this.netActionsEl)
                 this.netActionsEl.hidden = true;
             await store.refreshConfig();
             showToast(res.restartRequired ? "Discovery setting saved. Restart the appliance to apply." : "Discovery setting applied.");
+            // Hiding the actions bar dropped focus from the Save button; return it to
+            // the discovery toggle, the card's editable control.
+            this.discoveryEl?.focus();
         }
         catch (err) {
-            const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
-            showToast(`Save failed: ${msg}`, "error");
+            showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
+        }
+        finally {
+            if (saveBtn)
+                clearBusy(saveBtn, "Save Changes");
+            if (discardBtn)
+                discardBtn.disabled = false;
         }
     }
-    tile(label, sub, value, unit, barPct) {
+    // buildTile creates one resource-gauge tile with stable inner nodes (the sub,
+    // value, unit and progress bar are always present and toggled/updated, never
+    // rebuilt), so renderTiles can update it in place across polls. The label is
+    // fixed per tile key, so it is written once here.
+    buildTile(label) {
         const tile = elem("div", "system-tile");
         const header = elem("div", "tile-header");
-        header.appendChild(elem("span", undefined, label));
-        if (sub)
-            header.appendChild(elem("span", "mono", sub));
+        const sub = elem("span", "mono");
+        header.append(elem("span", undefined, label), sub);
         tile.appendChild(header);
         const val = elem("div", "tile-value mono");
-        val.appendChild(elem("span", undefined, value));
-        if (unit)
-            val.appendChild(elem("span", "telemetry-unit", unit));
+        const value = elem("span");
+        const unit = elem("span", "telemetry-unit");
+        val.append(value, unit);
         tile.appendChild(val);
-        if (barPct !== undefined) {
-            const bg = elem("div", "progress-bar-bg");
-            const fill = elem("div", "progress-bar-fill");
-            fill.style.width = `${Math.min(100, Math.max(0, barPct)).toFixed(1)}%`;
-            bg.appendChild(fill);
-            tile.appendChild(bg);
-        }
-        return tile;
+        const bar = elem("div", "progress-bar-bg");
+        const barFill = elem("div", "progress-bar-fill");
+        bar.appendChild(barFill);
+        tile.appendChild(bar);
+        return { tile, sub, value, unit, bar, barFill };
     }
-    // The tile grid holds only the four live resource gauges. Host and appliance
-    // facts live in the separate System Information card below.
+    updateTile(refs, spec) {
+        setText(refs.sub, spec.sub);
+        setHidden(refs.sub, !spec.sub);
+        setText(refs.value, spec.value);
+        setText(refs.unit, spec.unit);
+        setHidden(refs.unit, !spec.unit);
+        if (spec.barPct === undefined) {
+            setHidden(refs.bar, true);
+        }
+        else {
+            setHidden(refs.bar, false);
+            const w = `${Math.min(100, Math.max(0, spec.barPct)).toFixed(1)}%`;
+            if (refs.barFill.style.width !== w)
+                refs.barFill.style.width = w;
+        }
+    }
+    // The tile grid holds only the live resource gauges. Host and appliance facts
+    // live in the separate System Information card below. Rendered with the diffed
+    // convention: tiles are keyed by a stable key, updated in place, and only
+    // added/removed/reordered when the present set changes.
     renderTiles() {
         if (!this.tilesEl)
             return;
+        const grid = this.tilesEl;
         const sys = this.system;
         if (!sys)
             return;
-        this.tilesEl.textContent = "";
-        const cores = sys.cpuCores > 0 ? `${sys.cpuCores} Cores` : "";
-        this.tilesEl.appendChild(this.tile("CPU Utilization", cores, sys.cpuPercent !== undefined ? sys.cpuPercent.toFixed(1) : "n/a", "%", sys.cpuPercent ?? 0));
+        // Remove a load-error placeholder renderLoadError may have left in the grid, so
+        // a recovered poll does not strand it among the gauges: the diffed pass below
+        // tracks only tile nodes, not this foreign child.
+        grid.querySelector(":scope > .cfg-empty")?.remove();
+        const specs = [];
+        specs.push({
+            key: "cpu", label: "CPU Utilization", sub: sys.cpuCores > 0 ? `${sys.cpuCores} Cores` : "",
+            value: sys.cpuPercent !== undefined ? sys.cpuPercent.toFixed(1) : "n/a", unit: "%", barPct: sys.cpuPercent,
+        });
         if (sys.memTotalBytes > 0) {
-            const pct = (sys.memUsedBytes / sys.memTotalBytes) * 100;
-            const usedMb = Math.round(sys.memUsedBytes / 1048576);
-            const totalMb = Math.round(sys.memTotalBytes / 1048576);
-            this.tilesEl.appendChild(this.tile("Memory", `${totalMb} MB Total`, String(usedMb), "MB used", pct));
+            specs.push({
+                key: "mem", label: "Memory", sub: `${Math.round(sys.memTotalBytes / 1048576)} MB Total`,
+                value: String(Math.round(sys.memUsedBytes / 1048576)), unit: "MB used",
+                barPct: (sys.memUsedBytes / sys.memTotalBytes) * 100,
+            });
         }
-        this.tilesEl.appendChild(this.tile("SoC Temperature", "", sys.tempCelsius !== undefined ? sys.tempCelsius.toFixed(1) : "n/a", "deg C", sys.tempCelsius !== undefined ? (sys.tempCelsius / 85) * 100 : undefined));
+        specs.push({
+            key: "temp", label: "SoC Temperature", sub: "",
+            value: sys.tempCelsius !== undefined ? sys.tempCelsius.toFixed(1) : "n/a", unit: "deg C",
+            barPct: sys.tempCelsius !== undefined ? (sys.tempCelsius / 85) * 100 : undefined,
+        });
         if (sys.diskTotalBytes > 0) {
-            const pct = (sys.diskUsedBytes / sys.diskTotalBytes) * 100;
-            const usedGb = (sys.diskUsedBytes / 1073741824).toFixed(1);
-            const totalGb = (sys.diskTotalBytes / 1073741824).toFixed(1);
-            this.tilesEl.appendChild(this.tile("Disk", `${totalGb} GB Total`, usedGb, "GB used", pct));
+            specs.push({
+                key: "disk", label: "Disk", sub: `${(sys.diskTotalBytes / 1073741824).toFixed(1)} GB Total`,
+                value: (sys.diskUsedBytes / 1073741824).toFixed(1), unit: "GB used",
+                barPct: (sys.diskUsedBytes / sys.diskTotalBytes) * 100,
+            });
+        }
+        const want = new Set(specs.map((s) => s.key));
+        for (const [key, refs] of this.tileEls) {
+            if (!want.has(key)) {
+                refs.tile.remove();
+                this.tileEls.delete(key);
+            }
+        }
+        let prev = null;
+        for (const spec of specs) {
+            let refs = this.tileEls.get(spec.key);
+            if (!refs) {
+                refs = this.buildTile(spec.label);
+                this.tileEls.set(spec.key, refs);
+            }
+            this.updateTile(refs, spec);
+            const target = prev ? prev.nextSibling : grid.firstChild;
+            if (refs.tile !== target)
+                grid.insertBefore(refs.tile, target);
+            prev = refs.tile;
         }
     }
+    // renderInfo fills the System Information label/value grid, diffed: rows are
+    // keyed by label, values updated in place, and dt/dd pairs added, removed and
+    // ordered only on change rather than clearing the grid every poll.
     renderInfo() {
         if (!this.infoEl)
             return;
+        const grid = this.infoEl;
         const sys = this.system;
         const st = this.status;
         if (!sys && !st)
@@ -645,41 +780,103 @@ export class SystemView {
             rows.push(["RTSP Listen", st.rtspListen]);
             rows.push(["Devices Serving", `${st.devicesServing} / ${st.devicesTotal}`]);
         }
-        this.infoEl.textContent = "";
+        const want = new Set(rows.map(([k]) => k));
+        for (const [key, pair] of this.infoRows) {
+            if (!want.has(key)) {
+                pair.dt.remove();
+                pair.dd.remove();
+                this.infoRows.delete(key);
+            }
+        }
+        let prev = null; // previous row's dd
         for (const [k, v] of rows) {
-            const dt = elem("dt", "info-key", k);
-            const dd = elem("dd", "info-val mono", v);
-            this.infoEl.appendChild(dt);
-            this.infoEl.appendChild(dd);
+            let pair = this.infoRows.get(k);
+            if (!pair) {
+                pair = { dt: elem("dt", "info-key", k), dd: elem("dd", "info-val mono", v) };
+                this.infoRows.set(k, pair);
+            }
+            else {
+                setText(pair.dd, v);
+            }
+            const dtTarget = prev ? prev.nextSibling : grid.firstChild;
+            if (pair.dt !== dtTarget)
+                grid.insertBefore(pair.dt, dtTarget);
+            if (pair.dd !== pair.dt.nextSibling)
+                grid.insertBefore(pair.dd, pair.dt.nextSibling);
+            prev = pair.dd;
         }
         if (this.infoCardEl)
             this.infoCardEl.hidden = rows.length === 0;
     }
+    buildDeviceRow() {
+        const tr = document.createElement("tr");
+        const name = this.td("");
+        const alsa = this.td("", true);
+        const path = this.td("", true);
+        const codec = this.td("", true);
+        const client = this.td("", true);
+        const stateTd = document.createElement("td");
+        const stateSpan = elem("span");
+        stateTd.appendChild(stateSpan);
+        tr.append(name, alsa, path, codec, client, stateTd);
+        return { tr, name, alsa, path, codec, client, stateSpan };
+    }
+    updateDeviceRow(r, d) {
+        setText(r.name, d.name);
+        setText(r.alsa, d.device);
+        setText(r.path, d.path);
+        const rate = d.negotiatedRate ?? d.rate;
+        setText(r.codec, `${modeLabel(d.mode)} ${rate.toLocaleString("en-US")} Hz`);
+        setText(r.client, d.clientConnected ? "Connected" : "-");
+        const badge = deviceStateBadge(d.state);
+        if (r.stateSpan.className !== badge.cls)
+            r.stateSpan.className = badge.cls;
+        setText(r.stateSpan, badge.label);
+    }
+    // renderDeviceRows fills the Stream-Status table, diffed: rows are keyed by the
+    // immutable ALSA device id, cells updated in place, and rows added, removed and
+    // ordered only on change rather than rebuilding the whole tbody every poll.
     renderDeviceRows(devices) {
         if (!this.rowsEl)
             return;
-        this.rowsEl.textContent = "";
+        const body = this.rowsEl;
         if (devices.length === 0) {
-            const tr = document.createElement("tr");
-            const td = elem("td", undefined, "No devices configured.");
-            td.setAttribute("colspan", "6");
-            tr.appendChild(td);
-            this.rowsEl.appendChild(tr);
+            for (const r of this.deviceRows.values())
+                r.tr.remove();
+            this.deviceRows.clear();
+            if (!this.deviceEmptyRow) {
+                const tr = document.createElement("tr");
+                const td = elem("td", undefined, "No devices configured.");
+                td.setAttribute("colspan", "6");
+                tr.appendChild(td);
+                this.deviceEmptyRow = tr;
+            }
+            if (this.deviceEmptyRow.parentNode !== body)
+                body.appendChild(this.deviceEmptyRow);
             return;
         }
+        // Non-empty: drop the placeholder row if it is showing.
+        if (this.deviceEmptyRow?.parentNode)
+            this.deviceEmptyRow.remove();
+        const want = new Set(devices.map((d) => d.device));
+        for (const [id, r] of this.deviceRows) {
+            if (!want.has(id)) {
+                r.tr.remove();
+                this.deviceRows.delete(id);
+            }
+        }
+        let prev = null;
         for (const d of devices) {
-            const tr = document.createElement("tr");
-            tr.appendChild(this.td(d.name));
-            tr.appendChild(this.td(d.device, true));
-            tr.appendChild(this.td(d.path, true));
-            const rate = d.negotiatedRate ?? d.rate;
-            tr.appendChild(this.td(`${modeLabel(d.mode)} ${rate.toLocaleString("en-US")} Hz`, true));
-            tr.appendChild(this.td(d.clientConnected ? "Connected" : "-", true));
-            const stateTd = document.createElement("td");
-            const badge = deviceStateBadge(d.state);
-            stateTd.appendChild(elem("span", badge.cls, badge.label));
-            tr.appendChild(stateTd);
-            this.rowsEl.appendChild(tr);
+            let r = this.deviceRows.get(d.device);
+            if (!r) {
+                r = this.buildDeviceRow();
+                this.deviceRows.set(d.device, r);
+            }
+            this.updateDeviceRow(r, d);
+            const target = prev ? prev.nextSibling : body.firstChild;
+            if (r.tr !== target)
+                body.insertBefore(r.tr, target);
+            prev = r.tr;
         }
     }
     td(text, mono = false) {

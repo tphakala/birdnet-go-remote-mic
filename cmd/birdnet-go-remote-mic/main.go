@@ -275,10 +275,13 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
 	mgmtServing := false
-	// Sample host CPU utilization for GET /system and the host-health monitor. One
-	// /proc/stat read every two seconds, so it runs whether or not the API serves.
-	prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
+	// Sample host CPU utilization for GET /system, but only while the management API
+	// is enabled: it is the sole consumer now that the host monitor diffs /proc/stat
+	// over its own poll window (hostReader.cpu) instead of reading this 2 s snapshot.
+	// One /proc/stat read every two seconds; Collect tolerates a nil sampler and
+	// then omits CPUPercent, so a disabled API pays nothing for it.
 	if mgmtEnabled {
+		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
 		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard)
 	}
 	defer func() {
@@ -304,10 +307,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 	if monSettings.Enabled {
 		logUndervoltageSupport()
 	}
-	app.monitors = monitor.Group{
-		monitor.RunSignal(ctx, hub, center, &monSettings),
-		monitor.RunHost(ctx, hostReader{sampler: prov.sampler, dataPath: prov.dataPath}, prov.dropCounters, center, &monSettings),
-	}
+	app.monitors = buildMonitors(ctx, hub, prov.dataPath, prov.dropCounters, center, &monSettings)
 
 	// Sweep stale client-flap warnings: the connect-driven detector only clears on
 	// the next connect after the quiet window, which a client that settles into a

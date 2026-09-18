@@ -51,6 +51,11 @@ export class AppStore extends EventTarget {
         // 401 is expected rather than a credential failure, so nothing else would
         // bring it back until the next startPolling. Restart it under the token now
         // in force; start() is a no-op while the stream is already running.
+        // pollIntervalTimer !== null is the invariant for "polling is active", and the
+        // SSE stream runs exactly while polling does (startPolling starts both,
+        // stopPolling stops both), so a non-null timer means the stream is meant to be
+        // up and safe to (re)start here; a null timer means we are not polling and must
+        // not resurrect the stream.
         if (this.swapDepth === 0 && this.pollIntervalTimer !== null)
             sse.start();
     }
@@ -89,8 +94,11 @@ export class AppStore extends EventTarget {
         // loadInitial may have hit a fresh 401 (the token was revoked between the
         // verifying getStatus and the bulk load), which re-arms loginPending via
         // onUnauthorized. Resuming polling would only be rejected again, so report
-        // failure and leave the prompt up instead.
+        // failure and leave the prompt up instead. Drop the token as well: it was
+        // just rejected, so keeping it would contradict this method's contract ("a
+        // rejected token is not kept") and leave a dead credential in storage.
         if (this.loginPending) {
+            setToken(null);
             return { ok: false, message: "The appliance rejected the token during load. Try again." };
         }
         this.startPolling();
@@ -109,6 +117,13 @@ export class AppStore extends EventTarget {
                 this.dispatchEvent(new CustomEvent("connection", { detail: true }));
             }
             else if (eventName === "disconnected") {
+                // During a deliberate token rotation the SSE connection carrying the old
+                // token is dropped and reconnects under the new one within a backoff
+                // interval. That blip is expected, so do not blink the connection
+                // indicator to "Reconnecting" for it; a genuine drop (swapDepth 0) still
+                // shows. endTokenSwap restarts the stream so the recovery is not skipped.
+                if (this.swapDepth > 0)
+                    return;
                 this.state.connected = false;
                 this.dispatchEvent(new CustomEvent("connection", { detail: false }));
             }
@@ -122,24 +137,37 @@ export class AppStore extends EventTarget {
         });
     }
     async loadInitial() {
-        const [statusOk, devicesOk, systemOk] = await Promise.all([
+        // Name every result rather than destructuring a prefix positionally: the
+        // Promise.all order and the assignment order must agree, and a silent
+        // misassignment (adding or reordering a refresh) is exactly the bug this
+        // avoids. results[i] pairs 1:1 with the refresh at the same index below.
+        const results = await Promise.all([
             this.refreshStatus(),
             this.refreshDevices(),
             this.refreshSystem(),
             this.refreshConfig(),
             this.refreshAvailable(),
         ]);
+        const [statusOk, devicesOk, systemOk, configOk, availableOk] = results;
         // Surface a per-resource load error so each view can offer a retry for its
         // own data instead of a "Loading..." placeholder that never resolves, and
         // so one failing endpoint does not blank another view that loaded fine.
         const coreFailed = !statusOk && !devicesOk;
         const systemFailed = !systemOk;
+        // A config-only failure leaves the System view's network/access/notification
+        // cards hidden (they unhide on the "config" event). Surface it so the miss is
+        // not silent; the System view warns and polling recovers it on a later tick.
+        const configFailed = !configOk;
+        // The unconfigured-hardware list is advisory: a failure leaves it stale until
+        // the next poll rather than blanking a view, so availableFailed never triggers
+        // the load error on its own, but it is carried in the detail for completeness.
+        const availableFailed = !availableOk;
         // A rejected token is handled by the login prompt, not the retry state.
         if (this.loginPending)
             return;
-        if (coreFailed || systemFailed) {
+        if (coreFailed || systemFailed || configFailed) {
             this.dispatchEvent(new CustomEvent("loaderror", {
-                detail: { coreFailed, systemFailed, message: "Could not reach the appliance." },
+                detail: { coreFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." },
             }));
         }
     }

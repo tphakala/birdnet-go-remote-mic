@@ -12,6 +12,23 @@ let dialogSeq = 0;
 // closes.
 let inertDepth = 0;
 
+// Open transient dialogs (confirmDialog), each registered as its own cancel
+// close. A higher-priority modal (the access-token prompt on a 401) calls
+// closeTransientDialogs() before showing so two modals never fight over focus
+// and the inert background at once.
+const transientDialogs = new Set<() => void>();
+
+// closeTransientDialogs cancels every open confirm dialog (resolving it false).
+// The login prompt calls this before it opens: if a confirm ("Allow open
+// access?", "Discard changes?") is up when the session loses its credentials,
+// cancelling it aborts that half-finished action, which is the right outcome,
+// and leaves the login prompt as the only modal.
+export function closeTransientDialogs(): void {
+  // Each cancel() synchronously deletes only its own entry, so iterating the live
+  // set is safe (a Set iterator tolerates deleting the current element).
+  for (const cancel of transientDialogs) cancel();
+}
+
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -116,7 +133,18 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
       if (e.key === "Escape") close(false);
     };
 
+    // Register a cancel-close so a higher-priority modal (the login prompt) can
+    // dismiss this dialog and be the only modal on screen.
+    const cancelClose = (): void => close(false);
+    transientDialogs.add(cancelClose);
+
+    let closed = false;
     function close(result: boolean): void {
+      // Guard against a double close: closeTransientDialogs and a user action can
+      // race, and running the teardown twice would decrement inertDepth twice.
+      if (closed) return;
+      closed = true;
+      transientDialogs.delete(cancelClose);
       release();
       document.removeEventListener("keydown", onKey);
       overlay.remove();

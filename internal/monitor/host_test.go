@@ -22,6 +22,7 @@ type fakeHost struct {
 	temp               float64
 	tempOK             bool
 	diskTotal, diskUse int64
+	diskAvail          int64
 	diskOK             bool
 	cpu                float64
 	cpuOK              bool
@@ -43,11 +44,11 @@ func (f *fakeHost) Temp() (float64, bool) {
 	return f.temp, f.tempOK
 }
 
-func (f *fakeHost) Disk() (total, used int64, ok bool) {
+func (f *fakeHost) Disk() (total, used, avail int64, ok bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return f.diskTotal, f.diskUse, f.diskOK
+	return f.diskTotal, f.diskUse, f.diskAvail, f.diskOK
 }
 
 func (f *fakeHost) CPU() (float64, bool) {
@@ -215,7 +216,8 @@ func TestHostOnsetBoundaryEquality(t *testing.T) {
 	t.Run("disk at exactly the threshold onsets", func(t *testing.T) {
 		t.Parallel()
 		raiseDwell(t, hostDiskKey, diskEnterAfter, func(f *fakeHost) {
-			f.diskTotal, f.diskUse, f.diskOK = 100*gib, 90*gib, true // exactly 90%
+			// used/(used+avail) = 90/(90+10) = exactly 90%.
+			f.diskTotal, f.diskUse, f.diskAvail, f.diskOK = 100*gib, 90*gib, 10*gib, true
 		})
 	})
 	t.Run("memory one byte below the limit onsets", func(t *testing.T) {
@@ -261,9 +263,10 @@ func TestHostTempDiskVoltMem(t *testing.T) {
 		},
 		{
 			"disk", hostDiskKey, notify.SeverityWarning, diskEnterAfter,
-			func(f *fakeHost) { f.diskTotal, f.diskUse, f.diskOK = 100*gib, 95*gib, true },
-			func(f *fakeHost) { f.diskUse = 88 * gib },
-			func(f *fakeHost) { f.diskUse = 50 * gib },
+			// used/(used+avail): 95% raise, 88% gap, 50% recover (no reserved slack here).
+			func(f *fakeHost) { f.diskTotal, f.diskUse, f.diskAvail, f.diskOK = 100*gib, 95*gib, 5*gib, true },
+			func(f *fakeHost) { f.diskUse, f.diskAvail = 88*gib, 12*gib },
+			func(f *fakeHost) { f.diskUse, f.diskAvail = 50*gib, 50*gib },
 		},
 		{
 			"volt", hostVoltKey, notify.SeverityError, voltEnterAfter,
@@ -422,10 +425,11 @@ func TestHostUnavailableReadings(t *testing.T) {
 
 	// A zero total is treated as unavailable rather than dividing by zero. The disk
 	// fixture reports used>0 with total 0 so the total>0 guard actually matters:
-	// without it usedPct would be +Inf, which is >= the threshold and would onset.
+	// without it the condition would judge used/(used+avail) on a filesystem whose
+	// statfs figures are absent and could onset spuriously.
 	r.mu.Lock()
 	r.memTotal, r.memAvail, r.memOK = 0, 0, true
-	r.diskTotal, r.diskUse, r.diskOK = 0, 1<<30, true
+	r.diskTotal, r.diskUse, r.diskAvail, r.diskOK = 0, 1<<30, 0, true
 	r.mu.Unlock()
 	pollEvery(h, c, 10*time.Second, 30)
 	if rec.isActive(hostMemKey) || rec.isActive(hostDiskKey) {

@@ -18,6 +18,9 @@ const maxWriterPayload = 15360
 // sender report every SRInterval. It owns the reused packet buffer, and every
 // write goes through writeRaw so it never interleaves with an RTSP response.
 func (cs *connSession) runWriter() {
+	// Declared first so it runs last (LIFO): cs.close() cancels the context and drops
+	// the socket, then this signals serveConn's join that the writer has fully exited.
+	defer close(cs.writerDone)
 	defer cs.close()
 
 	pt := uint8(cs.track.PayloadType)

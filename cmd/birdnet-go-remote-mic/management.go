@@ -43,8 +43,10 @@ type provider struct {
 	// reason as discovery: the reconcile loop writes it, GET /status reads it.
 	auth     atomic.Bool
 	dataPath string // filesystem path whose storage usage /system and the host-health disk check report
-	// sampler tracks host CPU utilization. It is always created (not gated on the
-	// management API) and shared by GET /system and the host-health monitor.
+	// sampler tracks host CPU utilization for GET /system. It is created only while
+	// the management API is enabled (its sole consumer); the host-health monitor
+	// diffs /proc/stat over its own poll window instead. nil when the API is off,
+	// which sysinfo.Collect tolerates by omitting CPUPercent.
 	sampler *sysinfo.Sampler
 	devices atomic.Pointer[[]*deviceRuntime]
 	// detected is the last enumerated set of host capture devices with their
