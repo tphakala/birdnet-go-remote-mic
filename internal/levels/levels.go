@@ -391,9 +391,15 @@ func marshalLevels(le LevelsEvent) Event {
 // on the subscriber gate and the first-consumer meter reset. Registering the
 // first consumer of either kind (SSE or tap) resets residual meters so a new
 // session does not open on a previous session's accumulation.
+//
+// The broadcaster registration and the matching sseCount update both happen
+// under h.mu (as do the removal and decrement on cancel), so a sampler tick can
+// never see the channel registered but uncounted, or counted but unregistered:
+// the hasSSE gate and the broadcaster's subscriber set stay consistent. The
+// atomic subs hot-path gate is bumped just outside the lock, as before.
 func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
-	ch, cancelSub := h.bc.Subscribe()
 	h.mu.Lock()
+	ch, cancelSub := h.bc.Subscribe()
 	first := h.sseCount == 0 && len(h.taps) == 0
 	h.sseCount++
 	if first {
@@ -411,8 +417,8 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
-			cancelSub()
 			h.mu.Lock()
+			cancelSub()
 			h.sseCount--
 			h.mu.Unlock()
 			h.subs.Add(-1)
