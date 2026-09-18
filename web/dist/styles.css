@@ -2177,6 +2177,18 @@ select.field-input {
 :root[data-theme="light"] .btn-link {
   color: #b45309;
 }
+/* Certificate card: the two PEM textareas. .field-input supplies the chrome;
+   this keeps them monospace, vertically resizable only (a width resize would
+   break the card layout) and tall enough to show a PEM header plus a few lines. */
+.cert-pem {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 7em;
+  white-space: pre;
+  overflow: auto;
+}
 .auth-token-row {
   display: flex;
   flex-wrap: wrap;

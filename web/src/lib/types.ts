@@ -129,16 +129,36 @@ export interface ApplianceStatus {
 }
 
 // CertificateInfo is the public metadata of the management listener's TLS
-// certificate (GET /system/certificate). It never carries private key material.
+// certificate (GET /system/certificate, and the body of a successful PUT or
+// regenerate). It never carries private key material.
 export interface CertificateInfo {
   subject: string;
   issuer: string;
   selfSigned: boolean;
+  // true: the appliance minted this self-signed certificate and manages it
+  // (regenerates it itself). false: an operator-installed custom certificate,
+  // which the appliance never replaces on its own.
+  managed: boolean;
   dnsNames: string[];
   ipAddresses: string[];
   notBefore: string;
   notAfter: string;
   fingerprintSha256: string;
+}
+
+// CertificateInstallRequest is the body of PUT /system/certificate: an
+// operator-supplied certificate and its private key, both PEM. A 422 names the
+// offending field as certPem or keyPem.
+export interface CertificateInstallRequest {
+  certPem: string;
+  keyPem: string;
+}
+
+// CertificateRegenerateRequest is the body of POST /system/certificate/regenerate.
+// The body itself is required by the contract even when there are no extras, so
+// the client always sends at least {}. A 422 names an entry as extraSans[i].
+export interface CertificateRegenerateRequest {
+  extraSans?: string[];
 }
 
 export interface Device {

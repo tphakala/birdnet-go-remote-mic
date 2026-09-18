@@ -427,6 +427,43 @@ paths:
                 $ref: "#/components/schemas/CertificateInfo"
         default:
           $ref: "#/components/responses/Problem"
+    put:
+      operationId: putSystemCertificate
+      tags: [system]
+      summary: Install a custom management TLS certificate
+      description: >
+        Replace the management listener's certificate with an operator-supplied
+        certificate and private key. The pair is validated first (the key matches
+        the certificate, it is currently valid, it carries a subject alternative
+        name, and it is usable for server authentication); nothing is written on a
+        validation failure. On success the pair is persisted to the certificate
+        directory and served to new TLS connections at once, without a restart;
+        connections already open keep the previous certificate until they
+        reconnect. The installed certificate is pinned, so the appliance never
+        regenerates it automatically. The private key is never returned by any
+        endpoint. A browser may warn on its next load until the new certificate is
+        trusted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CertificateInstallRequest"
+      responses:
+        "200":
+          description: The installed certificate's metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateInfo"
+        "422":
+          description: The certificate or key failed validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ValidationProblem"
+        default:
+          $ref: "#/components/responses/Problem"
 
   /system/certificate/pem:
     get:
@@ -445,6 +482,43 @@ paths:
               schema:
                 type: string
                 format: binary
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /system/certificate/regenerate:
+    post:
+      operationId: regenerateSystemCertificate
+      tags: [system]
+      summary: Regenerate the self-signed management certificate
+      description: >
+        Generate a fresh self-signed certificate for the management listener and
+        serve it to new TLS connections at once, without a restart. It always
+        covers the auto-detected names (loopback, the hostname, the
+        hostname.local mDNS name, and the LAN IP addresses); any extraSans are
+        added on top. This replaces a previously installed custom certificate and
+        clears its pin, returning the appliance to self-managed certificates.
+        Connections already open keep the previous certificate until they
+        reconnect, and a browser may warn on its next load until the new
+        certificate is trusted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CertificateRegenerateRequest"
+      responses:
+        "200":
+          description: The regenerated certificate's metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateInfo"
+        "422":
+          description: An extra SAN entry was not a valid DNS name or IP address.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ValidationProblem"
         default:
           $ref: "#/components/responses/Problem"
 
@@ -566,6 +640,7 @@ components:
         - notBefore
         - notAfter
         - fingerprintSha256
+        - managed
       properties:
         subject:
           type: string
@@ -599,6 +674,58 @@ components:
           type: string
           description: SHA-256 fingerprint of the DER certificate, colon-separated uppercase hex.
           examples: ["AB:CD:EF"]
+        managed:
+          type: boolean
+          description: >
+            Whether the appliance manages this certificate (a self-signed
+            certificate it generated and will regenerate on an address change or
+            expiry). False when an operator installed a custom certificate, which
+            the appliance then never replaces automatically.
+
+    CertificateInstallRequest:
+      type: object
+      description: >
+        A custom certificate and its private key to install on the management
+        listener. Validated before anything is written; on success the pair is
+        persisted and served to new TLS connections without a restart. The
+        private key is write-only and never returned by any endpoint.
+      required:
+        - certPem
+        - keyPem
+      properties:
+        certPem:
+          type: string
+          maxLength: 65536
+          description: >
+            PEM-encoded certificate, leaf first, with any intermediate chain
+            certificates after it. Must carry at least one subject alternative
+            name and be valid now (not expired and not before its start).
+          examples: ["-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"]
+        keyPem:
+          type: string
+          format: password
+          maxLength: 16384
+          description: >
+            PEM-encoded unencrypted private key matching the certificate (PKCS#8,
+            PKCS#1 RSA, or SEC1 EC). Write-only: never returned by any endpoint.
+
+    CertificateRegenerateRequest:
+      type: object
+      description: >
+        Options for regenerating the self-signed management certificate. The
+        regenerated certificate always covers the auto-detected names (loopback,
+        the hostname, the hostname.local mDNS name, and the LAN IP addresses);
+        extraSans adds further names on top.
+      properties:
+        extraSans:
+          type: array
+          maxItems: 32
+          description: >
+            Extra DNS names or IP addresses to add to the subject alternative
+            names, for names the auto-detection cannot see.
+          items:
+            type: string
+            maxLength: 253
 
     Device:
       type: object

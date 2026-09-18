@@ -1,7 +1,9 @@
-// Package mgmtcert generates and persists the self-signed TLS certificate the
-// management API serves. A LAN appliance stays zero-config: the certificate is
-// created on first start, reused on later starts, and regenerated whenever the
-// persisted pair is missing, unreadable, or expired.
+// Package mgmtcert generates and persists the TLS certificate the management API
+// serves. A LAN appliance stays zero-config: a self-signed certificate is created
+// on first start, reused on later starts, and regenerated whenever the persisted
+// pair is missing, unreadable, expired, or no longer covers the appliance's
+// names. An operator may instead install a custom certificate, which is pinned
+// (a sidecar marker) so the appliance never regenerates it automatically.
 package mgmtcert
 
 import (
@@ -15,6 +17,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
@@ -25,17 +28,42 @@ import (
 // pinned by trust rather than validated against a CA.
 const certValidity = 10 * 365 * 24 * time.Hour
 
-// Ensure returns a TLS certificate for the management server, reusing the
-// persisted PEM pair at certPath/keyPath when both load and are within their
-// validity window, and otherwise generating a new self-signed certificate
-// covering hosts and writing it to those paths. A missing, unreadable, or
-// expired pair is regenerated. The key file is written with owner-only
-// permissions.
+// pemTypeCertificate is the PEM block type for an X.509 certificate.
+const pemTypeCertificate = "CERTIFICATE"
+
+// Ensure returns a TLS certificate for the management server. When the pair at
+// certPath/keyPath is pinned (an operator installed it) and loads, it is reused
+// verbatim: never regenerated, even once expired, so a custom certificate is
+// never silently replaced. A stale pin whose pair cannot load is dropped and the
+// appliance self-heals. An unpinned pair is reused when it is in date and covers
+// every host in hosts; when it is in date but a name is missing (the appliance's
+// address changed) its existing SANs are carried forward and it is regenerated;
+// a missing, unreadable, or expired unpinned pair is regenerated from hosts. The
+// key file is written with owner-only permissions.
 func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
+	pinned := Pinned(certPath)
 	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		if leaf := leafOf(&cert); leaf != nil && currentlyValid(leaf) && covers(leaf, hosts) {
-			return cert, nil
+		if leaf := leafOf(&cert); leaf != nil {
+			if pinned {
+				// An operator installed this certificate. Reuse it verbatim: never
+				// apply the validity or coverage checks that would regenerate it.
+				return cert, nil
+			}
+			if currentlyValid(leaf) {
+				if covers(leaf, hosts) {
+					return cert, nil
+				}
+				// Still in date but a current name is missing (the host's IP or
+				// hostname changed). Carry the existing SANs forward so operator-added
+				// extras survive the address change, then regenerate.
+				hosts = carryForward(leaf, hosts)
+			}
 		}
+	}
+	if pinned {
+		// The pin marker is present but the pair could not be loaded or parsed, so
+		// there is nothing to preserve. Drop the stale marker and self-heal.
+		_ = os.Remove(PinPath(certPath))
 	}
 	return generate(certPath, keyPath, hosts)
 }
@@ -117,7 +145,7 @@ func generate(certPath, keyPath string, hosts []string) (tls.Certificate, error)
 		return tls.Certificate{}, fmt.Errorf("create certificate: %w", err)
 	}
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: der})
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("marshal key: %w", err)
@@ -127,8 +155,8 @@ func generate(certPath, keyPath string, hosts []string) (tls.Certificate, error)
 	// Write both PEM files atomically (temp file + rename) so a crash mid-write
 	// never leaves a half-written file or a cert and key that do not match. A
 	// broken pair would still self-heal on the next start (Ensure regenerates
-	// when the pair fails to load), but the rename keeps every on-disk pair
-	// loadable in the first place.
+	// when the pair fails to load, dropping any stale pin marker first), but the
+	// rename keeps every on-disk pair loadable in the first place.
 	if err := atomicfile.Write(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
 		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
 	}

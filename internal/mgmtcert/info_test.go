@@ -3,6 +3,7 @@ package mgmtcert
 import (
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/pem"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -57,12 +58,30 @@ func TestDescribe(t *testing.T) {
 		t.Errorf("fingerprint = %q, want %q (SHA-256 of the leaf DER)", info.FingerprintSHA256, want)
 	}
 
-	pem, err := LeafPEM(&cert)
+	chainPEM, err := ChainPEM(&cert)
 	if err != nil {
-		t.Fatalf("LeafPEM: %v", err)
+		t.Fatalf("ChainPEM: %v", err)
 	}
-	if !strings.HasPrefix(string(pem), "-----BEGIN CERTIFICATE-----") {
-		t.Errorf("LeafPEM did not start with a PEM certificate header: %q", pem[:min(40, len(pem))])
+	if !strings.HasPrefix(string(chainPEM), "-----BEGIN CERTIFICATE-----") {
+		t.Errorf("ChainPEM did not start with a PEM certificate header: %q", chainPEM[:min(40, len(chainPEM))])
+	}
+}
+
+func TestChainPEMEncodesFullChain(t *testing.T) {
+	// A chain of a leaf plus one intermediate: ChainPEM must emit BOTH blocks so an
+	// operator who installed a chain downloads the whole chain back, not just the
+	// leaf. Sabotage target: the loop over cert.Certificate in ChainPEM.
+	leafPEM, _ := genPairPEM(t, nil)
+	intPEM, _ := genPairPEM(t, nil)
+	leafBlock, _ := pem.Decode(leafPEM)
+	intBlock, _ := pem.Decode(intPEM)
+	cert := &tls.Certificate{Certificate: [][]byte{leafBlock.Bytes, intBlock.Bytes}}
+	got, err := ChainPEM(cert)
+	if err != nil {
+		t.Fatalf("ChainPEM: %v", err)
+	}
+	if n := strings.Count(string(got), "-----BEGIN CERTIFICATE-----"); n != 2 {
+		t.Errorf("ChainPEM emitted %d certificate blocks, want 2 (leaf + intermediate)", n)
 	}
 }
 
@@ -91,18 +110,18 @@ func TestDescribeErrorsWithoutLeaf(t *testing.T) {
 	if _, err := Describe(&tls.Certificate{}); err == nil {
 		t.Error("Describe on an empty certificate returned nil error")
 	}
-	// A nil certificate returns an error rather than panicking, matching LeafPEM.
+	// A nil certificate returns an error rather than panicking, matching ChainPEM.
 	if _, err := Describe(nil); err == nil {
 		t.Error("Describe(nil) returned nil error")
 	}
 }
 
-func TestLeafPEMErrors(t *testing.T) {
-	if _, err := LeafPEM(&tls.Certificate{}); err == nil {
-		t.Error("LeafPEM on an empty certificate returned nil error")
+func TestChainPEMErrors(t *testing.T) {
+	if _, err := ChainPEM(&tls.Certificate{}); err == nil {
+		t.Error("ChainPEM on an empty certificate returned nil error")
 	}
-	if _, err := LeafPEM(nil); err == nil {
-		t.Error("LeafPEM(nil) returned nil error")
+	if _, err := ChainPEM(nil); err == nil {
+		t.Error("ChainPEM(nil) returned nil error")
 	}
 }
 

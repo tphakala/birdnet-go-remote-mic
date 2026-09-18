@@ -3,6 +3,7 @@
 // the system view), the load-error/retry pattern, and the per-mode/per-state
 // label maps live in exactly one place.
 import { ApiError } from "./api.js";
+import { showToast } from "../components/toast.js";
 // elem creates an element with an optional class and text content.
 export function elem(tag, className, text) {
     const e = document.createElement(tag);
@@ -56,6 +57,20 @@ export function setFieldError(field, input, errorEl, message) {
     input?.setAttribute("aria-invalid", message ? "true" : "false");
     if (errorEl)
         errorEl.textContent = message;
+}
+// copyText writes value to the clipboard and reports the outcome as a toast.
+// navigator.clipboard is absent on an insecure (plain http) origin and in some
+// embedded browsers; instead of silently doing nothing, say so, so the operator
+// knows to select and copy by hand. Shared by every Copy button so the
+// unavailable/failed cases read the same everywhere.
+export function copyText(value, successMessage) {
+    if (!navigator.clipboard) {
+        showToast("Copy is unavailable in this browser; select the text and copy it manually.", "warn");
+        return;
+    }
+    navigator.clipboard.writeText(value)
+        .then(() => showToast(successMessage))
+        .catch(() => showToast("Copy failed", "error"));
 }
 // setText and setHidden write only when the value actually changes. A card is
 // re-synced on every 3 s poll, so an unconditional write would dirty the DOM and,

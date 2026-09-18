@@ -1,6 +1,7 @@
 package mgmtcert
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/pem"
@@ -56,14 +57,24 @@ func Describe(cert *tls.Certificate) (Info, error) {
 	}, nil
 }
 
-// LeafPEM returns the PEM-encoded public leaf certificate. It returns an error
-// when cert has no DER body. It encodes the public certificate only and never
-// touches the private key.
-func LeafPEM(cert *tls.Certificate) ([]byte, error) {
+// ChainPEM returns the PEM-encoded public certificate chain: the leaf first,
+// followed by any intermediate certificates the pair carries, in order. It
+// returns an error when cert has no DER body. It encodes public certificates
+// only and never touches the private key, so an operator who installed a
+// leaf-plus-intermediates chain downloads the same chain back rather than a bare
+// leaf. For the appliance's own self-signed certificate the chain is a single
+// leaf, so the output is identical to encoding the leaf alone.
+func ChainPEM(cert *tls.Certificate) ([]byte, error) {
 	if cert == nil || len(cert.Certificate) == 0 {
 		return nil, errors.New("mgmtcert: certificate has no DER body")
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), nil
+	var buf bytes.Buffer
+	for _, der := range cert.Certificate {
+		if err := pem.Encode(&buf, &pem.Block{Type: pemTypeCertificate, Bytes: der}); err != nil {
+			return nil, fmt.Errorf("mgmtcert: encode certificate chain: %w", err)
+		}
+	}
+	return buf.Bytes(), nil
 }
 
 // fingerprint returns the SHA-256 digest of der as colon-separated uppercase

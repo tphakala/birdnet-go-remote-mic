@@ -1,0 +1,425 @@
+package mgmtcert
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// TEST-NET-1 address (RFC 5737), distinct from the package's loopbackIP const so
+// the two never collide and this is obviously not a real host.
+const testIP = "192.0.2.10"
+
+// customExampleSAN is the SAN used for a stand-in operator-installed certificate.
+const customExampleSAN = "custom.example"
+
+// genPairPEM builds a self-signed ECDSA pair, applying mutate to the template
+// before signing so a test can tune the SANs, validity window, or key usage. It
+// returns the PEM-encoded certificate and PKCS#8 key.
+func genPairPEM(t *testing.T, mutate func(*x509.Certificate)) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(now.UnixNano()),
+		Subject:               pkix.Name{CommonName: "test-install"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{localhost},
+	}
+	if mutate != nil {
+		mutate(tmpl)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: der})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
+
+// asValidationError unwraps err to a *ValidationError, failing the test when it
+// is not one, and returns it so the caller can assert the field.
+func asValidationError(t *testing.T, err error) *ValidationError {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected a validation error, got nil")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("error %v (%T) is not a *ValidationError", err, err)
+	}
+	return verr
+}
+
+func TestValidateAcceptsGoodPair(t *testing.T) {
+	certPEM, keyPEM := genPairPEM(t, nil)
+	cert, err := Validate(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("Validate rejected a good pair: %v", err)
+	}
+	if cert.Leaf == nil {
+		t.Error("Validate did not populate cert.Leaf")
+	}
+}
+
+func TestValidateRejectsMismatchedKey(t *testing.T) {
+	certPEM, _ := genPairPEM(t, nil)
+	_, otherKey := genPairPEM(t, nil)
+	// Sabotage target: the X509KeyPair error-to-ValidationError mapping. Deleting it
+	// returns the raw crypto/tls error, so errors.As for *ValidationError fails.
+	verr := asValidationError(t, mustErr(Validate(certPEM, otherKey)))
+	if verr.Field != fieldKeyPem {
+		t.Errorf("field = %q, want keyPem", verr.Field)
+	}
+}
+
+func TestValidateRejectsExpired(t *testing.T) {
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) {
+		c.NotBefore = time.Now().Add(-48 * time.Hour)
+		c.NotAfter = time.Now().Add(-24 * time.Hour)
+	})
+	// Sabotage target: the now.After(leaf.NotAfter) check.
+	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
+	if verr.Field != fieldCertPem {
+		t.Errorf("field = %q, want certPem", verr.Field)
+	}
+}
+
+func TestValidateRejectsNotYetValid(t *testing.T) {
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) {
+		c.NotBefore = time.Now().Add(24 * time.Hour)
+		c.NotAfter = time.Now().Add(48 * time.Hour)
+	})
+	// Sabotage target: the now.Before(leaf.NotBefore) check (agy finding #3).
+	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
+	if verr.Field != fieldCertPem {
+		t.Errorf("field = %q, want certPem", verr.Field)
+	}
+}
+
+func TestValidateRejectsNoSANs(t *testing.T) {
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) {
+		c.DNSNames = nil
+		c.IPAddresses = nil
+	})
+	// Sabotage target: the "no subject alternative names" check (agy finding #2).
+	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
+	if verr.Field != fieldCertPem {
+		t.Errorf("field = %q, want certPem", verr.Field)
+	}
+}
+
+func TestValidateRejectsNonServerAuthEKU(t *testing.T) {
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) {
+		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	})
+	// Sabotage target: the usableForServerAuth check (agy finding #5).
+	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
+	if verr.Field != fieldCertPem {
+		t.Errorf("field = %q, want certPem", verr.Field)
+	}
+}
+
+func TestValidateAcceptsEmptyEKU(t *testing.T) {
+	// An empty ExtKeyUsage means unrestricted, which is usable for server auth.
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+	})
+	if _, err := Validate(certPEM, keyPEM); err != nil {
+		t.Errorf("Validate rejected an empty-EKU cert: %v", err)
+	}
+}
+
+func TestValidateAcceptsKeyWithLeadingBlock(t *testing.T) {
+	// A key file whose first PEM block is a non-key block (a comment or a stray
+	// certificate) followed by the real private key must be accepted, exactly as
+	// crypto/tls locates the key. Sabotage target: firstPrivateKeyBlock (inspecting
+	// only the first block would reject this valid input).
+	certPEM, keyPEM := genPairPEM(t, nil)
+	leading := pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: []byte("not a real cert")})
+	prefixed := append(append([]byte(nil), leading...), keyPEM...)
+	if _, err := Validate(certPEM, prefixed); err != nil {
+		t.Errorf("Validate rejected a key with a leading non-key block: %v", err)
+	}
+}
+
+func TestValidateRejectsUnparseable(t *testing.T) {
+	good, goodKey := genPairPEM(t, nil)
+	// A well-formed CERTIFICATE PEM wrapper around bytes that are not valid DER.
+	// This must be attributed to certPem, not keyPem (X509KeyPair surfaces the
+	// certificate-parse failure as a generic keypair error).
+	badDERCert := pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: []byte("not valid DER")})
+	encryptedKey := pem.EncodeToMemory(&pem.Block{Type: "ENCRYPTED PRIVATE KEY", Bytes: []byte("nope")})
+	legacyEncrypted := pem.EncodeToMemory(&pem.Block{
+		Type:    "EC PRIVATE KEY",
+		Headers: map[string]string{"Proc-Type": "4,ENCRYPTED", "DEK-Info": "AES-128-CBC,0"},
+		Bytes:   []byte("nope"),
+	})
+	cases := []struct {
+		name          string
+		cert, key     []byte
+		expectedField string
+	}{
+		{"garbage cert", []byte("not a pem"), goodKey, fieldCertPem},
+		{"malformed cert DER", badDERCert, goodKey, fieldCertPem},
+		{"garbage key", good, []byte("not a pem"), fieldKeyPem},
+		{"pkcs8 encrypted key", good, encryptedKey, fieldKeyPem},
+		{"legacy encrypted key", good, legacyEncrypted, fieldKeyPem},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verr := asValidationError(t, mustErr(Validate(tc.cert, tc.key)))
+			if verr.Field != tc.expectedField {
+				t.Errorf("field = %q, want %q", verr.Field, tc.expectedField)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsOversize(t *testing.T) {
+	certPEM, keyPEM := genPairPEM(t, nil)
+	oversizeCert := make([]byte, maxCertPEM+1)
+	if verr := asValidationError(t, mustErr(Validate(oversizeCert, keyPEM))); verr.Field != fieldCertPem {
+		t.Errorf("oversize cert field = %q, want certPem", verr.Field)
+	}
+	bigKey := make([]byte, maxKeyPEM+1)
+	if verr := asValidationError(t, mustErr(Validate(certPEM, bigKey))); verr.Field != fieldKeyPem {
+		t.Errorf("oversize key field = %q, want keyPem", verr.Field)
+	}
+}
+
+func TestInstallPersistsPairAndPins(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) { c.DNSNames = []string{customExampleSAN} })
+
+	if _, err := Install(certPath, keyPath, certPEM, keyPEM); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if !Pinned(certPath) {
+		t.Error("Install did not write the pin marker") // sabotage target: the marker atomicfile.Write
+	}
+	if info, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("stat key: %v", err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("key perms = %o, want 600", perm)
+	}
+}
+
+func TestInstallWritesNothingOnValidationFailure(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	certPEM, _ := genPairPEM(t, nil)
+	_, otherKey := genPairPEM(t, nil)
+
+	if _, err := Install(certPath, keyPath, certPEM, otherKey); err == nil {
+		t.Fatal("Install accepted a mismatched pair")
+	}
+	// Sabotage target: the early return after Validate fails. If Install wrote
+	// before validating, these files would exist.
+	if _, err := os.Stat(certPath); !errors.Is(err, os.ErrNotExist) {
+		t.Error("cert file written despite validation failure")
+	}
+	if Pinned(certPath) {
+		t.Error("pin marker written despite validation failure")
+	}
+}
+
+func TestEnsureKeepsPinnedPairNotCoveringHosts(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) { c.DNSNames = []string{customExampleSAN} })
+	installed, err := Install(certPath, keyPath, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// A pinned pair must be reused verbatim even for hosts it does not cover.
+	// Sabotage target: the `if pinned { return cert, nil }` early return in Ensure.
+	got, err := Ensure(certPath, keyPath, []string{localhost, testIP})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	il, _ := x509.ParseCertificate(installed.Certificate[0])
+	gl, _ := x509.ParseCertificate(got.Certificate[0])
+	if il.SerialNumber.Cmp(gl.SerialNumber) != 0 {
+		t.Error("pinned certificate was regenerated despite not covering the hosts")
+	}
+}
+
+func TestEnsureKeepsPinnedExpiredPair(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	serial := writeExpiredPair(t, certPath, keyPath)
+	// Pin the expired pair as if an operator had installed it.
+	if err := os.WriteFile(PinPath(certPath), []byte("installed\n"), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+
+	// Sabotage target: the pinned early return bypasses the currentlyValid check.
+	got, err := Ensure(certPath, keyPath, []string{localhost})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	gl, _ := x509.ParseCertificate(got.Certificate[0])
+	if gl.SerialNumber.Cmp(serial) != 0 {
+		t.Error("pinned expired certificate was regenerated; a pinned cert must never be auto-replaced")
+	}
+}
+
+func TestEnsureUnpinsUnloadablePinnedPair(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	// A pin marker beside an unloadable certificate.
+	if err := os.WriteFile(certPath, []byte("not a pem"), 0o644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a pem"), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	if err := os.WriteFile(PinPath(certPath), []byte("installed\n"), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+
+	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// Sabotage target: the os.Remove(PinPath) in the stale-pin fallthrough.
+	if Pinned(certPath) {
+		t.Error("stale pin marker was not dropped after regenerating an unloadable pinned pair")
+	}
+}
+
+func TestEnsureCarriesForwardSANsOnDrift(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	if _, err := Ensure(certPath, keyPath, []string{localhost, "mic.example.org"}); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	// The address changed: a new host that the persisted cert does not cover.
+	got, err := Ensure(certPath, keyPath, []string{localhost, testIP})
+	if err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+	gl, _ := x509.ParseCertificate(got.Certificate[0])
+	// Sabotage target: hosts = carryForward(leaf, hosts). Without it the operator's
+	// original name is dropped when regenerating for the new address.
+	if err := gl.VerifyHostname("mic.example.org"); err != nil {
+		t.Errorf("carried-forward SAN missing: %v", err)
+	}
+	if err := gl.VerifyHostname(testIP); err != nil {
+		t.Errorf("new host SAN missing: %v", err)
+	}
+}
+
+func TestRegenerateUnpinsAndCoversHosts(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) { c.DNSNames = []string{customExampleSAN} })
+	if _, err := Install(certPath, keyPath, certPEM, keyPEM); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	got, err := Regenerate(certPath, keyPath, []string{localhost, testIP})
+	if err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	// Sabotage target: the os.Remove(PinPath) in Regenerate.
+	if Pinned(certPath) {
+		t.Error("Regenerate did not clear the pin marker")
+	}
+	gl, _ := x509.ParseCertificate(got.Certificate[0])
+	if err := gl.VerifyHostname(testIP); err != nil {
+		t.Errorf("regenerated cert does not cover the requested host: %v", err)
+	}
+}
+
+func TestValidateHosts(t *testing.T) {
+	cases := []struct {
+		name    string
+		hosts   []string
+		wantErr bool
+	}{
+		{"ipv4", []string{"10.1.2.3"}, false},
+		{"ipv6", []string{"2001:db8::1"}, false},
+		{"hostname", []string{"mic.example.org"}, false},
+		{"dotlocal", []string{"birdmic.local"}, false},
+		{"empty entry", []string{""}, true},
+		{"wildcard", []string{"*.example.org"}, true},
+		{"leading hyphen", []string{"-bad.example"}, true},
+		{"overlong", []string{makeLongName()}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateHosts(tc.hosts)
+			if tc.wantErr && err == nil {
+				t.Error("expected an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tc.wantErr && err != nil {
+				if verr := asValidationError(t, err); verr.Field != "extraSans[0]" {
+					t.Errorf("field = %q, want extraSans[0]", verr.Field)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateHostsRejectsTooMany(t *testing.T) {
+	// The contract caps extraSans at maxExtraSANs; ValidateHosts enforces it since
+	// no request-schema middleware runs. Sabotage target: the len(extra) check.
+	many := make([]string, maxExtraSANs+1)
+	for i := range many {
+		many[i] = "host.example"
+	}
+	err := ValidateHosts(many)
+	if err == nil {
+		t.Fatal("ValidateHosts accepted more than the allowed number of SANs")
+	}
+	if verr := asValidationError(t, err); verr.Field != "extraSans" {
+		t.Errorf("field = %q, want extraSans", verr.Field)
+	}
+}
+
+// mustErr returns err from a (value, error) pair, discarding the value, so a
+// one-liner can assert on the error alone.
+func mustErr[T any](_ T, err error) error { return err }
+
+func makeLongName() string {
+	// 254 characters, over the 253-byte hostname limit.
+	b := make([]byte, 254)
+	for i := range b {
+		b[i] = 'a'
+	}
+	return string(b)
+}
