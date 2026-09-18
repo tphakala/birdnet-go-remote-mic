@@ -224,7 +224,7 @@ export class SystemView {
             return;
         this.certCardEl.hidden = false;
         const rows = [
-            ["Type", cert.selfSigned ? "Self-signed" : "Custom (CA-signed)"],
+            ["Type", cert.selfSigned ? "Self-issued (subject matches issuer)" : "CA-issued (distinct issuer)"],
             ["Subject", cert.subject],
             ["Issuer", cert.issuer],
             ["Valid from", formatCertTime(cert.notBefore)],
@@ -260,7 +260,9 @@ export class SystemView {
             document.body.appendChild(a);
             a.click();
             a.remove();
-            URL.revokeObjectURL(url);
+            // Revoke on the next tick: revoking synchronously right after click() can
+            // cancel the download before the navigation starts in some browsers.
+            setTimeout(() => URL.revokeObjectURL(url), 0);
             showToast("Certificate downloaded.");
         }
         catch (err) {

@@ -1,19 +1,28 @@
 package mgmtcert
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
 
-// fingerprintPattern matches SHA-256 rendered as 32 colon-separated uppercase
-// hex pairs (31 colons, 95 characters total).
-var fingerprintPattern = regexp.MustCompile("^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
-
 // loopbackIP is the loopback SAN the tests request and assert on.
 const loopbackIP = "127.0.0.1"
+
+// wantFingerprint independently derives the expected fingerprint from the leaf
+// DER, mirroring info.go's format, so the assertion pins both the format and
+// that the digest is taken over the public leaf certificate.
+func wantFingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	parts := make([]string, len(sum))
+	for i, b := range sum {
+		parts[i] = fmt.Sprintf("%02X", b)
+	}
+	return strings.Join(parts, ":")
+}
 
 func TestDescribe(t *testing.T) {
 	dir := t.TempDir()
@@ -44,8 +53,8 @@ func TestDescribe(t *testing.T) {
 	if !info.NotAfter.After(info.NotBefore) {
 		t.Errorf("notAfter %v not after notBefore %v", info.NotAfter, info.NotBefore)
 	}
-	if !fingerprintPattern.MatchString(info.FingerprintSHA256) {
-		t.Errorf("fingerprint = %q, want colon-separated uppercase hex", info.FingerprintSHA256)
+	if want := wantFingerprint(cert.Certificate[0]); info.FingerprintSHA256 != want {
+		t.Errorf("fingerprint = %q, want %q (SHA-256 of the leaf DER)", info.FingerprintSHA256, want)
 	}
 
 	pem, err := LeafPEM(&cert)

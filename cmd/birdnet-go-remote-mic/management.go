@@ -104,19 +104,29 @@ func (p *provider) System() mgmtserver.SystemInfo {
 
 // setCertificate records the management certificate's public metadata and its
 // PEM body for the certificate endpoints. It is called once during startup,
-// before the server serves, so the fields are safe to read without a lock.
-func (p *provider) setCertificate(info mgmtserver.CertificateInfo, pemBytes []byte) {
-	p.certInfo = info
+// before the server serves, so the fields are safe to read without a lock. It
+// takes info by pointer because mgmtserver.CertificateInfo is a large value.
+func (p *provider) setCertificate(info *mgmtserver.CertificateInfo, pemBytes []byte) {
+	p.certInfo = *info
 	p.certPEM = pemBytes
 }
 
 // Certificate returns the management listener's certificate metadata for
-// GET /system/certificate.
-func (p *provider) Certificate() mgmtserver.CertificateInfo { return p.certInfo }
+// GET /system/certificate. The SAN slices are copied so a caller cannot mutate
+// the shared stored value.
+func (p *provider) Certificate() mgmtserver.CertificateInfo {
+	ci := p.certInfo
+	ci.DNSNames = append([]string(nil), p.certInfo.DNSNames...)
+	ci.IPAddresses = append([]string(nil), p.certInfo.IPAddresses...)
+	return ci
+}
 
 // CertificatePEM returns the PEM-encoded public certificate for
-// GET /system/certificate/pem. It never returns the private key.
-func (p *provider) CertificatePEM() []byte { return p.certPEM }
+// GET /system/certificate/pem. It never returns the private key, and returns a
+// copy so a caller cannot mutate the shared stored bytes.
+func (p *provider) CertificatePEM() []byte {
+	return append([]byte(nil), p.certPEM...)
+}
 
 // setDevices publishes the final record list once the open loop has built it.
 func (p *provider) setDevices(d []*deviceRuntime) { p.devices.Store(&d) }
@@ -390,7 +400,8 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	} else if pemBytes, perr := mgmtcert.LeafPEM(&cert); perr != nil {
 		log.Printf("management certificate PEM unavailable: %v (certificate endpoints disabled)", perr)
 	} else {
-		prov.setCertificate(toCertInfo(info), pemBytes)
+		ci := toCertInfo(&info)
+		prov.setCertificate(&ci, pemBytes)
 		certMounted = true
 	}
 
@@ -473,8 +484,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 }
 
 // toCertInfo adapts the mgmtcert metadata into the mgmtserver domain type, so
-// mgmtcert stays free of any dependency on the HTTP-server package.
-func toCertInfo(info mgmtcert.Info) mgmtserver.CertificateInfo {
+// mgmtcert stays free of any dependency on the HTTP-server package. It takes info
+// by pointer because mgmtcert.Info is a large value.
+func toCertInfo(info *mgmtcert.Info) mgmtserver.CertificateInfo {
 	return mgmtserver.CertificateInfo{
 		Subject:           info.Subject,
 		Issuer:            info.Issuer,
