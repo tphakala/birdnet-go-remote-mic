@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -252,28 +253,42 @@ func TestInstallPersistsChainWithoutKeyMaterial(t *testing.T) {
 	}
 }
 
-func TestRegenerateKeepsPinOnGenerateFailure(t *testing.T) {
-	// If generation fails, the pin must remain so the previously pinned pair is not
-	// left eligible for replacement on the next restart. Sabotage target:
-	// generating before removing the pin (the old order removed the pin first).
+func TestRegenerateKeepsOldPairOnGenerateFailure(t *testing.T) {
+	// If regeneration fails while staging the new pair, the previously installed
+	// pair must survive intact (both files loadable, same serial) and stay pinned,
+	// so the next restart still serves it rather than discarding it. Sabotage
+	// targets: writePair's atomic staging (a non-atomic write corrupts the pair)
+	// and Regenerate generating before clearing the pin.
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "mgmt-cert.pem")
 	keyPath := filepath.Join(dir, "mgmt-key.pem")
 	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) { c.DNSNames = []string{customExampleSAN} })
-	if _, err := Install(certPath, keyPath, certPEM, keyPEM); err != nil {
+	installed, err := Install(certPath, keyPath, certPEM, keyPEM)
+	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	if !Pinned(certPath) {
 		t.Fatal("precondition: Install should have pinned the pair")
 	}
-	// Direct the key write under certPath (a regular file), so generate's key write
-	// fails and the whole regeneration errors.
+	installedLeaf, _ := x509.ParseCertificate(installed.Certificate[0])
+
+	// Direct the key write under certPath (a regular file), so staging the new key
+	// fails and the whole regeneration errors before either file is committed.
 	badKeyPath := filepath.Join(certPath, "key.pem")
 	if _, err := Regenerate(certPath, badKeyPath, []string{localhost}); err == nil {
 		t.Fatal("Regenerate should have failed with an unwritable key path")
 	}
 	if !Pinned(certPath) {
-		t.Error("pin was cleared despite a generation failure")
+		t.Error("pin was cleared despite a regeneration failure")
+	}
+	// The original pinned pair must still load, unchanged.
+	got, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("original pair no longer loads after a failed regeneration: %v", err)
+	}
+	gotLeaf, _ := x509.ParseCertificate(got.Certificate[0])
+	if gotLeaf.SerialNumber.Cmp(installedLeaf.SerialNumber) != 0 {
+		t.Error("certificate file was overwritten by a failed regeneration")
 	}
 }
 

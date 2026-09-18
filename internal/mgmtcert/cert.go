@@ -19,8 +19,6 @@ import (
 	"net"
 	"os"
 	"time"
-
-	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 )
 
 // certValidity is how long a freshly generated certificate stays valid. It is
@@ -152,16 +150,13 @@ func generate(certPath, keyPath string, hosts []string) (tls.Certificate, error)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
-	// Write both PEM files atomically (temp file + rename) so a crash mid-write
-	// never leaves a half-written file or a cert and key that do not match. A
-	// broken pair would still self-heal on the next start (Ensure regenerates
-	// when the pair fails to load, dropping any stale pin marker first), but the
-	// rename keeps every on-disk pair loadable in the first place.
-	if err := atomicfile.Write(certPath, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
-		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
-	}
-	if err := atomicfile.Write(keyPath, keyPEM, 0o600); err != nil {
-		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
+	// Write the pair atomically as a unit (see writePair): if staging either file
+	// fails, both destinations are left untouched rather than a mismatched cert and
+	// key, so a failed regeneration never corrupts the previous pair. A broken pair
+	// would still self-heal on the next start (Ensure regenerates when the pair
+	// fails to load, dropping any stale pin marker first).
+	if err := writePair(certPath, certPEM, keyPath, keyPEM); err != nil {
+		return tls.Certificate{}, err
 	}
 
 	return tls.X509KeyPair(certPEM, keyPEM)

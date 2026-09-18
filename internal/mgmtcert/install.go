@@ -104,20 +104,61 @@ func Install(certPath, keyPath string, certPEM, keyPEM []byte) (tls.Certificate,
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	// Write the public certificate, then the private key, then the pin marker. A
-	// crash after the key but before the marker leaves an unpinned custom pair that
-	// the next start regenerates away; the operator re-installs. The alternative
-	// (marker first) could pin a half-written pair, which is worse.
-	if err := atomicfile.Write(certPath, chainPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
-		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
-	}
-	if err := atomicfile.Write(keyPath, keyPEM, 0o600); err != nil {
-		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
+	// Persist the cert+key pair atomically as a unit, then the pin marker. writePair
+	// leaves both destinations untouched if staging either file fails, so a failed
+	// install never destroys the previously installed pair. A crash after the pair
+	// but before the marker leaves an unpinned pair the next start regenerates away;
+	// the operator re-installs (marker-first would risk pinning a half-written pair).
+	if err := writePair(certPath, chainPEM, keyPath, keyPEM); err != nil {
+		return tls.Certificate{}, err
 	}
 	if err := atomicfile.Write(PinPath(certPath), []byte("installed\n"), 0o644); err != nil { //nolint:gosec // the pin marker carries no secret.
 		return tls.Certificate{}, fmt.Errorf("write pin marker: %w", err)
 	}
 	return cert, nil
+}
+
+// writePair writes the certificate and key as a unit. Each is first written to a
+// staged sibling file via atomicfile.Write (which fsyncs and renames it into the
+// staged path), then the two staged files are renamed into place back to back. A
+// failure staging either file leaves both real destinations untouched, so a
+// partial write never leaves a mismatched cert/key pair on disk and a failed
+// regenerate or install never destroys the previous pair. The only remaining
+// window is between the two final renames: two same-directory rename syscalls,
+// far smaller than a full write. Symlinked destinations are resolved so the
+// rename updates the real file rather than replacing an operator's symlink,
+// matching atomicfile.Write's own symlink handling.
+func writePair(certPath string, certPEM []byte, keyPath string, keyPEM []byte) error {
+	certDst := resolveSymlink(certPath)
+	keyDst := resolveSymlink(keyPath)
+	certStaged := certDst + ".new"
+	keyStaged := keyDst + ".new"
+	if err := atomicfile.Write(certStaged, certPEM, 0o644); err != nil { //nolint:gosec // the certificate is public by design.
+		return fmt.Errorf("write cert: %w", err)
+	}
+	if err := atomicfile.Write(keyStaged, keyPEM, 0o600); err != nil {
+		_ = os.Remove(certStaged)
+		return fmt.Errorf("write key: %w", err)
+	}
+	if err := os.Rename(certStaged, certDst); err != nil {
+		_ = os.Remove(certStaged)
+		_ = os.Remove(keyStaged)
+		return fmt.Errorf("commit cert: %w", err)
+	}
+	if err := os.Rename(keyStaged, keyDst); err != nil {
+		_ = os.Remove(keyStaged)
+		return fmt.Errorf("commit key: %w", err)
+	}
+	return nil
+}
+
+// resolveSymlink returns the real path p points at, or p unchanged when it does
+// not exist or is not a symlink.
+func resolveSymlink(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
 }
 
 // Validate parses and checks an operator-supplied certificate and key pair
