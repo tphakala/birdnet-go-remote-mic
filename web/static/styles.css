@@ -1354,6 +1354,16 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   transform: translateY(1px) scale(0.97);
 }
 
+/* Keyboard focus ring for buttons, matching the accent ring on .btn-link,
+   .toast-dismiss and the other controls. Applies app-wide (predates the
+   notification center): before this, .btn and .icon-btn fell back to the UA
+   default ring, which is faint on dark surfaces. */
+.btn:focus-visible,
+.icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-cyan);
+}
+
 .btn-primary {
   background: var(--accent-cyan);
   color: #041018;

@@ -207,9 +207,9 @@ func rmsDbfs(sumSq, count uint64) float64 {
 // JSON contract are untouched.
 type Event = sse.Event
 
-type subscriber struct {
-	ch chan Event
-}
+// sseBuffer is the per-SSE-subscriber channel depth. A slow client that fills
+// it drops levels frames rather than stalling the sampler.
+const sseBuffer = 8
 
 // tap is one in-process structured-levels consumer. Unlike a subscriber, a tap
 // receives the LevelsEvent value directly on the sampler goroutine (no SSE
@@ -226,18 +226,25 @@ type namedMeter struct {
 	meter *Meter
 }
 
-// Hub owns the device meters, the subscriber set, and the sampler. It is the
-// single reader-resetter of the meters, so SSE clients never race each other
-// for a measurement window.
+// Hub owns the device meters, the SSE fan-out (a shared sse.Broadcaster) and the
+// tap set, and the sampler. It is the single reader-resetter of the meters, so
+// SSE clients never race each other for a measurement window.
 type Hub struct {
 	interval time.Duration
 
+	// subs gates the hot path: it counts SSE subscribers plus taps and is read
+	// lock-free by the capture path (Meter.Observe) and the sampler.
 	subs atomic.Int32
+	// bc owns the SSE subscriber channels, drop-on-full delivery, and cancel.
+	bc *sse.Broadcaster
 
-	mu      sync.Mutex
-	meters  []namedMeter
-	subList map[*subscriber]struct{}
-	taps    map[*tap]struct{}
+	mu     sync.Mutex
+	meters []namedMeter
+	// sseCount is the SSE subscriber count under mu. It mirrors the broadcaster's
+	// size but lives here so the first-consumer decision and meter reset, and the
+	// hasSSE sampler gate, stay atomic with meter sampling under the one hub lock.
+	sseCount int
+	taps     map[*tap]struct{}
 }
 
 // Hub is an sse.Source: it fans marshaled levels events to SSE subscribers. The
@@ -248,7 +255,7 @@ var _ sse.Source = (*Hub)(nil)
 func NewHub() *Hub {
 	return &Hub{
 		interval: defaultInterval,
-		subList:  make(map[*subscriber]struct{}),
+		bc:       sse.NewBroadcaster(sseBuffer),
 		taps:     make(map[*tap]struct{}),
 	}
 }
@@ -318,7 +325,7 @@ func (h *Hub) Run(ctx context.Context) {
 				h.deliverTap(fn, ev)
 			}
 			if hasSSE {
-				h.broadcast(marshalLevels(ev))
+				h.bc.Broadcast(marshalLevels(ev))
 			}
 		}
 	}
@@ -342,7 +349,7 @@ func (h *Hub) sample(dst []func(LevelsEvent)) (ev LevelsEvent, taps []func(Level
 	for t := range h.taps {
 		taps = append(taps, t.fn)
 	}
-	hasSSE = len(h.subList) > 0
+	hasSSE = h.sseCount > 0
 	h.mu.Unlock()
 	return LevelsEvent{Devices: devs}, taps, hasSSE
 }
@@ -378,30 +385,23 @@ func marshalLevels(le LevelsEvent) Event {
 	return Event{Name: "levels", Data: data}
 }
 
-// broadcast sends ev to every subscriber, dropping it for any whose buffer is
-// full (a slow client falls behind rather than stalling the sampler).
-func (h *Hub) broadcast(ev Event) {
-	h.mu.Lock()
-	for s := range h.subList {
-		select {
-		case s.ch <- ev:
-		default:
-		}
-	}
-	h.mu.Unlock()
-}
-
 // Subscribe registers a new SSE client and returns its event channel plus a
-// cancel func that unregisters it. The channel is never closed; cancel just
-// removes the subscriber so a late broadcast cannot send on a closed channel.
+// cancel func that unregisters it. The shared sse.Broadcaster owns the channel
+// and its never-closed, drop-on-full, idempotent-cancel contract; the hub layers
+// on the subscriber gate and the first-consumer meter reset. Registering the
+// first consumer of either kind (SSE or tap) resets residual meters so a new
+// session does not open on a previous session's accumulation.
 func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
-	s := &subscriber{ch: make(chan Event, 8)}
+	ch, cancelSub := h.bc.Subscribe()
 	h.mu.Lock()
-	first := len(h.subList) == 0 && len(h.taps) == 0
-	h.subList[s] = struct{}{}
+	first := h.sseCount == 0 && len(h.taps) == 0
+	h.sseCount++
 	if first {
-		// The sampler stops draining the meters while no client is subscribed,
-		// so clear any residual before this first session starts reading.
+		// The sampler stops draining the meters while no client is subscribed, so
+		// clear any residual before this first session starts reading. The reset
+		// runs under h.mu (mutually excluded from sample) and completes before the
+		// hot-path gate opens on h.subs.Add(1) below, so the sampler cannot read a
+		// residual window into the fresh session.
 		for i := range h.meters {
 			h.meters[i].meter.reset()
 		}
@@ -409,10 +409,11 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 	h.mu.Unlock()
 	h.subs.Add(1)
 	var once sync.Once
-	return s.ch, func() {
+	return ch, func() {
 		once.Do(func() {
+			cancelSub()
 			h.mu.Lock()
-			delete(h.subList, s)
+			h.sseCount--
 			h.mu.Unlock()
 			h.subs.Add(-1)
 		})
@@ -433,7 +434,7 @@ func (h *Hub) Subscribe() (events <-chan Event, cancel func()) {
 func (h *Hub) Tap(fn func(LevelsEvent)) (cancel func()) {
 	t := &tap{fn: fn}
 	h.mu.Lock()
-	first := len(h.subList) == 0 && len(h.taps) == 0
+	first := h.sseCount == 0 && len(h.taps) == 0
 	h.taps[t] = struct{}{}
 	if first {
 		for i := range h.meters {

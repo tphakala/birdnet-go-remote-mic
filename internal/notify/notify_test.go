@@ -407,10 +407,7 @@ func waitForSubscriber(t *testing.T, c *Center) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		c.mu.Lock()
-		n := len(c.subs)
-		c.mu.Unlock()
-		if n > 0 {
+		if c.bc.Len() > 0 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
