@@ -115,9 +115,9 @@ func TestChooseParams(t *testing.T) {
 		// operator asked for; an explicit non-48k rate means they want PCM.
 		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: intPtr(96000)}, config.ModePCM, 96000, []int{1}},
 		{"auto with multi-channel selection falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1, 2)}, config.ModePCM, 48000, []int{1, 2}},
-		// An EXPLICIT multi-channel selection with explicit Opus is kept as asked so
-		// config.Validate rejects it (422) instead of the request being silently
-		// collapsed to one channel.
+		// An EXPLICIT selection with explicit Opus is kept as asked, not collapsed:
+		// two channels is a valid stereo Opus selection, and three or more is what
+		// config.Validate rejects (422) rather than the request being narrowed here.
 		{"explicit opus with explicit multi-channel is not collapsed", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2)}, config.ModeOpus, 48000, []int{1, 2}},
 		// A DERIVED default on a stereo-only device is narrowed to one channel for
 		// Opus: the operator asked for Opus, not for a channel set.
@@ -378,7 +378,7 @@ func TestDeleteDeviceUnknownYields404(t *testing.T) {
 	}
 }
 
-func TestProvisionDeviceOpusMultiChannelYields422(t *testing.T) {
+func TestProvisionDeviceOpusStereoYields201(t *testing.T) {
 	store, _ := tempStore(t)
 	prov := &fakeProvider{available: []AvailableDevice{
 		{ID: devAttic, FriendlyName: nameScarlett, SupportedRates: []int{48000}, SupportedChannels: []int{1, 2}},
@@ -390,15 +390,38 @@ func TestProvisionDeviceOpusMultiChannelYields422(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)
 	}
+	created, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse)
+	if !ok {
+		t.Fatalf("returned %T, want 201 for a two-channel (stereo) Opus selection", resp)
+	}
+	if created.Mode != mgmtapi.Opus || created.Rate != 48000 || !slices.Equal(created.Channels, []int{1, 2}) {
+		t.Errorf("created params = (%s, %d, %v), want (opus, 48000, [1 2])", created.Mode, created.Rate, created.Channels)
+	}
+}
+
+func TestProvisionDeviceOpusThreeChannelYields422(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameScarlett, SupportedRates: []int{48000}, SupportedChannels: []int{1, 2, 3, 4}},
+	}}
+	s := New(prov, WithConfigStore(store))
+	before := len(store.Config().Devices)
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2, 3)},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
 	got, ok := resp.(mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse)
 	if !ok {
-		t.Fatalf("returned %T, want 422 for an explicit multi-channel Opus selection", resp)
+		t.Fatalf("returned %T, want 422 for a three-channel Opus selection", resp)
 	}
 	if got.Errors == nil || len(*got.Errors) != 1 || !strings.HasSuffix((*got.Errors)[0].Field, ".channels") {
 		t.Errorf("errors = %+v, want one entry on the channels field", got.Errors)
 	}
-	if len(store.Config().Devices) != 1 {
-		t.Error("a rejected provisioning must not persist a device")
+	// A rejected provisioning must not persist a device.
+	if len(store.Config().Devices) != before {
+		t.Errorf("device count = %d after a rejected provision, want %d (nothing persisted)", len(store.Config().Devices), before)
 	}
 }
 

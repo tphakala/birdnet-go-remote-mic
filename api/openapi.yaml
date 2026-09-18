@@ -533,8 +533,9 @@ components:
           description: >
             Selected 1-based capture channel numbers to stream, ascending and
             unique (e.g. [1], [1, 2], or [1, 3]). The stream carries these
-            channels in order; a single-channel selection yields a mono stream
-            (and is the one Opus accepts).
+            channels in order; a single-channel selection yields a mono stream.
+            Opus accepts one channel (mono) or two (stereo); PCM L16 carries any
+            selection.
         opus:
           $ref: "#/components/schemas/OpusSettings"
         state:
@@ -685,7 +686,8 @@ components:
       enum: [pcm, opus]
       description: >
         pcm streams raw L16 at the capture rate (the ultrasonic path);
-        opus streams 48 kHz mono Opus (the normal-audio path).
+        opus streams 48 kHz Opus, mono or stereo (one or two channels; the
+        normal-audio path).
 
     OpusSettings:
       type: object

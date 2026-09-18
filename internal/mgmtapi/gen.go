@@ -343,7 +343,7 @@ type ConfigUpdateResult struct {
 
 // Device One configured capture device: its configuration, what capture actually negotiated, and its runtime state.
 type Device struct {
-	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]). The stream carries these channels in order; a single-channel selection yields a mono stream (and is the one Opus accepts).
+	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]). The stream carries these channels in order; a single-channel selection yields a mono stream. Opus accepts one channel (mono) or two (stereo); PCM L16 carries any selection.
 	Channels []int `json:"channels"`
 
 	// ClientConnected Whether an RTSP session currently holds this track's single slot. Always false for skipped or failed devices.
@@ -369,7 +369,7 @@ type Device struct {
 	// Examples: Scarlett 2i2 USB
 	FriendlyName *string `json:"friendlyName,omitempty"`
 
-	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
+	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
 	Mode StreamMode `json:"mode"`
 
 	// Name Unique device name (also the DNS-SD instance name).
@@ -423,7 +423,7 @@ type DeviceConfig struct {
 	Enabled *bool              `json:"enabled,omitempty"`
 	Format  DeviceConfigFormat `json:"format"`
 
-	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
+	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
 	Mode StreamMode `json:"mode"`
 	Name string     `json:"name"`
 
@@ -657,7 +657,7 @@ type ProvisionDeviceRequest struct {
 	// Examples: hw:1,0
 	Device string `json:"device"`
 
-	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
+	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
 	Mode *StreamMode `json:"mode,omitempty"`
 
 	// Name Optional unique device name; derived from the hardware label when omitted.
@@ -675,7 +675,7 @@ type RestartResult struct {
 	Status string `json:"status"`
 }
 
-// StreamMode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz mono Opus (the normal-audio path).
+// StreamMode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
 type StreamMode string
 
 // SystemInfo Host hardware facts and live system metrics.

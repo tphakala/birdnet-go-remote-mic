@@ -41,7 +41,8 @@ type Mode string
 const (
 	// ModePCM streams raw L16 at the capture rate (the ultrasonic path).
 	ModePCM Mode = "pcm"
-	// ModeOpus encodes 48 kHz mono Opus (the normal-audio path).
+	// ModeOpus encodes 48 kHz Opus, mono or stereo (one or two channels; the
+	// normal-audio path).
 	ModeOpus Mode = "opus"
 )
 
@@ -463,8 +464,8 @@ func (c *Config) validateDevices() error {
 			if d.Rate != 48000 {
 				return &ValidationError{field("rate"), "opus mode requires 48000 Hz"}
 			}
-			if len(d.Channels) != 1 {
-				return &ValidationError{field("channels"), "opus mode requires exactly one channel"}
+			if len(d.Channels) > 2 {
+				return &ValidationError{field("channels"), "opus mode requires one or two channels"}
 			}
 		}
 		if d.Opus.Bitrate < 0 {

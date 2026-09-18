@@ -90,23 +90,29 @@ type opusStage struct {
 	bitrate int
 }
 
-// NewOpus returns an Opus encode stage. It requires 48 kHz mono capture and
-// emits one Opus packet per 960-sample frame; a trailing partial frame at
-// teardown is dropped.
+// NewOpus returns an Opus encode stage. It requires 48 kHz capture with one or
+// two channels (mono or stereo) and emits one Opus packet per 20 ms frame (960
+// samples per channel); a trailing partial frame at teardown is dropped.
 func NewOpus(cfg config.Opus) Stage { return &opusStage{bitrate: cfg.Bitrate} }
 
 func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 	rate, ch := src.Negotiated()
-	if rate != 48000 || ch != 1 {
-		return fmt.Errorf("pipeline: opus requires 48000 Hz mono, got %d Hz %d ch", rate, ch)
+	if rate != 48000 || ch < 1 || ch > 2 {
+		return fmt.Errorf("pipeline: opus requires 48000 Hz with 1 or 2 channels, got %d Hz %d ch", rate, ch)
 	}
-	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: 1, Bitrate: o.bitrate})
+	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: o.bitrate})
 	if err != nil {
 		return err
 	}
 
-	acc := make([]int16, 0, opusFrameSamples) // reused accumulator
-	encBuf := make([]byte, 4000)              // one Opus packet fits easily
+	// One 20 ms Opus frame is opusFrameSamples per channel of interleaved PCM, so
+	// the accumulator fills to opusFrameSamples*ch before each Encode (mono is the
+	// ch==1 case). The RTP timestamp advances by opusFrameSamples (960) per frame:
+	// the Opus RTP clock counts samples of a single channel at 48 kHz (RFC 7587),
+	// so the per-frame increment is 960 regardless of the channel count.
+	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
+	acc := make([]int16, 0, frameSamples) // reused accumulator
+	encBuf := make([]byte, 4000)          // one Opus packet fits easily
 
 	for {
 		period, err := src.Read()
@@ -120,7 +126,7 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 		samples := len(period.Buf) / 2
 		for i := range samples {
 			acc = append(acc, int16(binary.LittleEndian.Uint16(period.Buf[i*2:])))
-			if len(acc) < opusFrameSamples {
+			if len(acc) < frameSamples {
 				continue
 			}
 			n, eerr := enc.Encode(acc, encBuf)
@@ -158,11 +164,14 @@ func CodecName(mode config.Mode) string {
 
 // SDPSpec builds the SDP write spec the server serializes at DESCRIBE time. rate
 // and channels are the negotiated capture values (used for the L16 rtpmap);
-// Opus is always advertised as opus/48000/2 per RFC 7587 with sprop-stereo=0 for
-// the mono source.
+// Opus is always advertised as opus/48000/2 per RFC 7587, with sprop-stereo
+// reflecting the selection: 1 for a two-channel (stereo) stream, 0 for mono.
 func SDPSpec(d *config.Device, rate, channels int) sdp.WriteSpec {
 	if d.Mode == config.ModeOpus {
 		fmtp := "sprop-stereo=0"
+		if len(d.Channels) == 2 {
+			fmtp = "sprop-stereo=1"
+		}
 		if d.Opus.Bitrate > 0 {
 			fmtp += ";maxaveragebitrate=" + strconv.Itoa(d.Opus.Bitrate)
 		}

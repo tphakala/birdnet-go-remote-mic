@@ -118,6 +118,85 @@ func TestOpusStageFraming(t *testing.T) {
 	}
 }
 
+func TestOpusStageStereo(t *testing.T) {
+	const rate, ch = 48000, 2
+	// Four 480-frame stereo periods => 1920 frames => two 960-frame Opus frames.
+	// Each frame carries opusFrameSamplesTest*ch interleaved samples.
+	periods := make([][]byte, 4)
+	for k := range periods {
+		b := make([]byte, 480*ch*2) // 480 frames, 2 channels, S16LE
+		for i := range 480 {
+			// Distinct tones per channel (left louder than right); the per-channel
+			// energy asserted after the loop pins interleaved stereo, not a doubled
+			// mono, and catches a dropped or swapped channel.
+			l := int16(8000 * math.Sin(2*math.Pi*440*float64(k*480+i)/rate))
+			r := int16(6000 * math.Sin(2*math.Pi*660*float64(k*480+i)/rate))
+			binary.LittleEndian.PutUint16(b[(i*ch+0)*2:], uint16(l))
+			binary.LittleEndian.PutUint16(b[(i*ch+1)*2:], uint16(r))
+		}
+		periods[k] = b
+	}
+	src := audio.NewFakeSource(rate, ch, periods)
+
+	dec, err := opus.NewDecoder(48000, ch)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	pcm := make([]int16, opusFrameSamplesTest*ch)
+	frames := 0
+	var sumL2, sumR2 float64 // decoded per-channel energy (left vs right)
+	err = pipeline.NewOpus(config.Opus{Bitrate: 96000}).Run(src, func(f pipeline.Frame) error {
+		frames++
+		if f.Duration != 960 {
+			t.Errorf("frame %d duration = %d, want 960", frames, f.Duration)
+		}
+		n, derr := dec.Decode(f.Payload, pcm)
+		if derr != nil {
+			t.Fatalf("Decode: %v", derr)
+		}
+		if n != 960 {
+			t.Errorf("decoded %d samples per channel, want 960", n)
+		}
+		for i := 0; i < n; i++ {
+			l, r := float64(pcm[i*2]), float64(pcm[i*2+1])
+			sumL2 += l * l
+			sumR2 += r * r
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if frames != 2 {
+		t.Errorf("emitted %d frames, want 2", frames)
+	}
+	// The channels carry different tones (left ~8000, right ~6000), so a correct
+	// interleaved-stereo encode decodes to two non-trivial channels with the left
+	// clearly louder. A mono-collapsed encode (identical channels), a dropped
+	// channel, or a swapped pair would fail left energy > right energy > 0.
+	if sumR2 <= 0 {
+		t.Errorf("right channel is silent (sumR2=%v): channel dropped or collapsed", sumR2)
+	}
+	if sumL2 <= sumR2 {
+		t.Errorf("left energy %v should exceed right %v: interleaved stereo not preserved", sumL2, sumR2)
+	}
+}
+
+func TestOpusStageRejectsTooManyChannels(t *testing.T) {
+	// The config layer already forbids more than two Opus channels; the stage
+	// guards independently, so a 3-channel source is rejected, not encoded.
+	src := audio.NewFakeSource(48000, 3, [][]byte{make([]byte, 960*3*2)})
+	err := pipeline.NewOpus(config.Opus{Bitrate: 96000}).Run(src, func(pipeline.Frame) error { return nil })
+	if err == nil {
+		t.Fatal("Run accepted a 3-channel source, want an error")
+	}
+	// Pin the stage's own guard rather than only go-opus rejecting 3 channels: the
+	// guard names the 1-or-2 constraint, which the encoder-construction error does not.
+	if !strings.Contains(err.Error(), "1 or 2 channels") {
+		t.Errorf("error %q should name the stage's 1-or-2-channel guard", err)
+	}
+}
+
 const opusFrameSamplesTest = 960
 
 func TestSDPSpec(t *testing.T) {
@@ -135,6 +214,16 @@ func TestSDPSpec(t *testing.T) {
 	}
 	if !strings.Contains(op.FMTP, "maxaveragebitrate=64000") {
 		t.Errorf("Opus fmtp missing maxaveragebitrate: %q", op.FMTP)
+	}
+
+	// A two-channel selection is signalled with sprop-stereo=1 while the rtpmap
+	// stays opus/48000/2 (RFC 7587).
+	stereo := pipeline.SDPSpec(&config.Device{Name: "s", Mode: config.ModeOpus, Channels: []int{1, 2}}, 48000, 2)
+	if stereo.Channels != 2 || !strings.Contains(stereo.FMTP, "sprop-stereo=1") {
+		t.Errorf("stereo Opus spec should carry sprop-stereo=1: %+v", stereo)
+	}
+	if strings.Contains(stereo.FMTP, "sprop-stereo=0") {
+		t.Errorf("stereo Opus fmtp must not contain sprop-stereo=0: %q", stereo.FMTP)
 	}
 }
 

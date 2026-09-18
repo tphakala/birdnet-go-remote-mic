@@ -99,11 +99,11 @@ export class DeviceSettingsForm {
 
     // Resolve the codec mode the form actually opens on BEFORE building the
     // channel field. modeOptions() may not offer the saved mode (Opus on
-    // hardware that cannot do 48 kHz mono), and pick() then coerces it to PCM.
+    // hardware that cannot do 48 kHz), and pick() then coerces it to PCM.
     // The channel group's caption and accessible name must describe this
     // resolved mode, not the saved one, or they would claim "Opus streams one
-    // channel" while the mode dropdown is actually showing PCM. Computed once
-    // and reused where the mode dropdown is built below.
+    // or two channels" while the mode dropdown is actually showing PCM. Computed
+    // once and reused where the mode dropdown is built below.
     const modeOpts = this.modeOptions();
     // pick() returns one of modeOpts' values ("opus" or "pcm"), so it is always
     // a valid StreamMode.
@@ -129,9 +129,9 @@ export class DeviceSettingsForm {
 
     // Channels: a per-channel selection built from the device's probed channel
     // capability. The operator picks which capture channels the stream carries;
-    // one selected channel is a mono stream (the only kind Opus accepts), two or
-    // more is a multi-channel PCM stream. The number of selectable channels is the
-    // largest probed channel count, defaulting to stereo when unknown.
+    // one channel is a mono stream, two is stereo (Opus accepts one or two), and
+    // three or more is a multi-channel PCM stream. The number of selectable
+    // channels is the largest probed channel count, defaulting to stereo when unknown.
     const chField = elem("div", "form-field");
     chField.appendChild(this.label("Channels"));
     const chGroup = this.buildChannelSelect(this.maxChannels(), d.channels);
@@ -139,8 +139,8 @@ export class DeviceSettingsForm {
     chField.appendChild(chGroup);
     this.chErr = this.error(`set-${uid}-ch-err`);
     chField.appendChild(this.chErr);
-    // The hint depends on the codec mode (Opus streams one channel, and the Opus
-    // clause is dropped on a device that cannot offer Opus). Start it empty:
+    // The hint depends on the codec mode (Opus streams one or two channels, and
+    // the Opus clause is dropped on a device that cannot offer Opus). Start it empty:
     // applyChannelMode is the single writer of both this caption and the group's
     // accessible name, and it is called with the resolved mode just below (and
     // again on every mode change).
@@ -168,9 +168,9 @@ export class DeviceSettingsForm {
     this.pathEl = path.input;
     this.pathErr = path.error;
 
-    // Mode: Opus is offered only when the device can do 48 kHz mono (Opus is a
-    // 48 kHz mono codec). On a device that cannot, only PCM L16 is offered and a
-    // saved opus mode is coerced to pcm so the form is never in an unsaveable state.
+    // Mode: Opus is offered only when the device can do 48 kHz (Opus is a 48 kHz
+    // codec, mono or stereo). On a device that cannot, only PCM L16 is offered and
+    // a saved opus mode is coerced to pcm so the form is never in an unsaveable state.
     const modeField = elem("div", "form-field");
     modeField.appendChild(this.label("Stream Codec Mode"));
     const mode = this.buildDropdown("Stream codec mode", modeOpts, modeInitial);
@@ -178,10 +178,10 @@ export class DeviceSettingsForm {
     modeField.appendChild(mode.container);
     const opusOffered = modeOpts.some((o) => o.val === "opus");
     // The saved config asked for Opus but the hardware can no longer satisfy it
-    // (no 48 kHz mono), so the form opened on PCM. Record it so the operator is
+    // (no 48 kHz), so the form opened on PCM. Record it so the operator is
     // told rather than seeing the codec change with no explanation.
     if (d.mode === "opus" && !opusOffered) {
-      this.loadCoercion = `${d.name} does not support Opus (48 kHz mono); switched to PCM L16. Save to keep this change.`;
+      this.loadCoercion = `${d.name} does not support Opus (needs 48 kHz); switched to PCM L16. Save to keep this change.`;
       // Opus pinned the rate to 48000. If the hardware does not offer 48000 for
       // PCM either, move the rate control to a supported value so Save does not
       // persist a rate the device cannot open.
@@ -192,8 +192,8 @@ export class DeviceSettingsForm {
     }
     const modeHint = this.hint(
       opusOffered
-        ? "Opus is 48 kHz mono; PCM L16 is raw and supports ultrasonic rates."
-        : "PCM L16 is raw and supports ultrasonic rates. Opus needs 48 kHz mono, which this device does not support.",
+        ? "Opus is 48 kHz (mono or stereo); PCM L16 is raw and supports ultrasonic rates."
+        : "PCM L16 is raw and supports ultrasonic rates. Opus needs 48 kHz, which this device does not support.",
       `set-${uid}-mode-hint`,
     );
     modeField.appendChild(modeHint);
@@ -256,11 +256,12 @@ export class DeviceSettingsForm {
       this.applyChannelMode(this.modeHidden.value as StreamMode);
       if (isOpus) {
         this.rateDrop.select("48000");
-        // Opus is a single mono channel: collapse the selection to one channel
-        // (keeping the lowest already-selected, or Ch1) so the form can never hold
-        // an unsaveable multi-channel Opus selection.
-        const first = this.selectedChannels()[0] ?? 1;
-        this.setChannelSelection([first]);
+        // Cap the selection at two channels on entering Opus (Opus takes one or
+        // two): keep a valid stereo pair, drop any extra, and fall back to Ch1
+        // when nothing is selected so the form is never left in an unsaveable
+        // (zero-channel) state.
+        const sel = this.selectedChannels();
+        this.setChannelSelection(sel.length ? sel.slice(0, 2) : [1]);
       }
       this.validate();
     });
@@ -272,7 +273,7 @@ export class DeviceSettingsForm {
   }
 
   // loadNotice returns a message when opening the form silently coerced an
-  // unsupported saved codec (Opus on hardware that cannot do 48 kHz mono) down to
+  // unsupported saved codec (Opus on hardware that cannot do 48 kHz) down to
   // PCM, or null when nothing was coerced. The caller surfaces it to the operator.
   public loadNotice(): string | null {
     return this.loadCoercion;
@@ -306,8 +307,8 @@ export class DeviceSettingsForm {
     let chMsg = "Select at least one channel.";
     if (mode === "opus") {
       rateOk = rate === 48000;
-      chOk = channels.length === 1;
-      chMsg = "Opus requires exactly one channel.";
+      chOk = channels.length >= 1 && channels.length <= 2;
+      chMsg = "Opus requires one or two channels.";
     }
     ok = this.markControl(this.rateErr, rateOk,
       mode === "opus" ? "Opus requires 48000 Hz." : "Rate must be 8000-384000 Hz.") && ok;
@@ -348,7 +349,7 @@ export class DeviceSettingsForm {
       dev.opus = { bitrate: Number(this.bitrateHidden.value) || MIN_BITRATE };
     } else if (this.device.opus) {
       // Preserve a saved Opus bitrate when the mode is not Opus (e.g. it was
-      // coerced to PCM because the device cannot do 48 kHz mono), so a temporary
+      // coerced to PCM because the device cannot do 48 kHz), so a temporary
       // mode change does not silently discard the operator's bitrate.
       dev.opus = this.device.opus;
     }
@@ -463,30 +464,31 @@ export class DeviceSettingsForm {
   }
 
   // channelHint is the caption under the channel group for the given mode. In
-  // Opus mode the group is single-select, and that is said plainly; on a device
-  // that cannot offer Opus the Opus clause is omitted rather than left dangling.
+  // Opus mode the group is limited to one or two channels, and that is said
+  // plainly; on a device that cannot offer Opus the Opus clause is omitted
+  // rather than left dangling.
   private channelHint(mode: StreamMode): string {
-    if (mode === "opus") return "Opus streams one channel: choosing a channel clears the others.";
-    if (this.opusSupported()) return "Select which capture channels to stream. One channel is a mono stream; Opus requires exactly one.";
+    if (mode === "opus") return "Opus streams one or two channels: pick one for mono or two for stereo.";
+    if (this.opusSupported()) return "Select which capture channels to stream. One channel is a mono stream; Opus takes one or two.";
     return "Select which capture channels to stream. One channel is a mono stream.";
   }
 
   // applyChannelMode refreshes the channel group's caption and accessible name
-  // for the codec mode, so the single-select behaviour in Opus mode is announced
-  // (the caption says choosing a channel clears the others, and the group's
-  // aria-label names it) instead of being an unexplained checkbox quirk. It is
-  // the single writer of both, so buildChannelSelect sets neither.
+  // for the codec mode, so the one-or-two-channel constraint in Opus mode is
+  // announced (the caption says pick one or two, and the group's aria-label
+  // names it) instead of being an unexplained checkbox quirk. It is the single
+  // writer of both, so buildChannelSelect sets neither.
   private applyChannelMode(mode: StreamMode): void {
-    const single = mode === "opus";
+    const opus = mode === "opus";
     this.chHint.textContent = this.channelHint(mode);
-    // Opus is single-select (the change handler clears the others). Flag the
-    // group so the stylesheet renders it as a radio-like "pick one" set (pill
-    // chips, round indicator), making the single-select behaviour visible rather
-    // than an unexplained checkbox quirk.
-    this.channelsGroup.classList.toggle("single-select", single);
+    // Opus is limited to one or two channels (the change handler caps it). Flag
+    // the group so the stylesheet renders it as a constrained "pick one or two"
+    // set (pill chips), making the constraint visible rather than an unexplained
+    // checkbox quirk.
+    this.channelsGroup.classList.toggle("opus-select", opus);
     this.channelsGroup.setAttribute(
       "aria-label",
-      single ? "Capture channel to stream (Opus streams one channel)" : "Capture channels to stream",
+      opus ? "Capture channels to stream (Opus: one or two channels)" : "Capture channels to stream",
     );
   }
 
@@ -508,10 +510,11 @@ export class DeviceSettingsForm {
   }
 
   // opusSupported reports whether the device can carry Opus in this appliance.
-  // Opus runs at 48 kHz mono internally (RFC 7587). Mono is always achievable by
-  // selecting a single channel (the appliance extracts one channel from whatever
-  // contiguous count the device opens), so only 48 kHz capture support gates Opus
-  // here. A rate set that was not probed (empty/absent) is treated as supported,
+  // Opus runs at 48 kHz (RFC 7587), mono or stereo. A mono stream is always
+  // achievable by selecting one channel (the appliance extracts channels from
+  // whatever contiguous count the device opens), so only 48 kHz capture support
+  // gates Opus here. A rate set that was not probed (empty/absent) is treated
+  // as supported,
   // the same graceful degradation the rate control uses, so a device that was
   // merely busy at startup is not stripped of Opus.
   private opusSupported(): boolean {
@@ -520,7 +523,7 @@ export class DeviceSettingsForm {
   }
 
   // modeOptions is the codec-mode list for this device: PCM L16 always, and Opus
-  // only when the device supports 48 kHz mono. Gating Opus here prevents offering
+  // only when the device supports 48 kHz. Gating Opus here prevents offering
   // a mode the hardware cannot satisfy (which would force an unsupported 48 kHz
   // and be rejected at open).
   private modeOptions(): DropdownOption[] {
@@ -545,8 +548,8 @@ export class DeviceSettingsForm {
   }
 
   // buildChannelSelect builds the per-channel checkbox group (Ch1..ChN). In Opus
-  // mode the group behaves like a radio: checking one channel clears the rest, so
-  // an Opus selection is always a single mono channel.
+  // mode the change handler caps the selection at two channels (mono or stereo),
+  // clearing the lowest-numbered other channel if a further box is checked.
   private buildChannelSelect(maxCh: number, selected: number[]): HTMLElement {
     const want = new Set(selected);
     const group = elem("div", "channel-select");
@@ -564,9 +567,18 @@ export class DeviceSettingsForm {
       box.addEventListener("change", () => {
         const isOpus = this.modeHidden?.value === "opus";
         if (isOpus && box.checked) {
-          // Opus streams one channel: checking one clears the rest (radio-like).
-          for (const other of this.channelBoxes) {
-            if (other !== box) other.checked = false;
+          // Opus carries one or two channels: cap the selection at two. When a
+          // further box is checked, clear the lowest-numbered of the other checked
+          // boxes (channelBoxes is in channel-number order), keeping the just-checked
+          // box and the highest-numbered prior selection.
+          const checked = this.channelBoxes.filter((b) => b.checked);
+          if (checked.length > 2) {
+            for (const other of checked) {
+              if (other !== box) {
+                other.checked = false;
+                break;
+              }
+            }
           }
         } else if (isOpus && !box.checked && this.selectedChannels().length === 0) {
           // ...and it cannot be emptied: unchecking the only channel re-checks it
