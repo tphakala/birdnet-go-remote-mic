@@ -1150,32 +1150,34 @@ body {
   border-color: var(--signal-crit);
 }
 
-/* Opus mode is single-select: checking one channel clears the others (the
-   change handler enforces it). Style the group so that is VISIBLE, not just
-   behavioural: pill-shaped chips and a radio-style round indicator read as a
-   "pick one" group rather than independent checkboxes. Applied via the
-   .single-select class that device-settings.ts toggles with the codec mode. */
-.channel-select.single-select .channel-checkbox {
+/* Opus is limited to one or two channels (mono or stereo): the change handler
+   caps the selection at two. Style the group so that constraint is VISIBLE, not
+   just behavioural: pill-shaped chips mark it as a special "pick one or two"
+   group rather than a free-form checkbox list. The indicator is a rounded
+   square (not a radio dot) because up to two channels can be selected at once.
+   Applied via the .opus-select class that device-settings.ts toggles with the
+   codec mode. */
+.channel-select.opus-select .channel-checkbox {
   border-radius: var(--radius-full);
 }
-.channel-select.single-select .channel-checkbox input {
+.channel-select.opus-select .channel-checkbox input {
   appearance: none;
   -webkit-appearance: none;
   width: 14px;
   height: 14px;
   border: 1.5px solid var(--border-base);
-  border-radius: 50%;
+  border-radius: 4px;
   position: relative;
   background: var(--bg-page);
 }
-.channel-select.single-select .channel-checkbox:has(input:checked) input {
+.channel-select.opus-select .channel-checkbox:has(input:checked) input {
   border-color: var(--accent-cyan);
 }
-.channel-select.single-select .channel-checkbox input:checked::after {
+.channel-select.opus-select .channel-checkbox input:checked::after {
   content: "";
   position: absolute;
   inset: 3px;
-  border-radius: 50%;
+  border-radius: 2px;
   background: var(--accent-cyan);
 }
 

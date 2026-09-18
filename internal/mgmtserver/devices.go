@@ -284,9 +284,9 @@ func randomPath(taken map[string]bool) string {
 // kHz, otherwise raw PCM at the device's best rate. Opus is fixed at 48 kHz, with
 // a deliberate asymmetry between the two overridable stream parameters: an
 // explicit rate is snapped to 48000 (a non-48k rate in auto mode is instead read
-// as "the operator wants PCM"), while an explicit multi-channel selection is
-// passed through unchanged so config.Validate rejects it with a 422 rather than
-// this silently narrowing the request.
+// as "the operator wants PCM"), while an explicit channel selection is passed
+// through unchanged so config.Validate accepts one or two channels and rejects
+// three or more with a 422 rather than this silently narrowing the request.
 func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode config.Mode, rate int, channels []int) {
 	if req.Mode != nil {
 		mode = config.Mode(string(*req.Mode))
@@ -310,11 +310,12 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 
 	switch mode {
 	case config.ModeOpus:
-		// Opus streams exactly one channel. A DERIVED default (the request named
-		// no channels, or an empty array) is narrowed to its first channel, since
-		// the operator asked for Opus rather than a channel set; an EXPLICIT
-		// selection is kept as asked so config.Validate rejects a multi-channel
-		// one with a 422 instead of this silently discarding part of the request.
+		// Opus accepts one channel (mono) or two (stereo), and mono is the
+		// default. A DERIVED default (the request named no channels, or an empty
+		// array) is narrowed to a single channel, since the operator asked for
+		// Opus rather than a channel set; an EXPLICIT selection is kept as asked,
+		// so config.Validate accepts one or two and rejects three or more with a
+		// 422 instead of this silently discarding part of the request.
 		if derived && len(channels) > 1 {
 			channels = channels[:1]
 		}
@@ -326,11 +327,12 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 		return config.ModePCM, rate, channels
 	default:
 		// Auto: prefer Opus, but only when the request did not ask for something
-		// Opus cannot honor. Opus is fixed at 48 kHz mono (exactly one selected
-		// channel), so an explicit rate other than 48 kHz or a multi-channel
-		// selection means the operator wants PCM; silently returning Opus would
-		// discard their request (the contract says a set field overrides the
-		// default).
+		// Opus cannot honor. Auto prefers 48 kHz mono Opus when a single channel is
+		// selected; an explicit rate other than 48 kHz, or a selection of more than
+		// one channel (including a stereo-only device's derived two-channel default),
+		// means the operator wants PCM, so silently returning Opus would discard
+		// their request (the contract says a set field overrides the default). Stereo
+		// Opus is reachable only by asking for it explicitly (mode opus, two channels).
 		opusOK := canOpus(d) &&
 			(req.Rate == nil || *req.Rate == 48000) &&
 			len(channels) == 1

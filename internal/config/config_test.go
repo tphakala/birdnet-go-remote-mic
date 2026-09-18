@@ -284,10 +284,15 @@ func TestValidate(t *testing.T) {
 			c.Devices[0].Rate = 48000
 		}, false},
 		{"opus at 44100 fails", func(c *Config) { c.Devices[0].Mode = ModeOpus; c.Devices[0].Rate = 44100 }, true},
-		{"opus multi-channel fails", func(c *Config) {
+		{"opus stereo (two channels) valid", func(c *Config) {
 			c.Devices[0].Mode = ModeOpus
 			c.Devices[0].Rate = 48000
 			c.Devices[0].Channels = []int{1, 2}
+		}, false},
+		{"opus three-channel fails", func(c *Config) {
+			c.Devices[0].Mode = ModeOpus
+			c.Devices[0].Rate = 48000
+			c.Devices[0].Channels = []int{1, 2, 3}
 		}, true},
 		{"multi-channel pcm selection valid", func(c *Config) { c.Devices[0].Channels = []int{1, 2} }, false},
 		{"non-contiguous channel selection valid", func(c *Config) { c.Devices[0].Channels = []int{1, 3} }, false},
