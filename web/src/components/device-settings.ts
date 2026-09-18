@@ -256,12 +256,12 @@ export class DeviceSettingsForm {
       this.applyChannelMode(this.modeHidden.value as StreamMode);
       if (isOpus) {
         this.rateDrop.select("48000");
-        // Narrow to a single channel on entering Opus (keeping the lowest
-        // already-selected, or Ch1): mono is the default, and the operator adds a
-        // second channel in Opus mode for a stereo feed. One channel always
-        // validates, so the form is never left in an unsaveable state.
-        const first = this.selectedChannels()[0] ?? 1;
-        this.setChannelSelection([first]);
+        // Cap the selection at two channels on entering Opus (Opus takes one or
+        // two): keep a valid stereo pair, drop any extra, and fall back to Ch1
+        // when nothing is selected so the form is never left in an unsaveable
+        // (zero-channel) state.
+        const sel = this.selectedChannels();
+        this.setChannelSelection(sel.length ? sel.slice(0, 2) : [1]);
       }
       this.validate();
     });

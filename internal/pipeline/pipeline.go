@@ -107,9 +107,9 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 
 	// One 20 ms Opus frame is opusFrameSamples per channel of interleaved PCM, so
 	// the accumulator fills to opusFrameSamples*ch before each Encode (mono is the
-	// ch==1 case). The RTP timestamp still advances by opusFrameSamples per frame:
-	// the 48 kHz Opus clock is per-frame, not per-sample, so it is independent of
-	// the channel count.
+	// ch==1 case). The RTP timestamp advances by opusFrameSamples (960) per frame:
+	// the Opus RTP clock counts samples of a single channel at 48 kHz (RFC 7587),
+	// so the per-frame increment is 960 regardless of the channel count.
 	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
 	acc := make([]int16, 0, frameSamples) // reused accumulator
 	encBuf := make([]byte, 4000)          // one Opus packet fits easily
