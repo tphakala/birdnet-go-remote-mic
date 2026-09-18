@@ -3,12 +3,45 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
+
+// TestBuildMonitorsWiresSignalAndHost pins that run()'s monitor group carries both
+// condition monitors: dropping the host monitor (or the signal monitor) from the
+// group would otherwise still compile and pass CI, silently disabling host-health
+// notifications. It asserts the group built the way run() builds it holds one of
+// each.
+func TestBuildMonitorsWiresSignalAndHost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var cfg config.Config
+	cfg.ApplyDefaults()
+	s := monitor.SettingsFrom(&cfg)
+	g := buildMonitors(ctx, levels.NewHub(), t.TempDir(), func() []monitor.DeviceDrops { return nil }, nil, &s)
+	cancel() // stop the goroutines the monitor constructors started
+	var hasSignal, hasHost bool
+	for _, m := range g {
+		switch m.(type) {
+		case *monitor.Signal:
+			hasSignal = true
+		case *monitor.Host:
+			hasHost = true
+		}
+	}
+	if !hasSignal {
+		t.Error("buildMonitors did not wire the signal monitor into the group")
+	}
+	if !hasHost {
+		t.Error("buildMonitors did not wire the host monitor into the group")
+	}
+}
 
 func TestProviderDropCounters(t *testing.T) {
 	p := &provider{}
@@ -38,11 +71,12 @@ func TestProviderDropCounters(t *testing.T) {
 
 func TestHostReaderAdapter(t *testing.T) {
 	dir := t.TempDir()
-	r := hostReader{dataPath: dir}
+	r := hostReader{cpu: sysinfo.NewHostCPU(), dataPath: dir}
 
-	// CPU with a nil sampler is unavailable, not a panic.
-	if _, ok := r.CPU(); ok {
-		t.Error("CPU ok with a nil sampler, want false")
+	// CPU with a nil HostCPU is unavailable, not a panic (the zero-value adapter
+	// path); the wired reader below carries the delegation proof.
+	if _, ok := (hostReader{}).CPU(); ok {
+		t.Error("CPU ok with a nil HostCPU, want false")
 	}
 
 	// Each method must delegate to its sysinfo counterpart, so a swapped wiring is
@@ -50,10 +84,10 @@ func TestHostReaderAdapter(t *testing.T) {
 	// reader called on the same input: totals (disk, mem) are stable across the two
 	// back-to-back calls, while availability and temperature can drift, so only the
 	// stable figures and the ok flags are pinned.
-	adTotal, _, adOK := r.Disk()
-	siTotal, _, siOK := sysinfo.DiskUsage(dir)
+	adTotal, _, _, adOK := r.Disk()
+	siTotal, _, _, siOK := sysinfo.DiskUsageDetail(dir)
 	if adOK != siOK || adTotal != siTotal {
-		t.Errorf("Disk adapter = (%d, %v), sysinfo.DiskUsage = (%d, %v); adapter must delegate", adTotal, adOK, siTotal, siOK)
+		t.Errorf("Disk adapter = (%d, %v), sysinfo.DiskUsageDetail = (%d, %v); adapter must delegate", adTotal, adOK, siTotal, siOK)
 	}
 	mTotal, _, mOK := r.Mem()
 	wTotal, _, wOK := sysinfo.ReadMem()
@@ -78,7 +112,7 @@ func TestHostReaderAdapter(t *testing.T) {
 	}
 
 	// A zero-value adapter (no data path) reports disk unavailable, not a panic.
-	if _, _, ok := (hostReader{}).Disk(); ok {
+	if _, _, _, ok := (hostReader{}).Disk(); ok {
 		t.Error("Disk with no data path ok, want false")
 	}
 }

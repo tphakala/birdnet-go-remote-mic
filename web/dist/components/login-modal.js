@@ -3,7 +3,7 @@
 // modals, and closes once a token is accepted. There is deliberately no Escape
 // or backdrop dismissal: nothing on the page works without a token.
 import { store } from "../lib/store.js";
-import { setAppInert, trapFocus } from "../lib/modal.js";
+import { closeTransientDialogs, setAppInert, trapFocus } from "../lib/modal.js";
 export function initLoginModal() {
     const overlay = document.getElementById("login-modal");
     const form = document.getElementById("login-form");
@@ -17,6 +17,11 @@ export function initLoginModal() {
     const show = () => {
         if (open)
             return;
+        // A confirm dialog (e.g. "Allow open access?" from a token save) can be open
+        // when a 401 arrives. Two modals would compete for focus and both inert the
+        // background, and this prompt's own hide() could later hand focus to a still
+        // -inert page. Close any transient dialog first so this is the only modal.
+        closeTransientDialogs();
         open = true;
         error.textContent = "";
         input.value = "";
@@ -33,7 +38,13 @@ export function initLoginModal() {
         release?.();
         release = null;
         setAppInert(false);
-        document.getElementById("main-content")?.focus();
+        // Only pull focus into the workspace when the background is actually
+        // interactive again. If another modal still holds .app-container inert
+        // (depth > 0), focusing an inert descendant would silently fail and strand
+        // focus, so leave it for that modal to place.
+        const app = document.querySelector(".app-container");
+        if (!app?.hasAttribute("inert"))
+            document.getElementById("main-content")?.focus();
     };
     form.addEventListener("submit", (e) => {
         e.preventDefault();

@@ -629,15 +629,10 @@ body {
   transform: scale(0.95);
 }
 
-.copy-btn .icon-copy,
-.copy-btn .icon-check {
+.copy-btn .icon-copy {
   display: flex;
   align-items: center;
   transition: transform 0.2s ease, opacity 0.2s ease;
-}
-
-.copy-btn .icon-check {
-  display: none;
 }
 
 .copy-btn.copied {
@@ -652,20 +647,10 @@ body {
   display: none;
 }
 
-.copy-btn.copied .icon-check {
-  display: flex;
-  animation: check-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
 @keyframes copy-pulse {
   0% { transform: scale(0.95); }
   50% { transform: scale(1.06); }
   100% { transform: scale(1); }
-}
-
-@keyframes check-pop {
-  0% { transform: scale(0); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
 }
 
 /* ==================== CUSTOM DROPDOWN COMPONENT ==================== */
@@ -700,9 +685,9 @@ body {
 .dropdown-trigger:focus,
 .custom-dropdown.open .dropdown-trigger {
   border-color: var(--border-active);
-  box-shadow: 0 0 0 2px var(--accent-cyan-glow);
-  outline: none;
 }
+/* Keyboard focus ring is the shared outline rule (search "Shared keyboard focus
+   ring"); the border-color above is the active/open affordance only. */
 
 .dropdown-value-group {
   display: flex;
@@ -880,7 +865,9 @@ body {
 
 .clip-latch-btn {
   font-family: var(--font-mono);
-  font-size: 10px;
+  /* 11px, not 10px: this is interactive text ("CLIP", a clickable latch reset),
+     so keep it legible rather than at the meter-scale caption size. */
+  font-size: 11px;
   font-weight: 700;
   padding: 3px 7px;
   border-radius: var(--radius-xs);
@@ -1079,8 +1066,9 @@ body {
 
 .field-input:focus, .field-select:focus {
   border-color: var(--border-active);
-  box-shadow: 0 0 0 2px var(--accent-cyan-glow);
 }
+/* Keyboard focus ring is the shared outline rule below; this sets only the
+   active border colour. */
 
 .field-input:disabled {
   background: var(--bg-surface-raised);
@@ -1150,9 +1138,8 @@ body {
   color: var(--text-primary);
 }
 
-.channel-checkbox:has(input:focus-visible) {
-  box-shadow: 0 0 0 2px var(--accent-cyan-glow);
-}
+/* Keyboard focus ring for the channel chips is the shared outline rule (search
+   "Shared keyboard focus ring"), so it survives forced-colors mode. */
 
 .channel-checkbox input {
   accent-color: var(--accent-cyan);
@@ -1161,6 +1148,35 @@ body {
 
 .form-field.invalid .channel-select .channel-checkbox {
   border-color: var(--signal-crit);
+}
+
+/* Opus mode is single-select: checking one channel clears the others (the
+   change handler enforces it). Style the group so that is VISIBLE, not just
+   behavioural: pill-shaped chips and a radio-style round indicator read as a
+   "pick one" group rather than independent checkboxes. Applied via the
+   .single-select class that device-settings.ts toggles with the codec mode. */
+.channel-select.single-select .channel-checkbox {
+  border-radius: var(--radius-full);
+}
+.channel-select.single-select .channel-checkbox input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border-base);
+  border-radius: 50%;
+  position: relative;
+  background: var(--bg-page);
+}
+.channel-select.single-select .channel-checkbox:has(input:checked) input {
+  border-color: var(--accent-cyan);
+}
+.channel-select.single-select .channel-checkbox input:checked::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
 }
 
 /* Custom Switch Toggle */
@@ -1318,6 +1334,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-weight: 600;
   animation: pulse-warn 1.8s infinite ease-in-out;
 }
+/* Light theme: --signal-warn (#d97706) on the warn-tinted badge fails WCAG AA
+   for this small bold text; the darker #b45309 (same tone used for .auth-state
+   .open) clears it. Dark theme already passes. */
+:root[data-theme="light"] .staged-badge {
+  color: #b45309;
+}
 
 @keyframes pulse-warn {
   0%, 100% { opacity: 1; }
@@ -1363,6 +1385,22 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
    .switch-control focus pattern already used in this file. */
 .btn:focus-visible,
 .icon-btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
+/* Shared keyboard focus ring. Declared once for every focusable control that
+   previously drew its ring with a box-shadow (invisible in forced-colors /
+   Windows High Contrast, where box-shadow is not painted). An outline paints in
+   forced colors, coexists with :hover box-shadows instead of being clobbered by
+   them, and the offset keeps it clear of any fill. Mirrors the .btn pattern
+   above; group new focusable controls here rather than re-declaring the ring. */
+.dropdown-trigger:focus-visible,
+.field-input:focus-visible,
+.field-select:focus-visible,
+.channel-checkbox:has(input:focus-visible),
+.toast-dismiss:focus-visible,
+.btn-link:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
@@ -1585,11 +1623,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .toast-dismiss:focus-visible {
   color: var(--text-primary);
   background: var(--bg-surface-active);
-  outline: none;
 }
-.toast-dismiss:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent-cyan);
-}
+/* Focus ring: shared outline rule (search "Shared keyboard focus ring"). */
 
 .toast {
   background: var(--bg-surface-raised);
@@ -1692,9 +1727,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   overflow: hidden;
 }
 
+/* Keep the panel's elevation (shadow-lg) and draw the keyboard focus ring as an
+   outline so it survives forced-colors mode, matching the shared ring pattern. */
 .notif-panel:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-lg), 0 0 0 2px var(--accent-cyan);
+  box-shadow: var(--shadow-lg);
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
 }
 
 .notif-panel-head {
@@ -2003,9 +2041,9 @@ select.field-input {
 .btn-link:hover {
   text-decoration: none;
 }
+/* .btn-link keyboard focus ring is the shared outline rule (search "Shared
+   keyboard focus ring"); the rounded corners keep the outline snug on the link. */
 .btn-link:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-cyan);
   border-radius: 3px;
 }
 .network-actions {

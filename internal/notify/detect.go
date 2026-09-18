@@ -75,11 +75,11 @@ func (h *Hysteresis) Observe(now time.Time, over bool) Transition {
 }
 
 // Reset returns the machine to its initial inactive state, discarding any
-// pending run. A monitor calls it when the subject it watches disappears.
+// pending run. A monitor calls it when the subject it watches disappears. It is
+// ResetRun plus clearing the active state.
 func (h *Hysteresis) Reset() {
 	h.active = false
-	h.running = false
-	h.since = time.Time{}
+	h.ResetRun()
 }
 
 // Active reports whether the condition is currently raised.
@@ -91,6 +91,15 @@ func (h *Hysteresis) Active() bool { return h.active }
 // on the next observation; a lengthened one simply waits longer), and an
 // already-active condition is untouched. The clear dwell stays fixed.
 func (h *Hysteresis) SetEnterAfter(d time.Duration) { h.enterAfter = d }
+
+// ResetRun abandons the current candidate run (the pending onset while inactive,
+// or the pending clear while active) without changing the active state. A monitor
+// calls it when a reading gaps out mid-run so the run must be contiguous: after a
+// gap, a clear requires a fresh unbroken stretch of "under" readings rather than
+// resuming a run that began before the gap and completing from readings taken far
+// apart. Unlike Reset it leaves active untouched, so it never clears or raises the
+// condition on its own.
+func (h *Hysteresis) ResetRun() { h.running, h.since = false, time.Time{} }
 
 // Flap detects a rapid burst of repeated events: while inactive, more than max
 // events within a sliding window of length window raises an onset; while active,

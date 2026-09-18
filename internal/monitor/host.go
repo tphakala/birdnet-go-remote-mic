@@ -70,8 +70,11 @@ type HostReader interface {
 	Mem() (total, avail int64, ok bool)
 	// Temp returns the SoC/CPU temperature in Celsius.
 	Temp() (celsius float64, ok bool)
-	// Disk returns total and used bytes of the appliance's data filesystem.
-	Disk() (total, used int64, ok bool)
+	// Disk returns total, used, and available bytes of the appliance's data
+	// filesystem. The condition judges used/(used+avail) (df's Use%), so avail
+	// excludes root-reserved blocks; total is carried only for the zero-total
+	// unavailable guard.
+	Disk() (total, used, avail int64, ok bool)
 	// CPU returns the host CPU utilization percentage.
 	CPU() (percent float64, ok bool)
 	// Undervoltage reports whether the supply is undervolted right now.
@@ -292,8 +295,16 @@ func (h *Host) evaluateHost(now time.Time, set *Settings) {
 	h.mem.observe(h, now, ok && total > 0,
 		func() bool {
 			// One onset limit: the larger of the percentage and absolute floors, so
-			// the stricter one wins on every memory size.
-			limit := max(total/100*int64(intVal(hs.MemFreePercent)), int64(intVal(hs.MemFreeMiB))<<20)
+			// the stricter one wins on every memory size. The MiB floor is clamped to
+			// half of RAM: a mem_free_mib set above (or near) what the host physically
+			// has would otherwise put the limit at or above total, where available
+			// memory can never fall below it to clear, pinning a permanent low-memory
+			// warning whose "% free" message contradicts itself. Config validation
+			// cannot know the host's RAM size, so the monitor bounds it here. The
+			// percentage floor needs no clamp: it is at most total (at 100%), and the
+			// clear-level cap below already keeps a high percentage's warning clearable.
+			mibFloor := min(int64(intVal(hs.MemFreeMiB))<<20, total/2)
+			limit := max(total/100*int64(intVal(hs.MemFreePercent)), mibFloor)
 			if h.mem.h.Active() {
 				// Cap the clear level so it stays reachable: halfway between the limit
 				// and total, since available memory can never exceed total.
@@ -318,13 +329,18 @@ func (h *Host) evaluateHost(now time.Time, set *Settings) {
 			return conditionClear("Temperature back to normal", fmt.Sprintf("SoC temperature is back at or below %d C", intVal(hs.TempClearCelsius)))
 		})
 
-	// usedPct is computed once here (only when the reading is valid, so a zero
-	// total never divides) and shared by the over and onset closures.
-	dTotal, used, ok := h.reader.Disk()
-	diskOK := ok && dTotal > 0
+	// usedPct is computed once here (only when the reading is valid, so an empty
+	// filesystem never divides) and shared by the over and onset closures. The
+	// percentage is used/(used+avail), matching df's Use%: avail excludes the
+	// root-reserved blocks, so the warning tracks the space the unprivileged
+	// service can actually write rather than the raw filesystem size. total is
+	// only the unavailable guard (a zero total means the statfs figure is absent).
+	dTotal, used, avail, ok := h.reader.Disk()
+	usable := used + avail
+	diskOK := ok && dTotal > 0 && usable > 0
 	var usedPct float64
 	if diskOK {
-		usedPct = float64(used) * 100 / float64(dTotal)
+		usedPct = float64(used) * 100 / float64(usable)
 	}
 	h.disk.observe(h, now, diskOK,
 		func() bool {
@@ -340,7 +356,11 @@ func (h *Host) evaluateHost(now time.Time, set *Settings) {
 		func() bool { return uv },
 		voltOnset,
 		func() notify.Notification {
-			return conditionClear("Power supply recovered", fmt.Sprintf("No undervoltage detected for %s", humanDuration(int(voltClearAfter/time.Second))))
+			// No exact "for N minutes" here: the rpi_volt alarm is a sticky bit the
+			// firmware samples about every 2 s and the monitor polls at 10 s, so the
+			// clear dwell is not a continuous undervoltage-free minute and claiming one
+			// would overstate the measurement.
+			return conditionClear("Power supply recovered", "No undervoltage detected recently; the supply looks stable again")
 		})
 }
 
@@ -357,7 +377,13 @@ func (c *hostCond) observe(h *Host, now time.Time, ok bool, over func() bool, mk
 			if !c.lastOK.IsZero() && now.Sub(c.lastOK) >= c.clearAfter {
 				h.pub.Resolve(c.key, "sensor reading unavailable")
 				c.h.Reset()
+				return
 			}
+			// Active but the reading gapped out short of the clear dwell: abandon any
+			// pending clear run so the clear needs a contiguous stretch of under
+			// readings after the gap, rather than completing from two under readings a
+			// whole clear dwell apart with the sensor dark in between.
+			c.h.ResetRun()
 			return
 		}
 		// Inactive: abandon any pending onset run so a gap in the readings cannot

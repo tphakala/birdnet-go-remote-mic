@@ -2,6 +2,7 @@
 // builder, the uptime formatter (which had diverged between the dashboard and
 // the system view), the load-error/retry pattern, and the per-mode/per-state
 // label maps live in exactly one place.
+import { ApiError } from "./api.js";
 // elem creates an element with an optional class and text content.
 export function elem(tag, className, text) {
     const e = document.createElement(tag);
@@ -10,6 +11,51 @@ export function elem(tag, className, text) {
     if (text !== undefined)
         e.textContent = text;
     return e;
+}
+// setBusy marks a control in-progress WITHOUT removing it from the tab order:
+// aria-disabled (not the disabled property) keeps it focusable, so a keyboard
+// user is not dumped to <body> when the focused control goes busy. Because
+// aria-disabled does not block activation, the caller must guard re-entry (a
+// boolean flag, or checking aria-disabled). aria-busy announces the state and
+// the .is-busy class dims the control and shows a progress cursor. This is the
+// canonical busy affordance; prefer it over toggling `disabled` on a focused
+// control, which steals focus.
+export function setBusy(el, label) {
+    if (label !== undefined)
+        el.textContent = label;
+    el.setAttribute("aria-disabled", "true");
+    el.setAttribute("aria-busy", "true");
+    el.classList.add("is-busy");
+}
+// clearBusy reverses setBusy, restoring the control's label when one is given.
+export function clearBusy(el, label) {
+    if (label !== undefined)
+        el.textContent = label;
+    el.removeAttribute("aria-disabled");
+    el.removeAttribute("aria-busy");
+    el.classList.remove("is-busy");
+}
+// apiErrorMessage reduces any thrown value to a short human string: an ApiError
+// shows its problem title, any other Error its message, and anything else its
+// string form. Shared so the several save/PATCH catch blocks map failures the
+// same way instead of re-inlining the ternary.
+export function apiErrorMessage(err) {
+    if (err instanceof ApiError)
+        return err.title;
+    if (err instanceof Error)
+        return err.message;
+    return String(err);
+}
+// setFieldError marks (or clears) a form field's invalid state uniformly: the
+// red border/background via .invalid on the wrapper, aria-invalid on the input
+// so a screen reader announces it, and the rule text in the error element. An
+// empty message clears all three. Shared by the hand-rolled per-field error
+// setters across the views.
+export function setFieldError(field, input, errorEl, message) {
+    field?.classList.toggle("invalid", !!message);
+    input?.setAttribute("aria-invalid", message ? "true" : "false");
+    if (errorEl)
+        errorEl.textContent = message;
 }
 // setText and setHidden write only when the value actually changes. A card is
 // re-synced on every 3 s poll, so an unconditional write would dirty the DOM and,

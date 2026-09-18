@@ -277,7 +277,7 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(context.Background())
-	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1}
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1, writerDone: make(chan struct{})}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -323,7 +323,7 @@ func TestWriterTearsDownOnWriteError(t *testing.T) {
 	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(context.Background())
-	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1}
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, writerDone: make(chan struct{})}
 
 	done := make(chan struct{})
 	go func() { cs.runWriter(); close(done) }()

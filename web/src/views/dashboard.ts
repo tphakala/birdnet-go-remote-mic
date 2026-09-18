@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setHidden, setText } from "../lib/ui.js";
+import { clearBusy, deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setBusy, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -62,21 +62,12 @@ interface IdleBody {
   footerNote: HTMLElement;
 }
 
-// CardEntry is the STABLE per-device identity, keyed by the immutable ALSA
-// device id. The <article> and its body are a disposable render swapped only
-// when the card's shape changes (serving with a given channel count, versus
-// idle); everything that must survive a rebuild (the settings panel node, its
-// form, the expanded/dirty state) hangs off the entry, not the article. Every
-// node that shows DEVICE OR CONFIG data is written by exactly one function,
-// syncCard; transient interaction state (the toggle's in-flight checked/busy and
-// the copy button's "Copied!" feedback) is the deliberate exception. buildArticle
-// creates the skeleton with no device data, so a data field syncCard forgets
-// renders blank at development time instead of going silently stale in
-// production, which is the class of bug the old build/update split produced.
-interface CardEntry {
-  id: string; // ALSA device id, immutable, the config-merge key
-  device: Device; // latest runtime view, set by syncCard
-  shape: string; // shapeKey of the currently mounted article
+// ArticleParts are the nodes buildArticle produces for a device's current shape:
+// the <article> plus every header/body node syncCard writes into. Returned as
+// one bundle so the compiler checks that buildArticle populates all of them, and
+// so the caller can assemble (or, on a rebuild, refresh) the CardEntry in one
+// checked step instead of mutating a partially-built object behind an `as` cast.
+interface ArticleParts {
   article: HTMLElement;
   // Header nodes, shape-independent (chips and lock are hidden on idle cards
   // rather than absent, so the header never has to be rebuilt on a shape flip):
@@ -94,6 +85,23 @@ interface CardEntry {
   // Body: exactly one is present, matching the shape.
   live: LiveBody | null;
   idle: IdleBody | null;
+}
+
+// CardEntry is the STABLE per-device identity, held in a Map keyed by the
+// immutable ALSA device id (read from device.device). The <article> and its
+// body are a disposable render swapped only when the card's shape changes
+// (serving with a given channel count, versus idle); everything that must
+// survive a rebuild (the settings panel node, its form, the expanded/dirty
+// state) hangs off the entry, not the article. Every node that shows DEVICE OR
+// CONFIG data is written by exactly one function, syncCard; transient
+// interaction state (the toggle's in-flight checked/busy and the copy button's
+// "Copied!" feedback) is the deliberate exception. buildArticle creates the
+// skeleton with no device data, so a data field syncCard forgets renders blank
+// at development time instead of going silently stale in production, which is
+// the class of bug the old build/update split produced.
+interface CardEntry extends ArticleParts {
+  device: Device; // latest runtime view, set by syncCard; device.device is the id
+  shape: string; // shapeKey of the currently mounted article
   // Settings panel: owned by the entry and moved between article renders, so an
   // open form survives a card rebuild rather than being torn down under the user.
   settingsWrap: HTMLElement;
@@ -101,6 +109,10 @@ interface CardEntry {
   // The config entry the open form was built from, used to detect an out-of-band
   // change while the form is open. Excludes enabled (see deviceConfigKey).
   formSource: DeviceConfig | null;
+  // Cached deviceConfigKey(formSource), computed once when the form opens rather
+  // than re-serialised on every render while the form is open (formSource does
+  // not change until the form is rebuilt).
+  formSourceKey: string;
   // "Changed elsewhere" notice in the open form's actions bar, shown by
   // syncSettings when formSource has drifted from the current config.
   staleNote: HTMLElement | null;
@@ -128,6 +140,19 @@ function pendingStop(configEnabled: boolean, state: string): boolean {
 
 const PENDING_STOP_TEXT = "Disabling; this device stops serving shortly.";
 
+// The copy button's resting and success labels, defined once so handleCopyUrl
+// restores the resting values by identity rather than re-reading the (possibly
+// mid-swap) DOM: a rapid second click must not capture "Copied!" as the value to
+// restore and leave the visible label or accessible name stuck on it.
+const COPY_LABEL = "Copy URL";
+const COPY_LABEL_DONE = "Copied!";
+const COPY_ARIA = "Copy RTSP stream URL";
+const COPY_ARIA_DONE = "RTSP stream URL copied";
+// Pending label-restore timer per copy button, so a second click clears the
+// prior restore instead of letting two timers fight (WeakMap: entries GC with
+// the button, no leak).
+const copyResetTimers = new WeakMap<HTMLElement, number>();
+
 // nonServingFooterText is the footer message for a card that is not serving.
 function nonServingFooterText(state: string, configEnabled: boolean): string {
   if (state === "disabled") {
@@ -141,6 +166,10 @@ function nonServingFooterText(state: string, configEnabled: boolean): string {
 function iconSpan(markup: string, className?: string): HTMLElement {
   const s = document.createElement("span");
   if (className) s.className = className;
+  // Decorative: every icon built through here (copy, lock, error banner) sits
+  // next to text that already carries its meaning, so hide it from assistive
+  // tech rather than announcing an unlabeled graphic.
+  s.setAttribute("aria-hidden", "true");
   // Static trusted markup only; never runtime/user data.
   s.innerHTML = markup;
   return s;
@@ -231,6 +260,9 @@ export class DashboardView {
   // built from a fresh base only after the previous mutation settled. Prevents a
   // full-array PATCH from a stale base from clobbering a concurrent change.
   private mutationQueue: Promise<void> = Promise.resolve();
+  // Set while a reconcile() is queued on the microtask, so the several store
+  // events a single poll tick fires collapse into one pass (see render()).
+  private renderScheduled = false;
 
   constructor() {
     this.rack = document.getElementById("channel-rack");
@@ -295,14 +327,34 @@ export class DashboardView {
     renderLoadError(this.emptyEl, message, "Loading devices...", () => void store.retry());
   }
 
-  // render is the single reconcile pass, driven by store state. For each runtime
-  // device it gets or creates the stable entry, rebuilds the article only when
-  // the shape changed, then syncs every field through the one write path. It
+  // render coalesces the up-to-three store events per 3 s poll tick (devices,
+  // status and config each request it) into a single reconcile on the microtask
+  // queue, so same-tick events collapse into one pass instead of three. The pass
+  // is idempotent and diffed, so this only drops redundant CPU. Focus
+  // restoration lives in the mutation handlers (which read the live nodes) and in
+  // mount(); both run inside microtask timing during their awaits, so coalescing
+  // does not disturb them.
+  private render(): void {
+    if (this.renderScheduled) return;
+    this.renderScheduled = true;
+    queueMicrotask(() => {
+      this.renderScheduled = false;
+      this.reconcile();
+    });
+  }
+
+  // reconcile is the single reconcile pass, driven by store state. For each
+  // runtime device it gets or creates the stable entry, rebuilds the article only
+  // when the shape changed, then syncs every field through the one write path. It
   // then removes gone cards, orders the rack with a diff (no DOM move in steady
   // state, which is what keeps keyboard focus from being dropped every poll),
   // rebuilds the name index for the levels stream, and reconciles open forms.
-  private render(): void {
+  private reconcile(): void {
     if (!this.rack) return;
+    // Capture the narrowed rack: the intervening syncCard/mount calls below make
+    // TS re-widen this.rack to include null, so hold a non-null local for the
+    // ordering pass rather than re-guarding it.
+    const rack = this.rack;
     const devices = store.getState().devices;
 
     if (this.emptyEl) {
@@ -311,8 +363,14 @@ export class DashboardView {
       // empty/loaded state is not re-announced as an error.
       this.emptyEl.removeAttribute("role");
       // Replace the static "Loading devices..." placeholder once we know there
-      // are genuinely zero configured devices (the element is visible here).
-      if (devices.length === 0) this.emptyEl.textContent = "No capture devices are configured.";
+      // are genuinely zero configured devices, and point to the next step: the
+      // Available Devices section below is where a detected device is enabled.
+      if (devices.length === 0) {
+        const hasAvailable = store.getState().available.length > 0;
+        setText(this.emptyEl, hasAvailable
+          ? "No capture devices are configured yet. Enable one from Available Devices below to start streaming."
+          : "No capture devices are configured. Connect capture hardware; it appears under Available Devices below, ready to enable.");
+      }
     }
 
     // Index the persisted config by ALSA id once per pass so the per-card
@@ -347,15 +405,19 @@ export class DashboardView {
       }
     }
 
-    // Order the rack to match the device list with a diff: only move a node when
-    // it is not already at its target position. Steady state performs no DOM
-    // moves, so focus inside a card is never dropped by re-inserting its node.
-    devices.forEach((d, i) => {
+    // Order the rack to match the device list with a diff. Walk the articles by
+    // previous sibling rather than indexing this.rack.children: #channel-rack
+    // also holds the hidden #rack-empty placeholder, so an index-based compare was
+    // off by one and moved a card every poll. Steady state performs no DOM moves,
+    // so focus inside a card is never dropped by re-inserting its node.
+    let prev: Element | null = null;
+    for (const d of devices) {
       const entry = this.cards.get(d.device);
-      if (!entry || !this.rack) return;
-      const current = this.rack.children[i];
-      if (current !== entry.article) this.rack.insertBefore(entry.article, current ?? null);
-    });
+      if (!entry) continue;
+      const target: Element | null = prev ? prev.nextElementSibling : rack.firstElementChild;
+      if (entry.article !== target) rack.insertBefore(entry.article, target);
+      prev = entry.article;
+    }
 
     // Rebuild the name index for the levels stream (cards are keyed by id, the
     // levels payload by name; a rename changes the name but not the id).
@@ -398,7 +460,7 @@ export class DashboardView {
     // Name the device in the accessible label: there is one Enable button per
     // available device, so a bare "Enable" is ambiguous to a screen-reader user.
     enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.device}`);
-    if (this.provisioning.has(d.device)) this.markBusy(enableBtn, "Enabling...");
+    if (this.provisioning.has(d.device)) setBusy(enableBtn, "Enabling...");
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
     card.append(info, enableBtn);
@@ -408,7 +470,7 @@ export class DashboardView {
   private async provisionDevice(d: AvailableDevice, btn: HTMLElement): Promise<void> {
     if (this.provisioning.has(d.device)) return;
     this.provisioning.add(d.device);
-    this.markBusy(btn, "Enabling...");
+    setBusy(btn, "Enabling...");
     try {
       // Serialize through the same queue as toggles and settings saves: those
       // submit a full-array PATCH built from the cached config, so a provision
@@ -424,26 +486,8 @@ export class DashboardView {
       this.apiErrorToast(err, "Enable failed");
     } finally {
       this.provisioning.delete(d.device);
-      this.clearBusy(btn, "Enable");
+      clearBusy(btn, "Enable");
     }
-  }
-
-  // markBusy/clearBusy toggle a control's in-progress affordance without using
-  // the disabled property on a focused element, which would steal keyboard focus
-  // (a control removed from the tab order sends focus to the body). aria-disabled
-  // plus a guard keeps the element focusable and announces the busy state.
-  private markBusy(el: HTMLElement, label: string): void {
-    el.textContent = label;
-    el.setAttribute("aria-disabled", "true");
-    el.setAttribute("aria-busy", "true");
-    el.classList.add("is-busy");
-  }
-
-  private clearBusy(el: HTMLElement, label: string): void {
-    el.textContent = label;
-    el.removeAttribute("aria-disabled");
-    el.removeAttribute("aria-busy");
-    el.classList.remove("is-busy");
   }
 
   // removeDevice deletes a configured device after confirmation, returning its
@@ -461,7 +505,7 @@ export class DashboardView {
       danger: true,
     });
     if (!ok) return;
-    this.markBusy(btn, "Removing...");
+    setBusy(btn, "Removing...");
     try {
       // Serialize with toggles and settings saves: a stale full-array PATCH from
       // one of those must not run interleaved with this delete and restore the
@@ -477,7 +521,7 @@ export class DashboardView {
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Remove failed");
-      this.clearBusy(btn, "Remove");
+      clearBusy(btn, "Remove");
     }
   }
 
@@ -487,38 +531,44 @@ export class DashboardView {
   }
 
   // newEntry creates the stable identity for a device: the settings panel node
-  // (which outlives article rebuilds) and then a first mounted article.
+  // (which outlives article rebuilds) plus a first built article, assembled into
+  // a fully-typed CardEntry in one checked literal (no partial `as` cast).
   private newEntry(d: Device): CardEntry {
     const settingsWrap = elem("div", "card-settings");
     settingsWrap.hidden = true;
-    // Partial until mount fills the article and its named nodes; mount is called
-    // immediately below, before the entry escapes to a caller.
-    const entry = {
-      id: d.device,
+    const parts = this.buildArticle(d);
+    const entry: CardEntry = {
+      ...parts,
       device: d,
+      shape: shapeKey(d),
       settingsWrap,
       settingsForm: null,
       formSource: null,
+      formSourceKey: "",
       staleNote: null,
       expanded: false,
       dirty: false,
-    } as CardEntry;
-    this.mount(entry, d);
+    };
+    this.wireArticleHandlers(entry);
+    entry.article.appendChild(entry.settingsWrap);
     return entry;
   }
 
-  // mount builds (or rebuilds) the article for a device's current shape, moving
-  // the owned settings panel into the new article and preserving keyboard focus
-  // across the swap. It is called once at creation and again whenever shapeKey
-  // changes (serving <-> idle, or a change in the captured channel count).
+  // mount rebuilds the article for a device's current shape, moving the owned
+  // settings panel into the new article and preserving keyboard focus across the
+  // swap. It is called whenever shapeKey changes (serving <-> idle, or a change in
+  // the captured channel count); the first article is built directly in newEntry.
   private mount(entry: CardEntry, d: Device): void {
     const saved = this.captureFocus(entry);
-    const oldArticle = entry.article as HTMLElement | undefined;
+    const oldArticle = entry.article;
     // The old serving body's meters own canvas rAF loops; stop them before the
     // article is discarded.
     entry.live?.meters.forEach((m) => m.destroy());
 
-    this.buildArticle(entry, d);
+    // Refresh the article and its named nodes in one checked assignment, then
+    // re-wire the fresh controls to the stable entry.
+    Object.assign(entry, this.buildArticle(d));
+    this.wireArticleHandlers(entry);
     // Move the owned settings panel (and its live form, if open) into the new
     // article, and restore its expanded visual state.
     entry.article.appendChild(entry.settingsWrap);
@@ -529,18 +579,26 @@ export class DashboardView {
     entry.shape = shapeKey(d);
 
     // Swap in place if the card was already mounted in the rack; otherwise the
-    // ordering pass in render() inserts it.
-    if (oldArticle?.parentNode) oldArticle.replaceWith(entry.article);
+    // ordering pass in reconcile() inserts it.
+    if (oldArticle.parentNode) oldArticle.replaceWith(entry.article);
     this.restoreFocus(entry, saved);
+  }
+
+  // wireArticleHandlers attaches the gear and toggle handlers to a freshly built
+  // article's controls. They close over the stable entry (not the disposable
+  // nodes), so a later rebuild simply re-wires the new nodes to the same entry.
+  private wireArticleHandlers(entry: CardEntry): void {
+    entry.gearBtn.addEventListener("click", () => this.toggleSettings(entry));
+    entry.toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry));
   }
 
   // buildArticle creates the DOM skeleton for a device's shape with NO device
   // data written: header nodes with empty text, chips and lock hidden, toggle
-  // unchecked, the body for the shape. syncCard fills every value immediately
-  // after. Handlers for the toggle and gear close over the stable entry, so they
-  // survive later rebuilds. Trusted static SVG for the copy, lock and gear icons
-  // is assigned here; the avatar icon depends on state and is written by syncCard.
-  private buildArticle(entry: CardEntry, d: Device): void {
+  // unchecked, the body for the shape. It returns the node bundle; syncCard fills
+  // every value and wireArticleHandlers binds the controls to the stable entry.
+  // Trusted static SVG for the copy, lock and gear icons is assigned here; the
+  // avatar icon depends on state and is written by syncCard.
+  private buildArticle(d: Device): ArticleParts {
     const serving = d.state === "serving";
     const article = elem("article", "rack-card");
 
@@ -548,6 +606,8 @@ export class DashboardView {
     const header = elem("div", "rack-header");
     const ident = elem("div", "device-ident");
     const avatar = elem("span", "device-avatar");
+    // Decorative: the avatar icon repeats the state shown by the status badge.
+    avatar.setAttribute("aria-hidden", "true");
     const nameBlock = elem("div", "device-name-block");
     const titleEl = elem("span", "device-title");
     const hwEl = elem("span", "device-path mono");
@@ -563,6 +623,10 @@ export class DashboardView {
     const lockEl = elem("span", "tech-tag lock-tag");
     lockEl.appendChild(iconSpan(ICON_LOCK));
     lockEl.appendChild(elem("span", undefined, "Token"));
+    // The visible "Token" tag needs its meaning in the accessible name too: a
+    // title tooltip is unreachable by keyboard and touch. A visually-hidden clause
+    // carries the explanation to assistive tech; the title stays for a pointer.
+    lockEl.appendChild(elem("span", "visually-hidden", ": pulling this stream requires the access token"));
     lockEl.title = "Pulling this stream requires the access token";
     const statusEl = elem("span");
     tags.append(modeTag, rateTag, chTag, lockEl, statusEl);
@@ -625,11 +689,11 @@ export class DashboardView {
       info.appendChild(urlEl);
       const copyBtn = elem("button", "copy-btn");
       copyBtn.setAttribute("type", "button");
-      copyBtn.setAttribute("aria-label", "Copy RTSP stream URL");
-      copyBtn.title = "Copy RTSP stream URL";
+      copyBtn.setAttribute("aria-label", COPY_ARIA);
+      copyBtn.title = COPY_ARIA;
       copyBtn.dataset.focus = "copy";
       copyBtn.appendChild(iconSpan(ICON_COPY, "icon-copy"));
-      copyBtn.appendChild(elem("span", "copy-label", "Copy URL"));
+      copyBtn.appendChild(elem("span", "copy-label", COPY_LABEL));
       copyBtn.addEventListener("click", () => this.handleCopyUrl(copyBtn, urlEl));
       strip.appendChild(info);
       strip.appendChild(copyBtn);
@@ -690,23 +754,10 @@ export class DashboardView {
       idle = { banner, bannerIcon, bannerDesc, footerNote };
     }
 
-    entry.article = article;
-    entry.avatar = avatar;
-    entry.titleEl = titleEl;
-    entry.hwEl = hwEl;
-    entry.modeTag = modeTag;
-    entry.rateTag = rateTag;
-    entry.chTag = chTag;
-    entry.lockEl = lockEl;
-    entry.statusEl = statusEl;
-    entry.toggleInput = toggleInput;
-    entry.gearBtn = gearBtn;
-    entry.pendingNote = pendingNote;
-    entry.live = live;
-    entry.idle = idle;
-
-    gearBtn.addEventListener("click", () => this.toggleSettings(entry));
-    toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry));
+    return {
+      article, avatar, titleEl, hwEl, modeTag, rateTag, chTag, lockEl,
+      statusEl, toggleInput, gearBtn, pendingNote, live, idle,
+    };
   }
 
   // buildMeterConsole builds the shared dB scale plus one metering row per
@@ -867,11 +918,11 @@ export class DashboardView {
   // a rebuilt control is remembered by its data-focus key (toggle, gear, copy,
   // clip-N), which the new article recreates.
   private captureFocus(entry: CardEntry): { el?: HTMLElement; key?: string } | null {
-    // entry.article is undefined on the first mount (the entry has no rendered
-    // card yet), so treat it as possibly absent rather than trusting the type.
-    const art = entry.article as HTMLElement | undefined;
+    // captureFocus runs only from mount(), which rebuilds an existing article, so
+    // entry.article is always present (the first article is built in newEntry).
+    const art = entry.article;
     const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || !art || !art.contains(active)) return null;
+    if (!(active instanceof HTMLElement) || !art.contains(active)) return null;
     if (entry.settingsWrap.contains(active)) return { el: active };
     const key = active.dataset.focus;
     return key ? { key } : null;
@@ -1038,7 +1089,11 @@ export class DashboardView {
       });
       entry.settingsForm = form;
       // Record what the form was built from, so an out-of-band change is detected.
+      // Cache its config key now: formSource is fixed until the form is rebuilt,
+      // so syncSettings compares against this instead of re-serialising it every
+      // render while the form is open.
       entry.formSource = configured;
+      entry.formSourceKey = deviceConfigKey(configured);
       entry.staleNote = staleNote;
       entry.settingsWrap.append(form.element, actions);
 
@@ -1088,6 +1143,7 @@ export class DashboardView {
     entry.settingsForm?.destroy();
     entry.settingsForm = null;
     entry.formSource = null;
+    entry.formSourceKey = "";
     entry.staleNote = null;
   }
 
@@ -1112,13 +1168,14 @@ export class DashboardView {
   }
 
   // syncSettings shows or hides the "changed elsewhere" notice on an open form by
-  // comparing the config the form was built from against the current config
-  // (excluding enabled). It never mutates the form; the operator chooses Reload
-  // or Save. Called from render() for entries with an open form.
+  // comparing the config the form was built from (cached formSourceKey) against
+  // the current config (excluding enabled). It never mutates the form; the
+  // operator chooses Reload or Save. Called from reconcile() for entries with an
+  // open form.
   private syncSettings(entry: CardEntry, cfgByDevice: Map<string, DeviceConfig>): void {
     if (!entry.settingsForm || !entry.staleNote) return;
-    const current = cfgByDevice.get(entry.id);
-    const stale = deviceConfigKey(current) !== deviceConfigKey(entry.formSource ?? undefined);
+    const current = cfgByDevice.get(entry.device.device);
+    const stale = deviceConfigKey(current) !== entry.formSourceKey;
     // Write the message text (not just toggle visibility) so the role=status
     // region announces the drift as it appears and clears when resolved.
     const msg = entry.staleNote.querySelector<HTMLElement>(".stale-msg");
@@ -1132,6 +1189,9 @@ export class DashboardView {
     if (!form) return;
     if (!form.validate()) {
       showToast("Fix the highlighted fields before saving.", "warn");
+      // Move focus to the first flagged field, matching saveAuth, so a keyboard
+      // user is taken to what needs fixing instead of staying on the Save button.
+      form.focusFirstInvalid();
       return;
     }
     // Refuse to save from the runtime fallback: until GET /config has loaded,
@@ -1146,7 +1206,7 @@ export class DashboardView {
     // Show the save in flight and block a second submit or a discard while the
     // queued PATCH runs; markBusy keeps Save focusable (aria-disabled) while
     // Cancel, which is not focused, can simply be disabled.
-    this.markBusy(btn, "Saving...");
+    setBusy(btn, "Saving...");
     cancelBtn.disabled = true;
     try {
       await this.enqueue(async () => {
@@ -1182,7 +1242,7 @@ export class DashboardView {
       // Restore the buttons whether the save succeeded (its panel is torn down,
       // so this is a harmless no-op on detached nodes) or failed (they stay for
       // retry).
-      this.clearBusy(btn, "Save Changes");
+      clearBusy(btn, "Save Changes");
       cancelBtn.disabled = false;
     }
   }
@@ -1200,18 +1260,30 @@ export class DashboardView {
     let url = shown;
     const token = this.status?.authRequired ? getToken() : null;
     if (token) {
-      url = shown.replace("rtsp://", `rtsp://mic:${token}@`);
+      // Anchor the scheme to the start so only the leading rtsp:// is rewritten,
+      // never a literal "rtsp://" that appears later in the path.
+      url = shown.replace(/^rtsp:\/\//, `rtsp://mic:${token}@`);
     }
     navigator.clipboard.writeText(url).then(() => {
       if (token) showToast("Stream URL copied with the access token included.");
       btn.classList.add("copied");
       const labelSpan = btn.querySelector<HTMLElement>(".copy-label");
-      const orig = labelSpan?.textContent ?? "Copy URL";
-      if (labelSpan) labelSpan.textContent = "Copied!";
-      window.setTimeout(() => {
+      if (labelSpan) labelSpan.textContent = COPY_LABEL_DONE;
+      // The credentialed path fires a toast (announced); the plain path only swaps
+      // the visible label, which a screen reader does not hear because the button's
+      // aria-label is otherwise fixed. Reflect the success in the accessible name
+      // briefly so the plain copy is announced too, then restore it. Restore to the
+      // fixed resting labels (not a captured value) and clear any prior pending
+      // restore, so a rapid second click cannot strand the button on "Copied!".
+      if (!token) btn.setAttribute("aria-label", COPY_ARIA_DONE);
+      const prev = copyResetTimers.get(btn);
+      if (prev !== undefined) window.clearTimeout(prev);
+      copyResetTimers.set(btn, window.setTimeout(() => {
         btn.classList.remove("copied");
-        if (labelSpan) labelSpan.textContent = orig;
-      }, 1600);
+        if (labelSpan) labelSpan.textContent = COPY_LABEL;
+        if (!token) btn.setAttribute("aria-label", COPY_ARIA);
+        copyResetTimers.delete(btn);
+      }, 1600));
     }).catch(() => {
       showToast("Copy failed", "error");
     });

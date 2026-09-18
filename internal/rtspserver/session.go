@@ -44,6 +44,12 @@ type connSession struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	writeMu   sync.Mutex
+	// writerDone is closed by runWriter when it returns. serveConn's cleanup waits
+	// on it (only when cs.writing) after close() cancels the context, so the writer
+	// goroutine has fully stopped reading before the track slot is released; without
+	// the join a new client could take the freed slot while the old writer is still
+	// parked in Frames.Next and steal one frame from the shared source.
+	writerDone chan struct{}
 
 	state    sessionState
 	id       string
@@ -82,11 +88,22 @@ type connSession struct {
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	ctx, cancel := context.WithCancel(parent)
-	cs := &connSession{srv: s, conn: conn, ctx: ctx, cancel: cancel}
+	cs := &connSession{srv: s, conn: conn, ctx: ctx, cancel: cancel, writerDone: make(chan struct{})}
 	defer func() {
 		if cs.hasSlot {
 			if a, ok := cs.track.Frames.(activator); ok {
 				a.SetActive(false)
+			}
+			// Close before releasing the slot so the writer goroutine observes the
+			// cancelled context and exits, then join it, so the slot is not reusable
+			// while the old writer is still reading the shared frame source. The join
+			// is bounded: close() cancels ctx (Frames.Next returns) and drops the
+			// socket (writeRaw's blocked write returns), so runWriter always reaches
+			// its deferred close(writerDone). A SETUP that never played (writing false)
+			// started no writer, so there is nothing to join.
+			cs.close()
+			if cs.writing {
+				<-cs.writerDone
 			}
 			cs.track.releaseSlot()
 		}
@@ -345,8 +362,15 @@ func (cs *connSession) respondPlay(req *rtsp.Request) {
 	// Start streaming only after the PLAY response is on the wire, so the
 	// client sees RTP-Info's starting seq/rtptime before the first packet.
 	if startWriter && cs.track.Frames != nil && !cs.writing {
-		cs.writing = true
+		// notifyConnected before setting cs.writing: it calls out to an external
+		// listener, and cs.writing is what gates serveConn's teardown join on
+		// <-cs.writerDone. If the listener panicked with cs.writing already true and
+		// no writer goroutine started, that channel would never close and the cleanup
+		// would block forever, leaking the socket and pinning the track slot. Setting
+		// cs.writing only immediately before the goroutine launch keeps it an accurate
+		// "a writer is running" flag.
 		cs.notifyConnected()
+		cs.writing = true
 		go cs.runWriter()
 	}
 }
