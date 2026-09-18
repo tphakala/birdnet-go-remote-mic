@@ -30,6 +30,7 @@ func TestTokenRuleMatchesOpenAPIPattern(t *testing.T) {
 		strings.Repeat("a", 128), // exactly the maximum
 		strings.Repeat("a", 129), // one above the maximum
 		"valid.token_1~2-3ok",    // the full unreserved set (. _ ~ -)
+		"ABCDEFGHIJKL",           // uppercase letters (both sides accept A-Z)
 		"abcdefghijkl!",          // an excluded punctuation char
 		"abcdefghijkl ",          // a space
 		"abcdefghijkl/",          // a slash

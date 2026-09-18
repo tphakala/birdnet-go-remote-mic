@@ -487,6 +487,9 @@ export class SystemView {
     }
     const cfg = store.getState().config;
     if (cfg) this.populateAuth(cfg);
+    // Re-mask the token: Generate reveals it as plaintext, and discarding must not
+    // leave the restored saved secret on screen.
+    this.setAuthReveal(false);
     // populateAuth hid the actions bar holding the Discard button focus was on,
     // dropping it to <body>; return focus to the token field, matching saveAuth.
     this.authTokenEl?.focus();
@@ -726,7 +729,7 @@ export class SystemView {
     const specs: TileSpec[] = [];
     specs.push({
       key: "cpu", label: "CPU Utilization", sub: sys.cpuCores > 0 ? `${sys.cpuCores} Cores` : "",
-      value: sys.cpuPercent !== undefined ? sys.cpuPercent.toFixed(1) : "n/a", unit: "%", barPct: sys.cpuPercent ?? 0,
+      value: sys.cpuPercent !== undefined ? sys.cpuPercent.toFixed(1) : "n/a", unit: "%", barPct: sys.cpuPercent,
     });
     if (sys.memTotalBytes > 0) {
       specs.push({

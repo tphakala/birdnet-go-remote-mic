@@ -148,7 +148,7 @@ export class AppStore extends EventTarget {
             this.refreshConfig(),
             this.refreshAvailable(),
         ]);
-        const [statusOk, devicesOk, systemOk, configOk] = results;
+        const [statusOk, devicesOk, systemOk, configOk, availableOk] = results;
         // Surface a per-resource load error so each view can offer a retry for its
         // own data instead of a "Loading..." placeholder that never resolves, and
         // so one failing endpoint does not blank another view that loaded fine.
@@ -158,12 +158,16 @@ export class AppStore extends EventTarget {
         // cards hidden (they unhide on the "config" event). Surface it so the miss is
         // not silent; the System view warns and polling recovers it on a later tick.
         const configFailed = !configOk;
+        // The unconfigured-hardware list is advisory: a failure leaves it stale until
+        // the next poll rather than blanking a view, so availableFailed never triggers
+        // the load error on its own, but it is carried in the detail for completeness.
+        const availableFailed = !availableOk;
         // A rejected token is handled by the login prompt, not the retry state.
         if (this.loginPending)
             return;
         if (coreFailed || systemFailed || configFailed) {
             this.dispatchEvent(new CustomEvent("loaderror", {
-                detail: { coreFailed, systemFailed, configFailed, message: "Could not reach the appliance." },
+                detail: { coreFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." },
             }));
         }
     }
