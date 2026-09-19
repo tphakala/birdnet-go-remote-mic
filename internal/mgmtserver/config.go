@@ -520,25 +520,30 @@ func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 // replaces cur. A wire entry that omits streams defines a single stream from its
 // flat fields; that is rejected when it would silently collapse an existing
 // multi-stream device, so a client that predates fan-out cannot drop streams it
-// cannot see. The existing device is matched by EITHER its ALSA device id OR its
-// name: a flat patch that renames the device keeps the id, and one that moves it
-// to a different card keeps the name, so requiring either match closes both
-// bypasses (only changing BOTH is a wholesale replacement, not a collapse). A
-// wire entry that carries streams is authoritative and may legitimately reduce
-// the count.
+// cannot see. The existing device is looked up by BOTH its name and its device
+// id, and either match being multi-stream rejects the entry: a rename keeps the
+// id, a rebind keeps the name, and a name rotation (one device's name paired with
+// another's id) is caught because the id still resolves to the multi-stream
+// device. Checking only one identifier leaves the mirror bypass open. When both
+// matches are multi-stream the name match is reported, since the name is the
+// device's identity everywhere else (the reload plan, the runtime records,
+// notifications). A wire entry that carries streams is authoritative and may
+// legitimately reduce the count.
 func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.Device, error) {
 	devs := make([]config.Device, 0, len(wire))
 	for i := range wire {
 		wd := &wire[i]
 		if wd.Streams == nil {
-			existing, ok := deviceByID(cur, wd.Device)
-			if !ok {
-				existing, ok = deviceByName(cur, wd.Name)
+			var collapse *config.Device
+			if byName, ok := deviceByName(cur, wd.Name); ok && len(byName.Streams) > 1 {
+				collapse = byName
+			} else if byID, ok := deviceByID(cur, wd.Device); ok && len(byID.Streams) > 1 {
+				collapse = byID
 			}
-			if ok && len(existing.Streams) > 1 {
+			if collapse != nil {
 				return nil, &config.ValidationError{
 					Field:  fmt.Sprintf("devices[%d].streams", i),
-					Reason: fmt.Sprintf("device %q has %d streams; include streams to update it", existing.Name, len(existing.Streams)),
+					Reason: fmt.Sprintf("device %q has %d streams; include streams to update it", collapse.Name, len(collapse.Streams)),
 				}
 			}
 		}
@@ -547,10 +552,9 @@ func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.
 	return devs, nil
 }
 
-// deviceByID returns a pointer to the device with the given ALSA device id in
-// devs, if present. The collapse guard matches on the id (stable across a rename)
-// as well as the name, so a flat patch cannot slip a collapse past it by changing
-// one identifier.
+// deviceByID returns a pointer to the device with the given device id in devs,
+// if present. The collapse guard also matches by id (unchanged by a rename), so
+// a flat patch cannot slip a collapse past it by changing one identifier.
 func deviceByID(devs []config.Device, id string) (*config.Device, bool) {
 	for i := range devs {
 		if devs[i].Device == id {
@@ -561,8 +565,8 @@ func deviceByID(devs []config.Device, id string) (*config.Device, bool) {
 }
 
 // deviceByName returns a pointer to the device named name in devs, if present.
-// The collapse guard matches on the name as well as the device id, so moving a
-// multi-stream device to a different card in a flat patch is still caught.
+// The collapse guard also matches by name, so rebinding a multi-stream device to
+// other hardware in a flat patch, which keeps the name, is still caught.
 func deviceByName(devs []config.Device, name string) (*config.Device, bool) {
 	for i := range devs {
 		if devs[i].Name == name {

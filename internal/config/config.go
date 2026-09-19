@@ -201,7 +201,7 @@ func (c *Config) ManagementEnabled() bool {
 // to a one-element Streams on load.
 type Device struct {
 	Name    string   `yaml:"name"`    // DNS-SD instance name and log label; unique
-	Device  string   `yaml:"device"`  // go-audio-capture device id, e.g. "hw:1,0"
+	Device  string   `yaml:"device"`  // go-audio-capture device id, e.g. "usb:1235:8218:s=S1:if=0,0" (see IsCardIndexID)
 	Rate    int      `yaml:"rate"`    // capture sample rate in Hz (one ALSA open per device)
 	Format  string   `yaml:"format"`  // only "s16"
 	Streams []Stream `yaml:"streams"` // one or more streams fanned out from the one capture
@@ -285,6 +285,22 @@ func (d *Device) UnmarshalYAML(value *yaml.Node) error {
 // no explicit enabled flag defaults on.
 func (d *Device) IsEnabled() bool {
 	return d.Enabled == nil || *d.Enabled
+}
+
+// IsCardIndexID reports whether a device id names a card by its kernel index
+// ("hw:3,0", "hw:3", "3,0") rather than by a stable identity. The kernel numbers
+// cards in probe order, which changes across reboots and replugs, so such an id
+// can silently point at a different device later. The capture library's stable
+// forms are "usb:..." and the alsa-lib "hw:CARD=<id>,DEV=<n>"; every other id is
+// treated as a card index. A card-index id is still accepted, because the host
+// offered no stable form (no sysfs in a minimal container, or a USB device with
+// neither a serial nor a derivable port), but it is flagged to the operator.
+func IsCardIndexID(id string) bool {
+	id = strings.TrimSpace(id)
+	if strings.HasPrefix(id, "usb:") {
+		return false
+	}
+	return !strings.HasPrefix(id, "hw:") || !strings.Contains(id, "=")
 }
 
 // QuietAlertEnabled reports whether the device raises the very-quiet audio

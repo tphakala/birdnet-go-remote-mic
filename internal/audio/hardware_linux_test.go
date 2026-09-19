@@ -10,50 +10,69 @@ import (
 	capture "github.com/tphakala/go-audio-capture"
 )
 
-func TestHardwareNamesSuccess(t *testing.T) {
+const (
+	testStableID = "usb:1235:8218:s=S123:if=0,0"
+	testHWAddr   = "hw:4,0"
+)
+
+func TestEnumerateMapsIdentity(t *testing.T) {
 	prev := enumerateDevices
 	enumerateDevices = func() ([]capture.DeviceInfo, error) {
-		return []capture.DeviceInfo{{ID: testDevID, Name: "Foo Card, USB Audio"}}, nil
+		return []capture.DeviceInfo{
+			{ID: testStableID, HWAddr: testHWAddr, IDStable: true, Name: testCardLongName},
+			{ID: testDevID2, HWAddr: testDevID2, Name: testCardName},
+		}, nil
 	}
 	defer func() { enumerateDevices = prev }()
 
-	got, err := HardwareNames()
+	got, err := Enumerate()
 	if err != nil {
-		t.Fatalf("HardwareNames: %v", err)
+		t.Fatalf("Enumerate: %v", err)
 	}
-	if got[testDevID] != "Foo Card" {
-		t.Errorf("names[%q] = %q, want %q", testDevID, got[testDevID], "Foo Card")
+	want := []Hardware{
+		{ID: testStableID, HWAddr: testHWAddr, Label: testFriendlyName, IDStable: true},
+		{ID: testDevID2, HWAddr: testDevID2, Label: testCardName},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Enumerate = %+v, want %+v", got, want)
 	}
 }
 
-func TestHardwareNamesPropagatesError(t *testing.T) {
+func TestEnumeratePropagatesError(t *testing.T) {
 	prev := enumerateDevices
 	enumerateDevices = func() ([]capture.DeviceInfo, error) { return nil, errors.New("enumerate failed") }
 	defer func() { enumerateDevices = prev }()
 
-	if _, err := HardwareNames(); err == nil {
-		t.Error("HardwareNames should propagate the enumeration error")
+	if _, err := Enumerate(); err == nil {
+		t.Error("Enumerate should propagate the enumeration error")
 	}
 }
 
-func TestHardwareNamesFrom(t *testing.T) {
-	t.Parallel()
-	devs := []capture.DeviceInfo{
-		{ID: testDevID, Name: testCardLongName},
-		{ID: testDevID2, Name: testCardName},
-	}
-	got := hardwareNamesFrom(devs)
-	want := map[string]string{
-		testDevID:  testFriendlyName,
-		testDevID2: testCardName,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
-	}
-	for id, label := range want {
-		if got[id] != label {
-			t.Errorf("names[%q] = %q, want %q", id, got[id], label)
+func TestResolveMapsIdentityAndKeepsTypedErrors(t *testing.T) {
+	prev := resolveFn
+	defer func() { resolveFn = prev }()
+
+	resolveFn = func(id string) (capture.DeviceInfo, error) {
+		if id != testStableID {
+			t.Fatalf("resolve called with %q, want %q", id, testStableID)
 		}
+		return capture.DeviceInfo{ID: testStableID, HWAddr: testHWAddr, IDStable: true, Name: testCardLongName}, nil
+	}
+	got, err := Resolve(testStableID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := (Hardware{ID: testStableID, HWAddr: testHWAddr, Label: testFriendlyName, IDStable: true}); got != want {
+		t.Errorf("Resolve = %+v, want %+v", got, want)
+	}
+
+	resolveFn = func(id string) (capture.DeviceInfo, error) {
+		return capture.DeviceInfo{}, &capture.DeviceNotFoundError{ID: id}
+	}
+	_, err = Resolve(testStableID)
+	var nf *capture.DeviceNotFoundError
+	if !errors.As(err, &nf) || !errors.Is(err, capture.ErrDeviceGone) {
+		t.Errorf("Resolve error = %v, want the library's *DeviceNotFoundError", err)
 	}
 }
 
@@ -73,16 +92,24 @@ func TestDetectDevices(t *testing.T) {
 	prev := enumerateDevices
 	enumerateDevices = func() ([]capture.DeviceInfo, error) {
 		return []capture.DeviceInfo{
-			{ID: "hw:1,0", Name: testCardLongName},
+			{ID: testStableID, HWAddr: testHWAddr, IDStable: true, Name: testCardLongName},
 			{ID: testDevID2, Name: testAudioMoth},
 		}, nil
 	}
 	defer func() { enumerateDevices = prev }()
 
-	// Channel probe (refine seam): hw:2,0 is mono-only, hw:1,0 does mono+stereo.
-	// Every candidate count above the device's max is rejected as an unsupported
-	// channel/format combo, so ProbeChannels keeps only the counts it accepts.
+	// probed records every device string the capability seams are asked about, so
+	// the test can assert the probes went by the current-boot address rather than
+	// the stable id (each stable-id probe would re-enumerate the whole host).
+	probed := map[string]bool{}
+
+	// Channel probe (refine seam): the address-less device (testDevID2) is
+	// mono-only, the stable-id device (probed at its address testHWAddr) does
+	// mono+stereo. Every candidate count above the device's max is rejected as an
+	// unsupported channel/format combo, so ProbeChannels keeps only the counts it
+	// accepts.
 	restoreCh := swapSupportedRates(func(dev string, ch int, _ capture.Format) (capture.RateSupport, error) {
+		probed[dev] = true
 		maxCh := 2
 		if dev == testDevID2 {
 			maxCh = 1
@@ -94,9 +121,11 @@ func TestDetectDevices(t *testing.T) {
 	})
 	defer restoreCh()
 
-	// Rate probe (verified seam): hw:2,0 is S32-only offering 44.1/48k; hw:1,0
-	// offers 48k on S16 and additionally 96k on S32.
+	// Rate probe (verified seam): the address-less device is S32-only offering
+	// 44.1/48k; the stable-id device (probed at testHWAddr) offers 48k on S16 and
+	// additionally 96k on S32.
 	restoreRates := swapVerifiedRates(func(dev string, _ int, f capture.Format) (capture.RateSupport, error) {
+		probed[dev] = true
 		if f == capture.FormatS16LE {
 			if dev == testDevID2 {
 				return capture.RateSupport{}, &capture.BadFormatError{Format: f}
@@ -118,8 +147,11 @@ func TestDetectDevices(t *testing.T) {
 		t.Fatalf("got %d devices, want 2: %+v", len(got), got)
 	}
 
-	if got[0].ID != "hw:1,0" || got[0].FriendlyName != testFriendlyName {
-		t.Errorf("device 0 = %+v, want id hw:1,0 name %q", got[0], testFriendlyName)
+	if got[0].ID != testStableID || got[0].FriendlyName != testFriendlyName {
+		t.Errorf("device 0 = %+v, want id %q name %q", got[0], testStableID, testFriendlyName)
+	}
+	if got[0].HWAddr != testHWAddr || !got[0].IDStable || got[1].IDStable {
+		t.Errorf("identity not carried through: device 0 = %+v, device 1 = %+v", got[0], got[1])
 	}
 	if !slices.Equal(got[0].SupportedChannels, []int{1, 2}) {
 		t.Errorf("device 0 channels = %v, want [1 2]", got[0].SupportedChannels)
@@ -136,6 +168,82 @@ func TestDetectDevices(t *testing.T) {
 	}
 	if !slices.Equal(got[1].SupportedRates, []int{44100, 48000}) {
 		t.Errorf("device 1 rates = %v, want [44100 48000]", got[1].SupportedRates)
+	}
+
+	// The stable-id device must be probed by its current-boot address, never by
+	// its stable id (which would re-enumerate the whole host per probe call). The
+	// address-less device falls back to its id.
+	if !probed[testHWAddr] {
+		t.Errorf("stable-id device was not probed by its address %q; probed: %v", testHWAddr, probed)
+	}
+	if probed[testStableID] {
+		t.Errorf("stable-id device was probed by its id %q instead of its address (defeats the re-enumeration fix)", testStableID)
+	}
+	if !probed[testDevID2] {
+		t.Errorf("address-less device was not probed by its id %q; probed: %v", testDevID2, probed)
+	}
+}
+
+// TestOffersPortIDForTwinsSharingSerial pins M7: two identical USB units that
+// report the same serial-form ID are offered (enumerated and detected) under
+// their distinct PortIDs, so each can be provisioned instead of colliding on one
+// ambiguous id. A unique device keeps its own id, and a duplicate with no
+// derivable PortID keeps the shared id (nothing better to offer).
+func TestOffersPortIDForTwinsSharingSerial(t *testing.T) {
+	const (
+		twinSerial = "usb:16d0:06f3:s=SAME:if=0,0"
+		portA      = "usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0"
+		portB      = "usb:16d0:06f3:p=0000:01:00.0-1.2:if=0,0"
+		uniqueID   = "usb:1235:8218:s=UNIQ:if=0,0"
+		dupNoPort  = "usb:2222:3333:s=NOPORT:if=0,0"
+	)
+	prev := enumerateDevices
+	enumerateDevices = func() ([]capture.DeviceInfo, error) {
+		return []capture.DeviceInfo{
+			{ID: twinSerial, HWAddr: "hw:1,0", IDStable: true, PortID: portA, Name: testCardName},
+			{ID: twinSerial, HWAddr: "hw:2,0", IDStable: true, PortID: portB, Name: testCardName},
+			{ID: uniqueID, HWAddr: "hw:3,0", IDStable: true, PortID: "usb:1235:8218:p=x:if=0,0", Name: testCardName},
+			{ID: dupNoPort, HWAddr: "hw:4,0", IDStable: true, Name: testCardName},
+			{ID: dupNoPort, HWAddr: "hw:5,0", IDStable: true, Name: testCardName},
+		}, nil
+	}
+	defer func() { enumerateDevices = prev }()
+
+	// The twins swap to their PortIDs; the unique device and the PortID-less
+	// duplicates keep their reported ids.
+	want := []string{portA, portB, uniqueID, dupNoPort, dupNoPort}
+
+	hw, err := Enumerate()
+	if err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	gotEnum := make([]string, len(hw))
+	for i := range hw {
+		gotEnum[i] = hw[i].ID
+	}
+	if !slices.Equal(gotEnum, want) {
+		t.Errorf("Enumerate ids = %v, want %v", gotEnum, want)
+	}
+
+	// The capabilities are irrelevant here; stub the probe seams so DetectDevices
+	// touches no hardware and the ids are what the test asserts.
+	defer swapSupportedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
+		return capture.RateSupport{}, errors.New("no probe")
+	})()
+	defer swapVerifiedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
+		return capture.RateSupport{}, errors.New("no probe")
+	})()
+
+	det, err := DetectDevices(nil)
+	if err != nil {
+		t.Fatalf("DetectDevices: %v", err)
+	}
+	gotDet := make([]string, len(det))
+	for i := range det {
+		gotDet[i] = det[i].ID
+	}
+	if !slices.Equal(gotDet, want) {
+		t.Errorf("DetectDevices ids = %v, want %v", gotDet, want)
 	}
 }
 

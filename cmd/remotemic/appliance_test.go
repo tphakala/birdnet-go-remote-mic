@@ -84,7 +84,7 @@ func (l *fakeOpenLog) snapshot() []string {
 // out into one runtime per configured stream.
 func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
 	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
-		log.add("open:" + dev.Name)
+		log.add("open:" + dev.Name + "@" + dev.Device)
 		// Mirror production ResolveOpenChannels: open at >= the highest selected
 		// channel (the union is sorted-unique, so its last element is the max), not
 		// len(union), so a non-contiguous selection like [1,3] opens 3 channels and a
@@ -170,6 +170,12 @@ func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFun
 	// wiring relies on. Tests read it back via app.notifier.(*notify.Center).
 	app := newAppliance(ctx, levels.NewHub(), srv, &provider{version: "test", start: time.Now()}, guard, notify.NewCenter())
 	app.open = fakeOpener(log)
+	// Every id resolves to present hardware at an address equal to the id, so the
+	// lifecycle tests do not read the host's sysfs; the identity tests replace
+	// this with a fakeHost.
+	app.resolve = func(id string) (audio.Hardware, error) {
+		return audio.Hardware{ID: id, HWAddr: id, IDStable: true}, nil
+	}
 	return app, log, cancel
 }
 
@@ -288,6 +294,16 @@ func TestApplianceRestartStopsAllBeforeStartingAny(t *testing.T) {
 	}
 	if lastClose == -1 || firstOpen == len(events) || lastClose >= firstOpen {
 		t.Fatalf("restart did not stop all before starting any: events=%v", events)
+	}
+
+	// Both must be serving after the swap. When a opens its swapped-in card, the
+	// other device's OLD runtime still sits in a.devices holding that same address
+	// but marked superseded; hardwareOwner must ignore a superseded runtime, or
+	// one of the two would be refused as a duplicate of the card it is taking over.
+	for _, name := range []string{"a", "b"} {
+		if st := app.devices[name].currentState(); st != mgmtserver.StateServing {
+			t.Errorf("%s state = %s after the swap, want serving (hardwareOwner must ignore the superseded old runtime)", name, st)
+		}
 	}
 
 	drainPump(t, app) // the two superseded old pumps

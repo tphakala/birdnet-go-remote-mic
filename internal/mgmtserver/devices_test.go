@@ -213,6 +213,9 @@ func TestProvisionDeviceHappyPath(t *testing.T) {
 	if len(loaded.Devices) != 2 {
 		t.Fatalf("persisted %d devices, want 2: %+v", len(loaded.Devices), loaded.Devices)
 	}
+	if got := loaded.Devices[1].Device; got != devAttic {
+		t.Errorf("persisted device id = %q, want the id the host reported (%q)", got, devAttic)
+	}
 }
 
 // An explicit empty channels array is a derived selection, exactly like an
@@ -759,4 +762,97 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 			t.Error("probe ran for a single-channel device")
 		}
 	})
+}
+
+const (
+	addrHW4     = "hw:4,0"
+	idStableUSB = "usb:1235:8218:s=S1:if=0,0"
+)
+
+// TestProvisionDeviceConfiguredUnderAnotherIDYields409 pins that a device the
+// host lists but the available view hides (the config owns it under another id,
+// such as a card index that resolves to it) is refused as already configured,
+// without the disruptive probe, rather than provisioned as a second entry.
+func TestProvisionDeviceConfiguredUnderAnotherIDYields409(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{detected: []AvailableDevice{{ID: idStableUSB, HWAddr: devHW1, IDStable: true}}}
+	called := false
+	probe := func(context.Context, string, int, int) ([]float64, error) {
+		called = true
+		return nil, nil
+	}
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: idStableUSB},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	got, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("returned %T, want 409", resp)
+	}
+	if got.Detail == nil || !strings.Contains(*got.Detail, "under another id") {
+		t.Errorf("409 detail = %v, want it to say the device is configured under another id", got.Detail)
+	}
+	if called {
+		t.Error("channel probe ran for a device the config already owns")
+	}
+}
+
+// TestProvisionDeviceTrimsID pins that surrounding whitespace in the requested
+// id is dropped before lookup and persistence, so it cannot create an entry
+// whose id differs from the host's by whitespace.
+func TestProvisionDeviceTrimsID(t *testing.T) {
+	store, path := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+	}}
+	s := New(prov, WithConfigStore(store))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: " " + devAttic + "\t"},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse); !ok {
+		t.Fatalf("returned %T, want 201", resp)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if got := loaded.Devices[len(loaded.Devices)-1].Device; got != devAttic {
+		t.Errorf("persisted device id = %q, want %q", got, devAttic)
+	}
+}
+
+// TestAvailableDeviceCarriesIdentity pins the wire mapping of the current
+// address and the stable flag for an available device.
+func TestAvailableDeviceCarriesIdentity(t *testing.T) {
+	got := mapAvailableDevice(&AvailableDevice{ID: idStableUSB, HWAddr: addrHW4, IDStable: true})
+	if got.HwAddr == nil || *got.HwAddr != addrHW4 || got.IdStable == nil || !*got.IdStable {
+		t.Errorf("mapped = %+v, want hwAddr hw:4,0 and idStable true", got)
+	}
+	got = mapAvailableDevice(&AvailableDevice{ID: devHW1})
+	if got.HwAddr != nil || got.IdStable == nil || *got.IdStable {
+		t.Errorf("mapped fallback = %+v, want no hwAddr and idStable false", got)
+	}
+}
+
+// TestDeviceStatusCarriesIdentity pins the wire mapping of the resolved
+// address and the stable flag for a configured device.
+func TestDeviceStatusCarriesIdentity(t *testing.T) {
+	d := servingOpus()
+	d.HWAddr = addrHW4
+	d.IDStable = true
+	got := mapDevice(&d)
+	if got.HwAddr == nil || *got.HwAddr != addrHW4 || got.IdStable == nil || !*got.IdStable {
+		t.Errorf("mapped = %+v, want hwAddr hw:4,0 and idStable true", got)
+	}
+	d.HWAddr, d.IDStable = "", false
+	got = mapDevice(&d)
+	if got.HwAddr != nil || got.IdStable == nil || *got.IdStable {
+		t.Errorf("mapped absent device = %+v, want no hwAddr and idStable false", got)
+	}
 }

@@ -36,14 +36,37 @@ var candidateChannels = func() []int {
 // It returns a fresh slice so a caller cannot mutate the shared package list.
 func CandidateChannels() []int { return slices.Clone(candidateChannels) }
 
+// Hardware is the current identity of one capture device the host exposes.
+//
+// ID is the device id to persist in the config: on Linux a sysfs-derived id that
+// names the physical device and survives reboots. A USB unit by vendor, product
+// and serial follows it to any port; the by-port form (a USB unit with no serial)
+// and the alsa-lib hw:CARD= form survive a replug into the same port. When two
+// identical USB units report the same serial, Enumerate offers the port-form id
+// for each instead, since the shared serial id cannot distinguish them (see
+// offeredIDs). IDStable is false when no stable form could be built (for example
+// a container without sysfs, or a USB device with neither a serial nor a
+// derivable port), in which case ID is the current-boot card index. HWAddr is the
+// current-boot ALSA address ("hw:4,0"), for display and logs only: the kernel
+// assigns card indices in probe order, so it must never be persisted. Label is
+// the short sound-card name for display.
+type Hardware struct {
+	ID       string
+	HWAddr   string
+	Label    string
+	IDStable bool
+}
+
 // DetectedDevice is one capture device the host exposes, with the capabilities
 // probed for it. It is what the web UI lists as an "available" device the
 // operator can enable, so it carries no configuration (name, path, mode): those
 // are derived when the device is provisioned. Empty SupportedRates/Channels mean
 // the device could not be probed (busy or gone) and the UI falls back to a
-// static list.
+// static list. ID, HWAddr and IDStable carry the same meaning as in Hardware.
 type DetectedDevice struct {
 	ID                string
+	HWAddr            string
+	IDStable          bool
 	FriendlyName      string
 	SupportedRates    []int
 	SupportedChannels []int

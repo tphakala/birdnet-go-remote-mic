@@ -47,7 +47,10 @@ instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
 all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
 `path`, `auth` (`token` when an access token is required, else `none`), and a
 `txtvers`. It sends goodbye packets on shutdown so stale entries
-clear promptly. Set `discovery.enabled: false` to turn it off; on a network
+clear promptly. When a config save starts, stops, or restarts a device, or a
+hardware-change retry starts one, the whole advertisement is rebuilt, because
+the responder cannot retire a single service. A device that dies mid-run stays
+advertised until the next rebuild (see Multi-device behaviour). Set `discovery.enabled: false` to turn it off; on a network
 where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
 plus path instead.
 
@@ -58,7 +61,7 @@ are grouped by what they act on (`remotemic <noun> <verb>`):
 
 ```bash
 remotemic                  # capture and serve (the default; same as `serve`)
-remotemic devices list     # enumerate capture devices
+remotemic devices list     # enumerate capture devices (id, address, label)
 remotemic token generate   # create the access token, save it, print it
 remotemic token get        # print the current access token
 remotemic version
@@ -92,7 +95,7 @@ auth:
   token: ""              # set a token to require credentials (see Authentication)
 devices:
   - name: garden-mic       # unique instance name; also the mDNS label
-    device: "hw:1,0"
+    device: "usb:1235:8218:s=S1A2B3C4:if=0,0"   # from `remotemic devices list`
     path: /garden          # unique RTSP path; defaults to /stream
     mode: opus             # "opus" (48 kHz, mono or stereo) or "pcm" (L16, any rate, ultrasonic)
     rate: 48000
@@ -101,7 +104,7 @@ devices:
     opus:
       bitrate: 64000
   - name: ultrasonic-mic   # add as many devices as the hardware supports
-    device: "hw:2,0"
+    device: "usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0"
     path: /bat
     mode: pcm
     rate: 256000
@@ -109,13 +112,35 @@ devices:
     format: s16
 ```
 
+A device's `device` value names the physical hardware, not its ALSA card
+number. The kernel numbers cards in probe order, so `hw:3,0` can be a different
+microphone after a reboot or a replug. Copy the id from `remotemic devices list`
+(or let the web UI write it):
+
+- `usb:<vendor>:<product>:s=<serial>:if=<interface>,<device>` names a USB unit
+  by its serial and follows it to any port.
+- `usb:<vendor>:<product>:p=<port>:if=<interface>,<device>` names the physical
+  port a USB device is plugged into. It is used for a device with no serial, and
+  for identical units that report the same serial.
+- `hw:CARD=<card id>,DEV=<device>` names a built-in or virtual card by its
+  kernel card id.
+
+A card-index id such as `hw:1,0` still works (offered when the host has no
+stable form: no sysfs in a minimal container, or a USB device with neither a
+serial nor a derivable port), but the web UI and `--check` flag it. A device
+whose id matches nothing is reported as not connected, and one whose id matches
+two units (identical devices sharing a serial) as ambiguous; the appliance never
+opens a different device in its place. Give each of the two units its own port
+id, not just one; `remotemic devices list`, the web UI, and the ambiguity error
+(shown by the web UI and `--check`) all name the port id to use.
+
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
 defaults are taken:
 
 ```bash
 remotemic --config config.yaml --listen :8554 --mgmt-listen :8443
-remotemic --config config.yaml --check   # validate config, then exit
+remotemic --config config.yaml --check   # validate config, show what each device id resolves to, then exit
 ```
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
@@ -234,24 +259,34 @@ ffmpeg  -rtsp_transport tcp -i rtsp://<host>:8554/stream -t 5 out.wav
 
 For a local end-to-end check without hardware, use the ALSA loopback
 (`snd-aloop`): play a tone into `hw:Loopback,0` and point a device's
-`device` at the capture side `hw:Loopback,1`.
+`device` at the capture side `hw:CARD=Loopback,DEV=1`.
 
 ### Multi-device behaviour
 
-- A device that fails to open at startup is logged and skipped. With the
+- A device that fails to open, is not connected, or whose id is ambiguous is
+  logged and skipped. With the
   management API enabled (the default) the process stays up so its status API
   keeps reporting every skipped device and its open error, even when no device
   opens at all. With management disabled there is nothing to keep alive, so a
   total open failure exits nonzero and lets a supervisor restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
-  until the process restarts, while the other devices keep serving. With
-  management enabled the process also stays up after the last device dies, so
-  the failure stays inspectable over the API (in-process capture restart is a
-  later phase); with management disabled it exits once every device has stopped.
-  A retired device's mDNS advertisement persists until the process exits (a
-  limitation of the dnssd responder), so a discoverer that picks it up gets 404.
+  while the other devices keep serving. The appliance rescans the host's
+  capture hardware every 15 seconds, and when the set of devices changes it
+  restarts every device that is down and configured by a stable id, so a
+  replugged device serves again on the same path even if it came back under a
+  different card number. A device pinned to a card index (`hw:1,0`) is not
+  restarted this way, because that index can now name a different microphone; it
+  waits for a config save, which also restarts a down device of either kind.
+  With management enabled the process stays up after the
+  last device dies, so the failure stays inspectable over the API; with
+  management disabled it exits once every device has stopped.
+  A device that dies mid-run stays in the mDNS advertisement until it is next
+  rebuilt (a config save, a retry that starts a device, or process exit), because
+  the dnssd responder cannot retire a single service, so a discoverer that picks
+  it up meanwhile gets 404.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
-  single-client (the config rejects a device id used twice), USB isochronous
+  single-client (the config rejects a device id used twice, and a second entry
+  that resolves to hardware another entry already captures from is skipped), USB isochronous
   bandwidth is shared per controller (watch for xruns when several high-rate
   or ultrasonic mics share one hub), and independent devices drift relative to
   each other over time (each stream is honest to its own capture clock).

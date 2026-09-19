@@ -27,9 +27,12 @@ type DeviceState string
 const (
 	// StateServing means the device is capturing and available over RTSP.
 	StateServing DeviceState = "serving"
-	// StateSkipped means the device could not be opened at startup.
+	// StateSkipped means the device was not opened: it is not connected, its id
+	// matches several devices, it resolves to hardware another entry already
+	// captures from, or the open failed. The error says which.
 	StateSkipped DeviceState = "skipped"
-	// StateFailed means the device died after startup; its RTSP path 404s.
+	// StateFailed means the device died after opening; its RTSP path returns 404
+	// until the device is reconnected or the config is saved.
 	StateFailed DeviceState = "failed"
 	// StateDisabled means the device is configured but intentionally not opened
 	// (its Enabled flag is false). It is not captured or streamed until it is
@@ -75,14 +78,21 @@ type DeviceStatus struct {
 	DroppedFrames      int64
 	Error              string
 	// FriendlyName is a human-facing label derived from the sound card name,
-	// empty when the device id matches no enumerated hardware.
+	// empty when the device id resolved to no present hardware.
 	FriendlyName string
-	// SupportedRates is the set of sample rates the hardware accepts, probed at
-	// startup. Empty when the device could not be probed (missing or busy).
+	// HWAddr is the current-boot ALSA address ("hw:4,0") the configured id
+	// resolved to, for display; empty when it resolved to no present hardware.
+	// It changes across reboots and replugs and is never persisted.
+	HWAddr string
+	// IDStable is false when the configured id names a card by its kernel index,
+	// which can point at a different device after a reboot or replug.
+	IDStable bool
+	// SupportedRates is the sample rate set from the last successful capability
+	// probe for this id (re-probed each time the device is opened); empty when no
+	// probe has succeeded (the device was never present and free to probe).
 	SupportedRates []int
-	// SupportedChannels is the set of channel counts the hardware accepts (up to
-	// 8), probed at startup via the same query as SupportedRates. Empty when the
-	// device could not be probed (missing or busy).
+	// SupportedChannels is the channel-count set (up to 8) from the same last
+	// successful probe as SupportedRates; empty when no probe has succeeded.
 	SupportedChannels []int
 	// Streams is the per-stream live state, one entry per stream fanned out from
 	// this device's shared capture, present only while serving. ClientConnected
@@ -102,7 +112,13 @@ type StreamStatus struct {
 // does not list. It carries the probed capabilities the UI uses to offer the
 // device for provisioning; it has no configuration until it is provisioned.
 type AvailableDevice struct {
+	// ID is the id provisioning persists. IDStable is false when the host offered
+	// no stable form (for example no sysfs in a minimal container, or a USB device
+	// with neither a serial nor a derivable port), in which case ID is a card
+	// index.
 	ID                string
+	HWAddr            string
+	IDStable          bool
 	FriendlyName      string
 	SupportedRates    []int
 	SupportedChannels []int
@@ -341,6 +357,10 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	if d.FriendlyName != "" {
 		out.FriendlyName = ptr(d.FriendlyName)
 	}
+	if d.HWAddr != "" {
+		out.HwAddr = ptr(d.HWAddr)
+	}
+	out.IdStable = ptr(d.IDStable)
 	if len(d.SupportedRates) > 0 {
 		rates := append([]int(nil), d.SupportedRates...)
 		out.SupportedRates = &rates
