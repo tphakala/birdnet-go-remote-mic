@@ -195,9 +195,7 @@ export class DeviceSettingsForm {
         });
         const track = elem("span", "switch-track");
         track.appendChild(elem("span", "switch-thumb"));
-        const quietText = elem("span", undefined, "Warn when this device stays very quiet");
-        quietText.style.fontSize = "12px";
-        quietText.style.fontWeight = "500";
+        const quietText = elem("span", "switch-label", "Warn when this device stays very quiet");
         quietSwitch.appendChild(this.quietAlertEl);
         quietSwitch.appendChild(track);
         quietSwitch.appendChild(quietText);

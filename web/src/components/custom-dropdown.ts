@@ -209,8 +209,6 @@ export class CustomDropdown {
         if (itemTag) {
           const tagEl = document.createElement("span");
           tagEl.className = `tech-tag ${tagClass}`;
-          tagEl.style.fontSize = "10px";
-          tagEl.style.padding = "1px 5px";
           tagEl.textContent = itemTag;
           valGroup.appendChild(tagEl);
         }

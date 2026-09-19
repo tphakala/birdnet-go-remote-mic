@@ -129,10 +129,13 @@ export class NotificationCenter {
         return formatRelative(Date.parse(iso) + offsetMs, nowMs);
     }
     renderRow(n, nowMs, offsetMs) {
-        const row = elem("div", `notif-row notif-${n.severity}`);
-        const icon = elem("span", "notif-row-icon");
+        // One lookup feeds both the severity surface and the glyph, so a row can
+        // never end up with an error tint and an info icon.
+        const sev = SEVERITY_TO_TOAST[n.severity] ?? "info";
+        const row = elem("div", `notif-row sev-${sev}`);
+        const icon = elem("span", "notif-row-icon sev-badge");
         icon.setAttribute("aria-hidden", "true");
-        icon.innerHTML = TOAST_ICONS[SEVERITY_TO_TOAST[n.severity]] ?? TOAST_ICONS.info; // trusted markup
+        icon.innerHTML = TOAST_ICONS[sev]; // trusted markup
         const main = elem("div", "notif-row-main");
         const top = elem("div", "notif-row-top");
         const title = elem("span", "notif-row-title");
