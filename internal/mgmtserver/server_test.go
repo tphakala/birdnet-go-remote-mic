@@ -27,6 +27,10 @@ type fakeProvider struct {
 	status    ApplianceStatus
 	devices   []DeviceStatus
 	available []AvailableDevice
+	// detected lists host devices the available view hides because the config
+	// owns them, as the real provider's unfiltered enumeration does. The fake's
+	// detected view is detected plus available.
+	detected []AvailableDevice
 }
 
 func (f *fakeProvider) Version() string                     { return f.status.Version }
@@ -35,9 +39,11 @@ func (f *fakeProvider) Devices() []DeviceStatus             { return f.devices }
 func (f *fakeProvider) AvailableDevices() []AvailableDevice { return f.available }
 
 func (f *fakeProvider) DetectedDevice(id string) (AvailableDevice, bool) {
-	for i := range f.available {
-		if f.available[i].ID == id {
-			return f.available[i], true
+	for _, list := range [][]AvailableDevice{f.detected, f.available} {
+		for i := range list {
+			if list[i].ID == id {
+				return list[i], true
+			}
 		}
 	}
 	return AvailableDevice{}, false

@@ -249,15 +249,27 @@ type AuthSettings struct {
 
 // AvailableDevice A capture device the host exposes that the configuration does not yet list. It carries only the device id and the probed capabilities; a name, path and stream parameters are assigned when it is provisioned (see POST /devices).
 type AvailableDevice struct {
-	// Device ALSA capture device id.
+	// Device Capture device id to persist, as provisioning stores it. It is a stable id that survives reboots and replugs unless idStable is false.
 	//
-	// Examples: hw:1,0
+	//
+	// Examples: usb:1235:8218:s=S1A2B3:if=0,0
 	Device string `json:"device"`
 
 	// FriendlyName Human-facing label derived from the sound card name.
 	//
 	// Examples: Scarlett 2i2 USB
 	FriendlyName *string `json:"friendlyName,omitempty"`
+
+	// HwAddr Current-boot ALSA address of the device, for display only.
+	//
+	// Examples: hw:4,0
+	HwAddr *string `json:"hwAddr,omitempty"`
+
+	// IdStable False when the host offered no stable id for this device (no sysfs, as in a minimal container), in which case device is a card index that can change across reboots.
+	//
+	//
+	// Examples: true
+	IdStable *bool `json:"idStable,omitempty"`
 
 	// State Always "available"; the device is detected but not configured.
 	State AvailableDeviceState `json:"state"`
@@ -420,9 +432,10 @@ type Device struct {
 	// ClientConnected Whether an RTSP session currently holds this track's single slot. Always false for skipped or failed devices.
 	ClientConnected bool `json:"clientConnected"`
 
-	// Device ALSA capture device id.
+	// Device Configured capture device id. A stable id names the physical device (a USB unit by vendor, product and serial, or by port when it has no serial; other cards in the alsa-lib hw:CARD= form) and survives reboots and replugs. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable).
 	//
-	// Examples: hw:1,0
+	//
+	// Examples: usb:1235:8218:s=S1A2B3:if=0,0, hw:CARD=Loopback,DEV=1
 	Device string `json:"device"`
 
 	// DroppedFrames Frames dropped because the connected client was not keeping up. Zero for devices that never served.
@@ -434,11 +447,23 @@ type Device struct {
 	// Format Sample format (only S16LE is supported).
 	Format DeviceFormat `json:"format"`
 
-	// FriendlyName Human-facing label derived from the sound card name (the text before the first comma). Absent when the device id matches no enumerated hardware, or the derived label is empty. The UI uses it to default a blank name.
+	// FriendlyName Human-facing label derived from the sound card name (the text before the first comma). Absent when the device id resolved to no present hardware, or the derived label is empty. The UI uses it to default a blank name.
 	//
 	//
 	// Examples: Scarlett 2i2 USB
 	FriendlyName *string `json:"friendlyName,omitempty"`
+
+	// HwAddr Current-boot ALSA address the configured id resolved to, for display. Absent when the id names no present hardware. It changes across reboots and replugs and is never persisted.
+	//
+	//
+	// Examples: hw:4,0
+	HwAddr *string `json:"hwAddr,omitempty"`
+
+	// IdStable False when the configured id names a card by its kernel index (hw:N,D), which the kernel assigns in probe order, so the id can point at a different device after a reboot or replug.
+	//
+	//
+	// Examples: true
+	IdStable *bool `json:"idStable,omitempty"`
 
 	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
 	Mode StreamMode `json:"mode"`
@@ -465,7 +490,7 @@ type Device struct {
 	// Rate Requested capture sample rate in Hz (as configured).
 	Rate int `json:"rate"`
 
-	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
+	// State serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device is reconnected or the config is saved. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 	State DeviceState `json:"state"`
 
 	// StreamedChannels Every 1-based capture channel that at least one of the device's streams carries, ascending and unique: the union of the stream selections, where channels describes only the first stream. The UI marks these channels as live on the level meters.
@@ -533,7 +558,7 @@ type DeviceLevels struct {
 	Name string `json:"name"`
 }
 
-// DeviceState serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
+// DeviceState serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device is reconnected or the config is saved. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 type DeviceState string
 
 // DiscoverySettings mDNS/DNS-SD advertisement settings.
@@ -739,9 +764,9 @@ type ProvisionDeviceRequest struct {
 	// Channels Optional 1-based channel selection to stream, ascending and unique. When omitted the appliance selects a single channel: it captures briefly from the device and picks the loudest channel (the lowest numbered among channels within 1 dB of the loudest, and channel 1 when all are near silence or the measurement fails). An empty array is treated the same as omitting the field (so no minItems is imposed).
 	Channels *[]int `json:"channels,omitempty"`
 
-	// Device ALSA capture device id to enable, as reported by GET /devices/available.
+	// Device Capture device id to enable, as reported by GET /devices/available.
 	//
-	// Examples: hw:1,0
+	// Examples: usb:1235:8218:s=S1A2B3:if=0,0
 	Device string `json:"device"`
 
 	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).

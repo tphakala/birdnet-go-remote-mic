@@ -36,14 +36,33 @@ var candidateChannels = func() []int {
 // It returns a fresh slice so a caller cannot mutate the shared package list.
 func CandidateChannels() []int { return slices.Clone(candidateChannels) }
 
+// Hardware is the current identity of one capture device the host exposes.
+//
+// ID is the device id to persist in the config: on Linux a sysfs-derived id that
+// names the physical device (a USB unit by vendor, product and serial, or by
+// port when it has no serial) and survives reboots and replugs. IDStable is false
+// when no stable form could be built (for example a container without sysfs), in
+// which case ID is the current-boot card index. HWAddr is the current-boot ALSA
+// address ("hw:4,0"), for display and logs only: the kernel assigns card indices
+// in probe order, so it must never be persisted. Label is the short sound-card
+// name for display.
+type Hardware struct {
+	ID       string
+	HWAddr   string
+	Label    string
+	IDStable bool
+}
+
 // DetectedDevice is one capture device the host exposes, with the capabilities
 // probed for it. It is what the web UI lists as an "available" device the
 // operator can enable, so it carries no configuration (name, path, mode): those
 // are derived when the device is provisioned. Empty SupportedRates/Channels mean
 // the device could not be probed (busy or gone) and the UI falls back to a
-// static list.
+// static list. ID, HWAddr and IDStable carry the same meaning as in Hardware.
 type DetectedDevice struct {
 	ID                string
+	HWAddr            string
+	IDStable          bool
 	FriendlyName      string
 	SupportedRates    []int
 	SupportedChannels []int

@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 
-	capture "github.com/tphakala/go-audio-capture"
-
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
 
@@ -23,10 +24,14 @@ var (
 	listDevicesFn = runListDevices
 )
 
-// captureDevices enumerates the host's capture devices. It is a package var so
+// captureDevices enumerates the host's capture devices and resolveDevice maps
+// one configured id to the device it names right now. They are package vars so
 // reportCheck (serve --check) and devices list are testable without ALSA
 // hardware: a test can inject a known device list or a probe failure.
-var captureDevices = capture.Devices
+var (
+	captureDevices = audio.Enumerate
+	resolveDevice  = audio.Resolve
+)
 
 // configEnv names the environment variable that supplies the config path when
 // --config is not given, so a service unit can set it once and every command
@@ -191,7 +196,8 @@ func runDevices(args []string, stdout, stderr io.Writer) int {
 		fs.Usage = func() {
 			out(stderr, "Usage: remotemic devices list\n\n"+
 				"List the host's capture devices: the id to put in a device's config\n"+
-				"entry, and its label.\n")
+				"entry, its current ALSA address, and its label. The id names the\n"+
+				"physical device and survives reboots; the address does not.\n")
 		}
 		if err := parseNoArgs(fs, args[1:]); err != nil {
 			return toExit(err, stderr)
@@ -212,56 +218,80 @@ func devicesUsage(w io.Writer) {
 	out(w, `Inspect the host's capture devices.
 
 Usage:
-  remotemic devices list   list capture devices (id and label)
+  remotemic devices list   list capture devices (id, address and label)
 `)
 }
 
-// runListDevices prints the id and label of every capture device on the host.
+// runListDevices prints the id, current address and label of every capture
+// device on the host.
 func runListDevices(w io.Writer) error {
 	devs, err := captureDevices()
 	if err != nil {
 		return err
 	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	out(tw, "ID\tADDRESS\tLABEL\n")
 	for _, d := range devs {
-		out(w, "%-12s %s\n", d.ID, d.Name)
+		label := d.Label
+		if !d.IDStable {
+			label += " (no stable id: this card index can change across reboots)"
+		}
+		out(tw, "%s\t%s\t%s\n", d.ID, d.HWAddr, label)
 	}
-	return nil
+	return tw.Flush()
 }
 
-// reportCheck validates cfg and reports each configured device's presence on the
-// host, writing a summary to w. It returns the validation error for an invalid
-// config (so `serve --check` exits nonzero, like `nginx -t`), but a device that
-// is not currently present is only noted, not fatal, because the appliance
-// tolerates a missing device by skipping it.
+// reportCheck validates cfg and reports which hardware each configured device
+// id resolves to on the host, writing a summary to w. It returns the validation
+// error for an invalid config (so `serve --check` exits nonzero, like
+// `nginx -t`), but a device that is not currently present is only noted, not
+// fatal, because the appliance tolerates a missing device by skipping it.
 func reportCheck(cfg *config.Config, w io.Writer) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	out(w, "config OK: %d device(s), RTSP %s\n", len(cfg.Devices), cfg.Listen)
-	present := make(map[string]bool)
-	probed := true
-	if devs, derr := captureDevices(); derr == nil {
-		for _, d := range devs {
-			present[d.ID] = true
-		}
-	} else {
+	if _, derr := captureDevices(); derr != nil {
 		// Enumeration failed wholesale; without it every device would print
-		// "not found", which would misrepresent present hardware. Say so instead.
-		probed = false
+		// "not connected", which would misrepresent present hardware. Say so
+		// instead.
 		out(w, "  (device probe unavailable: %v)\n", derr)
+		for i := range cfg.Devices {
+			out(w, "  %-20s %s  unknown\n", cfg.Devices[i].Name, cfg.Devices[i].Device)
+		}
+		return nil
 	}
+	// owner maps a resolved hardware address to the first entry that claims it,
+	// so a second entry naming the same device through another id is reported
+	// the way the appliance treats it: refused as a duplicate.
+	owner := make(map[string]string, len(cfg.Devices))
 	for i := range cfg.Devices {
 		d := &cfg.Devices[i]
-		status := "unknown"
-		if probed {
-			status = "present"
-			if !present[d.Device] {
-				status = "not found"
-			}
-		}
-		out(w, "  %-20s %-10s %s\n", d.Name, d.Device, status)
+		out(w, "  %-20s %s  %s\n", d.Name, d.Device, checkStatus(d, owner))
 	}
 	return nil
+}
+
+// checkStatus describes what one configured device id resolves to for
+// reportCheck, recording a present device's address in owner.
+func checkStatus(d *config.Device, owner map[string]string) string {
+	hw, err := resolveDevice(d.Device)
+	if err != nil {
+		_, msg := resolveError(d, err)
+		return msg
+	}
+	status := "present at " + hw.HWAddr
+	if hw.Label != "" {
+		status += " (" + hw.Label + ")"
+	}
+	if first, dup := owner[hw.HWAddr]; dup {
+		return status + "; same hardware as " + strconv.Quote(first) + ", so it will not be opened"
+	}
+	owner[hw.HWAddr] = d.Name
+	if config.IsCardIndexID(d.Device) {
+		status += "; pinned to a card index, which can change across reboots (use id " + hw.ID + ")"
+	}
+	return status
 }
 
 // serveOverrides carries the serve subcommand's config-overriding flag values

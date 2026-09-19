@@ -181,6 +181,12 @@ export interface Device {
   opus?: OpusSettings;
   error?: string;
   friendlyName?: string;
+  // Current-boot ALSA address ("hw:4,0") the configured id resolved to, for
+  // display only; absent when the device is not connected.
+  hwAddr?: string;
+  // False when the configured id names a card by its kernel index, which can
+  // point at a different device after a reboot or replug.
+  idStable?: boolean;
   supportedRates?: number[];
   supportedChannels?: number[];
 }
@@ -190,8 +196,13 @@ export interface Device {
 // probed capabilities; a name, path and stream parameters are assigned when it
 // is provisioned via POST /devices.
 export interface AvailableDevice {
+  // The stable id provisioning persists (see idStable).
   device: string;
   state: "available";
+  // Current-boot ALSA address, for display only.
+  hwAddr?: string;
+  // False when the host offered no stable id, so device is a card index.
+  idStable?: boolean;
   friendlyName?: string;
   supportedRates?: number[];
   supportedChannels?: number[];

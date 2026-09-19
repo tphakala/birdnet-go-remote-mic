@@ -75,8 +75,15 @@ type DeviceStatus struct {
 	DroppedFrames      int64
 	Error              string
 	// FriendlyName is a human-facing label derived from the sound card name,
-	// empty when the device id matches no enumerated hardware.
+	// empty when the device id resolved to no present hardware.
 	FriendlyName string
+	// HWAddr is the current-boot ALSA address ("hw:4,0") the configured id
+	// resolved to, for display; empty when it resolved to no present hardware.
+	// It changes across reboots and replugs and is never persisted.
+	HWAddr string
+	// IDStable is false when the configured id names a card by its kernel index,
+	// which can point at a different device after a reboot or replug.
+	IDStable bool
 	// SupportedRates is the set of sample rates the hardware accepts, probed at
 	// startup. Empty when the device could not be probed (missing or busy).
 	SupportedRates []int
@@ -102,7 +109,11 @@ type StreamStatus struct {
 // does not list. It carries the probed capabilities the UI uses to offer the
 // device for provisioning; it has no configuration until it is provisioned.
 type AvailableDevice struct {
+	// ID is the id provisioning persists. IDStable is false when the host
+	// offered no stable form (no sysfs), in which case ID is a card index.
 	ID                string
+	HWAddr            string
+	IDStable          bool
 	FriendlyName      string
 	SupportedRates    []int
 	SupportedChannels []int
@@ -341,6 +352,10 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	if d.FriendlyName != "" {
 		out.FriendlyName = ptr(d.FriendlyName)
 	}
+	if d.HWAddr != "" {
+		out.HwAddr = ptr(d.HWAddr)
+	}
+	out.IdStable = ptr(d.IDStable)
 	if len(d.SupportedRates) > 0 {
 		rates := append([]int(nil), d.SupportedRates...)
 		out.SupportedRates = &rates

@@ -1,0 +1,288 @@
+//go:build linux
+
+package main
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	capture "github.com/tphakala/go-audio-capture"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+)
+
+const (
+	addrHW3    = "hw:3,0"
+	addrHW4    = "hw:4,0"
+	addrHW5    = "hw:5,0"
+	idScarlett = "usb:1235:8218:s=S1:if=0,0"
+	idMoth     = "usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0"
+)
+
+// fakeHost is a host device list the appliance resolves configured ids against,
+// standing in for the capture library's sysfs resolution. An id resolves when it
+// equals a device's stable id or its current address (as a card-index id does);
+// no match is *DeviceNotFoundError and several are *AmbiguousDeviceError, which is
+// the library's contract.
+type fakeHost struct {
+	devs []audio.Hardware
+	// fail, when set, is returned for every resolution, as when the host has no
+	// readable device listing.
+	fail error
+}
+
+func (h *fakeHost) resolve(id string) (audio.Hardware, error) {
+	if h.fail != nil {
+		return audio.Hardware{}, h.fail
+	}
+	var hit []audio.Hardware
+	for _, d := range h.devs {
+		if d.ID == id || d.HWAddr == id {
+			hit = append(hit, d)
+		}
+	}
+	switch len(hit) {
+	case 0:
+		return audio.Hardware{}, &capture.DeviceNotFoundError{ID: id}
+	case 1:
+		return hit[0], nil
+	}
+	matches := make([]string, 0, len(hit))
+	for _, d := range hit {
+		matches = append(matches, d.HWAddr)
+	}
+	return audio.Hardware{}, &capture.AmbiguousDeviceError{ID: id, Matches: matches}
+}
+
+// withHost points the appliance's resolver at host.
+func withHost(app *appliance, host *fakeHost) { app.resolve = host.resolve }
+
+// opened reports whether the fake opener was asked to open the named device.
+func opened(log *fakeOpenLog, name string) bool {
+	return slices.ContainsFunc(log.snapshot(), func(e string) bool { return strings.HasPrefix(e, "open:"+name+"@") })
+}
+
+// TestReconcileBindsEachDeviceToItsIdentityAcrossReorder is the #62 reboot case:
+// the kernel numbered the two cards in the opposite order from when they were
+// provisioned. Each entry must open by its own stable id and report the address
+// its own hardware now has, so neither stream serves the other microphone.
+func TestReconcileBindsEachDeviceToItsIdentityAcrossReorder(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	// After the reboot the AudioMoth probed first and took card 3.
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: idMoth, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true},
+		{ID: idScarlett, HWAddr: addrHW4, Label: nameScarlett, IDStable: true},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{
+		testDevice("scarlett", idScarlett, "/s", 48000),
+		testDevice("moth", idMoth, "/m", 48000),
+	}})
+
+	for name, want := range map[string]string{"scarlett": addrHW4, "moth": addrHW3} {
+		rt := app.devices[name]
+		if rt.currentState() != mgmtserver.StateServing {
+			t.Fatalf("%s state = %s (%s), want serving", name, rt.currentState(), rt.err)
+		}
+		if st := rt.status(); st.HWAddr != want || !st.IDStable {
+			t.Errorf("%s status hwAddr=%q idStable=%v, want %q and true", name, st.HWAddr, st.IDStable, want)
+		}
+	}
+	for _, want := range []string{"open:scarlett@" + idScarlett, "open:moth@" + idMoth} {
+		if !slices.Contains(log.snapshot(), want) {
+			t.Errorf("open log %v lacks %q: the open must pass the stable id, not a card index", log.snapshot(), want)
+		}
+	}
+}
+
+// TestReconcileRefusesAbsentDevice pins "refuse, don't guess": an entry whose
+// hardware is not connected is skipped with a not-connected reason and is never
+// opened, even though another device that would accept its rate is present.
+func TestReconcileRefusesAbsentDevice(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{{ID: idScarlett, HWAddr: addrHW3, IDStable: true}}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{
+		testDevice("scarlett", idScarlett, "/s", 48000),
+		testDevice("moth", idMoth, "/m", 48000),
+	}})
+
+	rt := app.devices["moth"]
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "not connected") {
+		t.Fatalf("moth = %s %q, want skipped as not connected", rt.currentState(), rt.err)
+	}
+	if opened(log, "moth") {
+		t.Errorf("an absent device was opened: %v", log.snapshot())
+	}
+	act := applianceCenter(t, app).Active()
+	if len(act) != 1 || act[0].Key != deviceDownKey("moth") || act[0].Title != "Device not connected" {
+		t.Errorf("active = %+v, want one Device not connected condition for moth", act)
+	}
+}
+
+// TestReconcileRefusesAmbiguousDevice pins that an id matching two units is
+// never opened (the library refuses to pick one, and so does the appliance).
+func TestReconcileRefusesAmbiguousDevice(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: idMoth, HWAddr: addrHW3, IDStable: true},
+		{ID: idMoth, HWAddr: addrHW4, IDStable: true},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+
+	rt := app.devices["moth"]
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "ambiguous") || !strings.Contains(rt.err, "hw:3,0, hw:4,0") {
+		t.Fatalf("moth = %s %q, want skipped as ambiguous naming both addresses", rt.currentState(), rt.err)
+	}
+	if opened(log, "moth") {
+		t.Errorf("an ambiguous device was opened: %v", log.snapshot())
+	}
+}
+
+// TestReconcileRefusesSecondEntryForSameHardware pins that two entries naming
+// one physical device through different ids (a stable id and a card index) do
+// not both try to open it: the second is refused with the owner's name.
+func TestReconcileRefusesSecondEntryForSameHardware(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{{ID: idScarlett, HWAddr: addrHW3, IDStable: true}}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{
+		testDevice("scarlett", idScarlett, "/s", 48000),
+		testDevice("alias", addrHW3, "/a", 48000),
+	}})
+
+	if app.devices["scarlett"].currentState() != mgmtserver.StateServing {
+		t.Fatalf("scarlett state = %s, want serving", app.devices["scarlett"].currentState())
+	}
+	rt := app.devices["alias"]
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, `same hardware as "scarlett"`) {
+		t.Fatalf("alias = %s %q, want skipped as the same hardware as scarlett", rt.currentState(), rt.err)
+	}
+	if opened(log, "alias") {
+		t.Errorf("the duplicate entry was opened: %v", log.snapshot())
+	}
+	if rt.status().IDStable {
+		t.Error("a card-index entry reported idStable=true")
+	}
+}
+
+// TestReconcilePublishesResolvedIDsAsConfigured pins that a card-index entry
+// hides its hardware from the available list under the stable id the
+// enumeration reports, so the same device is not offered for provisioning twice.
+func TestReconcilePublishesResolvedIDsAsConfigured(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{{ID: idScarlett, HWAddr: addrHW3, IDStable: true}}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("byindex", addrHW3, "/a", 48000)}})
+
+	ids := app.prov.configuredIDs()
+	if !ids[addrHW3] || !ids[idScarlett] {
+		t.Errorf("configured ids = %v, want both the configured hw:3,0 and its stable id", ids)
+	}
+}
+
+// TestReconcileOpensCardIndexWhenHostHasNoListing pins the container fallback: a
+// card-index id whose resolution fails for a reason other than absence (no
+// device listing to resolve against) is still opened, since the open addresses
+// the card directly, while a stable id with the same failure is refused.
+func TestReconcileOpensCardIndexWhenHostHasNoListing(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{fail: errors.New("no /proc/asound")})
+
+	app.reconcile(&config.Config{Devices: []config.Device{
+		testDevice("byindex", addrHW3, "/a", 48000),
+		testDevice("stable", idScarlett, "/s", 48000),
+	}})
+
+	if st := app.devices["byindex"].currentState(); st != mgmtserver.StateServing || !opened(log, "byindex") {
+		t.Errorf("byindex state = %s, want opened and serving", st)
+	}
+	if rt := app.devices["stable"]; rt.currentState() != mgmtserver.StateSkipped || opened(log, "stable") {
+		t.Errorf("stable state = %s (opened=%v), want skipped without an open", rt.currentState(), opened(log, "stable"))
+	}
+}
+
+// TestRetryDownStartsReconnectedDevice is the hotplug case: a device that was
+// absent comes back on a new card index. The hardware-change retry starts it on
+// its new address with no config change and clears its down condition, and
+// leaves the device that was already serving alone.
+func TestRetryDownStartsReconnectedDevice(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	host := &fakeHost{devs: []audio.Hardware{{ID: idScarlett, HWAddr: addrHW3, IDStable: true}}}
+	withHost(app, host)
+	app.reconcile(&config.Config{Devices: []config.Device{
+		testDevice("scarlett", idScarlett, "/s", 48000),
+		testDevice("moth", idMoth, "/m", 48000),
+	}})
+	if app.devices["moth"].currentState() != mgmtserver.StateSkipped {
+		t.Fatalf("moth state = %s, want skipped while absent", app.devices["moth"].currentState())
+	}
+	scarlett := app.devices["scarlett"]
+
+	host.devs = append(host.devs, audio.Hardware{ID: idMoth, HWAddr: addrHW5, IDStable: true})
+	app.retryDown()
+
+	rt := app.devices["moth"]
+	if rt.currentState() != mgmtserver.StateServing || rt.hwAddr != addrHW5 {
+		t.Fatalf("moth = %s at %q, want serving at hw:5,0", rt.currentState(), rt.hwAddr)
+	}
+	if !app.srv.HasTrack("/m") {
+		t.Error("the reconnected device's RTSP track was not registered")
+	}
+	if app.devices["scarlett"] != scarlett {
+		t.Error("the retry restarted a device that was already serving")
+	}
+	if n := strings.Count(strings.Join(log.snapshot(), " "), "open:scarlett@"); n != 1 {
+		t.Errorf("scarlett opened %d times, want 1", n)
+	}
+	if act := applianceCenter(t, app).Active(); len(act) != 0 {
+		t.Errorf("active after reconnect = %+v, want the down condition cleared", act)
+	}
+}
+
+// TestDisconnectThenAbsentReraisesWithNewCause pins the cause tracking: a device
+// lost mid-stream is reported as disconnected, and when the retry then finds it
+// absent the condition is re-raised as not connected rather than kept at the
+// first cause by the idempotent onset.
+func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
+	withHost(app, host)
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+	center := applianceCenter(t, app)
+
+	rt := app.devices["moth"]
+	app.stop(rt) // retire the fake source so the pump goroutine ends
+	rt.superseded = false
+	drain := <-app.pumpDone
+	app.onPumpDone(pumpResult{rt: drain.rt, err: capture.ErrDeviceGone})
+	if act := center.Active(); len(act) != 1 || act[0].Title != "Device disconnected" {
+		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
+	}
+
+	host.devs = nil
+	app.retryDown()
+	if act := center.Active(); len(act) != 1 || act[0].Title != "Device not connected" {
+		t.Errorf("active after the retry = %+v, want the condition re-raised as Device not connected", act)
+	}
+}

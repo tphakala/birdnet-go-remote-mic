@@ -125,7 +125,15 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 		}, nil
 	}
 	req := request.Body
-	if req == nil || strings.TrimSpace(req.Device) == "" {
+	if req != nil {
+		// Compare and persist the id exactly as the host reports it, so stray
+		// whitespace cannot slip a second entry for one device past the
+		// duplicate checks below.
+		trimmed := *req
+		trimmed.Device = strings.TrimSpace(req.Device)
+		req = &trimmed
+	}
+	if req == nil || req.Device == "" {
 		return mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse(mgmtapi.ValidationProblem{
 			Status: ptr(http.StatusUnprocessableEntity),
 			Title:  ptr("invalid request"),
@@ -153,8 +161,15 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// disturb its running capture, and the Update below rejects it anyway. The
 	// duplicate check inside Update stays authoritative against a concurrent
 	// provision; this only avoids the wasted, disruptive probe first.
+	//
+	// The configured ids are compared both directly and through the available
+	// view: a device the host lists but the available view hides is owned by the
+	// config under another id (for example a card-index id that resolves to it),
+	// and provisioning it again would open one device from two entries.
 	if slices.ContainsFunc(s.configStore.Config().Devices, func(dev config.Device) bool {
 		return dev.Device == req.Device
+	}) || !slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool {
+		return ad.ID == req.Device
 	}) {
 		return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
 			problem(http.StatusConflict, "already configured", "device "+req.Device+" is already configured"),
@@ -489,8 +504,12 @@ func isValidationError(err error) bool {
 // type.
 func mapAvailableDevice(d *AvailableDevice) mgmtapi.AvailableDevice {
 	out := mgmtapi.AvailableDevice{
-		Device: d.ID,
-		State:  mgmtapi.Available,
+		Device:   d.ID,
+		State:    mgmtapi.Available,
+		IdStable: ptr(d.IDStable),
+	}
+	if d.HWAddr != "" {
+		out.HwAddr = ptr(d.HWAddr)
 	}
 	if d.FriendlyName != "" {
 		out.FriendlyName = ptr(d.FriendlyName)
@@ -514,11 +533,12 @@ func mapAvailableDevice(d *AvailableDevice) mgmtapi.AvailableDevice {
 // next GET /devices carries the true live state once the device opens.
 func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 	out := mgmtapi.Device{
-		Name:   d.Name,
-		Device: d.Device,
-		Format: mgmtapi.DeviceFormat(d.Format),
-		Rate:   d.Rate,
-		State:  mgmtapi.Skipped,
+		Name:     d.Name,
+		Device:   d.Device,
+		Format:   mgmtapi.DeviceFormat(d.Format),
+		Rate:     d.Rate,
+		State:    mgmtapi.Skipped,
+		IdStable: ptr(!config.IsCardIndexID(d.Device)),
 	}
 	// A freshly provisioned device is single-stream, so the flat projection of its
 	// first stream is complete; no per-stream runtime status exists yet.

@@ -130,3 +130,42 @@ func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 		t.Fatalf("busy gate counts = %v, want the fallback 1 then the corrected 2", seen)
 	}
 }
+
+// TestOpenDeviceRetryStopsOnPermanentError pins that an open failure that cannot
+// change between attempts (here a malformed stable id the library rejects) is
+// returned after one attempt instead of spending the retry budget.
+func TestOpenDeviceRetryStopsOnPermanentError(t *testing.T) {
+	defer swapResolveOpenChannels(func(string, []int) int { return 1 })()
+	attempts := 0
+	defer swapDeviceInUse(func(string, int) bool { attempts++; return false })()
+
+	dev := &config.Device{Name: "bad", Device: "usb:zz", Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
+	_, err := openDeviceRetry(dev, levels.NewHub())
+	var bad *capture.BadDeviceError
+	if !errors.As(err, &bad) {
+		t.Fatalf("openDeviceRetry error = %v, want *capture.BadDeviceError", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 for a permanent error", attempts)
+	}
+}
+
+func TestPermanentOpenError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{&capture.DeviceNotFoundError{ID: "x"}, true},
+		{&capture.AmbiguousDeviceError{ID: "x"}, true},
+		{&capture.BadRateError{Requested: 48000}, true},
+		{&capture.BadDeviceError{Value: "x"}, true},
+		{capture.ErrDeviceInUse, false},
+		{capture.ErrDeviceGone, false},
+		{errors.New("EIO"), false},
+	}
+	for _, c := range cases {
+		if got := permanentOpenError(c.err); got != c.want {
+			t.Errorf("permanentOpenError(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}

@@ -611,3 +611,22 @@ func TestOpusDefaultBitrate(t *testing.T) {
 		t.Errorf("unset bitrate: EffectiveBitrate = %d, want the stereo default 256000", got)
 	}
 }
+
+func TestIsCardIndexID(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{
+		"hw:3,0":                    true,
+		"hw:3":                      true,
+		"3,0":                       true,
+		" hw:10,1 ":                 true,
+		"usb:1235:8218:s=S1:if=0,0": false,
+		"usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0": false,
+		"hw:CARD=Headphones,DEV=0":                false,
+		" hw:CARD=Loopback,DEV=1":                 false,
+	}
+	for id, want := range cases {
+		if got := IsCardIndexID(id); got != want {
+			t.Errorf("IsCardIndexID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}

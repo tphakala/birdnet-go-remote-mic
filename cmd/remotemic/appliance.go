@@ -4,10 +4,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"runtime"
+	"slices"
+	"strings"
 	"sync"
+
+	capture "github.com/tphakala/go-audio-capture"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
@@ -66,11 +71,17 @@ type appliance struct {
 
 	// cfg is the configuration currently applied to the pipeline. devices holds
 	// one runtime per configured device keyed by name, in any state (serving,
-	// skipped, disabled, or failed). hwNames maps device id to its sound-card
-	// label, refreshed on each reconcile.
+	// skipped, disabled, or failed). hw maps each configured device id to the
+	// hardware it resolved to (or the resolve error), refreshed on every
+	// reconcile and on every host hardware change.
 	cfg     config.Config
-	hwNames map[string]string
+	hw      map[string]hwResult
 	devices map[string]*deviceRuntime
+	// downReason holds the cause class of each device's active down condition,
+	// keyed by device name, so a change of cause (not connected becoming
+	// ambiguous) re-raises the condition instead of being swallowed by the
+	// idempotent Onset. An entry exists exactly while the down key is active.
+	downReason map[string]string
 	// capsCache holds the last non-empty probed capabilities per device id. A
 	// re-probe during a hot reload can transiently report nothing (the card is
 	// briefly busy or gone mid card-swap); retaining the last-known-good caps keeps
@@ -92,6 +103,11 @@ type appliance struct {
 	// production it is openDeviceRetry.
 	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
 
+	// resolve maps a configured device id to the hardware it names right now,
+	// without opening it. It is a field so tests can inject a host device list
+	// instead of reading sysfs; in production it is audio.Resolve.
+	resolve func(id string) (audio.Hardware, error)
+
 	// monitors re-arms the condition monitors at the end of every reconcile so a
 	// threshold or per-device quiet-alert change applies without a restart. run()
 	// assigns a monitor.Group of the signal and host monitors; a nil monitors (a
@@ -109,18 +125,107 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		notifier = (*notify.Center)(nil)
 	}
 	return &appliance{
-		ctx:       ctx,
-		hub:       hub,
-		srv:       srv,
-		prov:      prov,
-		guard:     guard,
-		notifier:  notifier,
-		hwNames:   map[string]string{},
-		devices:   map[string]*deviceRuntime{},
-		capsCache: map[string]deviceCaps{},
-		pumpDone:  make(chan pumpResult, pumpBacklog),
-		open:      openDeviceRetry,
+		ctx:        ctx,
+		hub:        hub,
+		srv:        srv,
+		prov:       prov,
+		guard:      guard,
+		notifier:   notifier,
+		hw:         map[string]hwResult{},
+		devices:    map[string]*deviceRuntime{},
+		downReason: map[string]string{},
+		capsCache:  map[string]deviceCaps{},
+		pumpDone:   make(chan pumpResult, pumpBacklog),
+		open:       openDeviceRetry,
+		resolve:    audio.Resolve,
 	}
+}
+
+// hwResult is what one configured device id resolved to: the hardware it names
+// on this host right now, or why it names none.
+type hwResult struct {
+	hw  audio.Hardware
+	err error
+}
+
+// Cause classes for a device's down condition. A change of class while the
+// device stays down re-raises the condition (see markDown).
+const (
+	downNotConnected = "not-connected"
+	downAmbiguous    = "ambiguous"
+	downResolve      = "resolve-failed"
+	downSameHardware = "same-hardware"
+	downOpenFailed   = "open-failed"
+	downDisconnected = "disconnected"
+	downFailed       = "failed"
+)
+
+// markDown raises the device's down condition. Onset is idempotent per key, so
+// when the device is already down for a different cause the old condition is
+// resolved first and the new one raised, so the operator sees the current cause
+// rather than the first one.
+func (a *appliance) markDown(name, cause string, n *notify.Notification) {
+	if prev, ok := a.downReason[name]; ok && prev != cause {
+		a.notifier.Resolve(deviceDownKey(name), "the cause changed")
+	}
+	a.downReason[name] = cause
+	a.notifier.Onset(*n)
+}
+
+// resolveError explains why a configured device was not opened after its id
+// failed to resolve, returning the cause class and the operator-facing message.
+func resolveError(dev *config.Device, err error) (cause, msg string) {
+	var nf *capture.DeviceNotFoundError
+	var amb *capture.AmbiguousDeviceError
+	switch {
+	case errors.As(err, &nf):
+		return downNotConnected, fmt.Sprintf("not connected: no device matches %s", dev.Device)
+	case errors.As(err, &amb):
+		return downAmbiguous, fmt.Sprintf("ambiguous: %s matches %d devices (%s); bind it to one of them by port", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
+	default:
+		return downResolve, fmt.Sprintf("cannot resolve %s: %v", dev.Device, err)
+	}
+}
+
+// refreshHardware resolves every configured device id against the host's
+// current hardware and publishes the ids the configuration owns to the
+// background enumeration. The published set holds both the configured id and
+// the stable id it resolved to, so a device configured by a card index is still
+// recognised as configured under the stable id the enumeration lists it by.
+func (a *appliance) refreshHardware(cfg *config.Config) {
+	hw := make(map[string]hwResult, len(cfg.Devices))
+	ids := make(map[string]bool, 2*len(cfg.Devices))
+	for i := range cfg.Devices {
+		id := cfg.Devices[i].Device
+		ids[id] = true
+		if _, done := hw[id]; done {
+			continue
+		}
+		h, err := a.resolve(id)
+		hw[id] = hwResult{hw: h, err: err}
+		if err == nil {
+			ids[h.ID] = true
+		}
+	}
+	a.hw = hw
+	a.prov.setConfiguredIDs(ids)
+}
+
+// hardwareOwner returns the name of another serving device that already captures
+// from the hardware at hwAddr, or "" when none does. Two config entries can name
+// one physical device through different ids (a stable id and a card index), and
+// the second open would only fail busy, so it is refused up front with a reason
+// the operator can act on.
+func (a *appliance) hardwareOwner(hwAddr, name string) string {
+	if hwAddr == "" {
+		return ""
+	}
+	for other, rt := range a.devices {
+		if other != name && !rt.superseded && rt.hwAddr == hwAddr && rt.currentState() == mgmtserver.StateServing {
+			return other
+		}
+	}
+	return ""
 }
 
 // deviceDownKey is the notification-center condition key for a device that is
@@ -245,7 +350,7 @@ func (a *appliance) pump(rt *deviceRuntime) {
 			// track mounted and its consumer unread (the fan-out would spin dropping
 			// periods, spuriously tripping the drop monitor). So end the whole device:
 			// record the fault and close the fan-out, which unblocks the reader below and
-			// drives onPumpDone to fail the device (its paths 404 until reload), matching
+			// drives onPumpDone to fail the device (its paths 404 until it restarts), matching
 			// the pre-fan-out contract. On shutdown a.ctx.Err() is set and the stage
 			// returns that, which is a clean stop, not a fault.
 			if err != nil && a.ctx.Err() == nil {
@@ -268,8 +373,39 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // openAndStart opens a device, wires its RTSP track and level meter, and starts
 // its pump. A device that fails to open is not fatal: it returns a skipped record
 // carrying the open error so GET /devices can report it, exactly as at startup.
+//
+// The configured id was resolved by refreshHardware. A device whose id names no
+// present hardware, or more than one device, is refused rather than opened: the
+// id never falls back to whatever card holds an index, so a stream never serves
+// the wrong microphone. A card-index id whose resolution failed for another
+// reason (the host exposes no /proc/asound listing, as in some containers) is
+// still opened, since the open itself addresses the card directly.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
-	friendly := a.hwNames[dev.Device]
+	res := a.hw[dev.Device]
+	hw := res.hw
+	if res.err != nil {
+		var nf *capture.DeviceNotFoundError
+		var amb *capture.AmbiguousDeviceError
+		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) {
+			cause, msg := resolveError(dev, res.err)
+			title := "Device unavailable"
+			switch cause {
+			case downNotConnected:
+				title = "Device not connected"
+			case downAmbiguous:
+				title = "Device ambiguous"
+			}
+			return a.skipDevice(dev, &hw, cause, title, msg)
+		}
+	}
+	if owner := a.hardwareOwner(hw.HWAddr, dev.Name); owner != "" {
+		msg := fmt.Sprintf("same hardware as %q: %s is %s, which that device already captures from", owner, dev.Device, hw.HWAddr)
+		return a.skipDevice(dev, &hw, downSameHardware, "Device conflict", msg)
+	}
+	if config.IsCardIndexID(dev.Device) {
+		log.Printf("device %q is pinned to card index %s, which can name a different device after a reboot or replug; re-add it to bind it by identity", dev.Name, dev.Device)
+	}
+
 	// Resolve the hardware channel count for the capability PROBE only. The
 	// open itself re-resolves per attempt inside the opener (openDeviceRetry), as
 	// close to the open as possible, so a card transiently held right after a
@@ -291,22 +427,25 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	d := *dev
 	rt, err := a.open(&d, a.hub)
 	if err != nil {
-		log.Printf("skipping device %q (%s): %v", dev.Name, dev.Device, err)
+		log.Printf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
 		// so a device that keeps failing across successive reconciles enters the
 		// condition once, not once per retry.
-		a.notifier.Onset(deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s: %v", dev.Device, err)))
+		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v", dev.Device, atAddr(&hw), err))
+		a.markDown(dev.Name, downOpenFailed, &n)
 		return &deviceRuntime{
 			dev:               *dev,
 			state:             mgmtserver.StateSkipped,
 			err:               err.Error(),
-			friendlyName:      friendly,
+			friendlyName:      hw.Label,
+			hwAddr:            hw.HWAddr,
 			supportedRates:    rates,
 			supportedChannels: channels,
 		}
 	}
 	rt.state = mgmtserver.StateServing
-	rt.friendlyName = friendly
+	rt.friendlyName = hw.Label
+	rt.hwAddr = hw.HWAddr
 	rt.supportedRates = rates
 	rt.supportedChannels = channels
 	for _, sr := range rt.streams {
@@ -315,11 +454,43 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	a.alive++
 	go a.pump(rt)
 	if len(rt.streams) == 1 {
-		log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.streams[0].stream.Path)
+		log.Printf("capture %q: %d Hz, %d ch on %s%s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path)
 	} else {
-		log.Printf("capture %q: %d Hz, %d ch on %s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, len(rt.streams))
+		log.Printf("capture %q: %d Hz, %d ch on %s%s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams))
 	}
 	return rt
+}
+
+// atAddr renders where a resolved device currently sits, for logs and messages:
+// " (hw:4,0, Scarlett Solo 4th Gen)", or "" for a device that did not resolve.
+func atAddr(hw *audio.Hardware) string {
+	switch {
+	case hw.HWAddr == "":
+		return ""
+	case hw.Label == "":
+		return " (" + hw.HWAddr + ")"
+	default:
+		return " (" + hw.HWAddr + ", " + hw.Label + ")"
+	}
+}
+
+// skipDevice records a configured device that was refused before any open,
+// raising its down condition with the given cause. The last known capabilities
+// are kept so the settings form still offers the device's rates.
+func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, title, msg string) *deviceRuntime {
+	log.Printf("skipping device %q: %s", dev.Name, msg)
+	n := deviceDownOnset(dev.Name, title, msg)
+	a.markDown(dev.Name, cause, &n)
+	rates, channels := a.rememberCaps(dev.Device, nil, nil)
+	return &deviceRuntime{
+		dev:               *dev,
+		state:             mgmtserver.StateSkipped,
+		err:               msg,
+		friendlyName:      hw.Label,
+		hwAddr:            hw.HWAddr,
+		supportedRates:    rates,
+		supportedChannels: channels,
+	}
 }
 
 // startDevice opens a device via openAndStart, stores its runtime, and clears the
@@ -333,7 +504,11 @@ func (a *appliance) startDevice(dev *config.Device) {
 	prev := a.devices[dev.Name]
 	rt := a.openAndStart(dev)
 	a.devices[dev.Name] = rt
-	if rt.currentState() != mgmtserver.StateServing || prev == nil {
+	if rt.currentState() != mgmtserver.StateServing {
+		return
+	}
+	delete(a.downReason, dev.Name)
+	if prev == nil {
 		return
 	}
 	// A device is "recovered" only when it comes up from a down state (it could
@@ -374,12 +549,6 @@ func (a *appliance) stop(rt *deviceRuntime) {
 // the device records and, if the serving set, the discovery flag, or the auth
 // hint changed, restarts the mDNS advertisement.
 func (a *appliance) reconcile(newCfg *config.Config) {
-	if names, err := audio.HardwareNames(); err == nil {
-		a.hwNames = names
-	} else {
-		log.Printf("enumerate capture hardware: %v (devices carry no friendly label)", err)
-	}
-
 	prevDiscovery := a.prov.discoveryEnabled()
 	prevAuth := a.prov.authRequired()
 
@@ -397,16 +566,24 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	a.guard.Set(newCfg.Auth.Token)
 	a.prov.setAuthRequired(newCfg.AuthRequired())
 
-	// Publish the desired configured-device ids BEFORE opening anything, so the
+	// Resolve every configured id against the host's current hardware, and
+	// publish the desired configured-device ids BEFORE opening anything, so the
 	// background enumeration excludes a device from probing before its capture
-	// open begins and the probe and the open never contend for the same ALSA id.
-	desiredIDs := make(map[string]bool, len(newCfg.Devices))
-	for i := range newCfg.Devices {
-		desiredIDs[newCfg.Devices[i].Device] = true
-	}
-	a.prov.setConfiguredIDs(desiredIDs)
+	// open begins and the probe and the open never contend for the same device.
+	a.refreshHardware(newCfg)
 
 	plan := reload.Reconcile(a.runningParams(), newCfg)
+	// Open in config order rather than the plan's name order, so when two entries
+	// resolve to the same hardware the earlier one in the config is the one that
+	// opens it (see hardwareOwner) and the choice does not depend on how the
+	// entries happen to be named.
+	order := make(map[string]int, len(newCfg.Devices))
+	for i := range newCfg.Devices {
+		order[newCfg.Devices[i].Name] = i
+	}
+	byConfigOrder := func(x, y config.Device) int { return order[x.Name] - order[y.Name] }
+	slices.SortFunc(plan.Start, byConfigOrder)
+	slices.SortFunc(plan.Restart, byConfigOrder)
 
 	for _, name := range plan.Stop {
 		if rt, ok := a.devices[name]; ok && rt.currentState() == mgmtserver.StateServing {
@@ -486,7 +663,9 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		// record replaces it. Resolve is a no-op when the key is not active, so a
 		// healthy device being disabled emits nothing.
 		a.notifier.Resolve(deviceDownKey(d.Name), "device disabled")
-		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: a.hwNames[d.Device]}
+		delete(a.downReason, d.Name)
+		hw := a.hw[d.Device].hw
+		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: hw.Label, hwAddr: hw.HWAddr}
 	}
 	for name, rt := range a.devices {
 		if want[name] {
@@ -503,6 +682,7 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		// A serving or already-recovered device has no active down key, so this is
 		// a no-op for it.
 		a.notifier.Resolve(deviceDownKey(name), "device removed from the configuration")
+		delete(a.downReason, name)
 		delete(a.devices, name)
 	}
 }
@@ -521,8 +701,9 @@ func (a *appliance) publish(cfg *config.Config) {
 
 // onPumpDone handles a pump ending. A pump the reconcile stopped (superseded) only
 // adjusts the alive count; its teardown already happened. A pump that stopped on
-// its own is a device that died after startup: its track and meter are retired,
-// its record marked failed, and it keeps returning 404 until a reload restarts it.
+// its own is a device that died after startup: its track and meter are retired
+// and its record marked failed. Its paths return 404 until a config reload or a
+// change in the host's capture hardware (see retryDown) starts it again.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
 	if res.rt.superseded {
@@ -537,12 +718,52 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
 		res.rt.markFailed(res.err)
-		log.Printf("device %q failed: %v; its %d stream path(s) return 404 until reload", res.rt.dev.Name, res.err, len(res.rt.streams))
+		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
-		// that never opened. Onset is idempotent against a re-entry.
-		a.notifier.Onset(deviceDownOnset(res.rt.dev.Name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until the next config save", res.err)))
+		// that never opened. A lost device (unplugged or powered off) is reported
+		// as disconnected, since reconnecting it brings it back without a reload.
+		if errors.Is(res.err, capture.ErrDeviceGone) {
+			log.Printf("device %q disconnected: %v; its %d stream path(s) return 404 until it is reconnected", name, res.err, len(res.rt.streams))
+			n := deviceDownOnset(name, "Device disconnected", "Capture stopped because the device was disconnected; it starts again when the device is reconnected")
+			a.markDown(name, downDisconnected, &n)
+		} else {
+			log.Printf("device %q failed: %v; its %d stream path(s) return 404 until it restarts on a config save or a capture hardware change", name, res.err, len(res.rt.streams))
+			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until the device restarts on the next config save or capture hardware change", res.err))
+			a.markDown(name, downFailed, &n)
+		}
 	}
 	a.publish(&a.cfg)
+}
+
+// retryDown runs when the host's capture hardware changed (a device was plugged,
+// unplugged, or renumbered). It re-resolves every configured id and starts each
+// enabled device that is down (skipped or failed), so a device reconnected on a
+// different card index serves again on the right hardware without a config
+// save. Serving devices are left alone: they hold their hardware open, so a
+// renumbering of other cards cannot move them.
+func (a *appliance) retryDown() {
+	a.refreshHardware(&a.cfg)
+	started := false
+	for i := range a.cfg.Devices {
+		d := a.cfg.Devices[i]
+		rt, ok := a.devices[d.Name]
+		if !ok || !d.IsEnabled() {
+			continue
+		}
+		if s := rt.currentState(); s != mgmtserver.StateSkipped && s != mgmtserver.StateFailed {
+			continue
+		}
+		a.startDevice(&d)
+		if a.devices[d.Name].currentState() == mgmtserver.StateServing {
+			started = true
+		}
+	}
+	// Rebuild the disabled records so their hardware address follows the change.
+	a.reconcileRecords(&a.cfg)
+	a.publish(&a.cfg)
+	if started {
+		a.restartAnnounce()
+	}
 }
 
 // restartAnnounce cancels the current mDNS advertisement and starts a fresh one

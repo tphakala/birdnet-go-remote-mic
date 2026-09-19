@@ -10,50 +10,69 @@ import (
 	capture "github.com/tphakala/go-audio-capture"
 )
 
-func TestHardwareNamesSuccess(t *testing.T) {
+const (
+	testStableID = "usb:1235:8218:s=S123:if=0,0"
+	testHWAddr   = "hw:4,0"
+)
+
+func TestEnumerateMapsIdentity(t *testing.T) {
 	prev := enumerateDevices
 	enumerateDevices = func() ([]capture.DeviceInfo, error) {
-		return []capture.DeviceInfo{{ID: testDevID, Name: "Foo Card, USB Audio"}}, nil
+		return []capture.DeviceInfo{
+			{ID: testStableID, HWAddr: testHWAddr, IDStable: true, Name: testCardLongName},
+			{ID: testDevID2, HWAddr: testDevID2, Name: testCardName},
+		}, nil
 	}
 	defer func() { enumerateDevices = prev }()
 
-	got, err := HardwareNames()
+	got, err := Enumerate()
 	if err != nil {
-		t.Fatalf("HardwareNames: %v", err)
+		t.Fatalf("Enumerate: %v", err)
 	}
-	if got[testDevID] != "Foo Card" {
-		t.Errorf("names[%q] = %q, want %q", testDevID, got[testDevID], "Foo Card")
+	want := []Hardware{
+		{ID: testStableID, HWAddr: testHWAddr, Label: testFriendlyName, IDStable: true},
+		{ID: testDevID2, HWAddr: testDevID2, Label: testCardName},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Enumerate = %+v, want %+v", got, want)
 	}
 }
 
-func TestHardwareNamesPropagatesError(t *testing.T) {
+func TestEnumeratePropagatesError(t *testing.T) {
 	prev := enumerateDevices
 	enumerateDevices = func() ([]capture.DeviceInfo, error) { return nil, errors.New("enumerate failed") }
 	defer func() { enumerateDevices = prev }()
 
-	if _, err := HardwareNames(); err == nil {
-		t.Error("HardwareNames should propagate the enumeration error")
+	if _, err := Enumerate(); err == nil {
+		t.Error("Enumerate should propagate the enumeration error")
 	}
 }
 
-func TestHardwareNamesFrom(t *testing.T) {
-	t.Parallel()
-	devs := []capture.DeviceInfo{
-		{ID: testDevID, Name: testCardLongName},
-		{ID: testDevID2, Name: testCardName},
-	}
-	got := hardwareNamesFrom(devs)
-	want := map[string]string{
-		testDevID:  testFriendlyName,
-		testDevID2: testCardName,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
-	}
-	for id, label := range want {
-		if got[id] != label {
-			t.Errorf("names[%q] = %q, want %q", id, got[id], label)
+func TestResolveMapsIdentityAndKeepsTypedErrors(t *testing.T) {
+	prev := resolveFn
+	defer func() { resolveFn = prev }()
+
+	resolveFn = func(id string) (capture.DeviceInfo, error) {
+		if id != testStableID {
+			t.Fatalf("resolve called with %q, want %q", id, testStableID)
 		}
+		return capture.DeviceInfo{ID: testStableID, HWAddr: testHWAddr, IDStable: true, Name: testCardLongName}, nil
+	}
+	got, err := Resolve(testStableID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := (Hardware{ID: testStableID, HWAddr: testHWAddr, Label: testFriendlyName, IDStable: true}); got != want {
+		t.Errorf("Resolve = %+v, want %+v", got, want)
+	}
+
+	resolveFn = func(id string) (capture.DeviceInfo, error) {
+		return capture.DeviceInfo{}, &capture.DeviceNotFoundError{ID: id}
+	}
+	_, err = Resolve(testStableID)
+	var nf *capture.DeviceNotFoundError
+	if !errors.As(err, &nf) || !errors.Is(err, capture.ErrDeviceGone) {
+		t.Errorf("Resolve error = %v, want the library's *DeviceNotFoundError", err)
 	}
 }
 
@@ -73,7 +92,7 @@ func TestDetectDevices(t *testing.T) {
 	prev := enumerateDevices
 	enumerateDevices = func() ([]capture.DeviceInfo, error) {
 		return []capture.DeviceInfo{
-			{ID: "hw:1,0", Name: testCardLongName},
+			{ID: "hw:1,0", HWAddr: testHWAddr, IDStable: true, Name: testCardLongName},
 			{ID: testDevID2, Name: testAudioMoth},
 		}, nil
 	}
@@ -120,6 +139,9 @@ func TestDetectDevices(t *testing.T) {
 
 	if got[0].ID != "hw:1,0" || got[0].FriendlyName != testFriendlyName {
 		t.Errorf("device 0 = %+v, want id hw:1,0 name %q", got[0], testFriendlyName)
+	}
+	if got[0].HWAddr != testHWAddr || !got[0].IDStable || got[1].IDStable {
+		t.Errorf("identity not carried through: device 0 = %+v, device 1 = %+v", got[0], got[1])
 	}
 	if !slices.Equal(got[0].SupportedChannels, []int{1, 2}) {
 		t.Errorf("device 0 channels = %v, want [1 2]", got[0].SupportedChannels)

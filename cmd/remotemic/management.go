@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,13 @@ type provider struct {
 	// its capture open begins and the two never contend for the same id. Atomic
 	// because reconcile stores it while the enumeration goroutine reads it.
 	configured atomic.Pointer[map[string]bool]
+	// hwChanged tells the run loop that the host's capture hardware changed since
+	// the previous enumeration (a device was plugged, unplugged, or renumbered), so
+	// it can restart devices that are down (buffered depth 1, coalescing). The
+	// enumeration goroutine sends without blocking and never waits on the run
+	// loop, so it cannot deadlock against a reconcile. A nil channel (tests that
+	// wire none) drops the signal.
+	hwChanged chan struct{}
 	// overrides names the config fields a serve CLI flag overrode for this run,
 	// as a startup snapshot of the running-vs-persisted divergence. It is set once
 	// before the API starts serving and never mutated, so a plain field read from
@@ -286,6 +294,28 @@ func (p *provider) signalEnumerate() {
 // of a reconcile before any device opens.
 func (p *provider) setConfiguredIDs(ids map[string]bool) { p.configured.Store(&ids) }
 
+// signalHardwareChanged tells the run loop the host's capture hardware changed,
+// coalescing with a pending signal. It never blocks.
+func (p *provider) signalHardwareChanged() {
+	select {
+	case p.hwChanged <- struct{}{}:
+	default:
+	}
+}
+
+// hardwareSignature summarises which devices the host exposes and where, so two
+// enumerations can be compared for a plug, unplug, or renumbering. It includes
+// the current-boot address, so a device that moved to another card index
+// changes the signature even though its stable id did not.
+func hardwareSignature(det []audio.DetectedDevice) string {
+	parts := make([]string, 0, len(det))
+	for i := range det {
+		parts = append(parts, det[i].ID+"="+det[i].HWAddr)
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, "\n")
+}
+
 // configuredIDs is the set of ALSA device ids the config owns, so the enumeration
 // skips re-probing them (openAndStart already probes configured devices, and a
 // device being opened must be excluded before its open begins to avoid contending
@@ -313,6 +343,8 @@ func (p *provider) DetectedDevice(id string) (mgmtserver.AvailableDevice, bool) 
 			if (*d)[i].ID == id {
 				return mgmtserver.AvailableDevice{
 					ID:                (*d)[i].ID,
+					HWAddr:            (*d)[i].HWAddr,
+					IDStable:          (*d)[i].IDStable,
 					FriendlyName:      (*d)[i].FriendlyName,
 					SupportedRates:    (*d)[i].SupportedRates,
 					SupportedChannels: (*d)[i].SupportedChannels,
@@ -335,6 +367,11 @@ var detectDevices = audio.DetectDevices
 // not run on the run loop that also drives capture, reloads and shutdown.
 func (p *provider) runEnumeration(ctx context.Context) {
 	const interval = 15 * time.Second
+	// last is the previous enumeration's hardware signature. The first
+	// enumeration only records it: the initial reconcile has just resolved every
+	// configured device against the same hardware.
+	var last string
+	first := true
 	detect := func() {
 		det, err := detectDevices(p.configuredIDs())
 		if err != nil {
@@ -342,6 +379,13 @@ func (p *provider) runEnumeration(ctx context.Context) {
 			return
 		}
 		p.setDetected(det)
+		sig := hardwareSignature(det)
+		if !first && sig != last {
+			log.Printf("capture hardware changed (%d device(s) present); retrying devices that are down", len(det))
+			p.signalHardwareChanged()
+		}
+		first = false
+		last = sig
 	}
 	detect()
 	t := time.NewTicker(interval)
@@ -374,6 +418,8 @@ func (p *provider) AvailableDevices() []mgmtserver.AvailableDevice {
 		}
 		out = append(out, mgmtserver.AvailableDevice{
 			ID:                det[i].ID,
+			HWAddr:            det[i].HWAddr,
+			IDStable:          det[i].IDStable,
 			FriendlyName:      det[i].FriendlyName,
 			SupportedRates:    det[i].SupportedRates,
 			SupportedChannels: det[i].SupportedChannels,
@@ -421,6 +467,8 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		Error:             errMsg,
 		DroppedFrames:     int64(rt.droppedTotal()),
 		FriendlyName:      rt.friendlyName,
+		HWAddr:            rt.hwAddr,
+		IDStable:          !config.IsCardIndexID(rt.dev.Device),
 		SupportedRates:    rt.supportedRates,
 		SupportedChannels: rt.supportedChannels,
 	}

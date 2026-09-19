@@ -23,25 +23,41 @@ var supportedRatesFn = capture.SupportedRates
 // fake.
 var verifiedRatesFn = capture.SupportedRatesVerified
 
-// HardwareNames returns a map from ALSA device id to a friendly label for every
-// capture device the host currently exposes. It lets the UI default a device's
-// display name from the sound card when the config leaves it blank.
-func HardwareNames() (map[string]string, error) {
+// resolveFn is a package var so tests can inject a fake resolution.
+var resolveFn = capture.Resolve
+
+// Enumerate lists every capture device the host currently exposes with its
+// current identity. Enumeration opens nothing.
+func Enumerate() ([]Hardware, error) {
 	devs, err := enumerateDevices()
 	if err != nil {
 		return nil, err
 	}
-	return hardwareNamesFrom(devs), nil
+	out := make([]Hardware, 0, len(devs))
+	for i := range devs {
+		out = append(out, hardwareFrom(&devs[i]))
+	}
+	return out, nil
 }
 
-// hardwareNamesFrom is the pure mapping half of HardwareNames, split out so the
-// id-to-label derivation is testable without reading /proc.
-func hardwareNamesFrom(devs []capture.DeviceInfo) map[string]string {
-	names := make(map[string]string, len(devs))
-	for i := range devs {
-		names[devs[i].ID] = FriendlyName(devs[i].Name)
+// Resolve reports which physical device a configured device id names right now,
+// without opening it. It accepts every id form the capture library opens: a
+// stable id, or a current-boot "hw:N,D" card index. The error is the library's
+// own, so a caller can tell an absent device (*capture.DeviceNotFoundError,
+// which also satisfies errors.Is(err, capture.ErrDeviceGone)) from an ambiguous
+// one (*capture.AmbiguousDeviceError) and a malformed id
+// (*capture.BadDeviceError).
+func Resolve(id string) (Hardware, error) {
+	info, err := resolveFn(id)
+	if err != nil {
+		return Hardware{}, err
 	}
-	return names
+	return hardwareFrom(&info), nil
+}
+
+// hardwareFrom maps the library's device record to the app's view of it.
+func hardwareFrom(d *capture.DeviceInfo) Hardware {
+	return Hardware{ID: d.ID, HWAddr: d.HWAddr, Label: FriendlyName(d.Name), IDStable: d.IDStable}
 }
 
 // DetectDevices enumerates the capture devices the host exposes and probes each
@@ -70,7 +86,7 @@ func DetectDevices(skip map[string]bool) ([]DetectedDevice, error) {
 	out := make([]DetectedDevice, 0, len(devs))
 	for i := range devs {
 		id := devs[i].ID
-		d := DetectedDevice{ID: id, FriendlyName: FriendlyName(devs[i].Name)}
+		d := DetectedDevice{ID: id, HWAddr: devs[i].HWAddr, IDStable: devs[i].IDStable, FriendlyName: FriendlyName(devs[i].Name)}
 		if !skip[id] {
 			d.SupportedChannels = ProbeChannels(id, candidateChannels)
 			d.SupportedRates = ProbeRates(id, rateProbeChannel(d.SupportedChannels), candidateRates)

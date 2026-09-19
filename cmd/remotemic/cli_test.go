@@ -11,6 +11,7 @@ import (
 
 	capture "github.com/tphakala/go-audio-capture"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
 
@@ -180,40 +181,116 @@ func TestReportCheckInvalidConfig(t *testing.T) {
 	}
 }
 
-// TestReportCheckDevicePresence injects a known host device list through the
-// captureDevices seam so the present and not-found branches run deterministically
-// without ALSA hardware.
-func TestReportCheckDevicePresence(t *testing.T) {
-	orig := captureDevices
-	t.Cleanup(func() { captureDevices = orig })
-	captureDevices = func() ([]capture.DeviceInfo, error) {
-		return []capture.DeviceInfo{{ID: devHW1, Name: nameScarlett}}, nil
+// swapCLIHardware injects a host device list through the captureDevices and
+// resolveDevice seams, resolving an id by exact match on either the stable id or
+// the current address (as the library does for a card-index id), so reportCheck
+// runs deterministically without ALSA hardware.
+func swapCLIHardware(t *testing.T, devs []audio.Hardware, enumErr error) {
+	t.Helper()
+	prevEnum, prevResolve := captureDevices, resolveDevice
+	t.Cleanup(func() { captureDevices, resolveDevice = prevEnum, prevResolve })
+	captureDevices = func() ([]audio.Hardware, error) { return devs, enumErr }
+	resolveDevice = func(id string) (audio.Hardware, error) {
+		var hit []audio.Hardware
+		for _, d := range devs {
+			if d.ID == id || d.HWAddr == id {
+				hit = append(hit, d)
+			}
+		}
+		switch len(hit) {
+		case 0:
+			return audio.Hardware{}, &capture.DeviceNotFoundError{ID: id}
+		case 1:
+			return hit[0], nil
+		default:
+			return audio.Hardware{}, &capture.AmbiguousDeviceError{ID: id, Matches: []string{hit[0].HWAddr, hit[1].HWAddr}}
+		}
 	}
+}
+
+// checkDevice builds a minimal valid single-stream device for reportCheck.
+func checkDevice(name, id, path string) config.Device {
+	return config.Device{Name: name, Device: id, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: path, Mode: config.ModePCM, Channels: []int{1}}}}
+}
+
+// checkLine returns the report line naming a device, so each status is bound to
+// its own device and an inversion cannot pass on a word found elsewhere.
+func checkLine(report, name string) string {
+	for _, ln := range strings.Split(report, "\n") {
+		if strings.Contains(ln, " "+name+" ") {
+			return ln
+		}
+	}
+	return ""
+}
+
+// TestReportCheckResolvesByIdentity pins that serve --check reports each entry
+// by the hardware its id resolves to right now: a stable id is present at its
+// current address even when that is not the index it was provisioned at, an
+// absent device is not connected, a card-index id is flagged, and a second entry
+// naming the same hardware is reported as a duplicate.
+func TestReportCheckResolvesByIdentity(t *testing.T) {
+	const scarlettID = "usb:1235:8218:s=S1:if=0,0"
+	swapCLIHardware(t, []audio.Hardware{
+		{ID: scarlettID, HWAddr: addrHW4, Label: nameScarlett, IDStable: true},
+	}, nil)
 
 	cfg := config.Default()
 	cfg.Devices = []config.Device{
-		{Name: "cam-a", Device: devHW1, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}}},
-		{Name: "cam-b", Device: "hw:9,0", Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/b", Mode: config.ModePCM, Channels: []int{1}}}},
+		checkDevice("scarlett", scarlettID, "/a"),
+		checkDevice("moth", "usb:16d0:06f3:s=M1:if=0,0", "/b"),
+		checkDevice("byindex", addrHW4, "/c"),
 	}
 	var out bytes.Buffer
 	if err := reportCheck(&cfg, &out); err != nil {
 		t.Fatalf("reportCheck: %v", err)
 	}
-	// Bind each status to its device's own line so a present/not-found inversion
-	// cannot pass just because both words appear somewhere in the output.
-	lineFor := func(name string) string {
-		for _, ln := range strings.Split(out.String(), "\n") {
-			if strings.Contains(ln, name) {
-				return ln
-			}
-		}
-		return ""
+	report := out.String()
+	if l := checkLine(report, "scarlett"); !strings.Contains(l, "present at hw:4,0 ("+nameScarlett+")") || strings.Contains(l, "card index") {
+		t.Errorf("scarlett line = %q, want present at hw:4,0 with no card-index warning", l)
 	}
-	if l := lineFor("cam-a"); !strings.Contains(l, "present") || strings.Contains(l, "not found") {
-		t.Errorf("cam-a line = %q, want status present", l)
+	if l := checkLine(report, "moth"); !strings.Contains(l, "not connected") {
+		t.Errorf("moth line = %q, want not connected", l)
 	}
-	if l := lineFor("cam-b"); !strings.Contains(l, "not found") {
-		t.Errorf("cam-b line = %q, want status not found", l)
+	if l := checkLine(report, "byindex"); !strings.Contains(l, "same hardware as \"scarlett\"") {
+		t.Errorf("byindex line = %q, want a same-hardware duplicate report", l)
+	}
+}
+
+// TestReportCheckFlagsCardIndex pins the card-index warning, which names the
+// stable id to use instead.
+func TestReportCheckFlagsCardIndex(t *testing.T) {
+	const scarlettID = "usb:1235:8218:s=S1:if=0,0"
+	swapCLIHardware(t, []audio.Hardware{{ID: scarlettID, HWAddr: devHW1, Label: nameScarlett, IDStable: true}}, nil)
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{checkDevice("cam-a", devHW1, "/a")}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	if l := checkLine(out.String(), "cam-a"); !strings.Contains(l, "pinned to a card index") || !strings.Contains(l, scarlettID) {
+		t.Errorf("cam-a line = %q, want a card-index warning naming %s", l, scarlettID)
+	}
+}
+
+// TestReportCheckAmbiguous pins that an id matching two devices is reported as
+// ambiguous with both addresses, never as present.
+func TestReportCheckAmbiguous(t *testing.T) {
+	const twinID = "usb:16d0:06f3:s=SAME:if=0,0"
+	swapCLIHardware(t, []audio.Hardware{
+		{ID: twinID, HWAddr: addrHW3, IDStable: true},
+		{ID: twinID, HWAddr: addrHW4, IDStable: true},
+	}, nil)
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{checkDevice("twin", twinID, "/a")}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	if l := checkLine(out.String(), "twin"); !strings.Contains(l, "ambiguous") || !strings.Contains(l, "hw:3,0, hw:4,0") || strings.Contains(l, "present") {
+		t.Errorf("twin line = %q, want ambiguous naming both addresses", l)
 	}
 }
 
@@ -221,16 +298,10 @@ func TestReportCheckDevicePresence(t *testing.T) {
 // reported as a probe-unavailable note with every device marked unknown, rather
 // than misreporting present hardware as absent.
 func TestReportCheckProbeUnavailable(t *testing.T) {
-	orig := captureDevices
-	t.Cleanup(func() { captureDevices = orig })
-	captureDevices = func() ([]capture.DeviceInfo, error) {
-		return nil, errors.New("no ALSA")
-	}
+	swapCLIHardware(t, nil, errors.New("no ALSA"))
 
 	cfg := config.Default()
-	cfg.Devices = []config.Device{
-		{Name: "cam-a", Device: devHW1, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}}},
-	}
+	cfg.Devices = []config.Device{checkDevice("cam-a", devHW1, "/a")}
 	var out bytes.Buffer
 	if err := reportCheck(&cfg, &out); err != nil {
 		t.Fatalf("reportCheck: %v", err)
@@ -239,7 +310,31 @@ func TestReportCheckProbeUnavailable(t *testing.T) {
 	if !strings.Contains(s, "device probe unavailable") {
 		t.Errorf("want a probe-unavailable note, got:\n%s", s)
 	}
-	if !strings.Contains(s, "unknown") {
-		t.Errorf("want unknown status when the probe failed, got:\n%s", s)
+	if l := checkLine(s, "cam-a"); !strings.Contains(l, "unknown") {
+		t.Errorf("cam-a line = %q, want unknown status when the probe failed", l)
+	}
+}
+
+// TestRunListDevicesShowsIdentity pins the list columns: the stable id to
+// configure, the current address, and a warning on a device with no stable id.
+func TestRunListDevicesShowsIdentity(t *testing.T) {
+	const scarlettID = "usb:1235:8218:s=S1:if=0,0"
+	swapCLIHardware(t, []audio.Hardware{
+		{ID: scarlettID, HWAddr: addrHW4, Label: nameScarlett, IDStable: true},
+		{ID: addrHW5, HWAddr: addrHW5, Label: "Loop"},
+	}, nil)
+	var out bytes.Buffer
+	if err := runListDevices(&out); err != nil {
+		t.Fatalf("runListDevices: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want header plus 2:\n%s", len(lines), out.String())
+	}
+	if f := strings.Fields(lines[1]); len(f) < 3 || f[0] != scarlettID || f[1] != addrHW4 || strings.Contains(lines[1], "no stable id") {
+		t.Errorf("scarlett row = %q, want id, address, label and no warning", lines[1])
+	}
+	if !strings.Contains(lines[2], "no stable id") {
+		t.Errorf("loop row = %q, want the no-stable-id warning", lines[2])
 	}
 }

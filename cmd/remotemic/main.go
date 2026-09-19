@@ -88,6 +88,10 @@ type deviceRuntime struct {
 	friendlyName      string
 	supportedRates    []int
 	supportedChannels []int
+	// hwAddr is the current-boot ALSA address ("hw:4,0") the configured id
+	// resolved to when this record was built, for display only; empty when the
+	// id resolved to no present hardware. Static per record.
+	hwAddr string
 	// gen is a process-unique identity for this runtime instance, assigned at
 	// creation (see runtimeGen). A restart builds a fresh runtime with a fresh gen,
 	// so the host monitor rebaselines the dropped-frame counter on the change even
@@ -217,12 +221,33 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 			if rt, err = openDevice(dev, openCh, hub); err == nil {
 				return rt, nil
 			}
+			if permanentOpenError(err) {
+				return nil, err
+			}
 		}
 		if i < attempts-1 {
 			time.Sleep(delay)
 		}
 	}
 	return nil, err
+}
+
+// permanentOpenError reports whether an open failure cannot change between
+// retry attempts, so openDeviceRetry returns it at once instead of spending the
+// retry budget: a malformed id, an id that names no device or several, and a
+// rate, format or channel request the hardware rejects. Only a busy or
+// transiently failing device is worth retrying.
+func permanentOpenError(err error) bool {
+	var (
+		badDev  *capture.BadDeviceError
+		badRate *capture.BadRateError
+		badFmt  *capture.BadFormatError
+		badCfg  *capture.ConfigError
+		missing *capture.DeviceNotFoundError
+		amb     *capture.AmbiguousDeviceError
+	)
+	return errors.As(err, &badDev) || errors.As(err, &badRate) || errors.As(err, &badFmt) ||
+		errors.As(err, &badCfg) || errors.As(err, &missing) || errors.As(err, &amb)
 }
 
 // lockState builds the run-lock state for a serving management API. certPath
@@ -331,6 +356,7 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 		rtspListen:  cfg.Listen,
 		dataPath:    filepath.Dir(cfgPath),
 		enumTrigger: make(chan struct{}, 1),
+		hwChanged:   make(chan struct{}, 1),
 	}
 	prov.setDiscovery(cfg.DiscoveryEnabled())
 	prov.setAuthRequired(cfg.AuthRequired())
@@ -492,6 +518,8 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 		case req := <-reconcileCh:
 			app.reconcile(&req.cfg)
 			req.reply <- nil
+		case <-prov.hwChanged:
+			app.retryDown()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
 			if app.alive == 0 && !mgmtServing {

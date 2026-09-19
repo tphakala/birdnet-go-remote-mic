@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -800,5 +801,28 @@ func TestFileConfigStoreUpdateIsSerialized(t *testing.T) {
 	// A concurrent GET must never observe a torn config.
 	if got := store.Config(); len(got.Devices) != 1 {
 		t.Errorf("devices = %d after concurrent updates, want 1", len(got.Devices))
+	}
+}
+
+// TestPatchedDevicesMatchesByNameFirst pins the collapse guard's match order:
+// when two flat entries swap their device ids, each is checked against its own
+// existing entry (by name), so the rejection names the multi-stream device at
+// its own index instead of the entry that took over its id.
+func TestPatchedDevicesMatchesByNameFirst(t *testing.T) {
+	cur := []config.Device{
+		{Name: "multi", Device: "usb:a", Streams: []config.Stream{{Path: "/m1"}, {Path: "/m2"}}},
+		{Name: "single", Device: "usb:b", Streams: []config.Stream{{Path: "/s"}}},
+	}
+	wire := []mgmtapi.DeviceConfig{
+		{Name: "multi", Device: "usb:b", Path: "/m1", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+		{Name: "single", Device: "usb:a", Path: "/s", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+	}
+	_, err := patchedDevices(cur, wire)
+	var verr *config.ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("patchedDevices error = %v, want a collapse ValidationError", err)
+	}
+	if verr.Field != "devices[0].streams" || !strings.Contains(verr.Reason, `"multi"`) {
+		t.Errorf("collapse error = %s: %s, want devices[0].streams naming multi", verr.Field, verr.Reason)
 	}
 }

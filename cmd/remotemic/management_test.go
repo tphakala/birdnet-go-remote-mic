@@ -434,3 +434,86 @@ func duplicates(list []string) []string {
 	}
 	return dupes
 }
+
+// TestRunEnumerationSignalsHardwareChange pins the hotplug trigger: the first
+// enumeration only records the hardware, an unchanged one stays quiet, and a
+// device moving to another card index (same stable id, new address) signals the
+// run loop to retry devices that are down.
+func TestRunEnumerationSignalsHardwareChange(t *testing.T) {
+	// The fake reports each entry on entered and then waits for its result, so
+	// the test knows the previous enumeration has fully finished (published and,
+	// if due, signalled) whenever the next one enters.
+	entered := make(chan struct{})
+	results := make(chan []audio.DetectedDevice)
+	stop := make(chan struct{})
+	prev := detectDevices
+	detectDevices = func(map[string]bool) ([]audio.DetectedDevice, error) {
+		select {
+		case entered <- struct{}{}:
+		case <-stop:
+			return nil, nil
+		}
+		select {
+		case det := <-results:
+			return det, nil
+		case <-stop:
+			return nil, nil
+		}
+	}
+	defer func() { detectDevices = prev }()
+
+	p := newProvider()
+	p.enumTrigger = make(chan struct{}, 1)
+	p.hwChanged = make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.runEnumeration(ctx)
+		close(done)
+	}()
+	defer func() {
+		close(stop)
+		cancel()
+		<-done
+	}()
+
+	awaitEntry := func() {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("enumeration did not run")
+		}
+	}
+	signalled := func() bool {
+		select {
+		case <-p.hwChanged:
+			return true
+		default:
+			return false
+		}
+	}
+	// next finishes the pending enumeration with det, triggers another, and
+	// waits for it to enter, by which point det has been fully processed.
+	next := func(det []audio.DetectedDevice) {
+		t.Helper()
+		results <- det
+		p.enumTrigger <- struct{}{}
+		awaitEntry()
+	}
+
+	boot := []audio.DetectedDevice{{ID: idMoth, HWAddr: addrHW3}, {ID: idScarlett, HWAddr: addrHW4}}
+	awaitEntry() // the startup enumeration
+	next(boot)
+	if signalled() {
+		t.Fatal("the startup enumeration signalled a hardware change")
+	}
+	next(boot)
+	if signalled() {
+		t.Fatal("an unchanged enumeration signalled a hardware change")
+	}
+	next([]audio.DetectedDevice{{ID: idScarlett, HWAddr: addrHW4}, {ID: idMoth, HWAddr: addrHW5}})
+	if !signalled() {
+		t.Error("a device moving to another card index did not signal a hardware change")
+	}
+}

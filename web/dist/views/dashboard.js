@@ -184,7 +184,7 @@ function deviceConfigKey(cd) {
     ]);
 }
 export class DashboardView {
-    // Cards keyed by immutable ALSA device id (the stable identity). byName maps
+    // Cards keyed by immutable device id (the stable identity). byName maps
     // device name to entry for the levels stream, whose payload is keyed by name.
     cards = new Map();
     byName = new Map();
@@ -313,7 +313,7 @@ export class DashboardView {
                     : "No capture devices are configured. Connect capture hardware; it appears under Available Devices below, ready to enable.");
             }
         }
-        // Index the persisted config by ALSA id once per pass so the per-card
+        // Index the persisted config by device id once per pass so the per-card
         // reconcile is a Map lookup rather than a linear scan of the config list.
         const cfgByDevice = new Map();
         for (const cd of store.getState().config?.devices ?? [])
@@ -389,7 +389,11 @@ export class DashboardView {
         const info = elem("div", "available-info");
         info.appendChild(elem("div", "device-title", d.friendlyName || d.device));
         const sub = elem("div", "available-sub");
-        sub.appendChild(elem("span", "mono", d.device));
+        const addr = elem("span", "mono", d.hwAddr ?? d.device);
+        addr.title = `Device id: ${d.device}`;
+        sub.appendChild(addr);
+        if (d.idStable === false)
+            sub.appendChild(elem("span", "available-caps", "no stable id"));
         const caps = capsSummary(d);
         if (caps)
             sub.appendChild(elem("span", "available-caps", caps));
@@ -810,12 +814,21 @@ export class DashboardView {
         if (entry.avatar.style.color !== avatarColor)
             entry.avatar.style.color = avatarColor;
         setText(entry.titleEl, d.name);
-        // Surface the sound card's hardware model (friendlyName) next to the ALSA id
-        // so a device is identifiable by what it physically is, not only its config
-        // name. Omit it when absent or when it only repeats the configured name.
+        // Show the hardware the configured id resolves to right now: its current ALSA
+        // address and the sound card's model (friendlyName), so the label always
+        // names the device actually opened. Omit the model when absent or when it
+        // only repeats the configured name. The persisted id is long, so it goes in
+        // the tooltip rather than the line.
         const hw = d.friendlyName?.trim();
         const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
-        setText(entry.hwEl, showHw ? `ALSA: ${d.device} · ${hw}` : `ALSA: ${d.device}`);
+        const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : "Not connected";
+        let hwText = showHw ? `${addr} · ${hw}` : addr;
+        // A card-index id can name a different device after a reboot or replug.
+        if (d.idStable === false)
+            hwText += " · pinned to a card index";
+        setText(entry.hwEl, hwText);
+        if (entry.hwEl.title !== `Device id: ${d.device}`)
+            entry.hwEl.title = `Device id: ${d.device}`;
         // Chips describe the live stream and are shown only while serving.
         const rate = d.negotiatedRate ?? d.rate;
         setText(entry.modeTag, modeLabel(d.mode));
@@ -1054,7 +1067,7 @@ export class DashboardView {
             saveBtn.setAttribute("type", "button");
             actions.append(removeBtn, badge, staleNote, spacer, cancelBtn, saveBtn);
             removeBtn.addEventListener("click", () => void this.removeDevice(entry, removeBtn));
-            // Build from the saved config (source of truth), matched by ALSA id. Prefer
+            // Build from the saved config (source of truth), matched by device id. Prefer
             // the persisted config (it carries the enabled flag); fall back to the
             // runtime device projected through deviceToConfig so enabled is always
             // present and collect() cannot drop it.
