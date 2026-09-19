@@ -229,12 +229,23 @@ const PAIRS: Pair[] = [
   // getComputedStyle().backgroundColor does not report it. --text-muted on a
   // notification row measured 3.71:1 (warn) and 4.01:1 (error) on the dark theme
   // this way. Any new tinted surface needs its body text listed here too.
+  // The info row is NOT tinted (see .notif-row: neutral is the default and the
+  // tint marks exceptions), so its ground is the bare composited row surface.
+  // It still needs asserting: it is a different ground from any plain card,
+  // and it is the one most rows in the panel actually use.
+  { what: "notification row timestamp on an info row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
+  { what: "notification row message on an info row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
+  { what: "notification row title on an info row", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
   { what: "notification row timestamp on a warn row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-warn-bg"], min: AA },
   { what: "notification row timestamp on an error row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-crit-bg"], min: AA },
   { what: "notification row message on a warn row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-warn-bg"], min: AA },
   { what: "notification row message on an error row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-crit-bg"], min: AA },
   { what: "notification row title on a warn row", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-warn-bg"], min: AA },
   { what: "notification row title on an error row", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-crit-bg"], min: AA },
+  // Panel furniture that sits on its own grounds rather than on a row.
+  { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: AA },
+  { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
+
   { what: "toast message on an info toast", fg: "--text-primary", bg: ["--bg-surface-raised", "--signal-ok-bg"], min: AA },
   { what: "toast message on a warn toast", fg: "--text-primary", bg: ["--bg-surface-raised", "--signal-warn-bg"], min: AA },
   { what: "toast message on an error toast", fg: "--text-primary", bg: ["--bg-surface-raised", "--signal-crit-bg"], min: AA },
