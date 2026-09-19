@@ -94,17 +94,16 @@ func (l *Lock) Publish(s State) error {
 	if l == nil {
 		return nil
 	}
-	b, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
+	// Marshal cannot fail: State holds only an int and strings.
+	b, _ := json.Marshal(s)
 	if err := l.f.Truncate(0); err != nil {
 		return err
 	}
-	if _, err := l.f.WriteAt(b, 0); err != nil {
-		return err
+	_, err := l.f.WriteAt(b, 0)
+	if err == nil {
+		err = l.f.Sync()
 	}
-	return l.f.Sync()
+	return err
 }
 
 // Release empties the lock file and releases the lock. Closing the descriptor
