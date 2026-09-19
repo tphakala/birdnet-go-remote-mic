@@ -162,23 +162,24 @@ func CodecName(mode config.Mode) string {
 	return "L16"
 }
 
-// SDPSpec builds the SDP write spec the server serializes at DESCRIBE time. rate
-// and channels are the negotiated capture values (used for the L16 rtpmap);
+// SDPSpec builds the SDP write spec the server serializes at DESCRIBE time for
+// one stream. name is the device's DNS-SD/session name; rate and channels are
+// the stream's own values (the selected channel count feeds the L16 rtpmap).
 // Opus is always advertised as opus/48000/2 per RFC 7587, with sprop-stereo
 // reflecting the selection: 1 for a two-channel (stereo) stream, 0 for mono.
-func SDPSpec(d *config.Device, rate, channels int) sdp.WriteSpec {
-	if d.Mode == config.ModeOpus {
+func SDPSpec(s *config.Stream, name string, rate, channels int) sdp.WriteSpec {
+	if s.Mode == config.ModeOpus {
 		fmtp := "sprop-stereo=0"
-		if len(d.Channels) == 2 {
+		if len(s.Channels) == 2 {
 			fmtp = "sprop-stereo=1"
 		}
-		if d.Opus.Bitrate > 0 {
-			fmtp += ";maxaveragebitrate=" + strconv.Itoa(d.Opus.Bitrate)
+		if s.Opus.Bitrate > 0 {
+			fmtp += ";maxaveragebitrate=" + strconv.Itoa(s.Opus.Bitrate)
 		}
 		return sdp.WriteSpec{
-			Name:         d.Name,
-			PayloadType:  PayloadType(d.Mode),
-			EncodingName: CodecName(d.Mode),
+			Name:         name,
+			PayloadType:  PayloadType(s.Mode),
+			EncodingName: CodecName(s.Mode),
 			ClockRate:    48000,
 			Channels:     2,
 			Control:      "trackID=0",
@@ -186,9 +187,9 @@ func SDPSpec(d *config.Device, rate, channels int) sdp.WriteSpec {
 		}
 	}
 	return sdp.WriteSpec{
-		Name:         d.Name,
-		PayloadType:  PayloadType(d.Mode),
-		EncodingName: CodecName(d.Mode),
+		Name:         name,
+		PayloadType:  PayloadType(s.Mode),
+		EncodingName: CodecName(s.Mode),
 		ClockRate:    rate,
 		Channels:     channels,
 		Control:      "trackID=0",

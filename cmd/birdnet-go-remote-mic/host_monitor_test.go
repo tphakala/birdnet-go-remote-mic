@@ -50,22 +50,59 @@ func TestProviderDropCounters(t *testing.T) {
 	}
 	// Distinct gens on the serving runtimes so the test pins that dropCounters
 	// carries rt.gen into DeviceDrops.Gen (a regression hardcoding Gen 0 would fail).
-	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing}
-	a.dropped.Store(42)
-	b := &deviceRuntime{dev: config.Device{Name: "bats"}, gen: 8, state: mgmtserver.StateServing}
+	// The device-level dropped figure is the sum of its streams' counters
+	// (droppedTotal), so each runtime carries one stream holding the drops.
+	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
+	a.streams[0].dropped.Store(42)
+	b := &deviceRuntime{dev: config.Device{Name: "bats"}, gen: 8, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
 	// A disabled and a failed device carry (possibly frozen) counters but must be
 	// excluded, so the monitor sees them go absent and resolves any active drops
 	// condition rather than clearing it with a misleading "client keeping up".
-	disabled := &deviceRuntime{dev: config.Device{Name: "attic"}, state: mgmtserver.StateDisabled}
-	disabled.dropped.Store(99)
-	failed := &deviceRuntime{dev: config.Device{Name: "cellar"}, state: mgmtserver.StateFailed}
-	failed.dropped.Store(7)
+	disabled := &deviceRuntime{dev: config.Device{Name: "attic"}, state: mgmtserver.StateDisabled, streams: []*streamRuntime{{}}}
+	disabled.streams[0].dropped.Store(99)
+	failed := &deviceRuntime{dev: config.Device{Name: "cellar"}, state: mgmtserver.StateFailed, streams: []*streamRuntime{{}}}
+	failed.streams[0].dropped.Store(7)
 	p.setDevices([]*deviceRuntime{a, disabled, b, failed})
 	got := p.dropCounters()
 	if len(got) != 2 ||
 		got[0].Name != "orchard" || got[0].Gen != 5 || got[0].Dropped != 42 ||
 		got[1].Name != "bats" || got[1].Gen != 8 || got[1].Dropped != 0 {
 		t.Errorf("dropCounters = %+v, want only the two serving devices with their gens", got)
+	}
+}
+
+func TestDeviceRuntimeAggregatesStreamDrops(t *testing.T) {
+	// A device's droppedTotal sums its streams' counters, and status() reports that
+	// sum plus each stream's own figure. Exercises the 2+ stream path that the
+	// single-stream fixtures elsewhere do not.
+	rt := &deviceRuntime{
+		dev:      config.Device{Name: "iface", Streams: []config.Stream{{Path: "/a"}, {Path: "/b"}}},
+		state:    mgmtserver.StateServing,
+		rate:     48000,
+		channels: 2,
+		streams: []*streamRuntime{
+			{stream: config.Stream{Path: "/a"}},
+			{stream: config.Stream{Path: "/b"}},
+		},
+	}
+	rt.streams[0].dropped.Store(5)
+	rt.streams[1].dropped.Store(2)
+
+	if got := rt.droppedTotal(); got != 7 {
+		t.Errorf("droppedTotal() = %d, want 7 (5+2)", got)
+	}
+	ds := rt.status()
+	if ds.DroppedFrames != 7 {
+		t.Errorf("status DroppedFrames = %d, want 7", ds.DroppedFrames)
+	}
+	if len(ds.Streams) != 2 {
+		t.Fatalf("status Streams = %d, want 2", len(ds.Streams))
+	}
+	if ds.Streams[0].Path != "/a" || ds.Streams[0].DroppedFrames != 5 {
+		t.Errorf("status stream[0] = %+v, want /a drops=5", ds.Streams[0])
+	}
+	if ds.Streams[1].Path != "/b" || ds.Streams[1].DroppedFrames != 2 {
+		t.Errorf("status stream[1] = %+v, want /b drops=2", ds.Streams[1])
 	}
 }
 

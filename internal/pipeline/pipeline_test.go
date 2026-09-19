@@ -200,12 +200,12 @@ func TestOpusStageRejectsTooManyChannels(t *testing.T) {
 const opusFrameSamplesTest = 960
 
 func TestSDPSpec(t *testing.T) {
-	pcm := pipeline.SDPSpec(&config.Device{Name: "m", Mode: config.ModePCM}, 256000, 1)
+	pcm := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "m", 256000, 1)
 	if pcm.EncodingName != "L16" || pcm.ClockRate != 256000 || pcm.Channels != 1 || pcm.PayloadType != 96 || pcm.Ptime != 20 {
 		t.Errorf("PCM spec unexpected: %+v", pcm)
 	}
 
-	op := pipeline.SDPSpec(&config.Device{Name: "m", Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, 48000, 1)
+	op := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, "m", 48000, 1)
 	if op.EncodingName != "opus" || op.ClockRate != 48000 || op.Channels != 2 || op.PayloadType != 97 {
 		t.Errorf("Opus spec unexpected: %+v", op)
 	}
@@ -218,7 +218,7 @@ func TestSDPSpec(t *testing.T) {
 
 	// A two-channel selection is signalled with sprop-stereo=1 while the rtpmap
 	// stays opus/48000/2 (RFC 7587).
-	stereo := pipeline.SDPSpec(&config.Device{Name: "s", Mode: config.ModeOpus, Channels: []int{1, 2}}, 48000, 2)
+	stereo := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Channels: []int{1, 2}}, "s", 48000, 2)
 	if stereo.Channels != 2 || !strings.Contains(stereo.FMTP, "sprop-stereo=1") {
 		t.Errorf("stereo Opus spec should carry sprop-stereo=1: %+v", stereo)
 	}
@@ -246,7 +246,7 @@ func TestPayloadTypeAndCodecName(t *testing.T) {
 		if got := pipeline.CodecName(tc.mode); got != tc.codec {
 			t.Errorf("CodecName(%q) = %q, want %q", tc.mode, got, tc.codec)
 		}
-		spec := pipeline.SDPSpec(&config.Device{Name: "m", Mode: tc.mode}, 48000, 1)
+		spec := pipeline.SDPSpec(&config.Stream{Mode: tc.mode}, "m", 48000, 1)
 		if spec.PayloadType != pipeline.PayloadType(tc.mode) {
 			t.Errorf("SDPSpec payload %d != PayloadType %d for %q", spec.PayloadType, pipeline.PayloadType(tc.mode), tc.mode)
 		}

@@ -11,8 +11,8 @@ import (
 // capture params take sensible defaults so tests can vary one field at a time.
 func dev(name, hw, path string, rate int) config.Device {
 	return config.Device{
-		Name: name, Device: hw, Path: path,
-		Mode: config.ModePCM, Rate: rate, Channels: []int{1}, Format: "s16",
+		Name: name, Device: hw, Rate: rate, Format: "s16",
+		Streams: []config.Stream{{Path: path, Mode: config.ModePCM, Channels: []int{1}}},
 	}
 }
 
@@ -98,19 +98,22 @@ func TestReconcileRestartsOnRateChange(t *testing.T) {
 }
 
 func TestReconcileRestartsOnParamChanges(t *testing.T) {
-	base := dev("a", "hw:0", "/a", 48000)
 	cases := map[string]func(config.Device) config.Device{
 		"hw":       func(d config.Device) config.Device { d.Device = "hw:1"; return d },
-		"path":     func(d config.Device) config.Device { d.Path = "/b"; return d },
-		"channels": func(d config.Device) config.Device { d.Channels = []int{2}; return d },
+		"path":     func(d config.Device) config.Device { d.Streams[0].Path = "/b"; return d },
+		"channels": func(d config.Device) config.Device { d.Streams[0].Channels = []int{2}; return d },
 		"format":   func(d config.Device) config.Device { d.Format = "s32"; return d },
-		"mode":     func(d config.Device) config.Device { d.Mode = config.ModeOpus; return d },
-		"bitrate":  func(d config.Device) config.Device { d.Opus.Bitrate = 64000; return d },
+		"mode":     func(d config.Device) config.Device { d.Streams[0].Mode = config.ModeOpus; return d },
+		"bitrate":  func(d config.Device) config.Device { d.Streams[0].Opus.Bitrate = 64000; return d },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			running := map[string]config.Device{"a": base}
-			p := Reconcile(running, cfg(mutate(base)))
+			// running and desired are built from SEPARATE dev() instances: a value copy
+			// of one device still shares its Streams backing array, so mutating the
+			// desired copy in place would otherwise alias (and silently mutate) the
+			// running device, hiding the very change under test.
+			running := map[string]config.Device{"a": dev("a", "hw:0", "/a", 48000)}
+			p := Reconcile(running, cfg(mutate(dev("a", "hw:0", "/a", 48000))))
 			if got := namesOf(p.Restart); !reflect.DeepEqual(got, []string{"a"}) {
 				t.Fatalf("%s change: Restart = %v, want [a]", name, got)
 			}

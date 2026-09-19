@@ -468,6 +468,9 @@ type Device struct {
 	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 	State DeviceState `json:"state"`
 
+	// Streams Per-stream runtime state, one entry per stream fanned out from this device's shared capture. Present only while the device is serving. The device-level clientConnected and droppedFrames aggregate these (any client connected; summed drops), so a client that predates fan-out can ignore this array. A single-stream device carries one entry mirroring the device-level fields.
+	Streams *[]StreamStatus `json:"streams,omitempty"`
+
 	// SupportedChannels Channel counts the hardware accepts, probed once at startup via the same non-blocking capability query as supportedRates. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a mono/stereo default. The UI takes the largest count as the number of selectable channels and builds the per-channel selection control (Ch1..ChN) from it.
 	//
 	//
@@ -484,7 +487,7 @@ type Device struct {
 // DeviceFormat Sample format (only S16LE is supported).
 type DeviceFormat string
 
-// DeviceConfig The configuration of one device, without runtime state.
+// DeviceConfig The configuration of one device, without runtime state. A device opens one capture and fans it out into one or more streams. The flat path, mode, channels and opus fields describe the device's FIRST stream, so a client that predates fan-out still configures a single-stream device; the full set is in streams. On a PATCH, a body carrying streams is authoritative and the flat fields are ignored; a body omitting streams defines a single stream from the flat fields, and is rejected when it would collapse an existing multi-stream device.
 type DeviceConfig struct {
 	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]).
 	Channels []int  `json:"channels"`
@@ -505,6 +508,9 @@ type DeviceConfig struct {
 	// QuietAlert Whether this device raises the very-quiet audio condition; defaults to true when absent. Set false for a device expected to be silent for long stretches (a bat microphone by day). Stuck-at-zero and clipping conditions are unaffected.
 	QuietAlert *bool `json:"quietAlert,omitempty"`
 	Rate       int   `json:"rate"`
+
+	// Streams The streams fanned out from this device's shared capture, one RTSP path each. When present it is authoritative and the flat path/mode/channels/opus fields are ignored (they mirror streams[0] for older clients). One capture is opened per device, so every stream shares the device rate and format.
+	Streams *[]StreamConfig `json:"streams,omitempty"`
 }
 
 // DeviceConfigFormat defines model for DeviceConfig.Format.
@@ -746,8 +752,39 @@ type RestartResult struct {
 	Status string `json:"status"`
 }
 
+// StreamConfig One stream fanned out from a device's shared capture: a subset of the device's channels, encoded in one mode, served at one RTSP path.
+type StreamConfig struct {
+	// Channels Selected 1-based capture channel numbers this stream carries, ascending and unique (e.g. [1], [1, 2], or [1, 3]). Opus accepts one channel (mono) or two (stereo); PCM L16 carries any selection.
+	Channels []int `json:"channels"`
+
+	// Mode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
+	Mode StreamMode `json:"mode"`
+
+	// Opus Opus encoder settings, used only when mode is opus.
+	Opus *OpusSettings `json:"opus,omitempty"`
+
+	// Path RTSP path serving this stream; unique across every device's streams.
+	//
+	// Examples: /garden
+	Path string `json:"path"`
+}
+
 // StreamMode pcm streams raw L16 at the capture rate (the ultrasonic path); opus streams 48 kHz Opus, mono or stereo (one or two channels; the normal-audio path).
 type StreamMode string
+
+// StreamStatus One stream's runtime state within a serving device.
+type StreamStatus struct {
+	// ClientConnected Whether an RTSP session currently holds this stream's single slot.
+	ClientConnected bool `json:"clientConnected"`
+
+	// DroppedFrames Audio dropped for this stream because its client or encoder was not keeping up. Zero when it never fell behind.
+	DroppedFrames int64 `json:"droppedFrames"`
+
+	// Path RTSP path serving this stream.
+	//
+	// Examples: /garden
+	Path string `json:"path"`
+}
 
 // SystemInfo Host hardware facts and live system metrics.
 type SystemInfo struct {

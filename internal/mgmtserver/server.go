@@ -84,6 +84,18 @@ type DeviceStatus struct {
 	// 8), probed at startup via the same query as SupportedRates. Empty when the
 	// device could not be probed (missing or busy).
 	SupportedChannels []int
+	// Streams is the per-stream live state, one entry per stream fanned out from
+	// this device's shared capture, present only while serving. ClientConnected
+	// and DroppedFrames above aggregate these (any client connected; summed
+	// drops).
+	Streams []StreamStatus
+}
+
+// StreamStatus is one stream's live state within a serving device.
+type StreamStatus struct {
+	Path            string
+	ClientConnected bool
+	DroppedFrames   int64
 }
 
 // AvailableDevice is a capture device the host exposes that the configuration
@@ -276,28 +288,46 @@ func (s *Server) StreamEvents(_ context.Context, _ mgmtapi.StreamEventsRequestOb
 	}, nil
 }
 
-// mapDevice converts a runtime DeviceStatus into the generated wire type.
+// mapDevice converts a runtime DeviceStatus into the generated wire type. The
+// flat path/mode/channels/opus fields project the device's first stream so a
+// client that predates fan-out still reads a usable single-stream device; the
+// full set is in streams (config) and the per-stream runtime state in the status
+// streams array.
 func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	out := mgmtapi.Device{
 		Name:            d.Config.Name,
 		Device:          d.Config.Device,
-		Path:            d.Config.Path,
-		Mode:            mapMode(d.Config.Mode),
 		Format:          mgmtapi.DeviceFormat(d.Config.Format),
 		Rate:            d.Config.Rate,
-		Channels:        d.Config.Channels,
 		State:           mgmtapi.DeviceState(d.State),
 		ClientConnected: d.ClientConnected,
 		DroppedFrames:   d.DroppedFrames,
+	}
+	if len(d.Config.Streams) > 0 {
+		s0 := &d.Config.Streams[0]
+		out.Path = s0.Path
+		out.Mode = mapMode(s0.Mode)
+		out.Channels = s0.Channels
+		if s0.Mode == config.ModeOpus {
+			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
+		}
+	}
+	if len(d.Streams) > 0 {
+		ss := make([]mgmtapi.StreamStatus, 0, len(d.Streams))
+		for i := range d.Streams {
+			ss = append(ss, mgmtapi.StreamStatus{
+				Path:            d.Streams[i].Path,
+				ClientConnected: d.Streams[i].ClientConnected,
+				DroppedFrames:   d.Streams[i].DroppedFrames,
+			})
+		}
+		out.Streams = &ss
 	}
 	if d.NegotiatedRate > 0 {
 		out.NegotiatedRate = ptr(d.NegotiatedRate)
 	}
 	if d.NegotiatedChannels > 0 {
 		out.NegotiatedChannels = ptr(d.NegotiatedChannels)
-	}
-	if d.Config.Mode == config.ModeOpus {
-		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(d.Config.Opus.Bitrate)}
 	}
 	if d.Error != "" {
 		out.Error = ptr(d.Error)

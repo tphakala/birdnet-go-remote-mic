@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -164,9 +165,9 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 			mergeNotifications(&cur.Notifications, patch.Notifications)
 		}
 		if patch.Devices != nil {
-			devs := make([]config.Device, 0, len(*patch.Devices))
-			for i := range *patch.Devices {
-				devs = append(devs, wireDeviceToConfig(&(*patch.Devices)[i]))
+			devs, derr := patchedDevices(cur.Devices, *patch.Devices)
+			if derr != nil {
+				return config.Config{}, derr
 			}
 			cur.Devices = devs
 		}
@@ -433,20 +434,31 @@ func mergeNotifications(dst *config.Notifications, p *mgmtapi.NotificationSettin
 	}
 }
 
-// deviceConfigToWire maps one configured device to the generated wire type.
+// deviceConfigToWire maps one configured device to the generated wire type. The
+// flat path/mode/channels/opus fields mirror the device's first stream so a
+// client that predates fan-out still sees a usable single-stream device; every
+// stream is also carried in the streams array.
 func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 	out := mgmtapi.DeviceConfig{
-		Name:     d.Name,
-		Device:   d.Device,
-		Path:     d.Path,
-		Mode:     mapMode(d.Mode),
-		Format:   mgmtapi.DeviceConfigFormat(d.Format),
-		Rate:     d.Rate,
-		Channels: d.Channels,
+		Name:   d.Name,
+		Device: d.Device,
+		Format: mgmtapi.DeviceConfigFormat(d.Format),
+		Rate:   d.Rate,
 	}
-	if d.Mode == config.ModeOpus {
-		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(d.Opus.Bitrate)}
+	if len(d.Streams) > 0 {
+		s0 := &d.Streams[0]
+		out.Path = s0.Path
+		out.Mode = mapMode(s0.Mode)
+		out.Channels = s0.Channels
+		if s0.Mode == config.ModeOpus {
+			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
+		}
 	}
+	streams := make([]mgmtapi.StreamConfig, 0, len(d.Streams))
+	for i := range d.Streams {
+		streams = append(streams, streamConfigToWire(&d.Streams[i]))
+	}
+	out.Streams = &streams
 	// Materialize the default-on Enabled and QuietAlert flags to concrete booleans
 	// so the web UI sees definite values rather than nulls it must reinterpret.
 	out.Enabled = ptr(d.IsEnabled())
@@ -454,23 +466,39 @@ func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 	return out
 }
 
+// streamConfigToWire maps one configured stream to the generated wire type.
+func streamConfigToWire(s *config.Stream) mgmtapi.StreamConfig {
+	out := mgmtapi.StreamConfig{
+		Path:     s.Path,
+		Mode:     mapMode(s.Mode),
+		Channels: s.Channels,
+	}
+	if s.Mode == config.ModeOpus {
+		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s.Opus.Bitrate)}
+	}
+	return out
+}
+
 // wireDeviceToConfig maps one device from a config patch back to the appliance
-// type. Missing fields become zero values; config.Validate rejects them with a
-// per-field reason, which surfaces as a 422.
+// type. A body carrying streams is authoritative; a body omitting streams
+// defines a single stream from the flat path/mode/channels/opus fields (today's
+// semantics for a client that predates fan-out). Missing fields become zero
+// values; config.Validate rejects them with a per-field reason, which surfaces
+// as a 422.
 func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 	out := config.Device{
 		Name:   d.Name,
 		Device: d.Device,
-		Path:   d.Path,
-		Mode:   config.Mode(d.Mode),
 		Format: string(d.Format),
 		Rate:   d.Rate,
-		// Clone the selection into fresh storage so the persisted config does not
-		// alias the request body (parity with the Enabled handling below).
-		Channels: slices.Clone(d.Channels),
 	}
-	if d.Opus != nil && d.Opus.Bitrate != nil {
-		out.Opus.Bitrate = *d.Opus.Bitrate
+	if d.Streams != nil {
+		out.Streams = make([]config.Stream, 0, len(*d.Streams))
+		for i := range *d.Streams {
+			out.Streams = append(out.Streams, wireStreamToConfig(&(*d.Streams)[i]))
+		}
+	} else {
+		out.Streams = []config.Stream{wireFlatToStream(d)}
 	}
 	// An absent enabled flag leaves the device enabled (the default); a present
 	// one is copied into fresh storage so the persisted config does not alias the
@@ -484,6 +512,91 @@ func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 	if d.QuietAlert != nil {
 		v := *d.QuietAlert
 		out.QuietAlert = &v
+	}
+	return out
+}
+
+// patchedDevices maps a wire device list to the appliance device list that
+// replaces cur. A wire entry that omits streams defines a single stream from its
+// flat fields; that is rejected when it would silently collapse an existing
+// multi-stream device, so a client that predates fan-out cannot drop streams it
+// cannot see. The existing device is matched by EITHER its ALSA device id OR its
+// name: a flat patch that renames the device keeps the id, and one that moves it
+// to a different card keeps the name, so requiring either match closes both
+// bypasses (only changing BOTH is a wholesale replacement, not a collapse). A
+// wire entry that carries streams is authoritative and may legitimately reduce
+// the count.
+func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.Device, error) {
+	devs := make([]config.Device, 0, len(wire))
+	for i := range wire {
+		wd := &wire[i]
+		if wd.Streams == nil {
+			existing, ok := deviceByID(cur, wd.Device)
+			if !ok {
+				existing, ok = deviceByName(cur, wd.Name)
+			}
+			if ok && len(existing.Streams) > 1 {
+				return nil, &config.ValidationError{
+					Field:  fmt.Sprintf("devices[%d].streams", i),
+					Reason: fmt.Sprintf("device %q has %d streams; include streams to update it", existing.Name, len(existing.Streams)),
+				}
+			}
+		}
+		devs = append(devs, wireDeviceToConfig(wd))
+	}
+	return devs, nil
+}
+
+// deviceByID returns a pointer to the device with the given ALSA device id in
+// devs, if present. The collapse guard matches on the id (stable across a rename)
+// as well as the name, so a flat patch cannot slip a collapse past it by changing
+// one identifier.
+func deviceByID(devs []config.Device, id string) (*config.Device, bool) {
+	for i := range devs {
+		if devs[i].Device == id {
+			return &devs[i], true
+		}
+	}
+	return nil, false
+}
+
+// deviceByName returns a pointer to the device named name in devs, if present.
+// The collapse guard matches on the name as well as the device id, so moving a
+// multi-stream device to a different card in a flat patch is still caught.
+func deviceByName(devs []config.Device, name string) (*config.Device, bool) {
+	for i := range devs {
+		if devs[i].Name == name {
+			return &devs[i], true
+		}
+	}
+	return nil, false
+}
+
+// wireStreamToConfig maps one stream from a config patch back to the appliance
+// type, cloning the channel selection into fresh storage so the persisted config
+// does not alias the request body.
+func wireStreamToConfig(s *mgmtapi.StreamConfig) config.Stream {
+	out := config.Stream{
+		Path:     s.Path,
+		Mode:     config.Mode(s.Mode),
+		Channels: slices.Clone(s.Channels),
+	}
+	if s.Opus != nil && s.Opus.Bitrate != nil {
+		out.Opus.Bitrate = *s.Opus.Bitrate
+	}
+	return out
+}
+
+// wireFlatToStream builds the single stream implied by a device patch that omits
+// the streams array, from its flat path/mode/channels/opus fields.
+func wireFlatToStream(d *mgmtapi.DeviceConfig) config.Stream {
+	out := config.Stream{
+		Path:     d.Path,
+		Mode:     config.Mode(d.Mode),
+		Channels: slices.Clone(d.Channels),
+	}
+	if d.Opus != nil && d.Opus.Bitrate != nil {
+		out.Opus.Bitrate = *d.Opus.Bitrate
 	}
 	return out
 }

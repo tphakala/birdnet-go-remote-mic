@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -53,17 +54,33 @@ func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// deviceRuntime bundles one configured device's moving parts. A device that
-// failed to open keeps a record with src and track nil so the management API can
-// still report it (state skipped). src and track are set only when it opened.
+// streamRuntime bundles one stream fanned out from a device's shared capture: its
+// selecting source (the device's channels it carries), its pipeline stage, its
+// frame buffer and its RTSP track. dropped counts audio lost for this stream,
+// whether the fan-out dropped a period (its encoder is slow) or the RTSP writer
+// dropped a frame (its client is slow); the device sums them for the host
+// monitor.
+type streamRuntime struct {
+	stream  config.Stream
+	src     audio.Source
+	stage   pipeline.Stage
+	frames  *rtspserver.ChanSource
+	track   *rtspserver.Track
+	dropped atomic.Uint64
+}
+
+// deviceRuntime bundles one configured device's moving parts: one exclusive
+// capture, metered once over every opened channel, fanned out into one or more
+// streams. A device that failed to open keeps a record with src nil and no
+// streams so the management API can still report it (state skipped). src, fanout,
+// and streams are set only when it opened.
 type deviceRuntime struct {
 	dev      config.Device
-	src      audio.Source
-	stage    pipeline.Stage
-	frames   *rtspserver.ChanSource
-	track    *rtspserver.Track
+	src      audio.Source  // the metered base capture; teardown closes it via fanout.Close (idempotent), which ends the pump
+	fanout   *audio.Fanout // reads src on the pump goroutine and feeds every stream
+	streams  []*streamRuntime
 	rate     int
-	channels int
+	channels int // opened hardware channel count (every channel is metered)
 	// friendlyName is the sound card's human label; supportedRates and
 	// supportedChannels are the rate and channel-count sets the device accepted at
 	// the startup probe. All static per run and read without a lock.
@@ -75,8 +92,7 @@ type deviceRuntime struct {
 	// so the host monitor rebaselines the dropped-frame counter on the change even
 	// when the new runtime's counter has already climbed past the old value. Static
 	// per run; read without a lock, like dev.Name.
-	gen     uint64
-	dropped atomic.Uint64
+	gen uint64
 
 	mu    sync.Mutex
 	state mgmtserver.DeviceState
@@ -90,41 +106,75 @@ type deviceRuntime struct {
 	superseded bool
 }
 
+// droppedTotal sums every stream's dropped-audio counter, the device-level figure
+// the host monitor watches for a rising-drops condition.
+func (rt *deviceRuntime) droppedTotal() uint64 {
+	var n uint64
+	for _, sr := range rt.streams {
+		n += sr.dropped.Load()
+	}
+	return n
+}
+
 // runtimeGen hands out a process-unique generation to each serving deviceRuntime
 // so the host monitor can tell one runtime from its restarted successor. Only
 // openDevice (the sole builder of a serving runtime) draws from it; skipped and
 // disabled records keep gen 0 and never reach the drop monitor.
 var runtimeGen atomic.Uint64
 
-// openDevice opens and starts capture for one configured device at the
-// resolved hardware channel count openCh and builds its pipeline stage, SDP, and
-// RTSP track. The capture source is wrapped so every period also feeds the
-// device's level meter, which runs on the capture pump regardless of whether an
-// RTSP client is connected.
+// openDevice opens and starts capture for one configured device at the resolved
+// hardware channel count openCh, meters every opened channel once, and fans the
+// capture out into one pipeline stage, SDP, and RTSP track per configured stream.
+// The meter and fan-out run on the capture pump regardless of whether any RTSP
+// client is connected. Each stream extracts its own channels from the shared
+// capture with a selecting source, so the device opens the hardware exactly once.
 func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
-	src, err := audio.OpenCaptureAt(dev, openCh)
+	base, err := audio.OpenCaptureAt(dev, openCh)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
-	rate, channels := src.Negotiated()
-	stage, payloadType := buildStage(dev, channels)
-	sdpBytes, err := sdp.WriteSession(pipeline.SDPSpec(dev, rate, channels))
-	if err != nil {
-		_ = src.Close()
-		return nil, fmt.Errorf("build sdp: %w", err)
+	rate, channels := base.Negotiated()
+
+	// Build every stream's stage, SDP and track before starting anything, so a
+	// failure here closes the capture and reports the device skipped rather than
+	// leaving a half-registered device or a phantom meter behind.
+	streams := make([]*streamRuntime, 0, len(dev.Streams))
+	for i := range dev.Streams {
+		s := dev.Streams[i]
+		selCount := len(s.Channels)
+		stage, payloadType := buildStage(&s, selCount)
+		sdpBytes, serr := sdp.WriteSession(pipeline.SDPSpec(&s, dev.Name, rate, selCount))
+		if serr != nil {
+			_ = base.Close()
+			return nil, fmt.Errorf("build sdp for %s: %w", s.Path, serr)
+		}
+		frames := rtspserver.NewChanSource(64)
+		streams = append(streams, &streamRuntime{
+			stream: s,
+			stage:  stage,
+			frames: frames,
+			track:  &rtspserver.Track{Path: s.Path, SDP: sdpBytes, PayloadType: payloadType, Frames: frames},
+		})
 	}
-	// Register the level meter only once the device has fully opened. Doing it
-	// after the last fallible step keeps a device that fails here out of the
-	// hub, so the levels stream never reports a phantom silent device for it.
-	src = audio.NewMeteredSource(src, hub.Meter(dev.Name, channels))
-	frames := rtspserver.NewChanSource(64)
+
+	// Meter every captured channel once on the shared reader, then fan the metered
+	// capture out to each stream's selecting source. Registering the meter after the
+	// fallible build above keeps a device that fails there out of the levels hub.
+	metered := audio.NewMeteredSource(base, hub.Meter(dev.Name, channels))
+	drops := make([]*atomic.Uint64, len(streams))
+	for i := range streams {
+		drops[i] = &streams[i].dropped
+	}
+	fanout, consumers := audio.NewFanout(metered, dev.Name, drops)
+	for i := range streams {
+		streams[i].src = audio.NewSelectingSource(consumers[i], channels, streams[i].stream.Channels)
+	}
 	return &deviceRuntime{
 		dev:      *dev,
 		gen:      runtimeGen.Add(1),
-		src:      src,
-		stage:    stage,
-		frames:   frames,
-		track:    &rtspserver.Track{Path: dev.Path, SDP: sdpBytes, PayloadType: payloadType, Frames: frames},
+		src:      metered,
+		fanout:   fanout,
+		streams:  streams,
 		rate:     rate,
 		channels: channels,
 	}, nil
@@ -150,7 +200,7 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 	const delay = 50 * time.Millisecond
 	var err error
 	for i := range attempts {
-		openCh := resolveOpenChannels(dev.Device, dev.Channels)
+		openCh := resolveOpenChannels(dev.Device, dev.StreamChannelUnion())
 		// Gate the blocking capture open on a non-blocking busy check. A device
 		// held exclusively by another process can make the ALSA open block rather
 		// than fail promptly, which would park the single reconcile goroutine and
@@ -497,9 +547,15 @@ var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRu
 	log.Printf("advertising %d service(s) over mDNS (_rtsp._tcp) on port %d", len(infos), port)
 }
 
-// announceInfos builds the per-device advertisement records for the serving
-// set on the RTSP listen port, carrying the auth hint (auth=token or auth=none)
-// so BirdNET-Go's adopt flow knows whether to ask for the token.
+// announceInfos builds the per-stream advertisement records for the serving set
+// on the RTSP listen port, carrying the auth hint (auth=token or auth=none) so
+// BirdNET-Go's adopt flow knows whether to ask for the token. A multi-stream
+// device advertises one service per stream, each at its own path; the DNS-SD
+// instance name stays the device name for a lone stream (unchanged) and is
+// qualified with the stream path when a device fans out. The qualified name is
+// not guaranteed unique against a different device literally named "<name>
+// <path>", but the responder renames on a DNS-SD conflict, so a collision costs
+// only a suffix, not a dropped service.
 func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
 	_, portStr, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -509,25 +565,34 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 	if err != nil {
 		return nil, 0, fmt.Errorf("bad port in %q: %w", listen, err)
 	}
-	infos := make([]announce.Info, 0, len(devices))
+	var infos []announce.Info
 	for _, rt := range devices {
-		infos = append(infos, announce.Info{
-			Name:         rt.dev.Name,
-			Path:         rt.dev.Path,
-			Port:         port,
-			Codec:        pipeline.CodecName(rt.dev.Mode),
-			Rate:         rt.rate,
-			Channels:     rt.channels,
-			Version:      version,
-			AuthRequired: authRequired,
-		})
+		multi := len(rt.streams) > 1
+		for _, sr := range rt.streams {
+			name := rt.dev.Name
+			if multi {
+				name = rt.dev.Name + " " + strings.TrimPrefix(sr.stream.Path, "/")
+			}
+			infos = append(infos, announce.Info{
+				Name:         name,
+				Path:         sr.stream.Path,
+				Port:         port,
+				Codec:        pipeline.CodecName(sr.stream.Mode),
+				Rate:         rt.rate,
+				Channels:     len(sr.stream.Channels),
+				Version:      version,
+				AuthRequired: authRequired,
+			})
+		}
 	}
 	return infos, port, nil
 }
 
-func buildStage(d *config.Device, channels int) (stage pipeline.Stage, payloadType int) {
-	if d.Mode == config.ModeOpus {
-		return pipeline.NewOpus(d.Opus), pipeline.PayloadType(d.Mode)
+// buildStage builds one stream's pipeline stage and its RTP payload type.
+// channels is the stream's selected channel count, used for the L16 frame math.
+func buildStage(s *config.Stream, channels int) (stage pipeline.Stage, payloadType int) {
+	if s.Mode == config.ModeOpus {
+		return pipeline.NewOpus(s.Opus), pipeline.PayloadType(s.Mode)
 	}
-	return pipeline.NewPCM(channels), pipeline.PayloadType(d.Mode)
+	return pipeline.NewPCM(channels), pipeline.PayloadType(s.Mode)
 }

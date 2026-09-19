@@ -48,28 +48,26 @@ func TestCaptureFormat(t *testing.T) {
 func TestOpenCaptureRejectsUnknownFormat(t *testing.T) {
 	// A format that config.Validate does not (yet) permit must fail loud rather
 	// than silently fall back to S16LE and corrupt the byte math.
-	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{1}, Format: "s32"}); err == nil {
+	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: "s32", Streams: []config.Stream{{Channels: []int{1}}}}); err == nil {
 		t.Fatal("OpenCapture accepted format s32, want error")
 	}
 }
 
-func TestOpenCaptureAtRejectsOpenCountBelowSelection(t *testing.T) {
-	called := false
-	prev := openStream
-	openStream = func(capture.Config) (captureStream, error) {
-		called = true
-		return &stubStream{}, nil
+func TestOpenCaptureAtRejectsNegotiatedBelowOpenCount(t *testing.T) {
+	// OpenCaptureAt opens at openCh channels and returns the unselected base; each
+	// stream selects its channels downstream. If the driver negotiates FEWER
+	// channels than were opened, a stream's strided selecting copy could read past
+	// the buffer, so OpenCaptureAt must reject before Start and close the stream.
+	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
+	defer restore()
+	if _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2); err == nil {
+		t.Fatal("OpenCaptureAt accepted a device negotiating 1 channel when 2 were opened, want error")
 	}
-	defer func() { openStream = prev }()
-
-	// The selection needs channel 2 but only 1 channel is opened: OpenCaptureAt
-	// must reject before touching hardware, so the strided selecting copy can
-	// never read past the negotiated buffer.
-	if _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{2}, Format: testFmtS16}, 1); err == nil {
-		t.Fatal("OpenCaptureAt accepted openCh=1 below max(selection)=2, want error")
+	if stub.started {
+		t.Error("OpenCaptureAt started the stream despite the channel-count mismatch")
 	}
-	if called {
-		t.Error("OpenCaptureAt opened the device despite an insufficient open channel count")
+	if !stub.closed {
+		t.Error("OpenCaptureAt did not close the stream on the channel-count mismatch")
 	}
 }
 
@@ -81,7 +79,7 @@ func TestOpenCapturePassesS16Format(t *testing.T) {
 		return &stubStream{neg: capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960}}, nil
 	}
 	defer func() { openStream = prev }()
-	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{1}, Format: testFmtS16})
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}
@@ -112,12 +110,12 @@ func (s *twoChanStub) Read(buf []byte) (int, error) {
 }
 func (s *twoChanStub) Close() error { s.closed = true; return nil }
 
-func TestOpenCaptureExtractsSelectedChannel(t *testing.T) {
-	// A stereo-only device (opens at 2 channels) with a single-channel selection
-	// [1]: OpenCapture must open at 2 channels and wrap in a selecting source that
-	// delivers 1 channel carrying channel 0's data. This exercises the actual
-	// channel-reduction wiring (openCh from ResolveOpenChannels, n.Channels as the
-	// source width, dev.Channels as the selection), not the passthrough path.
+func TestOpenCaptureOpensAtResolvedCountUnselected(t *testing.T) {
+	// A stereo-only device (opens only at 2 channels) with a single-channel
+	// selection: OpenCapture resolves the open count to 2 (ResolveOpenChannels over
+	// the stream channel union) and returns the UNSELECTED base carrying BOTH
+	// channels interleaved. A stream reduces 2->1 downstream with NewSelectingSource;
+	// the base itself no longer selects.
 	restoreCh := swapSupportedRates(func(_ string, ch int, _ capture.Format) (capture.RateSupport, error) {
 		if ch == 2 {
 			return capture.RateSupport{Rates: []int{48000}}, nil
@@ -126,22 +124,24 @@ func TestOpenCaptureExtractsSelectedChannel(t *testing.T) {
 	})
 	defer restoreCh()
 
+	var opened int
 	prev := openStream
 	openStream = func(cfg capture.Config) (captureStream, error) {
-		if cfg.Channels != 2 {
-			t.Errorf("openStream Channels = %d, want 2 (stereo-only open for a mono selection)", cfg.Channels)
-		}
+		opened = cfg.Channels
 		return &twoChanStub{neg: capture.Config{Rate: 48000, Channels: 2, PeriodFrames: 3}}, nil
 	}
 	defer func() { openStream = prev }()
 
-	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{1}, Format: testFmtS16})
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}
 	defer func() { _ = src.Close() }()
-	if _, ch := src.Negotiated(); ch != 1 {
-		t.Fatalf("Negotiated channels = %d, want 1 (selecting source reduces 2->1)", ch)
+	if opened != 2 {
+		t.Errorf("hardware opened at %d channels, want 2 (stereo-only, resolved from the selection)", opened)
+	}
+	if _, ch := src.Negotiated(); ch != 2 {
+		t.Fatalf("base delivers %d channels, want 2 (unselected: selection happens per stream)", ch)
 	}
 	p, err := src.Read()
 	if err != nil {
@@ -150,10 +150,12 @@ func TestOpenCaptureExtractsSelectedChannel(t *testing.T) {
 	if p.Frames == 0 {
 		t.Fatal("Read returned 0 frames")
 	}
-	for f := range p.Frames {
-		if s := int16(binary.LittleEndian.Uint16(p.Buf[f*2:])); s != 0x1111 {
-			t.Fatalf("frame %d sample = %#x, want 0x1111 (channel 0 extracted, not channel 1)", f, s)
-		}
+	// The base is interleaved: channel 0 = 0x1111, channel 1 = 0x2222.
+	if s := int16(binary.LittleEndian.Uint16(p.Buf[0:])); s != 0x1111 {
+		t.Errorf("channel 0 sample = %#x, want 0x1111", uint16(s))
+	}
+	if s := int16(binary.LittleEndian.Uint16(p.Buf[2:])); s != 0x2222 {
+		t.Errorf("channel 1 sample = %#x, want 0x2222 (base keeps every channel)", uint16(s))
 	}
 }
 
@@ -194,7 +196,7 @@ func TestOpenCaptureFallsBackToS32AndDownconverts(t *testing.T) {
 	}
 	defer func() { openStream = prev }()
 
-	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{1}, Format: testFmtS16})
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}
@@ -260,7 +262,7 @@ func TestOpenCapturePrefersRateErrorAcrossFormats(t *testing.T) {
 			}
 			defer func() { openStream = prev }()
 
-			_, err := OpenCapture(&config.Device{Device: testDevID, Rate: 384000, Channels: []int{1}, Format: testFmtS16})
+			_, err := OpenCapture(&config.Device{Device: testDevID, Rate: 384000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
 			var bre *capture.BadRateError
 			if got := errors.As(err, &bre); got != tc.wantRate {
 				t.Fatalf("errors.As BadRateError = %v, want %v (err=%v)", got, tc.wantRate, err)
@@ -277,7 +279,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// rather than silently deliver the wrong rate.
 	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
 	defer restore()
-	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Channels: []int{1}, Format: testFmtS16}); err == nil {
+	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}); err == nil {
 		t.Fatal("OpenCapture accepted a rate mismatch, want error")
 	}
 	if !stub.closed {
@@ -288,7 +290,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 func TestOpenCaptureStartsAndReads(t *testing.T) {
 	_, restore := swapOpenStream(capture.Config{Rate: 256000, Channels: 1, PeriodFrames: 5120})
 	defer restore()
-	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Channels: []int{1}, Format: testFmtS16})
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
 	if err != nil {
 		t.Fatalf("OpenCapture: %v", err)
 	}
@@ -317,7 +319,7 @@ func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
 		return &stubStream{neg: capture.Config{Rate: 48000, Channels: cfg.Channels, PeriodFrames: 960}}, nil
 	}
 	defer func() { openStream = prev }()
-	src, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Channels: []int{1}, Format: testFmtS16}, 2)
+	src, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2)
 	if err != nil {
 		t.Fatalf("OpenCaptureAt: %v", err)
 	}
@@ -325,7 +327,7 @@ func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
 	if got != 2 {
 		t.Errorf("hardware opened at %d channels, want the given 2", got)
 	}
-	if _, ch := src.Negotiated(); ch != 1 {
-		t.Errorf("stream delivers %d channels, want the 1 selected", ch)
+	if _, ch := src.Negotiated(); ch != 2 {
+		t.Errorf("base delivers %d channels, want the 2 opened (unselected)", ch)
 	}
 }
