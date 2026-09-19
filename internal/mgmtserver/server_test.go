@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 )
@@ -98,6 +99,32 @@ func TestGetHealthReportsOkAndVersion(t *testing.T) {
 	}
 	if h.Version != testVersion {
 		t.Errorf("version = %q, want v1.2.3", h.Version)
+	}
+}
+
+// TestGetHealthReportsAuthRequired asserts the open liveness probe says
+// whether a token is required, following the guard as it is set and cleared.
+func TestGetHealthReportsAuthRequired(t *testing.T) {
+	g := auth.NewGuard("")
+	s := New(&fakeProvider{}, WithAuth(g))
+	health := func() bool {
+		t.Helper()
+		resp, err := s.GetHealth(context.Background(), mgmtapi.GetHealthRequestObject{})
+		if err != nil {
+			t.Fatalf("GetHealth: %v", err)
+		}
+		return resp.(mgmtapi.GetHealth200JSONResponse).AuthRequired
+	}
+	if health() {
+		t.Fatal("open appliance reports authRequired=true")
+	}
+	g.Set("a-valid-token-123")
+	if !health() {
+		t.Fatal("token-gated appliance reports authRequired=false")
+	}
+	g.Set("")
+	if health() {
+		t.Fatal("cleared token still reports authRequired=true")
 	}
 }
 

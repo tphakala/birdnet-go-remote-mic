@@ -457,9 +457,13 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 // until the API has shut down cleanly (a prerequisite for a future config PATCH
 // that must flush its response before the appliance restarts).
 type mgmt struct {
-	// addr is the bound listener address (host:port), read by tests.
+	// addr is the bound listener address (host:port), published in the run lock
+	// for the token commands and read by tests.
 	addr string
-	done chan struct{}
+	// certPath is the PEM certificate the listener serves, published beside addr
+	// so a token command can pin it.
+	certPath string
+	done     chan struct{}
 }
 
 // Wait blocks until the management API has finished shutting down. It is safe on
@@ -536,6 +540,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		mgmtserver.WithSystemInfo(prov),
 		mgmtserver.WithRestart(restartFn),
 		mgmtserver.WithAuth(guard),
+		mgmtserver.WithChannelProbe(probeChannelLevels),
 	}
 	if certMounted {
 		opts = append(opts, mgmtserver.WithCertificateManager(prov))
@@ -604,7 +609,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	}()
 
 	log.Printf("management API on https://%s%s (certificate at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
-	return &mgmt{done: done, addr: ln.Addr().String()}, true
+	return &mgmt{done: done, addr: ln.Addr().String(), certPath: certPath}, true
 }
 
 // toCertInfo adapts the mgmtcert metadata into the mgmtserver domain type, so

@@ -1,6 +1,6 @@
 import { api, ApiError } from "./api.js";
 import { sse } from "./sse.js";
-import { setToken } from "./auth.js";
+import { getToken, setToken } from "./auth.js";
 export class AppStore extends EventTarget {
     state = {
         status: null,
@@ -170,6 +170,45 @@ export class AppStore extends EventTarget {
                 detail: { coreFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." },
             }));
         }
+    }
+    // start is the boot sequence. It settles access before any gated request, so
+    // a browser without a valid token sees the login prompt instead of a burst of
+    // rejected loads (and their console errors). The open /healthz says whether a
+    // token is required; with one required, a stored token is checked with a
+    // single request first. It resolves true once loading and polling are
+    // running, false when the login prompt is up instead (a successful login then
+    // loads and starts polling itself).
+    async start() {
+        let authRequired = false;
+        try {
+            authRequired = (await api.getHealth()).authRequired === true;
+        }
+        catch {
+            // Unreachable or an older appliance without the field: fall through to
+            // the normal load, which surfaces the failure per view (or a 401 prompts).
+        }
+        if (authRequired) {
+            if (!getToken()) {
+                this.onUnauthorized();
+                return false;
+            }
+            try {
+                await api.getStatus();
+            }
+            catch {
+                // A 401 has already raised the prompt through api.onUnauthorized; drop
+                // the rejected token too, so the next page load goes straight to the
+                // prompt instead of repeating the failed request. Any other failure is
+                // left to the full load below to report per view.
+                if (this.loginPending) {
+                    setToken(null);
+                    return false;
+                }
+            }
+        }
+        void this.loadInitial();
+        this.startPolling();
+        return true;
     }
     // retry re-runs the initial load; views call it from their error state.
     retry() {

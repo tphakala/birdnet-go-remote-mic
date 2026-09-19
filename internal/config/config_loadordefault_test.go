@@ -9,7 +9,7 @@ import (
 )
 
 // TestLoadOrDefaultMissingFile asserts a missing config file yields Default()
-// with no error, so a first-run serve or init boots without a config present.
+// with no error, so a first-run serve or token command boots without a config present.
 func TestLoadOrDefaultMissingFile(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "does-not-exist.yaml")

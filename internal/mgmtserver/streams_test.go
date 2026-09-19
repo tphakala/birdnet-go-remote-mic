@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -244,5 +245,29 @@ func TestListDevicesMapsPerStreamStatus(t *testing.T) {
 	}
 	if ws[1].Path != pathSouth || ws[1].ClientConnected || ws[1].DroppedFrames != 2 {
 		t.Errorf("stream[1] = %+v, want /south not-connected drops=2", ws[1])
+	}
+}
+
+// TestDeviceMapsStreamedChannels asserts streamedChannels is the union of every
+// stream's selection (channels covers only the first stream), for both the
+// live device view and the freshly provisioned projection.
+func TestDeviceMapsStreamedChannels(t *testing.T) {
+	cfg := config.Device{
+		Name: nameIface, Device: devIface, Rate: 48000, Format: fmtS16,
+		Streams: []config.Stream{
+			{Path: pathNorth, Mode: config.ModePCM, Channels: []int{3}},
+			{Path: pathSouth, Mode: config.ModePCM, Channels: []int{1, 3}},
+		},
+	}
+	live := mapDevice(&DeviceStatus{Config: cfg, State: StateServing})
+	if live.StreamedChannels == nil || !slices.Equal(*live.StreamedChannels, []int{1, 3}) {
+		t.Errorf("live streamedChannels = %v, want [1 3]", live.StreamedChannels)
+	}
+	if !slices.Equal(live.Channels, []int{3}) {
+		t.Errorf("live channels = %v, want the first stream's [3]", live.Channels)
+	}
+	provisioned := configDeviceToWireDevice(&cfg)
+	if provisioned.StreamedChannels == nil || !slices.Equal(*provisioned.StreamedChannels, []int{1, 3}) {
+		t.Errorf("provisioned streamedChannels = %v, want [1 3]", provisioned.StreamedChannels)
 	}
 }

@@ -53,16 +53,23 @@ plus path instead.
 
 ## Usage
 
-The appliance is a single binary with a handful of subcommands:
+The appliance is a single binary. Apart from `serve` and `version`, commands
+are grouped by what they act on (`remotemic <noun> <verb>`):
 
 ```bash
-birdnet-go-remote-mic list-devices   # enumerate capture devices
-birdnet-go-remote-mic init           # generate the access token, save it, print it
-birdnet-go-remote-mic                # capture and serve (the default; same as `serve`)
-birdnet-go-remote-mic version
+remotemic                  # capture and serve (the default; same as `serve`)
+remotemic devices list     # enumerate capture devices
+remotemic token generate   # create the access token, save it, print it
+remotemic token get        # print the current access token
+remotemic version
 ```
 
-Run `serve` or `init` with `-h` for its flags.
+`remotemic help` lists the commands; add `-h` to `serve` or to a `token` or
+`devices` command for its flags. Commands that read the config take
+`--config`, which defaults to the `REMOTEMIC_CONFIG` environment variable and
+then to `config.yaml` in the working directory. Set `REMOTEMIC_CONFIG` in the
+service unit and in your shell profile on the appliance, and every command
+finds the same file without `--config`.
 
 ### Zero-config first start
 
@@ -87,7 +94,7 @@ devices:
   - name: garden-mic       # unique instance name; also the mDNS label
     device: "hw:1,0"
     path: /garden          # unique RTSP path; defaults to /stream
-    mode: opus             # "opus" (48 kHz mono) or "pcm" (L16, any rate, ultrasonic)
+    mode: opus             # "opus" (48 kHz, mono or stereo) or "pcm" (L16, any rate, ultrasonic)
     rate: 48000
     channels: [1]
     format: s16
@@ -107,8 +114,8 @@ config over default), which is handy for relocating ports on a host where the
 defaults are taken:
 
 ```bash
-birdnet-go-remote-mic --config config.yaml --listen :8554 --mgmt-listen :8443
-birdnet-go-remote-mic --config config.yaml --check   # validate config, then exit
+remotemic --config config.yaml --listen :8554 --mgmt-listen :8443
+remotemic --config config.yaml --check   # validate config, then exit
 ```
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
@@ -120,13 +127,34 @@ By default the appliance is open: anyone on the network can pull the streams
 and use the management API and web UI. Set a shared access token to require
 credentials everywhere at once.
 
-The quickest way is the `init` subcommand: it generates a strong token, writes
-it into the config, and prints it once.
+The quickest way is `token generate`: it creates a strong token, writes it
+into the config, and prints it.
 
 ```bash
-birdnet-go-remote-mic init            # generate, save, and print the token
-birdnet-go-remote-mic init --force    # rotate an existing token
+remotemic token generate           # create, save, and print a token
+remotemic token generate --force   # rotate: replace the existing token
+remotemic token get                # print the current token (for the web UI login)
+remotemic token set < token.txt    # use a token of your own (prompts when run in a terminal)
+remotemic token clear              # remove the token and return to open access
 ```
+
+`token get` prints only the token, so `TOKEN=$(remotemic token get)` works in
+scripts. `token set` never takes the token as an argument, which would leave it
+in shell history and the process list: it reads stdin, or prompts twice without
+echo in a terminal. `token clear` asks for confirmation in a terminal and needs
+`--yes` otherwise.
+
+`generate`, `set`, and `clear` work whether or not the appliance is running.
+While it runs, they send the change through its management API, so it applies
+immediately, exactly like the web UI's Access Control card. A running appliance
+holds a lock file beside its config (`config.yaml.lock`) that records where the
+API listens. When the appliance is stopped, the commands edit the config file
+and the change applies at the next start. An appliance running without its
+management API has no config writer, so the commands edit the file too and the
+running process keeps its current token until it restarts. A command run while
+the appliance is still starting up, before it has published where its API
+listens, asks you to retry in a few seconds. The config is written 0600, so run
+the commands as the account the appliance runs as.
 
 You can also set it by hand:
 
@@ -241,8 +269,8 @@ task check   # build (amd64 + arm64 + arm, CGO off), vet (4 arches), lint, gofmt
 - **Streams** over a self-implemented RTSP/RTP server, TCP-interleaved by
   default so the audio arrives lossless and firewall-friendly.
 - **Two modes over one protocol:**
-  - *Normal audio* uses Opus at 48 kHz mono, low bandwidth for ordinary
-    birdsong.
+  - *Normal audio* uses Opus at 48 kHz, mono or stereo, low bandwidth for
+    ordinary birdsong.
   - *Ultrasonic* uses raw PCM (L16) at high sample rates (up to 256 or 384 kHz)
     for bat detection, where no lossy codec can carry the signal. On a LAN the
     uncompressed bandwidth is a non-issue (~4 Mbit/s at 256 kHz mono).

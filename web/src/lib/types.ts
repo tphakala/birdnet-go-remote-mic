@@ -170,6 +170,9 @@ export interface Device {
   rate: number;
   // Selected 1-based capture channel numbers streamed (see DeviceConfig.channels).
   channels: number[];
+  // Every channel any of the device's streams carries (channels covers only the
+  // first stream). Absent from an older appliance.
+  streamedChannels?: number[];
   state: DeviceState;
   negotiatedRate?: number;
   negotiatedChannels?: number;

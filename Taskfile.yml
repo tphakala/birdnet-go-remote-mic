@@ -13,36 +13,36 @@ tasks:
       - task --list
 
   # Every target writes an arch-suffixed binary; there is deliberately no bare
-  # bin/birdnet-go-remote-mic, so an out-of-date `scp bin/birdnet-go-remote-mic`
+  # bin/remotemic, so an out-of-date `scp bin/remotemic`
   # fails loudly instead of silently shipping the amd64 dev build to an ARM Pi.
   build:amd64:
-    desc: Build for linux/amd64 dev host, CGO off, version stamped (bin/birdnet-go-remote-mic-amd64)
+    desc: Build for linux/amd64 dev host, CGO off, version stamped (bin/remotemic-amd64)
     aliases: [build]
     env:
       CGO_ENABLED: '0'
       GOOS: linux
       GOARCH: amd64
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic-amd64 ./cmd/birdnet-go-remote-mic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/remotemic-amd64 ./cmd/remotemic
 
   build:arm64:
-    desc: Cross-build for linux/arm64, the Pi Zero 2 W target (bin/birdnet-go-remote-mic-arm64)
+    desc: Cross-build for linux/arm64, the Pi Zero 2 W target (bin/remotemic-arm64)
     env:
       CGO_ENABLED: '0'
       GOOS: linux
       GOARCH: arm64
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic-arm64 ./cmd/birdnet-go-remote-mic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/remotemic-arm64 ./cmd/remotemic
 
   build:arm:
-    desc: Cross-build for linux/arm, 32-bit older Pis, GOARM=6 for ARMv6 reach (bin/birdnet-go-remote-mic-arm)
+    desc: Cross-build for linux/arm, 32-bit older Pis, GOARM=6 for ARMv6 reach (bin/remotemic-arm)
     env:
       CGO_ENABLED: '0'
       GOOS: linux
       GOARCH: arm
       GOARM: '6'
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/birdnet-go-remote-mic-arm ./cmd/birdnet-go-remote-mic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/remotemic-arm ./cmd/remotemic
 
   test:
     desc: Run all tests

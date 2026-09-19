@@ -2,6 +2,8 @@ package mgmtserver
 
 import (
 	"context"
+	"errors"
+	"math"
 	"net/http"
 	"regexp"
 	"slices"
@@ -97,9 +99,9 @@ func TestChooseParams(t *testing.T) {
 		{"auto picks opus when 48k supported", opusCapable, &mgmtapi.ProvisionDeviceRequest{}, config.ModeOpus, 48000, []int{1}},
 		{"auto picks pcm at best rate for ultrasonic", ultrasonic, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 384000, []int{1}},
 		{"auto unprobed defaults pcm 48k mono", unprobed, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 48000, []int{1}},
-		// A stereo-only interface cannot open mono, so its auto default is the full
-		// native width and it lands on PCM stereo (Opus needs a single channel).
-		{"auto stereo-only defaults pcm full width", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{}, config.ModePCM, 48000, []int{1, 2}},
+		// Every derived selection is a single channel, even on a stereo-only
+		// interface (the selecting source extracts it), so auto lands on mono Opus.
+		{"auto stereo-only defaults to one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{}, config.ModeOpus, 48000, []int{1}},
 		// But selecting a single channel on that same stereo-only device unlocks
 		// Opus: the selecting source extracts one channel to a mono stream.
 		{"single-channel selection unlocks opus on stereo-only", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1)}, config.ModeOpus, 48000, []int{1}},
@@ -119,18 +121,18 @@ func TestChooseParams(t *testing.T) {
 		// two channels is a valid stereo Opus selection, and three or more is what
 		// config.Validate rejects (422) rather than the request being narrowed here.
 		{"explicit opus with explicit multi-channel is not collapsed", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2)}, config.ModeOpus, 48000, []int{1, 2}},
-		// A DERIVED default on a stereo-only device is narrowed to one channel for
-		// Opus: the operator asked for Opus, not for a channel set.
+		// A derived selection is always a single channel, so explicit Opus on a
+		// stereo-only device lands on one channel.
 		{"explicit opus on stereo-only derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
 		// An explicit EMPTY channel array is a derived selection just like an
-		// omitted field, so Opus on a stereo-only device narrows to one channel
-		// instead of 422ing where omitting the field would have succeeded.
+		// omitted field, so it derives a single channel instead of 422ing where
+		// omitting the field would have succeeded.
 		{"explicit opus with empty channel array derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr()}, config.ModeOpus, 48000, []int{1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mode, rate, ch := chooseParams(tt.dev, tt.req)
+			mode, rate, ch := chooseParams(tt.dev, tt.req, 1)
 			if mode != tt.wantMode || rate != tt.wantRate || !slices.Equal(ch, tt.wantCh) {
 				t.Errorf("chooseParams = (%s, %d, %v), want (%s, %d, %v)", mode, rate, ch, tt.wantMode, tt.wantRate, tt.wantCh)
 			}
@@ -464,4 +466,242 @@ func TestDeriveNameFallsBackToDevice(t *testing.T) {
 	if got := deriveName("", "---", map[string]bool{"device": true}); got != "device-2" {
 		t.Errorf("deriveName with device taken = %q, want device-2", got)
 	}
+}
+
+// TestChooseParamsPreferredChannel asserts a derived selection takes the
+// preferred (loudest) channel, and an explicit selection ignores it.
+func TestChooseParamsPreferredChannel(t *testing.T) {
+	t.Parallel()
+	dev := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{4}}
+	if _, _, ch := chooseParams(dev, &mgmtapi.ProvisionDeviceRequest{}, 3); !slices.Equal(ch, []int{3}) {
+		t.Errorf("derived selection = %v, want [3]", ch)
+	}
+	if _, _, ch := chooseParams(dev, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(2)}, 3); !slices.Equal(ch, []int{2}) {
+		t.Errorf("explicit selection = %v, want [2]", ch)
+	}
+}
+
+func TestLoudestChannel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		levels []float64
+		want   int
+	}{
+		{"empty", nil, 1},
+		{"clear winner", []float64{-60, -30, -55}, 2},
+		{"exact tie picks lowest", []float64{-40, -40}, 1},
+		{"within tie window picks lowest", []float64{-40.6, -40}, 1},
+		{"outside tie window picks loudest", []float64{-42, -40}, 2},
+		{"all silent picks channel 1", []float64{-95, -85, -99}, 1},
+		{"single channel", []float64{-20}, 1},
+		{"one dB below is still a tie for the lowest", []float64{-41, -40}, 1},
+		{"loudest at the silence floor picks channel 1", []float64{-80, -80.5}, 1},
+		{"NaN never wins", []float64{math.NaN(), -20}, 1},
+	} {
+		if got := loudestChannel(tc.levels); got != tc.want {
+			t.Errorf("%s: loudestChannel(%v) = %d, want %d", tc.name, tc.levels, got, tc.want)
+		}
+	}
+}
+
+// TestProvisionDeviceDefaultsToLoudestChannel asserts provisioning without a
+// channel selection probes the device across its width at the rate it will
+// use, and provisions the loudest channel.
+func TestProvisionDeviceDefaultsToLoudestChannel(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2, 4}},
+	}}
+	var gotRate, gotWidth int
+	probe := func(_ context.Context, _ string, rate, channels int) ([]float64, error) {
+		gotRate, gotWidth = rate, channels
+		return []float64{-70, -65, -30, -31}, nil
+	}
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe),
+		WithReloader(func(context.Context, config.Config) error { return nil }))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	created, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse)
+	if !ok {
+		t.Fatalf("returned %T, want 201", resp)
+	}
+	if !slices.Equal(created.Channels, []int{3}) {
+		t.Errorf("channels = %v, want [3] (the loudest; 4 is within the tie window but higher)", created.Channels)
+	}
+	if gotRate != 48000 || gotWidth != 4 {
+		t.Errorf("probe opened at %d Hz x %d ch, want 48000 Hz x 4 ch", gotRate, gotWidth)
+	}
+}
+
+// TestProvisionDeviceProbeFallbacks asserts a failing probe falls back to
+// channel 1 and an explicit selection skips the probe entirely.
+func TestProvisionDeviceProbeFallbacks(t *testing.T) {
+	newServer := func(t *testing.T, probe ChannelProbe) *Server {
+		t.Helper()
+		store, _ := tempStore(t)
+		prov := &fakeProvider{available: []AvailableDevice{
+			{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}},
+		}}
+		return New(prov, WithConfigStore(store), WithChannelProbe(probe),
+			WithReloader(func(context.Context, config.Config) error { return nil }))
+	}
+	provision := func(t *testing.T, s *Server, req *mgmtapi.ProvisionDeviceRequest) []int {
+		t.Helper()
+		resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{Body: req})
+		if err != nil {
+			t.Fatalf("ProvisionDevice: %v", err)
+		}
+		created, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse)
+		if !ok {
+			t.Fatalf("returned %T, want 201", resp)
+		}
+		return created.Channels
+	}
+
+	failing := func(context.Context, string, int, int) ([]float64, error) { return nil, errors.New("device busy") }
+	if ch := provision(t, newServer(t, failing), &mgmtapi.ProvisionDeviceRequest{Device: devAttic}); !slices.Equal(ch, []int{1}) {
+		t.Errorf("failed probe: channels = %v, want [1]", ch)
+	}
+
+	called := false
+	spy := func(context.Context, string, int, int) ([]float64, error) {
+		called = true
+		return []float64{-90, -10}, nil
+	}
+	ch := provision(t, newServer(t, spy), &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr(1)})
+	if called {
+		t.Error("probe ran although the request named its channels")
+	}
+	if !slices.Equal(ch, []int{1}) {
+		t.Errorf("explicit selection: channels = %v, want [1]", ch)
+	}
+}
+
+// TestProvisionDeviceAlreadyConfiguredSkipsProbe asserts an already-configured
+// device is refused with a 409 before the channel probe runs, so provisioning
+// never opens a device that is already serving.
+func TestProvisionDeviceAlreadyConfiguredSkipsProbe(t *testing.T) {
+	store, _ := tempStore(t) // baseConfig already lists devHW1
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devHW1, FriendlyName: "Garden", SupportedRates: []int{48000}, SupportedChannels: []int{2}},
+	}}
+	called := false
+	probe := func(context.Context, string, int, int) ([]float64, error) {
+		called = true
+		return []float64{-90, -10}, nil
+	}
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devHW1},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse); !ok {
+		t.Fatalf("returned %T, want 409", resp)
+	}
+	if called {
+		t.Error("channel probe ran for an already-configured device")
+	}
+}
+
+// TestProvisionDeviceCancelledDuringProbeDoesNotPersist asserts a request whose
+// context is cancelled during the probe is answered with a 503 and persists
+// nothing, so a client that walked away leaves no half-provisioned device.
+func TestProvisionDeviceCancelledDuringProbeDoesNotPersist(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	probe := func(context.Context, string, int, int) ([]float64, error) {
+		cancel() // the client disconnects during the probe
+		return []float64{-90, -10}, nil
+	}
+	before := len(store.Config().Devices)
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe),
+		WithReloader(func(context.Context, config.Config) error { return nil }))
+	resp, err := s.ProvisionDevice(ctx, mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	d, ok := resp.(mgmtapi.ProvisionDevicedefaultApplicationProblemPlusJSONResponse)
+	if !ok || d.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("returned %T, want a 503", resp)
+	}
+	if got := len(store.Config().Devices); got != before {
+		t.Errorf("persisted %d devices after a cancelled request, want %d", got, before)
+	}
+}
+
+// TestPreferredChannelProbeParams asserts the probe runs at the rate and width
+// provisioning will actually use, and is skipped when there is nothing to choose.
+func TestPreferredChannelProbeParams(t *testing.T) {
+	newServer := func(probe ChannelProbe) *Server {
+		store, _ := tempStore(t)
+		return New(&fakeProvider{}, WithConfigStore(store), WithChannelProbe(probe))
+	}
+
+	t.Run("opus request probes at 48k not the requested rate", func(t *testing.T) {
+		var gotRate int
+		s := newServer(func(_ context.Context, _ string, rate, _ int) ([]float64, error) {
+			gotRate = rate
+			return []float64{-90, -10}, nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{44100, 48000}, SupportedChannels: []int{2}}
+		s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{
+			Mode: modePtr(mgmtapi.Opus), Rate: intPtr(44100),
+		})
+		if gotRate != 48000 {
+			t.Errorf("probe rate = %d, want 48000 (the rate opus provisioning uses)", gotRate)
+		}
+	})
+
+	t.Run("empty channels array still probes", func(t *testing.T) {
+		called := false
+		s := newServer(func(context.Context, string, int, int) ([]float64, error) {
+			called = true
+			return []float64{-90, -10}, nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{2}}
+		s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr()})
+		if !called {
+			t.Error("probe did not run for an explicit empty channels array")
+		}
+	})
+
+	t.Run("width caps at the config maximum", func(t *testing.T) {
+		var gotWidth int
+		s := newServer(func(_ context.Context, _ string, _, channels int) ([]float64, error) {
+			gotWidth = channels
+			return make([]float64, channels), nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{16}}
+		s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{})
+		if gotWidth != config.MaxChannels {
+			t.Errorf("probe width = %d, want %d (config maximum)", gotWidth, config.MaxChannels)
+		}
+	})
+
+	t.Run("single-channel device is not probed", func(t *testing.T) {
+		called := false
+		s := newServer(func(context.Context, string, int, int) ([]float64, error) {
+			called = true
+			return []float64{-10}, nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{1}}
+		if got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{}); got != 1 {
+			t.Errorf("preferredChannel = %d, want 1", got)
+		}
+		if called {
+			t.Error("probe ran for a single-channel device")
+		}
+	})
 }

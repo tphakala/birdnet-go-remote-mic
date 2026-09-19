@@ -13,7 +13,11 @@ const ICON_ERROR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
 const ICON_WARN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
 const ICON_COPY = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
 const ICON_LOCK = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
-const ICON_GEAR = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+// Vertical faders (the mixing-desk "sliders" glyph) for the settings toggle:
+// the panel adjusts capture and stream parameters, which reads closer to an
+// audio console than a generic gear does.
+const ICON_SLIDERS = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="4" y1="21" y2="14"></line><line x1="4" x2="4" y1="10" y2="3"></line><line x1="12" x2="12" y1="21" y2="12"></line><line x1="12" x2="12" y1="8" y2="3"></line><line x1="20" x2="20" y1="21" y2="16"></line><line x1="20" x2="20" y1="12" y2="3"></line><line x1="2" x2="6" y1="14" y2="14"></line><line x1="10" x2="14" y1="8" y2="8"></line><line x1="18" x2="22" y1="16" y2="16"></line></svg>';
+const ICON_CHEVRON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
 // capsSummary renders a short human summary of a device's probed capabilities
 // (channel support and top sample rate) for the available-devices list.
 function capsSummary(d) {
@@ -59,10 +63,34 @@ const COPY_LABEL = "Copy URL";
 const COPY_LABEL_DONE = "Copied!";
 const COPY_ARIA = "Copy RTSP stream URL";
 const COPY_ARIA_DONE = "RTSP stream URL copied";
+const TOKEN_LABEL = "Token";
+const TOKEN_ARIA = "Copy access token";
 // Pending label-restore timer per copy button, so a second click clears the
 // prior restore instead of letting two timers fight (WeakMap: entries GC with
 // the button, no leak).
 const copyResetTimers = new WeakMap();
+// flashCopied plays the copy-success feedback on btn: the green "copied" pulse,
+// the visible label swapped to "Copied!" and the accessible name to ariaDone
+// (so the success is announced too), all restored after a moment. It restores
+// to the fixed resting values rather than re-reading the DOM, and clears any
+// pending restore first, so a rapid second click cannot strand the button on
+// "Copied!".
+function flashCopied(btn, label, rest, ariaRest, ariaDone) {
+    btn.classList.add("copied");
+    if (label)
+        label.textContent = COPY_LABEL_DONE;
+    btn.setAttribute("aria-label", ariaDone);
+    const prev = copyResetTimers.get(btn);
+    if (prev !== undefined)
+        window.clearTimeout(prev);
+    copyResetTimers.set(btn, window.setTimeout(() => {
+        btn.classList.remove("copied");
+        if (label)
+            label.textContent = rest;
+        btn.setAttribute("aria-label", ariaRest);
+        copyResetTimers.delete(btn);
+    }, 1600));
+}
 // nonServingFooterText is the footer message for a card that is not serving.
 function nonServingFooterText(state, configEnabled) {
     if (state === "disabled") {
@@ -72,6 +100,10 @@ function nonServingFooterText(state, configEnabled) {
     }
     return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
 }
+// Sequence for the settings panels' element ids (aria-controls targets).
+let settingsSeq = 0;
+// Sequence for the token tag's description element ids (aria-describedby targets).
+let tokenDescSeq = 0;
 function iconSpan(markup, className) {
     const s = document.createElement("span");
     if (className)
@@ -387,7 +419,8 @@ export class DashboardView {
             await this.enqueue(async () => {
                 const created = await api.provisionDevice({ device: d.device });
                 await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-                showToast(`Enabled ${created.name}. Streaming on ${created.path}.`);
+                const ch = created.channels.length === 1 ? ` on channel ${created.channels[0]}` : "";
+                showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
             });
         }
         catch (err) {
@@ -444,6 +477,7 @@ export class DashboardView {
     // a fully-typed CardEntry in one checked literal (no partial `as` cast).
     newEntry(d) {
         const settingsWrap = elem("div", "card-settings");
+        settingsWrap.id = `card-settings-${++settingsSeq}`;
         settingsWrap.hidden = true;
         const parts = this.buildArticle(d);
         const entry = {
@@ -490,18 +524,27 @@ export class DashboardView {
             oldArticle.replaceWith(entry.article);
         this.restoreFocus(entry, saved);
     }
-    // wireArticleHandlers attaches the gear and toggle handlers to a freshly built
+    // syncSettingsButton reflects whether the settings panel is open on the
+    // disclosure button: aria-expanded for assistive tech, the chevron flip and
+    // accent via the card's .expanded class. It runs wherever expanded changes
+    // and after every rebuild, which creates a fresh button.
+    syncSettingsButton(entry) {
+        entry.settingsBtn.setAttribute("aria-expanded", String(entry.expanded));
+        entry.settingsBtn.setAttribute("aria-controls", entry.settingsWrap.id);
+    }
+    // wireArticleHandlers attaches the settings and toggle handlers to a freshly built
     // article's controls. They close over the stable entry (not the disposable
     // nodes), so a later rebuild simply re-wires the new nodes to the same entry.
     wireArticleHandlers(entry) {
-        entry.gearBtn.addEventListener("click", () => this.toggleSettings(entry));
+        entry.settingsBtn.addEventListener("click", () => this.toggleSettings(entry));
         entry.toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry));
+        this.syncSettingsButton(entry);
     }
     // buildArticle creates the DOM skeleton for a device's shape with NO device
     // data written: header nodes with empty text, chips and lock hidden, toggle
     // unchecked, the body for the shape. It returns the node bundle; syncCard fills
     // every value and wireArticleHandlers binds the controls to the stable entry.
-    // Trusted static SVG for the copy, lock and gear icons is assigned here; the
+    // Trusted static SVG for the copy, lock and settings icons is assigned here; the
     // avatar icon depends on state and is written by syncCard.
     buildArticle(d) {
         const serving = d.state === "serving";
@@ -523,14 +566,28 @@ export class DashboardView {
         const modeTag = elem("span", "tech-tag");
         const rateTag = elem("span", "tech-tag");
         const chTag = elem("span", "tech-tag");
-        const lockEl = elem("span", "tech-tag lock-tag");
-        lockEl.appendChild(iconSpan(ICON_LOCK));
-        lockEl.appendChild(elem("span", undefined, "Token"));
-        // The visible "Token" tag needs its meaning in the accessible name too: a
-        // title tooltip is unreachable by keyboard and touch. A visually-hidden clause
-        // carries the explanation to assistive tech; the title stays for a pointer.
-        lockEl.appendChild(elem("span", "visually-hidden", ": pulling this stream requires the access token"));
-        lockEl.title = "Pulling this stream requires the access token";
+        // "Token" marks a stream that needs the access token, and copies it: the
+        // same feedback as Copy URL. Its aria-label names the action; the title
+        // adds why the token matters for a pointer user.
+        const lockEl = elem("button", "tech-tag lock-tag");
+        lockEl.setAttribute("type", "button");
+        lockEl.setAttribute("aria-label", TOKEN_ARIA);
+        lockEl.title = "Pulling this stream requires the access token. Click to copy it.";
+        lockEl.dataset.focus = "token";
+        // Hidden until syncCard shows it (serving and auth required). Building it
+        // hidden means restoreFocus does not land focus on it right before syncCard
+        // would hide it again, dropping focus to <body>.
+        lockEl.hidden = true;
+        lockEl.appendChild(iconSpan(ICON_LOCK, "icon-copy"));
+        lockEl.appendChild(elem("span", "copy-label", TOKEN_LABEL));
+        // aria-label names the action ("Copy access token"); a described-by span adds
+        // why the token matters, which a title attribute alone does not reliably
+        // reach a screen-reader user.
+        const tokenDesc = elem("span", "visually-hidden", "Pulling this stream requires the access token");
+        tokenDesc.id = `token-desc-${++tokenDescSeq}`;
+        lockEl.setAttribute("aria-describedby", tokenDesc.id);
+        lockEl.appendChild(tokenDesc);
+        lockEl.addEventListener("click", () => this.handleCopyToken(lockEl));
         const statusEl = elem("span");
         tags.append(modeTag, rateTag, chTag, lockEl, statusEl);
         // Streaming enable/disable toggle. A disabled device stays configured but is
@@ -558,13 +615,16 @@ export class DashboardView {
         toggleLabel.appendChild(toggleInput);
         toggleLabel.appendChild(toggleTrack);
         tags.appendChild(toggleLabel);
-        const gearBtn = elem("button", "card-gear");
-        gearBtn.setAttribute("type", "button");
-        gearBtn.setAttribute("aria-label", "Device settings");
-        gearBtn.title = "Device settings";
-        gearBtn.dataset.focus = "gear";
-        gearBtn.innerHTML = ICON_GEAR;
-        tags.appendChild(gearBtn);
+        // Settings disclosure. It sits at the right end of the footer, directly
+        // above the panel it expands, in both body shapes (a disabled or failed
+        // device still needs its settings). syncSettingsButton writes its
+        // expanded state.
+        const settingsBtn = elem("button", "card-settings-toggle");
+        settingsBtn.setAttribute("type", "button");
+        settingsBtn.dataset.focus = "settings";
+        settingsBtn.appendChild(iconSpan(ICON_SLIDERS, "settings-toggle-icon"));
+        settingsBtn.appendChild(elem("span", undefined, "Settings"));
+        settingsBtn.appendChild(iconSpan(ICON_CHEVRON, "settings-toggle-chevron"));
         header.appendChild(ident);
         header.appendChild(tags);
         article.appendChild(header);
@@ -622,9 +682,12 @@ export class DashboardView {
             const negotiated = elem("div");
             const negotiatedEl = elem("span");
             negotiated.appendChild(negotiatedEl);
-            footer.appendChild(negotiated);
+            // The negotiated rate and the settings toggle share the right end.
+            const footerEnd = elem("div", "rack-footer-end");
+            footerEnd.append(negotiated, settingsBtn);
+            footer.appendChild(footerEnd);
             article.appendChild(footer);
-            live = { urlEl, clientsEl, droppedEl, negotiatedEl, meters: built.meters };
+            live = { urlEl, clientsEl, droppedEl, negotiatedEl, meters: built.meters, rows: built.rows };
         }
         else {
             // Error / skipped / disabled body. The banner is always present and hidden
@@ -643,12 +706,13 @@ export class DashboardView {
             const footer = elem("div", "rack-footer");
             const footerNote = elem("span");
             footer.appendChild(footerNote);
+            footer.appendChild(settingsBtn);
             article.appendChild(footer);
             idle = { banner, bannerIcon, bannerDesc, footerNote };
         }
         return {
             article, avatar, titleEl, hwEl, modeTag, rateTag, chTag, lockEl,
-            statusEl, toggleInput, gearBtn, pendingNote, live, idle,
+            statusEl, toggleInput, settingsBtn, pendingNote, live, idle,
         };
     }
     // buildMeterConsole builds the shared dB scale plus one metering row per
@@ -665,6 +729,7 @@ export class DashboardView {
         }
         meterConsole.appendChild(scale);
         const meters = [];
+        const rows = [];
         const n = Math.max(1, count);
         const multi = n > 1;
         // Cap the stack height for high-channel interfaces so a 6-8 channel device
@@ -676,8 +741,14 @@ export class DashboardView {
             const wrapper = elem("div", "meter-track-wrapper");
             const chNum = c + 1;
             if (multi) {
-                const label = elem("span", "meter-channel-label mono", `Ch ${chNum}`);
+                // A tally light in front of the channel number: lit while a stream
+                // carries the channel (syncCard sets it), so the streamed channels stand
+                // out on a multi-channel interface. A mono device has a single row that
+                // is always streamed, so it gets no label and no light.
+                const label = elem("span", "meter-channel-label mono");
                 label.setAttribute("aria-hidden", "true");
+                label.appendChild(elem("span", "meter-tally"));
+                label.appendChild(elem("span", undefined, `Ch ${chNum}`));
                 wrapper.appendChild(label);
             }
             const canvasContainer = elem("div", "meter-canvas-container");
@@ -703,9 +774,10 @@ export class DashboardView {
             wrapper.appendChild(canvasContainer);
             wrapper.appendChild(stats);
             meterConsole.appendChild(wrapper);
+            rows.push(wrapper);
             meters.push(new VUMeter(canvas, dbReadout, clipBtn));
         }
-        return { console: meterConsole, meters };
+        return { console: meterConsole, meters, rows };
     }
     // syncCard is the ONE write path for device and config data. It runs right
     // after every build and on every render, writing each dynamic field through a
@@ -763,6 +835,11 @@ export class DashboardView {
         const toggleAria = `Stream ${d.name}`;
         if (entry.toggleInput.getAttribute("aria-label") !== toggleAria)
             entry.toggleInput.setAttribute("aria-label", toggleAria);
+        // The settings disclosure reads "Settings" for every card; name the device so
+        // a screen-reader user can tell which card's settings the button opens.
+        const settingsAria = `Settings for ${d.name}`;
+        if (entry.settingsBtn.getAttribute("aria-label") !== settingsAria)
+            entry.settingsBtn.setAttribute("aria-label", settingsAria);
         // Do not fight the user mid-interaction (the input is disabled while a PATCH
         // is in flight); otherwise keep it in sync with the persisted flag.
         if (!entry.toggleInput.disabled && entry.toggleInput.checked !== configEnabled) {
@@ -783,6 +860,25 @@ export class DashboardView {
             setText(entry.live.clientsEl, d.clientConnected ? "1 connected" : "0 connected");
             setText(entry.live.droppedEl, String(d.droppedFrames));
             setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz`);
+            // Mark each captured channel live when a stream carries it. Rows index
+            // hardware channels from 0, selections number them from 1.
+            if (entry.live.rows.length > 1) {
+                const streamed = new Set(d.streamedChannels ?? d.channels);
+                entry.live.rows.forEach((row, i) => {
+                    const on = streamed.has(i + 1);
+                    row.classList.toggle("ch-live", on);
+                    row.classList.toggle("ch-off", !on);
+                    const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
+                    if (row.title !== title)
+                        row.title = title;
+                    // The tally light is aria-hidden, so carry its streamed/not-streamed
+                    // meaning on the row's own exposed control: the clip button.
+                    const clip = row.querySelector(".clip-latch-btn");
+                    const clipAria = `Channel ${i + 1} (${on ? "streamed" : "not streamed"}) clip indicator, click to clear`;
+                    if (clip && clip.getAttribute("aria-label") !== clipAria)
+                        clip.setAttribute("aria-label", clipAria);
+                });
+            }
         }
         if (entry.idle) {
             setHidden(entry.idle.banner, !d.error);
@@ -798,8 +894,8 @@ export class DashboardView {
     // captureFocus records where keyboard focus is inside a card before its article
     // is rebuilt, so restoreFocus can put it back. Focus inside the settings panel
     // is remembered by element identity (the panel is moved, not rebuilt); focus on
-    // a rebuilt control is remembered by its data-focus key (toggle, gear, copy,
-    // clip-N), which the new article recreates.
+    // a rebuilt control is remembered by its data-focus key (toggle, settings, copy,
+    // token, clip-N), which the new article recreates.
     captureFocus(entry) {
         // captureFocus runs only from mount(), which rebuilds an existing article, so
         // entry.article is always present (the first article is built in newEntry).
@@ -823,10 +919,11 @@ export class DashboardView {
         }
         if (saved.key) {
             const node = entry.article.querySelector(`[data-focus="${saved.key}"]`);
-            // A control that exists only in the serving shape (copy, clip-N) is gone
-            // after a flip to idle; keep focus on the card via the gear rather than
-            // letting it fall to <body>.
-            (node ?? entry.gearBtn).focus();
+            // A control that is gone or hidden in the rebuilt shape (copy and clip-N
+            // after a flip to idle, or the token tag when the stream no longer needs
+            // the token) cannot take focus; keep focus on the card via the settings
+            // button rather than letting it fall to <body>.
+            (node && !node.hidden && !node.closest("[hidden]") ? node : entry.settingsBtn).focus();
         }
     }
     // deviceConfigBase is the current device list to patch from: the persisted
@@ -913,13 +1010,13 @@ export class DashboardView {
                 // Re-read the current toggle: a poll may have rebuilt the card during the
                 // PATCH (a serving<->idle flip, or a captured-channel change) and replaced
                 // the node this closure captured. Clear the busy state and restore focus on
-                // the live node, falling back to the gear if the toggle is gone, so a
+                // the live node, falling back to the settings button if the toggle is gone, so a
                 // keyboard user is never stranded on the document body.
                 const toggle = entry.toggleInput;
                 toggle.disabled = false;
                 toggle.removeAttribute("aria-busy");
                 if (hadFocus)
-                    (toggle.isConnected ? toggle : entry.gearBtn).focus();
+                    (toggle.isConnected ? toggle : entry.settingsBtn).focus();
             }
         });
     }
@@ -991,10 +1088,11 @@ export class DashboardView {
         entry.expanded = true;
         entry.settingsWrap.hidden = false;
         entry.article.classList.add("expanded");
+        this.syncSettingsButton(entry);
     }
     // requestCloseSettings collapses the panel, but first confirms the discard if
     // the form has unsaved edits. It guards every collapse path (the Cancel button
-    // and the gear toggle), so a stray click cannot silently drop pending changes.
+    // and the settings button), so a stray click cannot silently drop pending changes.
     async requestCloseSettings(entry) {
         if (entry.dirty) {
             const ok = await confirmDialog({
@@ -1008,15 +1106,16 @@ export class DashboardView {
         }
         this.closeSettings(entry);
         // closeSettings clears settingsWrap (including the Cancel button focus was on),
-        // so return focus to the gear button, which always survives the collapse,
+        // so return focus to the settings button, which always survives the collapse,
         // rather than letting focus fall to <body>.
-        entry.gearBtn.focus();
+        entry.settingsBtn.focus();
     }
     closeSettings(entry) {
         entry.expanded = false;
         entry.dirty = false;
         entry.settingsWrap.hidden = true;
         entry.article.classList.remove("expanded");
+        this.syncSettingsButton(entry);
         entry.settingsWrap.textContent = "";
         entry.settingsForm?.destroy();
         entry.settingsForm = null;
@@ -1041,8 +1140,8 @@ export class DashboardView {
         this.closeSettings(entry);
         this.toggleSettings(entry);
         // The Reload button was just removed with the old form; move focus to the
-        // gear (which survives the rebuild) rather than letting it fall to <body>.
-        entry.gearBtn.focus();
+        // settings button (which survives the rebuild) rather than letting it fall to <body>.
+        entry.settingsBtn.focus();
     }
     // syncSettings shows or hides the "changed elsewhere" notice on an open form by
     // comparing the config the form was built from (cached formSourceKey) against
@@ -1111,10 +1210,10 @@ export class DashboardView {
                     await Promise.all([store.refreshConfig(), store.refreshDevices()]);
                     showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
                     // closeSettings above destroyed the focused Save button and collapsed the
-                    // panel, dropping focus to <body>. Return it to the gear (which survives
+                    // panel, dropping focus to <body>. Return it to the settings button (which survives
                     // any rebuild the refresh triggered, via the stable entry), matching the
                     // Cancel and reload paths so a keyboard user is not stranded at the top.
-                    entry.gearBtn.focus();
+                    entry.settingsBtn.focus();
                 }
                 catch (err) {
                     this.apiErrorToast(err, "Save failed");
@@ -1150,29 +1249,32 @@ export class DashboardView {
         navigator.clipboard.writeText(url).then(() => {
             if (token)
                 showToast("Stream URL copied with the access token included.");
-            btn.classList.add("copied");
-            const labelSpan = btn.querySelector(".copy-label");
-            if (labelSpan)
-                labelSpan.textContent = COPY_LABEL_DONE;
-            // The credentialed path fires a toast (announced); the plain path only swaps
-            // the visible label, which a screen reader does not hear because the button's
-            // aria-label is otherwise fixed. Reflect the success in the accessible name
-            // briefly so the plain copy is announced too, then restore it. Restore to the
-            // fixed resting labels (not a captured value) and clear any prior pending
-            // restore, so a rapid second click cannot strand the button on "Copied!".
-            if (!token)
-                btn.setAttribute("aria-label", COPY_ARIA_DONE);
-            const prev = copyResetTimers.get(btn);
-            if (prev !== undefined)
-                window.clearTimeout(prev);
-            copyResetTimers.set(btn, window.setTimeout(() => {
-                btn.classList.remove("copied");
-                if (labelSpan)
-                    labelSpan.textContent = COPY_LABEL;
-                if (!token)
-                    btn.setAttribute("aria-label", COPY_ARIA);
-                copyResetTimers.delete(btn);
-            }, 1600));
+            // With the token included the toast already announces the copy, so the
+            // accessible name stays put rather than announcing it twice.
+            flashCopied(btn, btn.querySelector(".copy-label"), COPY_LABEL, COPY_ARIA, token ? COPY_ARIA : COPY_ARIA_DONE);
+        }).catch(() => {
+            showToast("Copy failed", "error");
+        });
+    }
+    // handleCopyToken copies the access token this browser signed in with. The
+    // tag only shows while the appliance requires a token, so a signed-in browser
+    // holds one; without it (or without a clipboard, as on a plain http origin)
+    // the operator is told rather than getting a silent no-op.
+    handleCopyToken(btn) {
+        const token = getToken();
+        if (!token) {
+            showToast("This browser does not hold the access token. Run remotemic token get on the appliance.", "warn");
+            return;
+        }
+        if (!navigator.clipboard) {
+            showToast("Copying needs a secure (https) connection.", "error");
+            return;
+        }
+        navigator.clipboard.writeText(token).then(() => {
+            showToast("Access token copied.");
+            // The toast announces the copy, so the accessible name stays fixed rather
+            // than announcing it twice (mirrors the credentialed Copy URL path).
+            flashCopied(btn, btn.querySelector(".copy-label"), TOKEN_LABEL, TOKEN_ARIA, TOKEN_ARIA);
         }).catch(() => {
             showToast("Copy failed", "error");
         });

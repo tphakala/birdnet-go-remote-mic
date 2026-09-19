@@ -468,6 +468,12 @@ type Device struct {
 	// State serving: capturing and available over RTSP. skipped: could not be opened at startup. failed: died after startup; its RTSP path returns 404 until the appliance restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 	State DeviceState `json:"state"`
 
+	// StreamedChannels Every 1-based capture channel that at least one of the device's streams carries, ascending and unique: the union of the stream selections, where channels describes only the first stream. The UI marks these channels as live on the level meters.
+	//
+	//
+	// Examples: [1], [1,3]
+	StreamedChannels *[]int `json:"streamedChannels,omitempty"`
+
 	// Streams Per-stream runtime state, one entry per stream fanned out from this device's shared capture. Present only while the device is serving. The device-level clientConnected and droppedFrames aggregate these (any client connected; summed drops), so a client that predates fan-out can ignore this array. A single-stream device carries one entry mirroring the device-level fields.
 	Streams *[]StreamStatus `json:"streams,omitempty"`
 
@@ -538,7 +544,11 @@ type DiscoverySettings struct {
 
 // Health Liveness probe response.
 type Health struct {
-	Status HealthStatus `json:"status"`
+	// AuthRequired True when every other operation requires the access token.
+	//
+	// Examples: true
+	AuthRequired bool         `json:"authRequired"`
+	Status       HealthStatus `json:"status"`
 
 	// Version Appliance build version.
 	//
@@ -711,7 +721,7 @@ type NotificationSnapshot struct {
 
 // OpusSettings Opus encoder settings, used only when mode is opus.
 type OpusSettings struct {
-	// Bitrate Encoder bitrate in bits per second; 0 selects the encoder default.
+	// Bitrate Encoder bitrate in bits per second; 0 selects the default of 128 kbps per channel carried (128 kbps mono, 256 kbps stereo), capped at the 510 kbps Opus maximum.
 	Bitrate *int `json:"bitrate,omitempty"`
 }
 
@@ -726,7 +736,7 @@ type Problem struct {
 
 // ProvisionDeviceRequest Request to enable (provision) a detected capture device. Only device is required; the appliance derives sensible defaults for everything else, and any field set here overrides its derived default.
 type ProvisionDeviceRequest struct {
-	// Channels Optional 1-based channel selection to stream, ascending and unique; chosen from the device's capabilities when omitted. An empty array is treated the same as omitting the field: the appliance derives the default selection (so no minItems is imposed).
+	// Channels Optional 1-based channel selection to stream, ascending and unique. When omitted the appliance selects a single channel: it captures briefly from the device and picks the loudest channel (the lowest numbered among channels within 1 dB of the loudest, and channel 1 when all are near silence or the measurement fails). An empty array is treated the same as omitting the field (so no minItems is imposed).
 	Channels *[]int `json:"channels,omitempty"`
 
 	// Device ALSA capture device id to enable, as reported by GET /devices/available.
@@ -1055,7 +1065,7 @@ type ClientInterface interface {
 
 	// GetHealth Liveness probe
 	//
-	// Always available and unauthenticated. Reports only that the process is up; use /status for real state.
+	// Always available and unauthenticated. Reports that the process is up and whether the other operations require the access token, so a client can ask for the token before making any gated request (the mDNS TXT record already advertises the same auth=token flag). Use /status for real state.
 	//
 	// Corresponds with GET /healthz (the `GetHealth` operationId).
 	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1348,7 +1358,7 @@ func (c *Client) StreamEvents(ctx context.Context, params *StreamEventsParams, r
 
 // GetHealth Liveness probe
 //
-// Always available and unauthenticated. Reports only that the process is up; use /status for real state.
+// Always available and unauthenticated. Reports that the process is up and whether the other operations require the access token, so a client can ask for the token before making any gated request (the mDNS TXT record already advertises the same auth=token flag). Use /status for real state.
 //
 // Corresponds with GET /healthz (the `GetHealth` operationId).
 func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2258,7 +2268,7 @@ type ClientWithResponsesInterface interface {
 
 	// GetHealthWithResponse Liveness probe
 	//
-	// Always available and unauthenticated. Reports only that the process is up; use /status for real state.
+	// Always available and unauthenticated. Reports that the process is up and whether the other operations require the access token, so a client can ask for the token before making any gated request (the mDNS TXT record already advertises the same auth=token flag). Use /status for real state.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -3388,7 +3398,7 @@ func (c *ClientWithResponses) StreamEventsWithResponse(ctx context.Context, para
 
 // GetHealthWithResponse Liveness probe
 //
-// Always available and unauthenticated. Reports only that the process is up; use /status for real state.
+// Always available and unauthenticated. Reports that the process is up and whether the other operations require the access token, so a client can ask for the token before making any gated request (the mDNS TXT record already advertises the same auth=token flag). Use /status for real state.
 //
 // Returns a wrapper object for the known response body format(s).
 //

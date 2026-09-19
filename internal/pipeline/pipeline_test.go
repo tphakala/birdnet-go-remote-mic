@@ -255,3 +255,16 @@ func TestPayloadTypeAndCodecName(t *testing.T) {
 		}
 	}
 }
+
+// TestSDPSpecOpusDefaultBitrate asserts a stream with no configured bitrate
+// advertises the per-channel default (128 kbps per channel) rather than none.
+func TestSDPSpecOpusDefaultBitrate(t *testing.T) {
+	mono := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Channels: []int{1}}, "m", 48000, 1)
+	if !strings.Contains(mono.FMTP, "maxaveragebitrate=128000") {
+		t.Errorf("mono fmtp = %q, want maxaveragebitrate=128000", mono.FMTP)
+	}
+	stereo := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Channels: []int{1, 2}}, "m", 48000, 2)
+	if !strings.Contains(stereo.FMTP, "maxaveragebitrate=256000") {
+		t.Errorf("stereo fmtp = %q, want maxaveragebitrate=256000", stereo.FMTP)
+	}
+}

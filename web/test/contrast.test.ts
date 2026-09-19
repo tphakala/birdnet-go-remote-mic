@@ -172,6 +172,10 @@ const PAIRS: Pair[] = [
   // card, and landed at 5.2:1 of muddy dark-on-cyan.
   { what: "primary button label", fg: "--btn-primary-fg", bg: ["--btn-primary-bg"], min: AA },
   { what: "primary button label (hover)", fg: "--btn-primary-fg", bg: ["--btn-primary-bg-hover"], min: AA },
+  // The danger button is a solid fill like the primary one (its label is
+  // --btn-danger-fg on the fill), not a *-text token on a tint.
+  { what: "danger button label", fg: "--btn-danger-fg", bg: ["--btn-danger-bg"], min: AA },
+  { what: "danger button label (hover)", fg: "--btn-danger-fg", bg: ["--btn-danger-bg-hover"], min: AA },
 
   // Body copy on each of the three opaque grounds.
   { what: "primary text on a card", fg: "--text-primary", bg: ["--bg-surface"], min: AA },
@@ -190,9 +194,9 @@ const PAIRS: Pair[] = [
   { what: "meter scale labels on the meter trough", fg: "--text-muted", bg: ["--meter-bg"], min: AA },
 
   // Signal colours used as TEXT on their own tint: status badges, the live
-  // indicator, tech tags, the danger button. These are the *-text tokens rather
-  // than the base signal colours, because a fill and a label want different
-  // colours out of the same hue.
+  // indicator, tech tags. These are the *-text tokens rather than the base
+  // signal colours, because a fill and a label want different colours out of the
+  // same hue.
   { what: "ok badge label", fg: "--signal-ok-text", bg: ["--bg-surface", "--signal-ok-bg"], min: AA },
   { what: "ok label on the app ground", fg: "--signal-ok-text", bg: ["--bg-app"], min: AA },
   { what: "ok label on a card", fg: "--signal-ok-text", bg: ["--bg-surface"], min: AA },
@@ -206,6 +210,9 @@ const PAIRS: Pair[] = [
   { what: "accent tag label", fg: "--accent-cyan-text", bg: ["--bg-surface", "--accent-cyan-bg"], min: AA },
   { what: "accent tag label on a raised card", fg: "--accent-cyan-text", bg: ["--bg-surface-raised", "--accent-cyan-bg"], min: AA },
   { what: "accent label on a card", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
+  // The login/confirm modal status line: accent text on the accent tint over a
+  // card surface.
+  { what: "modal status text", fg: "--accent-cyan-text", bg: ["--bg-surface", "--accent-cyan-bg"], min: AA },
 
   // The ultrasonic (PCM L16) tag, same shape as the accent tag.
   { what: "ultrasonic tag label", fg: "--ultrasonic-text", bg: ["--bg-surface", "--ultrasonic-bg"], min: AA },
@@ -220,36 +227,21 @@ const PAIRS: Pair[] = [
   { what: "open-access banner icon", fg: "--signal-warn-text", bg: ["--bg-app", "--signal-warn-bg"], min: AA_NON_TEXT },
   { what: "open-access banner link", fg: "--accent-cyan-text", bg: ["--bg-app", "--signal-warn-bg"], min: AA },
 
-  // BODY TEXT ON A SEVERITY-TINTED GROUND.
-  // This block is the one that was missing, and it is the expensive kind of gap:
-  // the severity work above tints the SURFACE under ordinary body text, so the
-  // text colour is fine everywhere it was checked and fails only on the tinted
-  // rows. A rendered sweep does not catch it either, because the tint is painted
-  // as a background-IMAGE (a gradient layer over the surface) and
-  // getComputedStyle().backgroundColor does not report it. --text-muted on a
-  // notification row measured 3.71:1 (warn) and 4.01:1 (error) on the dark theme
-  // this way. Any new tinted surface needs its body text listed here too.
-  // The info row is NOT tinted (see .notif-row: neutral is the default and the
-  // tint marks exceptions), so its ground is the bare composited row surface.
-  // It still needs asserting: it is a different ground from any plain card,
-  // and it is the one most rows in the panel actually use.
-  { what: "notification row timestamp on an info row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
-  { what: "notification row message on an info row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
-  { what: "notification row title on an info row", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
-  { what: "notification row timestamp on a warn row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-warn-bg"], min: AA },
-  { what: "notification row timestamp on an error row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-crit-bg"], min: AA },
-  { what: "notification row message on a warn row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-warn-bg"], min: AA },
-  { what: "notification row message on an error row", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-crit-bg"], min: AA },
-  { what: "notification row title on a warn row", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-warn-bg"], min: AA },
-  { what: "notification row title on an error row", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle", "--signal-crit-bg"], min: AA },
+  // BODY TEXT ON A NOTIFICATION ROW. Every row, whatever its severity, is the
+  // neutral composited row surface (severity is carried by the icon badge, not
+  // by a tint), so one set of pairs covers them all. It still needs asserting:
+  // it is a different ground from any plain card, and it is the one every row
+  // in the panel uses.
+  { what: "notification row timestamp", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
+  { what: "notification row message", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
+  { what: "notification row title", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
   // Panel furniture that sits on its own grounds rather than on a row.
   { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: AA },
   { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
 
-  { what: "toast message on an info toast", fg: "--text-primary", bg: ["--bg-surface-raised", "--signal-ok-bg"], min: AA },
-  { what: "toast message on a warn toast", fg: "--text-primary", bg: ["--bg-surface-raised", "--signal-warn-bg"], min: AA },
-  { what: "toast message on an error toast", fg: "--text-primary", bg: ["--bg-surface-raised", "--signal-crit-bg"], min: AA },
-  { what: "toast dismiss glyph on an error toast", fg: "--text-muted", bg: ["--bg-surface-raised", "--signal-crit-bg"], min: AA_NON_TEXT },
+  // Toasts are the neutral raised surface for every severity.
+  { what: "toast message", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
+  { what: "toast dismiss glyph", fg: "--text-muted", bg: ["--bg-surface-raised"], min: AA_NON_TEXT },
 
   // Severity glyphs in their badge tile. These are icons, not text, so SC
   // 1.4.11 applies: they still have to be distinguishable from the tile.

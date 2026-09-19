@@ -8,6 +8,14 @@ const CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" strok
 // Keep in sync with candidateRates in internal/audio/hardware.go.
 const STANDARD_RATES = [16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 256000, 384000];
 const MIN_BITRATE = 64000;
+// Opus bitrate default: 128 kbps for each channel carried, capped at the top of
+// the bitrate range Opus supports (510 kbps). Keep in sync with
+// config.OpusDefaultBitrate.
+const OPUS_BITRATE_PER_CHANNEL = 128000;
+const OPUS_MAX_BITRATE = 510000;
+function defaultOpusBitrate(channels) {
+    return Math.min(OPUS_BITRATE_PER_CHANNEL * Math.max(1, channels), OPUS_MAX_BITRATE);
+}
 const BITRATE_OPTIONS = [
     { val: "64000", label: "64 kbps" },
     { val: "96000", label: "96 kbps" },
@@ -46,6 +54,13 @@ export class DeviceSettingsForm {
     // config's channels array.
     channelBoxes = [];
     bitrateHidden;
+    bitrateDrop;
+    // bitrateFollows is true while the bitrate is the per-channel default, so a
+    // change to the channel count moves it along (128 kbps mono, 256 kbps
+    // stereo). Picking a bitrate by hand turns it off. settingBitrate marks the
+    // form's own select() calls, which fire the same change event as a pick.
+    bitrateFollows = false;
+    settingBitrate = false;
     modeHidden;
     bitrateField;
     quietAlertEl;
@@ -163,11 +178,22 @@ export class DeviceSettingsForm {
         // Bitrate
         this.bitrateField = elem("div", "form-field");
         this.bitrateField.appendChild(this.label("Opus Bitrate"));
-        const saved = d.opus?.bitrate ?? MIN_BITRATE;
+        // An unset bitrate (absent or 0) is the per-channel default, and so is a
+        // saved value that equals it: both keep following the channel count. Opus
+        // carries at most two channels, so the default is seeded from at most two
+        // even on a device with more capture channels (a PCM-shaped selection).
+        const defaultRate = defaultOpusBitrate(Math.min(2, d.channels.length));
+        const saved = d.opus?.bitrate || defaultRate;
+        this.bitrateFollows = saved === defaultRate;
         const bitrate = this.buildDropdown("Opus bitrate", this.bitrateOptions(saved), this.selectedBitrate(saved));
         this.bitrateHidden = bitrate.hidden;
+        this.bitrateDrop = bitrate.dropdown;
+        this.bitrateHidden.addEventListener("change", () => {
+            if (this.ready && !this.settingBitrate)
+                this.bitrateFollows = false;
+        });
         this.bitrateField.appendChild(bitrate.container);
-        const bitrateHint = this.hint("Target bitrate for the Opus encoder.", `set-${uid}-bitrate-hint`);
+        const bitrateHint = this.hint("Target bitrate for the Opus encoder. Defaults to 128 kbps per channel (128 kbps mono, 256 kbps stereo).", `set-${uid}-bitrate-hint`);
         this.bitrateField.appendChild(bitrateHint);
         this.describe(bitrate.container, bitrateHint.id);
         this.bitrateField.hidden = modeInitial !== "opus";
@@ -215,9 +241,36 @@ export class DeviceSettingsForm {
                 // (zero-channel) state.
                 const sel = this.selectedChannels();
                 this.setChannelSelection(sel.length ? sel.slice(0, 2) : [1]);
+                this.syncDefaultBitrate();
             }
             this.validate();
         });
+        // Validate on a rate change too, so picking a non-48 kHz rate in Opus mode
+        // shows the "switch to PCM" guidance at once rather than on save.
+        this.rateHidden.addEventListener("change", () => {
+            if (this.ready)
+                this.validate();
+        });
+    }
+    // syncDefaultBitrate moves the Opus bitrate to the default for the selected
+    // channel count while it is still following the default. It is a no-op outside
+    // Opus mode: in PCM the bitrate control is hidden and a >2 channel count would
+    // otherwise pick a value the dropdown does not carry, deselecting every option.
+    syncDefaultBitrate() {
+        if (this.modeHidden.value !== "opus")
+            return;
+        if (!this.bitrateFollows)
+            return;
+        const want = String(defaultOpusBitrate(this.selectedChannels().length));
+        if (this.bitrateHidden.value === want)
+            return;
+        this.settingBitrate = true;
+        try {
+            this.bitrateDrop.select(want);
+        }
+        finally {
+            this.settingBitrate = false;
+        }
     }
     destroy() {
         for (const dropdown of this.dropdowns)
@@ -257,7 +310,9 @@ export class DeviceSettingsForm {
             chOk = channels.length >= 1 && channels.length <= 2;
             chMsg = "Opus requires one or two channels.";
         }
-        ok = this.markControl(this.rateErr, rateOk, mode === "opus" ? "Opus requires 48000 Hz." : "Rate must be 8000-384000 Hz.") && ok;
+        ok = this.markControl(this.rateErr, rateOk, mode === "opus"
+            ? `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`
+            : "Rate must be 8000-384000 Hz.") && ok;
         ok = this.markControl(this.chErr, chOk, chMsg) && ok;
         this.channelsGroup.setAttribute("aria-invalid", String(!chOk));
         return ok;
@@ -290,7 +345,10 @@ export class DeviceSettingsForm {
             quietAlert: this.quietAlertEl.checked,
         };
         if (mode === "opus") {
-            dev.opus = { bitrate: Number(this.bitrateHidden.value) || MIN_BITRATE };
+            // While the bitrate is still following the channel-count default, persist 0
+            // so the server applies its own default (OpusDefaultBitrate) rather than
+            // freezing today's number; a value the operator picked is sent as chosen.
+            dev.opus = { bitrate: this.bitrateFollows ? 0 : Number(this.bitrateHidden.value) || 0 };
         }
         else if (this.device.opus) {
             // Preserve a saved Opus bitrate when the mode is not Opus (e.g. it was
@@ -515,6 +573,7 @@ export class DeviceSettingsForm {
                     box.checked = true;
                     return;
                 }
+                this.syncDefaultBitrate();
                 if (this.ready)
                     this.onDirty();
                 this.validate();

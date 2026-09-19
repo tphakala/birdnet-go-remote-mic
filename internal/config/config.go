@@ -318,7 +318,31 @@ func (c *Config) DiscoveryEnabled() bool {
 
 // Opus configures the Opus encoder (used only when Mode is ModeOpus).
 type Opus struct {
+	// Bitrate is the target in bits per second; zero means the default,
+	// OpusDefaultBitrate for the stream's channel count.
 	Bitrate int `yaml:"bitrate,omitempty"`
+}
+
+// Opus bitrate defaults: 128 kbps for each channel carried, capped at the top of
+// the bitrate range Opus supports (510 kbps, RFC 6716 section 2.1.1).
+const (
+	OpusBitratePerChannel = 128000
+	OpusMaxBitrate        = 510000
+)
+
+// OpusDefaultBitrate returns the default Opus bitrate for a stream carrying the
+// given number of channels.
+func OpusDefaultBitrate(channels int) int {
+	return min(OpusBitratePerChannel*max(1, channels), OpusMaxBitrate)
+}
+
+// EffectiveBitrate returns the configured bitrate, or the default for the
+// given channel count when none is configured.
+func (o Opus) EffectiveBitrate(channels int) int {
+	if o.Bitrate > 0 {
+		return o.Bitrate
+	}
+	return OpusDefaultBitrate(channels)
 }
 
 // ValidationError reports a single invalid configuration field.
@@ -376,7 +400,8 @@ func Load(path string) (Config, error) {
 // Default() when the file does not exist yet, so first-run callers boot with a
 // usable config without one present. Any other load error (a parse or validation
 // failure) is returned unchanged rather than masked as a default. It is the one
-// place the first-run load-or-default decision lives, shared by serve and init.
+// place the first-run load-or-default decision lives, shared by serve and the
+// token commands.
 func LoadOrDefault(path string) (Config, error) {
 	c, err := Load(path)
 	if errors.Is(err, os.ErrNotExist) {

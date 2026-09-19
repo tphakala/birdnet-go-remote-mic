@@ -97,6 +97,11 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", headerCSP)
 	w.Header().Set("X-Content-Type-Options", headerXContentTypeOptions)
 	w.Header().Set("Referrer-Policy", headerReferrerPolicy)
+	// Revalidate on every load. Without an explicit policy browsers cache by
+	// heuristic (a fraction of the time since Last-Modified), so a freshly
+	// deployed build could keep showing the previous stylesheet or script.
+	// The ETag makes each revalidation a cheap 304 when nothing changed.
+	w.Header().Set("Cache-Control", "no-cache")
 
 	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/"))
 	if cleanPath == "" || cleanPath == "." {

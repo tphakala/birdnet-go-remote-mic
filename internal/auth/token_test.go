@@ -17,7 +17,7 @@ func TestGenerateTokenReturnsEntropyError(t *testing.T) {
 }
 
 // TestGenerateTokenIsValid asserts a generated token passes ValidToken, so a
-// token seeded by `init` is always accepted by the guard.
+// token seeded by `token generate` is always accepted by the guard.
 func TestGenerateTokenIsValid(t *testing.T) {
 	tok, err := GenerateToken()
 	if err != nil {

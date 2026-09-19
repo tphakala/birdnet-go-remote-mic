@@ -462,3 +462,42 @@ func (h *Hub) Tap(fn func(LevelsEvent)) (cancel func()) {
 
 // The SSE HTTP handler lives in internal/sse; cmd wires sse.Handler(hub, center) onto
 // GET /events. The hub is only the levels Source.
+
+// Accumulator measures per-channel RMS over a bounded one-shot capture, such as
+// the short probe that picks a new device's default channel. Unlike Meter it
+// is single-goroutine and never reset: feed it periods with Add, then read the
+// result once with RMSDbfs.
+type Accumulator struct {
+	sumSq []uint64
+	count uint64
+}
+
+// NewAccumulator returns an Accumulator for interleaved S16LE audio with the
+// given channel count (at least one).
+func NewAccumulator(channels int) *Accumulator {
+	return &Accumulator{sumSq: make([]uint64, max(1, channels))}
+}
+
+// Add folds one interleaved S16LE period into the per-channel sums. A trailing
+// partial frame is ignored.
+func (a *Accumulator) Add(pcm []byte) {
+	nch := len(a.sumSq)
+	frames := (len(pcm) / 2) / nch
+	for f := 0; f < frames; f++ {
+		for c := 0; c < nch; c++ {
+			s := int64(int16(binary.LittleEndian.Uint16(pcm[(f*nch+c)*2:])))
+			a.sumSq[c] += uint64(s * s)
+		}
+	}
+	a.count += uint64(frames)
+}
+
+// RMSDbfs returns each channel's RMS level in dBFS, floored at FloorDbfs (and
+// FloorDbfs for every channel when nothing was added).
+func (a *Accumulator) RMSDbfs() []float64 {
+	out := make([]float64, len(a.sumSq))
+	for c, s := range a.sumSq {
+		out[c] = rmsDbfs(s, a.count)
+	}
+	return out
+}
