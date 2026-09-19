@@ -27,26 +27,57 @@ var verifiedRatesFn = capture.SupportedRatesVerified
 var resolveFn = capture.Resolve
 
 // Enumerate lists every capture device the host currently exposes with its
-// current identity. Enumeration opens nothing.
+// current identity. Enumeration opens nothing. The id offered for each device is
+// its reported ID, except that two identical USB units reporting the same serial
+// share one serial-form ID; offeredIDs swaps such a duplicate to its PortID so
+// each unit is distinguishable and provisionable (see offeredIDs).
 func Enumerate() ([]Hardware, error) {
 	devs, err := enumerateDevices()
 	if err != nil {
 		return nil, err
 	}
+	ids := offeredIDs(devs)
 	out := make([]Hardware, 0, len(devs))
 	for i := range devs {
-		out = append(out, hardwareFrom(&devs[i]))
+		h := hardwareFrom(&devs[i])
+		h.ID = ids[i]
+		out = append(out, h)
 	}
 	return out, nil
 }
 
+// offeredIDs returns the id to offer for each enumerated device: its reported
+// ID, except when that ID is shared by more than one enumerated device (two
+// identical USB units reporting the same serial get the same serial-form ID) and
+// the device has a non-empty PortID, in which case the PortID. The capture
+// library resolves a PortID and it names the physical port rather than the unit,
+// so it distinguishes the twins where the shared serial cannot, and it is
+// openable. A duplicate with no derivable PortID keeps the shared ID (there is
+// nothing better to offer). A unique device always keeps its own ID.
+func offeredIDs(devs []capture.DeviceInfo) []string {
+	counts := make(map[string]int, len(devs))
+	for i := range devs {
+		counts[devs[i].ID]++
+	}
+	ids := make([]string, len(devs))
+	for i := range devs {
+		ids[i] = devs[i].ID
+		if counts[devs[i].ID] > 1 && devs[i].PortID != "" {
+			ids[i] = devs[i].PortID
+		}
+	}
+	return ids
+}
+
 // Resolve reports which physical device a configured device id names right now,
 // without opening it. It accepts every id form the capture library opens: a
-// stable id, or a current-boot "hw:N,D" card index. The error is the library's
-// own, so a caller can tell an absent device (*capture.DeviceNotFoundError,
-// which also satisfies errors.Is(err, capture.ErrDeviceGone)) from an ambiguous
-// one (*capture.AmbiguousDeviceError) and a malformed id
-// (*capture.BadDeviceError).
+// stable id, or a current-boot card index in "hw:N,D", "hw:N", or "N,D" form.
+// The error is the library's own, so a caller can tell an absent device
+// (*capture.DeviceNotFoundError, which also satisfies errors.Is(err,
+// capture.ErrDeviceGone)) from an ambiguous one (*capture.AmbiguousDeviceError)
+// and a malformed id (*capture.BadDeviceError). A wholesale enumeration failure
+// (no readable device listing) comes back wrapped in capture.ErrDeviceGone and
+// matches none of those typed errors.
 func Resolve(id string) (Hardware, error) {
 	info, err := resolveFn(id)
 	if err != nil {
@@ -83,13 +114,24 @@ func DetectDevices(skip map[string]bool) ([]DetectedDevice, error) {
 	if err != nil {
 		return nil, err
 	}
+	ids := offeredIDs(devs)
 	out := make([]DetectedDevice, 0, len(devs))
 	for i := range devs {
-		id := devs[i].ID
+		id := ids[i]
 		d := DetectedDevice{ID: id, HWAddr: devs[i].HWAddr, IDStable: devs[i].IDStable, FriendlyName: FriendlyName(devs[i].Name)}
 		if !skip[id] {
-			d.SupportedChannels = ProbeChannels(id, candidateChannels)
-			d.SupportedRates = ProbeRates(id, rateProbeChannel(d.SupportedChannels), candidateRates)
+			// Probe by the current-boot address this enumeration just reported, not
+			// the stable id: each probe call re-resolves a stable id (a full host
+			// enumeration) before opening, so probing by id would re-enumerate the
+			// host once per candidate for capabilities the UI only displays. The
+			// address names the same device the id enumerated to. Fall back to the id
+			// when the device reports no address (no stable form and no card index).
+			probeID := devs[i].HWAddr
+			if probeID == "" {
+				probeID = id
+			}
+			d.SupportedChannels = ProbeChannels(probeID, candidateChannels)
+			d.SupportedRates = ProbeRates(probeID, rateProbeChannel(d.SupportedChannels), candidateRates)
 		}
 		out = append(out, d)
 	}

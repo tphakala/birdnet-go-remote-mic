@@ -47,7 +47,9 @@ instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
 all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
 `path`, `auth` (`token` when an access token is required, else `none`), and a
 `txtvers`. It sends goodbye packets on shutdown so stale entries
-clear promptly. Set `discovery.enabled: false` to turn it off; on a network
+clear promptly. When a device starts, stops, or restarts (a config save or a
+hardware-change retry), the whole advertisement is rebuilt, because the
+responder cannot retire a single service. Set `discovery.enabled: false` to turn it off; on a network
 where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
 plus path instead.
 
@@ -121,12 +123,14 @@ microphone after a reboot or a replug. Copy the id from `remotemic devices list`
 - `hw:CARD=<card id>,DEV=<device>` names a built-in or virtual card by its
   kernel card id.
 
-A card-index id such as `hw:1,0` still works (a host without sysfs, such as a
-minimal container, has nothing better), but the web UI and `--check` flag it.
-A device whose id matches nothing is reported as not connected, and one whose
-id matches two units (identical devices sharing a serial) as ambiguous; the
-appliance never opens a different device in its place. Pin one of two such
-units by its port id instead.
+A card-index id such as `hw:1,0` still works (offered when the host has no
+stable form: no sysfs in a minimal container, or a USB device with neither a
+serial nor a derivable port), but the web UI and `--check` flag it. A device
+whose id matches nothing is reported as not connected, and one whose id matches
+two units (identical devices sharing a serial) as ambiguous; the appliance never
+opens a different device in its place. Give each of the two units its own port
+id, not just one; `remotemic devices list`, the web UI, and the ambiguity error
+(shown by the web UI and `--check`) all name the port id to use.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
@@ -266,9 +270,12 @@ For a local end-to-end check without hardware, use the ALSA loopback
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
   while the other devices keep serving. The appliance rescans the host's
   capture hardware every 15 seconds, and when the set of devices changes it
-  restarts every device that is down, so a replugged device serves again on the
-  same path even if it came back under a different card number. A config save
-  also restarts it. With management enabled the process stays up after the
+  restarts every device that is down and configured by a stable id, so a
+  replugged device serves again on the same path even if it came back under a
+  different card number. A device pinned to a card index (`hw:1,0`) is not
+  restarted this way, because that index can now name a different microphone; it
+  waits for a config save, which also restarts a down device of either kind.
+  With management enabled the process stays up after the
   last device dies, so the failure stays inspectable over the API; with
   management disabled it exits once every device has stopped.
   A retired device's mDNS advertisement persists until the process exits (a

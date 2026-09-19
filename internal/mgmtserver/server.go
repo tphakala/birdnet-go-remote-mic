@@ -27,9 +27,12 @@ type DeviceState string
 const (
 	// StateServing means the device is capturing and available over RTSP.
 	StateServing DeviceState = "serving"
-	// StateSkipped means the device could not be opened at startup.
+	// StateSkipped means the device was not opened: it is not connected, its id
+	// matches several devices, it resolves to hardware another entry already
+	// captures from, or the open failed. The error says which.
 	StateSkipped DeviceState = "skipped"
-	// StateFailed means the device died after startup; its RTSP path 404s.
+	// StateFailed means the device died after opening; its RTSP path returns 404
+	// until the device is reconnected or the config is saved.
 	StateFailed DeviceState = "failed"
 	// StateDisabled means the device is configured but intentionally not opened
 	// (its Enabled flag is false). It is not captured or streamed until it is
@@ -84,12 +87,12 @@ type DeviceStatus struct {
 	// IDStable is false when the configured id names a card by its kernel index,
 	// which can point at a different device after a reboot or replug.
 	IDStable bool
-	// SupportedRates is the set of sample rates the hardware accepts, probed at
-	// startup. Empty when the device could not be probed (missing or busy).
+	// SupportedRates is the sample rate set from the last successful capability
+	// probe for this id (re-probed each time the device is opened); empty when no
+	// probe has succeeded (the device was never present and free to probe).
 	SupportedRates []int
-	// SupportedChannels is the set of channel counts the hardware accepts (up to
-	// 8), probed at startup via the same query as SupportedRates. Empty when the
-	// device could not be probed (missing or busy).
+	// SupportedChannels is the channel-count set (up to 8) from the same last
+	// successful probe as SupportedRates; empty when no probe has succeeded.
 	SupportedChannels []int
 	// Streams is the per-stream live state, one entry per stream fanned out from
 	// this device's shared capture, present only while serving. ClientConnected
@@ -109,8 +112,10 @@ type StreamStatus struct {
 // does not list. It carries the probed capabilities the UI uses to offer the
 // device for provisioning; it has no configuration until it is provisioned.
 type AvailableDevice struct {
-	// ID is the id provisioning persists. IDStable is false when the host
-	// offered no stable form (no sysfs), in which case ID is a card index.
+	// ID is the id provisioning persists. IDStable is false when the host offered
+	// no stable form (for example no sysfs in a minimal container, or a USB device
+	// with neither a serial nor a derivable port), in which case ID is a card
+	// index.
 	ID                string
 	HWAddr            string
 	IDStable          bool

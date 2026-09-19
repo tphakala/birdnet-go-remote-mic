@@ -252,18 +252,21 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 	}
 	out(w, "config OK: %d device(s), RTSP %s\n", len(cfg.Devices), cfg.Listen)
 	if _, derr := captureDevices(); derr != nil {
-		// Enumeration failed wholesale; without it every device would print
-		// "not connected", which would misrepresent present hardware. Say so
-		// instead.
+		// The host enumeration failed wholesale (no readable device listing), so
+		// per-device resolution would fail too and print "cannot resolve" for
+		// every entry, which tells the operator nothing about the hardware. Report
+		// the probe failure once and mark every device unknown instead.
 		out(w, "  (device probe unavailable: %v)\n", derr)
 		for i := range cfg.Devices {
 			out(w, "  %-20s %s  unknown\n", cfg.Devices[i].Name, cfg.Devices[i].Device)
 		}
 		return nil
 	}
-	// owner maps a resolved hardware address to the first entry that claims it,
-	// so a second entry naming the same device through another id is reported
-	// the way the appliance treats it: refused as a duplicate.
+	// owner maps a resolved hardware address to the first ENABLED entry that
+	// claims it, matching how the appliance opens enabled entries in config order
+	// and refuses a later enabled entry naming the same device through another id.
+	// A disabled entry is never opened, so it does not claim hardware and is not
+	// reported as a duplicate (see checkStatus).
 	owner := make(map[string]string, len(cfg.Devices))
 	for i := range cfg.Devices {
 		d := &cfg.Devices[i]
@@ -284,10 +287,16 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 	if hw.Label != "" {
 		status += " (" + hw.Label + ")"
 	}
-	if first, dup := owner[hw.HWAddr]; dup {
-		return status + "; same hardware as " + strconv.Quote(first) + ", so it will not be opened"
+	// Only an enabled entry is opened, and the appliance refuses a later enabled
+	// entry that resolves to the same hardware (see hardwareOwner). A disabled
+	// entry is never opened, so it neither claims the hardware nor is reported as
+	// a duplicate: print its resolution and leave ownership to the enabled entry.
+	if d.IsEnabled() {
+		if first, dup := owner[hw.HWAddr]; dup {
+			return status + "; same hardware as " + strconv.Quote(first) + ", so it will not be opened"
+		}
+		owner[hw.HWAddr] = d.Name
 	}
-	owner[hw.HWAddr] = d.Name
 	if config.IsCardIndexID(d.Device) {
 		status += "; pinned to a card index, which can change across reboots (use id " + hw.ID + ")"
 	}

@@ -4,9 +4,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
 
@@ -37,7 +39,12 @@ type fakeHost struct {
 
 func (h *fakeHost) resolve(id string) (audio.Hardware, error) {
 	if h.fail != nil {
-		return audio.Hardware{}, h.fail
+		// The library wraps a wholesale enumeration failure (no readable device
+		// listing) in capture.ErrDeviceGone, so a caller that classified it by
+		// errors.Is(ErrDeviceGone) instead of the typed *DeviceNotFoundError would
+		// misread it as a specific absent device. Wrap it the same way so the tests
+		// pin the errors.As (typed) classification, not errors.Is.
+		return audio.Hardware{}, fmt.Errorf("%w: %w", capture.ErrDeviceGone, h.fail)
 	}
 	var hit []audio.Hardware
 	for _, d := range h.devs {
@@ -218,6 +225,29 @@ func TestReconcileOpensCardIndexWhenHostHasNoListing(t *testing.T) {
 	}
 }
 
+// TestReconcileRefusesCardIndexWithNoCardAtIndex pins T4: a card-index id whose
+// index names no present card resolves to *DeviceNotFoundError, which is refused
+// as not connected and never opened. This is the contrast to the container
+// fallback above: only a resolve failure that is NOT a specific absent device
+// (nor an ambiguous one) lets a card-index id open unresolved.
+func TestReconcileRefusesCardIndexWithNoCardAtIndex(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	// A card is present, but not at index 3, so hw:3,0 matches nothing.
+	withHost(app, &fakeHost{devs: []audio.Hardware{{ID: idScarlett, HWAddr: addrHW4, IDStable: true}}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("byindex", addrHW3, "/a", 48000)}})
+
+	rt := app.devices["byindex"]
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "not connected") {
+		t.Fatalf("byindex = %s %q, want skipped as not connected", rt.currentState(), rt.err)
+	}
+	if opened(log, "byindex") {
+		t.Errorf("a card index naming no present card was opened: %v", log.snapshot())
+	}
+}
+
 // TestRetryDownStartsReconnectedDevice is the hotplug case: a device that was
 // absent comes back on a new card index. The hardware-change retry starts it on
 // its new address with no config change and clears its down condition, and
@@ -237,12 +267,16 @@ func TestRetryDownStartsReconnectedDevice(t *testing.T) {
 	}
 	scarlett := app.devices["scarlett"]
 
+	genBefore := app.announceGen
 	host.devs = append(host.devs, audio.Hardware{ID: idMoth, HWAddr: addrHW5, IDStable: true})
 	app.retryDown()
 
 	rt := app.devices["moth"]
 	if rt.currentState() != mgmtserver.StateServing || rt.hwAddr != addrHW5 {
 		t.Fatalf("moth = %s at %q, want serving at hw:5,0", rt.currentState(), rt.hwAddr)
+	}
+	if app.announceGen <= genBefore {
+		t.Errorf("announceGen = %d, want > %d: starting a reconnected device must rebuild the mDNS advertisement", app.announceGen, genBefore)
 	}
 	if !app.srv.HasTrack("/m") {
 		t.Error("the reconnected device's RTSP track was not registered")
@@ -274,8 +308,16 @@ func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
 	rt := app.devices["moth"]
 	app.stop(rt) // retire the fake source so the pump goroutine ends
 	rt.superseded = false
-	drain := <-app.pumpDone
+	var drain pumpResult
+	select {
+	case drain = <-app.pumpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the retired pump to report done")
+	}
 	app.onPumpDone(pumpResult{rt: drain.rt, err: capture.ErrDeviceGone})
+	if !app.prov.retryArmed.Load() {
+		t.Error("a spontaneous pump failure did not arm a retry")
+	}
 	if act := center.Active(); len(act) != 1 || act[0].Title != "Device disconnected" {
 		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
 	}
@@ -284,5 +326,37 @@ func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
 	app.retryDown()
 	if act := center.Active(); len(act) != 1 || act[0].Title != "Device not connected" {
 		t.Errorf("active after the retry = %+v, want the condition re-raised as Device not connected", act)
+	}
+}
+
+// TestRetryDownSkipsCardIndexEntry pins H1: a down card-index entry is NOT
+// restarted by an unattended hardware-change retry. Its index names a card by
+// kernel probe order, so after a hardware change the index may name a different
+// microphone than when the entry went down (the #62 swap). Restarting it here
+// could open the wrong device, so it waits for an explicit config save.
+func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	host := &fakeHost{}
+	withHost(app, host)
+	app.reconcile(&config.Config{Devices: []config.Device{
+		testDevice("byindex", addrHW3, "/a", 48000),
+	}})
+	if app.devices["byindex"].currentState() != mgmtserver.StateSkipped {
+		t.Fatalf("byindex state = %s, want skipped while nothing is at hw:3,0", app.devices["byindex"].currentState())
+	}
+
+	// A different microphone now occupies card index 3; the entry only ever
+	// matched the bare index, not this device's stable id.
+	host.devs = []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}
+	app.retryDown()
+
+	rt := app.devices["byindex"]
+	if rt.currentState() != mgmtserver.StateSkipped {
+		t.Errorf("byindex = %s, want still skipped; a card-index entry must not restart unattended", rt.currentState())
+	}
+	if opened(log, "byindex") {
+		t.Errorf("a card-index entry was reopened onto different hardware on a hardware change: %v", log.snapshot())
 	}
 }

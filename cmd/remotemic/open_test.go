@@ -157,8 +157,13 @@ func TestPermanentOpenError(t *testing.T) {
 	}{
 		{&capture.DeviceNotFoundError{ID: "x"}, true},
 		{&capture.AmbiguousDeviceError{ID: "x"}, true},
-		{&capture.BadRateError{Requested: 48000}, true},
 		{&capture.BadDeviceError{Value: "x"}, true},
+		{&capture.ConfigError{Field: "rate", Reason: "unset"}, true},
+		// A rate or format rejection is not permanent: openDeviceRetry re-resolves
+		// the channel count each attempt, and the accepted rates and formats can
+		// depend on it, so a later attempt can succeed.
+		{&capture.BadRateError{Requested: 48000}, false},
+		{&capture.BadFormatError{Channels: 1}, false},
 		{capture.ErrDeviceInUse, false},
 		{capture.ErrDeviceGone, false},
 		{errors.New("EIO"), false},

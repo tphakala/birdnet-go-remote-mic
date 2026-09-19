@@ -158,21 +158,29 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	detected := &dd
 
 	// A device that is already configured needs no probe: opening it would
-	// disturb its running capture, and the Update below rejects it anyway. The
-	// duplicate check inside Update stays authoritative against a concurrent
-	// provision; this only avoids the wasted, disruptive probe first.
+	// disturb its running capture. The authoritative duplicate rejection is the
+	// check inside Update below, which holds the store lock and matches the EXACT
+	// id, so a concurrent provision cannot slip past it. The two checks here run
+	// before that lock and are best effort: they catch the common cases early and
+	// skip the wasted, disruptive probe.
 	//
-	// The configured ids are compared both directly and through the available
-	// view: a device the host lists but the available view hides is owned by the
-	// config under another id (for example a card-index id that resolves to it),
-	// and provisioning it again would open one device from two entries.
+	// First, the exact id is already in the config.
 	if slices.ContainsFunc(s.configStore.Config().Devices, func(dev config.Device) bool {
 		return dev.Device == req.Device
-	}) || !slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool {
-		return ad.ID == req.Device
 	}) {
 		return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
 			problem(http.StatusConflict, "already configured", "device "+req.Device+" is already configured"),
+		), nil
+	}
+	// Second, the host lists the device but the available view hides it, which
+	// means the config already owns it under ANOTHER id (for example a card-index
+	// id that resolves to it); provisioning it again would open one device from
+	// two entries.
+	if !slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool {
+		return ad.ID == req.Device
+	}) {
+		return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
+			problem(http.StatusConflict, "already configured", "device "+req.Device+" is already configured under another id"),
 		), nil
 	}
 

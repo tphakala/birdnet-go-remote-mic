@@ -934,13 +934,15 @@ export class DashboardView {
 
     setText(entry.titleEl, d.name);
     // Show the hardware the configured id resolves to right now: its current ALSA
-    // address and the sound card's model (friendlyName), so the label always
-    // names the device actually opened. Omit the model when absent or when it
-    // only repeats the configured name. The persisted id is long, so it goes in
-    // the tooltip rather than the line.
+    // address and the sound card's model (friendlyName). When the id resolved to
+    // no single present device the address is absent: a serving card-index device
+    // opened without a resolution (the container fallback) still shows its
+    // configured id, and anything else shows "No matching hardware". Omit the
+    // model when absent or when it only repeats the configured name. The persisted
+    // id is long, so it goes in the tooltip rather than the line.
     const hw = d.friendlyName?.trim();
     const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
-    const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : "Not connected";
+    const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : serving ? `ALSA: ${d.device}` : "No matching hardware";
     let hwText = showHw ? `${addr} · ${hw}` : addr;
     // A card-index id can name a different device after a reboot or replug.
     if (d.idStable === false) hwText += " · pinned to a card index";

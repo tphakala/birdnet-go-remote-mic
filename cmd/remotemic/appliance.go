@@ -229,16 +229,16 @@ func (a *appliance) hardwareOwner(hwAddr, name string) string {
 }
 
 // deviceDownKey is the notification-center condition key for a device that is
-// unavailable: it could not be opened, or it died after opening. The open-failed
-// onset, the mid-run failure onset, the recovery clear, and the removed/disabled
-// resolve all share this one key so a down condition has a single identity from
-// onset to clear.
+// unavailable: it could not be opened, or it died after opening. Every down
+// onset, cause change, recovery clear, and removal or disable resolve for a
+// device uses this one key, so its down condition has a single identity from
+// onset to clear no matter which site raises or clears it.
 func deviceDownKey(name string) string { return "device:" + name + ":down" }
 
-// deviceDownOnset builds the error onset for a device that is unavailable, shared
-// by the open-failure and mid-run-death sites so both carry the same severity,
-// category, key and source identity that the recovery clear and the removal or
-// disable resolve pair with.
+// deviceDownOnset builds the error onset for a device that is unavailable. Every
+// site that raises a down condition builds it here, so each carries the same
+// severity, category, key and source identity that the recovery clear and the
+// removal or disable resolve pair with.
 func deviceDownOnset(name, title, message string) notify.Notification {
 	return notify.Notification{
 		Severity: notify.SeverityError,
@@ -406,22 +406,37 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		log.Printf("device %q is pinned to card index %s, which can name a different device after a reboot or replug; re-add it to bind it by identity", dev.Name, dev.Device)
 	}
 
+	// Probe by the current-boot address the id just resolved to (hw.HWAddr), not
+	// the stable id: each probe call re-resolves a stable id (a full host
+	// enumeration) inside go-audio-capture before opening, so probing by id costs
+	// ~18 re-enumerations per device open for capability lists the UI only
+	// displays. The address came from the resolution a few lines above, and the
+	// real capture open in openDeviceRetry still goes by the stable id
+	// (dev.Device), so a probe by address cannot make the open reach the wrong
+	// device. Fall back to dev.Device when there is no resolved address (a
+	// card-index id opened without a resolution, the container fallback).
+	probeID := dev.Device
+	if hw.HWAddr != "" {
+		probeID = hw.HWAddr
+	}
 	// Resolve the hardware channel count for the capability PROBE only. The
 	// open itself re-resolves per attempt inside the opener (openDeviceRetry), as
 	// close to the open as possible, so a card transiently held right after a
 	// restart is opened at its correct count once it frees rather than at a
 	// fallback pinned here. A wrong value here costs at most a cosmetic
 	// capability list, and rememberCaps below retains the last known good.
-	openCh := resolveOpenChannels(dev.Device, dev.StreamChannelUnion())
+	openCh := resolveOpenChannels(probeID, dev.StreamChannelUnion())
 	// Probe supported rates and channels for the config UI before opening: once we
 	// hold the hw device exclusively the probe would see our own process and report
 	// busy. Both use the same non-blocking capability query. Rates are probed at
 	// the count we will actually open, since a device's rate set can depend on
 	// the channel count.
-	rates := audio.ProbeRates(dev.Device, openCh, audio.CandidateRates())
-	channels := audio.ProbeChannels(dev.Device, audio.CandidateChannels())
+	rates := audio.ProbeRates(probeID, openCh, audio.CandidateRates())
+	channels := audio.ProbeChannels(probeID, audio.CandidateChannels())
 	// Keep the last-known caps if this probe came back empty (a transient
-	// card-swap window), so the UI does not flicker to an empty list.
+	// card-swap window), so the UI does not flicker to an empty list. The cache
+	// key stays the configured id so cached caps follow the device across a
+	// card-index change of address.
 	rates, channels = a.rememberCaps(dev.Device, rates, channels)
 
 	d := *dev
@@ -573,10 +588,12 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 	a.refreshHardware(newCfg)
 
 	plan := reload.Reconcile(a.runningParams(), newCfg)
-	// Open in config order rather than the plan's name order, so when two entries
-	// resolve to the same hardware the earlier one in the config is the one that
-	// opens it (see hardwareOwner) and the choice does not depend on how the
-	// entries happen to be named.
+	// Sort each pass into config order rather than the plan's name order, so when
+	// two entries resolve to the same hardware the earlier entry in the config
+	// wins it (see hardwareOwner) rather than whichever happens to sort first by
+	// name. This orders within each pass; the restart pass then opens before the
+	// start pass below, and any device left serving keeps its hardware, so a new
+	// or restarted entry cannot take a still-serving device's card.
 	order := make(map[string]int, len(newCfg.Devices))
 	for i := range newCfg.Devices {
 		order[newCfg.Devices[i].Name] = i
@@ -718,6 +735,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
 		res.rt.markFailed(res.err)
+		// Arm a retry so the next enumeration restarts this device even when the
+		// host's hardware signature is unchanged (an unplug and replug at the same
+		// card index within one enumeration tick). See provider.retryArmed.
+		a.prov.armRetry()
 		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
 		// that never opened. A lost device (unplugged or powered off) is reported
@@ -741,6 +762,12 @@ func (a *appliance) onPumpDone(res pumpResult) {
 // different card index serves again on the right hardware without a config
 // save. Serving devices are left alone: they hold their hardware open, so a
 // renumbering of other cards cannot move them.
+//
+// A card-index entry (config.IsCardIndexID) is NOT restarted here: its index
+// names a card by kernel probe order, so after a hardware change the index may
+// name a different device than it did when the entry went down, and an
+// unattended restart could open the wrong microphone (the #62 swap). Such an
+// entry is restarted only by an explicit config save.
 func (a *appliance) retryDown() {
 	a.refreshHardware(&a.cfg)
 	started := false
@@ -748,6 +775,11 @@ func (a *appliance) retryDown() {
 		d := a.cfg.Devices[i]
 		rt, ok := a.devices[d.Name]
 		if !ok || !d.IsEnabled() {
+			continue
+		}
+		if config.IsCardIndexID(d.Device) {
+			// Its index may now name different hardware than when it went down, so
+			// it waits for an explicit config save rather than restarting here.
 			continue
 		}
 		if s := rt.currentState(); s != mgmtserver.StateSkipped && s != mgmtserver.StateFailed {

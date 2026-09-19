@@ -292,9 +292,9 @@ func (d *Device) IsEnabled() bool {
 // cards in probe order, which changes across reboots and replugs, so such an id
 // can silently point at a different device later. The capture library's stable
 // forms are "usb:..." and the alsa-lib "hw:CARD=<id>,DEV=<n>"; every other id is
-// treated as a card index. A card-index id is still accepted, because a host
-// without sysfs (a minimal container) has no stable form to offer, but it is
-// flagged to the operator.
+// treated as a card index. A card-index id is still accepted, because the host
+// offered no stable form (no sysfs in a minimal container, or a USB device with
+// neither a serial nor a derivable port), but it is flagged to the operator.
 func IsCardIndexID(id string) bool {
 	id = strings.TrimSpace(id)
 	if strings.HasPrefix(id, "usb:") {

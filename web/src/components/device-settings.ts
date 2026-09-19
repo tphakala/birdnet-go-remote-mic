@@ -57,7 +57,7 @@ let formSeq = 0;
 /**
  * The editable settings controls for one device. Builds its own DOM (into
  * `element`), tracks dirtiness via the onDirty callback, validates field
- * formats, and returns the edited DeviceConfig via collect(). The ALSA device
+ * formats, and returns the edited DeviceConfig via collect(). The device
  * id is fixed and not shown here; the caller supplies it back on save. Fields
  * are grouped Capture (what the hardware delivers) then Stream (how it is named,
  * addressed, and encoded).

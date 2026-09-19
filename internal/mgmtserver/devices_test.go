@@ -788,8 +788,12 @@ func TestProvisionDeviceConfiguredUnderAnotherIDYields409(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)
 	}
-	if _, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse); !ok {
+	got, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse)
+	if !ok {
 		t.Fatalf("returned %T, want 409", resp)
+	}
+	if got.Detail == nil || !strings.Contains(*got.Detail, "under another id") {
+		t.Errorf("409 detail = %v, want it to say the device is configured under another id", got.Detail)
 	}
 	if called {
 		t.Error("channel probe ran for a device the config already owns")

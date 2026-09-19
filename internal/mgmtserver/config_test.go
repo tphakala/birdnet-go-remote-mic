@@ -826,3 +826,27 @@ func TestPatchedDevicesMatchesByNameFirst(t *testing.T) {
 		t.Errorf("collapse error = %s: %s, want devices[0].streams naming multi", verr.Field, verr.Reason)
 	}
 }
+
+// TestPatchedDevicesRejectsNameRotationCollapse pins M5: a flat entry that takes
+// a single-stream device's NAME and a multi-stream device's ID must still be
+// rejected. Matching only by name would find the single-stream device and let
+// the collapse of the multi-stream device (whose id the entry now carries) slip
+// through, so the guard also checks the id.
+func TestPatchedDevicesRejectsNameRotationCollapse(t *testing.T) {
+	cur := []config.Device{
+		{Name: "solo", Device: "usb:solo", Streams: []config.Stream{{Path: "/solo"}}},
+		{Name: "duo", Device: "usb:duo", Streams: []config.Stream{{Path: "/duo1"}, {Path: "/duo2"}}},
+	}
+	wire := []mgmtapi.DeviceConfig{
+		{Name: "solo", Device: "usb:duo", Path: "/solo", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+		{Name: "extra", Device: "usb:solo", Path: "/extra", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+	}
+	_, err := patchedDevices(cur, wire)
+	var verr *config.ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("patchedDevices error = %v, want a collapse ValidationError for the rotated id", err)
+	}
+	if verr.Field != "devices[0].streams" || !strings.Contains(verr.Reason, `"duo"`) {
+		t.Errorf("collapse error = %s: %s, want devices[0].streams naming duo (matched by its id)", verr.Field, verr.Reason)
+	}
+}

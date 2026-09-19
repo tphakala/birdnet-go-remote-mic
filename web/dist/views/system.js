@@ -1225,8 +1225,11 @@ export class SystemView {
     }
     updateDeviceRow(r, d) {
         setText(r.name, d.name);
-        // The current ALSA address; the persisted id is long and goes in the tooltip.
-        setText(r.alsa, d.hwAddr ?? "-");
+        // The current ALSA address; when the id resolved to no single present device
+        // it is absent, so a serving card-index device (container fallback) shows its
+        // configured id and anything else shows "-". The persisted id is long and
+        // goes in the tooltip.
+        setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
         if (r.alsa.title !== `Device id: ${d.device}`)
             r.alsa.title = `Device id: ${d.device}`;
         setText(r.path, d.path);

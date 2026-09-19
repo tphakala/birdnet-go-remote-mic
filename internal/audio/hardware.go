@@ -39,13 +39,17 @@ func CandidateChannels() []int { return slices.Clone(candidateChannels) }
 // Hardware is the current identity of one capture device the host exposes.
 //
 // ID is the device id to persist in the config: on Linux a sysfs-derived id that
-// names the physical device (a USB unit by vendor, product and serial, or by
-// port when it has no serial) and survives reboots and replugs. IDStable is false
-// when no stable form could be built (for example a container without sysfs), in
-// which case ID is the current-boot card index. HWAddr is the current-boot ALSA
-// address ("hw:4,0"), for display and logs only: the kernel assigns card indices
-// in probe order, so it must never be persisted. Label is the short sound-card
-// name for display.
+// names the physical device and survives reboots. A USB unit by vendor, product
+// and serial follows it to any port; the by-port form (a USB unit with no serial)
+// and the alsa-lib hw:CARD= form survive a replug into the same port. When two
+// identical USB units report the same serial, Enumerate offers the port-form id
+// for each instead, since the shared serial id cannot distinguish them (see
+// offeredIDs). IDStable is false when no stable form could be built (for example
+// a container without sysfs, or a USB device with neither a serial nor a
+// derivable port), in which case ID is the current-boot card index. HWAddr is the
+// current-boot ALSA address ("hw:4,0"), for display and logs only: the kernel
+// assigns card indices in probe order, so it must never be persisted. Label is
+// the short sound-card name for display.
 type Hardware struct {
 	ID       string
 	HWAddr   string

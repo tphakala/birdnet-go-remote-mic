@@ -296,6 +296,16 @@ func TestApplianceRestartStopsAllBeforeStartingAny(t *testing.T) {
 		t.Fatalf("restart did not stop all before starting any: events=%v", events)
 	}
 
+	// Both must be serving after the swap. When a opens its swapped-in card, the
+	// other device's OLD runtime still sits in a.devices holding that same address
+	// but marked superseded; hardwareOwner must ignore a superseded runtime, or
+	// one of the two would be refused as a duplicate of the card it is taking over.
+	for _, name := range []string{"a", "b"} {
+		if st := app.devices[name].currentState(); st != mgmtserver.StateServing {
+			t.Errorf("%s state = %s after the swap, want serving (hardwareOwner must ignore the superseded old runtime)", name, st)
+		}
+	}
+
 	drainPump(t, app) // the two superseded old pumps
 	drainPump(t, app)
 }

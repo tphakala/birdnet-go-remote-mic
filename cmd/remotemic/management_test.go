@@ -505,15 +505,28 @@ func TestRunEnumerationSignalsHardwareChange(t *testing.T) {
 	boot := []audio.DetectedDevice{{ID: idMoth, HWAddr: addrHW3}, {ID: idScarlett, HWAddr: addrHW4}}
 	awaitEntry() // the startup enumeration
 	next(boot)
-	if signalled() {
-		t.Fatal("the startup enumeration signalled a hardware change")
+	if !signalled() {
+		t.Error("the first enumeration did not signal a retry (a mic that finished enumerating after reconcile would stay down)")
 	}
 	next(boot)
 	if signalled() {
-		t.Fatal("an unchanged enumeration signalled a hardware change")
+		t.Fatal("an unchanged enumeration signalled a retry")
 	}
-	next([]audio.DetectedDevice{{ID: idScarlett, HWAddr: addrHW4}, {ID: idMoth, HWAddr: addrHW5}})
+	moved := []audio.DetectedDevice{{ID: idScarlett, HWAddr: addrHW4}, {ID: idMoth, HWAddr: addrHW5}}
+	next(moved)
 	if !signalled() {
-		t.Error("a device moving to another card index did not signal a hardware change")
+		t.Error("a device moving to another card index did not signal a retry")
+	}
+	// A spontaneous pump failure arms a retry, so the next enumeration signals
+	// even though the hardware signature is unchanged (an unplug and replug at the
+	// same index within one tick), and it fires exactly once.
+	p.armRetry()
+	next(moved)
+	if !signalled() {
+		t.Error("an armed retry with an unchanged signature did not signal")
+	}
+	next(moved)
+	if signalled() {
+		t.Error("the armed retry signalled more than once")
 	}
 }

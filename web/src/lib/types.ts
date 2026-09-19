@@ -182,7 +182,9 @@ export interface Device {
   error?: string;
   friendlyName?: string;
   // Current-boot ALSA address ("hw:4,0") the configured id resolved to, for
-  // display only; absent when the device is not connected.
+  // display only; absent when the id resolved to no single present device (not
+  // connected, ambiguous, a resolve failure, or a card-index device opened
+  // without a resolution).
   hwAddr?: string;
   // False when the configured id names a card by its kernel index, which can
   // point at a different device after a reboot or replug.

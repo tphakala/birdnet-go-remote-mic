@@ -62,19 +62,29 @@ type provider struct {
 	// leaves or rejoins the available list promptly, without probing hardware on
 	// the capture run-loop goroutine.
 	enumTrigger chan struct{}
-	// configured is the set of ALSA device ids the desired config owns, published
-	// at the START of a reconcile (before any device is opened). The enumeration
-	// skips these, so a device being provisioned is excluded from probing before
-	// its capture open begins and the two never contend for the same id. Atomic
-	// because reconcile stores it while the enumeration goroutine reads it.
+	// configured is the set of ids the desired config owns, including the stable
+	// ids its entries resolved to (so a card-index entry also hides the stable id
+	// of the hardware it names), published at the START of a reconcile (before any
+	// device is opened). The enumeration skips these, so a device being
+	// provisioned is excluded from probing before its capture open begins and the
+	// two never contend for the same id. Atomic because reconcile stores it while
+	// the enumeration goroutine reads it.
 	configured atomic.Pointer[map[string]bool]
-	// hwChanged tells the run loop that the host's capture hardware changed since
-	// the previous enumeration (a device was plugged, unplugged, or renumbered), so
-	// it can restart devices that are down (buffered depth 1, coalescing). The
-	// enumeration goroutine sends without blocking and never waits on the run
-	// loop, so it cannot deadlock against a reconcile. A nil channel (tests that
-	// wire none) drops the signal.
+	// hwChanged tells the run loop to retry devices that are down (buffered depth
+	// 1, coalescing), either because the host's capture hardware changed since the
+	// previous enumeration (a device was plugged, unplugged, or renumbered) or
+	// because a capture pump failed spontaneously and armed a retry (see
+	// retryArmed), which covers a device unplugged and replugged at the same card
+	// index within one enumeration tick. The enumeration goroutine sends without
+	// blocking and never waits on the run loop, so it cannot deadlock against a
+	// reconcile. A nil channel (tests that wire none) drops the signal.
 	hwChanged chan struct{}
+	// retryArmed is set by onPumpDone when a capture pump fails on its own. The
+	// next enumeration signals hwChanged even when the hardware signature is
+	// unchanged, then clears the flag with Swap, so one spontaneous failure arms
+	// exactly one retry. Atomic because onPumpDone (run loop) writes it while the
+	// enumeration goroutine reads and clears it.
+	retryArmed atomic.Bool
 	// overrides names the config fields a serve CLI flag overrode for this run,
 	// as a startup snapshot of the running-vs-persisted divergence. It is set once
 	// before the API starts serving and never mutated, so a plain field read from
@@ -294,14 +304,22 @@ func (p *provider) signalEnumerate() {
 // of a reconcile before any device opens.
 func (p *provider) setConfiguredIDs(ids map[string]bool) { p.configured.Store(&ids) }
 
-// signalHardwareChanged tells the run loop the host's capture hardware changed,
-// coalescing with a pending signal. It never blocks.
+// signalHardwareChanged asks the run loop to retry devices that are down,
+// coalescing with a pending signal. It never blocks. The trigger is either a
+// host hardware change or a spontaneous pump failure that armed a retry.
 func (p *provider) signalHardwareChanged() {
 	select {
 	case p.hwChanged <- struct{}{}:
 	default:
 	}
 }
+
+// armRetry records that a capture pump failed on its own, so the next
+// enumeration signals hwChanged and the run loop retries devices that are down
+// even if the host's hardware signature is unchanged (a device unplugged and
+// replugged at the same card index within one tick). runEnumeration clears the
+// flag with Swap, so one failure arms exactly one retry.
+func (p *provider) armRetry() { p.retryArmed.Store(true) }
 
 // hardwareSignature summarises which devices the host exposes and where, so two
 // enumerations can be compared for a plug, unplug, or renumbering. It includes
@@ -316,11 +334,12 @@ func hardwareSignature(det []audio.DetectedDevice) string {
 	return strings.Join(parts, "\n")
 }
 
-// configuredIDs is the set of ALSA device ids the config owns, so the enumeration
-// skips re-probing them (openAndStart already probes configured devices, and a
-// device being opened must be excluded before its open begins to avoid contending
-// with the probe). It uses the desired set published by reconcile; before the
-// first reconcile it falls back to the running device list.
+// configuredIDs is the set of ids the config owns, including the stable ids its
+// entries resolved to, so the enumeration skips re-probing them (openAndStart
+// already probes configured devices, and a device being opened must be excluded
+// before its open begins to avoid contending with the probe). It uses the desired
+// set published by reconcile; before the first reconcile it falls back to the
+// configured ids of the running device list (no resolved stable ids yet).
 func (p *provider) configuredIDs() map[string]bool {
 	if c := p.configured.Load(); c != nil {
 		return *c
@@ -365,13 +384,19 @@ var detectDevices = audio.DetectDevices
 // config change signals enumTrigger (so a provisioned or removed device updates
 // promptly). Probing opens hardware and can be slow, which is exactly why it must
 // not run on the run loop that also drives capture, reloads and shutdown.
+//
+// It also detects host hardware changes and signals hwChanged so the run loop
+// retries devices that are down. It signals when the hardware signature changed
+// since the previous enumeration (which includes the first enumeration whenever
+// the host exposes any device, so a mic that finished enumerating between the
+// initial reconcile and this probe is retried) or when a spontaneous pump
+// failure armed a retry (retryArmed) even though the signature is unchanged (a
+// device unplugged and replugged at the same card index within one tick).
 func (p *provider) runEnumeration(ctx context.Context) {
 	const interval = 15 * time.Second
-	// last is the previous enumeration's hardware signature. The first
-	// enumeration only records it: the initial reconcile has just resolved every
-	// configured device against the same hardware.
+	// last is the previous enumeration's hardware signature; it starts empty, so
+	// the first enumeration signals whenever the host exposes any device.
 	var last string
-	first := true
 	detect := func() {
 		det, err := detectDevices(p.configuredIDs())
 		if err != nil {
@@ -380,12 +405,20 @@ func (p *provider) runEnumeration(ctx context.Context) {
 		}
 		p.setDetected(det)
 		sig := hardwareSignature(det)
-		if !first && sig != last {
-			log.Printf("capture hardware changed (%d device(s) present); retrying devices that are down", len(det))
+		changed := sig != last
+		last = sig
+		// Consume the armed flag every time (evaluate it, do not let a changed
+		// signature short-circuit it away), so a spontaneous pump failure arms
+		// exactly one retry.
+		armed := p.retryArmed.Swap(false)
+		if changed || armed {
+			reason := "capture hardware changed"
+			if !changed {
+				reason = "a capture device failed"
+			}
+			log.Printf("%s (%d device(s) present); retrying devices that are down", reason, len(det))
 			p.signalHardwareChanged()
 		}
-		first = false
-		last = sig
 	}
 	detect()
 	t := time.NewTicker(interval)

@@ -249,7 +249,7 @@ type AuthSettings struct {
 
 // AvailableDevice A capture device the host exposes that the configuration does not yet list. It carries only the device id and the probed capabilities; a name, path and stream parameters are assigned when it is provisioned (see POST /devices).
 type AvailableDevice struct {
-	// Device Capture device id to persist, as provisioning stores it. It is a stable id that survives reboots and replugs unless idStable is false.
+	// Device Capture device id to persist, as provisioning stores it. It is a stable id that survives reboots (a serial-form id follows the unit to any port; a by-port or hw:CARD= id survives a replug into the same port), unless idStable is false.
 	//
 	//
 	// Examples: usb:1235:8218:s=S1A2B3:if=0,0
@@ -265,7 +265,7 @@ type AvailableDevice struct {
 	// Examples: hw:4,0
 	HwAddr *string `json:"hwAddr,omitempty"`
 
-	// IdStable False when the host offered no stable id for this device (no sysfs, as in a minimal container), in which case device is a card index that can change across reboots.
+	// IdStable False when the host offered no stable id for this device (for example no sysfs in a minimal container, or a USB device with neither a serial nor a derivable port), in which case device is a card index that can change across reboots.
 	//
 	//
 	// Examples: true
@@ -432,7 +432,7 @@ type Device struct {
 	// ClientConnected Whether an RTSP session currently holds this track's single slot. Always false for skipped or failed devices.
 	ClientConnected bool `json:"clientConnected"`
 
-	// Device Configured capture device id. A stable id names the physical device (a USB unit by vendor, product and serial, or by port when it has no serial; other cards in the alsa-lib hw:CARD= form) and survives reboots and replugs. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable).
+	// Device Configured capture device id. A stable id names the physical device and survives reboots: a USB unit by vendor, product and serial follows it to any port, while the by-port form (a USB unit with no serial) and the alsa-lib hw:CARD= form survive a replug into the same port. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable).
 	//
 	//
 	// Examples: usb:1235:8218:s=S1A2B3:if=0,0, hw:CARD=Loopback,DEV=1
@@ -490,7 +490,7 @@ type Device struct {
 	// Rate Requested capture sample rate in Hz (as configured).
 	Rate int `json:"rate"`
 
-	// State serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device is reconnected or the config is saved. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
+	// State serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, it resolves to hardware another entry already captures from, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device is reconnected or the config is saved. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 	State DeviceState `json:"state"`
 
 	// StreamedChannels Every 1-based capture channel that at least one of the device's streams carries, ascending and unique: the union of the stream selections, where channels describes only the first stream. The UI marks these channels as live on the level meters.
@@ -502,13 +502,13 @@ type Device struct {
 	// Streams Per-stream runtime state, one entry per stream fanned out from this device's shared capture. Present only while the device is serving. The device-level clientConnected and droppedFrames aggregate these (any client connected; summed drops), so a client that predates fan-out can ignore this array. A single-stream device carries one entry mirroring the device-level fields.
 	Streams *[]StreamStatus `json:"streams,omitempty"`
 
-	// SupportedChannels Channel counts the hardware accepts, probed once at startup via the same non-blocking capability query as supportedRates. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a mono/stereo default. The UI takes the largest count as the number of selectable channels and builds the per-channel selection control (Ch1..ChN) from it.
+	// SupportedChannels Channel counts the hardware accepts, from the last successful probe (re-probed each time the device is opened) via the same non-blocking capability query as supportedRates. Absent or empty when no probe has succeeded (device missing or busy), in which case the UI offers a mono/stereo default. The UI takes the largest count as the number of selectable channels and builds the per-channel selection control (Ch1..ChN) from it.
 	//
 	//
 	// Examples: [2], [1,2], [2,4]
 	SupportedChannels *[]int `json:"supportedChannels,omitempty"`
 
-	// SupportedRates Sample rates the hardware accepts, probed once at startup. Absent or empty when the device could not be probed (missing or busy), in which case the UI offers a static list of common rates.
+	// SupportedRates Sample rates the hardware accepts, from the last successful probe (re-probed each time the device is opened, and retained across a transiently-unprobeable open). Absent or empty when no probe has succeeded (device missing or busy), in which case the UI offers a static list of common rates.
 	//
 	//
 	// Examples: [48000,96000,192000]
@@ -558,7 +558,7 @@ type DeviceLevels struct {
 	Name string `json:"name"`
 }
 
-// DeviceState serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device is reconnected or the config is saved. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
+// DeviceState serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, it resolves to hardware another entry already captures from, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device is reconnected or the config is saved. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
 type DeviceState string
 
 // DiscoverySettings mDNS/DNS-SD advertisement settings.

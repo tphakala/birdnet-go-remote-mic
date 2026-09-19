@@ -257,6 +257,34 @@ func TestReportCheckResolvesByIdentity(t *testing.T) {
 	}
 }
 
+// TestReportCheckDisabledEntryDoesNotClaimHardware pins M4: a disabled entry
+// that resolves to the same hardware as a later enabled entry does not own that
+// hardware, because the appliance never opens a disabled device. The enabled
+// entry is therefore reported present, not as a duplicate that "will not be
+// opened" (which it would be).
+func TestReportCheckDisabledEntryDoesNotClaimHardware(t *testing.T) {
+	const scarlettID = "usb:1235:8218:s=S1:if=0,0"
+	swapCLIHardware(t, []audio.Hardware{
+		{ID: scarlettID, HWAddr: addrHW4, Label: nameScarlett, IDStable: true},
+	}, nil)
+
+	disabled := false
+	a := checkDevice("disabled-a", scarlettID, "/a")
+	a.Enabled = &disabled
+	b := checkDevice("enabled-b", addrHW4, "/b")
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{a, b}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	report := out.String()
+	if l := checkLine(report, "enabled-b"); !strings.Contains(l, "present at hw:4,0") || strings.Contains(l, "same hardware") || strings.Contains(l, "will not be opened") {
+		t.Errorf("enabled-b line = %q, want present with no duplicate text (a disabled entry does not claim the hardware)", l)
+	}
+}
+
 // TestReportCheckFlagsCardIndex pins the card-index warning, which names the
 // stable id to use instead.
 func TestReportCheckFlagsCardIndex(t *testing.T) {

@@ -190,6 +190,9 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 // not release a hw device the instant Close returns, so an immediate reopen of
 // the same card can transiently fail with EBUSY. A handful of short retries rides
 // that out; a device that still will not open is reported skipped, not dropped.
+// An error that cannot change between attempts (a malformed id, no such device,
+// an ambiguous id, or an invalid config; see permanentOpenError) returns at once
+// rather than sleeping out the retry budget.
 //
 // The hardware open channel count is resolved at the top of EACH attempt, not
 // once up front. openDeviceRetry runs right after the old capture source was
@@ -234,20 +237,23 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 
 // permanentOpenError reports whether an open failure cannot change between
 // retry attempts, so openDeviceRetry returns it at once instead of spending the
-// retry budget: a malformed id, an id that names no device or several, and a
-// rate, format or channel request the hardware rejects. Only a busy or
-// transiently failing device is worth retrying.
+// retry budget: a malformed id (BadDeviceError), an id that names no device
+// (DeviceNotFoundError) or several (AmbiguousDeviceError), and an invalid config
+// (ConfigError). A rate, format or channel rejection (BadRateError,
+// BadFormatError) is NOT treated as permanent: openDeviceRetry re-resolves the
+// open channel count each attempt, and the rates and formats a device accepts
+// can depend on that count, so a stereo-only card that failed at the mono
+// fallback can open once it frees and resolves to stereo. Everything else (a
+// busy or transiently failing device) is retried.
 func permanentOpenError(err error) bool {
 	var (
 		badDev  *capture.BadDeviceError
-		badRate *capture.BadRateError
-		badFmt  *capture.BadFormatError
 		badCfg  *capture.ConfigError
 		missing *capture.DeviceNotFoundError
 		amb     *capture.AmbiguousDeviceError
 	)
-	return errors.As(err, &badDev) || errors.As(err, &badRate) || errors.As(err, &badFmt) ||
-		errors.As(err, &badCfg) || errors.As(err, &missing) || errors.As(err, &amb)
+	return errors.As(err, &badDev) || errors.As(err, &badCfg) ||
+		errors.As(err, &missing) || errors.As(err, &amb)
 }
 
 // lockState builds the run-lock state for a serving management API. certPath
