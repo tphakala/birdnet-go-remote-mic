@@ -73,17 +73,20 @@ type provider struct {
 	// hwChanged tells the run loop to retry devices that are down (buffered depth
 	// 1, coalescing), either because the host's capture hardware changed since the
 	// previous enumeration (a device was plugged, unplugged, or renumbered) or
-	// because a capture pump failed spontaneously and armed a retry (see
+	// because a capture pump died when its device was lost and armed a retry (see
 	// retryArmed), which covers a device unplugged and replugged at the same card
 	// index within one enumeration tick. The enumeration goroutine sends without
 	// blocking and never waits on the run loop, so it cannot deadlock against a
 	// reconcile. A nil channel (tests that wire none) drops the signal.
 	hwChanged chan struct{}
-	// retryArmed is set by onPumpDone when a capture pump fails on its own. The
-	// next enumeration signals hwChanged even when the hardware signature is
-	// unchanged, then clears the flag with Swap, so one spontaneous failure arms
-	// exactly one retry. Atomic because onPumpDone (run loop) writes it while the
-	// enumeration goroutine reads and clears it.
+	// retryArmed is set by onPumpDone when a capture pump dies because its device
+	// was lost (unplugged or powered off). The next enumeration signals hwChanged
+	// even when the hardware signature is unchanged, then clears the flag with
+	// Swap, so one lost-device failure arms exactly one retry. A pump that dies
+	// while its device is still present does not arm a retry, since re-arming a
+	// persistent non-hardware fault would restart it every tick. Atomic because
+	// onPumpDone (run loop) writes it while the enumeration goroutine reads and
+	// clears it.
 	retryArmed atomic.Bool
 	// overrides names the config fields a serve CLI flag overrode for this run,
 	// as a startup snapshot of the running-vs-persisted divergence. It is set once
@@ -306,7 +309,8 @@ func (p *provider) setConfiguredIDs(ids map[string]bool) { p.configured.Store(&i
 
 // signalHardwareChanged asks the run loop to retry devices that are down,
 // coalescing with a pending signal. It never blocks. The trigger is either a
-// host hardware change or a spontaneous pump failure that armed a retry.
+// host hardware change or a pump that died because its device was lost and
+// armed a retry.
 func (p *provider) signalHardwareChanged() {
 	select {
 	case p.hwChanged <- struct{}{}:
@@ -314,11 +318,13 @@ func (p *provider) signalHardwareChanged() {
 	}
 }
 
-// armRetry records that a capture pump failed on its own, so the next
-// enumeration signals hwChanged and the run loop retries devices that are down
-// even if the host's hardware signature is unchanged (a device unplugged and
-// replugged at the same card index within one tick). runEnumeration clears the
-// flag with Swap, so one failure arms exactly one retry.
+// armRetry records that a capture pump died because its device was lost, so the
+// next enumeration signals hwChanged and the run loop retries devices that are
+// down even if the host's hardware signature is unchanged (a device unplugged
+// and replugged at the same card index within one tick). runEnumeration clears
+// the flag with Swap, so one such failure arms exactly one retry. onPumpDone
+// does not call it for a pump that died while its device was still present, so a
+// persistent non-hardware fault does not retry-flap.
 func (p *provider) armRetry() { p.retryArmed.Store(true) }
 
 // hardwareSignature summarises which devices the host exposes and where, so two
@@ -389,9 +395,10 @@ var detectDevices = audio.DetectDevices
 // retries devices that are down. It signals when the hardware signature changed
 // since the previous enumeration (which includes the first enumeration whenever
 // the host exposes any device, so a mic that finished enumerating between the
-// initial reconcile and this probe is retried) or when a spontaneous pump
-// failure armed a retry (retryArmed) even though the signature is unchanged (a
-// device unplugged and replugged at the same card index within one tick).
+// initial reconcile and this probe is retried) or when a pump died because its
+// device was lost and armed a retry (retryArmed) even though the signature is
+// unchanged (a device unplugged and replugged at the same card index within one
+// tick).
 func (p *provider) runEnumeration(ctx context.Context) {
 	const interval = 15 * time.Second
 	// last is the previous enumeration's hardware signature; it starts empty, so
@@ -408,13 +415,13 @@ func (p *provider) runEnumeration(ctx context.Context) {
 		changed := sig != last
 		last = sig
 		// Consume the armed flag every time (evaluate it, do not let a changed
-		// signature short-circuit it away), so a spontaneous pump failure arms
+		// signature short-circuit it away), so a lost-device pump failure arms
 		// exactly one retry.
 		armed := p.retryArmed.Swap(false)
 		if changed || armed {
 			reason := "capture hardware changed"
 			if !changed {
-				reason = "a capture device failed"
+				reason = "a capture device was lost"
 			}
 			log.Printf("%s (%d device(s) present); retrying devices that are down", reason, len(det))
 			p.signalHardwareChanged()

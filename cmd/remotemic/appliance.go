@@ -720,7 +720,11 @@ func (a *appliance) publish(cfg *config.Config) {
 // adjusts the alive count; its teardown already happened. A pump that stopped on
 // its own is a device that died after startup: its track and meter are retired
 // and its record marked failed. Its paths return 404 until a config reload or a
-// change in the host's capture hardware (see retryDown) starts it again.
+// change in the host's capture hardware (see retryDown) starts it again. It arms
+// an unattended retry only when the device was lost (unplugged or powered off); a
+// failure that is not a confirmed loss does not arm one, since re-arming a
+// still-present device that keeps failing would restart and re-notify it every
+// enumeration tick.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
 	if res.rt.superseded {
@@ -735,19 +739,48 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
 		res.rt.markFailed(res.err)
-		// Arm a retry so the next enumeration restarts this device even when the
-		// host's hardware signature is unchanged (an unplug and replug at the same
-		// card index within one enumeration tick). See provider.retryArmed.
-		a.prov.armRetry()
 		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
-		// that never opened. A lost device (unplugged or powered off) is reported
-		// as disconnected, since reconnecting it brings it back without a reload.
-		if errors.Is(res.err, capture.ErrDeviceGone) {
-			log.Printf("device %q disconnected: %v; its %d stream path(s) return 404 until it is reconnected", name, res.err, len(res.rt.streams))
-			n := deviceDownOnset(name, "Device disconnected", "Capture stopped because the device was disconnected; it starts again when the device is reconnected")
+		// that never opened. Decide whether the device was LOST (unplugged or
+		// powered off) or merely FAILED while still present. ErrDeviceGone is the
+		// library's clean loss signal, but it does not cover every way a lost device
+		// can surface (its gone-errno set is a fixed few, so some unplugs come back
+		// as a raw errno), so when the error is not ErrDeviceGone also re-resolve
+		// the configured id: a *DeviceNotFoundError means the id no longer names
+		// present hardware, i.e. the device is gone. The re-resolve costs one host
+		// enumeration, acceptable on a spontaneous pump death (it is off every hot
+		// path).
+		lost := errors.Is(res.err, capture.ErrDeviceGone)
+		if !lost {
+			if _, rerr := a.resolve(res.rt.dev.Device); rerr != nil {
+				var nf *capture.DeviceNotFoundError
+				lost = errors.As(rerr, &nf)
+			}
+		}
+		if lost {
+			// A lost device comes back on its own once reconnected, so arm a retry:
+			// the next enumeration restarts it even when the host's hardware
+			// signature is unchanged (an unplug and replug at the same card index
+			// within one enumeration tick). See provider.retryArmed.
+			a.prov.armRetry()
+			// retryDown does not restart a card-index entry unattended (its index
+			// may name different hardware after a reconnect, the #62 swap), so the
+			// message must tell the truth for each: a stable id comes back on
+			// reconnect, a card index waits for a config save.
+			msg := "Capture stopped because the device was disconnected; it starts again when the device is reconnected"
+			if config.IsCardIndexID(res.rt.dev.Device) {
+				msg = "Capture stopped because the device was disconnected; it restarts on the next config save (its card index may name different hardware after a reconnect)"
+			}
+			log.Printf("device %q disconnected: %v; its %d stream path(s) return 404 until it comes back", name, res.err, len(res.rt.streams))
+			n := deviceDownOnset(name, "Device disconnected", msg)
 			a.markDown(name, downDisconnected, &n)
 		} else {
+			// The pump died but the device did not read as lost: it still resolves to
+			// present hardware, or the failure could not be confirmed as a loss (a
+			// deterministic encoder fault, an EIO right after open). Do NOT arm a
+			// retry: an armed retry would restart it every enumeration tick, which
+			// flaps the onset/clear condition and climbs announceGen forever. It
+			// restarts on the next config save or host hardware change instead.
 			log.Printf("device %q failed: %v; its %d stream path(s) return 404 until it restarts on a config save or a capture hardware change", name, res.err, len(res.rt.streams))
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until the device restarts on the next config save or capture hardware change", res.err))
 			a.markDown(name, downFailed, &n)

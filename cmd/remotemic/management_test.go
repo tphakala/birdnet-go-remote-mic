@@ -517,7 +517,7 @@ func TestRunEnumerationSignalsHardwareChange(t *testing.T) {
 	if !signalled() {
 		t.Error("a device moving to another card index did not signal a retry")
 	}
-	// A spontaneous pump failure arms a retry, so the next enumeration signals
+	// A lost-device pump failure arms a retry, so the next enumeration signals
 	// even though the hardware signature is unchanged (an unplug and replug at the
 	// same index within one tick), and it fires exactly once.
 	p.armRetry()

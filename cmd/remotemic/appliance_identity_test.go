@@ -23,6 +23,10 @@ const (
 	addrHW5    = "hw:5,0"
 	idScarlett = "usb:1235:8218:s=S1:if=0,0"
 	idMoth     = "usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0"
+
+	// titleDisconnected is the onset title a lost device raises; several tests
+	// assert it, so it lives here rather than as a repeated literal.
+	titleDisconnected = "Device disconnected"
 )
 
 // fakeHost is a host device list the appliance resolves configured ids against,
@@ -316,9 +320,9 @@ func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
 	}
 	app.onPumpDone(pumpResult{rt: drain.rt, err: capture.ErrDeviceGone})
 	if !app.prov.retryArmed.Load() {
-		t.Error("a spontaneous pump failure did not arm a retry")
+		t.Error("a lost-device pump failure did not arm a retry")
 	}
-	if act := center.Active(); len(act) != 1 || act[0].Title != "Device disconnected" {
+	if act := center.Active(); len(act) != 1 || act[0].Title != titleDisconnected {
 		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
 	}
 
@@ -358,5 +362,115 @@ func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
 	}
 	if opened(log, "byindex") {
 		t.Errorf("a card-index entry was reopened onto different hardware on a hardware change: %v", log.snapshot())
+	}
+}
+
+// TestPersistentNonHardwareFailureDoesNotArm pins the fix for a device that opens
+// fine and then keeps dying for a non-hardware reason (a deterministic encoder
+// fault, an EIO right after open): while the device is still present, the failure
+// is reported as failed and does NOT arm an unattended retry. Arming it would
+// restart and re-notify the device every enumeration tick, flapping the down
+// condition forever.
+func TestPersistentNonHardwareFailureDoesNotArm(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
+	withHost(app, host)
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+	center := applianceCenter(t, app)
+
+	rt := app.devices["moth"]
+	app.stop(rt) // retire the fake source so the pump goroutine ends
+	rt.superseded = false
+	var drain pumpResult
+	select {
+	case drain = <-app.pumpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the retired pump to report done")
+	}
+	// The device is still present in the host listing, so this is a fault in a
+	// present device, not a loss.
+	app.onPumpDone(pumpResult{rt: drain.rt, err: errors.New("encoder fault")})
+
+	if app.prov.retryArmed.Load() {
+		t.Error("a persistent non-hardware failure armed a retry; it would flap the condition forever")
+	}
+	if act := center.Active(); len(act) != 1 || act[0].Title != "Device failed" {
+		t.Fatalf("active after the failure = %+v, want one Device failed", act)
+	}
+}
+
+// TestAbsentDeviceFailureIsDisconnectAndArms pins that a pump death whose error is
+// NOT ErrDeviceGone but whose device no longer resolves is treated as a loss:
+// ErrDeviceGone does not cover every lost-device error, so onPumpDone re-resolves
+// the id and, finding it absent, reports a disconnect and arms a retry (a
+// same-index replug within one enumeration tick must still be retried).
+func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
+	withHost(app, host)
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+	center := applianceCenter(t, app)
+
+	rt := app.devices["moth"]
+	app.stop(rt) // retire the fake source so the pump goroutine ends
+	rt.superseded = false
+	var drain pumpResult
+	select {
+	case drain = <-app.pumpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the retired pump to report done")
+	}
+	// The unplug removed the device from the host listing, and the pump reported
+	// a raw errno rather than ErrDeviceGone.
+	host.devs = nil
+	app.onPumpDone(pumpResult{rt: drain.rt, err: errors.New("file descriptor in bad state")})
+
+	if !app.prov.retryArmed.Load() {
+		t.Error("a lost device (absent on re-resolve) did not arm a retry")
+	}
+	if act := center.Active(); len(act) != 1 || act[0].Title != titleDisconnected {
+		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
+	}
+}
+
+// TestCardIndexDeviceLostRestartsOnConfigSave pins that when a card-index device is
+// lost, the disconnected message tells the operator it restarts on the next config
+// save, not "when reconnected": retryDown never restarts a card-index entry
+// unattended, since its index may name different hardware after a reconnect.
+func TestCardIndexDeviceLostRestartsOnConfigSave(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	// byindex binds the bare card index hw:3,0, which matches the present card's
+	// address, so it opens and serves.
+	host := &fakeHost{devs: []audio.Hardware{{ID: idScarlett, HWAddr: addrHW3, IDStable: true}}}
+	withHost(app, host)
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("byindex", addrHW3, "/a", 48000)}})
+	if app.devices["byindex"].currentState() != mgmtserver.StateServing {
+		t.Fatalf("byindex state = %s, want serving", app.devices["byindex"].currentState())
+	}
+	center := applianceCenter(t, app)
+
+	rt := app.devices["byindex"]
+	app.stop(rt) // retire the fake source so the pump goroutine ends
+	rt.superseded = false
+	var drain pumpResult
+	select {
+	case drain = <-app.pumpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the retired pump to report done")
+	}
+	app.onPumpDone(pumpResult{rt: drain.rt, err: capture.ErrDeviceGone})
+
+	act := center.Active()
+	if len(act) != 1 || act[0].Title != titleDisconnected {
+		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
+	}
+	if !strings.Contains(act[0].Message, "restarts on the next config save") {
+		t.Errorf("card-index disconnect message = %q, want it to say it restarts on the next config save", act[0].Message)
 	}
 }
