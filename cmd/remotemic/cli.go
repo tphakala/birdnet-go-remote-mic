@@ -283,7 +283,10 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 		_, msg := resolveError(d, err)
 		return msg
 	}
-	status := "present at " + hw.HWAddr
+	status := "present"
+	if hw.HWAddr != "" {
+		status += " at " + hw.HWAddr
+	}
 	if hw.Label != "" {
 		status += " (" + hw.Label + ")"
 	}
@@ -291,14 +294,22 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 	// entry that resolves to the same hardware (see hardwareOwner). A disabled
 	// entry is never opened, so it neither claims the hardware nor is reported as
 	// a duplicate: print its resolution and leave ownership to the enabled entry.
-	if d.IsEnabled() {
+	// An empty address names no card, so it cannot be compared for ownership.
+	if d.IsEnabled() && hw.HWAddr != "" {
 		if first, dup := owner[hw.HWAddr]; dup {
 			return status + "; same hardware as " + strconv.Quote(first) + ", so it will not be opened"
 		}
 		owner[hw.HWAddr] = d.Name
 	}
 	if config.IsCardIndexID(d.Device) {
-		status += "; pinned to a card index, which can change across reboots (use id " + hw.ID + ")"
+		status += "; pinned to a card index, which can change across reboots"
+		// Suggest the resolved id only when it is a stable one: a host that offers
+		// no stable form resolves the index back to the same card index.
+		if hw.IDStable && hw.ID != d.Device {
+			status += " (use id " + hw.ID + ")"
+		} else if !hw.IDStable {
+			status += " (this device reports no stable id)"
+		}
 	}
 	return status
 }

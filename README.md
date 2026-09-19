@@ -47,9 +47,10 @@ instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
 all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
 `path`, `auth` (`token` when an access token is required, else `none`), and a
 `txtvers`. It sends goodbye packets on shutdown so stale entries
-clear promptly. When a device starts, stops, or restarts (a config save or a
-hardware-change retry), the whole advertisement is rebuilt, because the
-responder cannot retire a single service. Set `discovery.enabled: false` to turn it off; on a network
+clear promptly. When a config save starts, stops, or restarts a device, or a
+hardware-change retry starts one, the whole advertisement is rebuilt, because
+the responder cannot retire a single service. A device that dies mid-run stays
+advertised until the next rebuild (see Multi-device behaviour). Set `discovery.enabled: false` to turn it off; on a network
 where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
 plus path instead.
 
@@ -118,8 +119,9 @@ microphone after a reboot or a replug. Copy the id from `remotemic devices list`
 
 - `usb:<vendor>:<product>:s=<serial>:if=<interface>,<device>` names a USB unit
   by its serial and follows it to any port.
-- `usb:<vendor>:<product>:p=<port>:if=<interface>,<device>` is used for a USB
-  device with no serial, and names the physical port it is plugged into.
+- `usb:<vendor>:<product>:p=<port>:if=<interface>,<device>` names the physical
+  port a USB device is plugged into. It is used for a device with no serial, and
+  for identical units that report the same serial.
 - `hw:CARD=<card id>,DEV=<device>` names a built-in or virtual card by its
   kernel card id.
 
@@ -278,8 +280,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
   With management enabled the process stays up after the
   last device dies, so the failure stays inspectable over the API; with
   management disabled it exits once every device has stopped.
-  A retired device's mDNS advertisement persists until the process exits (a
-  limitation of the dnssd responder), so a discoverer that picks it up gets 404.
+  A device that dies mid-run stays in the mDNS advertisement until it is next
+  rebuilt (a config save, a retry that starts a device, or process exit), because
+  the dnssd responder cannot retire a single service, so a discoverer that picks
+  it up meanwhile gets 404.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous

@@ -366,3 +366,43 @@ func TestRunListDevicesShowsIdentity(t *testing.T) {
 		t.Errorf("loop row = %q, want the no-stable-id warning", lines[2])
 	}
 }
+
+// TestReportCheckCardIndexWithoutStableID pins that --check never suggests a
+// card index as the replacement id: a host with no stable form resolves the
+// index back to itself, so the hint says the device reports no stable id.
+func TestReportCheckCardIndexWithoutStableID(t *testing.T) {
+	swapCLIHardware(t, []audio.Hardware{{ID: devHW1, HWAddr: devHW1, Label: nameScarlett}}, nil)
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{checkDevice("cam-a", devHW1, "/a")}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	l := checkLine(out.String(), "cam-a")
+	if strings.Contains(l, "use id") || !strings.Contains(l, "reports no stable id") {
+		t.Errorf("cam-a line = %q, want the no-stable-id note and no replacement id", l)
+	}
+}
+
+// TestReportCheckEmptyAddressClaimsNothing pins that two entries resolving to
+// devices with no address are not reported as duplicates of each other, and
+// that the status does not print a dangling "present at".
+func TestReportCheckEmptyAddressClaimsNothing(t *testing.T) {
+	swapCLIHardware(t, []audio.Hardware{
+		{ID: idScarlett, IDStable: true},
+		{ID: idMoth, IDStable: true},
+	}, nil)
+
+	cfg := config.Default()
+	cfg.Devices = []config.Device{checkDevice("one", idScarlett, "/a"), checkDevice("two", idMoth, "/b")}
+	var out bytes.Buffer
+	if err := reportCheck(&cfg, &out); err != nil {
+		t.Fatalf("reportCheck: %v", err)
+	}
+	for _, name := range []string{"one", "two"} {
+		if l := checkLine(out.String(), name); strings.Contains(l, "same hardware") || strings.Contains(l, "present at") || !strings.Contains(l, "present") {
+			t.Errorf("%s line = %q, want plain present with no duplicate report", name, l)
+		}
+	}
+}
