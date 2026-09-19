@@ -150,8 +150,8 @@ export class NotificationCenter {
   }
 
   private renderRow(n: Notification, nowMs: number, offsetMs: number): HTMLElement {
-    // One lookup feeds both the severity surface and the glyph, so a row can
-    // never end up with an error tint and an info icon.
+    // One lookup feeds both the severity badge colour and the glyph, so a row
+    // can never end up with an error colour and an info icon.
     const sev = SEVERITY_TO_TOAST[n.severity] ?? "info";
     const row = elem("div", `notif-row sev-${sev}`);
 

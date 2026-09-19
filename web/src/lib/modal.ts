@@ -110,13 +110,11 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
 
     const card = elem("div", "modal-card");
 
-    const title = elem("h3", undefined, opts.title);
+    const title = elem("h3", "modal-title", opts.title);
     title.id = titleId;
-    title.style.cssText = "font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:6px;";
 
-    const body = elem("p", undefined, opts.body);
+    const body = elem("p", "modal-text", opts.body);
     body.id = descId;
-    body.style.cssText = "font-size:12px;color:var(--text-secondary);line-height:1.5;";
 
     const actions = elem("div", "settings-actions");
     const cancel = elem("button", "btn btn-secondary", opts.cancelLabel ?? "Cancel");

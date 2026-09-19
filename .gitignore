@@ -1,7 +1,7 @@
 # Build artifacts
 /bin/
-# Bare binary from `go build ./cmd/birdnet-go-remote-mic` (Taskfile builds go to /bin/).
-/birdnet-go-remote-mic
+# Bare binary from `go build ./cmd/remotemic` (Taskfile builds go to /bin/).
+/remotemic
 *.exe
 *.test
 *.out
@@ -23,6 +23,8 @@ coverage.txt
 
 # Runtime artifacts
 *.pid
+# Run lock a serving appliance holds beside its config.
+*.yaml.lock
 
 # Local tool caches
 cache/

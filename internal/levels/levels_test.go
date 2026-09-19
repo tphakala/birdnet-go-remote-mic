@@ -513,3 +513,47 @@ func (h *Hub) levelsEvent() Event {
 	ev, _, _ := h.sample(nil)
 	return marshalLevels(ev)
 }
+
+// TestAccumulatorPerChannelRMS asserts the one-shot accumulator keeps channels
+// apart and converts to dBFS: a full-scale square wave on channel 2 reads near
+// 0 dBFS while a silent channel 1 sits at the floor.
+func TestAccumulatorPerChannelRMS(t *testing.T) {
+	const frames = 480
+	pcm := make([]byte, frames*2*2)
+	for f := 0; f < frames; f++ {
+		v := int16(math.MaxInt16)
+		if f%2 == 1 {
+			v = -math.MaxInt16
+		}
+		binary.LittleEndian.PutUint16(pcm[(f*2+1)*2:], uint16(v))
+	}
+	acc := NewAccumulator(2)
+	acc.Add(pcm[:len(pcm)/2])
+	acc.Add(pcm[len(pcm)/2:])
+	got := acc.RMSDbfs()
+	if got[0] != FloorDbfs {
+		t.Errorf("silent channel = %.2f dBFS, want the floor %.0f", got[0], FloorDbfs)
+	}
+	if got[1] < -0.1 {
+		t.Errorf("full-scale channel = %.2f dBFS, want about 0", got[1])
+	}
+	if empty := NewAccumulator(3).RMSDbfs(); len(empty) != 3 || empty[2] != FloorDbfs {
+		t.Errorf("empty accumulator = %v, want three floor values", empty)
+	}
+}
+
+// TestAccumulatorHalfScaleSquareWave asserts a square wave at half full scale
+// reads -6.02 dBFS, the closed-form 20*log10(0.5).
+func TestAccumulatorHalfScaleSquareWave(t *testing.T) {
+	acc := NewAccumulator(1)
+	// Alternating +/- 16384 is a square wave with RMS 16384, half of the 32768
+	// full scale.
+	acc.Add(pcm(16384, -16384, 16384, -16384))
+	got := acc.RMSDbfs()
+	if len(got) != 1 {
+		t.Fatalf("RMSDbfs len = %d, want 1", len(got))
+	}
+	if math.Abs(got[0]-(-6.02)) > 0.05 {
+		t.Fatalf("half-scale square wave = %.4f dBFS, want -6.02 +/- 0.05", got[0])
+	}
+}

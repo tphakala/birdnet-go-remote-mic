@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	capture "github.com/tphakala/go-audio-capture"
@@ -14,7 +15,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
 
-// serveFn and listDevicesFn are the serve and list-devices entry points behind a
+// serveFn and listDevicesFn are the serve and devices list entry points behind a
 // seam so dispatch routing is testable without starting the appliance or
 // touching audio hardware.
 var (
@@ -23,9 +24,24 @@ var (
 )
 
 // captureDevices enumerates the host's capture devices. It is a package var so
-// reportCheck (serve --check) and list-devices are testable without ALSA
+// reportCheck (serve --check) and devices list are testable without ALSA
 // hardware: a test can inject a known device list or a probe failure.
 var captureDevices = capture.Devices
+
+// configEnv names the environment variable that supplies the config path when
+// --config is not given, so a service unit can set it once and every command
+// run by hand on the appliance finds the same file.
+const configEnv = "REMOTEMIC_CONFIG"
+
+// configFlag registers the shared --config flag on fs. Its default is
+// $REMOTEMIC_CONFIG when set and non-empty, else config.yaml in the working directory.
+func configFlag(fs *flag.FlagSet) *string {
+	def := os.Getenv(configEnv)
+	if def == "" {
+		def = "config.yaml"
+	}
+	return fs.String("config", def, "path to the YAML config file (env "+configEnv+")")
+}
 
 // out writes formatted CLI text to w, discarding the write error: output to
 // stdout or stderr is best-effort, and a failed write there is unrecoverable and
@@ -34,39 +50,39 @@ func out(w io.Writer, format string, a ...any) {
 	_, _ = fmt.Fprintf(w, format, a...)
 }
 
-// dispatch routes CLI arguments (os.Args[1:]) to a subcommand and returns the
-// process exit code. serve is the implicit default: a bare invocation, or one
-// whose first argument is a flag, runs the appliance.
+// dispatch routes CLI arguments (os.Args[1:]) to a command and returns the
+// process exit code. Commands are noun-verb groups (token get, devices list),
+// plus the top-level serve and version. serve is the implicit default: a bare
+// invocation, or one whose first argument is a flag, runs the appliance.
 func dispatch(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return toExit(serveFn(nil, stderr), stderr)
 	}
 	switch args[0] {
 	case "version":
-		out(stdout, "birdnet-go-remote-mic %s\n", version)
+		out(stdout, "remotemic %s\n", version)
 		return 0
-	case "help", "-h", "--help":
+	case "help":
 		usage(stdout)
 		return 0
-	case "list-devices":
-		return toExit(listDevicesFn(stdout), stderr)
-	case "init":
-		return toExit(runInit(args[1:], stdout, stderr), stderr)
+	case "devices":
+		return runDevices(args[1:], stdout, stderr)
+	case "token":
+		return runToken(args[1:], stdout, stderr)
 	case "serve":
 		return toExit(serveFn(args[1:], stderr), stderr)
 	}
+	if isHelp(args[0]) {
+		usage(stdout)
+		return 0
+	}
 	if strings.HasPrefix(args[0], "-") {
-		// The legacy single-flag forms (-version and the deprecated -list-devices)
-		// are handled here rather than as subcommands. The old flat flag parser
-		// also honored them in any position, so `-config x.yaml -list-devices`
-		// listed devices; preserve that by scanning every arg, not just the first.
+		// The version flag works in any position, so `--config x.yaml -v` prints
+		// the version instead of starting the appliance.
 		for _, a := range args {
 			switch a {
-			case "-list-devices", "--list-devices":
-				out(stderr, "note: -list-devices is deprecated; use `list-devices`\n")
-				return toExit(listDevicesFn(stdout), stderr)
 			case "-v", "--version", "-version":
-				out(stdout, "birdnet-go-remote-mic %s\n", version)
+				out(stdout, "remotemic %s\n", version)
 				return 0
 			}
 		}
@@ -76,6 +92,11 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	out(stderr, "unknown command %q\n\n", args[0])
 	usage(stderr)
 	return 2
+}
+
+// isHelp reports whether arg asks a command group for its usage.
+func isHelp(arg string) bool {
+	return arg == "help" || arg == "-h" || arg == "--help"
 }
 
 // toExit maps a subcommand's error to an exit code, printing it to stderr. A
@@ -88,22 +109,23 @@ func toExit(err error, stderr io.Writer) int {
 	case errors.Is(err, flag.ErrHelp):
 		return 0
 	default:
-		out(stderr, "birdnet-go-remote-mic: %v\n", err)
+		out(stderr, "remotemic: %v\n", err)
 		return 1
 	}
 }
 
 // usage prints the top-level command summary.
 func usage(w io.Writer) {
-	out(w, `birdnet-go-remote-mic - remote microphone appliance for BirdNET-Go
+	out(w, `remotemic - remote microphone appliance for BirdNET-Go
 
 Usage:
-  birdnet-go-remote-mic [serve] [flags]   capture and serve (the default)
-  birdnet-go-remote-mic init [flags]      seed and print the shared access token
-  birdnet-go-remote-mic list-devices      list capture devices and exit
-  birdnet-go-remote-mic version           print version and exit
+  remotemic [serve] [flags]     capture and serve (the default)
+  remotemic token <command>     manage the shared access token (get, generate, set, clear)
+  remotemic devices <command>   inspect capture devices (list)
+  remotemic version             print version and exit
 
-Run serve or init with -h to see its flags.
+Commands that read the config take --config, which defaults to $`+configEnv+`
+or config.yaml. Run a command with -h to see its flags.
 `)
 }
 
@@ -126,13 +148,13 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		out(stderr, "Usage: birdnet-go-remote-mic [serve] [flags]\n\n"+
+		out(stderr, "Usage: remotemic [serve] [flags]\n\n"+
 			"Capture local audio and serve it over RTSP. Flags override the config\n"+
 			"file for this run only and are never written back to it; use\n"+
 			"--flag=false for the boolean toggles.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	path := fs.String("config", "config.yaml", "path to the YAML config file")
+	path := configFlag(fs)
 	listen := fs.String("listen", "", "RTSP listen address host:port (overrides config)")
 	mgmtListen := fs.String("mgmt-listen", "", "HTTPS management listen address host:port (overrides config)")
 	certDir := fs.String("cert-dir", "", "directory for the self-signed management certificate (overrides config)")
@@ -155,6 +177,43 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	}
 	fs.Visit(func(f *flag.Flag) { ov.set[f.Name] = true })
 	return *path, ov, *checkFlag, nil
+}
+
+// runDevices routes the devices command group and returns the exit code.
+func runDevices(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		devicesUsage(stderr)
+		return 2
+	}
+	if args[0] == "list" {
+		fs := flag.NewFlagSet("devices list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		fs.Usage = func() {
+			out(stderr, "Usage: remotemic devices list\n\n"+
+				"List the host's capture devices: the id to put in a device's config\n"+
+				"entry, and its label.\n")
+		}
+		if err := parseNoArgs(fs, args[1:]); err != nil {
+			return toExit(err, stderr)
+		}
+		return toExit(listDevicesFn(stdout), stderr)
+	}
+	if isHelp(args[0]) {
+		devicesUsage(stdout)
+		return 0
+	}
+	out(stderr, "unknown devices command %q\n\n", args[0])
+	devicesUsage(stderr)
+	return 2
+}
+
+// devicesUsage prints the devices command summary.
+func devicesUsage(w io.Writer) {
+	out(w, `Inspect the host's capture devices.
+
+Usage:
+  remotemic devices list   list capture devices (id and label)
+`)
 }
 
 // runListDevices prints the id and label of every capture device on the host.

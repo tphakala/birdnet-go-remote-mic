@@ -312,6 +312,8 @@ func TestValidate(t *testing.T) {
 		{"empty device fails", func(c *Config) { c.Devices[0].Device = "" }, true},
 		{"unknown mode fails", func(c *Config) { c.Devices[0].Streams[0].Mode = "flac" }, true},
 		{"negative opus bitrate fails", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = -1 }, true},
+		{"opus bitrate above the maximum fails", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = OpusMaxBitrate + 1 }, true},
+		{"opus bitrate at the maximum ok", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = OpusMaxBitrate }, false},
 		{"duplicate name fails", func(c *Config) { c.Devices[1].Name = nameGarden }, true},
 		{"duplicate path fails", func(c *Config) { c.Devices[1].Streams[0].Path = pathGarden }, true},
 		{"duplicate device id fails", func(c *Config) { c.Devices[1].Device = deviceHW1 }, true},
@@ -589,5 +591,23 @@ func TestCloneDeepCopiesDeviceQuietAlert(t *testing.T) {
 	*clone.Devices[0].QuietAlert = true
 	if *c.Devices[0].QuietAlert {
 		t.Error("Clone aliased Device.QuietAlert; mutating the clone changed the original")
+	}
+}
+
+// TestOpusDefaultBitrate pins 128 kbps per channel, capped at the Opus maximum,
+// and that an explicit bitrate wins over the default.
+func TestOpusDefaultBitrate(t *testing.T) {
+	for _, tc := range []struct{ ch, want int }{
+		{0, 128000}, {1, 128000}, {2, 256000}, {4, 510000}, {8, 510000},
+	} {
+		if got := OpusDefaultBitrate(tc.ch); got != tc.want {
+			t.Errorf("OpusDefaultBitrate(%d) = %d, want %d", tc.ch, got, tc.want)
+		}
+	}
+	if got := (Opus{Bitrate: 96000}).EffectiveBitrate(2); got != 96000 {
+		t.Errorf("explicit bitrate: EffectiveBitrate = %d, want 96000", got)
+	}
+	if got := (Opus{}).EffectiveBitrate(2); got != 256000 {
+		t.Errorf("unset bitrate: EffectiveBitrate = %d, want the stereo default 256000", got)
 	}
 }

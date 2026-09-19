@@ -21,10 +21,13 @@ class App {
         // Push a stored token into the clients before the first request so a
         // token-gated appliance loads without a prompt on a returning browser.
         applyStoredToken();
-        store.loadInitial();
-        store.startPolling();
-        // Load the snapshot immediately too, independent of SSE connect timing.
-        void notifications.load();
+        void store.start().then((running) => {
+            // Load the snapshot immediately too, independent of SSE connect timing.
+            // When the login prompt is up instead, the stream's connect after login
+            // re-syncs the snapshot.
+            if (running)
+                void notifications.load();
+        });
     }
     initTheme() {
         const savedTheme = localStorage.getItem("remote-mic-theme") || "dark";

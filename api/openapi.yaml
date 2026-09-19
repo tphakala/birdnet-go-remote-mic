@@ -59,8 +59,11 @@ paths:
       tags: [system]
       summary: Liveness probe
       description: >
-        Always available and unauthenticated. Reports only that the process
-        is up; use /status for real state.
+        Always available and unauthenticated. Reports that the process is up
+        and whether the other operations require the access token, so a
+        client can ask for the token before making any gated request (the
+        mDNS TXT record already advertises the same auth=token flag). Use
+        /status for real state.
       security: []
       responses:
         "200":
@@ -546,7 +549,7 @@ components:
     Health:
       type: object
       description: Liveness probe response.
-      required: [status, version]
+      required: [status, version, authRequired]
       properties:
         status:
           type: string
@@ -555,6 +558,10 @@ components:
           type: string
           description: Appliance build version.
           examples: ["v0.3.0"]
+        authRequired:
+          type: boolean
+          description: True when every other operation requires the access token.
+          examples: [true]
 
     ApplianceStatus:
       type: object
@@ -781,6 +788,19 @@ components:
             channels in order; a single-channel selection yields a mono stream.
             Opus accepts one channel (mono) or two (stereo); PCM L16 carries any
             selection.
+        streamedChannels:
+          type: array
+          maxItems: 8
+          items:
+            type: integer
+            minimum: 1
+            maximum: 8
+          description: >
+            Every 1-based capture channel that at least one of the device's
+            streams carries, ascending and unique: the union of the stream
+            selections, where channels describes only the first stream. The
+            UI marks these channels as live on the level meters.
+          examples: [[1], [1, 3]]
         opus:
           $ref: "#/components/schemas/OpusSettings"
         state:
@@ -952,10 +972,13 @@ components:
             minimum: 1
             maximum: 8
           description: >
-            Optional 1-based channel selection to stream, ascending and unique;
-            chosen from the device's capabilities when omitted. An empty array
-            is treated the same as omitting the field: the appliance derives the
-            default selection (so no minItems is imposed).
+            Optional 1-based channel selection to stream, ascending and unique.
+            When omitted the appliance selects a single channel: it captures
+            briefly from the device and picks the loudest channel (the lowest
+            numbered among channels within 1 dB of the loudest, and channel 1
+            when all are near silence or the measurement fails). An empty array
+            is treated the same as omitting the field (so no minItems is
+            imposed).
 
     StreamMode:
       type: string
@@ -972,7 +995,12 @@ components:
         bitrate:
           type: integer
           minimum: 0
-          description: Encoder bitrate in bits per second; 0 selects the encoder default.
+          maximum: 510000
+          description: >
+            Encoder bitrate in bits per second; 0 selects the default of 128
+            kbps per channel carried (128 kbps mono, 256 kbps stereo), capped
+            at the 510 kbps Opus maximum. An explicit value above 510000 is
+            rejected.
 
     LevelsEvent:
       type: object

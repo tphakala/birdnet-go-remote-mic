@@ -11,10 +11,87 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 )
+
+// ChannelProbe briefly captures from an unconfigured host device, opened at the
+// given rate and channel count, and returns each channel's RMS level in dBFS
+// (index 0 is channel 1). Provisioning uses it to default a new device to its
+// loudest channel.
+type ChannelProbe func(ctx context.Context, device string, rate, channels int) ([]float64, error)
+
+// WithChannelProbe mounts fn so provisioning without an explicit channel
+// selection defaults to the device's loudest channel. Without it, or when the
+// probe fails, the default is channel 1.
+func WithChannelProbe(fn ChannelProbe) Option {
+	return func(s *Server) { s.channelProbe = fn }
+}
+
+// Loudest-channel selection. Levels within channelTieDb of the loudest count as
+// equal, and levels at or below channelSilenceDbfs as silence, so two idle
+// inputs whose noise floors differ slightly do not pick the higher-numbered one
+// by chance: every tie resolves to the lowest channel number.
+const (
+	channelTieDb       = 1.0
+	channelSilenceDbfs = -80.0
+	channelProbeWidth  = config.MaxChannels // widest capture probed (the config channel maximum)
+	channelProbeBudget = 3 * time.Second    // bounds the probe: its blocking open, the settle window, and the measurement
+)
+
+// loudestChannel returns the 1-based channel with the highest RMS level in
+// levels (dBFS, index 0 is channel 1). Channels within channelTieDb of the
+// loudest are ties and the lowest-numbered of them wins; when every channel is
+// at or below channelSilenceDbfs, or levels is empty, it returns channel 1.
+func loudestChannel(levels []float64) int {
+	if len(levels) == 0 {
+		return 1
+	}
+	top := slices.Max(levels)
+	if top <= channelSilenceDbfs {
+		return 1
+	}
+	for i, l := range levels {
+		if l >= top-channelTieDb {
+			return i + 1
+		}
+	}
+	return 1
+}
+
+// preferredChannel measures the device and returns its loudest channel, or 1
+// when there is nothing to choose between (a single-channel device), no probe
+// is mounted, the rate provisioning would pick falls outside the probe's band,
+// or the measurement fails (the device is busy, say). It captures at the rate
+// provisioning will pick (chooseParams), so the probe exercises the real open,
+// and considers at most width channels.
+func (s *Server) preferredChannel(ctx context.Context, d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) int {
+	width := channelProbeWidth
+	if len(d.SupportedChannels) > 0 {
+		width = min(slices.Max(d.SupportedChannels), channelProbeWidth)
+	}
+	if s.channelProbe == nil || width < 2 {
+		return 1
+	}
+	// Probe at the rate provisioning will actually pick so the open matches the
+	// real one: chooseParams owns that derivation (Opus is always 48 kHz, PCM
+	// takes the requested or preferred rate). preferred does not affect the rate,
+	// so pass 1. Skip an implausible rate no capture would accept.
+	_, rate, _ := chooseParams(d, req, 1)
+	if rate < 8000 || rate > 384000 {
+		return 1
+	}
+	pctx, cancel := context.WithTimeout(ctx, channelProbeBudget)
+	defer cancel()
+	levels, err := s.channelProbe(pctx, d.ID, rate, width)
+	if err != nil {
+		log.Printf("mgmtserver: channel level probe on %s failed: %v (defaulting to channel 1)", d.ID, err)
+		return 1
+	}
+	return loudestChannel(levels[:min(len(levels), width)])
+}
 
 // errDeviceExists and errDeviceNotFound distinguish a provisioning conflict and
 // a missing delete target from a validation failure, so the handlers can map
@@ -72,10 +149,41 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	}
 	detected := &dd
 
+	// A device that is already configured needs no probe: opening it would
+	// disturb its running capture, and the Update below rejects it anyway. The
+	// duplicate check inside Update stays authoritative against a concurrent
+	// provision; this only avoids the wasted, disruptive probe first.
+	if slices.ContainsFunc(s.configStore.Config().Devices, func(dev config.Device) bool {
+		return dev.Device == req.Device
+	}) {
+		return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
+			problem(http.StatusConflict, "already configured", "device "+req.Device+" is already configured"),
+		), nil
+	}
+
+	// With no channel selection in the request, default to the loudest channel.
+	// Measure before taking patchMu: the probe captures for up to a second and
+	// must not hold up concurrent config changes.
+	preferred := 1
+	if req.Channels == nil || len(*req.Channels) == 0 {
+		preferred = s.preferredChannel(ctx, detected, req)
+	}
+
+	// If the client disconnected during the probe, do not persist a device it can
+	// no longer learn about; a 503 lets it retry. It is checked after taking
+	// patchMu, which can also wait (behind another request's reload), so both
+	// waits are covered.
+	//
 	// Serialize the persist-then-reload sequence exactly like PatchConfig, so a
 	// provision and a concurrent patch cannot interleave persist and reload.
 	s.patchMu.Lock()
 	defer s.patchMu.Unlock()
+	if ctx.Err() != nil {
+		return mgmtapi.ProvisionDevicedefaultApplicationProblemPlusJSONResponse{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       problem(http.StatusServiceUnavailable, "request cancelled", "the provisioning request was cancelled before the device was saved"),
+		}, nil
+	}
 
 	var created config.Device
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
@@ -84,7 +192,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 				return config.Config{}, errDeviceExists
 			}
 		}
-		dev := buildProvisionedDevice(&cur, detected, req)
+		dev := buildProvisionedDevice(&cur, detected, req, preferred)
 		cur.Devices = append(cur.Devices, dev)
 		cur.ApplyDefaults()
 		if verr := cur.Validate(); verr != nil {
@@ -186,7 +294,7 @@ func (s *Server) DeleteDevice(ctx context.Context, request mgmtapi.DeleteDeviceR
 // random hard-to-guess RTSP path, and stream parameters chosen from the device's
 // capabilities. Request fields override the derived defaults. config.Validate
 // (run by the caller) still guards the result.
-func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) config.Device {
+func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest, preferred int) config.Device {
 	names := make(map[string]bool, len(cur.Devices))
 	paths := make(map[string]bool, len(cur.Devices))
 	for i := range cur.Devices {
@@ -204,7 +312,7 @@ func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi
 		name = deriveName(d.FriendlyName, d.ID, names)
 	}
 
-	mode, rate, channels := chooseParams(d, req)
+	mode, rate, channels := chooseParams(d, req, preferred)
 
 	// Provisioning always creates a single-stream device: one capture, one RTSP
 	// path, the chosen channels. Fan-out is added later by editing the device.
@@ -293,7 +401,7 @@ func randomPath(taken map[string]bool) string {
 // as "the operator wants PCM"), while an explicit channel selection is passed
 // through unchanged so config.Validate accepts one or two channels and rejects
 // three or more with a 422 rather than this silently narrowing the request.
-func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode config.Mode, rate int, channels []int) {
+func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest, preferred int) (mode config.Mode, rate int, channels []int) {
 	if req.Mode != nil {
 		mode = config.Mode(string(*req.Mode))
 	}
@@ -303,28 +411,22 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 	if req.Channels != nil {
 		channels = config.NormalizeChannels(*req.Channels)
 	}
-	// derived records that the selection is the appliance's default, not the
-	// operator's: an omitted field and an explicit empty array (channels: [])
-	// both leave nothing after normalization, so both fall back below and must
-	// be treated the same way. Keying the Opus narrowing on req.Channels==nil
-	// instead would 422 an explicit [] on a stereo-only device while an omitted
-	// field succeeded.
-	derived := len(channels) == 0
+	// An omitted field and an explicit empty array (channels: []) both leave
+	// nothing after normalization and are treated the same: the selection is
+	// derived, and a derived selection is always a single channel (preferred,
+	// normally the loudest). The selecting source extracts it from whatever
+	// contiguous count the device opens, so this holds on a stereo-only
+	// interface too.
 	if len(channels) == 0 {
-		channels = defaultSelection(d.SupportedChannels)
+		channels = []int{max(1, preferred)}
 	}
 
 	switch mode {
 	case config.ModeOpus:
-		// Opus accepts one channel (mono) or two (stereo), and mono is the
-		// default. A DERIVED default (the request named no channels, or an empty
-		// array) is narrowed to a single channel, since the operator asked for
-		// Opus rather than a channel set; an EXPLICIT selection is kept as asked,
-		// so config.Validate accepts one or two and rejects three or more with a
-		// 422 instead of this silently discarding part of the request.
-		if derived && len(channels) > 1 {
-			channels = channels[:1]
-		}
+		// Opus accepts one channel (mono) or two (stereo). An explicit selection
+		// is kept as asked, so config.Validate accepts one or two and rejects
+		// three or more with a 422 instead of this silently discarding part of
+		// the request.
 		return config.ModeOpus, 48000, channels
 	case config.ModePCM:
 		if rate == 0 {
@@ -334,9 +436,8 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 	default:
 		// Auto: prefer Opus, but only when the request did not ask for something
 		// Opus cannot honor. Auto prefers 48 kHz mono Opus when a single channel is
-		// selected; an explicit rate other than 48 kHz, or a selection of more than
-		// one channel (including a stereo-only device's derived two-channel default),
-		// means the operator wants PCM, so silently returning Opus would discard
+		// selected; an explicit rate other than 48 kHz, or an explicit selection of
+		// more than one channel, means the operator wants PCM, so silently returning Opus would discard
 		// their request (the contract says a set field overrides the default). Stereo
 		// Opus is reachable only by asking for it explicitly (mode opus, two channels).
 		opusOK := canOpus(d) &&
@@ -361,23 +462,6 @@ func chooseParams(d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) (mode
 // rate is more forgiving.
 func canOpus(d *AvailableDevice) bool {
 	return slices.Contains(d.SupportedRates, 48000)
-}
-
-// defaultSelection picks a channel selection for a newly provisioned device:
-// mono (channel 1) when the device can open a single channel or its capability is
-// unknown (the common default, and the one Opus accepts), otherwise the device's
-// full native width so no channel is silently dropped on a stereo-only (or wider)
-// interface that cannot open mono directly.
-func defaultSelection(supported []int) []int {
-	if len(supported) == 0 || slices.Contains(supported, 1) {
-		return []int{1}
-	}
-	maxCh := slices.Max(supported)
-	sel := make([]int, maxCh)
-	for i := range sel {
-		sel[i] = i + 1
-	}
-	return sel
 }
 
 // preferRate picks a sample rate: 48 kHz when supported (normal audio), otherwise
@@ -446,6 +530,7 @@ func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 		if s0.Mode == config.ModeOpus {
 			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
 		}
+		out.StreamedChannels = ptr(d.StreamChannelUnion())
 	}
 	return out
 }

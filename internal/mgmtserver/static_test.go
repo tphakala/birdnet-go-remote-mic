@@ -199,3 +199,20 @@ func TestStaticHandlerETagCaching(t *testing.T) {
 		})
 	}
 }
+
+// TestStaticHandlerRevalidates asserts assets and the SPA fallback are sent
+// with Cache-Control: no-cache, so a browser revalidates after a deploy
+// instead of reusing a heuristically cached stylesheet.
+func TestStaticHandlerRevalidates(t *testing.T) {
+	handler := newStaticHandler(fstest.MapFS{
+		indexAsset:  &fstest.MapFile{Data: []byte("<!doctype html><title>x</title>")},
+		stylesAsset: &fstest.MapFile{Data: []byte("body{}")},
+	})
+	for _, p := range []string{"/", "/styles.css", "/system"} {
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, p, http.NoBody))
+		if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("%s: Cache-Control = %q, want no-cache", p, got)
+		}
+	}
+}

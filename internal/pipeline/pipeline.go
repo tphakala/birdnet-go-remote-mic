@@ -100,7 +100,8 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 	if rate != 48000 || ch < 1 || ch > 2 {
 		return fmt.Errorf("pipeline: opus requires 48000 Hz with 1 or 2 channels, got %d Hz %d ch", rate, ch)
 	}
-	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: o.bitrate})
+	bitrate := config.Opus{Bitrate: o.bitrate}.EffectiveBitrate(ch)
+	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: bitrate})
 	if err != nil {
 		return err
 	}
@@ -173,9 +174,7 @@ func SDPSpec(s *config.Stream, name string, rate, channels int) sdp.WriteSpec {
 		if len(s.Channels) == 2 {
 			fmtp = "sprop-stereo=1"
 		}
-		if s.Opus.Bitrate > 0 {
-			fmtp += ";maxaveragebitrate=" + strconv.Itoa(s.Opus.Bitrate)
-		}
+		fmtp += ";maxaveragebitrate=" + strconv.Itoa(s.Opus.EffectiveBitrate(len(s.Channels)))
 		return sdp.WriteSpec{
 			Name:         name,
 			PayloadType:  PayloadType(s.Mode),

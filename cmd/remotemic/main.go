@@ -1,6 +1,6 @@
 //go:build linux
 
-// Command birdnet-go-remote-mic is the remote microphone appliance: it captures
+// Command remotemic is the remote microphone appliance: it captures
 // local audio and serves it over RTSP/RTP for BirdNET-Go to pull.
 package main
 
@@ -33,6 +33,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
@@ -224,14 +225,63 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 	return nil, err
 }
 
+// lockState builds the run-lock state for a serving management API. certPath
+// is made absolute: it derives from --config, which may be relative to this
+// process's working directory, and a token command reading the lock usually
+// runs from somewhere else.
+func lockState(pid int, mgmtAddr, certPath string) runlock.State {
+	if abs, err := filepath.Abs(certPath); err == nil {
+		certPath = abs
+	}
+	return runlock.State{PID: pid, MgmtAddr: mgmtAddr, CertPath: certPath}
+}
+
+// acquireRunLock takes the process-lifetime run lock beside cfgPath. Holding it
+// keeps a second appliance off the same config and tells the token commands this
+// config is being served (and, once Publish runs, where the management API
+// listens). A token command holds the lock only for the moment of a file edit,
+// which the short wait absorbs. Only a lock already held by another appliance is
+// fatal; any other lock failure is logged and returns a nil lock, so the
+// appliance still serves (the token commands then cannot detect it and would
+// edit the config file directly).
+func acquireRunLock(cfgPath string) (*runlock.Lock, error) {
+	lockPath := runlock.PathFor(cfgPath)
+	lock, err := runlock.Acquire(lockPath, 2*time.Second)
+	switch {
+	case errors.Is(err, runlock.ErrHeld):
+		return nil, fmt.Errorf("another appliance is already running with %s (lock %s held)", cfgPath, lockPath)
+	case err != nil:
+		log.Printf("WARNING: cannot create run lock %s: %v (token commands will not detect this running appliance)", lockPath, err)
+		return nil, nil //nolint:nilnil // a nil lock with no error is the deliberate "serve without a lock" signal
+	}
+	return lock, nil
+}
+
 func run(cfgPath string, ov serveOverrides, check bool) error {
 	startTime := time.Now()
+
+	// Take the run lock before loading the config (serve only, never --check).
+	// Loading first would let a token command edit the file in the gap between
+	// the load and the moment this appliance announces itself through the lock,
+	// so the appliance would run the pre-edit token and a later web UI save would
+	// revert the operator's change. --check does no work under the lock: it is a
+	// systemd ExecStartPre and must not fence a starting appliance.
+	var lock *runlock.Lock
+	if !check {
+		l, err := acquireRunLock(cfgPath)
+		if err != nil {
+			return err
+		}
+		lock = l
+		defer func() { _ = lock.Release() }()
+	}
+
 	// First run with no config file: LoadOrDefault boots with defaults and no
 	// devices so the web UI comes up and the operator can enumerate the host's
 	// capture hardware and enable devices from there; the first provisioning
 	// writes the config file at cfgPath. The stat only surfaces that operator
 	// hint: the load-or-default decision itself lives in config.LoadOrDefault, so
-	// serve and init share one first-run path.
+	// serve and the token commands share one first-run path.
 	if _, statErr := os.Stat(cfgPath); errors.Is(statErr, os.ErrNotExist) {
 		log.Printf("no config file at %s; starting with defaults (enable capture devices from the web UI)", cfgPath)
 	}
@@ -343,6 +393,16 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 		stop()
 		management.Wait()
 	}()
+
+	// Publish where the management API listens (nothing when it is not serving,
+	// which also means no API handler can rewrite the config file).
+	st := runlock.State{PID: os.Getpid()}
+	if mgmtServing {
+		st = lockState(os.Getpid(), management.addr, management.certPath)
+	}
+	if perr := lock.Publish(st); perr != nil {
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), perr)
+	}
 
 	// Drive the level sampler for the lifetime of the process.
 	go hub.Run(ctx)

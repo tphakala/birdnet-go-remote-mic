@@ -16,7 +16,7 @@ import (
 
 // This external test package binds the real levels.Hub and notify.Center as
 // sse.Sources behind sse.Handler, the production wiring sse.Handler(hub, center)
-// (see cmd/birdnet-go-remote-mic/main.go). It lives in package sse_test so it may
+// (see cmd/remotemic/main.go). It lives in package sse_test so it may
 // import sse, levels and notify without an import cycle (levels and notify both
 // import sse), and it exercises what the in-package unit tests over a fake Source
 // cannot: the Hub-and-Center-to-sse integration and per-connection fan-out across

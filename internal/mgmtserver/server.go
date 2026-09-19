@@ -141,6 +141,7 @@ type Server struct {
 	notifier      notify.Publisher
 	restartFn     func()
 	reloader      Reloader
+	channelProbe  ChannelProbe
 	staticFS      fs.FS
 	// guard gates the API routes with the shared bearer token; nil or disabled
 	// means open access.
@@ -226,9 +227,12 @@ func writeProblem(w http.ResponseWriter, status int, title, detail string) {
 
 // GetHealth handles GET /healthz.
 func (s *Server) GetHealth(_ context.Context, _ mgmtapi.GetHealthRequestObject) (mgmtapi.GetHealthResponseObject, error) {
+	// Snapshot is nil-safe: without a guard the appliance is open.
+	required, _ := s.guard.Snapshot()
 	return mgmtapi.GetHealth200JSONResponse{
-		Status:  mgmtapi.Ok,
-		Version: s.provider.Version(),
+		Status:       mgmtapi.Ok,
+		Version:      s.provider.Version(),
+		AuthRequired: required,
 	}, nil
 }
 
@@ -292,7 +296,8 @@ func (s *Server) StreamEvents(_ context.Context, _ mgmtapi.StreamEventsRequestOb
 // flat path/mode/channels/opus fields project the device's first stream so a
 // client that predates fan-out still reads a usable single-stream device; the
 // full set is in streams (config) and the per-stream runtime state in the status
-// streams array.
+// streams array. streamedChannels is the union of every stream's channels, so a
+// client can tell which captured channels are carried without walking streams.
 func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	out := mgmtapi.Device{
 		Name:            d.Config.Name,
@@ -311,6 +316,7 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		if s0.Mode == config.ModeOpus {
 			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
 		}
+		out.StreamedChannels = ptr(d.Config.StreamChannelUnion())
 	}
 	if len(d.Streams) > 0 {
 		ss := make([]mgmtapi.StreamStatus, 0, len(d.Streams))

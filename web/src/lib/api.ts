@@ -97,8 +97,8 @@ export class ApiClient {
     return (await res.text()) as unknown as T;
   }
 
-  public async getHealth(): Promise<{ status: string; version: string }> {
-    return this.request<{ status: string; version: string }>("/healthz");
+  public async getHealth(): Promise<{ status: string; version: string; authRequired?: boolean }> {
+    return this.request<{ status: string; version: string; authRequired?: boolean }>("/healthz");
   }
 
   public async getStatus(): Promise<ApplianceStatus> {
