@@ -178,3 +178,33 @@ func TestNilLockIsNoop(t *testing.T) {
 		t.Fatalf("nil Release: %v", err)
 	}
 }
+
+func TestPathFor(t *testing.T) {
+	if got := PathFor("/etc/remotemic/config.yaml"); got != "/etc/remotemic/config.yaml.lock" {
+		t.Errorf("PathFor = %q, want the config path with .lock appended", got)
+	}
+}
+
+// TestTryAcquireOpenError asserts a lock file that cannot be created is a plain
+// error, not ErrHeld, so serve can tell "cannot lock" from "already running".
+func TestTryAcquireOpenError(t *testing.T) {
+	_, err := TryAcquire(filepath.Join(t.TempDir(), "missing-dir", "config.yaml.lock"))
+	if err == nil || errors.Is(err, ErrHeld) {
+		t.Fatalf("TryAcquire in a missing directory: err = %v, want a non-ErrHeld error", err)
+	}
+}
+
+// TestPublishAfterReleaseErrors asserts Publish reports a failed write rather
+// than silently dropping the state.
+func TestPublishAfterReleaseErrors(t *testing.T) {
+	l, err := TryAcquire(filepath.Join(t.TempDir(), "config.yaml.lock"))
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if err := l.Publish(State{PID: 1}); err == nil {
+		t.Fatal("Publish on a released lock returned nil, want an error")
+	}
+}

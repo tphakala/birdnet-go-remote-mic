@@ -170,18 +170,20 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	}
 
 	// If the client disconnected during the probe, do not persist a device it can
-	// no longer learn about; a 503 lets it retry.
+	// no longer learn about; a 503 lets it retry. It is checked after taking
+	// patchMu, which can also wait (behind another request's reload), so both
+	// waits are covered.
+	//
+	// Serialize the persist-then-reload sequence exactly like PatchConfig, so a
+	// provision and a concurrent patch cannot interleave persist and reload.
+	s.patchMu.Lock()
+	defer s.patchMu.Unlock()
 	if ctx.Err() != nil {
 		return mgmtapi.ProvisionDevicedefaultApplicationProblemPlusJSONResponse{
 			StatusCode: http.StatusServiceUnavailable,
 			Body:       problem(http.StatusServiceUnavailable, "request cancelled", "the provisioning request was cancelled before the device was saved"),
 		}, nil
 	}
-
-	// Serialize the persist-then-reload sequence exactly like PatchConfig, so a
-	// provision and a concurrent patch cannot interleave persist and reload.
-	s.patchMu.Lock()
-	defer s.patchMu.Unlock()
 
 	var created config.Device
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {

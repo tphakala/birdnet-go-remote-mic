@@ -616,6 +616,9 @@ func validateStreams(d *Device, paths map[string]bool, field func(string) string
 		if s.Opus.Bitrate < 0 {
 			return &ValidationError{sfield("opus.bitrate"), "must not be negative"}
 		}
+		if s.Opus.Bitrate > OpusMaxBitrate {
+			return &ValidationError{sfield("opus.bitrate"), fmt.Sprintf("must be at most %d", OpusMaxBitrate)}
+		}
 		if paths[s.Path] {
 			return &ValidationError{sfield("path"), "duplicate path " + strconv.Quote(s.Path) + " (paths are unique across every device's streams)"}
 		}

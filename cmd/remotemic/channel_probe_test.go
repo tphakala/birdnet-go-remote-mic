@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,7 +120,9 @@ func TestProbeChannelLevelsBoundsBlockingOpen(t *testing.T) {
 	release := make(chan struct{})
 	lateClosed := make(chan struct{})
 	prevOpen, prevBusy := openProbeCapture, deviceInUse
+	var opens atomic.Int32
 	openProbeCapture = func(string, int, int) (audio.Source, error) {
+		opens.Add(1)
 		<-release // block the open until the test releases it
 		return &closeFlagSource{scriptedSource: scriptedSource{rate: 48000, frames: 480}, closed: lateClosed}, nil
 	}
@@ -134,12 +138,24 @@ func TestProbeChannelLevelsBoundsBlockingOpen(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("probe took %v after a 50 ms deadline; the blocking open was not bounded", elapsed)
 	}
+	// While that open is still stuck, a second probe must fail fast without
+	// opening, so stuck opens cannot pile up one goroutine per request.
+	if _, err := probeChannelLevels(context.Background(), "hw:8", 48000, 2); err == nil || !strings.Contains(err.Error(), "still opening") {
+		t.Fatalf("second probe err = %v, want the earlier-probe-still-opening error", err)
+	}
+	if n := opens.Load(); n != 1 {
+		t.Fatalf("open called %d times, want 1 (the second probe must not open)", n)
+	}
 	// Let the open finish; the source it produces after the cancel must be closed.
 	close(release)
 	select {
 	case <-lateClosed:
 	case <-time.After(time.Second):
 		t.Fatal("the source opened after cancellation was not closed")
+	}
+	// The slot is released once the stuck open returns.
+	if n := len(probeOpenSlot); n != 0 {
+		t.Fatalf("probe open slot still held (%d) after the open returned", n)
 	}
 }
 

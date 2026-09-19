@@ -641,6 +641,46 @@ func TestProvisionDeviceCancelledDuringProbeDoesNotPersist(t *testing.T) {
 	}
 }
 
+// TestProvisionDeviceCancelledWhileWaitingForLockDoesNotPersist asserts a
+// request cancelled while it waits for patchMu (held by another request's
+// persist-and-reload) is not persisted once it gets the lock.
+func TestProvisionDeviceCancelledWhileWaitingForLockDoesNotPersist(t *testing.T) {
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{1}},
+	}}
+	s := New(prov, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }))
+	before := len(store.Config().Devices)
+
+	s.patchMu.Lock() // another request is mid persist-and-reload
+	ctx, cancel := context.WithCancel(context.Background())
+	type out struct {
+		resp mgmtapi.ProvisionDeviceResponseObject
+		err  error
+	}
+	done := make(chan out, 1)
+	go func() {
+		resp, err := s.ProvisionDevice(ctx, mgmtapi.ProvisionDeviceRequestObject{
+			Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+		})
+		done <- out{resp, err}
+	}()
+	cancel() // the client disconnects while the request waits for the lock
+	s.patchMu.Unlock()
+
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("ProvisionDevice: %v", r.err)
+	}
+	d, ok := r.resp.(mgmtapi.ProvisionDevicedefaultApplicationProblemPlusJSONResponse)
+	if !ok || d.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("returned %T, want a 503", r.resp)
+	}
+	if got := len(store.Config().Devices); got != before {
+		t.Errorf("persisted %d devices after a cancelled request, want %d", got, before)
+	}
+}
+
 // TestPreferredChannelProbeParams asserts the probe runs at the rate and width
 // provisioning will actually use, and is skipped when there is nothing to choose.
 func TestPreferredChannelProbeParams(t *testing.T) {
@@ -661,6 +701,21 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 		})
 		if gotRate != 48000 {
 			t.Errorf("probe rate = %d, want 48000 (the rate opus provisioning uses)", gotRate)
+		}
+	})
+
+	t.Run("implausible rate skips the probe", func(t *testing.T) {
+		called := false
+		s := newServer(func(context.Context, string, int, int) ([]float64, error) {
+			called = true
+			return []float64{-90, -10}, nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{2}}
+		got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{
+			Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(1000),
+		})
+		if called || got != 1 {
+			t.Errorf("probe called=%v, channel=%d; want the probe skipped and channel 1 for a 1000 Hz request", called, got)
 		}
 	})
 

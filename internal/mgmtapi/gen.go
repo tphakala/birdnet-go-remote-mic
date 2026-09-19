@@ -721,7 +721,7 @@ type NotificationSnapshot struct {
 
 // OpusSettings Opus encoder settings, used only when mode is opus.
 type OpusSettings struct {
-	// Bitrate Encoder bitrate in bits per second; 0 selects the default of 128 kbps per channel carried (128 kbps mono, 256 kbps stereo), capped at the 510 kbps Opus maximum.
+	// Bitrate Encoder bitrate in bits per second; 0 selects the default of 128 kbps per channel carried (128 kbps mono, 256 kbps stereo), capped at the 510 kbps Opus maximum. An explicit value above 510000 is rejected.
 	Bitrate *int `json:"bitrate,omitempty"`
 }
 

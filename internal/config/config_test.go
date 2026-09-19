@@ -312,6 +312,8 @@ func TestValidate(t *testing.T) {
 		{"empty device fails", func(c *Config) { c.Devices[0].Device = "" }, true},
 		{"unknown mode fails", func(c *Config) { c.Devices[0].Streams[0].Mode = "flac" }, true},
 		{"negative opus bitrate fails", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = -1 }, true},
+		{"opus bitrate above the maximum fails", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = OpusMaxBitrate + 1 }, true},
+		{"opus bitrate at the maximum ok", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = OpusMaxBitrate }, false},
 		{"duplicate name fails", func(c *Config) { c.Devices[1].Name = nameGarden }, true},
 		{"duplicate path fails", func(c *Config) { c.Devices[1].Streams[0].Path = pathGarden }, true},
 		{"duplicate device id fails", func(c *Config) { c.Devices[1].Device = deviceHW1 }, true},

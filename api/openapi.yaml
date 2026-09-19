@@ -995,10 +995,12 @@ components:
         bitrate:
           type: integer
           minimum: 0
+          maximum: 510000
           description: >
             Encoder bitrate in bits per second; 0 selects the default of 128
             kbps per channel carried (128 kbps mono, 256 kbps stereo), capped
-            at the 510 kbps Opus maximum.
+            at the 510 kbps Opus maximum. An explicit value above 510000 is
+            rejected.
 
     LevelsEvent:
       type: object
