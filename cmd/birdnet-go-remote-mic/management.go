@@ -419,7 +419,7 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		Config:            rt.dev,
 		State:             state,
 		Error:             errMsg,
-		DroppedFrames:     int64(rt.dropped.Load()),
+		DroppedFrames:     int64(rt.droppedTotal()),
 		FriendlyName:      rt.friendlyName,
 		SupportedRates:    rt.supportedRates,
 		SupportedChannels: rt.supportedChannels,
@@ -429,11 +429,25 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		ds.NegotiatedChannels = rt.channels
 	}
 	// Only a serving device can hold a client slot. A device that died after
-	// startup keeps its track pointer until process exit, and its slot is
-	// released asynchronously during teardown, so gate on state to honor the
-	// contract's "always false for skipped or failed devices".
-	if state == mgmtserver.StateServing && rt.track != nil {
-		ds.ClientConnected = rt.track.ClientConnected()
+	// startup keeps its track pointers until process exit, and slots are released
+	// asynchronously during teardown, so gate on state to honor the contract's
+	// "always false for skipped or failed devices". The device-level
+	// ClientConnected is true when ANY stream has a client; each stream's own state
+	// is reported per stream, and DroppedFrames per stream sums the same way the
+	// device figure does.
+	if state == mgmtserver.StateServing {
+		ds.Streams = make([]mgmtserver.StreamStatus, 0, len(rt.streams))
+		for _, sr := range rt.streams {
+			connected := sr.track != nil && sr.track.ClientConnected()
+			if connected {
+				ds.ClientConnected = true
+			}
+			ds.Streams = append(ds.Streams, mgmtserver.StreamStatus{
+				Path:            sr.stream.Path,
+				ClientConnected: connected,
+				DroppedFrames:   int64(sr.dropped.Load()),
+			})
+		}
 	}
 	return ds
 }

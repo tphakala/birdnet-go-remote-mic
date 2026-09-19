@@ -109,10 +109,11 @@ func TestValidateDeviceCountBoundary(t *testing.T) {
 		devs := make([]Device, 0, n)
 		for i := 0; i < n; i++ {
 			devs = append(devs, Device{
-				Name:   "dev" + strconv.Itoa(i),
-				Device: "hw:" + strconv.Itoa(i) + ",0",
-				Path:   "/dev" + strconv.Itoa(i),
-				Mode:   ModePCM, Rate: 48000, Channels: []int{1}, Format: formatS16,
+				Name:    "dev" + strconv.Itoa(i),
+				Device:  "hw:" + strconv.Itoa(i) + ",0",
+				Rate:    48000,
+				Format:  formatS16,
+				Streams: []Stream{{Path: "/dev" + strconv.Itoa(i), Mode: ModePCM, Channels: []int{1}}},
 			})
 		}
 		return devs

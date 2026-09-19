@@ -193,16 +193,18 @@ func (c *Config) ManagementEnabled() bool {
 	return c.Management.Enabled == nil || *c.Management.Enabled
 }
 
-// Device configures one capture device and the stream it serves.
+// Device configures one capture device (opened once, exclusively) and the
+// streams it fans out. A device is opened at a single rate and format; each
+// Stream carries a chosen subset of the captured channels, encoded in its own
+// mode, served at its own RTSP path. A single-stream device is the common case
+// and can be written in the legacy flat form (see UnmarshalYAML), which migrates
+// to a one-element Streams on load.
 type Device struct {
-	Name     string `yaml:"name"`           // DNS-SD instance name and log label; unique
-	Device   string `yaml:"device"`         // go-audio-capture device id, e.g. "hw:1,0"
-	Path     string `yaml:"path"`           // RTSP path, e.g. "/garden"; unique; default "/stream"
-	Mode     Mode   `yaml:"mode"`           // pcm or opus
-	Rate     int    `yaml:"rate"`           // capture sample rate in Hz
-	Channels []int  `yaml:"channels"`       // 1-based channel numbers to stream, e.g. [1] or [1,2] or [1,3]
-	Format   string `yaml:"format"`         // only "s16"
-	Opus     Opus   `yaml:"opus,omitempty"` // used only when Mode is opus
+	Name    string   `yaml:"name"`    // DNS-SD instance name and log label; unique
+	Device  string   `yaml:"device"`  // go-audio-capture device id, e.g. "hw:1,0"
+	Rate    int      `yaml:"rate"`    // capture sample rate in Hz (one ALSA open per device)
+	Format  string   `yaml:"format"`  // only "s16"
+	Streams []Stream `yaml:"streams"` // one or more streams fanned out from the one capture
 	// Enabled is a pointer so an absent value defaults on: a device is captured
 	// and streamed unless explicitly disabled. A disabled device stays in the
 	// config (and is shown in the UI) but is not opened; toggling it takes effect
@@ -215,6 +217,70 @@ type Device struct {
 	QuietAlert *bool `yaml:"quiet_alert,omitempty"`
 }
 
+// Stream is one RTSP stream fanned out from a device's shared capture: a subset
+// of the device's channels, encoded in one mode, served at one path. Path is
+// unique across every device's streams; Mode/Channels/Opus mirror the fields a
+// single-stream device carried before fan-out.
+type Stream struct {
+	Path     string `yaml:"path"`           // RTSP path, e.g. "/garden"; globally unique; default "/stream" for a lone stream
+	Mode     Mode   `yaml:"mode"`           // pcm or opus
+	Channels []int  `yaml:"channels"`       // 1-based capture channel numbers to stream, e.g. [1] or [1,2] or [1,3]
+	Opus     Opus   `yaml:"opus,omitempty"` // used only when Mode is opus
+}
+
+// UnmarshalYAML accepts both the current nested form (a streams: list) and the
+// legacy flat single-stream form (path/mode/channels/opus directly on the
+// device), migrating the flat form to a one-element Streams. A device that sets
+// both the flat fields and streams: is rejected. A minimal device with neither
+// (only name/device/rate) becomes a single default stream, matching the
+// pre-fan-out behavior where every device served exactly one stream. Save always
+// writes the nested form, so the migration is one-way on the first save.
+func (d *Device) UnmarshalYAML(value *yaml.Node) error {
+	var raw struct {
+		Name   string `yaml:"name"`
+		Device string `yaml:"device"`
+		Rate   int    `yaml:"rate"`
+		Format string `yaml:"format"`
+		// Streams is a pointer so an omitted key (nil) is distinguished from an
+		// explicitly empty list (streams: []): the former is the legacy/minimal flat
+		// form to migrate, the latter is a present-but-empty list that must reach
+		// Validate and be rejected ("must define at least one stream").
+		Streams    *[]Stream `yaml:"streams"`
+		Enabled    *bool     `yaml:"enabled"`
+		QuietAlert *bool     `yaml:"quiet_alert"`
+		// Legacy flat single-stream fields (pre-fan-out configs).
+		Path     string `yaml:"path"`
+		Mode     Mode   `yaml:"mode"`
+		Channels []int  `yaml:"channels"`
+		Opus     Opus   `yaml:"opus"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	d.Name = raw.Name
+	d.Device = raw.Device
+	d.Rate = raw.Rate
+	d.Format = raw.Format
+	d.Enabled = raw.Enabled
+	d.QuietAlert = raw.QuietAlert
+
+	flatUsed := raw.Path != "" || raw.Mode != "" || len(raw.Channels) > 0 || raw.Opus.Bitrate != 0
+	if raw.Streams != nil {
+		if flatUsed {
+			return fmt.Errorf("device %q sets both the legacy flat stream fields (path/mode/channels/opus) and streams:; use streams: only", raw.Name)
+		}
+		// Keep the list as given, including an explicitly empty one so Validate can
+		// reject it rather than a phantom default stream masking the mistake.
+		d.Streams = *raw.Streams
+		return nil
+	}
+	// Flat or minimal device (no streams key): synthesize the single stream. Empty
+	// fields are filled by ApplyDefaults exactly as the flat device was defaulted
+	// before.
+	d.Streams = []Stream{{Path: raw.Path, Mode: raw.Mode, Channels: raw.Channels, Opus: raw.Opus}}
+	return nil
+}
+
 // IsEnabled reports whether the device is captured and streamed. A device with
 // no explicit enabled flag defaults on.
 func (d *Device) IsEnabled() bool {
@@ -225,6 +291,18 @@ func (d *Device) IsEnabled() bool {
 // condition. A device with no explicit quiet_alert flag defaults on.
 func (d *Device) QuietAlertEnabled() bool {
 	return d.QuietAlert == nil || *d.QuietAlert
+}
+
+// StreamChannelUnion returns the sorted, de-duplicated union of every stream's
+// 1-based channel selection: the set of capture channels the device must open to
+// serve all its streams from one shared capture. A device with no streams yields
+// an empty selection, which the open path rounds up to one channel.
+func (d *Device) StreamChannelUnion() []int {
+	var all []int
+	for i := range d.Streams {
+		all = append(all, d.Streams[i].Channels...)
+	}
+	return NormalizeChannels(all)
 }
 
 // Discovery configures mDNS/DNS-SD advertisement. Enabled is a pointer so an
@@ -341,22 +419,30 @@ func (c *Config) ApplyDefaults() {
 	}
 	for i := range c.Devices {
 		d := &c.Devices[i]
-		if d.Mode == "" {
-			d.Mode = ModePCM
-		}
-		if len(d.Channels) == 0 {
-			d.Channels = []int{1}
-		} else {
-			// Normalize the selection to canonical ascending-unique order so a
-			// hand-edited [2,1] or [1,1] stores and validates the same as [1,2],
-			// and downstream (open count, extraction) can assume sorted-unique.
-			d.Channels = NormalizeChannels(d.Channels)
-		}
 		if d.Format == "" {
 			d.Format = "s16"
 		}
-		if d.Path == "" {
-			d.Path = "/stream"
+		// A lone stream defaults its path to "/stream"; a device with several
+		// streams has no single obvious path, so an empty one there stays empty and
+		// is rejected by validation. singleStream is read before the loop because it
+		// does not change within it.
+		singleStream := len(d.Streams) == 1
+		for j := range d.Streams {
+			s := &d.Streams[j]
+			if s.Mode == "" {
+				s.Mode = ModePCM
+			}
+			if len(s.Channels) == 0 {
+				s.Channels = []int{1}
+			} else {
+				// Normalize the selection to canonical ascending-unique order so a
+				// hand-edited [2,1] or [1,1] stores and validates the same as [1,2],
+				// and downstream (open count, extraction) can assume sorted-unique.
+				s.Channels = NormalizeChannels(s.Channels)
+			}
+			if s.Path == "" && singleStream {
+				s.Path = "/stream"
+			}
 		}
 	}
 
@@ -435,54 +521,80 @@ func (c *Config) validateDevices() error {
 		if d.Device == "" {
 			return &ValidationError{field("device"), "must not be empty"}
 		}
-		if reason := validatePath(d.Path); reason != "" {
-			return &ValidationError{field("path"), reason}
-		}
-		switch d.Mode {
-		case ModePCM, ModeOpus:
-		default:
-			return &ValidationError{field("mode"), "must be pcm or opus"}
-		}
 		if d.Format != "s16" {
 			return &ValidationError{field("format"), "must be s16"}
 		}
 		if d.Rate < 8000 || d.Rate > 384000 {
 			return &ValidationError{field("rate"), "must be between 8000 and 384000 Hz"}
 		}
-		if len(d.Channels) == 0 {
-			return &ValidationError{field("channels"), "must select at least one channel"}
+		if len(d.Streams) == 0 {
+			return &ValidationError{field("streams"), "must define at least one stream"}
 		}
-		for j, ch := range d.Channels {
-			if ch < 1 || ch > MaxChannels {
-				return &ValidationError{field("channels"), fmt.Sprintf("channel numbers must be between 1 and %d", MaxChannels)}
-			}
-			if j > 0 && ch <= d.Channels[j-1] {
-				return &ValidationError{field("channels"), "must be ascending with no duplicates"}
-			}
-		}
-		if d.Mode == ModeOpus {
-			if d.Rate != 48000 {
-				return &ValidationError{field("rate"), "opus mode requires 48000 Hz"}
-			}
-			if len(d.Channels) > 2 {
-				return &ValidationError{field("channels"), "opus mode requires one or two channels"}
-			}
-		}
-		if d.Opus.Bitrate < 0 {
-			return &ValidationError{field("opus.bitrate"), "must not be negative"}
+		// Cap the streams per device. Streams may share a capture channel (for
+		// example a PCM and an Opus stream of the same mic), so this is a plain
+		// policy limit reusing MaxChannels as a sensible bound, not a one-per-channel
+		// rule.
+		if len(d.Streams) > MaxChannels {
+			return &ValidationError{field("streams"), fmt.Sprintf("must not define more than %d streams", MaxChannels)}
 		}
 		if names[d.Name] {
 			return &ValidationError{field("name"), "duplicate name " + strconv.Quote(d.Name)}
-		}
-		if paths[d.Path] {
-			return &ValidationError{field("path"), "duplicate path " + strconv.Quote(d.Path) + " (set an explicit unique path per device)"}
 		}
 		if ids[d.Device] {
 			return &ValidationError{field("device"), "duplicate device " + strconv.Quote(d.Device) + " (ALSA hw devices are single-client)"}
 		}
 		names[d.Name] = true
-		paths[d.Path] = true
 		ids[d.Device] = true
+		if err := validateStreams(d, paths, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateStreams checks one device's streams and records their paths in the
+// shared, global paths set so a path is unique across every device's streams.
+// The opus-rate rule is enforced against the device rate because one ALSA open
+// serves every stream at a single rate. field builds a "devices[i].<f>" label;
+// per-stream errors extend it to "streams[j].<f>".
+func validateStreams(d *Device, paths map[string]bool, field func(string) string) error {
+	for j := range d.Streams {
+		s := &d.Streams[j]
+		sfield := func(f string) string { return field(fmt.Sprintf("streams[%d].%s", j, f)) }
+		if reason := validatePath(s.Path); reason != "" {
+			return &ValidationError{sfield("path"), reason}
+		}
+		switch s.Mode {
+		case ModePCM, ModeOpus:
+		default:
+			return &ValidationError{sfield("mode"), "must be pcm or opus"}
+		}
+		if len(s.Channels) == 0 {
+			return &ValidationError{sfield("channels"), "must select at least one channel"}
+		}
+		for k, ch := range s.Channels {
+			if ch < 1 || ch > MaxChannels {
+				return &ValidationError{sfield("channels"), fmt.Sprintf("channel numbers must be between 1 and %d", MaxChannels)}
+			}
+			if k > 0 && ch <= s.Channels[k-1] {
+				return &ValidationError{sfield("channels"), "must be ascending with no duplicates"}
+			}
+		}
+		if s.Mode == ModeOpus {
+			if d.Rate != 48000 {
+				return &ValidationError{field("rate"), "opus mode requires the device rate to be 48000 Hz"}
+			}
+			if len(s.Channels) > 2 {
+				return &ValidationError{sfield("channels"), "opus mode requires one or two channels"}
+			}
+		}
+		if s.Opus.Bitrate < 0 {
+			return &ValidationError{sfield("opus.bitrate"), "must not be negative"}
+		}
+		if paths[s.Path] {
+			return &ValidationError{sfield("path"), "duplicate path " + strconv.Quote(s.Path) + " (paths are unique across every device's streams)"}
+		}
+		paths[s.Path] = true
 	}
 	return nil
 }
@@ -598,9 +710,10 @@ func (c *Config) Clone() Config {
 	if c.Devices != nil {
 		out.Devices = make([]Device, len(c.Devices))
 		copy(out.Devices, c.Devices)
-		// Device carries reference types (the *bool Enabled and QuietAlert flags, and a []int Channels);
-		// give each copy its own backing storage so a caller mutating the clone
-		// cannot race or alias the original.
+		// Device carries reference types (the *bool Enabled and QuietAlert flags and
+		// a []Stream, each stream with its own []int Channels); give each copy its own
+		// backing storage so a caller mutating the clone cannot race or alias the
+		// original.
 		for i := range c.Devices {
 			if c.Devices[i].Enabled != nil {
 				v := *c.Devices[i].Enabled
@@ -610,7 +723,13 @@ func (c *Config) Clone() Config {
 				v := *c.Devices[i].QuietAlert
 				out.Devices[i].QuietAlert = &v
 			}
-			out.Devices[i].Channels = slices.Clone(c.Devices[i].Channels)
+			if c.Devices[i].Streams != nil {
+				out.Devices[i].Streams = make([]Stream, len(c.Devices[i].Streams))
+				copy(out.Devices[i].Streams, c.Devices[i].Streams)
+				for j := range c.Devices[i].Streams {
+					out.Devices[i].Streams[j].Channels = slices.Clone(c.Devices[i].Streams[j].Channels)
+				}
+			}
 		}
 	}
 	return out

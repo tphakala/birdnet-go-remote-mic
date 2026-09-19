@@ -54,11 +54,11 @@ devices:
 		t.Fatalf("want 2 devices, got %d", len(c.Devices))
 	}
 	d := c.Devices[0]
-	if d.Name != nameGarden || d.Mode != ModeOpus || d.Rate != 48000 || d.Device != deviceHW1 || d.Path != pathGarden {
+	if d.Name != nameGarden || d.Streams[0].Mode != ModeOpus || d.Rate != 48000 || d.Device != deviceHW1 || d.Streams[0].Path != pathGarden {
 		t.Errorf("first device parsed unexpectedly: %+v", d)
 	}
 	u := c.Devices[1]
-	if u.Name != "ultrasonic-mic" || u.Mode != ModePCM || u.Rate != 256000 || u.Path != "/bat" {
+	if u.Name != "ultrasonic-mic" || u.Streams[0].Mode != ModePCM || u.Rate != 256000 || u.Streams[0].Path != "/bat" {
 		t.Errorf("second device parsed unexpectedly: %+v", u)
 	}
 }
@@ -120,11 +120,11 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load minimal: %v", err)
 	}
-	if c.Listen != ":8554" {
+	if c.Listen != cfgListen {
 		t.Errorf("listen default = %q", c.Listen)
 	}
 	d := c.Devices[0]
-	if d.Mode != ModePCM || !slices.Equal(d.Channels, []int{1}) || d.Format != formatS16 || d.Path != "/stream" {
+	if d.Streams[0].Mode != ModePCM || !slices.Equal(d.Streams[0].Channels, []int{1}) || d.Format != formatS16 || d.Streams[0].Path != "/stream" {
 		t.Errorf("device defaults not applied: %+v", d)
 	}
 }
@@ -183,11 +183,11 @@ func TestManagementEnabledDefault(t *testing.T) {
 
 func validBase() Config {
 	c := Config{
-		Listen:     ":8554",
+		Listen:     cfgListen,
 		Management: Management{Listen: ":8443"},
 		Devices: []Device{
-			{Name: nameGarden, Device: deviceHW1, Path: pathGarden, Mode: ModePCM, Rate: 256000, Channels: []int{1}, Format: formatS16},
-			{Name: "bat-mic", Device: "hw:2,0", Path: "/bat", Mode: ModePCM, Rate: 384000, Channels: []int{1}, Format: formatS16},
+			{Name: nameGarden, Device: deviceHW1, Rate: 256000, Format: formatS16, Streams: []Stream{{Path: pathGarden, Mode: ModePCM, Channels: []int{1}}}},
+			{Name: "bat-mic", Device: "hw:2,0", Rate: 384000, Format: formatS16, Streams: []Stream{{Path: "/bat", Mode: ModePCM, Channels: []int{1}}}},
 		},
 	}
 	// Apply defaults so the notifications block is populated: Validate runs after
@@ -237,12 +237,12 @@ func TestCloneDeepCopiesDeviceEnabled(t *testing.T) {
 func TestCloneDeepCopiesDeviceChannels(t *testing.T) {
 	t.Parallel()
 	c := validBase()
-	c.Devices[0].Channels = []int{1, 2}
+	c.Devices[0].Streams[0].Channels = []int{1, 2}
 	clone := c.Clone()
 	// Mutating a channel in the clone must not reach the original's backing array.
-	clone.Devices[0].Channels[0] = 99
-	if c.Devices[0].Channels[0] != 1 {
-		t.Errorf("Clone aliased Device.Channels; original changed to %v", c.Devices[0].Channels)
+	clone.Devices[0].Streams[0].Channels[0] = 99
+	if c.Devices[0].Streams[0].Channels[0] != 1 {
+		t.Errorf("Clone aliased Device.Channels; original changed to %v", c.Devices[0].Streams[0].Channels)
 	}
 }
 
@@ -258,10 +258,10 @@ func TestApplyDefaultsNormalizesChannels(t *testing.T) {
 	}
 	for _, tt := range cases {
 		c := validBase()
-		c.Devices[0].Channels = tt.in
+		c.Devices[0].Streams[0].Channels = tt.in
 		c.ApplyDefaults()
-		if !slices.Equal(c.Devices[0].Channels, tt.want) {
-			t.Errorf("ApplyDefaults(%v) channels = %v, want %v", tt.in, c.Devices[0].Channels, tt.want)
+		if !slices.Equal(c.Devices[0].Streams[0].Channels, tt.want) {
+			t.Errorf("ApplyDefaults(%v) channels = %v, want %v", tt.in, c.Devices[0].Streams[0].Channels, tt.want)
 		}
 	}
 }
@@ -280,23 +280,23 @@ func TestValidate(t *testing.T) {
 		{"disabled device stays valid", func(c *Config) { f := false; c.Devices[0].Enabled = &f }, false},
 		{"disabled device is still validated", func(c *Config) { f := false; c.Devices[0].Enabled = &f; c.Devices[0].Rate = 100 }, true},
 		{"opus at 48k mono", func(c *Config) {
-			c.Devices[0].Mode = ModeOpus
+			c.Devices[0].Streams[0].Mode = ModeOpus
 			c.Devices[0].Rate = 48000
 		}, false},
-		{"opus at 44100 fails", func(c *Config) { c.Devices[0].Mode = ModeOpus; c.Devices[0].Rate = 44100 }, true},
+		{"opus at 44100 fails", func(c *Config) { c.Devices[0].Streams[0].Mode = ModeOpus; c.Devices[0].Rate = 44100 }, true},
 		{"opus stereo (two channels) valid", func(c *Config) {
-			c.Devices[0].Mode = ModeOpus
+			c.Devices[0].Streams[0].Mode = ModeOpus
 			c.Devices[0].Rate = 48000
-			c.Devices[0].Channels = []int{1, 2}
+			c.Devices[0].Streams[0].Channels = []int{1, 2}
 		}, false},
 		{"opus three-channel fails", func(c *Config) {
-			c.Devices[0].Mode = ModeOpus
+			c.Devices[0].Streams[0].Mode = ModeOpus
 			c.Devices[0].Rate = 48000
-			c.Devices[0].Channels = []int{1, 2, 3}
+			c.Devices[0].Streams[0].Channels = []int{1, 2, 3}
 		}, true},
-		{"multi-channel pcm selection valid", func(c *Config) { c.Devices[0].Channels = []int{1, 2} }, false},
-		{"non-contiguous channel selection valid", func(c *Config) { c.Devices[0].Channels = []int{1, 3} }, false},
-		{"max channel number valid", func(c *Config) { c.Devices[0].Channels = []int{1, MaxChannels} }, false},
+		{"multi-channel pcm selection valid", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{1, 2} }, false},
+		{"non-contiguous channel selection valid", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{1, 3} }, false},
+		{"max channel number valid", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{1, MaxChannels} }, false},
 		{"format s24 fails", func(c *Config) { c.Devices[0].Format = "s24" }, true},
 		{"name with CRLF fails", func(c *Config) { c.Devices[0].Name = "bad\r\nname" }, true},
 		{"empty name fails", func(c *Config) { c.Devices[0].Name = "" }, true},
@@ -304,22 +304,22 @@ func TestValidate(t *testing.T) {
 		{"no devices is valid (zero-config first run)", func(c *Config) { c.Devices = nil }, false},
 		{"rate too high fails", func(c *Config) { c.Devices[0].Rate = 500000 }, true},
 		{"rate too low fails", func(c *Config) { c.Devices[0].Rate = 100 }, true},
-		{"empty channel selection fails", func(c *Config) { c.Devices[0].Channels = []int{} }, true},
-		{"channel number above max fails", func(c *Config) { c.Devices[0].Channels = []int{MaxChannels + 1} }, true},
-		{"channel number zero fails", func(c *Config) { c.Devices[0].Channels = []int{0} }, true},
-		{"unsorted channel selection fails", func(c *Config) { c.Devices[0].Channels = []int{2, 1} }, true},
-		{"duplicate channel selection fails", func(c *Config) { c.Devices[0].Channels = []int{1, 1} }, true},
+		{"empty channel selection fails", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{} }, true},
+		{"channel number above max fails", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{MaxChannels + 1} }, true},
+		{"channel number zero fails", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{0} }, true},
+		{"unsorted channel selection fails", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{2, 1} }, true},
+		{"duplicate channel selection fails", func(c *Config) { c.Devices[0].Streams[0].Channels = []int{1, 1} }, true},
 		{"empty device fails", func(c *Config) { c.Devices[0].Device = "" }, true},
-		{"unknown mode fails", func(c *Config) { c.Devices[0].Mode = "flac" }, true},
-		{"negative opus bitrate fails", func(c *Config) { c.Devices[0].Opus.Bitrate = -1 }, true},
+		{"unknown mode fails", func(c *Config) { c.Devices[0].Streams[0].Mode = "flac" }, true},
+		{"negative opus bitrate fails", func(c *Config) { c.Devices[0].Streams[0].Opus.Bitrate = -1 }, true},
 		{"duplicate name fails", func(c *Config) { c.Devices[1].Name = nameGarden }, true},
-		{"duplicate path fails", func(c *Config) { c.Devices[1].Path = pathGarden }, true},
+		{"duplicate path fails", func(c *Config) { c.Devices[1].Streams[0].Path = pathGarden }, true},
 		{"duplicate device id fails", func(c *Config) { c.Devices[1].Device = deviceHW1 }, true},
-		{"path without slash fails", func(c *Config) { c.Devices[0].Path = "garden" }, true},
-		{"path with space fails", func(c *Config) { c.Devices[0].Path = "/gar den" }, true},
-		{"bare slash path fails", func(c *Config) { c.Devices[0].Path = "/" }, true},
-		{"trailing slash path fails", func(c *Config) { c.Devices[0].Path = "/garden/" }, true},
-		{"reserved trackID suffix fails", func(c *Config) { c.Devices[0].Path = "/garden/trackID=0" }, true},
+		{"path without slash fails", func(c *Config) { c.Devices[0].Streams[0].Path = "garden" }, true},
+		{"path with space fails", func(c *Config) { c.Devices[0].Streams[0].Path = "/gar den" }, true},
+		{"bare slash path fails", func(c *Config) { c.Devices[0].Streams[0].Path = "/" }, true},
+		{"trailing slash path fails", func(c *Config) { c.Devices[0].Streams[0].Path = "/garden/" }, true},
+		{"reserved trackID suffix fails", func(c *Config) { c.Devices[0].Streams[0].Path = "/garden/trackID=0" }, true},
 		{"management bad listen fails", func(c *Config) { c.Management.Listen = "nope" }, true},
 		{"management disabled skips listen check", func(c *Config) {
 			off := false

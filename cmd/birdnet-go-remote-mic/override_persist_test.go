@@ -70,8 +70,8 @@ func TestServeOverridesNotPersistedToStore(t *testing.T) {
 	// A PATCH that enables a device triggers a full config.Save of the store.
 	if uerr := store.Update(func(c config.Config) (config.Config, error) {
 		c.Devices = []config.Device{{
-			Name: "garden", Device: devHW1, Path: "/garden",
-			Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
+			Name: "garden", Device: devHW1, Rate: 48000, Format: testFmtS16,
+			Streams: []config.Stream{{Path: "/garden", Mode: config.ModePCM, Channels: []int{1}}},
 		}}
 		c.ApplyDefaults()
 		return c, nil

@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,22 +78,48 @@ func (l *fakeOpenLog) snapshot() []string {
 }
 
 // fakeOpener returns an appliance.open replacement that builds a real
-// deviceRuntime (real pipeline stage, ChanSource and Track) around a blocking
-// fake source, logging each open and each source close through log.
+// deviceRuntime (real fan-out, per-stream pipeline stages, ChanSources and
+// Tracks) around a blocking fake source, logging each open and each source close
+// through log. It mirrors production openDevice: one metered base capture fanned
+// out into one runtime per configured stream.
 func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
 	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 		log.add("open:" + dev.Name)
-		streamCh := len(dev.Channels)
-		src := newBlockingSource(dev.Rate, streamCh)
-		frames := rtspserver.NewChanSource(64)
+		// Mirror production ResolveOpenChannels: open at >= the highest selected
+		// channel (the union is sorted-unique, so its last element is the max), not
+		// len(union), so a non-contiguous selection like [1,3] opens 3 channels and a
+		// stream selecting channel 3 does not read past the base buffer.
+		openCh := 1
+		if u := dev.StreamChannelUnion(); len(u) > 0 {
+			openCh = u[len(u)-1]
+		}
+		metered := audio.NewMeteredSource(loggingClose{newBlockingSource(dev.Rate, openCh), dev.Name, log}, hub.Meter(dev.Name, openCh))
+		streams := make([]*streamRuntime, 0, len(dev.Streams))
+		for i := range dev.Streams {
+			s := dev.Streams[i]
+			frames := rtspserver.NewChanSource(64)
+			streams = append(streams, &streamRuntime{
+				stream: s,
+				stage:  pipeline.NewPCM(len(s.Channels)),
+				frames: frames,
+				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Frames: frames},
+			})
+		}
+		drops := make([]*atomic.Uint64, len(streams))
+		for i := range streams {
+			drops[i] = &streams[i].dropped
+		}
+		fanout, consumers := audio.NewFanout(metered, dev.Name, drops)
+		for i := range streams {
+			streams[i].src = audio.NewSelectingSource(consumers[i], openCh, streams[i].stream.Channels)
+		}
 		return &deviceRuntime{
 			dev:      *dev,
-			src:      audio.NewMeteredSource(loggingClose{src, dev.Name, log}, hub.Meter(dev.Name, streamCh)),
-			stage:    pipeline.NewPCM(streamCh),
-			frames:   frames,
-			track:    &rtspserver.Track{Path: dev.Path, PayloadType: 96, Frames: frames},
+			src:      metered,
+			fanout:   fanout,
+			streams:  streams,
 			rate:     dev.Rate,
-			channels: streamCh,
+			channels: openCh,
 		}, nil
 	}
 }
@@ -112,7 +139,10 @@ func (c loggingClose) Close() error {
 }
 
 func testDevice(name, hw, path string, rate int) config.Device {
-	return config.Device{Name: name, Device: hw, Path: path, Mode: config.ModePCM, Rate: rate, Channels: []int{1}, Format: testFmtS16}
+	return config.Device{
+		Name: name, Device: hw, Rate: rate, Format: testFmtS16,
+		Streams: []config.Stream{{Path: path, Mode: config.ModePCM, Channels: []int{1}}},
+	}
 }
 
 func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFunc) {

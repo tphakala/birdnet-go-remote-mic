@@ -41,7 +41,7 @@ func TestOpenDeviceRetrySkipsBusyDevice(t *testing.T) {
 	restore := swapDeviceInUse(func(string, int) bool { return true })
 	defer restore()
 
-	dev := &config.Device{Name: "busy", Device: devMissing, Channels: []int{1}, Rate: 48000, Format: testFmtS16}
+	dev := &config.Device{Name: "busy", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
 	_, err := openDeviceRetry(dev, levels.NewHub())
 	if !errors.Is(err, capture.ErrDeviceInUse) {
 		t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
@@ -57,7 +57,7 @@ func TestOpenDeviceRetryPassesGateWhenFree(t *testing.T) {
 	restore := swapDeviceInUse(func(string, int) bool { return false })
 	defer restore()
 
-	dev := &config.Device{Name: "free", Device: devMissing, Channels: []int{1}, Rate: 48000, Format: testFmtS16}
+	dev := &config.Device{Name: "free", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
 	_, err := openDeviceRetry(dev, levels.NewHub())
 	if err == nil {
 		t.Fatal("openDeviceRetry on nonexistent hardware should fail")
@@ -79,7 +79,7 @@ func TestOpenDeviceRetryGatesOnResolvedOpenCount(t *testing.T) {
 	})
 	defer restore()
 
-	dev := &config.Device{Name: "stereo", Device: devMissing, Channels: []int{2}, Rate: 48000, Format: testFmtS16}
+	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{2}}}}
 	if _, err := openDeviceRetry(dev, levels.NewHub()); !errors.Is(err, capture.ErrDeviceInUse) {
 		t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
 	}
@@ -118,7 +118,7 @@ func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 	})
 	defer restore()
 
-	dev := &config.Device{Name: "stereo", Device: devMissing, Channels: []int{1, 2}, Rate: 48000, Format: testFmtS16}
+	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1, 2}}}}
 	_, err := openDeviceRetry(dev, levels.NewHub())
 	// Once the count corrects to 2 the gate reports free and the open is attempted
 	// at 2; it fails here only because devMissing is not real hardware. The point

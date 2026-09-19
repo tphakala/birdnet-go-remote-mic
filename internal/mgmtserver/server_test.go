@@ -54,15 +54,18 @@ func (f *fakeProvider) Device(name string) (DeviceStatus, bool) {
 func servingOpus() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
-			Name: devGarden, Device: "hw:1,0", Path: "/garden",
-			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: "s16",
-			Opus: config.Opus{Bitrate: 96000},
+			Name: devGarden, Device: devHW1, Rate: 48000, Format: fmtS16,
+			Streams: []config.Stream{{
+				Path: "/garden", Mode: config.ModeOpus, Channels: []int{1},
+				Opus: config.Opus{Bitrate: 96000},
+			}},
 		},
 		State:              StateServing,
 		NegotiatedRate:     48000,
 		NegotiatedChannels: 1,
 		ClientConnected:    true,
 		DroppedFrames:      12,
+		Streams:            []StreamStatus{{Path: "/garden", ClientConnected: true, DroppedFrames: 12}},
 		FriendlyName:       nameScarlett,
 		SupportedRates:     []int{48000, 96000, 192000},
 		SupportedChannels:  []int{1, 2},
@@ -72,8 +75,8 @@ func servingOpus() DeviceStatus {
 func skippedPCM() DeviceStatus {
 	return DeviceStatus{
 		Config: config.Device{
-			Name: nameAttic, Device: devAttic, Path: pathAttic,
-			Mode: config.ModePCM, Rate: 192000, Channels: []int{1}, Format: "s16",
+			Name: nameAttic, Device: devAttic, Rate: 192000, Format: "s16",
+			Streams: []config.Stream{{Path: pathAttic, Mode: config.ModePCM, Channels: []int{1}}},
 		},
 		State: StateSkipped,
 		Error: "open capture: device busy",

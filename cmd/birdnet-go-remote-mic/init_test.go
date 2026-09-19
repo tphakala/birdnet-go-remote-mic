@@ -129,8 +129,8 @@ func TestInitPreservesExistingDevices(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := config.Default()
 	cfg.Devices = []config.Device{{
-		Name: "m1", Device: "hw:1,0", Path: "/m1",
-		Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
+		Name: "m1", Device: "hw:1,0", Rate: 48000, Format: testFmtS16,
+		Streams: []config.Stream{{Path: "/m1", Mode: config.ModeOpus, Channels: []int{1}}},
 	}}
 	if err := config.Save(path, &cfg); err != nil {
 		t.Fatalf("seed Save: %v", err)

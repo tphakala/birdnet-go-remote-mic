@@ -59,7 +59,7 @@ func TestSelectingSourceExtractsChannels(t *testing.T) {
 			const frames = 3
 			period := interleave(frames, tt.srcCh, val)
 			inner := NewFakeSource(48000, tt.srcCh, [][]byte{period})
-			s := newSelectingSource(inner, tt.srcCh, tt.selection)
+			s := NewSelectingSource(inner, tt.srcCh, tt.selection)
 
 			_, gotCh := s.Negotiated()
 			if gotCh != len(tt.selection) {
@@ -95,7 +95,7 @@ func TestSelectingSourceReusesBufferAcrossReads(t *testing.T) {
 	p1 := interleave(2, 4, val(0))
 	p2 := interleave(5, 4, val(1000)) // more frames, forces a grow
 	inner := NewFakeSource(48000, 4, [][]byte{p1, p2})
-	s := newSelectingSource(inner, 4, []int{1, 3}) // extract channels 0 and 2
+	s := NewSelectingSource(inner, 4, []int{1, 3}) // extract channels 0 and 2
 
 	got1, err := s.Read()
 	if err != nil {
@@ -134,7 +134,7 @@ func (c *closeTrackingSource) Close() error { c.closed = true; return nil }
 func TestSelectingSourceClosesInner(t *testing.T) {
 	t.Parallel()
 	inner := &closeTrackingSource{Source: NewFakeSource(48000, 4, nil)}
-	s := newSelectingSource(inner, 4, []int{1}) // non-passthrough wrapper
+	s := NewSelectingSource(inner, 4, []int{1}) // non-passthrough wrapper
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -148,15 +148,15 @@ func TestSelectingSourcePassthroughWhenSelectingAll(t *testing.T) {
 	inner := NewFakeSource(48000, 2, [][]byte{interleave(1, 2, func(_, c int) int16 { return int16(c) })})
 	// Selecting exactly channels 1..N in order must return the inner source
 	// unwrapped so the hot path adds no copy.
-	if got := newSelectingSource(inner, 2, []int{1, 2}); got != inner {
-		t.Errorf("newSelectingSource([1,2]) = %T, want the inner source unwrapped", got)
+	if got := NewSelectingSource(inner, 2, []int{1, 2}); got != inner {
+		t.Errorf("NewSelectingSource([1,2]) = %T, want the inner source unwrapped", got)
 	}
 }
 
 func TestSelectingSourcePropagatesEOF(t *testing.T) {
 	t.Parallel()
 	inner := NewFakeSource(48000, 2, nil)
-	s := newSelectingSource(inner, 2, []int{1})
+	s := NewSelectingSource(inner, 2, []int{1})
 	if _, err := s.Read(); !errors.Is(err, io.EOF) {
 		t.Errorf("Read err = %v, want io.EOF", err)
 	}

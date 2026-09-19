@@ -191,7 +191,9 @@ func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi
 	paths := make(map[string]bool, len(cur.Devices))
 	for i := range cur.Devices {
 		names[cur.Devices[i].Name] = true
-		paths[cur.Devices[i].Path] = true
+		for j := range cur.Devices[i].Streams {
+			paths[cur.Devices[i].Streams[j].Path] = true
+		}
 	}
 
 	name := ""
@@ -204,14 +206,18 @@ func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi
 
 	mode, rate, channels := chooseParams(d, req)
 
+	// Provisioning always creates a single-stream device: one capture, one RTSP
+	// path, the chosen channels. Fan-out is added later by editing the device.
 	return config.Device{
-		Name:     name,
-		Device:   d.ID,
-		Path:     randomPath(paths),
-		Mode:     mode,
-		Rate:     rate,
-		Channels: channels,
-		Format:   "s16",
+		Name:   name,
+		Device: d.ID,
+		Rate:   rate,
+		Format: "s16",
+		Streams: []config.Stream{{
+			Path:     randomPath(paths),
+			Mode:     mode,
+			Channels: channels,
+		}},
 	}
 }
 
@@ -424,17 +430,22 @@ func mapAvailableDevice(d *AvailableDevice) mgmtapi.AvailableDevice {
 // next GET /devices carries the true live state once the device opens.
 func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 	out := mgmtapi.Device{
-		Name:     d.Name,
-		Device:   d.Device,
-		Path:     d.Path,
-		Mode:     mapMode(d.Mode),
-		Format:   mgmtapi.DeviceFormat(d.Format),
-		Rate:     d.Rate,
-		Channels: d.Channels,
-		State:    mgmtapi.Skipped,
+		Name:   d.Name,
+		Device: d.Device,
+		Format: mgmtapi.DeviceFormat(d.Format),
+		Rate:   d.Rate,
+		State:  mgmtapi.Skipped,
 	}
-	if d.Mode == config.ModeOpus {
-		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(d.Opus.Bitrate)}
+	// A freshly provisioned device is single-stream, so the flat projection of its
+	// first stream is complete; no per-stream runtime status exists yet.
+	if len(d.Streams) > 0 {
+		s0 := &d.Streams[0]
+		out.Path = s0.Path
+		out.Mode = mapMode(s0.Mode)
+		out.Channels = s0.Channels
+		if s0.Mode == config.ModeOpus {
+			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
+		}
 	}
 	return out
 }

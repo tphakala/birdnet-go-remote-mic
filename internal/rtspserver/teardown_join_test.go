@@ -44,7 +44,7 @@ func (s *slowExitSource) SetActive(active bool) { s.active.Store(active) }
 // across that linger and free only once the read has returned.
 func TestServeConnJoinsWriterBeforeReleasingSlot(t *testing.T) {
 	src := &slowExitSource{linger: 150 * time.Millisecond, started: make(chan struct{})}
-	spec := pipeline.SDPSpec(&config.Device{Name: "teardown", Mode: config.ModePCM}, 48000, 1)
+	spec := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "teardown", 48000, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)

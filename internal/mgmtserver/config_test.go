@@ -25,11 +25,13 @@ const (
 // baseConfig is a minimal valid, defaulted configuration for the config tests.
 func baseConfig() config.Config {
 	c := config.Config{
-		Listen: ":8554",
+		Listen: rtspAddr,
 		Devices: []config.Device{{
-			Name: devGarden, Device: devHW1, Path: pathGarden,
-			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: fmtS16,
-			Opus: config.Opus{Bitrate: 96000},
+			Name: devGarden, Device: devHW1, Rate: 48000, Format: fmtS16,
+			Streams: []config.Stream{{
+				Path: pathGarden, Mode: config.ModeOpus, Channels: []int{1},
+				Opus: config.Opus{Bitrate: 96000},
+			}},
 		}},
 	}
 	c.ApplyDefaults()
@@ -103,7 +105,7 @@ func TestPatchConfigReplacesDevicesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload persisted config: %v", err)
 	}
-	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic || loaded.Devices[0].Mode != config.ModePCM {
+	if len(loaded.Devices) != 1 || loaded.Devices[0].Name != nameAttic || loaded.Devices[0].Streams[0].Mode != config.ModePCM {
 		t.Errorf("persisted config = %+v, want one pcm device named attic", loaded.Devices)
 	}
 }

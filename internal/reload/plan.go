@@ -82,16 +82,26 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 }
 
 // captureParamsEqual reports whether two device configurations open the same ALSA
-// stream and build the same pipeline and RTSP track, so a running device need not
-// be restarted. It compares every field that feeds the capture open, the pipeline
-// stage, the SDP, or the RTSP mount. The name is the identity key and is equal by
-// construction here; the enabled flag is handled by the caller.
+// stream and build the same set of pipeline stages and RTSP tracks, so a running
+// device need not be restarted. It compares every field that feeds the capture
+// open (Device/Rate/Format) and the full ordered stream set (each stream's path,
+// mode, channels and Opus bitrate feed a pipeline stage, an SDP and an RTSP
+// mount). Any stream add, remove or edit restarts the whole device, because one
+// ALSA open is shared by every stream and the handle cannot change per stream.
+// The name is the identity key and is equal by construction here; the enabled
+// flag is handled by the caller.
 func captureParamsEqual(a, b *config.Device) bool {
 	return a.Device == b.Device &&
-		a.Path == b.Path &&
-		a.Mode == b.Mode &&
 		a.Rate == b.Rate &&
-		slices.Equal(a.Channels, b.Channels) &&
 		a.Format == b.Format &&
-		a.Opus.Bitrate == b.Opus.Bitrate
+		slices.EqualFunc(a.Streams, b.Streams, streamEqual)
+}
+
+// streamEqual reports whether two streams build an identical pipeline stage, SDP
+// and RTSP mount.
+func streamEqual(a, b config.Stream) bool {
+	return a.Path == b.Path &&
+		a.Mode == b.Mode &&
+		a.Opus.Bitrate == b.Opus.Bitrate &&
+		slices.Equal(a.Channels, b.Channels)
 }

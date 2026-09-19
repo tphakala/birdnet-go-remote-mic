@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"sync"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
@@ -209,20 +210,58 @@ func (a *appliance) runningParams() map[string]config.Device {
 	return m
 }
 
-// pump runs one device's capture-to-RTP loop until its source ends (a clean stop
-// or a failure), then reports the result. Each pump is locked to its OS thread so
-// the capture read loop is not descheduled mid-period.
+// pump runs one device's capture-to-RTP loop until its capture ends (a clean stop
+// or a failure), then reports the result. The fan-out reader runs on this
+// goroutine, locked to its OS thread so the capture read is not descheduled
+// mid-period; each stream's pipeline runs on its own goroutine so N encodes fan
+// across cores and a slow encoder cannot blow the capture period budget. When the
+// capture ends the fan-out closes the stream feeds, so every stage goroutine
+// returns, and pump waits for them before reporting so no stage outlives the
+// device's teardown.
 func (a *appliance) pump(rt *deviceRuntime) {
 	runtime.LockOSThread()
-	perr := rt.stage.Run(rt.src, func(f pipeline.Frame) error {
-		if !rt.frames.Push(f) {
-			drops := rt.dropped.Add(1)
-			if drops%50 == 1 {
-				log.Printf("%s: dropping frames: the client is not keeping up (total drops: %d)", rt.dev.Name, drops)
+	var wg sync.WaitGroup
+	// stageErr records the first spontaneous per-stream pipeline fault so it can be
+	// reported as the pump's result when the fan-out itself ended cleanly.
+	var stageOnce sync.Once
+	var stageErr error
+	for i := range rt.streams {
+		sr := rt.streams[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := sr.stage.Run(sr.src, func(f pipeline.Frame) error {
+				if !sr.frames.Push(f) {
+					drops := sr.dropped.Add(1)
+					if drops%50 == 1 {
+						log.Printf("%s (%s): dropping frames: the client is not keeping up (total drops: %d)", rt.dev.Name, sr.stream.Path, drops)
+					}
+				}
+				return a.ctx.Err()
+			})
+			// A non-nil error while the appliance is NOT shutting down is a spontaneous
+			// pipeline fault (for example an Opus encoder failure). The capture is shared
+			// across the device's streams, and a dead stage would otherwise leave its
+			// track mounted and its consumer unread (the fan-out would spin dropping
+			// periods, spuriously tripping the drop monitor). So end the whole device:
+			// record the fault and close the fan-out, which unblocks the reader below and
+			// drives onPumpDone to fail the device (its paths 404 until reload), matching
+			// the pre-fan-out contract. On shutdown a.ctx.Err() is set and the stage
+			// returns that, which is a clean stop, not a fault.
+			if err != nil && a.ctx.Err() == nil {
+				log.Printf("%s (%s): capture pipeline stopped: %v", rt.dev.Name, sr.stream.Path, err)
+				stageOnce.Do(func() { stageErr = err })
+				_ = rt.fanout.Close()
 			}
-		}
-		return a.ctx.Err()
-	})
+		}()
+	}
+	perr := rt.fanout.Run()
+	wg.Wait()
+	// A stage fault that ended the device surfaces as the pump result when the
+	// fan-out's own read ended cleanly (a closed source reports EOF, i.e. nil here).
+	if perr == nil {
+		perr = stageErr
+	}
 	a.pumpDone <- pumpResult{rt: rt, err: perr}
 }
 
@@ -237,7 +276,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// restart is opened at its correct count once it frees rather than at a
 	// fallback pinned here. A wrong value here costs at most a cosmetic
 	// capability list, and rememberCaps below retains the last known good.
-	openCh := resolveOpenChannels(dev.Device, dev.Channels)
+	openCh := resolveOpenChannels(dev.Device, dev.StreamChannelUnion())
 	// Probe supported rates and channels for the config UI before opening: once we
 	// hold the hw device exclusively the probe would see our own process and report
 	// busy. Both use the same non-blocking capability query. Rates are probed at
@@ -270,10 +309,16 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rt.friendlyName = friendly
 	rt.supportedRates = rates
 	rt.supportedChannels = channels
-	a.srv.AddTrack(rt.track)
+	for _, sr := range rt.streams {
+		a.srv.AddTrack(sr.track)
+	}
 	a.alive++
 	go a.pump(rt)
-	log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.dev.Path)
+	if len(rt.streams) == 1 {
+		log.Printf("capture %q: %d Hz, %d ch on %s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, rt.streams[0].stream.Path)
+	} else {
+		log.Printf("capture %q: %d Hz, %d ch on %s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, len(rt.streams))
+	}
 	return rt
 }
 
@@ -313,10 +358,14 @@ func (a *appliance) startDevice(dev *config.Device) {
 // the alive count, so stop does not.
 func (a *appliance) stop(rt *deviceRuntime) {
 	rt.superseded = true
-	a.srv.RemoveTrack(rt.track.Path)
+	for _, sr := range rt.streams {
+		a.srv.RemoveTrack(sr.track.Path)
+		sr.frames.Close()
+	}
 	a.hub.RemoveMeter(rt.dev.Name)
-	_ = rt.src.Close()
-	rt.frames.Close()
+	// Close through the fan-out (idempotent) so the base capture is closed exactly
+	// once even if the pump's own stage-fault path already closed it.
+	_ = rt.fanout.Close()
 }
 
 // reconcile applies newCfg to the running pipeline: it starts newly enabled or
@@ -479,17 +528,19 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	if res.rt.superseded {
 		return
 	}
-	a.srv.RemoveTrack(res.rt.track.Path)
-	res.rt.frames.Close()
-	_ = res.rt.src.Close()
+	for _, sr := range res.rt.streams {
+		a.srv.RemoveTrack(sr.track.Path)
+		sr.frames.Close()
+	}
+	_ = res.rt.fanout.Close()
 	a.hub.RemoveMeter(res.rt.dev.Name)
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
 		res.rt.markFailed(res.err)
-		log.Printf("device %q failed: %v; %s returns 404 until reload", res.rt.dev.Name, res.err, res.rt.dev.Path)
+		log.Printf("device %q failed: %v; its %d stream path(s) return 404 until reload", res.rt.dev.Name, res.err, len(res.rt.streams))
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Onset is idempotent against a re-entry.
-		a.notifier.Onset(deviceDownOnset(res.rt.dev.Name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path returns 404 until the next config save", res.err)))
+		a.notifier.Onset(deviceDownOnset(res.rt.dev.Name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until the next config save", res.err)))
 	}
 	a.publish(&a.cfg)
 }
@@ -525,8 +576,8 @@ func (a *appliance) restartAnnounce() {
 // ALSA hardware is freed promptly rather than at process exit.
 func (a *appliance) closeAll() {
 	for _, rt := range a.devices {
-		if rt.currentState() == mgmtserver.StateServing && rt.src != nil {
-			_ = rt.src.Close()
+		if rt.currentState() == mgmtserver.StateServing && rt.fanout != nil {
+			_ = rt.fanout.Close()
 		}
 	}
 }

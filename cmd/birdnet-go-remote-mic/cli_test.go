@@ -171,8 +171,8 @@ func TestReportCheckValidConfig(t *testing.T) {
 func TestReportCheckInvalidConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.Devices = []config.Device{{
-		Name: "bad", Device: "hw:9,0", Path: "/b",
-		Mode: config.ModeOpus, Rate: 22050, Channels: []int{1}, Format: testFmtS16,
+		Name: "bad", Device: "hw:9,0", Rate: 22050, Format: testFmtS16,
+		Streams: []config.Stream{{Path: "/b", Mode: config.ModeOpus, Channels: []int{1}}},
 	}}
 	var out bytes.Buffer
 	if err := reportCheck(&cfg, &out); err == nil {
@@ -192,8 +192,8 @@ func TestReportCheckDevicePresence(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Devices = []config.Device{
-		{Name: "cam-a", Device: devHW1, Path: "/a", Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16},
-		{Name: "cam-b", Device: "hw:9,0", Path: "/b", Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16},
+		{Name: "cam-a", Device: devHW1, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}}},
+		{Name: "cam-b", Device: "hw:9,0", Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/b", Mode: config.ModePCM, Channels: []int{1}}}},
 	}
 	var out bytes.Buffer
 	if err := reportCheck(&cfg, &out); err != nil {
@@ -229,7 +229,7 @@ func TestReportCheckProbeUnavailable(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Devices = []config.Device{
-		{Name: "cam-a", Device: devHW1, Path: "/a", Mode: config.ModePCM, Rate: 48000, Channels: []int{1}, Format: testFmtS16},
+		{Name: "cam-a", Device: devHW1, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}}},
 	}
 	var out bytes.Buffer
 	if err := reportCheck(&cfg, &out); err != nil {

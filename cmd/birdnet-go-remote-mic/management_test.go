@@ -61,22 +61,24 @@ func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
 }
 
 func servingRecord(name, path string) *deviceRuntime {
+	st := config.Stream{Path: path, Mode: config.ModeOpus, Channels: []int{1}}
 	return &deviceRuntime{
 		dev: config.Device{
-			Name: name, Device: devHW1, Path: path,
-			Mode: config.ModeOpus, Rate: 48000, Channels: []int{1}, Format: testFmtS16,
+			Name: name, Device: devHW1, Rate: 48000, Format: testFmtS16,
+			Streams: []config.Stream{st},
 		},
 		state:    mgmtserver.StateServing,
 		rate:     48000,
 		channels: 1,
+		streams:  []*streamRuntime{{stream: st}},
 	}
 }
 
 func skippedRecord(name, path, errMsg string) *deviceRuntime {
 	return &deviceRuntime{
 		dev: config.Device{
-			Name: name, Device: "hw:2,0", Path: path,
-			Mode: config.ModePCM, Rate: 192000, Channels: []int{1}, Format: testFmtS16,
+			Name: name, Device: "hw:2,0", Rate: 192000, Format: testFmtS16,
+			Streams: []config.Stream{{Path: path, Mode: config.ModePCM, Channels: []int{1}}},
 		},
 		state: mgmtserver.StateSkipped,
 		err:   errMsg,
