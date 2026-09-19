@@ -150,11 +150,14 @@ export class NotificationCenter {
   }
 
   private renderRow(n: Notification, nowMs: number, offsetMs: number): HTMLElement {
-    const row = elem("div", `notif-row notif-${n.severity}`);
+    // One lookup feeds both the severity surface and the glyph, so a row can
+    // never end up with an error tint and an info icon.
+    const sev = SEVERITY_TO_TOAST[n.severity] ?? "info";
+    const row = elem("div", `notif-row sev-${sev}`);
 
-    const icon = elem("span", "notif-row-icon");
+    const icon = elem("span", "notif-row-icon sev-badge");
     icon.setAttribute("aria-hidden", "true");
-    icon.innerHTML = TOAST_ICONS[SEVERITY_TO_TOAST[n.severity]] ?? TOAST_ICONS.info; // trusted markup
+    icon.innerHTML = TOAST_ICONS[sev]; // trusted markup
 
     const main = elem("div", "notif-row-main");
 

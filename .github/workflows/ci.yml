@@ -9,6 +9,10 @@ on:
 env:
   GO_VERSION: '1.27'
   GOLANGCI_LINT_VERSION: 'v2.13.2'
+  NODE_VERSION: '26'
+  # Pinned to the version the Taskfile is developed against, so CI and a local
+  # `task check` cannot interpret the same file differently.
+  TASK_VERSION: '3.53.1'
 
 permissions:
   contents: read
@@ -82,3 +86,30 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  # The web UI ships as committed, pre-compiled assets in web/dist (embedded by
+  # go:embed so a Go build needs no Node toolchain). Nothing in the Go jobs above
+  # looks at web/, so before this job the whole front end reached main unchecked:
+  # the type-check, the lint, the accessibility audit and the drift check between
+  # web/src and web/dist only ever ran if someone remembered `task check` locally.
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Running the real Taskfile rather than re-listing its commands here: a
+      # copy would drift from the local gate, and the drift would be invisible
+      # until CI passed something `task check` would have caught, or the reverse.
+      - name: Install Task
+        run: npm install --global @go-task/cli@${{ env.TASK_VERSION }}
+      # web:verify runs, in order: tsc --noEmit, oxlint, the html-validate
+      # accessibility audit (task web:a11y), the node:test suite (which includes
+      # the WCAG token-contrast tests), and finally a rebuild that fails if the
+      # committed web/dist does not match the sources.
+      - name: Verify web UI (type-check, lint, a11y, tests, dist drift)
+        run: task web:verify

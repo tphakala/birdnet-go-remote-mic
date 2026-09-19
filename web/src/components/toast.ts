@@ -30,10 +30,11 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
   const ttl = durationMs ?? (isError ? ERROR_TTL_MS : INFO_TTL_MS);
 
   const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
+  // sev-* drives the shared severity surface (badge fill, border and wash).
+  toast.className = `toast sev-${type}`;
 
   const icon = document.createElement("span");
-  icon.className = "toast-icon";
+  icon.className = "toast-icon sev-badge";
   // Fall back to ICON_OK so an off-contract type cannot render "undefined"
   // (the replaced ternary had a default; the lookup must keep one).
   icon.innerHTML = TOAST_ICONS[type] ?? ICON_OK; // static, trusted markup

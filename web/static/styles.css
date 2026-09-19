@@ -54,6 +54,31 @@
   --ultrasonic-purple: #a855f7;
   --ultrasonic-bg: rgba(168, 85, 247, 0.14);
 
+  /* Signal colours as TEXT.
+     A signal colour has two jobs and they pull in opposite directions: as a
+     fill, a border or a meter bar it wants saturation, and as a label on its
+     own tint it wants contrast. One token cannot serve both, which is why the
+     file had accumulated a scatter of one-off
+     ":root[data-theme=light] .thing { color: #xxx }" overrides. Each of those
+     fixed the one surface somebody looked at, so the next place that used the
+     base token failed again.
+
+     These are that same set of hand-verified values, promoted to tokens so
+     every label reaches for the readable variant by name. The base tokens keep
+     their saturation for fills, strokes and glows. web/test/contrast.test.ts
+     holds the ratios to the floor from here on.
+
+     On the dark theme the bright signal colours already clear AA on their own
+     tints, with one exception: #ef4444 measured 3.99:1 in its danger-button
+     tint, so the crit label lightens. */
+  --signal-ok-text: var(--signal-ok);
+  --signal-warn-text: var(--signal-warn);
+  --signal-crit-text: #f87171;
+  --accent-cyan-text: var(--accent-cyan);
+  /* #a855f7 measured 3.4:1 on its own tint over a raised card; purple-400 is
+     the same hue with the lightness the label needs. */
+  --ultrasonic-text: #c084fc;
+
   /* Meter Palette */
   --meter-bg: #070a0f;
   --meter-green: #10b981;
@@ -66,6 +91,18 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Consolas, monospace;
 
   /* Geometry & Rhythm */
+  /* Control sizing scale. Every control that can share a row with another one
+     takes its height from this scale rather than from padding plus whatever
+     line-height it happens to inherit. Heights are applied as min-height with
+     zero block padding so the content centres itself and the box stays put when
+     a font size or line-height changes around it.
+       tag  non-interactive inline tags and badges
+       sm   dense interactive controls (also the WCAG 2.5.8 target-size floor)
+       md   the default: fields, dropdowns, buttons, icon buttons, nav items */
+  --control-h-tag: 24px;
+  --control-h-sm: 24px;
+  --control-h-md: 32px;
+
   --radius-xs: 3px;
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -76,6 +113,18 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
   --shadow-glow: 0 0 16px var(--accent-cyan-glow);
+
+  /* Primary button fill. Kept as its own pair rather than reusing --accent-cyan
+     with a fixed dark label: a filled CTA and a 1px accent hairline do not want
+     the same colour. On the dark theme the accent is bright, so a near-black
+     label rides on it at 7.9:1. On the light theme the accent has to darken to
+     survive a white card, and dark-on-mid-cyan then reads muddy (it measured
+     5.2:1), so the light CTA goes deeper still and flips its label to white.
+     Hover darkens on light and brightens on dark: both move AWAY from the label
+     colour, so the contrast only ever improves while the button is active. */
+  --btn-primary-bg: #06b6d4;
+  --btn-primary-bg-hover: #22d3ee;
+  --btn-primary-fg: #041018;
 }
 
 /* Light Theme (Laboratory Instrument) */
@@ -94,9 +143,12 @@
 
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  /* Darkened from #64748b: on the lighter surfaces (#eef2f6/#f1f5f9) it dipped
-     to ~4.3:1, below WCAG AA for small text; #5b6b82 is >=4.8:1 everywhere. */
-  --text-muted: #5b6b82;
+  /* Darkened from #64748b, which dipped to ~4.3:1 on the lighter surfaces
+     (#eef2f6/#f1f5f9). The first pass at this picked #5b6b82 and claimed
+     ">=4.8:1 everywhere", but "everywhere" had only been checked against the
+     card surfaces: on --meter-bg (#e2e8f0), where the 10px meter scale labels
+     sit, it was 4.40:1. #566579 clears every ground it is used on. */
+  --text-muted: #566579;
   --text-faint: #94a3b8;
 
   --accent-cyan: #0891b2;
@@ -117,6 +169,24 @@
 
   --ultrasonic-purple: #7e22ce;
   --ultrasonic-bg: rgba(126, 34, 206, 0.1);
+
+  /* 7.1:1 white-on-deep-teal, rising to 9.0:1 on hover. */
+  --btn-primary-bg: #0a6076;
+  --btn-primary-bg-hover: #07505f;
+  --btn-primary-fg: #ffffff;
+
+  /* Every light-theme signal colour fails AA as small text on its own tint
+     (measured: ok 3.34:1, warn 2.87:1, crit 4.14:1, accent 3.00:1), so all of
+     them darken for label use. The values are the ones already proven in this
+     file by the per-component overrides these tokens replace. */
+  --signal-ok-text: #047857;
+  /* Darker than the #b45309 the per-component overrides used: that value was
+     picked against a white card (4.52:1) and was never checked on the app
+     ground, where it came out at 4.46:1. #a44908 clears both. */
+  --signal-warn-text: #a44908;
+  --signal-crit-text: #b91c1c;
+  --accent-cyan-text: #155e75;
+  --ultrasonic-text: var(--ultrasonic-purple);
 
   --meter-bg: #e2e8f0;
   --meter-peak: #0284c7;
@@ -223,7 +293,10 @@ body {
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-tag);
+  padding: 0 6px;
   border-radius: var(--radius-xs);
   background: var(--bg-surface-active);
   color: var(--text-secondary);
@@ -242,7 +315,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--signal-ok);
+  color: var(--signal-ok-text);
   font-weight: 500;
 }
 
@@ -261,7 +334,7 @@ body {
 }
 
 .live-indicator.offline {
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
 }
 
 .live-indicator.offline .pulse-dot {
@@ -285,12 +358,16 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 14px;
+  min-height: var(--control-h-md);
+  padding: 0 14px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
   text-decoration: none;
   border-radius: var(--radius-xs);
+  /* Transparent in the base rule so .active adding a real border does not make
+     the selected tab 2px taller than its siblings. */
+  border: 1px solid transparent;
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative;
 }
@@ -317,7 +394,7 @@ body {
   background: var(--bg-surface-raised);
   color: var(--text-primary);
   box-shadow: var(--shadow-sm);
-  border: 1px solid var(--border-subtle);
+  border-color: var(--border-subtle);
 }
 
 .nav-badge {
@@ -325,7 +402,7 @@ body {
   padding: 1px 5px;
   border-radius: var(--radius-full);
   background: var(--accent-cyan-bg);
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   font-weight: 600;
   animation: badge-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -347,8 +424,8 @@ body {
 }
 
 .icon-btn {
-  width: 32px;
-  height: 32px;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
   border-radius: var(--radius-sm);
   background: transparent;
   border: 1px solid var(--border-subtle);
@@ -428,7 +505,8 @@ body {
 .status-badge {
   font-size: 11px;
   font-weight: 600;
-  padding: 1px 7px;
+  min-height: var(--control-h-tag);
+  padding: 0 8px;
   border-radius: var(--radius-full);
   display: inline-flex;
   align-items: center;
@@ -437,7 +515,7 @@ body {
 
 .status-badge.ok {
   background: var(--signal-ok-bg);
-  color: var(--signal-ok);
+  color: var(--signal-ok-text);
   border: 1px solid var(--signal-ok);
 }
 
@@ -449,7 +527,7 @@ body {
 
 .status-badge.crit {
   background: var(--signal-crit-bg);
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
   border: 1px solid var(--signal-crit);
 }
 
@@ -544,7 +622,10 @@ body {
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 500;
-  padding: 2px 7px;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-tag);
+  padding: 0 7px;
   border-radius: var(--radius-xs);
   background: var(--bg-page);
   border: 1px solid var(--border-subtle);
@@ -554,14 +635,14 @@ body {
 .tech-tag.highlight {
   background: var(--accent-cyan-bg);
   border-color: var(--accent-cyan);
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   font-weight: 600;
 }
 
 .tech-tag.ultrasonic {
   background: var(--ultrasonic-bg);
   border-color: var(--ultrasonic-purple);
-  color: var(--ultrasonic-purple);
+  color: var(--ultrasonic-text);
   font-weight: 600;
 }
 
@@ -606,7 +687,8 @@ body {
   border-radius: var(--radius-xs);
   color: var(--text-secondary);
   font-size: 11px;
-  padding: 4px 9px;
+  min-height: var(--control-h-sm);
+  padding: 0 9px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -638,7 +720,7 @@ body {
 .copy-btn.copied {
   background: var(--signal-ok-bg);
   border-color: var(--signal-ok);
-  color: var(--signal-ok);
+  color: var(--signal-ok-text);
   box-shadow: 0 0 10px var(--signal-ok-glow);
   animation: copy-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -664,7 +746,8 @@ body {
   background: var(--bg-page);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
+  min-height: var(--control-h-md);
+  padding: 0 12px;
   font-family: var(--font-sans);
   font-size: 13px;
   color: var(--text-primary);
@@ -694,6 +777,14 @@ body {
   align-items: center;
   gap: 8px;
   overflow: hidden;
+}
+
+/* The tag echoed into the closed trigger sits on one text line beside the
+   label, so it drops to the caption scale instead of the full tag height. */
+.dropdown-value-group .tech-tag {
+  min-height: 0;
+  padding: 1px 5px;
+  font-size: 10px;
 }
 
 .dropdown-chevron {
@@ -756,7 +847,7 @@ body {
 
 .dropdown-item.selected {
   background: var(--accent-cyan-bg);
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   font-weight: 600;
 }
 
@@ -777,7 +868,7 @@ body {
 }
 
 .dropdown-item .item-check {
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   opacity: 0;
   transform: scale(0.5);
   transition: all 0.18s ease;
@@ -869,7 +960,11 @@ body {
      so keep it legible rather than at the meter-scale caption size. */
   font-size: 11px;
   font-weight: 700;
-  padding: 3px 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-h-sm);
+  padding: 0 7px;
   border-radius: var(--radius-xs);
   background: var(--bg-surface-raised);
   border: 1px solid var(--border-base);
@@ -934,7 +1029,7 @@ body {
 }
 
 .error-banner-icon {
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
   margin-top: 2px;
 }
 
@@ -947,7 +1042,7 @@ body {
 .error-banner-title {
   font-weight: 600;
   font-size: 13px;
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
 }
 
 .error-banner-desc {
@@ -1056,12 +1151,20 @@ body {
   background: var(--bg-page);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
+  min-height: var(--control-h-md);
+  padding: 0 12px;
   font-family: var(--font-sans);
   font-size: 13px;
   color: var(--text-primary);
   transition: all 0.15s ease;
   outline: none;
+}
+
+/* A textarea wraps, so it keeps real block padding and grows from its rows
+   attribute instead of sitting on the single-line control height. */
+textarea.field-input {
+  padding: 8px 12px;
+  line-height: 1.5;
 }
 
 .field-input:focus, .field-select:focus {
@@ -1083,7 +1186,7 @@ body {
 
 .field-error {
   font-size: 11px;
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
   font-weight: 500;
   display: none;
 }
@@ -1116,7 +1219,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  min-height: var(--control-h-md);
+  padding: 0 10px;
   border: 1px solid var(--border-base);
   border-radius: var(--radius-sm);
   background: var(--bg-page);
@@ -1202,6 +1306,19 @@ body {
   user-select: none;
 }
 
+/* A switch standing in for an input inside a form row: give it the same slot
+   height as the fields beside it so the caption sits on their text line and the
+   hints underneath start at the same y. */
+.form-field > .switch-control {
+  min-height: var(--control-h-md);
+}
+
+/* Caption beside a switch track. Was three copies of an inline font-size. */
+.switch-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .switch-control input:focus-visible + .switch-track {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
@@ -1270,6 +1387,40 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   color: var(--text-secondary);
 }
 
+/* ===== Severity surfaces =====
+   Toasts, notification rows and the restart banner all say "this is info / a
+   warning / an error". They used to say it with a 3px bar down the left edge.
+   That bar is gone: it reads as a stray rule rather than part of the card, it
+   breaks the rounded corner it runs into, it is the first thing to look wrong
+   when the card sits in a list, and it carries no meaning a blind user can
+   reach.
+
+   The replacement encodes severity three ways instead of one: the glyph shape,
+   a filled icon badge in the severity colour, and a tint carried across the
+   card's whole border and surface. A block opts in by setting the --sev triple;
+   the shared rules below do the painting, so a new severity is three custom
+   properties and no new rules. */
+.sev-info    { --sev: var(--signal-ok-text);   --sev-soft: var(--signal-ok-bg);   --sev-strong: var(--signal-ok-glow); }
+.sev-warn    { --sev: var(--signal-warn-text); --sev-soft: var(--signal-warn-bg); --sev-strong: var(--signal-warn-glow); }
+.sev-error   { --sev: var(--signal-crit-text); --sev-soft: var(--signal-crit-bg); --sev-strong: var(--signal-crit-glow); }
+
+/* The icon badge: a filled tile in the severity colour, sized off the dense
+   control step so it lines up with everything else on the row. It takes the
+   STRONG tint while the card around it takes the soft one, so the badge still
+   separates from the surface it is composited on top of. */
+.sev-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  flex-shrink: 0;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  border-radius: var(--radius-xs);
+  background: var(--sev-strong, var(--bg-surface-active));
+  color: var(--sev, var(--text-muted));
+}
+
 /* Persistent "restart required to apply" banner on a device card, shown when the
    configured streaming flag diverges from the live runtime state. It is a direct
    flex child of .rack-card, so the card's own padding and gap position it. */
@@ -1277,8 +1428,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   padding: 7px 11px;
   border-radius: var(--radius-sm);
   background: var(--signal-warn-bg);
-  border: 1px solid var(--signal-warn-glow);
-  border-left: 3px solid var(--signal-warn);
+  border: 1px solid var(--signal-warn);
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.4;
@@ -1328,21 +1478,17 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .staged-badge {
   background: var(--signal-warn-bg);
-  color: var(--signal-warn);
+  color: var(--signal-warn-text);
   border: 1px solid var(--signal-warn);
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-tag);
+  padding: 0 8px;
   border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 600;
   animation: pulse-warn 1.8s infinite ease-in-out;
 }
-/* Light theme: --signal-warn (#d97706) on the warn-tinted badge fails WCAG AA
-   for this small bold text; the darker #b45309 (same tone used for .auth-state
-   .open) clears it. Dark theme already passes. */
-:root[data-theme="light"] .staged-badge {
-  color: #b45309;
-}
-
 @keyframes pulse-warn {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.65; }
@@ -1372,8 +1518,10 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 8px 16px;
+  min-height: var(--control-h-md);
+  padding: 0 16px;
   border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 600;
@@ -1422,13 +1570,17 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .btn-primary {
-  background: var(--accent-cyan);
-  color: #041018;
-  border-color: var(--accent-cyan);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  border-color: var(--btn-primary-bg);
 }
 
+/* Swap the fill rather than filter: brightness(). A filter repaints the whole
+   element, so it also washed out the focus outline and the glow drawn on top of
+   it, and it moved the contrast ratio by an amount nobody had checked. */
 .btn-primary:hover {
-  filter: brightness(1.1);
+  background: var(--btn-primary-bg-hover);
+  border-color: var(--btn-primary-bg-hover);
   box-shadow: var(--shadow-glow);
 }
 
@@ -1446,7 +1598,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .btn-danger {
   background: var(--signal-crit-bg);
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
   border-color: var(--signal-crit);
 }
 
@@ -1626,7 +1778,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .toast-dismiss {
   margin-left: 6px;
-  padding: 3px;
+  /* 24px square: this is a real click target, so it gets the WCAG 2.5.8 floor
+     rather than sizing itself to the 14px glyph inside it. */
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  flex-shrink: 0;
+  padding: 0;
   background: none;
   border: 0;
   border-radius: var(--radius-xs);
@@ -1634,6 +1791,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
 }
 .toast-dismiss:hover,
 .toast-dismiss:focus-visible {
@@ -1643,45 +1801,30 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 /* Focus ring: shared outline rule (search "Shared keyboard focus ring"). */
 
 .toast {
-  background: var(--bg-surface-raised);
-  border: 1px solid var(--border-base);
-  border-left: 3px solid var(--border-base);
+  /* The tint is a gradient layer over the opaque surface, not a translucent
+     background: a toast floats above page content and has to stay readable
+     whatever it happens to be covering. */
+  background:
+    linear-gradient(var(--sev-soft, transparent), var(--sev-soft, transparent)),
+    var(--bg-surface-raised);
+  border: 1px solid var(--sev-strong, var(--border-base));
   color: var(--text-primary);
-  padding: 10px 16px;
+  padding: 10px 14px;
   border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 500;
   box-shadow: var(--shadow-lg);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   animation: toast-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.toast-icon {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-/* Accent by type, driven onto the icon via currentColor. */
-.toast-info {
-  border-left-color: var(--signal-ok);
-}
-.toast-info .toast-icon {
-  color: var(--signal-ok);
-}
-.toast-warn {
-  border-left-color: var(--signal-warn);
-}
-.toast-warn .toast-icon {
-  color: var(--signal-warn);
-}
-.toast-error {
-  border-left-color: var(--signal-crit);
-}
-.toast-error .toast-icon {
-  color: var(--signal-crit);
+/* Scoped to .toast so it beats .sev-badge's flex-start on specificity rather
+   than on source order: a toast is one line and centres, a notification row
+   wraps and pins the badge to the top. */
+.toast .toast-icon {
+  align-self: center;
 }
 
 @keyframes toast-in {
@@ -1773,13 +1916,14 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .notif-panel-btn {
-  padding: 3px 8px;
+  min-height: var(--control-h-sm);
+  padding: 0 8px;
   font-size: 11px;
 }
 
 .notif-panel-close {
-  width: 26px;
-  height: 26px;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
 }
 
 .notif-body {
@@ -1804,15 +1948,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--signal-crit);
+  color: var(--signal-crit-text);
   padding: 2px 4px;
-}
-
-/* On the white light-theme panel, --signal-crit (#dc2626) is just under AA for
-   this small bold text; a darker red clears it. Dark theme keeps --signal-crit,
-   which has enough contrast on the dark panel. */
-:root[data-theme="light"] .notif-group-head {
-  color: #b91c1c;
 }
 
 .notif-list {
@@ -1830,26 +1967,27 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .notif-row {
   display: flex;
-  gap: 8px;
-  padding: 8px;
+  gap: 10px;
+  padding: 8px 10px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface-subtle);
-  border-left: 3px solid var(--border-base);
+  border: 1px solid var(--border-subtle);
 }
 
-.notif-row.notif-error { border-left-color: var(--signal-crit); }
-.notif-row.notif-warning { border-left-color: var(--signal-warn); }
-.notif-row.notif-info { border-left-color: var(--signal-ok); }
-
-.notif-row-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  margin-top: 1px;
+/* Only the exceptions carry the tint. Nearly every row in this panel is a
+   routine info event, so tinting all of them painted a healthy appliance as a
+   wall of coloured alerts and left a real warning with nothing to stand out
+   against. Neutral is the default and the tint now means "look at this one".
+   Severity is still on every row regardless: the glyphs are distinct shapes
+   (check, triangle, cross) in their own badge, and the screen-reader prefix in
+   .notif-row-title spells the severity out. */
+.notif-row.sev-warn,
+.notif-row.sev-error {
+  background:
+    linear-gradient(var(--sev-soft), var(--sev-soft)),
+    var(--bg-surface-subtle);
+  border-color: var(--sev-strong);
 }
-
-.notif-row.notif-error .notif-row-icon { color: var(--signal-crit); }
-.notif-row.notif-warning .notif-row-icon { color: var(--signal-warn); }
-.notif-row.notif-info .notif-row-icon { color: var(--signal-ok); }
 
 .notif-row-main {
   flex: 1;
@@ -1871,7 +2009,11 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .notif-row-time {
   font-size: 10px;
-  color: var(--text-muted);
+  /* text-secondary, not text-muted: a warn or error row composites a tint over
+     this ground, and at 10px the muted tone fell to 3.7:1 (warn) and 4.0:1
+     (error) on the dark theme. One colour for every row rather than a
+     severity-scoped override, so a new severity cannot reintroduce this. */
+  color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -1998,8 +2140,11 @@ select.field-input {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  /* The dense size, not the 32px .icon-btn size: this gear shares a row with
+     the device tags, the status badge and the stream toggle, and that whole
+     band reads as one 24px strip. */
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-base);
   background: var(--bg-surface-raised);
@@ -2008,11 +2153,11 @@ select.field-input {
   transition: color 120ms, border-color 120ms, background 120ms;
 }
 .card-gear:hover {
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   border-color: var(--accent-cyan);
 }
 .rack-card.expanded .card-gear {
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   border-color: var(--accent-cyan);
   background: var(--accent-cyan-bg);
 }
@@ -2039,7 +2184,7 @@ select.field-input {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--signal-warn);
+  color: var(--signal-warn-text);
   font-size: 11px;
   font-weight: 600;
 }
@@ -2050,7 +2195,7 @@ select.field-input {
   margin: 0;
   font: inherit;
   font-weight: 600;
-  color: var(--signal-warn);
+  color: var(--signal-warn-text);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -2133,11 +2278,11 @@ select.field-input {
   line-height: 1.45;
 }
 .open-access-banner svg {
-  color: var(--signal-warn);
+  color: var(--signal-warn-text);
   flex-shrink: 0;
 }
 .open-access-banner a {
-  color: var(--accent-cyan);
+  color: var(--accent-cyan-text);
   font-weight: 600;
 }
 
@@ -2148,34 +2293,10 @@ select.field-input {
   font-weight: 600;
 }
 .auth-state.locked {
-  color: var(--signal-ok);
+  color: var(--signal-ok-text);
 }
 .auth-state.open {
-  color: var(--signal-warn);
-}
-/* Light-theme contrast overrides. The default signal colours fail WCAG AA for
-   this small (12 px, 600 weight) text on the light grounds: measured on
-   #ffffff (config-section-card) locked #059669 is 3.77:1 and open #d97706 is
-   3.19:1, and the banner link #0891b2 is 2.97:1 on the warn-tinted banner
-   ground (signal-warn-bg 0.1 over --bg-app #eef2f6). Darkened per state, each
-   verified against its actual background: locked #047857 -> 5.48:1, open
-   #b45309 -> 5.02:1, banner link #155e75 -> 5.86:1. Dark theme already passes,
-   so scope the overrides to light only. */
-:root[data-theme="light"] .auth-state.locked {
-  color: #047857;
-}
-:root[data-theme="light"] .auth-state.open {
-  color: #b45309;
-}
-:root[data-theme="light"] .open-access-banner a {
-  color: #155e75;
-}
-/* The default --signal-warn (#d97706) is 3.19:1 on the light card ground; use
-   the same darker tone as .auth-state.open for the settings-drift notice and its
-   Reload link so both clear AA in light theme. Dark theme already passes. */
-:root[data-theme="light"] .stale-note,
-:root[data-theme="light"] .btn-link {
-  color: #b45309;
+  color: var(--signal-warn-text);
 }
 /* Certificate card: the two PEM textareas. .field-input supplies the chrome;
    this keeps them monospace, vertically resizable only (a width resize would
@@ -2192,6 +2313,9 @@ select.field-input {
 .auth-token-row {
   display: flex;
   flex-wrap: wrap;
+  /* Centre, not the default stretch: otherwise the buttons silently grow to the
+     token field's height instead of rendering at the shared control height. */
+  align-items: center;
   gap: 8px;
 }
 .auth-token-row .field-input {
