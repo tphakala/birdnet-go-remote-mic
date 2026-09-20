@@ -6,6 +6,9 @@
 *.test
 *.out
 
+# GoReleaser output directory (`goreleaser release [--snapshot]` writes here).
+/dist/
+
 # Coverage and profiling
 coverage.out
 coverage.txt
