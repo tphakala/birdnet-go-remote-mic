@@ -8,13 +8,16 @@ import (
 )
 
 // unitTemplate is the systemd unit rendered for an install. Choices worth
-// noting: ExecStartPre is "-"prefixed so a broken hand-edited config logs but
-// does not block the web UI from coming up to fix it; SupplementaryGroups=audio
-// grants /dev/snd without running as root; ProtectSystem=strict makes the
-// filesystem read-only except the config dir and state dir listed in
-// ReadWritePaths. Device and address-family restriction is deliberately left
-// out: it can silently break ALSA capture or mDNS interface enumeration and
-// needs validation on real hardware first.
+// noting: Restart=always (not on-failure) is required because a UI-initiated or
+// self-update restart exits the process cleanly (code 0) and relies on the
+// supervisor to bring it back, which on-failure would not do; ExecStartPre is
+// "-"prefixed so a broken hand-edited config logs but does not block the web UI
+// from coming up to fix it; SupplementaryGroups=audio grants /dev/snd without
+// running as root; ProtectSystem=strict makes the filesystem read-only except
+// the config dir and state dir listed in ReadWritePaths. Device and
+// address-family restriction is deliberately left out: it can silently break
+// ALSA capture or mDNS interface enumeration and needs validation on real
+// hardware first.
 const unitTemplate = `[Unit]
 Description=BirdNET-Go remote microphone appliance
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic
@@ -29,7 +32,9 @@ SupplementaryGroups=audio
 Environment=REMOTEMIC_CONFIG={{.ConfigPath}}
 ExecStartPre=-{{.BinPath}} serve --check --cert-dir={{.StateDir}}
 ExecStart={{.BinPath}} serve --cert-dir={{.StateDir}}
-Restart=on-failure
+# Restart on any exit, including the clean exit a UI-initiated or self-update
+# restart makes; on-failure would leave the appliance stopped after one.
+Restart=always
 RestartSec=5
 WorkingDirectory={{.StateDir}}
 NoNewPrivileges=true

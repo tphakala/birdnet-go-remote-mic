@@ -43,7 +43,7 @@ func TestRenderDefaults(t *testing.T) {
 		"Environment=REMOTEMIC_CONFIG=/etc/remote-mic/config.yaml",
 		"ExecStartPre=-/usr/local/bin/remote-mic serve --check --cert-dir=/var/lib/remote-mic",
 		"ExecStart=/usr/local/bin/remote-mic serve --cert-dir=/var/lib/remote-mic",
-		"Restart=on-failure",
+		"Restart=always",
 		"RestartSec=5",
 		"WorkingDirectory=/var/lib/remote-mic",
 		"NoNewPrivileges=true",
