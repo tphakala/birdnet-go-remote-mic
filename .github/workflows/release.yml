@@ -4,7 +4,9 @@ on:
   push:
     tags:
       - 'v*'
-  # Manual runs must be dispatched on a tag ref; goreleaser refuses untagged commits.
+  # Manual runs are gated to a v* tag ref by the job `if` below: a dispatch on a
+  # branch ref is skipped, not run and failed inside goreleaser (which refuses an
+  # untagged commit). Dispatch on a v* tag to cut a release manually.
   workflow_dispatch:
 
 permissions:
@@ -20,6 +22,10 @@ jobs:
   goreleaser:
     name: GoReleaser
     runs-on: ubuntu-latest
+    # goreleaser can only release from a tag. The push trigger already filters to
+    # v* tags; this also guards workflow_dispatch, so a manual run on a branch ref
+    # is skipped instead of failing partway through the release.
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v7
         with:
