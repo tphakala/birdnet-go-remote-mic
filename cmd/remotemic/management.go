@@ -404,6 +404,11 @@ func (p *provider) runEnumeration(ctx context.Context) {
 	// last is the previous enumeration's hardware signature; it starts empty, so
 	// the first enumeration signals whenever the host exposes any device.
 	var last string
+	// first distinguishes the startup enumeration: last starts empty, so the first
+	// pass reads as "changed" whenever the host exposes any device, though nothing
+	// actually changed. It only kicks the startup retry, so it is logged as an
+	// initial enumeration rather than as a hardware change that never happened.
+	first := true
 	detect := func() {
 		det, err := detectDevices(p.configuredIDs())
 		if err != nil {
@@ -414,14 +419,21 @@ func (p *provider) runEnumeration(ctx context.Context) {
 		sig := hardwareSignature(det)
 		changed := sig != last
 		last = sig
+		wasFirst := first
+		first = false
 		// Consume the armed flag every time (evaluate it, do not let a changed
 		// signature short-circuit it away), so a lost-device pump failure arms
 		// exactly one retry.
 		armed := p.retryArmed.Swap(false)
 		if changed || armed {
-			reason := "capture hardware changed"
-			if !changed {
+			var reason string
+			switch {
+			case wasFirst:
+				reason = "initial capture hardware enumeration"
+			case !changed:
 				reason = "a capture device was lost"
+			default:
+				reason = "capture hardware changed"
 			}
 			log.Printf("%s (%d device(s) present); retrying devices that are down", reason, len(det))
 			p.signalHardwareChanged()
@@ -478,7 +490,11 @@ func (p *provider) Device(name string) (mgmtserver.DeviceStatus, bool) {
 	return mgmtserver.DeviceStatus{}, false
 }
 
-// markFailed records that a device's pump died after startup.
+// markFailed records that a device's pump died after startup. It does not touch
+// hwAddr: that field is static per record (set once before the record is
+// published, then read lock-free), so the stale-address suppression for a failed
+// device is done at read time in status() instead, which keeps the field
+// immutable-after-publish and free of a data race with the API readers.
 func (rt *deviceRuntime) markFailed(err error) {
 	rt.mu.Lock()
 	rt.state = mgmtserver.StateFailed
@@ -501,13 +517,24 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	state, errMsg := rt.state, rt.err
 	rt.mu.Unlock()
 
+	// A device that died after startup is no longer capturing at its last-known
+	// address, and the kernel can reassign that card index to another device before
+	// this entry is retried, so a failed device does not report its stale hw:N,D
+	// (which may now name different hardware). hwAddr stays set on the record (it is
+	// static per record and read lock-free here alongside friendlyName); this hides
+	// it only in the failed view, so a later successful retry surfaces it again.
+	hwAddr := rt.hwAddr
+	if state == mgmtserver.StateFailed {
+		hwAddr = ""
+	}
+
 	ds := mgmtserver.DeviceStatus{
 		Config:            rt.dev,
 		State:             state,
 		Error:             errMsg,
 		DroppedFrames:     int64(rt.droppedTotal()),
 		FriendlyName:      rt.friendlyName,
-		HWAddr:            rt.hwAddr,
+		HWAddr:            hwAddr,
 		IDStable:          !config.IsCardIndexID(rt.dev.Device),
 		SupportedRates:    rt.supportedRates,
 		SupportedChannels: rt.supportedChannels,

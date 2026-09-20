@@ -500,7 +500,11 @@ func TestLoudestChannel(t *testing.T) {
 		{"single channel", []float64{-20}, 1},
 		{"one dB below is still a tie for the lowest", []float64{-41, -40}, 1},
 		{"loudest at the silence floor picks channel 1", []float64{-80, -80.5}, 1},
-		{"NaN never wins", []float64{math.NaN(), -20}, 1},
+		// A NaN channel is skipped, so it never wins and a real channel decides the
+		// result. The RMS feed cannot produce NaN; these pin the explicit policy.
+		{"NaN channel is skipped, the real channel wins", []float64{math.NaN(), -20}, 2},
+		{"NaN on the loudest channel is skipped", []float64{-20, math.NaN()}, 1},
+		{"all NaN picks channel 1", []float64{math.NaN(), math.NaN()}, 1},
 	} {
 		if got := loudestChannel(tc.levels); got != tc.want {
 			t.Errorf("%s: loudestChannel(%v) = %d, want %d", tc.name, tc.levels, got, tc.want)

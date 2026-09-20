@@ -153,6 +153,7 @@ type hwResult struct {
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
+	downMalformed    = "malformed"
 	downResolve      = "resolve-failed"
 	downSameHardware = "same-hardware"
 	downOpenFailed   = "open-failed"
@@ -177,11 +178,18 @@ func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 func resolveError(dev *config.Device, err error) (cause, msg string) {
 	var nf *capture.DeviceNotFoundError
 	var amb *capture.AmbiguousDeviceError
+	var bad *capture.BadDeviceError
 	switch {
 	case errors.As(err, &nf):
 		return downNotConnected, fmt.Sprintf("not connected: no device matches %s", dev.Device)
 	case errors.As(err, &amb):
 		return downAmbiguous, fmt.Sprintf("ambiguous: %s matches %d devices (%s); bind it to one of them by port", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
+	case errors.As(err, &bad):
+		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is in no accepted
+		// form and can never open. IsCardIndexID classifies these by shape as card
+		// indexes, but unlike a real card index no reboot can make them resolve, so
+		// report them as malformed and tell the operator to fix the id.
+		return downMalformed, fmt.Sprintf("malformed device id %s: %v; re-add the device to bind it to real hardware", dev.Device, err)
 	default:
 		return downResolve, fmt.Sprintf("cannot resolve %s: %v", dev.Device, err)
 	}
@@ -189,9 +197,12 @@ func resolveError(dev *config.Device, err error) (cause, msg string) {
 
 // refreshHardware resolves every configured device id against the host's
 // current hardware and publishes the ids the configuration owns to the
-// background enumeration. The published set holds both the configured id and
-// the stable id it resolved to, so a device configured by a card index is still
-// recognised as configured under the stable id the enumeration lists it by.
+// background enumeration. The published set holds the configured id plus every id
+// form the resolution recognises it under: the stable id it resolved to, its port
+// id, and, for an entry that resolves ambiguously (a same-serial twin named by its
+// shared serial), each matching unit's port id. So a device configured by a card
+// index, or an owned same-serial twin, is still recognised as configured and not
+// re-offered as available.
 func (a *appliance) refreshHardware(cfg *config.Config) {
 	hw := make(map[string]hwResult, len(cfg.Devices))
 	ids := make(map[string]bool, 2*len(cfg.Devices))
@@ -204,7 +215,29 @@ func (a *appliance) refreshHardware(cfg *config.Config) {
 		h, err := a.resolve(id)
 		hw[id] = hwResult{hw: h, err: err}
 		if err == nil {
+			// Claim both the resolved stable id and the port-form id. When two
+			// identical USB units share a serial, the enumeration offers each unit
+			// under its PortID (offeredIDs), so an owned unit whose config entry
+			// resolved cleanly would otherwise reappear under a PortID the set did
+			// not hold, be re-probed every tick, and be re-provisionable.
 			ids[h.ID] = true
+			if h.PortID != "" {
+				ids[h.PortID] = true
+			}
+			continue
+		}
+		// A config entry naming a same-serial twin by its shared serial resolves
+		// ambiguous once the second unit is plugged in: the entry cannot open (it is
+		// skipped ambiguous), but the matches are the very units the enumeration now
+		// offers under their port ids. Claim every match so neither twin is
+		// re-offered as available and re-provisioned into a dead entry while the
+		// ambiguous entry stands; the operator's remedy is to delete it and re-add
+		// each unit by its port id.
+		var amb *capture.AmbiguousDeviceError
+		if errors.As(err, &amb) {
+			for _, m := range amb.Matches {
+				ids[m] = true
+			}
 		}
 	}
 	a.hw = hw
@@ -386,7 +419,16 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	if res.err != nil {
 		var nf *capture.DeviceNotFoundError
 		var amb *capture.AmbiguousDeviceError
-		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) {
+		var bad *capture.BadDeviceError
+		// A malformed id (*BadDeviceError) is refused here rather than falling
+		// through to an open that can only fail. IsCardIndexID returns true for a
+		// malformed id (for example "plughw:1,0"), so the !IsCardIndexID term does
+		// NOT catch it; the explicit errors.As(&bad) term is what refuses it, and
+		// reporting it as malformed is more useful than a generic open failure
+		// mislabelled as a card index a few lines down. A card index whose
+		// enumeration merely failed resolves to a wrapped ErrDeviceGone, not
+		// *BadDeviceError, so it still falls through to the container-fallback open.
+		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) || errors.As(res.err, &bad) {
 			cause, msg := resolveError(dev, res.err)
 			title := "Device unavailable"
 			switch cause {
@@ -394,6 +436,8 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 				title = "Device not connected"
 			case downAmbiguous:
 				title = "Device ambiguous"
+			case downMalformed:
+				title = "Invalid device id"
 			}
 			return a.skipDevice(dev, &hw, cause, title, msg)
 		}

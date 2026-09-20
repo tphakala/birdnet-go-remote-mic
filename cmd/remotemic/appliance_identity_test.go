@@ -52,7 +52,10 @@ func (h *fakeHost) resolve(id string) (audio.Hardware, error) {
 	}
 	var hit []audio.Hardware
 	for _, d := range h.devs {
-		if d.ID == id || d.HWAddr == id {
+		// The library matches a stable id against a device's own id OR its port id
+		// (which is what lets a caller pin one same-serial twin by port); a
+		// card-index id matches by the current-boot address.
+		if d.ID == id || d.HWAddr == id || (d.PortID != "" && d.PortID == id) {
 			hit = append(hit, d)
 		}
 	}
@@ -62,9 +65,16 @@ func (h *fakeHost) resolve(id string) (audio.Hardware, error) {
 	case 1:
 		return hit[0], nil
 	}
+	// Mirror the library: an ambiguous match lists each unit's PortID so the caller
+	// can pin one by port, falling back to the current-boot address for a match
+	// with no derivable port.
 	matches := make([]string, 0, len(hit))
 	for _, d := range hit {
-		matches = append(matches, d.HWAddr)
+		pin := d.PortID
+		if pin == "" {
+			pin = d.HWAddr
+		}
+		matches = append(matches, pin)
 	}
 	return audio.Hardware{}, &capture.AmbiguousDeviceError{ID: id, Matches: matches}
 }
@@ -157,6 +167,152 @@ func TestReconcileRefusesAmbiguousDevice(t *testing.T) {
 	}
 	if opened(log, "moth") {
 		t.Errorf("an ambiguous device was opened: %v", log.snapshot())
+	}
+}
+
+// twin ids for the same-serial cases below: a shared serial-form id and the two
+// distinct port-form ids the enumeration offers for the two units.
+const (
+	twinSerial = "usb:16d0:06f3:s=SAME:if=0,0"
+	twinPortA  = "usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0"
+	twinPortB  = "usb:16d0:06f3:p=0000:01:00.0-1.2:if=0,0"
+)
+
+// TestReconcileClaimsTwinPortIDsWhenSerialAmbiguous pins the #66 fix: a config
+// entry naming two identical USB units by their shared serial resolves ambiguous
+// (and is skipped), but the appliance still claims both units' port ids as
+// configured, so neither twin is re-offered as available and re-provisioned into a
+// dead entry. The operator's remedy is to delete the ambiguous entry and re-add
+// each unit by its port id.
+func TestReconcileClaimsTwinPortIDsWhenSerialAmbiguous(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: twinSerial, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true, PortID: twinPortA},
+		{ID: twinSerial, HWAddr: addrHW4, Label: nameAudioMoth, IDStable: true, PortID: twinPortB},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", twinSerial, "/m", 48000)}})
+
+	if rt := app.devices["moth"]; rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "ambiguous") {
+		t.Fatalf("moth = %s %q, want skipped as ambiguous", rt.currentState(), rt.err)
+	}
+	ids := app.prov.configuredIDs()
+	if !ids[twinSerial] || !ids[twinPortA] || !ids[twinPortB] {
+		t.Errorf("configured ids = %v, want the serial and both twin port ids so neither unit is re-offered as available", ids)
+	}
+}
+
+// TestReconcileClaimsResolvedPortIDForBoundTwin pins that a config entry bound to
+// one twin by its port id claims both the resolved serial and that port id, while
+// the OTHER twin stays available for provisioning.
+func TestReconcileClaimsResolvedPortIDForBoundTwin(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: twinSerial, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true, PortID: twinPortA},
+		{ID: twinSerial, HWAddr: addrHW4, Label: nameAudioMoth, IDStable: true, PortID: twinPortB},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", twinPortA, "/m", 48000)}})
+
+	if rt := app.devices["moth"]; rt.currentState() != mgmtserver.StateServing {
+		t.Fatalf("moth = %s %q, want serving (bound to one twin by its port id)", rt.currentState(), rt.err)
+	}
+	ids := app.prov.configuredIDs()
+	if !ids[twinPortA] || !ids[twinSerial] {
+		t.Errorf("configured ids = %v, want the bound port id and its resolved serial", ids)
+	}
+	if ids[twinPortB] {
+		t.Errorf("configured ids = %v, must NOT claim the other twin: it stays available for provisioning", ids)
+	}
+}
+
+// TestReconcileClaimsPortIDForCardIndexTwin pins the clean-resolve PortID claim: a
+// twin configured by its card index resolves cleanly (one match, by address) to a
+// unit whose stable id is the shared serial and whose port id is twinPortA. That
+// port id is claimed ONLY by the h.PortID branch of refreshHardware (the config id
+// is the card index and the stable id is the serial, so neither adds twinPortA), so
+// this reddens if that branch is dropped. The other twin stays available.
+func TestReconcileClaimsPortIDForCardIndexTwin(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: twinSerial, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true, PortID: twinPortA},
+		{ID: twinSerial, HWAddr: addrHW4, Label: nameAudioMoth, IDStable: true, PortID: twinPortB},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", addrHW3, "/m", 48000)}})
+
+	ids := app.prov.configuredIDs()
+	if !ids[twinPortA] {
+		t.Errorf("configured ids = %v, want the resolved unit's port id %q claimed via h.PortID", ids, twinPortA)
+	}
+	if ids[twinPortB] {
+		t.Errorf("configured ids = %v, must NOT claim the other twin %q", ids, twinPortB)
+	}
+}
+
+// TestResolveErrorClassifiesMalformedID pins that a malformed id (one the
+// capture library rejects with *BadDeviceError) is classified as malformed, not
+// lumped in with a card index that "can change across reboots".
+func TestResolveErrorClassifiesMalformedID(t *testing.T) {
+	dev := &config.Device{Name: "typo", Device: "plughw:1,0"}
+	cause, msg := resolveError(dev, &capture.BadDeviceError{Value: dev.Device, Err: errors.New("card number: invalid")})
+	if cause != downMalformed {
+		t.Errorf("cause = %q, want %q", cause, downMalformed)
+	}
+	if !strings.Contains(msg, "malformed") || !strings.Contains(msg, dev.Device) {
+		t.Errorf("msg = %q, want it to name the id and call it malformed", msg)
+	}
+}
+
+// TestReconcileSkipsMalformedID pins that a malformed id is refused up front with
+// an Invalid device id condition and never reaches an open, rather than falling
+// through to an open that can only fail (mislabelled as a card index on the way).
+func TestReconcileSkipsMalformedID(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	// The library rejects an id in no accepted form with *BadDeviceError; inject
+	// that directly so the test does not depend on the fake host's grammar.
+	app.resolve = func(id string) (audio.Hardware, error) {
+		return audio.Hardware{}, &capture.BadDeviceError{Value: id, Err: errors.New("card number: invalid")}
+	}
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("typo", "plughw:1,0", "/t", 48000)}})
+
+	rt := app.devices["typo"]
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "malformed") {
+		t.Fatalf("typo = %s %q, want skipped as malformed", rt.currentState(), rt.err)
+	}
+	if opened(log, "typo") {
+		t.Errorf("a malformed id was opened: %v", log.snapshot())
+	}
+	act := applianceCenter(t, app).Active()
+	if len(act) != 1 || act[0].Title != "Invalid device id" {
+		t.Errorf("active = %+v, want one Invalid device id condition for typo", act)
+	}
+}
+
+// TestFailedDeviceStatusOmitsStaleAddress pins that a device whose pump dies does
+// not report its last-known address in the API view: the kernel can reassign that
+// card index to another device before the entry is retried, so a stale hw:N,D
+// would point the operator at the wrong hardware. The suppression is at read time
+// (status), not a mutation of the record, so hwAddr stays immutable after publish
+// and does not race the API readers.
+func TestFailedDeviceStatusOmitsStaleAddress(t *testing.T) {
+	rt := &deviceRuntime{hwAddr: addrHW3}
+	rt.markFailed(errors.New("EIO"))
+	st := rt.status()
+	if st.State != mgmtserver.StateFailed {
+		t.Errorf("state = %s, want failed", st.State)
+	}
+	if st.HWAddr != "" {
+		t.Errorf("status HWAddr = %q, want empty for a failed device (a stale address may name other hardware)", st.HWAddr)
 	}
 }
 

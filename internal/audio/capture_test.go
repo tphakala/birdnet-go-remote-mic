@@ -33,6 +33,22 @@ func swapOpenStream(neg capture.Config) (stub *stubStream, restore func()) {
 	return stub, func() { openStream = prev }
 }
 
+// swapMonoProbe stubs the channel-resolution probe (supportedRatesFn) so a test
+// that calls the OpenCapture convenience wrapper resolves to one channel without
+// touching real hardware. OpenCapture runs ResolveOpenChannels first, which
+// probes supportedRatesFn: on a dev host with a multi-channel capture card at
+// hw:1,0 the live probe resolves to that card's count and then mismatches a mono
+// stub, so these tests failed on any machine with a sound card (#59). Restoring
+// the previous seam is the caller's job (defer swapMonoProbe()()).
+func swapMonoProbe() func() {
+	return swapSupportedRates(func(_ string, ch int, _ capture.Format) (capture.RateSupport, error) {
+		if ch == 1 {
+			return capture.RateSupport{Rates: []int{48000}}, nil
+		}
+		return capture.RateSupport{}, &capture.BadFormatError{Channels: ch}
+	})
+}
+
 func TestCaptureFormat(t *testing.T) {
 	for _, f := range []string{testFmtS16, ""} {
 		got, err := captureFormat(f)
@@ -48,6 +64,7 @@ func TestCaptureFormat(t *testing.T) {
 func TestOpenCaptureRejectsUnknownFormat(t *testing.T) {
 	// A format that config.Validate does not (yet) permit must fail loud rather
 	// than silently fall back to S16LE and corrupt the byte math.
+	defer swapMonoProbe()()
 	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: "s32", Streams: []config.Stream{{Channels: []int{1}}}}); err == nil {
 		t.Fatal("OpenCapture accepted format s32, want error")
 	}
@@ -72,6 +89,7 @@ func TestOpenCaptureAtRejectsNegotiatedBelowOpenCount(t *testing.T) {
 }
 
 func TestOpenCapturePassesS16Format(t *testing.T) {
+	defer swapMonoProbe()()
 	var got capture.Format
 	prev := openStream
 	openStream = func(cfg capture.Config) (captureStream, error) {
@@ -181,6 +199,7 @@ func TestOpenCaptureFallsBackToS32AndDownconverts(t *testing.T) {
 	// The device rejects S16 (here with a rate error, which must NOT short-circuit
 	// the S32 attempt), then opens in S32. Each S32 sample is downconverted to its
 	// top 16 bits before reaching the pipeline.
+	defer swapMonoProbe()()
 	fake := &s32Stream{
 		neg:     capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 2},
 		samples: []int32{0x11112222, 0x33334444},
@@ -237,6 +256,7 @@ func TestOpenCapturePrefersRateErrorAcrossFormats(t *testing.T) {
 	// whichever format produced it, and when BOTH formats reject the rate it must
 	// keep the FIRST (S16) error so the reported range is the preferred format's,
 	// not the narrower fallback's. Min identifies which format's error survived.
+	defer swapMonoProbe()()
 	raw := errors.New("alsa: HW_REFINE: invalid argument")
 	s16Rate := &capture.BadRateError{Requested: 384000, Min: 16000, Max: 384000}
 	s32Rate := &capture.BadRateError{Requested: 384000, Min: 44100, Max: 96000}
@@ -277,6 +297,7 @@ func TestOpenCapturePrefersRateErrorAcrossFormats(t *testing.T) {
 func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// Requested 256000 but the driver negotiated 48000: OpenCapture must refuse
 	// rather than silently deliver the wrong rate.
+	defer swapMonoProbe()()
 	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
 	defer restore()
 	if _, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}); err == nil {
@@ -288,6 +309,7 @@ func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 }
 
 func TestOpenCaptureStartsAndReads(t *testing.T) {
+	defer swapMonoProbe()()
 	_, restore := swapOpenStream(capture.Config{Rate: 256000, Channels: 1, PeriodFrames: 5120})
 	defer restore()
 	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 256000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
