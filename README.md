@@ -297,6 +297,13 @@ For a local end-to-end check without hardware, use the ALSA loopback
 task check   # build (amd64 + arm64 + arm, CGO off), vet (4 arches), lint, gofmt, race tests
 ```
 
+The web UI is compiled TypeScript embedded via `go:embed`; `web/dist` is
+generated, not committed. `task` rebuilds it before every build, so `task check`
+and `task build` work from a clean checkout. A bare `go build ./...` or
+`go test ./...` outside `task` needs those assets present: run `task web:build`
+first, or pass `-tags skipfrontend` to compile the Go code against a stub UI
+(what the CI Go jobs do).
+
 ## What it does
 
 - **Captures** audio from any number of local devices (USB or I2S) with no

@@ -18,6 +18,9 @@ tasks:
   build:amd64:
     desc: Build for linux/amd64 dev host, CGO off, version stamped (bin/remote-mic-amd64)
     aliases: [build]
+    # Build the web UI first so go:embed bakes in a fresh dist. web/dist is not
+    # tracked in git, so an untagged Go build embeds whatever web:build emits here.
+    deps: [web:build]
     env:
       CGO_ENABLED: '0'
       GOOS: linux
@@ -27,6 +30,7 @@ tasks:
 
   build:arm64:
     desc: Cross-build for linux/arm64, the Pi Zero 2 W target (bin/remote-mic-arm64)
+    deps: [web:build]
     env:
       CGO_ENABLED: '0'
       GOOS: linux
@@ -36,6 +40,7 @@ tasks:
 
   build:arm:
     desc: Cross-build for linux/arm, 32-bit older Pis, GOARM=6 for ARMv6 reach (bin/remote-mic-arm)
+    deps: [web:build]
     env:
       CGO_ENABLED: '0'
       GOOS: linux
@@ -48,24 +53,27 @@ tasks:
     desc: Run all tests
     env:
       CGO_ENABLED: '0'
+    # skipfrontend selects the web embed stub, so tests build without a compiled
+    # web/dist (which is untracked and may be absent on a clean checkout).
     cmds:
-      - go test ./...
+      - go test -tags skipfrontend ./...
 
   test:race:
     desc: Run tests with the race detector
     cmds:
-      - go test -race ./...
+      - go test -race -tags skipfrontend ./...
 
   vet:
     desc: Run go vet for the supported 64-bit and 32-bit architectures
     env:
       CGO_ENABLED: '0' # vet the pure-Go, CGO-off build
       GOARM: '6' # ignored for non-arm arches; matches the arm build target
+    # skipfrontend selects the web embed stub so vet needs no compiled web/dist.
     cmds:
-      - GOARCH=amd64 go vet ./...
-      - GOARCH=arm64 go vet ./...
-      - GOARCH=arm go vet ./...
-      - GOARCH=386 go vet ./...
+      - GOARCH=amd64 go vet -tags skipfrontend ./...
+      - GOARCH=arm64 go vet -tags skipfrontend ./...
+      - GOARCH=arm go vet -tags skipfrontend ./...
+      - GOARCH=386 go vet -tags skipfrontend ./...
 
   lint:
     desc: Run golangci-lint
@@ -111,6 +119,11 @@ tasks:
 
   web:build:
     desc: Compile web UI TypeScript and sync static assets into web/dist
+    # web/dist is architecture-independent, and build:amd64/arm64/arm each depend
+    # on this task. `run: once` builds it a single time per `task` invocation
+    # (e.g. `task check`) instead of once per arch. Standalone `task web:build`
+    # or `task build:arm64` is still a fresh invocation, so it always rebuilds.
+    run: once
     cmds:
       # Clean first so a renamed or deleted source file cannot leave a stale
       # artifact behind in the embedded output.
@@ -147,21 +160,17 @@ tasks:
       - node --test web/.test-out/test/
 
   web:verify:
-    desc: Fail if web/dist is out of date relative to web/src or web/static
+    desc: Type-check, lint, a11y-audit, unit-test, and rebuild the web UI
+    # web/dist is generated, not tracked, so there is no committed artifact to
+    # drift from: this just proves the front end type-checks, lints, passes the
+    # a11y audit and its unit tests, and compiles cleanly into web/dist. The
+    # binary-build steps (task build:*) then verify go:embed against that output.
     cmds:
       - task: web:typecheck
       - task: web:lint
       - task: web:a11y
       - task: web:test
       - task: web:build
-      - |
-        # Fail on any modified OR untracked file under web/dist (a freshly
-        # emitted file is untracked and would slip past `git diff` alone).
-        if [ -n "$(git status --porcelain -- web/dist)" ]; then
-          echo "web/dist is out of date; run: task web:build"
-          git status --porcelain -- web/dist
-          exit 1
-        fi
 
   check:
     desc: Full local gate (build, arm64 + arm builds, vet, lint, api checks, web verify, fmt, race tests)

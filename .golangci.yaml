@@ -4,6 +4,11 @@
 #   - Linux-only (the appliance captures via ALSA through go-audio-capture)
 #   - keeps gocritic's ruleguard wired to rules/*.go for modern-Go patterns
 version: "2"
+run:
+  # web/dist is generated and untracked, so lint the web embed stub rather than
+  # the real go:embed file, which needs the compiled assets present on disk.
+  build-tags:
+    - skipfrontend
 output:
   sort-order:
     - linter
