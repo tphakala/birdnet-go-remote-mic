@@ -709,7 +709,10 @@ body {
   position: relative;
 }
 
-.copy-btn:hover {
+/* The token chip (.lock-tag) shares this hover lift and press; grouped so the
+   two copy chips cannot drift apart. */
+.copy-btn:hover,
+.lock-tag:hover {
   background: var(--bg-surface-active);
   color: var(--text-primary);
   border-color: var(--border-active);
@@ -717,7 +720,8 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
-.copy-btn:active {
+.copy-btn:active,
+.lock-tag:active {
   transform: scale(0.95);
 }
 
@@ -727,17 +731,8 @@ body {
   transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
-.copy-btn.copied {
-  background: var(--signal-ok-bg);
-  border-color: var(--signal-ok);
-  color: var(--signal-ok-text);
-  box-shadow: 0 0 10px var(--signal-ok-glow);
-  animation: copy-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.copy-btn.copied .icon-copy {
-  display: none;
-}
+/* The "copied" success state lives after the focus rules (see below) so its
+   green pulse wins the cascade over the focus ring's colours. */
 
 @keyframes copy-pulse {
   0% { transform: scale(0.95); }
@@ -1606,10 +1601,15 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   box-shadow: var(--focus-glow);
 }
 
-/* .btn-primary's border equals its cyan fill, so an accent-cyan focus border
-   would vanish into it; use the primary foreground colour for contrast. */
+/* .btn-primary and .btn-danger fill their border with the solid variant colour,
+   so an accent-cyan focus border would vanish into it. Use each variant's own
+   foreground colour, chosen for contrast against that fill (--text-primary sat
+   at only ~2.2:1 against the cyan fill). */
 .btn-primary:focus-visible {
-  border-color: var(--text-primary);
+  border-color: var(--btn-primary-fg);
+}
+.btn-danger:focus-visible {
+  border-color: var(--btn-danger-fg);
 }
 
 /* Shared keyboard focus ring for controls with no filled border to tint. An
@@ -1679,13 +1679,41 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   box-shadow: 0 0 12px var(--signal-crit-glow);
 }
 
-/* A variant's :hover box-shadow above would replace the focus bloom on a button
-   that is hovered while keyboard-focused. Re-assert the bloom here, after all the
-   :hover rules, so the focus indicator survives the hover. */
+/* A variant's :hover rules above would replace the focus bloom (box-shadow) and,
+   for the filled variants, the focus border-color on a button that is hovered
+   while keyboard-focused. Re-assert both here, after all the :hover rules, so the
+   focus indicator survives the hover. The filled variants keep their contrasting
+   foreground border (their :hover sets border-color to the fill, which would hide
+   the ring). */
 .btn:hover:focus-visible,
 .copy-btn:hover:focus-visible,
 .lock-tag:hover:focus-visible {
   box-shadow: var(--focus-glow);
+}
+.btn-primary:hover:focus-visible {
+  border-color: var(--btn-primary-fg);
+}
+.btn-danger:hover:focus-visible {
+  border-color: var(--btn-danger-fg);
+}
+
+/* The transient "copied" success pulse, shared by both copy chips. Placed AFTER
+   the focus rules on purpose: when a chip is copied while keyboard-focused, the
+   green confirmation must win the border/background/box-shadow cascade so it is
+   not hidden by the focus ring. The green glow is itself a visible focus
+   indicator during the ~1.6s pulse (and the transparent focus outline still
+   paints in forced-colors mode), so keyboard place is never lost. */
+.copy-btn.copied,
+.lock-tag.copied {
+  background: var(--signal-ok-bg);
+  border-color: var(--signal-ok);
+  color: var(--signal-ok-text);
+  box-shadow: 0 0 10px var(--signal-ok-glow);
+  animation: copy-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.copy-btn.copied .icon-copy,
+.lock-tag.copied .icon-copy {
+  display: none;
 }
 
 /* ==================== SYSTEM VIEW ==================== */
@@ -2482,8 +2510,8 @@ select.field-input {
 }
 
 /* "Token" tag on a serving card: a button that copies the access token, with
-   the same hover lift and "copied" pulse as .copy-btn. The tag keeps the
-   tech-tag size; only the button chrome is reset. */
+   the same hover lift and "copied" pulse as .copy-btn (grouped with it above and
+   in the shared .copied rule). Only its resting look and layout are set here. */
 .lock-tag {
   display: inline-flex;
   align-items: center;
@@ -2491,25 +2519,12 @@ select.field-input {
   cursor: pointer;
   user-select: none;
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.lock-tag:hover {
-  background: var(--bg-surface-active);
-  color: var(--text-primary);
-  border-color: var(--border-active);
-  transform: translateY(-1px);
-}
-.lock-tag:active {
-  transform: scale(0.95);
-}
-.lock-tag.copied {
-  background: var(--signal-ok-bg);
-  border-color: var(--signal-ok);
-  color: var(--signal-ok-text);
-  box-shadow: 0 0 10px var(--signal-ok-glow);
-  animation: copy-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.lock-tag.copied .icon-copy {
-  display: none;
+  /* Give the clickable token chip the same resting chrome as .copy-btn (a raised
+     surface and a solid border) so it reads as an actionable button rather than
+     blending into the static tech-tags beside it, which only hover revealed. */
+  background: var(--bg-surface);
+  border-color: var(--border-base);
+  color: var(--text-secondary);
 }
 
 /* Access token prompt */

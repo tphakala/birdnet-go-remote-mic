@@ -137,7 +137,7 @@ func TestReconcileRefusesAbsentDevice(t *testing.T) {
 	}})
 
 	rt := app.devices["moth"]
-	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "not connected") {
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "Not connected") {
 		t.Fatalf("moth = %s %q, want skipped as not connected", rt.currentState(), rt.err)
 	}
 	if opened(log, "moth") {
@@ -162,7 +162,7 @@ func TestReconcileRefusesAmbiguousDevice(t *testing.T) {
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 
 	rt := app.devices["moth"]
-	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "ambiguous") || !strings.Contains(rt.err, "hw:3,0, hw:4,0") {
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "Ambiguous") || !strings.Contains(rt.err, "hw:3,0, hw:4,0") {
 		t.Fatalf("moth = %s %q, want skipped as ambiguous naming both addresses", rt.currentState(), rt.err)
 	}
 	if opened(log, "moth") {
@@ -195,7 +195,7 @@ func TestReconcileClaimsTwinPortIDsWhenSerialAmbiguous(t *testing.T) {
 
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", twinSerial, "/m", 48000)}})
 
-	if rt := app.devices["moth"]; rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "ambiguous") {
+	if rt := app.devices["moth"]; rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "Ambiguous") {
 		t.Fatalf("moth = %s %q, want skipped as ambiguous", rt.currentState(), rt.err)
 	}
 	ids := app.prov.configuredIDs()
@@ -258,14 +258,14 @@ func TestReconcileClaimsPortIDForCardIndexTwin(t *testing.T) {
 
 // TestResolveErrorClassifiesMalformedID pins that a malformed id (one the
 // capture library rejects with *BadDeviceError) is classified as malformed, not
-// lumped in with a card index that "can change across reboots".
+// lumped in with a card index that "can change after a reboot".
 func TestResolveErrorClassifiesMalformedID(t *testing.T) {
 	dev := &config.Device{Name: "typo", Device: "plughw:1,0"}
 	cause, msg := resolveError(dev, &capture.BadDeviceError{Value: dev.Device, Err: errors.New("card number: invalid")})
 	if cause != downMalformed {
 		t.Errorf("cause = %q, want %q", cause, downMalformed)
 	}
-	if !strings.Contains(msg, "malformed") || !strings.Contains(msg, dev.Device) {
+	if !strings.Contains(msg, "Malformed") || !strings.Contains(msg, dev.Device) {
 		t.Errorf("msg = %q, want it to name the id and call it malformed", msg)
 	}
 }
@@ -286,7 +286,7 @@ func TestReconcileSkipsMalformedID(t *testing.T) {
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("typo", "plughw:1,0", "/t", 48000)}})
 
 	rt := app.devices["typo"]
-	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "malformed") {
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "Malformed") {
 		t.Fatalf("typo = %s %q, want skipped as malformed", rt.currentState(), rt.err)
 	}
 	if opened(log, "typo") {
@@ -334,7 +334,7 @@ func TestReconcileRefusesSecondEntryForSameHardware(t *testing.T) {
 		t.Fatalf("scarlett state = %s, want serving", app.devices["scarlett"].currentState())
 	}
 	rt := app.devices["alias"]
-	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, `same hardware as "scarlett"`) {
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, `Same hardware as "scarlett"`) {
 		t.Fatalf("alias = %s %q, want skipped as the same hardware as scarlett", rt.currentState(), rt.err)
 	}
 	if opened(log, "alias") {
@@ -400,7 +400,7 @@ func TestReconcileRefusesCardIndexWithNoCardAtIndex(t *testing.T) {
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("byindex", addrHW3, "/a", 48000)}})
 
 	rt := app.devices["byindex"]
-	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "not connected") {
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "Not connected") {
 		t.Fatalf("byindex = %s %q, want skipped as not connected", rt.currentState(), rt.err)
 	}
 	if opened(log, "byindex") {

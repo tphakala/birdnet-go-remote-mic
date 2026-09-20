@@ -8,6 +8,7 @@ import type {
   ConfigPatch,
   ConfigUpdateResult,
   Device,
+  Health,
   NotificationSnapshot,
   ProvisionDeviceRequest,
   RestartResult,
@@ -97,8 +98,8 @@ export class ApiClient {
     return (await res.text()) as unknown as T;
   }
 
-  public async getHealth(): Promise<{ status: string; version: string; authRequired?: boolean }> {
-    return this.request<{ status: string; version: string; authRequired?: boolean }>("/healthz");
+  public async getHealth(): Promise<Health> {
+    return this.request<Health>("/healthz");
   }
 
   public async getStatus(): Promise<ApplianceStatus> {

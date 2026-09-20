@@ -230,11 +230,11 @@ func runListDevices(w io.Writer) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	out(tw, "ID\tADDRESS\tLABEL\n")
+	out(tw, "ID\tALSA\tLABEL\n")
 	for _, d := range devs {
 		label := d.Label
 		if !d.IDStable {
-			label += " (no stable id: this card index can change across reboots)"
+			label += " (no stable id: card index can change after a reboot)"
 		}
 		out(tw, "%s\t%s\t%s\n", d.ID, d.HWAddr, label)
 	}
@@ -302,7 +302,7 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 		owner[hw.HWAddr] = d.Name
 	}
 	if config.IsCardIndexID(d.Device) {
-		status += "; pinned to a card index, which can change across reboots"
+		status += "; card index (can change after a reboot)"
 		// Suggest the resolved id only when it is a stable one: a host that offers
 		// no stable form resolves the index back to the same card index.
 		if hw.IDStable && hw.ID != d.Device {

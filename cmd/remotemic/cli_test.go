@@ -249,7 +249,7 @@ func TestReportCheckResolvesByIdentity(t *testing.T) {
 	if l := checkLine(report, "scarlett"); !strings.Contains(l, "present at hw:4,0 ("+nameScarlett+")") || strings.Contains(l, "card index") {
 		t.Errorf("scarlett line = %q, want present at hw:4,0 with no card-index warning", l)
 	}
-	if l := checkLine(report, "moth"); !strings.Contains(l, "not connected") {
+	if l := checkLine(report, "moth"); !strings.Contains(l, "Not connected") {
 		t.Errorf("moth line = %q, want not connected", l)
 	}
 	if l := checkLine(report, "byindex"); !strings.Contains(l, "same hardware as \"scarlett\"") {
@@ -297,7 +297,7 @@ func TestReportCheckFlagsCardIndex(t *testing.T) {
 	if err := reportCheck(&cfg, &out); err != nil {
 		t.Fatalf("reportCheck: %v", err)
 	}
-	if l := checkLine(out.String(), "cam-a"); !strings.Contains(l, "pinned to a card index") || !strings.Contains(l, scarlettID) {
+	if l := checkLine(out.String(), "cam-a"); !strings.Contains(l, "card index (can change after a reboot)") || !strings.Contains(l, scarlettID) {
 		t.Errorf("cam-a line = %q, want a card-index warning naming %s", l, scarlettID)
 	}
 }
@@ -317,7 +317,7 @@ func TestReportCheckAmbiguous(t *testing.T) {
 	if err := reportCheck(&cfg, &out); err != nil {
 		t.Fatalf("reportCheck: %v", err)
 	}
-	if l := checkLine(out.String(), "twin"); !strings.Contains(l, "ambiguous") || !strings.Contains(l, "hw:3,0, hw:4,0") || strings.Contains(l, "present") {
+	if l := checkLine(out.String(), "twin"); !strings.Contains(l, "Ambiguous") || !strings.Contains(l, "hw:3,0, hw:4,0") || strings.Contains(l, "present") {
 		t.Errorf("twin line = %q, want ambiguous naming both addresses", l)
 	}
 }

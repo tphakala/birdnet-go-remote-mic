@@ -181,17 +181,20 @@ func resolveError(dev *config.Device, err error) (cause, msg string) {
 	var bad *capture.BadDeviceError
 	switch {
 	case errors.As(err, &nf):
-		return downNotConnected, fmt.Sprintf("not connected: no device matches %s", dev.Device)
+		return downNotConnected, fmt.Sprintf("Not connected: no device matches %s", dev.Device)
 	case errors.As(err, &amb):
-		return downAmbiguous, fmt.Sprintf("ambiguous: %s matches %d devices (%s); bind it to one of them by port", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
+		// Remove-and-re-add is the remedy the web UI can perform (it enables an
+		// available unit by its own id); the old "bind it by port" advice only
+		// made sense for a CLI user editing the config file.
+		return downAmbiguous, fmt.Sprintf("Ambiguous: %s matches %d devices (%s). Remove this entry and re-add each unit by its own id.", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
 	case errors.As(err, &bad):
 		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is in no accepted
 		// form and can never open. IsCardIndexID classifies these by shape as card
 		// indexes, but unlike a real card index no reboot can make them resolve, so
 		// report them as malformed and tell the operator to fix the id.
-		return downMalformed, fmt.Sprintf("malformed device id %s: %v; re-add the device to bind it to real hardware", dev.Device, err)
+		return downMalformed, fmt.Sprintf("Malformed device id %s: %v. Re-add the device to bind it to real hardware.", dev.Device, err)
 	default:
-		return downResolve, fmt.Sprintf("cannot resolve %s: %v", dev.Device, err)
+		return downResolve, fmt.Sprintf("Cannot resolve %s: %v", dev.Device, err)
 	}
 }
 
@@ -443,7 +446,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		}
 	}
 	if owner := a.hardwareOwner(hw.HWAddr, dev.Name); owner != "" {
-		msg := fmt.Sprintf("same hardware as %q: %s is %s, which that device already captures from", owner, dev.Device, hw.HWAddr)
+		msg := fmt.Sprintf("Same hardware as %q: %s is %s, which that device already captures from", owner, dev.Device, hw.HWAddr)
 		return a.skipDevice(dev, &hw, downSameHardware, "Device conflict", msg)
 	}
 	if config.IsCardIndexID(dev.Device) {
