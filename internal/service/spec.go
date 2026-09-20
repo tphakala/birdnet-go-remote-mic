@@ -7,9 +7,11 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // userNameRe is the standard shadow-utils NAME_REGEX for a system account. It
@@ -24,12 +26,17 @@ var userNameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 // one of these would re-home or delete system-wide files. The service's config
 // and state directories must be dedicated subdirectories, not these.
 var sharedSystemDirs = map[string]bool{
-	"/": true, "/etc": true, "/var": true, "/var/lib": true, "/var/log": true,
-	"/var/run": true, "/var/cache": true, "/run": true, "/usr": true,
-	"/usr/local": true, "/usr/bin": true, "/usr/sbin": true, "/usr/lib": true,
+	"/": true, "/etc": true, "/etc/systemd": true, "/etc/default": true,
+	"/etc/cron.d": true, "/var": true, "/var/lib": true, "/var/log": true,
+	"/var/run": true, "/var/cache": true, "/var/tmp": true, "/var/spool": true,
+	"/var/mail": true, "/var/lock": true, "/run": true, "/run/lock": true,
+	"/usr": true, "/usr/local": true, "/usr/local/bin": true, "/usr/local/sbin": true,
+	"/usr/local/etc": true, "/usr/local/lib": true, "/usr/local/share": true,
+	"/usr/bin": true, "/usr/sbin": true, "/usr/lib": true, "/usr/share": true,
 	"/bin": true, "/sbin": true, "/lib": true, "/lib64": true, "/boot": true,
-	"/opt": true, "/home": true, "/root": true, "/tmp": true, "/dev": true,
-	"/proc": true, "/sys": true, "/mnt": true, "/media": true, "/srv": true,
+	"/boot/efi": true, "/opt": true, "/home": true, "/root": true, "/tmp": true,
+	"/dev": true, "/proc": true, "/sys": true, "/mnt": true, "/media": true,
+	"/srv": true,
 }
 
 // Defaults for a system-wide install. The binary is copied to a stable path so
@@ -94,6 +101,9 @@ func (s ServiceSpec) Validate() error {
 	if !userNameRe.MatchString(s.User) {
 		return fmt.Errorf("service: invalid user name %q (want %s)", s.User, userNameRe)
 	}
+	if s.User == "root" {
+		return errors.New("service: refusing to run as root; use a dedicated unprivileged user")
+	}
 	for label, p := range map[string]string{
 		"bin path":    s.BinPath,
 		"config path": s.ConfigPath,
@@ -101,6 +111,11 @@ func (s ServiceSpec) Validate() error {
 	} {
 		if !filepath.IsAbs(p) {
 			return fmt.Errorf("service: %s must be absolute, got %q", label, p)
+		}
+		// systemd splits ExecStart and ReadWritePaths on spaces and reads '%' as
+		// a specifier, so a path containing either would silently misparse.
+		if strings.ContainsAny(p, " \t\n%") {
+			return fmt.Errorf("service: %s %q must not contain spaces, tabs, newlines, or %%", label, p)
 		}
 	}
 	for label, dir := range map[string]string{
@@ -116,7 +131,20 @@ func (s ServiceSpec) Validate() error {
 }
 
 // isSharedSystemDir reports whether dir is the filesystem root or a well-known
-// shared system directory that must never be chowned recursively or removed.
+// shared system directory that must never be chowned or removed. It checks the
+// lexically cleaned path and, best-effort, the symlink-resolved path, so a link
+// such as /var/lock -> /run/lock or an operator pointing through a symlink into
+// a shared tree is caught. A path that does not exist yet (a fresh install)
+// resolves to itself and is judged on its literal form. The list cannot be
+// exhaustive, so it is a guardrail against the common footguns, not a full
+// sandbox.
 func isSharedSystemDir(dir string) bool {
-	return sharedSystemDirs[filepath.Clean(dir)]
+	clean := filepath.Clean(dir)
+	if sharedSystemDirs[clean] {
+		return true
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return sharedSystemDirs[filepath.Clean(resolved)]
+	}
+	return false
 }

@@ -53,6 +53,7 @@ func TestSystemdQuery(t *testing.T) {
 		"inactive":         {"inactive\n", errors.New("exit 3"), false, false, false},
 		"not-found word":   {"not-found\n", errors.New("exit 4"), true, false, false},
 		"broken systemctl": {"", errors.New("exec: systemctl not found"), true, false, true},
+		"unexpected word":  {"weird\n", nil, true, false, true}, // exit 0 but unknown word -> unknown, not false
 	}
 	for name, c := range states {
 		t.Run(name, func(t *testing.T) {

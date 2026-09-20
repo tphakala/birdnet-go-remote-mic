@@ -2,7 +2,10 @@
 
 package service
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // InitSystem abstracts the boot service manager so the installer stays
 // independent of systemd specifics. Only systemd is implemented today; an
@@ -100,7 +103,12 @@ func (s *Systemd) query(enabled bool, verb, unit string) (bool, error) {
 		return true, nil
 	case no[word]:
 		return false, nil
-	default:
+	case err != nil:
 		return false, err
+	default:
+		// systemctl exited 0 but printed a word we do not recognize (a newer
+		// state, or a warning merged onto stdout): report it as unknown rather
+		// than a definitive "no".
+		return false, fmt.Errorf("systemctl %s %s: unexpected state %q", verb, unit, word)
 	}
 }
