@@ -118,8 +118,8 @@ func (in *Installer) Install(now bool) error {
 	if err := in.Init.DaemonReload(); err != nil {
 		return fmt.Errorf("service: daemon-reload: %w", err)
 	}
-	if err := in.Init.Enable(s.UnitName, now); err != nil {
-		return fmt.Errorf("service: enable %s: %w", s.UnitName, err)
+	if err := in.Init.Enable(DefaultUnitName, now); err != nil {
+		return fmt.Errorf("service: enable %s: %w", DefaultUnitName, err)
 	}
 	return nil
 }
@@ -133,11 +133,11 @@ func (in *Installer) ensureUser(s ServiceSpec) error {
 	if in.userExists(s.User) {
 		return nil
 	}
-	if _, err := in.Run("groupadd", "--system", "--force", s.Group); err != nil {
-		return fmt.Errorf("service: create group %q: %w", s.Group, err)
+	if _, err := in.Run("groupadd", "--system", "--force", s.User); err != nil {
+		return fmt.Errorf("service: create group %q: %w", s.User, err)
 	}
 	if _, err := in.Run("useradd", "--system", "--no-create-home",
-		"--shell", in.Plat.NologinShell(), "--gid", s.Group, s.User); err != nil {
+		"--shell", in.Plat.NologinShell(), "--gid", s.User, s.User); err != nil {
 		return fmt.Errorf("service: create user %q: %w", s.User, err)
 	}
 	if _, err := in.Run("usermod", "--append", "--groups", "audio", s.User); err != nil {

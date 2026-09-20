@@ -28,7 +28,7 @@ var (
 	geteuid      = os.Geteuid
 	lookPath     = exec.LookPath
 	osExecutable = os.Executable
-	execSelf     = func(argv0 string, argv, envv []string) error { return syscall.Exec(argv0, argv, envv) } //nolint:gosec // argv0 is our own binary via os.Executable, run under sudo
+	execSelf     = syscall.Exec //nolint:gosec // argv0 is our own binary via os.Executable, run under sudo
 )
 
 // Action seams so subcommand routing and flag parsing are testable without
@@ -94,7 +94,7 @@ func ensureRoot(escalated bool) error {
 		return errors.New("this command must run as root, but re-running under sudo did not grant it; re-run as root")
 	}
 	if !stdinIsTerminal() {
-		return errors.New("this command must run as root; re-run with: sudo remote-mic service ...")
+		return errors.New("this command must run as root; re-run it with sudo, for example sudo remote-mic service install")
 	}
 	sudo, err := lookPath("sudo")
 	if err != nil {

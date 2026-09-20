@@ -40,7 +40,7 @@ func TestInstallSequence(t *testing.T) {
 	// NologinShell probes the filesystem; pin it so the useradd shell is stable.
 	orig := fileExists
 	t.Cleanup(func() { fileExists = orig })
-	fileExists = func(p string) bool { return p == "/usr/sbin/nologin" }
+	fileExists = func(p string) bool { return p == nologinPath }
 
 	var events []string
 	init := &fakeInit{events: &events, present: true}
@@ -61,7 +61,7 @@ func TestInstallSequence(t *testing.T) {
 		"chown /etc/remote-mic 990:990",
 		"mkdir /var/lib/remote-mic",
 		"chown /var/lib/remote-mic 990:990",
-		"reload",
+		evReload,
 		"enable --now remote-mic.service",
 	})
 }
@@ -72,7 +72,7 @@ func TestInstallSequence(t *testing.T) {
 func TestInstallChownBeforeStart(t *testing.T) {
 	orig := fileExists
 	t.Cleanup(func() { fileExists = orig })
-	fileExists = func(p string) bool { return p == "/usr/sbin/nologin" }
+	fileExists = func(p string) bool { return p == nologinPath }
 
 	var events []string
 	init := &fakeInit{events: &events, present: true}

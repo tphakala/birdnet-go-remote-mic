@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+// Repeated fixture strings, factored out to satisfy goconst and keep the
+// expected event sequences readable.
+const (
+	evReload    = "reload"
+	nologinPath = "/usr/sbin/nologin"
+)
+
 // call records one Runner invocation for assertions.
 type call struct {
 	name string
@@ -72,7 +79,7 @@ type fakeInit struct {
 func (f *fakeInit) log(s string)  { *f.events = append(*f.events, s) }
 func (f *fakeInit) Present() bool { return f.present }
 func (f *fakeInit) DaemonReload() error {
-	f.log("reload")
+	f.log(evReload)
 	return nil
 }
 

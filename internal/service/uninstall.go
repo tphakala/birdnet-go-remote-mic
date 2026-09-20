@@ -48,8 +48,8 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 		return err
 	}
 
-	_ = un.Init.Stop(s.UnitName)
-	_ = un.Init.Disable(s.UnitName)
+	_ = un.Init.Stop(DefaultUnitName)
+	_ = un.Init.Disable(DefaultUnitName)
 
 	if err := un.removeFile(s.UnitPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("service: remove unit %s: %w", s.UnitPath(), err)

@@ -31,14 +31,13 @@ const unitDir = "/etc/systemd/system"
 // ServiceSpec is the resolved description of an install: who the service runs
 // as and where its binary, config, and state live. Zero fields are filled from
 // the Default* constants by withDefaults, so a caller can pass only the fields
-// it overrides.
+// it overrides. The unit file name is fixed (DefaultUnitName); an operator does
+// not run two differently named copies of this appliance on one host.
 type ServiceSpec struct {
-	User       string // system user to create and run as
-	Group      string // system group; defaults to User
+	User       string // system user to create and run as; its primary group takes the same name
 	BinPath    string // absolute path the binary is copied to and ExecStart runs
 	ConfigPath string // absolute config path baked into the unit via REMOTEMIC_CONFIG
 	StateDir   string // absolute cert-store directory, owned by the service user
-	UnitName   string // unit file name, e.g. remote-mic.service
 }
 
 // withDefaults returns a copy of s with empty fields filled from the Default*
@@ -47,9 +46,6 @@ type ServiceSpec struct {
 func (s ServiceSpec) withDefaults() ServiceSpec {
 	if s.User == "" {
 		s.User = DefaultUser
-	}
-	if s.Group == "" {
-		s.Group = s.User
 	}
 	if s.BinPath == "" {
 		s.BinPath = DefaultBinPath
@@ -60,9 +56,6 @@ func (s ServiceSpec) withDefaults() ServiceSpec {
 	if s.StateDir == "" {
 		s.StateDir = DefaultStateDir
 	}
-	if s.UnitName == "" {
-		s.UnitName = DefaultUnitName
-	}
 	return s
 }
 
@@ -71,7 +64,7 @@ func (s ServiceSpec) withDefaults() ServiceSpec {
 func (s ServiceSpec) ConfigDir() string { return filepath.Dir(s.ConfigPath) }
 
 // UnitPath is the absolute path the unit file is written to.
-func (s ServiceSpec) UnitPath() string { return filepath.Join(unitDir, s.UnitName) }
+func (s ServiceSpec) UnitPath() string { return filepath.Join(unitDir, DefaultUnitName) }
 
 // Validate rejects a spec that would render an unusable unit: a non-absolute
 // path (systemd requires absolute ExecStart and directory paths), an empty or
@@ -81,9 +74,6 @@ func (s ServiceSpec) Validate() error {
 	if strings.TrimSpace(s.User) == "" || strings.ContainsAny(s.User, " \t\n") {
 		return fmt.Errorf("service: invalid user name %q", s.User)
 	}
-	if strings.TrimSpace(s.Group) == "" || strings.ContainsAny(s.Group, " \t\n") {
-		return fmt.Errorf("service: invalid group name %q", s.Group)
-	}
 	for label, p := range map[string]string{
 		"bin path":    s.BinPath,
 		"config path": s.ConfigPath,
@@ -92,9 +82,6 @@ func (s ServiceSpec) Validate() error {
 		if !filepath.IsAbs(p) {
 			return fmt.Errorf("service: %s must be absolute, got %q", label, p)
 		}
-	}
-	if s.UnitName == "" || strings.ContainsAny(s.UnitName, "/ \t\n") || !strings.HasSuffix(s.UnitName, ".service") {
-		return fmt.Errorf("service: invalid unit name %q (want <name>.service)", s.UnitName)
 	}
 	return nil
 }

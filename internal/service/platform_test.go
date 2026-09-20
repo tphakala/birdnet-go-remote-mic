@@ -37,8 +37,8 @@ func TestNologinShell(t *testing.T) {
 	orig := fileExists
 	t.Cleanup(func() { fileExists = orig })
 
-	fileExists = func(p string) bool { return p == "/usr/sbin/nologin" || p == "/sbin/nologin" }
-	if got := (Platform{Family: FamilyDebian}).NologinShell(); got != "/usr/sbin/nologin" {
+	fileExists = func(p string) bool { return p == nologinPath || p == "/sbin/nologin" }
+	if got := (Platform{Family: FamilyDebian}).NologinShell(); got != nologinPath {
 		t.Errorf("debian nologin = %q, want /usr/sbin/nologin", got)
 	}
 	if got := (Platform{Family: FamilyRHEL}).NologinShell(); got != "/sbin/nologin" {
@@ -46,14 +46,14 @@ func TestNologinShell(t *testing.T) {
 	}
 
 	// When the family's preferred path is absent, fall back to the other.
-	fileExists = func(p string) bool { return p == "/usr/sbin/nologin" }
-	if got := (Platform{Family: FamilyRHEL}).NologinShell(); got != "/usr/sbin/nologin" {
+	fileExists = func(p string) bool { return p == nologinPath }
+	if got := (Platform{Family: FamilyRHEL}).NologinShell(); got != nologinPath {
 		t.Errorf("rhel fallback nologin = %q, want /usr/sbin/nologin", got)
 	}
 
 	// When neither exists, return the family's preferred path anyway.
 	fileExists = func(string) bool { return false }
-	if got := (Platform{Family: FamilyDebian}).NologinShell(); got != "/usr/sbin/nologin" {
+	if got := (Platform{Family: FamilyDebian}).NologinShell(); got != nologinPath {
 		t.Errorf("debian none-exist nologin = %q, want /usr/sbin/nologin", got)
 	}
 }

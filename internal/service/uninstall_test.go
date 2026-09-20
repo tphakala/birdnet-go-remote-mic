@@ -28,7 +28,7 @@ func TestUninstallKeepsData(t *testing.T) {
 		"stop remote-mic.service",
 		"disable remote-mic.service",
 		"rm /etc/systemd/system/remote-mic.service",
-		"reload",
+		evReload,
 	})
 }
 
@@ -42,7 +42,7 @@ func TestUninstallPurge(t *testing.T) {
 		"stop remote-mic.service",
 		"disable remote-mic.service",
 		"rm /etc/systemd/system/remote-mic.service",
-		"reload",
+		evReload,
 		"rm /usr/local/bin/remote-mic",
 		"rmall /etc/remote-mic",
 		"rmall /var/lib/remote-mic",

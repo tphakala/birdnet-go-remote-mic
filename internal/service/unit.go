@@ -63,7 +63,7 @@ func Render(s ServiceSpec) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := unitTmpl.Execute(&buf, unitData{
 		User:       s.User,
-		Group:      s.Group,
+		Group:      s.User, // the service user's primary group takes its name
 		BinPath:    s.BinPath,
 		ConfigPath: s.ConfigPath,
 		ConfigDir:  s.ConfigDir(),
