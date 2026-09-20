@@ -7,17 +7,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/github/sponsors/tphakala?logo=githubsponsors&color=ea4aaa&label=Sponsor)](https://github.com/sponsors/tphakala)
 
-**A standalone network microphone for [BirdNET-Go](https://github.com/tphakala/birdnet-go).**
-One pure-Go binary does the whole job: it captures audio from local capture
-hardware, encodes it (Opus for birdsong, raw PCM for ultrasonic recording), and
-publishes it as a standard RTSP/RTP stream on your LAN. BirdNET-Go discovers it
-automatically over mDNS and pulls the stream with its native ingest client.
+**Stream a local microphone to [BirdNET-Go](https://github.com/tphakala/birdnet-go)
+over your network.** One pure-Go binary captures audio from a microphone
+attached to a small Linux host, encodes it (Opus for birdsong, raw PCM for
+ultrasonic recording), and publishes it as a standard RTSP/RTP stream. Point
+BirdNET-Go at that stream and it ingests the audio like any other RTSP source.
 
 There is nothing else to run: no ffmpeg, no separate media server, no glue
 scripts. Install the binary, enable a capture device from the built-in web UI,
-and BirdNET-Go starts listening. It is happy on a Raspberry Pi Zero 2 W (arm64)
-or an older 32-bit Pi (arm), the same class of hardware BirdNET-Go itself runs
-on.
+and add the stream's RTSP URL to BirdNET-Go. It runs happily on a Raspberry Pi
+Zero 2 W (arm64) or an older 32-bit Pi (arm), the same class of hardware
+BirdNET-Go itself runs on.
 
 ![The BirdNET-Go Remote Mic dashboard: live per-channel level meters, per-device stream state, and copy-ready RTSP URLs](assets/dashboard.png)
 
@@ -34,8 +34,9 @@ on.
 - **Streams** over a self-implemented RTSP/RTP server, TCP-interleaved by
   default so the audio arrives lossless and firewall-friendly. ffmpeg, VLC, and
   BirdNET-Go's own ingest client all play it.
-- **Announces itself** on the LAN over mDNS / DNS-SD, with a manual host:port
-  fallback for networks where multicast does not cross.
+- **Advertises itself** on the LAN over mDNS / DNS-SD with everything needed to
+  adopt the stream. Automatic discovery on the BirdNET-Go side is still to come,
+  so for now you add the stream to BirdNET-Go by its RTSP URL.
 - **Manages itself** through a built-in HTTPS web UI: enable devices, watch live
   levels, copy RTSP URLs, and set an access token, with no config-file editing.
 
@@ -112,15 +113,17 @@ Access Control card for setting or rotating the shared access token.
 
 Each configured device is advertised as its own mDNS/DNS-SD `_rtsp._tcp`
 instance (so `avahi-browse -r _rtsp._tcp` and `dns-sd -B _rtsp._tcp` see them
-all), with TXT records BirdNET-Go reads to adopt it: `codec`, `rate`, `ch`,
-`path`, `auth` (`token` when an access token is required, else `none`), and a
-`txtvers`. It sends goodbye packets on shutdown so stale entries
+all), with TXT records that carry everything needed to adopt the stream:
+`codec`, `rate`, `ch`, `path`, `auth` (`token` when an access token is required,
+else `none`), and a `txtvers`. It sends goodbye packets on shutdown so stale entries
 clear promptly. When a config save starts, stops, or restarts a device, or a
 hardware-change retry starts one, the whole advertisement is rebuilt, because
 the responder cannot retire a single service. A device that dies mid-run stays
-advertised until the next rebuild (see Multi-device behaviour). Set `discovery.enabled: false` to turn it off; on a network
-where multicast does not cross, add each mic in BirdNET-Go by its `host:port`
-plus path instead.
+advertised until the next rebuild (see Multi-device behaviour). Automatic
+discovery on the BirdNET-Go side is not available yet, so for now you add each
+mic in BirdNET-Go by its `host:port` plus path; the advertisement is already in
+place for when that support lands. Set `discovery.enabled: false` to turn the
+advertisement off.
 
 ## Usage
 
