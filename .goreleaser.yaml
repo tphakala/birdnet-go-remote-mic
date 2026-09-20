@@ -37,12 +37,18 @@ builds:
     ldflags:
       - -s -w -X main.version={{ .Tag }}
     # Linux only: the appliance is an ALSA capture + RTSP server (cmd/remotemic
-    # is //go:build linux). amd64 and arm64 only, per the release scope.
+    # is //go:build linux). amd64, arm64, and 32-bit arm.
     goos:
       - linux
     goarch:
       - amd64
       - arm64
+      - arm
+    # GOARM=6 (ARMv6) matches the Taskfile's build:arm target: a static pure-Go
+    # ARMv6 binary runs on every 32-bit Pi, from the Pi Zero / Zero W / 1 up
+    # through the Pi 4, so a single arm build covers the older devices.
+    goarm:
+      - "6"
 
 archives:
   # e.g. birdnet-go-remote-mic_1.0.0_linux_amd64.tar.gz, containing the
