@@ -153,6 +153,7 @@ type hwResult struct {
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
+	downMalformed    = "malformed"
 	downResolve      = "resolve-failed"
 	downSameHardware = "same-hardware"
 	downOpenFailed   = "open-failed"
@@ -177,11 +178,18 @@ func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 func resolveError(dev *config.Device, err error) (cause, msg string) {
 	var nf *capture.DeviceNotFoundError
 	var amb *capture.AmbiguousDeviceError
+	var bad *capture.BadDeviceError
 	switch {
 	case errors.As(err, &nf):
 		return downNotConnected, fmt.Sprintf("not connected: no device matches %s", dev.Device)
 	case errors.As(err, &amb):
 		return downAmbiguous, fmt.Sprintf("ambiguous: %s matches %d devices (%s); bind it to one of them by port", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
+	case errors.As(err, &bad):
+		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is not a card index
+		// that "can change across reboots"; it is not in any accepted form and can
+		// never open. Report it as malformed so the operator fixes the id rather than
+		// waiting for a reboot to fix an address.
+		return downMalformed, fmt.Sprintf("malformed device id %s: %v; re-add the device to bind it to real hardware", dev.Device, err)
 	default:
 		return downResolve, fmt.Sprintf("cannot resolve %s: %v", dev.Device, err)
 	}
@@ -409,7 +417,13 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	if res.err != nil {
 		var nf *capture.DeviceNotFoundError
 		var amb *capture.AmbiguousDeviceError
-		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) {
+		var bad *capture.BadDeviceError
+		// A malformed id (*BadDeviceError) is refused here rather than falling
+		// through to an open that can only fail: it is not a card index, so it must
+		// not be opened unresolved (the container fallback), and reporting it as
+		// malformed is more useful than a generic open failure mislabelled as a card
+		// index a few lines down.
+		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) || errors.As(res.err, &bad) {
 			cause, msg := resolveError(dev, res.err)
 			title := "Device unavailable"
 			switch cause {
@@ -417,6 +431,8 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 				title = "Device not connected"
 			case downAmbiguous:
 				title = "Device ambiguous"
+			case downMalformed:
+				title = "Invalid device id"
 			}
 			return a.skipDevice(dev, &hw, cause, title, msg)
 		}

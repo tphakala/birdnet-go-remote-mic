@@ -230,6 +230,66 @@ func TestReconcileClaimsResolvedPortIDForBoundTwin(t *testing.T) {
 	}
 }
 
+// TestResolveErrorClassifiesMalformedID pins that a malformed id (one the
+// capture library rejects with *BadDeviceError) is classified as malformed, not
+// lumped in with a card index that "can change across reboots".
+func TestResolveErrorClassifiesMalformedID(t *testing.T) {
+	dev := &config.Device{Name: "typo", Device: "plughw:1,0"}
+	cause, msg := resolveError(dev, &capture.BadDeviceError{Value: dev.Device, Err: errors.New("card number: invalid")})
+	if cause != downMalformed {
+		t.Errorf("cause = %q, want %q", cause, downMalformed)
+	}
+	if !strings.Contains(msg, "malformed") || !strings.Contains(msg, dev.Device) {
+		t.Errorf("msg = %q, want it to name the id and call it malformed", msg)
+	}
+}
+
+// TestReconcileSkipsMalformedID pins that a malformed id is refused up front with
+// an Invalid device id condition and never reaches an open, rather than falling
+// through to an open that can only fail (mislabelled as a card index on the way).
+func TestReconcileSkipsMalformedID(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	// The library rejects an id in no accepted form with *BadDeviceError; inject
+	// that directly so the test does not depend on the fake host's grammar.
+	app.resolve = func(id string) (audio.Hardware, error) {
+		return audio.Hardware{}, &capture.BadDeviceError{Value: id, Err: errors.New("card number: invalid")}
+	}
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("typo", "plughw:1,0", "/t", 48000)}})
+
+	rt := app.devices["typo"]
+	if rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "malformed") {
+		t.Fatalf("typo = %s %q, want skipped as malformed", rt.currentState(), rt.err)
+	}
+	if opened(log, "typo") {
+		t.Errorf("a malformed id was opened: %v", log.snapshot())
+	}
+	act := applianceCenter(t, app).Active()
+	if len(act) != 1 || act[0].Title != "Invalid device id" {
+		t.Errorf("active = %+v, want one Invalid device id condition for typo", act)
+	}
+}
+
+// TestMarkFailedClearsStaleAddress pins that a device whose pump dies drops its
+// last-known address: the kernel can reassign that card index to another device
+// before the entry is retried, so advertising the stale hw:N,D would point the
+// operator at the wrong hardware.
+func TestMarkFailedClearsStaleAddress(t *testing.T) {
+	rt := &deviceRuntime{hwAddr: addrHW3}
+	rt.markFailed(errors.New("EIO"))
+	rt.mu.Lock()
+	addr, state := rt.hwAddr, rt.state
+	rt.mu.Unlock()
+	if state != mgmtserver.StateFailed {
+		t.Errorf("state = %s, want failed", state)
+	}
+	if addr != "" {
+		t.Errorf("hwAddr = %q, want cleared after markFailed", addr)
+	}
+}
+
 // TestReconcileRefusesSecondEntryForSameHardware pins that two entries naming
 // one physical device through different ids (a stable id and a card index) do
 // not both try to open it: the second is refused with the owner's name.
