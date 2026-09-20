@@ -1,4 +1,7 @@
-//go:build unix
+// syscall.Flock and its LOCK_EX/LOCK_NB/EWOULDBLOCK constants are absent on aix
+// and solaris, so carve them out of the unix set. The appliance builds only for
+// linux; this keeps runlock buildable and vettable on the other unix platforms.
+//go:build unix && !aix && !solaris
 
 // Package runlock marks a running appliance with an advisory lock on a file
 // beside its config, and publishes where that appliance's management API
@@ -18,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -45,9 +49,48 @@ type Lock struct {
 	f *os.File
 }
 
-// PathFor returns the lock file path for the config file at cfgPath.
+// PathFor returns the lock file path for the config file at cfgPath. It resolves
+// symlinks so a config reached through a symlink and through its target map to
+// one lock file, rather than two locks that would each report no appliance
+// running and let a token command edit the file under a live appliance.
+//
+// When the config file does not exist yet (a first-run token command that will
+// create it), its own symlinks cannot be resolved, so the directory is resolved
+// instead and the base name appended: two spellings of a not-yet-created config
+// that share a resolved directory still take one lock. If the base is itself a
+// dangling symlink (its target not created yet), the link is followed one hop so
+// the link and its future target still converge on one lock. Only when the
+// directory cannot be resolved is the literal path used.
 func PathFor(cfgPath string) string {
-	return cfgPath + ".lock"
+	if resolved, err := filepath.EvalSymlinks(cfgPath); err == nil {
+		return resolved + ".lock"
+	}
+	dir, base := filepath.Split(cfgPath)
+	if base == "" {
+		return cfgPath + ".lock"
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return cfgPath + ".lock"
+	}
+	full := filepath.Join(resolvedDir, base)
+	// A dangling final symlink (its target not created yet) fails the
+	// EvalSymlinks above; follow it one hop and derive the lock beside the
+	// target's own resolved directory, so the link and its future target converge
+	// on one lock exactly as PathFor(target) would, even when the target is
+	// absolute or its directory is itself a symlink.
+	if target, err := os.Readlink(full); err == nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(resolvedDir, target)
+		}
+		if tDir, tBase := filepath.Split(target); tBase != "" {
+			if resolvedTDir, err := filepath.EvalSymlinks(tDir); err == nil {
+				return filepath.Join(resolvedTDir, tBase) + ".lock"
+			}
+		}
+		return filepath.Clean(target) + ".lock"
+	}
+	return full + ".lock"
 }
 
 // TryAcquire takes the lock at path without waiting, creating the file (0600)

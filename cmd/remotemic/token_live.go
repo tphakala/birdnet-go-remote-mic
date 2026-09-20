@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -83,6 +84,11 @@ func dialAddr(bound string) string {
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
 	}
+	// A link-local address carries an IPv6 zone (fe80::1%eth0); its "%" must be
+	// written "%25" once it sits in a URL (RFC 6874), or url.Parse rejects the
+	// whole address as a bad percent-escape. net/http decodes it back before it
+	// dials, so the zone still selects the interface.
+	host = strings.Replace(host, "%", "%25", 1)
 	return net.JoinHostPort(host, port)
 }
 

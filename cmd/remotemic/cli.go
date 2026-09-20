@@ -67,9 +67,6 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		out(stdout, "remote-mic %s\n", version)
 		return 0
-	case "help":
-		usage(stdout)
-		return 0
 	case "devices":
 		return runDevices(args[1:], stdout, stderr)
 	case "token":
@@ -104,19 +101,48 @@ func isHelp(arg string) bool {
 	return arg == "help" || arg == "-h" || arg == "--help"
 }
 
+// usageError marks a command-line usage problem (a bad flag or a stray
+// argument) so toExit maps it to exit code 2, matching an unknown command,
+// rather than the generic 1. printed is true when the flag package has already
+// written the message and usage to stderr (a Parse failure), so toExit does not
+// print it a second time; a usage error raised after a successful parse
+// (printed false) is printed by toExit like any other error.
+type usageError struct {
+	err     error
+	printed bool
+}
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+// parseFailed wraps an error from flag.FlagSet.Parse, which has already reported
+// it to the command's stderr with usage, so toExit exits 2 without repeating it.
+func parseFailed(err error) error { return &usageError{err: err, printed: true} }
+
+// badUsage wraps an argument-validation error raised after a successful parse
+// (the flag package has printed nothing), so toExit prints it and exits 2.
+func badUsage(err error) error { return &usageError{err: err, printed: false} }
+
 // toExit maps a subcommand's error to an exit code, printing it to stderr. A
 // flag.ErrHelp (a -h request) is not an error: the FlagSet already printed its
-// usage, so exit 0.
+// usage, so exit 0. A usageError is command-line misuse and exits 2, matching an
+// unknown command; the flag package's own message is not repeated.
 func toExit(err error, stderr io.Writer) int {
 	switch {
 	case err == nil:
 		return 0
 	case errors.Is(err, flag.ErrHelp):
 		return 0
-	default:
-		out(stderr, "remote-mic: %v\n", err)
-		return 1
 	}
+	var ue *usageError
+	if errors.As(err, &ue) {
+		if !ue.printed {
+			out(stderr, "remote-mic: %v\n", err)
+		}
+		return 2
+	}
+	out(stderr, "remote-mic: %v\n", err)
+	return 1
 }
 
 // usage prints the top-level command summary.
@@ -166,11 +192,8 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	management := fs.Bool("management", true, "serve the management API and web UI (use --management=false to disable)")
 	discovery := fs.Bool("discovery", true, "advertise devices over mDNS (use --discovery=false to disable)")
 	checkFlag := fs.Bool("check", false, "validate the config and configured devices, then exit without serving")
-	if perr := fs.Parse(args); perr != nil {
-		return "", serveOverrides{}, false, perr
-	}
-	if fs.NArg() > 0 {
-		return "", serveOverrides{}, false, fmt.Errorf("unexpected argument(s): %s", strings.Join(fs.Args(), " "))
+	if err := parseNoArgs(fs, args); err != nil {
+		return "", serveOverrides{}, false, err
 	}
 	ov = serveOverrides{
 		listen:     *listen,

@@ -348,7 +348,7 @@ func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
 	if !app.guard.Enabled() {
 		t.Error("reconcile with a token must enable the guard")
 	}
-	if !app.prov.Status().AuthRequired {
+	if !app.prov.authRequired() {
 		t.Error("reconcile with a token must report authRequired")
 	}
 	cfg.Auth.Token = ""
@@ -356,7 +356,7 @@ func TestApplianceReconcileAppliesAuthToken(t *testing.T) {
 	if app.guard.Enabled() {
 		t.Error("reconcile with an empty token must disable the guard")
 	}
-	if app.prov.Status().AuthRequired {
+	if app.prov.authRequired() {
 		t.Error("reconcile with an empty token must report open access")
 	}
 }

@@ -274,7 +274,6 @@ func (p *provider) Status() mgmtserver.ApplianceStatus {
 		Uptime:           time.Since(p.start),
 		RTSPListen:       p.rtspListen,
 		DiscoveryEnabled: p.discovery.Load(),
-		AuthRequired:     p.auth.Load(),
 		DevicesServing:   serving,
 		DevicesTotal:     len(devices),
 		Overrides:        p.overrides,

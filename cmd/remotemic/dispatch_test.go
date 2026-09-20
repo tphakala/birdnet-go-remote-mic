@@ -64,7 +64,7 @@ func TestDispatchImplicitServeWithFlags(t *testing.T) {
 func TestDispatchServeSubcommand(t *testing.T) {
 	var got []string
 	defer stubServe(func(args []string, _ io.Writer) error { got = args; return nil })()
-	dispatch([]string{"serve", flagListen, listenAddr9}, &bytes.Buffer{}, &bytes.Buffer{})
+	dispatch([]string{cmdServe, flagListen, listenAddr9}, &bytes.Buffer{}, &bytes.Buffer{})
 	if len(got) != 2 || got[0] != flagListen {
 		t.Fatalf("serve args = %v", got)
 	}
@@ -82,7 +82,7 @@ func TestDispatchUnknownCommand(t *testing.T) {
 
 func TestDispatchServeErrorExits1(t *testing.T) {
 	defer stubServe(func([]string, io.Writer) error { return errServeStub })()
-	if code := dispatch([]string{"serve"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 1 {
+	if code := dispatch([]string{cmdServe}, &bytes.Buffer{}, &bytes.Buffer{}); code != 1 {
 		t.Fatalf("serve error exit %d, want 1", code)
 	}
 }
@@ -93,6 +93,7 @@ const (
 	cmdDevices = "devices"
 	cmdToken   = "token"
 	cmdHelp    = "help"
+	cmdServe   = "serve"
 )
 
 func TestDispatchDevicesListRoutes(t *testing.T) {
@@ -107,7 +108,7 @@ func TestDispatchDevicesListRoutes(t *testing.T) {
 }
 
 // TestDispatchDevicesUsageErrors asserts a bare `devices`, an unknown action,
-// and a stray argument to `devices list` exit 2 (usage) or 1 without listing.
+// and a stray argument to `devices list` all exit 2 (usage) without listing.
 func TestDispatchDevicesUsageErrors(t *testing.T) {
 	var called bool
 	defer stubListDevices(func(io.Writer) error { called = true; return nil })()
@@ -117,7 +118,7 @@ func TestDispatchDevicesUsageErrors(t *testing.T) {
 	}{
 		{[]string{cmdDevices}, 2},
 		{[]string{cmdDevices, "show"}, 2},
-		{[]string{cmdDevices, "list", "extra"}, 1},
+		{[]string{cmdDevices, "list", "extra"}, 2},
 	} {
 		if code := dispatch(tc.args, &bytes.Buffer{}, &bytes.Buffer{}); code != tc.code {
 			t.Errorf("%v: exit %d, want %d", tc.args, code, tc.code)
@@ -125,6 +126,44 @@ func TestDispatchDevicesUsageErrors(t *testing.T) {
 	}
 	if called {
 		t.Fatal("a usage error still listed devices")
+	}
+}
+
+// TestDispatchBadFlagExits2Once asserts an unknown flag is a usage error (exit
+// 2, like an unknown command) and that the flag package's message is not printed
+// a second time by toExit.
+func TestDispatchBadFlagExits2Once(t *testing.T) {
+	var errb bytes.Buffer
+	if code := dispatch([]string{cmdToken, "get", "--nonexistent"}, &bytes.Buffer{}, &errb); code != 2 {
+		t.Errorf("bad flag exit %d, want 2", code)
+	}
+	if n := strings.Count(errb.String(), "not defined"); n != 1 {
+		t.Errorf("flag error printed %d times, want 1:\n%s", n, errb.String())
+	}
+}
+
+// TestDispatchSubcommandHelpExits0 pins the wrapped-ErrHelp path: a subcommand
+// -h flows fs.Parse -> flag.ErrHelp -> parseFailed (which wraps ErrHelp in a
+// usageError) -> toExit, which must still exit 0 because it checks
+// errors.Is(err, flag.ErrHelp) before the usageError branch.
+func TestDispatchSubcommandHelpExits0(t *testing.T) {
+	for _, args := range [][]string{
+		{cmdToken, "get", "-h"},
+		{cmdToken, "generate", "-h"},
+	} {
+		var out, errb bytes.Buffer
+		if code := dispatch(args, &out, &errb); code != 0 {
+			t.Errorf("%v: exit %d stderr %q, want 0", args, code, errb.String())
+		}
+	}
+}
+
+// TestDispatchServeUsageErrorExits2 asserts a bad serve flag is a usage error
+// (exit 2), matching the token and devices usage paths, and never reaches run().
+func TestDispatchServeUsageErrorExits2(t *testing.T) {
+	var errb bytes.Buffer
+	if code := dispatch([]string{cmdServe, "--nonexistent-flag"}, &bytes.Buffer{}, &errb); code != 2 {
+		t.Errorf("serve bad flag exit %d, want 2", code)
 	}
 }
 

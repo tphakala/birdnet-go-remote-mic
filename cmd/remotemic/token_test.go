@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -199,8 +200,8 @@ func TestTokenGeneratePreservesDevices(t *testing.T) {
 
 func TestTokenGenerateRejectsPositional(t *testing.T) {
 	path := tempConfig(t)
-	if code, _, _ := runCLI("token", "generate", flagConfig, path, "stray"); code != 1 {
-		t.Fatalf("exit %d, want 1", code)
+	if code, _, _ := runCLI("token", "generate", flagConfig, path, "stray"); code != 2 {
+		t.Fatalf("exit %d, want 2 (usage)", code)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("config written despite rejected args (stat err = %v)", err)
@@ -228,11 +229,60 @@ func TestTokenSetRejectsPositionalToken(t *testing.T) {
 	// A valid token on stdin, so only the positional guard can stop the write.
 	stubStdin(t, tokenNew+"\n", false)
 	code, _, errOut := runCLI("token", "set", flagConfig, path, tokenNew)
-	if code != 1 || !strings.Contains(errOut, "shell history") {
-		t.Fatalf("exit %d stderr %q, want a refusal pointing at stdin", code, errOut)
+	if code != 2 || !strings.Contains(errOut, "shell history") {
+		t.Fatalf("exit %d stderr %q, want exit 2 and a refusal pointing at stdin", code, errOut)
 	}
 	if got := loadToken(t, path); got != tokenOld {
 		t.Fatalf("token changed to %q", got)
+	}
+}
+
+// TestTokenSetReturnsOnFirstLine proves token set reads only the first line of a
+// piped token and returns on the newline, rather than consuming stdin to EOF. A
+// reader that yields the line then blocks forever (an interactive ssh pipe held
+// open after Enter) would hang a read-to-EOF; the deadline turns that into a
+// failure instead of a hang.
+func TestTokenSetReturnsOnFirstLine(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+
+	pr, pw := io.Pipe()
+	// Deliver the token line and then leave the writer open (never EOF).
+	go func() { _, _ = io.WriteString(pw, tokenNew+"\n") }()
+
+	prevIn, prevTTY := stdin, stdinIsTerminal
+	stdin = pr
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdin, stdinIsTerminal = prevIn, prevTTY; _ = pr.Close() })
+
+	done := make(chan int, 1)
+	go func() { done <- runToken([]string{"set", flagConfig, path}, io.Discard, io.Discard) }()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("token set exit %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("token set blocked on stdin; it must return on the first line, not wait for EOF")
+	}
+	if got := loadToken(t, path); got != tokenNew {
+		t.Fatalf("token = %q, want %q", got, tokenNew)
+	}
+}
+
+// TestTokenSetFromPipeNoTrailingNewline sets a token piped without a trailing
+// newline (for example `printf %s tok | remote-mic token set`), which reaches
+// EOF carrying data and no delimiter; the first-line read must still accept it.
+func TestTokenSetFromPipeNoTrailingNewline(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubStdin(t, tokenNew, false) // no trailing newline
+	code, _, errOut := runCLI("token", "set", flagConfig, path)
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q, want 0", code, errOut)
+	}
+	if got := loadToken(t, path); got != tokenNew {
+		t.Fatalf("token = %q, want %q", got, tokenNew)
 	}
 }
 
@@ -777,6 +827,9 @@ func TestDialAddr(t *testing.T) {
 		"10.0.0.5:9443":  "10.0.0.5:9443",
 		"[::1]:9443":     "[::1]:9443",
 		"127.0.0.1:9000": "127.0.0.1:9000",
+		// A link-local address keeps its zone, with the "%" percent-escaped so the
+		// resulting URL parses (RFC 6874).
+		"[fe80::1%eth0]:9443": "[fe80::1%25eth0]:9443",
 	} {
 		if got := dialAddr(in); got != want {
 			t.Errorf("dialAddr(%q) = %q, want %q", in, got, want)
