@@ -45,12 +45,14 @@ func TestSystemdQuery(t *testing.T) {
 		want    bool
 		wantErr bool
 	}{
-		"enabled":  {"enabled\n", errors.New("exit 0 not guaranteed"), true, true, false},
-		"disabled": {"disabled\n", errors.New("exit 1"), true, false, false},
-		"static":   {"static\n", nil, true, true, false},
-		"active":   {"active\n", nil, false, true, false},
-		"inactive": {"inactive\n", errors.New("exit 3"), false, false, false},
-		"notfound": {"", errors.New("Failed to get unit file state: No such file"), true, false, true},
+		"enabled":          {"enabled\n", errors.New("exit 0 not guaranteed"), true, true, false},
+		"disabled":         {"disabled\n", errors.New("exit 1"), true, false, false},
+		"static":           {"static\n", nil, true, true, false},
+		"active":           {"active\n", nil, false, true, false},
+		"reloading":        {"reloading\n", nil, false, true, false},
+		"inactive":         {"inactive\n", errors.New("exit 3"), false, false, false},
+		"not-found word":   {"not-found\n", errors.New("exit 4"), true, false, false},
+		"broken systemctl": {"", errors.New("exec: systemctl not found"), true, false, true},
 	}
 	for name, c := range states {
 		t.Run(name, func(t *testing.T) {

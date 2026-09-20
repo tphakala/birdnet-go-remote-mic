@@ -50,9 +50,15 @@ func runService(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	escalated, rest := stripGuard(args)
+	if len(rest) == 0 {
+		// The input was only the escalation guard flag (e.g. a hand-run
+		// `service --internal-escalated`); there is no subcommand to route.
+		serviceUsage(stderr)
+		return 2
+	}
 	switch rest[0] {
 	case "install":
-		return toExit(runServiceInstall(rest[1:], escalated, stdout, stderr), stderr)
+		return toExit(runServiceInstall(rest[1:], escalated, stderr), stderr)
 	case "uninstall":
 		return toExit(runServiceUninstall(rest[1:], escalated, stderr), stderr)
 	case "status":
@@ -106,14 +112,18 @@ func ensureRoot(escalated bool) error {
 	}
 	argv := append([]string{sudo, self}, os.Args[1:]...)
 	argv = append(argv, escalateGuard)
-	// On success syscall.Exec replaces this process, so this does not return.
-	return execSelf(sudo, argv, os.Environ())
+	// On success syscall.Exec replaces this process, so this does not return;
+	// only a failed exec falls through, and it carries context.
+	if err := execSelf(sudo, argv, os.Environ()); err != nil {
+		return fmt.Errorf("re-exec under sudo: %w", err)
+	}
+	return nil
 }
 
 // runServiceInstall parses install flags, escalates to root, and installs the
 // service. Flags are parsed before escalation so -h and a bad flag report
 // without a sudo prompt.
-func runServiceInstall(args []string, escalated bool, stdout, stderr io.Writer) error {
+func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -138,9 +148,9 @@ func runServiceInstall(args []string, escalated bool, stdout, stderr io.Writer) 
 		return err
 	}
 	if *noStart {
-		out(stdout, "installed and enabled remote-mic.service (not started; start with: systemctl start remote-mic)\n")
+		out(stderr, "installed and enabled remote-mic.service (not started; start with: systemctl start remote-mic)\n")
 	} else {
-		out(stdout, "installed, enabled, and started remote-mic.service\n")
+		out(stderr, "installed, enabled, and started remote-mic.service\n")
 	}
 	return nil
 }
@@ -195,11 +205,20 @@ func runServiceStatus(args []string, stdout, stderr io.Writer) error {
 // for the default unit and prints a compact summary.
 func runServiceStatusDefault(w io.Writer) error {
 	sd := service.NewSystemd()
-	enabled, _ := sd.IsEnabled(service.DefaultUnitName)
-	active, _ := sd.IsActive(service.DefaultUnitName)
 	out(w, "unit:    %s\n", service.DefaultUnitName)
-	out(w, "enabled: %t\n", enabled)
-	out(w, "active:  %t\n", active)
+	// Surface a genuine systemctl failure as "unknown" rather than folding it
+	// into a definitive "false", which would be indistinguishable from an
+	// installed-but-disabled or stopped unit.
+	if enabled, err := sd.IsEnabled(service.DefaultUnitName); err != nil {
+		out(w, "enabled: unknown (%v)\n", err)
+	} else {
+		out(w, "enabled: %t\n", enabled)
+	}
+	if active, err := sd.IsActive(service.DefaultUnitName); err != nil {
+		out(w, "active:  unknown (%v)\n", err)
+	} else {
+		out(w, "active:  %t\n", active)
+	}
 	return nil
 }
 

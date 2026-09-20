@@ -5,6 +5,7 @@ package service
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -104,16 +105,68 @@ func TestInstallUserExistsSkipsCreation(t *testing.T) {
 	if err := testInstaller(&events, init, &userThere).Install(false); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
+	var groupadd bool
 	for _, e := range events {
-		if e == "run groupadd --system --force remote-mic" ||
-			e == "run usermod --append --groups audio remote-mic" {
-			t.Errorf("existing user should not trigger creation: saw %q", e)
+		switch e {
+		case "run groupadd --system --force remote-mic":
+			groupadd = true
+		case "run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
+			"run usermod --append --groups audio remote-mic":
+			t.Errorf("existing user should not trigger user creation: saw %q", e)
 		}
+	}
+	// The group is ensured even for a pre-existing user, so the unit's Group=
+	// always resolves.
+	if !groupadd {
+		t.Error("groupadd must run even when the user exists, to ensure the group")
 	}
 	// now=false enables without starting.
 	last := events[len(events)-1]
 	if last != "enable remote-mic.service" {
 		t.Errorf("last event = %q, want %q", last, "enable remote-mic.service")
+	}
+}
+
+// TestChownTreeStaysShallow proves the TOCTOU fix: chownTree touches the root
+// and its immediate flat files but does not descend into a subdirectory.
+func TestChownTreeStaysShallow(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "inside"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := lchown
+	t.Cleanup(func() { lchown = orig })
+	var visited []string
+	lchown = func(p string, _, _ int) error {
+		visited = append(visited, p)
+		return nil
+	}
+	if err := chownTree(root, 990, 990); err != nil {
+		t.Fatalf("chownTree: %v", err)
+	}
+	for _, p := range visited {
+		if p == filepath.Join(sub, "inside") {
+			t.Errorf("chownTree descended into a subdirectory: touched %q", p)
+		}
+	}
+	// It must still touch the root and its immediate file.
+	wantTouched := map[string]bool{root: false, filepath.Join(root, "config.yaml"): false}
+	for _, p := range visited {
+		if _, ok := wantTouched[p]; ok {
+			wantTouched[p] = true
+		}
+	}
+	for p, touched := range wantTouched {
+		if !touched {
+			t.Errorf("chownTree did not touch %q", p)
+		}
 	}
 }
 

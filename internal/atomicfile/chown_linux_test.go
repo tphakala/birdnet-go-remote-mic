@@ -32,6 +32,37 @@ func TestWritePreservesOwner(t *testing.T) {
 	}
 }
 
+// TestPreserveOwnerChownsToTarget observes the mechanism a same-uid rewrite
+// cannot reveal through the resulting file: preserveOwner stats the target and
+// chowns the temp file to its uid/gid. Deleting the preserveOwner call makes
+// this fail (chownFile is never invoked).
+func TestPreserveOwnerChownsToTarget(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f")
+	if err := Write(p, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := ownerOf(t, p)
+
+	orig := chownFile
+	t.Cleanup(func() { chownFile = orig })
+	var called bool
+	var gotUID, gotGID int
+	chownFile = func(f *os.File, uid, gid int) error {
+		called, gotUID, gotGID = true, uid, gid
+		return f.Chown(uid, gid)
+	}
+	if err := Write(p, []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("preserveOwner did not chown the temp file on a rewrite")
+	}
+	if uint32(gotUID) != want[0] || uint32(gotGID) != want[1] {
+		t.Errorf("chown(%d,%d), want target owner (%d,%d)", gotUID, gotGID, want[0], want[1])
+	}
+}
+
 func ownerOf(t *testing.T, p string) [2]uint32 {
 	t.Helper()
 	fi, err := os.Stat(p)

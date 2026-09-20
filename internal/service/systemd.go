@@ -19,10 +19,6 @@ type InitSystem interface {
 	Disable(unit string) error
 	// Stop stops a running unit.
 	Stop(unit string) error
-	// IsEnabled reports whether a unit is enabled at boot.
-	IsEnabled(unit string) (bool, error)
-	// IsActive reports whether a unit is currently running.
-	IsActive(unit string) (bool, error)
 }
 
 // Systemd drives systemctl through the Runner seam.
@@ -75,13 +71,16 @@ func (s *Systemd) IsActive(unit string) (bool, error) {
 	return s.query(false, "is-active", unit)
 }
 
-// enabledStates and activeStates are the systemctl state words that count as a
-// yes for is-enabled and is-active. systemctl exits nonzero for a "no" state
-// (disabled, inactive) while still printing the word, so the boolean comes from
-// the word, not the exit code.
+// The systemctl state words that count as a yes and a no for is-enabled and
+// is-active. systemctl exits nonzero for a "no" state (disabled, inactive) while
+// still printing the word, so the boolean comes from the word, not the exit
+// code. "reloading" is a yes for is-active: a unit reloading its config is still
+// running. Hoisted to package scope so query allocates nothing per call.
 var (
-	enabledStates = map[string]bool{"enabled": true, "enabled-runtime": true, "static": true, "alias": true, "indirect": true, "generated": true}
-	activeStates  = map[string]bool{"active": true}
+	enabledStates   = map[string]bool{"enabled": true, "enabled-runtime": true, "static": true, "alias": true, "indirect": true, "generated": true}
+	enabledNoStates = map[string]bool{"disabled": true, "masked": true, "masked-runtime": true, "linked": true, "linked-runtime": true, "transient": true, "bad": true, "not-found": true}
+	activeStates    = map[string]bool{"active": true, "reloading": true}
+	activeNoStates  = map[string]bool{"inactive": true, "failed": true, "activating": true, "deactivating": true, "maintenance": true, "unknown": true, "not-found": true}
 )
 
 // query runs a systemctl state check and maps its printed word to a boolean. A
@@ -92,11 +91,9 @@ var (
 func (s *Systemd) query(enabled bool, verb, unit string) (bool, error) {
 	out, err := s.Run("systemctl", verb, unit)
 	word := strings.TrimSpace(string(out))
-	yes := activeStates
-	no := map[string]bool{"inactive": true, "failed": true, "activating": true, "deactivating": true, "reloading": true, "maintenance": true}
+	yes, no := activeStates, activeNoStates
 	if enabled {
-		yes = enabledStates
-		no = map[string]bool{"disabled": true, "masked": true, "masked-runtime": true, "linked": true, "linked-runtime": true, "transient": true, "bad": true}
+		yes, no = enabledStates, enabledNoStates
 	}
 	switch {
 	case yes[word]:

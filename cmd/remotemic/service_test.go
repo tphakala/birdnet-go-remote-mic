@@ -19,6 +19,7 @@ const (
 	userBird   = "bird"
 	cmdService = "service"
 	cmdInstall = "install"
+	selfBin    = "/usr/local/bin/remote-mic"
 )
 
 // saveServiceSeams snapshots the package seams the service tests mutate and
@@ -53,7 +54,7 @@ func TestEnsureRootReexecsUnderSudo(t *testing.T) {
 	geteuid = func() int { return 1000 }
 	stdinIsTerminal = func() bool { return true }
 	lookPath = func(string) (string, error) { return sudoPath, nil }
-	osExecutable = func() (string, error) { return "/usr/local/bin/remote-mic", nil }
+	osExecutable = func() (string, error) { return selfBin, nil }
 	os.Args = []string{"remote-mic", cmdService, cmdInstall, flagUser, userBird}
 	var gotArgv0 string
 	var gotArgv []string
@@ -67,7 +68,7 @@ func TestEnsureRootReexecsUnderSudo(t *testing.T) {
 	if gotArgv0 != sudoPath {
 		t.Errorf("argv0 = %q, want /usr/bin/sudo", gotArgv0)
 	}
-	want := []string{sudoPath, "/usr/local/bin/remote-mic", cmdService, cmdInstall, flagUser, userBird, escalateGuard}
+	want := []string{sudoPath, selfBin, cmdService, cmdInstall, flagUser, userBird, escalateGuard}
 	if !reflect.DeepEqual(gotArgv, want) {
 		t.Errorf("argv = %v, want %v", gotArgv, want)
 	}
@@ -127,12 +128,21 @@ func TestDispatchServiceInstall(t *testing.T) {
 		return nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := dispatch([]string{cmdService, cmdInstall, flagUser, userBird, "--no-start"}, &stdout, &stderr)
+	code := dispatch([]string{
+		cmdService, cmdInstall,
+		flagUser, userBird,
+		"--config", "/etc/bird/config.yaml",
+		"--state-dir", "/var/lib/bird",
+		"--bin-path", "/usr/local/bin/bird",
+		"--no-start",
+	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, stderr.String())
 	}
-	if gotSpec.User != userBird {
-		t.Errorf("spec.User = %q, want bird", gotSpec.User)
+	// Every flag must thread into the spec, not just --user.
+	want := service.ServiceSpec{User: userBird, ConfigPath: "/etc/bird/config.yaml", StateDir: "/var/lib/bird", BinPath: "/usr/local/bin/bird"}
+	if gotSpec != want {
+		t.Errorf("spec = %+v, want %+v", gotSpec, want)
 	}
 	if gotStart {
 		t.Error("--no-start should pass start=false")
@@ -180,16 +190,32 @@ func TestDispatchServiceUnknown(t *testing.T) {
 	}
 }
 
+// TestDispatchServiceGuardOnly guards the panic fix: input that is only the
+// hidden escalation guard (no subcommand) must print usage and exit 2, not
+// panic on an empty argument slice after the guard is stripped.
+func TestDispatchServiceGuardOnly(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := dispatch([]string{cmdService, escalateGuard}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+}
+
 func TestServiceInstallBadFlagNoEscalation(t *testing.T) {
 	saveServiceSeams(t)
 	geteuid = func() int { return 1000 }
+	// Make escalation fully reachable: with a TTY, sudo, and a resolvable self,
+	// ensureRoot WOULD re-exec and hit this fatal if parsing did not fail first.
+	// So the fatal genuinely enforces "parse before escalate".
+	stdinIsTerminal = func() bool { return true }
+	lookPath = func(string) (string, error) { return sudoPath, nil }
+	osExecutable = func() (string, error) { return selfBin, nil }
 	execSelf = func(string, []string, []string) error {
 		t.Fatal("a bad flag must fail at parse, before any sudo re-exec")
 		return nil
 	}
 	var stderr bytes.Buffer
-	// An unknown flag fails at parse, before ensureRoot, so no escalation.
-	if err := runServiceInstall([]string{"--nope"}, false, &stderr, &stderr); err == nil {
+	if err := runServiceInstall([]string{"--nope"}, false, &stderr); err == nil {
 		t.Fatal("bad flag = nil error, want usage error")
 	}
 }

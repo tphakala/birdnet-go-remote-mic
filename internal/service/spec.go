@@ -9,8 +9,28 @@ package service
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
+	"regexp"
 )
+
+// userNameRe is the standard shadow-utils NAME_REGEX for a system account. It
+// also blocks a name that starts with '-' (which useradd/usermod would reparse
+// as an option) and a '%' (a systemd unit specifier), closing an option- and
+// specifier-injection shape even though install already requires root.
+var userNameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// sharedSystemDirs are directories the installer must never own recursively or
+// remove. The installer chowns the config and state directories (recursively at
+// their root) and --purge deletes them, so pointing --config or --state-dir at
+// one of these would re-home or delete system-wide files. The service's config
+// and state directories must be dedicated subdirectories, not these.
+var sharedSystemDirs = map[string]bool{
+	"/": true, "/etc": true, "/var": true, "/var/lib": true, "/var/log": true,
+	"/var/run": true, "/var/cache": true, "/run": true, "/usr": true,
+	"/usr/local": true, "/usr/bin": true, "/usr/sbin": true, "/usr/lib": true,
+	"/bin": true, "/sbin": true, "/lib": true, "/lib64": true, "/boot": true,
+	"/opt": true, "/home": true, "/root": true, "/tmp": true, "/dev": true,
+	"/proc": true, "/sys": true, "/mnt": true, "/media": true, "/srv": true,
+}
 
 // Defaults for a system-wide install. The binary is copied to a stable path so
 // the unit's ExecStart never points at a download location that may move; the
@@ -41,8 +61,7 @@ type ServiceSpec struct {
 }
 
 // withDefaults returns a copy of s with empty fields filled from the Default*
-// constants. Group mirrors User when unset, matching the user-plus-group a
-// system account gets.
+// constants.
 func (s ServiceSpec) withDefaults() ServiceSpec {
 	if s.User == "" {
 		s.User = DefaultUser
@@ -66,13 +85,14 @@ func (s ServiceSpec) ConfigDir() string { return filepath.Dir(s.ConfigPath) }
 // UnitPath is the absolute path the unit file is written to.
 func (s ServiceSpec) UnitPath() string { return filepath.Join(unitDir, DefaultUnitName) }
 
-// Validate rejects a spec that would render an unusable unit: a non-absolute
-// path (systemd requires absolute ExecStart and directory paths), an empty or
-// whitespace-bearing user name, or a unit name that is not a bare
-// "<name>.service" file. It assumes defaults have already been applied.
+// Validate rejects a spec that would render an unusable unit or damage the
+// host: an invalid system user name, a non-absolute path (systemd requires
+// absolute ExecStart and directory paths), or a config or state directory that
+// is a shared system location the installer would chown recursively and --purge
+// would delete. It assumes defaults have already been applied.
 func (s ServiceSpec) Validate() error {
-	if strings.TrimSpace(s.User) == "" || strings.ContainsAny(s.User, " \t\n") {
-		return fmt.Errorf("service: invalid user name %q", s.User)
+	if !userNameRe.MatchString(s.User) {
+		return fmt.Errorf("service: invalid user name %q (want %s)", s.User, userNameRe)
 	}
 	for label, p := range map[string]string{
 		"bin path":    s.BinPath,
@@ -83,5 +103,20 @@ func (s ServiceSpec) Validate() error {
 			return fmt.Errorf("service: %s must be absolute, got %q", label, p)
 		}
 	}
+	for label, dir := range map[string]string{
+		"config directory": s.ConfigDir(),
+		"state directory":  s.StateDir,
+	} {
+		if isSharedSystemDir(dir) {
+			return fmt.Errorf("service: %s %q is a shared system directory; use a dedicated subdirectory such as %s or %s",
+				label, filepath.Clean(dir), DefaultConfigPath, DefaultStateDir)
+		}
+	}
 	return nil
+}
+
+// isSharedSystemDir reports whether dir is the filesystem root or a well-known
+// shared system directory that must never be chowned recursively or removed.
+func isSharedSystemDir(dir string) bool {
+	return sharedSystemDirs[filepath.Clean(dir)]
 }

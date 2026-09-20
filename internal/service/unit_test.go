@@ -7,13 +7,22 @@ import (
 	"testing"
 )
 
-// wantLines asserts every expected line is present verbatim in the rendered
-// unit, so a template change that drops or mangles a critical directive fails.
+// wantLines asserts every expected line appears as a COMPLETE line in the
+// rendered unit (split on newlines) and that no unexpanded template placeholder
+// remains, so a regression that merges two directives onto one line or leaves a
+// stray {{...}} fails rather than passing a loose substring match.
 func wantLines(t *testing.T, got string, lines ...string) {
 	t.Helper()
+	if strings.Contains(got, "{{") {
+		t.Errorf("rendered unit contains an unexpanded template placeholder:\n%s", got)
+	}
+	have := make(map[string]bool)
+	for _, l := range strings.Split(got, "\n") {
+		have[l] = true
+	}
 	for _, l := range lines {
-		if !strings.Contains(got, l) {
-			t.Errorf("rendered unit missing line %q\n---\n%s", l, got)
+		if !have[l] {
+			t.Errorf("rendered unit missing exact line %q\n---\n%s", l, got)
 		}
 	}
 }
@@ -25,16 +34,22 @@ func TestRenderDefaults(t *testing.T) {
 	}
 	got := string(b)
 	wantLines(t, got,
+		"Type=simple",
 		"User=remote-mic",
 		"Group=remote-mic",
 		"SupplementaryGroups=audio",
+		"After=network-online.target sound.target",
+		"Wants=network-online.target",
 		"Environment=REMOTEMIC_CONFIG=/etc/remote-mic/config.yaml",
 		"ExecStartPre=-/usr/local/bin/remote-mic serve --check --cert-dir=/var/lib/remote-mic",
 		"ExecStart=/usr/local/bin/remote-mic serve --cert-dir=/var/lib/remote-mic",
 		"Restart=on-failure",
+		"RestartSec=5",
 		"WorkingDirectory=/var/lib/remote-mic",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"PrivateTmp=true",
 		"ReadWritePaths=/etc/remote-mic /var/lib/remote-mic",
 		"WantedBy=multi-user.target",
 	)

@@ -33,11 +33,10 @@ func (f Family) String() string {
 	}
 }
 
-// Platform is the detected host identity. ID is the raw os-release ID, kept for
-// operator-facing messages.
+// Platform is the detected host identity. Only the packaging family is kept:
+// it is the sole thing the install path varies on today (the nologin shell).
 type Platform struct {
 	Family Family
-	ID     string
 }
 
 // osReleasePath and fileExists are seams so detection and shell selection are
@@ -88,16 +87,14 @@ func parseOSRelease(r io.Reader) Platform {
 			idLike = strings.ToLower(val)
 		}
 	}
-	p := Platform{ID: id}
 	switch {
 	case debianIDs[id]:
-		p.Family = FamilyDebian
+		return Platform{Family: FamilyDebian}
 	case rhelIDs[id]:
-		p.Family = FamilyRHEL
+		return Platform{Family: FamilyRHEL}
 	default:
-		p.Family = familyFromLike(idLike)
+		return Platform{Family: familyFromLike(idLike)}
 	}
-	return p
 }
 
 // familyFromLike classifies from the space-separated ID_LIKE list, checking

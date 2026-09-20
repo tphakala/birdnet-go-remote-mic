@@ -124,17 +124,23 @@ func (in *Installer) Install(now bool) error {
 	return nil
 }
 
-// ensureUser creates the service group and user if the user does not already
-// exist, and adds the user to the audio group for /dev/snd access when run by
-// hand. An existing user is left untouched (its group memberships and shell are
-// the operator's business). groupadd --force is idempotent, so a group that
-// already exists is not an error.
+// ensureUser makes sure the service group and user exist. The group named after
+// the user is ensured unconditionally (so the unit's Group= always resolves);
+// the user and its audio-group membership are created only when the user does
+// not already exist, leaving a pre-existing account's memberships and shell to
+// the operator. groupadd --force is idempotent, so an existing group is not an
+// error.
 func (in *Installer) ensureUser(s ServiceSpec) error {
-	if in.userExists(s.User) {
-		return nil
-	}
+	// Always ensure a group named after the user exists (groupadd --force is
+	// idempotent), even when the user already exists, so the unit's
+	// Group=<user> always resolves. A pre-existing user whose primary group has
+	// a different name would otherwise fail the unit at start with "Failed to
+	// determine group credentials".
 	if _, err := in.Run("groupadd", "--system", "--force", s.User); err != nil {
 		return fmt.Errorf("service: create group %q: %w", s.User, err)
+	}
+	if in.userExists(s.User) {
+		return nil
 	}
 	if _, err := in.Run("useradd", "--system", "--no-create-home",
 		"--shell", in.Plat.NologinShell(), "--gid", s.User, s.User); err != nil {
@@ -178,15 +184,29 @@ func ensureDir(path string, perm os.FileMode) error {
 	return os.Chmod(path, perm)
 }
 
-// chownTree recursively chowns root and everything under it to uid/gid, using
-// Lchown so a symlink is retargeted rather than followed. It hands over a
-// pre-existing config tree without following a link out of it.
+// chownTree chowns root and its immediate flat-file entries to uid/gid, without
+// descending into subdirectories, using Lchown so a symlink entry is retargeted
+// rather than followed. Staying shallow both matches the flat layout (config,
+// lock, cert, key, pin) and closes the subdirectory-swap TOCTOU noted in the
+// callback.
+// lchown is a seam so chownTree's traversal (which paths it touches, and that it
+// does not descend) is testable without a second uid.
+var lchown = os.Lchown
+
 func chownTree(root string, uid, gid int) error {
-	return filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		return os.Lchown(p, uid, gid)
+		// Do not descend into subdirectories: the config and state dirs hold only
+		// flat files (config, run lock, certificate, key, pin marker), and refusing
+		// to recurse closes a TOCTOU where an unprivileged user swaps a
+		// subdirectory for a symlink between the walk's stat and its read, which
+		// would otherwise let the chown escape to a linked-to tree.
+		if p != root && d.IsDir() {
+			return filepath.SkipDir
+		}
+		return lchown(p, uid, gid)
 	})
 }
 

@@ -28,16 +28,18 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	}
 	tmp := f.Name()
 	defer func() { _ = os.Remove(tmp) }() // no-op once the rename has consumed tmp
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return err
-	}
 	// Preserve the existing file's ownership so a privileged writer (an admin
 	// running a CLI command under sudo) does not silently re-home a
 	// service-user-owned config or certificate to root and lock the service out
 	// of its own files. Best-effort: on a first write there is nothing to match,
-	// and on a filesystem without ownership the chown is moot.
+	// and on a filesystem without ownership the chown is moot. This runs BEFORE
+	// Chmod because a chown clears the setuid/setgid bits for a non-root caller,
+	// which would silently strip a mode the caller requested via perm.
 	preserveOwner(f, target)
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
