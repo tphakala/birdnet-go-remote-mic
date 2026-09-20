@@ -64,6 +64,7 @@ remote-mic                  # capture and serve (the default; same as `serve`)
 remote-mic devices list     # enumerate capture devices (id, address, label)
 remote-mic token generate   # create the access token, save it, print it
 remote-mic token get        # print the current access token
+remote-mic service install  # install and enable the systemd service (run at boot)
 remote-mic version
 ```
 
@@ -73,6 +74,36 @@ remote-mic version
 then to `config.yaml` in the working directory. Set `REMOTEMIC_CONFIG` in the
 service unit and in your shell profile on the appliance, and every command
 finds the same file without `--config`.
+
+### Run at boot (systemd service)
+
+To run the appliance at boot, install it as a systemd service:
+
+```bash
+sudo remote-mic service install
+```
+
+This creates a dedicated `remote-mic` system user (added to the `audio` group
+for device access), copies the binary to `/usr/local/bin/remote-mic`, writes and
+enables `/etc/systemd/system/remote-mic.service`, and starts it. The service
+reads its config from `/etc/remote-mic/config.yaml` and keeps its management
+certificate under `/var/lib/remote-mic`, both owned by the service user. There
+is no config file on a fresh install, so open the web UI and enable a device;
+the zero-config first start writes the file for you.
+
+Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
+your password for the privileged steps. Flags override the defaults (`--user`,
+`--config`, `--state-dir`, `--bin-path`, and `--no-start` to enable without
+starting). Manage it afterwards:
+
+```bash
+remote-mic service status                    # enabled at boot? running now?
+sudo remote-mic service uninstall            # stop, disable, remove the unit (keeps config)
+sudo remote-mic service uninstall --purge    # also remove config, state, binary, and user
+```
+
+The installer targets Debian-family systems (Debian, Ubuntu, Raspberry Pi OS)
+and works on any systemd host.
 
 ### Zero-config first start
 
