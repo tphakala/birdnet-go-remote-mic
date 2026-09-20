@@ -1394,7 +1394,7 @@ export class DashboardView {
   private handleCopyToken(btn: HTMLElement): void {
     const token = getToken();
     if (!token) {
-      showToast("This browser does not hold the access token. Run remotemic token get on the appliance.", "warn");
+      showToast("This browser does not hold the access token. Run remote-mic token get on the appliance.", "warn");
       return;
     }
     if (!navigator.clipboard) {

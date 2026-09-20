@@ -29,7 +29,7 @@ func TestDispatchVersion(t *testing.T) {
 		if code := dispatch([]string{arg}, &out, &errb); code != 0 {
 			t.Errorf("%q: exit %d, want 0", arg, code)
 		}
-		if !strings.Contains(out.String(), "remotemic") {
+		if !strings.Contains(out.String(), "remote-mic") {
 			t.Errorf("%q: version not printed: %q", arg, out.String())
 		}
 	}
@@ -151,7 +151,7 @@ func TestDispatchVersionFlagAnyPosition(t *testing.T) {
 	})()
 	var out bytes.Buffer
 	dispatch([]string{flagConfig, cfgPathX, "-version"}, &out, &bytes.Buffer{})
-	if !strings.Contains(out.String(), "remotemic") {
+	if !strings.Contains(out.String(), "remote-mic") {
 		t.Errorf("-config x -version did not print version: %q", out.String())
 	}
 }

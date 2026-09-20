@@ -73,10 +73,10 @@ func tokenUsage(w io.Writer) {
 (Bearer), and the RTSP stream (Digest password, any username).
 
 Usage:
-  remotemic token get                 print the current token
-  remotemic token generate [--force]  create a random token (--force replaces one)
-  remotemic token set                 set a token read from stdin
-  remotemic token clear [--yes]       remove the token (open access)
+  remote-mic token get                 print the current token
+  remote-mic token generate [--force]  create a random token (--force replaces one)
+  remote-mic token set                 set a token read from stdin
+  remote-mic token clear [--yes]       remove the token (open access)
 
 When the appliance is running with its management API, generate, set, and clear
 apply the change through it, so it takes effect immediately. Running without that
@@ -92,7 +92,7 @@ func newTokenFlags(name, synopsis, summary string, stderr io.Writer) (fs *flag.F
 	fs = flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		out(stderr, "Usage: remotemic %s\n\n%s\n\nFlags:\n", synopsis, summary)
+		out(stderr, "Usage: remote-mic %s\n\n%s\n\nFlags:\n", synopsis, summary)
 		fs.PrintDefaults()
 	}
 	return fs, configFlag(fs)
@@ -110,7 +110,7 @@ func parseNoArgs(fs *flag.FlagSet, args []string) error {
 }
 
 // runTokenGet prints the access token stored in the config file. The bare
-// token goes to stdout so `TOKEN=$(remotemic token get)` works. A missing
+// token goes to stdout so `TOKEN=$(remote-mic token get)` works. A missing
 // config or an unset token is an error with no stdout, so a script never reads
 // empty output as a token. The file is authoritative even while the appliance
 // runs: the management API persists a token change before it enforces it.
@@ -128,7 +128,7 @@ func runTokenGet(args []string, stdout, stderr io.Writer) error {
 		return withPermHint(err)
 	}
 	if cfg.Auth.Token == "" {
-		return fmt.Errorf("no access token is set in %s (the appliance is open); create one with `remotemic token generate`", *cfgPath)
+		return fmt.Errorf("no access token is set in %s (the appliance is open); create one with `remote-mic token generate`", *cfgPath)
 	}
 	out(stdout, "%s\n", cfg.Auth.Token)
 	return nil
@@ -152,7 +152,7 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
 	}
 	res, err := changeToken(*cfgPath, token, func(cur string) error {
 		if cur != "" && !*force {
-			return fmt.Errorf("an access token is already set in %s; show it with `remotemic token get`, or re-run with --force to replace it", *cfgPath)
+			return fmt.Errorf("an access token is already set in %s; show it with `remote-mic token get`, or re-run with --force to replace it", *cfgPath)
 		}
 		return nil
 	})
@@ -181,7 +181,7 @@ func runTokenSet(args []string, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remotemic token set < token.txt")
+		return errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt")
 	}
 	token, err := readNewToken(stderr)
 	if err != nil {
@@ -231,7 +231,7 @@ func readNewToken(stderr io.Writer) (string, error) {
 	}
 	token := strings.TrimSpace(string(first))
 	if token == "" {
-		return "", errors.New("no token entered; to remove the token use `remotemic token clear`")
+		return "", errors.New("no token entered; to remove the token use `remote-mic token clear`")
 	}
 	return token, nil
 }
@@ -387,7 +387,7 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 	defer cancel()
 	restart, err := patchLiveToken(ctx, st, cfg.Auth.Token, token)
 	if err != nil {
-		return res, fmt.Errorf("the appliance (pid %d) is running but the change could not be confirmed through its management API: %w; check the current token with `remotemic token get`", st.PID, err)
+		return res, fmt.Errorf("the appliance (pid %d) is running but the change could not be confirmed through its management API: %w; check the current token with `remote-mic token get`", st.PID, err)
 	}
 	res.outcome = changedLive
 	if restart {

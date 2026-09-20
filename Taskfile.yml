@@ -13,36 +13,36 @@ tasks:
       - task --list
 
   # Every target writes an arch-suffixed binary; there is deliberately no bare
-  # bin/remotemic, so an out-of-date `scp bin/remotemic`
+  # bin/remote-mic, so an out-of-date `scp bin/remote-mic`
   # fails loudly instead of silently shipping the amd64 dev build to an ARM Pi.
   build:amd64:
-    desc: Build for linux/amd64 dev host, CGO off, version stamped (bin/remotemic-amd64)
+    desc: Build for linux/amd64 dev host, CGO off, version stamped (bin/remote-mic-amd64)
     aliases: [build]
     env:
       CGO_ENABLED: '0'
       GOOS: linux
       GOARCH: amd64
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/remotemic-amd64 ./cmd/remotemic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/remote-mic-amd64 ./cmd/remotemic
 
   build:arm64:
-    desc: Cross-build for linux/arm64, the Pi Zero 2 W target (bin/remotemic-arm64)
+    desc: Cross-build for linux/arm64, the Pi Zero 2 W target (bin/remote-mic-arm64)
     env:
       CGO_ENABLED: '0'
       GOOS: linux
       GOARCH: arm64
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/remotemic-arm64 ./cmd/remotemic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/remote-mic-arm64 ./cmd/remotemic
 
   build:arm:
-    desc: Cross-build for linux/arm, 32-bit older Pis, GOARM=6 for ARMv6 reach (bin/remotemic-arm)
+    desc: Cross-build for linux/arm, 32-bit older Pis, GOARM=6 for ARMv6 reach (bin/remote-mic-arm)
     env:
       CGO_ENABLED: '0'
       GOOS: linux
       GOARCH: arm
       GOARM: '6'
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/remotemic-arm ./cmd/remotemic
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/remote-mic-arm ./cmd/remotemic
 
   test:
     desc: Run all tests

@@ -57,17 +57,17 @@ plus path instead.
 ## Usage
 
 The appliance is a single binary. Apart from `serve` and `version`, commands
-are grouped by what they act on (`remotemic <noun> <verb>`):
+are grouped by what they act on (`remote-mic <noun> <verb>`):
 
 ```bash
-remotemic                  # capture and serve (the default; same as `serve`)
-remotemic devices list     # enumerate capture devices (id, address, label)
-remotemic token generate   # create the access token, save it, print it
-remotemic token get        # print the current access token
-remotemic version
+remote-mic                  # capture and serve (the default; same as `serve`)
+remote-mic devices list     # enumerate capture devices (id, address, label)
+remote-mic token generate   # create the access token, save it, print it
+remote-mic token get        # print the current access token
+remote-mic version
 ```
 
-`remotemic help` lists the commands; add `-h` to `serve` or to a `token` or
+`remote-mic help` lists the commands; add `-h` to `serve` or to a `token` or
 `devices` command for its flags. Commands that read the config take
 `--config`, which defaults to the `REMOTEMIC_CONFIG` environment variable and
 then to `config.yaml` in the working directory. Set `REMOTEMIC_CONFIG` in the
@@ -95,7 +95,7 @@ auth:
   token: ""              # set a token to require credentials (see Authentication)
 devices:
   - name: garden-mic       # unique instance name; also the mDNS label
-    device: "usb:1235:8218:s=S1A2B3C4:if=0,0"   # from `remotemic devices list`
+    device: "usb:1235:8218:s=S1A2B3C4:if=0,0"   # from `remote-mic devices list`
     path: /garden          # unique RTSP path; defaults to /stream
     mode: opus             # "opus" (48 kHz, mono or stereo) or "pcm" (L16, any rate, ultrasonic)
     rate: 48000
@@ -114,7 +114,7 @@ devices:
 
 A device's `device` value names the physical hardware, not its ALSA card
 number. The kernel numbers cards in probe order, so `hw:3,0` can be a different
-microphone after a reboot or a replug. Copy the id from `remotemic devices list`
+microphone after a reboot or a replug. Copy the id from `remote-mic devices list`
 (or let the web UI write it):
 
 - `usb:<vendor>:<product>:s=<serial>:if=<interface>,<device>` names a USB unit
@@ -131,7 +131,7 @@ serial nor a derivable port), but the web UI and `--check` flag it. A device
 whose id matches nothing is reported as not connected, and one whose id matches
 two units (identical devices sharing a serial) as ambiguous; the appliance never
 opens a different device in its place. Give each of the two units its own port
-id, not just one; `remotemic devices list`, the web UI, and the ambiguity error
+id, not just one; `remote-mic devices list`, the web UI, and the ambiguity error
 (shown by the web UI and `--check`) all name the port id to use.
 
 Serve flags override the loaded config for that run (precedence: flag over
@@ -139,8 +139,8 @@ config over default), which is handy for relocating ports on a host where the
 defaults are taken:
 
 ```bash
-remotemic --config config.yaml --listen :8554 --mgmt-listen :8443
-remotemic --config config.yaml --check   # validate config, show what each device id resolves to, then exit
+remote-mic --config config.yaml --listen :8554 --mgmt-listen :8443
+remote-mic --config config.yaml --check   # validate config, show what each device id resolves to, then exit
 ```
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
@@ -156,14 +156,14 @@ The quickest way is `token generate`: it creates a strong token, writes it
 into the config, and prints it.
 
 ```bash
-remotemic token generate           # create, save, and print a token
-remotemic token generate --force   # rotate: replace the existing token
-remotemic token get                # print the current token (for the web UI login)
-remotemic token set < token.txt    # use a token of your own (prompts when run in a terminal)
-remotemic token clear              # remove the token and return to open access
+remote-mic token generate           # create, save, and print a token
+remote-mic token generate --force   # rotate: replace the existing token
+remote-mic token get                # print the current token (for the web UI login)
+remote-mic token set < token.txt    # use a token of your own (prompts when run in a terminal)
+remote-mic token clear              # remove the token and return to open access
 ```
 
-`token get` prints only the token, so `TOKEN=$(remotemic token get)` works in
+`token get` prints only the token, so `TOKEN=$(remote-mic token get)` works in
 scripts. `token set` never takes the token as an argument, which would leave it
 in shell history and the process list: it reads stdin, or prompts twice without
 echo in a terminal. `token clear` asks for confirmation in a terminal and needs

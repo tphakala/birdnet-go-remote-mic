@@ -435,7 +435,7 @@ func TestTokenClearOpenMessage(t *testing.T) {
 func TestTokenUsageErrors(t *testing.T) {
 	for _, args := range [][]string{{cmdToken}, {cmdToken, "rotate"}} {
 		code, _, errOut := runCLI(args...)
-		if code != 2 || !strings.Contains(errOut, "remotemic token get") {
+		if code != 2 || !strings.Contains(errOut, "remote-mic token get") {
 			t.Errorf("%v: exit %d stderr %q, want 2 with usage", args, code, errOut)
 		}
 	}

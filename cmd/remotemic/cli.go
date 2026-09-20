@@ -65,7 +65,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		out(stdout, "remotemic %s\n", version)
+		out(stdout, "remote-mic %s\n", version)
 		return 0
 	case "help":
 		usage(stdout)
@@ -87,7 +87,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		for _, a := range args {
 			switch a {
 			case "-v", "--version", "-version":
-				out(stdout, "remotemic %s\n", version)
+				out(stdout, "remote-mic %s\n", version)
 				return 0
 			}
 		}
@@ -114,20 +114,20 @@ func toExit(err error, stderr io.Writer) int {
 	case errors.Is(err, flag.ErrHelp):
 		return 0
 	default:
-		out(stderr, "remotemic: %v\n", err)
+		out(stderr, "remote-mic: %v\n", err)
 		return 1
 	}
 }
 
 // usage prints the top-level command summary.
 func usage(w io.Writer) {
-	out(w, `remotemic - remote microphone appliance for BirdNET-Go
+	out(w, `remote-mic - remote microphone appliance for BirdNET-Go
 
 Usage:
-  remotemic [serve] [flags]     capture and serve (the default)
-  remotemic token <command>     manage the shared access token (get, generate, set, clear)
-  remotemic devices <command>   inspect capture devices (list)
-  remotemic version             print version and exit
+  remote-mic [serve] [flags]     capture and serve (the default)
+  remote-mic token <command>     manage the shared access token (get, generate, set, clear)
+  remote-mic devices <command>   inspect capture devices (list)
+  remote-mic version             print version and exit
 
 Commands that read the config take --config, which defaults to $`+configEnv+`
 or config.yaml. Run a command with -h to see its flags.
@@ -153,7 +153,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		out(stderr, "Usage: remotemic [serve] [flags]\n\n"+
+		out(stderr, "Usage: remote-mic [serve] [flags]\n\n"+
 			"Capture local audio and serve it over RTSP. Flags override the config\n"+
 			"file for this run only and are never written back to it; use\n"+
 			"--flag=false for the boolean toggles.\n\nFlags:\n")
@@ -194,7 +194,7 @@ func runDevices(args []string, stdout, stderr io.Writer) int {
 		fs := flag.NewFlagSet("devices list", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		fs.Usage = func() {
-			out(stderr, "Usage: remotemic devices list\n\n"+
+			out(stderr, "Usage: remote-mic devices list\n\n"+
 				"List the host's capture devices: the id to put in a device's config\n"+
 				"entry, its current ALSA address, and its label. The id names the\n"+
 				"physical device and survives reboots; the address does not.\n")
@@ -218,7 +218,7 @@ func devicesUsage(w io.Writer) {
 	out(w, `Inspect the host's capture devices.
 
 Usage:
-  remotemic devices list   list capture devices (id, address and label)
+  remote-mic devices list   list capture devices (id, address and label)
 `)
 }
 
