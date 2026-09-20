@@ -124,7 +124,7 @@ func (s ServiceSpec) Validate() error {
 	} {
 		if isSharedSystemDir(dir) {
 			return fmt.Errorf("service: %s %q is a shared system directory; use a dedicated subdirectory such as %s or %s",
-				label, filepath.Clean(dir), DefaultConfigPath, DefaultStateDir)
+				label, filepath.Clean(dir), filepath.Dir(DefaultConfigPath), DefaultStateDir)
 		}
 	}
 	return nil
