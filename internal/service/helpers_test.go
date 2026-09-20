@@ -43,13 +43,57 @@ func (f *fakeRunner) lines() []string {
 // wantSeq asserts the recorded call lines exactly match want, in order.
 func (f *fakeRunner) wantSeq(t *testing.T, want ...string) {
 	t.Helper()
-	got := f.lines()
+	wantSeq(t, f.lines(), want)
+}
+
+// wantSeq asserts got matches want exactly, in order, with a readable diff.
+func wantSeq(t *testing.T, got, want []string) {
+	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("call count = %d, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
+		t.Fatalf("event count = %d, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("call %d = %q, want %q", i, got[i], want[i])
+			t.Errorf("event %d = %q, want %q", i, got[i], want[i])
 		}
 	}
 }
+
+// fakeInit is a recording InitSystem that logs its lifecycle calls into a
+// shared event slice, so a test can assert the ordering of systemd actions
+// relative to filesystem and user operations.
+type fakeInit struct {
+	events  *[]string
+	present bool
+	enabled bool
+	active  bool
+}
+
+func (f *fakeInit) log(s string)  { *f.events = append(*f.events, s) }
+func (f *fakeInit) Present() bool { return f.present }
+func (f *fakeInit) DaemonReload() error {
+	f.log("reload")
+	return nil
+}
+
+func (f *fakeInit) Enable(unit string, now bool) error {
+	if now {
+		f.log("enable --now " + unit)
+	} else {
+		f.log("enable " + unit)
+	}
+	return nil
+}
+
+func (f *fakeInit) Disable(unit string) error {
+	f.log("disable " + unit)
+	return nil
+}
+
+func (f *fakeInit) Stop(unit string) error {
+	f.log("stop " + unit)
+	return nil
+}
+
+func (f *fakeInit) IsEnabled(string) (bool, error) { return f.enabled, nil }
+func (f *fakeInit) IsActive(string) (bool, error)  { return f.active, nil }
