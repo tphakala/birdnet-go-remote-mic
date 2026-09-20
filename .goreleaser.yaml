@@ -1,0 +1,122 @@
+# GoReleaser builds the tagged release: Linux amd64/arm64 tarballs, .deb
+# packages, and the Homebrew formula in tphakala/homebrew-tap. Run by
+# .github/workflows/release.yml on a v* tag. Dry-run locally with
+# `goreleaser release --snapshot --clean`. Note `goreleaser check` exits
+# nonzero here solely on the deprecated-`brews` warning (see the brews note
+# below); the release job runs `release`, where that is only a warning.
+version: 2
+project_name: birdnet-go-remote-mic
+
+# The release binary embeds the web UI via go:embed (web/embed.go, built WITHOUT
+# the skipfrontend tag), so web/dist must exist before the Go build. `task
+# web:build` compiles the TypeScript and syncs the static assets into web/dist.
+# web/dist is architecture-independent, so building it once here covers every
+# target. Running the real Taskfile task (not a re-listed copy of its commands)
+# keeps this in step with CI and a local `task check`.
+before:
+  hooks:
+    - task web:build
+
+builds:
+  - id: remote-mic
+    # The command users run is `remote-mic`; the archive, deb, and formula all
+    # ship it under that name even though the repo is birdnet-go-remote-mic.
+    binary: remote-mic
+    main: ./cmd/remotemic
+    # Pure-Go appliance: no cgo, so these are static binaries that cross-compile
+    # cleanly for arm64 on the amd64 runner.
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # main.version is the ldflags target the binary prints (cmd/remotemic/main.go:
+    # `var version = "dev"`), surfaced by `remote-mic version`. {{ .Tag }} (not
+    # {{ .Version }}, which strips the leading v) keeps the released version
+    # string v-prefixed, matching what `git describe --tags` stamps in a local
+    # `task build`.
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+    # Linux only: the appliance is an ALSA capture + RTSP server (cmd/remotemic
+    # is //go:build linux). amd64 and arm64 only, per the release scope.
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # e.g. birdnet-go-remote-mic_1.0.0_linux_amd64.tar.gz, containing the
+  # remote-mic binary plus the README and license.
+  - formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - '^ci:'
+      - '^docs?:'
+      - '^README'
+
+# .deb packages for amd64 and arm64. Binary only, by design: the installed
+# binary sets up its own hardened systemd service (dedicated user, unit, state
+# dirs) via `remote-mic service install`, so the package ships no unit file and
+# starts nothing on `apt install`. It installs /usr/bin/remote-mic and the docs.
+nfpms:
+  - id: remote-mic
+    package_name: birdnet-go-remote-mic
+    vendor: Tomi P. Hakala
+    homepage: "https://github.com/tphakala/birdnet-go-remote-mic"
+    # GitHub noreply address, so no personal email is baked into published debs.
+    maintainer: "Tomi P. Hakala <tphakala@users.noreply.github.com>"
+    description: |-
+      Remote microphone appliance for BirdNET-Go.
+      Captures local ALSA audio and serves it over RTSP/RTP for BirdNET-Go to pull.
+      After install, run `sudo remote-mic service install` to run it at boot.
+    license: MIT
+    formats:
+      - deb
+    bindir: /usr/bin
+    section: sound
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/birdnet-go-remote-mic/README.md
+      - src: LICENSE
+        # Debian convention (and lintian) expect the license file at .../copyright.
+        dst: /usr/share/doc/birdnet-go-remote-mic/copyright
+
+# Homebrew tap: on every tagged release, GoReleaser regenerates the formula in
+# tphakala/homebrew-tap and pushes it over SSH, so the tap stays current with no
+# manual steps. Auth is a scoped write deploy key (secret HOMEBREW_TAP_DEPLOY_KEY),
+# not a personal access token, so its reach is limited to that one repo.
+#
+# Kept as a formula (`brews`), not a cask: casks are macOS-only and this ships
+# Linux binaries, so a formula lets `brew install` work on Linux (Homebrew on
+# Linux). GoReleaser deprecated `brews` but it stays functional in v2, and the
+# release job runs `release`, not `check`, so the deprecation only warns.
+brews:
+  - name: birdnet-go-remote-mic
+    repository:
+      owner: tphakala
+      name: homebrew-tap
+      branch: main
+      git:
+        url: "git@github.com:tphakala/homebrew-tap.git"
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
+    directory: Formula
+    homepage: "https://github.com/tphakala/birdnet-go-remote-mic"
+    description: "Remote microphone appliance for BirdNET-Go (ALSA capture served over RTSP)"
+    license: MIT
+    caveats: |
+      This installs the `remote-mic` command. To run it at boot as a hardened
+      systemd service (creates a dedicated user, unit, and state directories):
+        sudo remote-mic service install
+    # `remote-mic version` prints and exits 0; a bare invocation would default to
+    # `serve` and start the appliance, so the test names the subcommand.
+    test: |
+      system "#{bin}/remote-mic", "version"

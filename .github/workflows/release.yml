@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual runs must be dispatched on a tag ref; goreleaser refuses untagged commits.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '26'
+  # Pinned to the version the Taskfile is developed against, so the release
+  # web build and a local `task check` cannot interpret the same file differently.
+  TASK_VERSION: '3.53.1'
+
+jobs:
+  goreleaser:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history and tags: goreleaser derives the version and changelog
+          # from them.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # The release binary embeds the web UI, so the goreleaser `before` hook runs
+      # `task web:build` (tsc) before compiling. That needs Node and Task on PATH.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install Task
+        run: npm install --global @go-task/cli@${{ env.TASK_VERSION }}
+      # Quick pre-release gate. The full race + web suite already ran on this
+      # commit when it landed on main (a tag is cut from main); this is cheap
+      # insurance that the tagged tree still builds and passes unit tests.
+      - name: Test before release
+        run: task test
+      # GoReleaser's brews step pushes the regenerated formula to the tap over
+      # SSH. Prime the runner's known_hosts with GitHub's key so that push cannot
+      # hang or fail on host-key verification, rather than relying on an
+      # undocumented checkout side effect.
+      - name: Add github.com to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+      # SHA-pinned: this job holds contents: write, so a moving tag on a third-party
+      # action is a supply-chain risk. Dependabot updates the SHA pin. (# v7.2.3)
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Scoped write deploy key for tphakala/homebrew-tap; goreleaser's brews
+          # step pushes the regenerated formula over SSH with it (no PAT needed).
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
