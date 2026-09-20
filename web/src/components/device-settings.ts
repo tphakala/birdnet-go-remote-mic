@@ -1,5 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { copyText, elem } from "../lib/ui.js";
+import { button, copyText, elem, hideInactiveKey, ICON_COPY, readBoolPref, writeBoolPref } from "../lib/ui.js";
 import { bitrateFollowsDefault, defaultOpusBitrate } from "../lib/device-settings-core.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
@@ -87,16 +87,20 @@ export class DeviceSettingsForm {
   private device: DeviceConfig;
   private hardware: DeviceHardware;
   private onDirty: () => void;
+  // Applied when a display-only preference (hide inactive channels) changes, so
+  // the dashboard re-renders the meter at once. Not part of the save/dirty flow.
+  private onDisplayChange: () => void;
   private ready = false;
   // loadCoercion is set when opening the form silently downgraded the saved codec
   // because the hardware no longer supports it, so the caller can tell the
   // operator instead of the change appearing to happen on its own.
   private loadCoercion: string | null = null;
 
-  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware = {}) {
+  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware = {}, onDisplayChange: () => void = () => {}) {
     this.device = device;
     this.hardware = hardware;
     this.onDirty = onDirty;
+    this.onDisplayChange = onDisplayChange;
     this.element = elem("div", "device-settings");
     this.build();
     this.ready = true;
@@ -278,6 +282,42 @@ export class DeviceSettingsForm {
     ));
     grid.appendChild(quietField);
 
+    // Meter display preference (not appliance config): hide the channels no
+    // stream carries from the VU meter. On by default. Stored client-side and
+    // applied at once via onDisplayChange, so it stays outside collect() and the
+    // save/dirty flow. Only meaningful when the device has more than one channel.
+    if (this.maxChannels() > 1) {
+      const hideField = elem("div", "form-field");
+      const hideId = `set-${uid}-hideinactive`;
+      const hideLabel = this.label("Hide Inactive Channels");
+      hideLabel.setAttribute("for", hideId);
+      hideField.appendChild(hideLabel);
+      const hideSwitch = elem("label", "switch-control");
+      const hideInput = document.createElement("input");
+      hideInput.type = "checkbox";
+      hideInput.id = hideId;
+      hideInput.className = "visually-hidden";
+      hideInput.checked = readBoolPref(hideInactiveKey(this.device.device), true);
+      const hideHintId = `${hideId}-hint`;
+      hideInput.setAttribute("aria-describedby", hideHintId);
+      hideInput.addEventListener("change", () => {
+        writeBoolPref(hideInactiveKey(this.device.device), hideInput.checked);
+        this.onDisplayChange();
+      });
+      const hideTrack = elem("span", "switch-track");
+      hideTrack.appendChild(elem("span", "switch-thumb"));
+      const hideText = elem("span", "switch-label", "Hide channels no stream carries");
+      hideSwitch.appendChild(hideInput);
+      hideSwitch.appendChild(hideTrack);
+      hideSwitch.appendChild(hideText);
+      hideField.appendChild(hideSwitch);
+      hideField.appendChild(this.hint(
+        "On by default. Shows only the channels the current selection streams; turn off to see every captured channel, dimmed when inactive.",
+        hideHintId,
+      ));
+      grid.appendChild(hideField);
+    }
+
     this.element.appendChild(grid);
 
     this.modeHidden.addEventListener("change", () => {
@@ -324,10 +364,13 @@ export class DeviceSettingsForm {
     input.spellcheck = false;
     const hintId = `${inputId}-hint`;
     input.setAttribute("aria-describedby", hintId);
-    const copyBtn = elem("button", "btn btn-secondary", "Copy");
-    copyBtn.setAttribute("type", "button");
-    copyBtn.setAttribute("aria-label", "Copy device id");
-    copyBtn.addEventListener("click", () => copyText(this.device.device, "Device id copied."));
+    const copyBtn = button({
+      variant: "secondary",
+      icon: ICON_COPY,
+      label: "Copy",
+      ariaLabel: "Copy device id",
+      onClick: () => copyText(this.device.device, "Device id copied."),
+    });
     row.append(input, copyBtn);
     field.appendChild(row);
 

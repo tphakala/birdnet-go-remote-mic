@@ -21,8 +21,79 @@ export function elem(tag: string, className?: string, text?: string): HTMLElemen
 // the .is-busy class dims the control and shows a progress cursor. This is the
 // canonical busy affordance; prefer it over toggling `disabled` on a focused
 // control, which steals focus.
+// ICON_COPY is the shared copy glyph for every copy-to-clipboard control, so the
+// affordance reads the same on the dashboard, the system view, and the device
+// settings form. It lived in dashboard.ts, where only the dashboard's own copy
+// buttons could reach it; the other copy buttons shipped without an icon as a
+// result. Keep new copy controls pointed here.
+export const ICON_COPY =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
+
+// iconSpan wraps trusted, static icon markup in a decorative (aria-hidden) span.
+// The control's own text or aria-label carries the meaning, so the graphic is
+// hidden from assistive tech rather than announced unlabeled.
+export function iconSpan(markup: string, className?: string): HTMLElement {
+  const s = document.createElement("span");
+  if (className) s.className = className;
+  s.setAttribute("aria-hidden", "true");
+  // Static trusted markup only; never runtime/user data.
+  s.innerHTML = markup;
+  return s;
+}
+
+// button builds a .btn control: variant fill, an optional leading icon, a label,
+// and the attributes every button repeats (type=button, aria-label, id, click).
+// It replaces the elem("button", "btn btn-…") + setAttribute("type","button")
+// pattern that was copied at each call site, so a button cannot drift from the
+// shared shape. It covers the button-shaped variants only; the inline text link
+// (.btn-link) and the chip controls (.copy-btn, .icon-btn, .clip-latch-btn) keep
+// their own construction.
+export interface ButtonOptions {
+  variant?: "primary" | "secondary" | "danger";
+  label?: string;
+  icon?: string;
+  ariaLabel?: string;
+  id?: string;
+  title?: string;
+  extraClass?: string;
+  type?: "button" | "submit" | "reset";
+  onClick?: (ev: MouseEvent) => void;
+}
+
+export function button(opts: ButtonOptions = {}): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = opts.type ?? "button";
+  const classes = ["btn", `btn-${opts.variant ?? "secondary"}`];
+  if (opts.extraClass) classes.push(opts.extraClass);
+  b.className = classes.join(" ");
+  if (opts.icon) b.appendChild(iconSpan(opts.icon, "btn-icon"));
+  // Label lives in its own span so setButtonLabel/setBusy can rewrite the text
+  // without wiping a leading icon.
+  if (opts.label !== undefined) b.appendChild(elem("span", "btn-label", opts.label));
+  if (opts.ariaLabel) b.setAttribute("aria-label", opts.ariaLabel);
+  if (opts.id) b.id = opts.id;
+  if (opts.title) b.title = opts.title;
+  if (opts.onClick) b.addEventListener("click", opts.onClick);
+  return b;
+}
+
+// setButtonLabel updates a button's visible text without disturbing a leading
+// icon: it writes into the .btn-label span the factory adds, and falls back to
+// the element's own text for a plain button that has no such span.
+export function setButtonLabel(el: HTMLElement, text: string): void {
+  let label = el.querySelector<HTMLElement>(".btn-label");
+  // An icon-only button has a .btn-icon but no label span; add one rather than
+  // wiping the icon via textContent.
+  if (!label && el.querySelector(".btn-icon")) {
+    label = elem("span", "btn-label");
+    el.appendChild(label);
+  }
+  if (label) label.textContent = text;
+  else el.textContent = text;
+}
+
 export function setBusy(el: HTMLElement, label?: string): void {
-  if (label !== undefined) el.textContent = label;
+  if (label !== undefined) setButtonLabel(el, label);
   el.setAttribute("aria-disabled", "true");
   el.setAttribute("aria-busy", "true");
   el.classList.add("is-busy");
@@ -30,10 +101,34 @@ export function setBusy(el: HTMLElement, label?: string): void {
 
 // clearBusy reverses setBusy, restoring the control's label when one is given.
 export function clearBusy(el: HTMLElement, label?: string): void {
-  if (label !== undefined) el.textContent = label;
+  if (label !== undefined) setButtonLabel(el, label);
   el.removeAttribute("aria-disabled");
   el.removeAttribute("aria-busy");
   el.classList.remove("is-busy");
+}
+
+// Per-device meter display preference: "hide inactive channels". It is a per-
+// viewer view option, not appliance config, so it lives in localStorage keyed by
+// the stable device id rather than in the saved config. read/write are wrapped
+// because localStorage can throw (private mode, disabled storage); a failure
+// falls back to the default and simply does not persist.
+export function hideInactiveKey(deviceId: string): string {
+  return `remote-mic-hide-inactive:${deviceId}`;
+}
+export function readBoolPref(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === "1";
+  } catch {
+    return fallback;
+  }
+}
+export function writeBoolPref(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    /* storage unavailable: the preference just does not persist */
+  }
 }
 
 // apiErrorMessage reduces any thrown value to a short human string: an ApiError
@@ -183,8 +278,7 @@ export function renderLoadError(
   container.hidden = false;
   container.setAttribute("role", "alert");
   container.textContent = `${message} `;
-  const retry = elem("button", "btn btn-secondary", "Retry");
-  retry.setAttribute("type", "button");
+  const retry = button({ variant: "secondary", label: "Retry" });
   retry.addEventListener("click", () => {
     // Drop the assertive alert role before showing the benign loading text so
     // the screen reader does not read "Loading..." as an alert. A later failure

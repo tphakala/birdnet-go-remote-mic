@@ -383,7 +383,9 @@ body {
 }
 
 .nav-item svg {
-  transition: transform 0.18s ease, color 0.18s ease;
+  /* Colour only: a hover that also lifted the glyph left it misaligned with its
+     own label for the length of the transition. */
+  transition: color 0.18s ease;
 }
 
 .nav-item:hover {
@@ -392,7 +394,6 @@ body {
 }
 
 .nav-item:hover svg {
-  transform: translateY(-1px);
   color: var(--accent-cyan);
 }
 
@@ -414,7 +415,9 @@ body {
   background: var(--accent-cyan-bg);
   color: var(--accent-cyan-text);
   font-weight: 600;
-  animation: badge-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* Grow-in with the standard ease, not an overshoot curve: the badge settles at
+     size rather than punching past it. */
+  animation: badge-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .nav-badge[hidden] {
@@ -459,11 +462,11 @@ body {
 }
 
 .icon-btn:hover svg {
-  transform: scale(1.12);
+  transform: scale(1.06);
 }
 
 .icon-btn:active {
-  transform: scale(0.92);
+  transform: scale(0.97);
 }
 
 /* Telemetry Dashboard Ribbon */
@@ -546,10 +549,20 @@ body {
   display: none;
   flex-direction: column;
   gap: 16px;
+  /* Switching a view flips its display none->flex (the router sets it inline),
+     which restarts this one-shot so the incoming panel fades up. A hidden panel
+     is display:none and never runs it, and a poll re-rendering the panel's
+     children does not restart it. The reduced-motion block neutralises it. */
+  animation: view-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .view-panel.active {
   display: flex;
+}
+
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Rack Channel Strips (Audio Devices) */
@@ -716,13 +729,15 @@ body {
   background: var(--bg-surface-active);
   color: var(--text-primary);
   border-color: var(--border-active);
-  transform: translateY(-1px);
+  /* No lift: these chips sit inline beside text (the endpoint URL) and other
+     tags, so a hover translate pulled them out of the row's baseline. The
+     shadow carries the "raised" cue without moving the box. */
   box-shadow: var(--shadow-sm);
 }
 
 .copy-btn:active,
 .lock-tag:active {
-  transform: scale(0.95);
+  transform: scale(0.97);
 }
 
 .copy-btn .icon-copy {
@@ -734,10 +749,12 @@ body {
 /* The "copied" success state lives after the focus rules (see below) so its
    green pulse wins the cascade over the focus ring's colours. */
 
+/* A gentle settle up to size, no overshoot past 1: on a small inline chip the
+   old bump to 1.06 read as a jarring resize. The green fill and glow carry the
+   confirmation; the scale is just a soft acknowledgement. */
 @keyframes copy-pulse {
-  0% { transform: scale(0.95); }
-  50% { transform: scale(1.06); }
-  100% { transform: scale(1); }
+  from { transform: scale(0.97); }
+  to { transform: scale(1); }
 }
 
 /* ==================== CUSTOM DROPDOWN COMPONENT ==================== */
@@ -845,9 +862,10 @@ body {
 
 .dropdown-item:hover,
 .dropdown-item.active {
+  /* Background shift only: the old translateX nudged each row's text sideways on
+     hover and keyboard roving, which read as the list jittering. */
   background: var(--bg-surface-active);
   color: var(--text-primary);
-  transform: translateX(2px);
 }
 
 .dropdown-item.selected {
@@ -895,6 +913,10 @@ body {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 12px;
+  /* Shared column template for the dB scale and every channel row: a fixed
+     channel-label column, the flexible meter, and a fixed stats column. Driving
+     both off one variable keeps the scale aligned with the meter track. */
+  --meter-cols: 42px 1fr 132px;
 }
 
 /* A high-channel interface (6-8 channels) would stack that many meter rows and
@@ -911,29 +933,43 @@ body {
   background: var(--meter-bg);
 }
 
+/* The dB scale fills only the meter (middle) column of the shared grid, so its
+   -60 sits at the meter track's left edge and 0 dBFS at its right edge, for any
+   channel count. */
 .meter-scale {
+  display: grid;
+  grid-template-columns: var(--meter-cols);
+  column-gap: 12px;
+}
+
+.meter-scale-track {
+  grid-column: 2;
   display: flex;
   justify-content: space-between;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-muted);
-  padding: 0 4px;
   user-select: none;
 }
 
 .meter-track-wrapper {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--meter-cols);
+  column-gap: 12px;
   align-items: center;
-  gap: 12px;
 }
 
 .meter-canvas-container {
-  flex-grow: 1;
   height: 22px;
   position: relative;
   border-radius: var(--radius-xs);
   overflow: hidden;
   background: rgba(255, 255, 255, 0.03);
+}
+/* The dark wash is invisible on the light meter ground; darken it there so the
+   canvas track reads (the segments themselves are drawn theme-aware in script). */
+:root[data-theme="light"] .meter-canvas-container {
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .meter-canvas {
@@ -946,7 +982,6 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 120px;
   justify-content: flex-end;
 }
 
@@ -1355,7 +1390,9 @@ textarea.field-input {
   position: absolute;
   top: 2px;
   left: 2px;
-  transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.2s ease;
+  /* Standard ease, not an overshoot curve: the thumb glides across and stops,
+     without the spring-past-and-back bounce. */
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
 }
 
 input[type="checkbox"]:checked + .switch-track {
@@ -1369,7 +1406,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .switch-control:active .switch-thumb {
-  width: 17px;
+  width: 16px;
 }
 
 /* In-flight state: the input is disabled while its PATCH runs, so dim the
@@ -1447,9 +1484,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   line-height: 1.4;
 }
 
-/* Per-channel meter row label, present only on multi-channel devices. */
+/* Per-channel meter row label, shown for every device (one row per captured channel). */
 .meter-channel-label {
-  min-width: 34px;
   font-size: 11px;
   /* The only visible per-channel identifier; keep it at AA contrast. */
   color: var(--text-secondary);
@@ -1576,12 +1612,18 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   user-select: none;
 }
 
-.btn:hover {
-  transform: translateY(-1px);
+/* Hover feedback is colour and shadow, set per variant below; the base button
+   does not lift, so a hovered button no longer rises out of its action row. The
+   press is a single gentle scale, with no vertical drop to jump against it. */
+.btn:active {
+  transform: scale(0.97);
 }
 
-.btn:active {
-  transform: translateY(1px) scale(0.97);
+/* Leading icon inside a .btn (factory-built buttons wrap it in this span). The
+   .btn flex row and its gap handle spacing; this only centres the glyph. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* The icon-only button keeps the hard outline ring: it has no filled border to
@@ -1714,7 +1756,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   border-color: var(--signal-ok);
   color: var(--signal-ok-text);
   box-shadow: 0 0 10px var(--signal-ok-glow);
-  animation: copy-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: copy-pulse 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 /* A keyboard-focused copied control keeps a DISTINCT focus indicator: layer the
    focus bloom over the green success glow so both read at once. This wins the
@@ -1838,6 +1880,26 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .modal-overlay.open {
   display: flex;
+  /* Show flips display none->flex (via .open on the login/restart overlays, or
+     by creating the confirm overlay already-open), so these one-shots play on
+     open: the backdrop fades and the card rises into place. Close removes the
+     element outright, so there is no exit animation to stage. The global
+     reduced-motion block neutralises both. */
+  animation: overlay-in 0.18s ease;
+}
+
+.modal-overlay.open .modal-card {
+  animation: modal-card-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* The login prompt must sit above transient confirm dialogs. Both are
@@ -2064,6 +2126,21 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   overflow: hidden;
 }
 
+/* Opening the panel clears its hidden attribute, flipping display none->flex, so
+   this one-shot plays on each open. It is a straight vertical slide with no
+   scale: a scale anchored at a corner would drag the "Notifications" title
+   sideways as the panel settled, which read as the label shifting after it
+   opened. Sliding the whole panel as one unit keeps every child fixed relative
+   to it. A restamp of the times while the panel stays open does not restart it. */
+.notif-panel:not([hidden]) {
+  animation: notif-panel-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes notif-panel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Keep the panel's elevation (shadow-lg) and draw the keyboard focus ring as an
    outline so it survives forced-colors mode, matching the shared ring pattern. */
 .notif-panel:focus-visible {
@@ -2225,9 +2302,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   .header-actions {
     justify-content: flex-end;
   }
-  .meter-track-wrapper {
-    flex-direction: column;
-    align-items: stretch;
+  .meter-track-wrapper,
+  .meter-scale {
+    grid-template-columns: 1fr;
+  }
+  .meter-scale-track {
+    grid-column: 1;
   }
   .meter-stats {
     justify-content: space-between;
@@ -2299,6 +2379,47 @@ select.field-input {
   font-size: 13px;
   color: var(--text-primary);
   overflow-wrap: anywhere;
+}
+
+/* System Information: two labelled columns (Hardware / Software), each its own
+   info-grid. The wrapper drops to a single column when the card is too narrow
+   for two side by side. */
+.sysinfo-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px 32px;
+}
+.sysinfo-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.sysinfo-group-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* Each row label carries a leading glyph. Centre the key against its value so
+   the icon does not drag the row off the value's line, and scope it to the
+   System Information columns so the certificate info grid keeps its plain keys. */
+.sysinfo-group .info-grid {
+  align-items: center;
+}
+.sysinfo-group .info-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.info-key-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-faint);
 }
 
 /* Dashboard card settings disclosure + inline device settings. */

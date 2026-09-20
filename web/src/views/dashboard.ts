@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { clearBusy, deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, writeToClipboard } from "../lib/ui.js";
+import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, writeToClipboard } from "../lib/ui.js";
 import { channelLabel, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
@@ -18,8 +18,6 @@ const ICON_ERROR =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
 const ICON_WARN =
   '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
-const ICON_COPY =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
 const ICON_LOCK =
   '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
 // Vertical faders (the mixing-desk "sliders" glyph) for the settings toggle:
@@ -199,18 +197,6 @@ let settingsSeq = 0;
 
 // Sequence for the token tag's description element ids (aria-describedby targets).
 let tokenDescSeq = 0;
-
-function iconSpan(markup: string, className?: string): HTMLElement {
-  const s = document.createElement("span");
-  if (className) s.className = className;
-  // Decorative: every icon built through here (copy, lock, error banner) sits
-  // next to text that already carries its meaning, so hide it from assistive
-  // tech rather than announcing an unlabeled graphic.
-  s.setAttribute("aria-hidden", "true");
-  // Static trusted markup only; never runtime/user data.
-  s.innerHTML = markup;
-  return s;
-}
 
 // The runtime device carries the runtime-visible configured fields; project it
 // to the config shape as a fallback base for the device-list patch.
@@ -489,8 +475,7 @@ export class DashboardView {
     if (caps) sub.appendChild(elem("span", "available-caps", caps));
     info.appendChild(sub);
 
-    const enableBtn = elem("button", "btn btn-primary available-enable", "Enable");
-    enableBtn.setAttribute("type", "button");
+    const enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
     // Name the device in the accessible label: there is one Enable button per
     // available device, so a bare "Enable" is ambiguous to a screen-reader user.
     enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.hwAddr || d.device}`);
@@ -832,21 +817,22 @@ export class DashboardView {
   // buildMeterConsole builds the shared dB scale plus one metering row per
   // captured hardware channel and returns the console element and its VU meters,
   // indexed by zero-based hardware channel position (the levels event's
-  // ch.channel indexes straight into this array). A mono device gets a single
-  // unlabeled row; a multi-channel device labels each row with its 1-based
-  // hardware channel number ("Ch 2" for the second captured channel).
+  // ch.channel indexes straight into this array). Every device labels each row
+  // with its 1-based hardware channel number ("Ch 1", "Ch 2", ...), so the dB
+  // scale lines up the same way regardless of channel count.
   private buildMeterConsole(count: number): { console: HTMLElement; meters: VUMeter[]; rows: HTMLElement[] } {
     const meterConsole = elem("div", "meter-console");
     const scale = elem("div", "meter-scale");
+    const scaleTrack = elem("div", "meter-scale-track");
     for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
-      scale.appendChild(elem("span", undefined, s));
+      scaleTrack.appendChild(elem("span", undefined, s));
     }
+    scale.appendChild(scaleTrack);
     meterConsole.appendChild(scale);
 
     const meters: VUMeter[] = [];
     const rows: HTMLElement[] = [];
     const n = Math.max(1, count);
-    const multi = n > 1;
     // Cap the stack height for high-channel interfaces so a 6-8 channel device
     // does not grow the card tall enough to push the dashboard down; the rows
     // scroll within the console instead. Most appliance devices are mono/stereo.
@@ -854,17 +840,15 @@ export class DashboardView {
     for (let c = 0; c < n; c++) {
       const wrapper = elem("div", "meter-track-wrapper");
       const chNum = c + 1;
-      if (multi) {
-        // A tally light in front of the channel number: lit while a stream
-        // carries the channel (syncCard sets it), so the streamed channels stand
-        // out on a multi-channel interface. A mono device has a single row that
-        // is always streamed, so it gets no label and no light.
-        const label = elem("span", "meter-channel-label mono");
-        label.setAttribute("aria-hidden", "true");
-        label.appendChild(elem("span", "meter-tally"));
-        label.appendChild(elem("span", undefined, `Ch ${chNum}`));
-        wrapper.appendChild(label);
-      }
+      // A tally light in front of the channel number, lit while a stream carries
+      // the channel (syncCard sets it). Shown for every device, mono included, so
+      // the channel-label column is always present and the dB scale lines up the
+      // same way regardless of channel count.
+      const label = elem("span", "meter-channel-label mono");
+      label.setAttribute("aria-hidden", "true");
+      label.appendChild(elem("span", "meter-tally"));
+      label.appendChild(elem("span", undefined, `Ch ${chNum}`));
+      wrapper.appendChild(label);
       const canvasContainer = elem("div", "meter-canvas-container");
       const canvas = document.createElement("canvas");
       canvas.className = "meter-canvas";
@@ -879,10 +863,7 @@ export class DashboardView {
       dbReadout.setAttribute("aria-hidden", "true");
       const clipBtn = elem("button", "clip-latch-btn", "CLIP");
       clipBtn.setAttribute("type", "button");
-      clipBtn.setAttribute(
-        "aria-label",
-        multi ? `Channel ${chNum} clip indicator, click to clear` : "Clip indicator, click to clear",
-      );
+      clipBtn.setAttribute("aria-label", `Channel ${chNum} clip indicator, click to clear`);
       clipBtn.title = "Click to clear clip latch";
       // Focus key so a rebuild that moves focus can restore it to the same row.
       clipBtn.dataset.focus = `clip-${c}`;
@@ -993,23 +974,36 @@ export class DashboardView {
       setText(entry.live.clientsEl, d.clientConnected ? "1 connected" : "0 connected");
       setText(entry.live.droppedEl, String(d.droppedFrames));
       setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz`);
-      // Mark each captured channel live when a stream carries it. Rows index
+      // Mark each captured channel live when a stream carries it, and (with the
+      // per-device "hide inactive channels" preference, on by default) hide the
+      // rows no stream carries. Runs for every device, mono included, so a single
+      // row is marked live and the tally lights stay consistent. Rows index
       // hardware channels from 0, selections number them from 1.
-      if (entry.live.rows.length > 1) {
-        const states = tallyStates(d.streamedChannels ?? d.channels, entry.live.rows.length);
-        entry.live.rows.forEach((row, i) => {
-          const on = states[i];
-          row.classList.toggle("ch-live", on);
-          row.classList.toggle("ch-off", !on);
-          const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
-          if (row.title !== title) row.title = title;
-          // The tally light is aria-hidden, so carry its streamed/not-streamed
-          // meaning on the row's own exposed control: the clip button.
-          const clip = row.querySelector<HTMLElement>(".clip-latch-btn");
-          const clipAria = `Channel ${i + 1} (${on ? "streamed" : "not streamed"}) clip indicator, click to clear`;
-          if (clip && clip.getAttribute("aria-label") !== clipAria) clip.setAttribute("aria-label", clipAria);
-        });
-      }
+      const states = tallyStates(d.streamedChannels ?? d.channels, entry.live.rows.length);
+      const hideInactive = readBoolPref(hideInactiveKey(d.device), true);
+      // Never hide every row: if no row is streamed (a channel-count/selection
+      // mismatch), show them all rather than leave an empty meter console.
+      const anyLive = states.some((s) => s);
+      // meters is indexed the same as rows (both come from buildMeterConsole);
+      // capture it here so the callback below does not re-narrow entry.live.
+      const meters = entry.live.meters;
+      entry.live.rows.forEach((row, i) => {
+        const on = states[i];
+        row.classList.toggle("ch-live", on);
+        row.classList.toggle("ch-off", !on);
+        const hide = hideInactive && anyLive && !on;
+        setHidden(row, hide);
+        // Stop the hidden row's ~60fps canvas loop; resume it when shown again.
+        const meter = meters[i];
+        if (meter) { if (hide) meter.pause(); else meter.resume(); }
+        const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
+        if (row.title !== title) row.title = title;
+        // The tally light is aria-hidden, so carry its streamed/not-streamed
+        // meaning on the row's own exposed control: the clip button.
+        const clip = row.querySelector<HTMLElement>(".clip-latch-btn");
+        const clipAria = `Channel ${i + 1} (${on ? "streamed" : "not streamed"}) clip indicator, click to clear`;
+        if (clip && clip.getAttribute("aria-label") !== clipAria) clip.setAttribute("aria-label", clipAria);
+      });
     }
     if (entry.idle) {
       setHidden(entry.idle.banner, !d.error);
@@ -1161,9 +1155,7 @@ export class DashboardView {
       entry.settingsWrap.textContent = "";
 
       const actions = elem("div", "settings-actions");
-      const removeBtn = elem("button", "btn btn-danger", "Remove");
-      removeBtn.setAttribute("type", "button");
-      removeBtn.setAttribute("aria-label", `Remove ${entry.device.name}`);
+      const removeBtn = button({ variant: "danger", label: "Remove", ariaLabel: `Remove ${entry.device.name}` });
       const badge = elem("span", "staged-badge", "Unsaved changes");
       badge.hidden = true;
       // Stale notice, shown by syncSettings when the saved config changed under
@@ -1181,10 +1173,8 @@ export class DashboardView {
       staleNote.appendChild(reloadBtn);
       staleNote.hidden = true;
       const spacer = elem("span", "settings-actions-spacer");
-      const cancelBtn = elem("button", "btn btn-secondary", "Cancel") as HTMLButtonElement;
-      cancelBtn.setAttribute("type", "button");
-      const saveBtn = elem("button", "btn btn-primary", "Save Changes");
-      saveBtn.setAttribute("type", "button");
+      const cancelBtn = button({ variant: "secondary", label: "Cancel" });
+      const saveBtn = button({ variant: "primary", label: "Save Changes" });
       actions.append(removeBtn, badge, staleNote, spacer, cancelBtn, saveBtn);
       removeBtn.addEventListener("click", () => void this.removeDevice(entry, removeBtn));
 
@@ -1199,7 +1189,7 @@ export class DashboardView {
         supportedRates: entry.device.supportedRates,
         supportedChannels: entry.device.supportedChannels,
         idStable: entry.device.idStable,
-      });
+      }, () => this.render());
       entry.settingsForm = form;
       // Record what the form was built from, so an out-of-band change is detected.
       // Cache its config key now: formSource is fixed until the form is rebuilt,
