@@ -42,7 +42,8 @@ BirdNET-Go itself runs on.
 
 ## Install
 
-Prebuilt releases for Linux **amd64** and **arm64** are on the
+Prebuilt releases for Linux **amd64**, **arm64**, and **32-bit arm** (ARMv6,
+for older Raspberry Pis) are on the
 [releases page](https://github.com/tphakala/birdnet-go-remote-mic/releases).
 Every method below installs the same `remote-mic` binary; pick whichever suits
 the host.
@@ -80,8 +81,7 @@ sudo install -m 0755 remote-mic /usr/local/bin/remote-mic
 
 ### Build from source
 
-Requires Go (version in `go.mod`) and Node (for the web UI). The 32-bit
-Raspberry Pi target (`arm`) has no prebuilt release, so build it here:
+Requires Go (version in `go.mod`) and Node (for the web UI):
 
 ```sh
 git clone https://github.com/tphakala/birdnet-go-remote-mic
