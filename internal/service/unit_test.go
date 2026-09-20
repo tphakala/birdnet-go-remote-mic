@@ -29,7 +29,7 @@ func TestRenderDefaults(t *testing.T) {
 		"Group=remote-mic",
 		"SupplementaryGroups=audio",
 		"Environment=REMOTEMIC_CONFIG=/etc/remote-mic/config.yaml",
-		"ExecStartPre=-/usr/local/bin/remote-mic serve --check",
+		"ExecStartPre=-/usr/local/bin/remote-mic serve --check --cert-dir=/var/lib/remote-mic",
 		"ExecStart=/usr/local/bin/remote-mic serve --cert-dir=/var/lib/remote-mic",
 		"Restart=on-failure",
 		"WorkingDirectory=/var/lib/remote-mic",

@@ -27,7 +27,7 @@ User={{.User}}
 Group={{.Group}}
 SupplementaryGroups=audio
 Environment=REMOTEMIC_CONFIG={{.ConfigPath}}
-ExecStartPre=-{{.BinPath}} serve --check
+ExecStartPre=-{{.BinPath}} serve --check --cert-dir={{.StateDir}}
 ExecStart={{.BinPath}} serve --cert-dir={{.StateDir}}
 Restart=on-failure
 RestartSec=5
