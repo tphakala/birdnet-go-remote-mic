@@ -1706,20 +1706,24 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* The transient "copied" success pulse, shared by both copy chips. Placed AFTER
-   the focus rules on purpose: when a chip is copied while keyboard-focused, the
-   green confirmation must win the border/background/box-shadow cascade so it is
-   not hidden by the focus ring. The green glow is itself a visible focus
-   indicator during the ~1.6s pulse (and the transparent focus outline still
-   paints in forced-colors mode), so keyboard place is never lost. */
+   the focus rules on purpose: the green confirmation wins the border/background
+   cascade so it is not hidden by the focus ring. */
 .copy-btn.copied,
-.copy-btn.copied:focus-visible,
-.lock-tag.copied,
-.lock-tag.copied:focus-visible {
+.lock-tag.copied {
   background: var(--signal-ok-bg);
   border-color: var(--signal-ok);
   color: var(--signal-ok-text);
   box-shadow: 0 0 10px var(--signal-ok-glow);
   animation: copy-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+/* A keyboard-focused copied control keeps a DISTINCT focus indicator: layer the
+   focus bloom over the green success glow so both read at once. This wins the
+   box-shadow cascade over the earlier :hover:focus-visible rule (equal
+   specificity, later in source), so the focus ring is never lost during the
+   pulse while the success cue still shows. */
+.copy-btn.copied:focus-visible,
+.lock-tag.copied:focus-visible {
+  box-shadow: var(--focus-glow), 0 0 10px var(--signal-ok-glow);
 }
 .copy-btn.copied .icon-copy,
 .lock-tag.copied .icon-copy {

@@ -61,7 +61,7 @@ export function setFieldError(field, input, errorEl, message) {
 // CLIPBOARD_UNAVAILABLE_MSG is shown when the Clipboard API is absent (an
 // insecure plain-http origin, or an embedded browser). Defined once so every
 // copy path reports it identically.
-export const CLIPBOARD_UNAVAILABLE_MSG = "Copy is unavailable in this browser; a secure (https) connection is required.";
+export const CLIPBOARD_UNAVAILABLE_MSG = "Copy is unavailable in this browser; it may need a secure (https) connection.";
 // writeToClipboard is the shared clipboard primitive: it never throws, reporting
 // the outcome instead. "unavailable" means the Clipboard API is absent; "failed"
 // means the write was rejected; "ok" means it succeeded. The availability check
@@ -69,7 +69,11 @@ export const CLIPBOARD_UNAVAILABLE_MSG = "Copy is unavailable in this browser; a
 // Copy URL bug) or leak an unhandled rejection. Callers add their own feedback (a
 // toast, a button pulse) on the result.
 export async function writeToClipboard(value) {
-    if (!navigator.clipboard)
+    // The Clipboard API is missing outright, or present but unusable outside a
+    // secure context (plain http on a non-localhost origin, and some embedded
+    // browsers). Treat both as "unavailable" so the caller shows the actionable
+    // message instead of a bare "Copy failed".
+    if (!navigator.clipboard || window.isSecureContext === false)
         return "unavailable";
     try {
         await navigator.clipboard.writeText(value);

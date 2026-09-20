@@ -282,13 +282,18 @@ export class DeviceSettingsForm {
         this.element.appendChild(field);
     }
     // identityHint explains the persisted id: for a card-index id (idStable false)
-    // it warns it can change and gives the remedy; otherwise it says the id is
-    // stable across reboots and re-plugging.
+    // it warns it can change and gives the remedy; for a stable id it says the id
+    // follows the hardware; and when the stability is unknown (idStable absent,
+    // e.g. the hardware could not be matched or probed) it says so rather than
+    // claiming the id is stable.
     identityHint() {
         if (this.hardware.idStable === false) {
             return "This id is a card index and can change after a reboot or replug. Remove and re-add this device to pin it by its stable identity.";
         }
-        return "The stable id this device is pinned to. It follows the hardware across reboots and re-plugging into another port.";
+        if (this.hardware.idStable === true) {
+            return "The stable id this device is pinned to. It follows the hardware across reboots and re-plugging into another port.";
+        }
+        return "The stability of this id is unknown: the hardware could not be matched or probed.";
     }
     // syncDefaultBitrate moves the Opus bitrate to the default for the selected
     // channel count while it is still following the default. It is a no-op outside
