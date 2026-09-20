@@ -211,8 +211,7 @@ func (a *appliance) refreshHardware(cfg *config.Config) {
 		}
 		h, err := a.resolve(id)
 		hw[id] = hwResult{hw: h, err: err}
-		switch {
-		case err == nil:
+		if err == nil {
 			// Claim both the resolved stable id and the port-form id. When two
 			// identical USB units share a serial, the enumeration offers each unit
 			// under its PortID (offeredIDs), so an owned unit whose config entry
@@ -222,19 +221,19 @@ func (a *appliance) refreshHardware(cfg *config.Config) {
 			if h.PortID != "" {
 				ids[h.PortID] = true
 			}
-		default:
-			// A config entry naming a same-serial twin by its shared serial resolves
-			// ambiguous once the second unit is plugged in: the entry cannot open (it
-			// is skipped ambiguous), but the matches are the very units the
-			// enumeration now offers under their port ids. Claim every match so
-			// neither twin is re-offered as available and re-provisioned into a dead
-			// entry while the ambiguous entry stands; the operator's remedy is to
-			// delete it and re-add each unit by its port id.
-			var amb *capture.AmbiguousDeviceError
-			if errors.As(err, &amb) {
-				for _, m := range amb.Matches {
-					ids[m] = true
-				}
+			continue
+		}
+		// A config entry naming a same-serial twin by its shared serial resolves
+		// ambiguous once the second unit is plugged in: the entry cannot open (it is
+		// skipped ambiguous), but the matches are the very units the enumeration now
+		// offers under their port ids. Claim every match so neither twin is
+		// re-offered as available and re-provisioned into a dead entry while the
+		// ambiguous entry stands; the operator's remedy is to delete it and re-add
+		// each unit by its port id.
+		var amb *capture.AmbiguousDeviceError
+		if errors.As(err, &amb) {
+			for _, m := range amb.Matches {
+				ids[m] = true
 			}
 		}
 	}
