@@ -71,6 +71,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return runDevices(args[1:], stdout, stderr)
 	case "token":
 		return runToken(args[1:], stdout, stderr)
+	case "service":
+		return runService(args[1:], stdout, stderr)
 	case "serve":
 		return toExit(serveFn(args[1:], stderr), stderr)
 	}
@@ -153,6 +155,7 @@ Usage:
   remote-mic [serve] [flags]     capture and serve (the default)
   remote-mic token <command>     manage the shared access token (get, generate, set, clear)
   remote-mic devices <command>   inspect capture devices (list)
+  remote-mic service <command>   install and manage the systemd service (install, uninstall, status)
   remote-mic version             print version and exit
 
 Commands that read the config take --config, which defaults to $`+configEnv+`
