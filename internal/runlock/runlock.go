@@ -57,18 +57,40 @@ type Lock struct {
 // When the config file does not exist yet (a first-run token command that will
 // create it), its own symlinks cannot be resolved, so the directory is resolved
 // instead and the base name appended: two spellings of a not-yet-created config
-// that share a resolved directory still take one lock. Only when neither the
-// file nor its directory resolves is the literal path used.
+// that share a resolved directory still take one lock. If the base is itself a
+// dangling symlink (its target not created yet), the link is followed one hop so
+// the link and its future target still converge on one lock. Only when the
+// directory cannot be resolved is the literal path used.
 func PathFor(cfgPath string) string {
 	if resolved, err := filepath.EvalSymlinks(cfgPath); err == nil {
 		return resolved + ".lock"
 	}
-	if dir, base := filepath.Split(cfgPath); base != "" {
-		if resolvedDir, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(resolvedDir, base) + ".lock"
-		}
+	dir, base := filepath.Split(cfgPath)
+	if base == "" {
+		return cfgPath + ".lock"
 	}
-	return cfgPath + ".lock"
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return cfgPath + ".lock"
+	}
+	full := filepath.Join(resolvedDir, base)
+	// A dangling final symlink (its target not created yet) fails the
+	// EvalSymlinks above; follow it one hop and derive the lock beside the
+	// target's own resolved directory, so the link and its future target converge
+	// on one lock exactly as PathFor(target) would, even when the target is
+	// absolute or its directory is itself a symlink.
+	if target, err := os.Readlink(full); err == nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(resolvedDir, target)
+		}
+		if tDir, tBase := filepath.Split(target); tBase != "" {
+			if resolvedTDir, err := filepath.EvalSymlinks(tDir); err == nil {
+				return filepath.Join(resolvedTDir, tBase) + ".lock"
+			}
+		}
+		return filepath.Clean(target) + ".lock"
+	}
+	return full + ".lock"
 }
 
 // TryAcquire takes the lock at path without waiting, creating the file (0600)

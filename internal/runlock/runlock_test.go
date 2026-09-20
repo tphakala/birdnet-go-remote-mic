@@ -230,6 +230,27 @@ func TestPathFor(t *testing.T) {
 	if viaReal != viaLink {
 		t.Errorf("first-run parent symlink: PathFor(real) = %q != PathFor(link) = %q", viaReal, viaLink)
 	}
+
+	// A dangling final symlink (its target not created yet) derives the target's
+	// lock, so the link and its future target converge rather than taking
+	// separate locks. This must hold for a relative target and for an absolute
+	// target whose directory is itself a symlink (realDir/linkDir from above).
+	relDangling := filepath.Join(dir, "rel-dangling.yaml")
+	if err := os.Symlink("future.yaml", relDangling); err != nil {
+		t.Fatal(err)
+	}
+	if got, wantConv := PathFor(relDangling), PathFor(filepath.Join(dir, "future.yaml")); got != wantConv {
+		t.Errorf("relative dangling: PathFor(link) = %q != PathFor(target) = %q", got, wantConv)
+	}
+
+	absTarget := filepath.Join(linkDir, "abs-future.yaml") // linkDir -> realDir; abs-future.yaml never created
+	absDangling := filepath.Join(dir, "abs-dangling.yaml")
+	if err := os.Symlink(absTarget, absDangling); err != nil {
+		t.Fatal(err)
+	}
+	if got, wantConv := PathFor(absDangling), PathFor(absTarget); got != wantConv {
+		t.Errorf("absolute dangling: PathFor(link) = %q != PathFor(target) = %q", got, wantConv)
+	}
 }
 
 // TestTryAcquireOpenError asserts a lock file that cannot be created is a plain
