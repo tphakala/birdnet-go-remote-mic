@@ -50,11 +50,17 @@ func CandidateChannels() []int { return slices.Clone(candidateChannels) }
 // current-boot ALSA address ("hw:4,0"), for display and logs only: the kernel
 // assigns card indices in probe order, so it must never be persisted. Label is
 // the short sound-card name for display.
+//
+// PortID is the port-form id for a USB card whose physical port could be derived,
+// empty otherwise. It is the id the enumeration offers for a unit that shares a
+// serial with a twin (see offeredIDs), so the appliance claims it alongside ID
+// when deciding which detected devices the config already owns.
 type Hardware struct {
 	ID       string
 	HWAddr   string
 	Label    string
 	IDStable bool
+	PortID   string
 }
 
 // DetectedDevice is one capture device the host exposes, with the capabilities

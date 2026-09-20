@@ -54,6 +54,12 @@ func Enumerate() ([]Hardware, error) {
 // so it distinguishes the twins where the shared serial cannot, and it is
 // openable. A duplicate with no derivable PortID keeps the shared ID (there is
 // nothing better to offer). A unique device always keeps its own ID.
+//
+// The offered id is therefore a function of what is plugged in right now: a lone
+// unit is offered its serial id, but plugging in a twin makes the same unit be
+// offered its port id instead. A caller that persists an offered id (the config)
+// must treat both forms as the same hardware; refreshHardware does, claiming a
+// resolved unit's PortID and an ambiguous entry's matches alongside its id.
 func offeredIDs(devs []capture.DeviceInfo) []string {
 	counts := make(map[string]int, len(devs))
 	for i := range devs {
@@ -88,7 +94,7 @@ func Resolve(id string) (Hardware, error) {
 
 // hardwareFrom maps the library's device record to the app's view of it.
 func hardwareFrom(d *capture.DeviceInfo) Hardware {
-	return Hardware{ID: d.ID, HWAddr: d.HWAddr, Label: FriendlyName(d.Name), IDStable: d.IDStable}
+	return Hardware{ID: d.ID, HWAddr: d.HWAddr, Label: FriendlyName(d.Name), IDStable: d.IDStable, PortID: d.PortID}
 }
 
 // DetectDevices enumerates the capture devices the host exposes and probes each

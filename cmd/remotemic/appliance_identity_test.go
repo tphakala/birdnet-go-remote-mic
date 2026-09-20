@@ -52,7 +52,10 @@ func (h *fakeHost) resolve(id string) (audio.Hardware, error) {
 	}
 	var hit []audio.Hardware
 	for _, d := range h.devs {
-		if d.ID == id || d.HWAddr == id {
+		// The library matches a stable id against a device's own id OR its port id
+		// (which is what lets a caller pin one same-serial twin by port); a
+		// card-index id matches by the current-boot address.
+		if d.ID == id || d.HWAddr == id || (d.PortID != "" && d.PortID == id) {
 			hit = append(hit, d)
 		}
 	}
@@ -62,9 +65,16 @@ func (h *fakeHost) resolve(id string) (audio.Hardware, error) {
 	case 1:
 		return hit[0], nil
 	}
+	// Mirror the library: an ambiguous match lists each unit's PortID so the caller
+	// can pin one by port, falling back to the current-boot address for a match
+	// with no derivable port.
 	matches := make([]string, 0, len(hit))
 	for _, d := range hit {
-		matches = append(matches, d.HWAddr)
+		pin := d.PortID
+		if pin == "" {
+			pin = d.HWAddr
+		}
+		matches = append(matches, pin)
 	}
 	return audio.Hardware{}, &capture.AmbiguousDeviceError{ID: id, Matches: matches}
 }
@@ -157,6 +167,66 @@ func TestReconcileRefusesAmbiguousDevice(t *testing.T) {
 	}
 	if opened(log, "moth") {
 		t.Errorf("an ambiguous device was opened: %v", log.snapshot())
+	}
+}
+
+// twin ids for the same-serial cases below: a shared serial-form id and the two
+// distinct port-form ids the enumeration offers for the two units.
+const (
+	twinSerial = "usb:16d0:06f3:s=SAME:if=0,0"
+	twinPortA  = "usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0"
+	twinPortB  = "usb:16d0:06f3:p=0000:01:00.0-1.2:if=0,0"
+)
+
+// TestReconcileClaimsTwinPortIDsWhenSerialAmbiguous pins the #66 fix: a config
+// entry naming two identical USB units by their shared serial resolves ambiguous
+// (and is skipped), but the appliance still claims both units' port ids as
+// configured, so neither twin is re-offered as available and re-provisioned into a
+// dead entry. The operator's remedy is to delete the ambiguous entry and re-add
+// each unit by its port id.
+func TestReconcileClaimsTwinPortIDsWhenSerialAmbiguous(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: twinSerial, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true, PortID: twinPortA},
+		{ID: twinSerial, HWAddr: addrHW4, Label: nameAudioMoth, IDStable: true, PortID: twinPortB},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", twinSerial, "/m", 48000)}})
+
+	if rt := app.devices["moth"]; rt.currentState() != mgmtserver.StateSkipped || !strings.Contains(rt.err, "ambiguous") {
+		t.Fatalf("moth = %s %q, want skipped as ambiguous", rt.currentState(), rt.err)
+	}
+	ids := app.prov.configuredIDs()
+	if !ids[twinSerial] || !ids[twinPortA] || !ids[twinPortB] {
+		t.Errorf("configured ids = %v, want the serial and both twin port ids so neither unit is re-offered as available", ids)
+	}
+}
+
+// TestReconcileClaimsResolvedPortIDForBoundTwin pins that a config entry bound to
+// one twin by its port id claims both the resolved serial and that port id, while
+// the OTHER twin stays available for provisioning.
+func TestReconcileClaimsResolvedPortIDForBoundTwin(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: twinSerial, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true, PortID: twinPortA},
+		{ID: twinSerial, HWAddr: addrHW4, Label: nameAudioMoth, IDStable: true, PortID: twinPortB},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", twinPortA, "/m", 48000)}})
+
+	if rt := app.devices["moth"]; rt.currentState() != mgmtserver.StateServing {
+		t.Fatalf("moth = %s %q, want serving (bound to one twin by its port id)", rt.currentState(), rt.err)
+	}
+	ids := app.prov.configuredIDs()
+	if !ids[twinPortA] || !ids[twinSerial] {
+		t.Errorf("configured ids = %v, want the bound port id and its resolved serial", ids)
+	}
+	if ids[twinPortB] {
+		t.Errorf("configured ids = %v, must NOT claim the other twin: it stays available for provisioning", ids)
 	}
 }
 
