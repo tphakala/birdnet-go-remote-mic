@@ -230,6 +230,32 @@ func TestReconcileClaimsResolvedPortIDForBoundTwin(t *testing.T) {
 	}
 }
 
+// TestReconcileClaimsPortIDForCardIndexTwin pins the clean-resolve PortID claim: a
+// twin configured by its card index resolves cleanly (one match, by address) to a
+// unit whose stable id is the shared serial and whose port id is twinPortA. That
+// port id is claimed ONLY by the h.PortID branch of refreshHardware (the config id
+// is the card index and the stable id is the serial, so neither adds twinPortA), so
+// this reddens if that branch is dropped. The other twin stays available.
+func TestReconcileClaimsPortIDForCardIndexTwin(t *testing.T) {
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	withHost(app, &fakeHost{devs: []audio.Hardware{
+		{ID: twinSerial, HWAddr: addrHW3, Label: nameAudioMoth, IDStable: true, PortID: twinPortA},
+		{ID: twinSerial, HWAddr: addrHW4, Label: nameAudioMoth, IDStable: true, PortID: twinPortB},
+	}})
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", addrHW3, "/m", 48000)}})
+
+	ids := app.prov.configuredIDs()
+	if !ids[twinPortA] {
+		t.Errorf("configured ids = %v, want the resolved unit's port id %q claimed via h.PortID", ids, twinPortA)
+	}
+	if ids[twinPortB] {
+		t.Errorf("configured ids = %v, must NOT claim the other twin %q", ids, twinPortB)
+	}
+}
+
 // TestResolveErrorClassifiesMalformedID pins that a malformed id (one the
 // capture library rejects with *BadDeviceError) is classified as malformed, not
 // lumped in with a card index that "can change across reboots".
@@ -272,21 +298,21 @@ func TestReconcileSkipsMalformedID(t *testing.T) {
 	}
 }
 
-// TestMarkFailedClearsStaleAddress pins that a device whose pump dies drops its
-// last-known address: the kernel can reassign that card index to another device
-// before the entry is retried, so advertising the stale hw:N,D would point the
-// operator at the wrong hardware.
-func TestMarkFailedClearsStaleAddress(t *testing.T) {
+// TestFailedDeviceStatusOmitsStaleAddress pins that a device whose pump dies does
+// not report its last-known address in the API view: the kernel can reassign that
+// card index to another device before the entry is retried, so a stale hw:N,D
+// would point the operator at the wrong hardware. The suppression is at read time
+// (status), not a mutation of the record, so hwAddr stays immutable after publish
+// and does not race the API readers.
+func TestFailedDeviceStatusOmitsStaleAddress(t *testing.T) {
 	rt := &deviceRuntime{hwAddr: addrHW3}
 	rt.markFailed(errors.New("EIO"))
-	rt.mu.Lock()
-	addr, state := rt.hwAddr, rt.state
-	rt.mu.Unlock()
-	if state != mgmtserver.StateFailed {
-		t.Errorf("state = %s, want failed", state)
+	st := rt.status()
+	if st.State != mgmtserver.StateFailed {
+		t.Errorf("state = %s, want failed", st.State)
 	}
-	if addr != "" {
-		t.Errorf("hwAddr = %q, want cleared after markFailed", addr)
+	if st.HWAddr != "" {
+		t.Errorf("status HWAddr = %q, want empty for a failed device (a stale address may name other hardware)", st.HWAddr)
 	}
 }
 

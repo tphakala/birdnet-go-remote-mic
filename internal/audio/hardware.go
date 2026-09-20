@@ -59,8 +59,8 @@ type Hardware struct {
 	ID       string
 	HWAddr   string
 	Label    string
-	IDStable bool
 	PortID   string
+	IDStable bool
 }
 
 // DetectedDevice is one capture device the host exposes, with the capabilities

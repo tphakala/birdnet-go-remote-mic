@@ -185,10 +185,10 @@ func resolveError(dev *config.Device, err error) (cause, msg string) {
 	case errors.As(err, &amb):
 		return downAmbiguous, fmt.Sprintf("ambiguous: %s matches %d devices (%s); bind it to one of them by port", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
 	case errors.As(err, &bad):
-		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is not a card index
-		// that "can change across reboots"; it is not in any accepted form and can
-		// never open. Report it as malformed so the operator fixes the id rather than
-		// waiting for a reboot to fix an address.
+		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is in no accepted
+		// form and can never open. IsCardIndexID classifies these by shape as card
+		// indexes, but unlike a real card index no reboot can make them resolve, so
+		// report them as malformed and tell the operator to fix the id.
 		return downMalformed, fmt.Sprintf("malformed device id %s: %v; re-add the device to bind it to real hardware", dev.Device, err)
 	default:
 		return downResolve, fmt.Sprintf("cannot resolve %s: %v", dev.Device, err)
@@ -197,9 +197,12 @@ func resolveError(dev *config.Device, err error) (cause, msg string) {
 
 // refreshHardware resolves every configured device id against the host's
 // current hardware and publishes the ids the configuration owns to the
-// background enumeration. The published set holds both the configured id and
-// the stable id it resolved to, so a device configured by a card index is still
-// recognised as configured under the stable id the enumeration lists it by.
+// background enumeration. The published set holds the configured id plus every id
+// form the resolution recognises it under: the stable id it resolved to, its port
+// id, and, for an entry that resolves ambiguously (a same-serial twin named by its
+// shared serial), each matching unit's port id. So a device configured by a card
+// index, or an owned same-serial twin, is still recognised as configured and not
+// re-offered as available.
 func (a *appliance) refreshHardware(cfg *config.Config) {
 	hw := make(map[string]hwResult, len(cfg.Devices))
 	ids := make(map[string]bool, 2*len(cfg.Devices))
@@ -418,10 +421,13 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		var amb *capture.AmbiguousDeviceError
 		var bad *capture.BadDeviceError
 		// A malformed id (*BadDeviceError) is refused here rather than falling
-		// through to an open that can only fail: it is not a card index, so it must
-		// not be opened unresolved (the container fallback), and reporting it as
-		// malformed is more useful than a generic open failure mislabelled as a card
-		// index a few lines down.
+		// through to an open that can only fail. IsCardIndexID returns true for a
+		// malformed id (for example "plughw:1,0"), so the !IsCardIndexID term does
+		// NOT catch it; the explicit errors.As(&bad) term is what refuses it, and
+		// reporting it as malformed is more useful than a generic open failure
+		// mislabelled as a card index a few lines down. A card index whose
+		// enumeration merely failed resolves to a wrapped ErrDeviceGone, not
+		// *BadDeviceError, so it still falls through to the container-fallback open.
 		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) || errors.As(res.err, &bad) {
 			cause, msg := resolveError(dev, res.err)
 			title := "Device unavailable"

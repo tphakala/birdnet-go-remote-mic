@@ -405,9 +405,9 @@ func (p *provider) runEnumeration(ctx context.Context) {
 	// the first enumeration signals whenever the host exposes any device.
 	var last string
 	// first distinguishes the startup enumeration: last starts empty, so the first
-	// pass always reads as "changed" though nothing actually changed. It only kicks
-	// the startup retry, so it is logged as an initial enumeration rather than as a
-	// hardware change that never happened.
+	// pass reads as "changed" whenever the host exposes any device, though nothing
+	// actually changed. It only kicks the startup retry, so it is logged as an
+	// initial enumeration rather than as a hardware change that never happened.
 	first := true
 	detect := func() {
 		det, err := detectDevices(p.configuredIDs())
@@ -490,18 +490,17 @@ func (p *provider) Device(name string) (mgmtserver.DeviceStatus, bool) {
 	return mgmtserver.DeviceStatus{}, false
 }
 
-// markFailed records that a device's pump died after startup.
+// markFailed records that a device's pump died after startup. It does not touch
+// hwAddr: that field is static per record (set once before the record is
+// published, then read lock-free), so the stale-address suppression for a failed
+// device is done at read time in status() instead, which keeps the field
+// immutable-after-publish and free of a data race with the API readers.
 func (rt *deviceRuntime) markFailed(err error) {
 	rt.mu.Lock()
 	rt.state = mgmtserver.StateFailed
 	if err != nil {
 		rt.err = err.Error()
 	}
-	// Drop the last-known address: the device is no longer capturing at it, and the
-	// kernel can reassign that card index to another device before this entry is
-	// retried, so reporting the stale hw:N,D would point at the wrong hardware. The
-	// next successful retry rebuilds the record with the current address.
-	rt.hwAddr = ""
 	rt.mu.Unlock()
 }
 
@@ -518,13 +517,24 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	state, errMsg := rt.state, rt.err
 	rt.mu.Unlock()
 
+	// A device that died after startup is no longer capturing at its last-known
+	// address, and the kernel can reassign that card index to another device before
+	// this entry is retried, so a failed device does not report its stale hw:N,D
+	// (which may now name different hardware). hwAddr stays set on the record (it is
+	// static per record and read lock-free here alongside friendlyName); this hides
+	// it only in the failed view, so a later successful retry surfaces it again.
+	hwAddr := rt.hwAddr
+	if state == mgmtserver.StateFailed {
+		hwAddr = ""
+	}
+
 	ds := mgmtserver.DeviceStatus{
 		Config:            rt.dev,
 		State:             state,
 		Error:             errMsg,
 		DroppedFrames:     int64(rt.droppedTotal()),
 		FriendlyName:      rt.friendlyName,
-		HWAddr:            rt.hwAddr,
+		HWAddr:            hwAddr,
 		IDStable:          !config.IsCardIndexID(rt.dev.Device),
 		SupportedRates:    rt.supportedRates,
 		SupportedChannels: rt.supportedChannels,
