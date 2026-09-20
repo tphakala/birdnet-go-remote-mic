@@ -250,14 +250,14 @@ func TestStartManagementServesNotifications(t *testing.T) {
 	}
 }
 
-func TestProviderStatusAuthRequired(t *testing.T) {
+func TestProviderAuthRequired(t *testing.T) {
 	p := newProvider()
-	if p.Status().AuthRequired {
+	if p.authRequired() {
 		t.Fatal("a fresh provider must report open access")
 	}
 	p.setAuthRequired(true)
-	if !p.Status().AuthRequired {
-		t.Error("setAuthRequired(true) must be reported by Status")
+	if !p.authRequired() {
+		t.Error("setAuthRequired(true) must be reported by authRequired")
 	}
 }
 

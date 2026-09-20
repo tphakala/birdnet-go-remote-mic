@@ -101,10 +101,10 @@ func newTokenFlags(name, synopsis, summary string, stderr io.Writer) (fs *flag.F
 // parseNoArgs parses args into fs and rejects stray positional arguments.
 func parseNoArgs(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
-		return err
+		return parseFailed(err)
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument(s): %s", strings.Join(fs.Args(), " "))
+		return badUsage(fmt.Errorf("unexpected argument(s): %s", strings.Join(fs.Args(), " ")))
 	}
 	return nil
 }
@@ -178,10 +178,10 @@ func runTokenSet(args []string, stderr io.Writer) error {
 			"terminal). The token is 12-128 characters of letters, digits, and . _ ~ -", stderr)
 	quiet := fs.Bool("quiet", false, "print nothing on success")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return parseFailed(err)
 	}
 	if fs.NArg() > 0 {
-		return errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt")
+		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
 	}
 	token, err := readNewToken(stderr)
 	if err != nil {
@@ -203,12 +203,16 @@ func runTokenSet(args []string, stderr io.Writer) error {
 // readNewToken reads the token for token set.
 func readNewToken(stderr io.Writer) (string, error) {
 	if !stdinIsTerminal() {
-		b, err := io.ReadAll(io.LimitReader(stdin, maxTokenInput))
-		if err != nil {
+		// Read only the first line so a token piped interactively
+		// (ssh host remote-mic token set) returns as soon as Enter is pressed,
+		// rather than blocking until the sender closes stdin (EOF). ReadString
+		// stops at the newline, or at EOF for input with no trailing newline;
+		// LimitReader caps a stream that carries neither.
+		line, err := bufio.NewReader(io.LimitReader(stdin, maxTokenInput)).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
 			return "", fmt.Errorf("read token from stdin: %w", err)
 		}
-		token, _, _ := strings.Cut(string(b), "\n")
-		token = strings.TrimSpace(token)
+		token := strings.TrimSpace(line)
 		if token == "" {
 			return "", errors.New("no token on stdin")
 		}
@@ -257,7 +261,7 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	}
 	if cfg.Auth.Token == "" {
 		if !*quiet {
-			out(stderr, "No access token is set in %s; the appliance is already open.\n", *cfgPath)
+			out(stderr, "No access token is set in %s; the appliance is already open.\n", absPath(*cfgPath))
 		}
 		return nil
 	}
@@ -268,7 +272,8 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	var alreadyOpen bool
 	res, err := changeToken(*cfgPath, "", func(cur string) error {
 		if cur == "" {
-			// Cleared between the load above and this edit under the lock.
+			// Cleared between the load above and this change (the file edit runs
+			// under the lock; a live change goes through the management API).
 			alreadyOpen = true
 			return errNoChange
 		}
@@ -277,7 +282,7 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	switch {
 	case alreadyOpen:
 		if !*quiet {
-			out(stderr, "No access token is set in %s; the appliance is already open.\n", *cfgPath)
+			out(stderr, "No access token is set in %s; the appliance is already open.\n", absPath(*cfgPath))
 		}
 		return nil
 	case err != nil:
@@ -374,14 +379,9 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 		return res, saveToken(cfgPath, token, check)
 	}
 
-	cfg, err := config.LoadOrDefault(cfgPath)
+	cfg, err := loadConfigForChange(cfgPath, check)
 	if err != nil {
-		return res, withPermHint(err)
-	}
-	if check != nil {
-		if err := check(cfg.Auth.Token); err != nil {
-			return res, err
-		}
+		return res, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
 	defer cancel()
@@ -396,17 +396,29 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 	return res, nil
 }
 
-// saveToken edits the config file directly: load (or default, for a first run
-// with no file yet), check, set, and save atomically at 0600.
-func saveToken(cfgPath, token string, check func(cur string) error) error {
+// loadConfigForChange loads the config (or defaults, for a first run with no
+// file yet) and, when check is non-nil, lets it inspect the current token and
+// veto the change. Both the file-edit path (saveToken) and the live-API path
+// (changeToken) share this prologue.
+func loadConfigForChange(cfgPath string, check func(cur string) error) (config.Config, error) {
 	cfg, err := config.LoadOrDefault(cfgPath)
 	if err != nil {
-		return withPermHint(err)
+		return cfg, withPermHint(err)
 	}
 	if check != nil {
 		if err := check(cfg.Auth.Token); err != nil {
-			return err
+			return cfg, err
 		}
+	}
+	return cfg, nil
+}
+
+// saveToken edits the config file directly: load (or default, for a first run
+// with no file yet), check, set, and save atomically at 0600.
+func saveToken(cfgPath, token string, check func(cur string) error) error {
+	cfg, err := loadConfigForChange(cfgPath, check)
+	if err != nil {
+		return err
 	}
 	cfg.Auth.Token = token
 	return withPermHint(config.Save(cfgPath, &cfg))

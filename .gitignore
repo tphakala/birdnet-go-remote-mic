@@ -23,8 +23,9 @@ coverage.txt
 
 # Runtime artifacts
 *.pid
-# Run lock a serving appliance holds beside its config.
+# Run lock a serving appliance holds beside its config (either config extension).
 *.yaml.lock
+*.yml.lock
 
 # Local tool caches
 cache/

@@ -46,11 +46,8 @@ type ApplianceStatus struct {
 	Uptime           time.Duration
 	RTSPListen       string
 	DiscoveryEnabled bool
-	// AuthRequired is whether a shared access token is configured, so the API,
-	// web UI and RTSP stream demand credentials.
-	AuthRequired   bool
-	DevicesServing int
-	DevicesTotal   int
+	DevicesServing   int
+	DevicesTotal     int
 	// Overrides lists the config fields whose effective (running) value differs
 	// from the persisted config because a serve CLI flag overrode it. Empty when
 	// no serve overrides are active for this run.
@@ -243,12 +240,13 @@ func writeProblem(w http.ResponseWriter, status int, title, detail string) {
 
 // GetHealth handles GET /healthz.
 func (s *Server) GetHealth(_ context.Context, _ mgmtapi.GetHealthRequestObject) (mgmtapi.GetHealthResponseObject, error) {
-	// Snapshot is nil-safe: without a guard the appliance is open.
-	required, _ := s.guard.Snapshot()
 	return mgmtapi.GetHealth200JSONResponse{
-		Status:       mgmtapi.Ok,
-		Version:      s.provider.Version(),
-		AuthRequired: required,
+		Status:  mgmtapi.Ok,
+		Version: s.provider.Version(),
+		// Enabled is nil-safe (without a guard the appliance is open) and reports
+		// the live enforcement state, so /healthz and /status give the same
+		// answer even when a reload half-applied.
+		AuthRequired: s.guard.Enabled(),
 	}, nil
 }
 
@@ -260,9 +258,11 @@ func (s *Server) GetStatus(_ context.Context, _ mgmtapi.GetStatusRequestObject) 
 		UptimeSeconds:    int64(st.Uptime.Seconds()),
 		RtspListen:       st.RTSPListen,
 		DiscoveryEnabled: st.DiscoveryEnabled,
-		AuthRequired:     st.AuthRequired,
-		DevicesServing:   st.DevicesServing,
-		DevicesTotal:     st.DevicesTotal,
+		// From the guard, not the provider snapshot, so /status and /healthz agree
+		// on the live auth state (the guard is what actually gates requests).
+		AuthRequired:   s.guard.Enabled(),
+		DevicesServing: st.DevicesServing,
+		DevicesTotal:   st.DevicesTotal,
 	}
 	if len(st.Overrides) > 0 {
 		ovs := make([]mgmtapi.ConfigOverride, 0, len(st.Overrides))

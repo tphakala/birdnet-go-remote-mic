@@ -1,4 +1,7 @@
-//go:build unix
+// syscall.Flock and its LOCK_EX/LOCK_NB/EWOULDBLOCK constants are absent on aix
+// and solaris, so carve them out of the unix set. The appliance builds only for
+// linux; this keeps runlock buildable and vettable on the other unix platforms.
+//go:build unix && !aix && !solaris
 
 // Package runlock marks a running appliance with an advisory lock on a file
 // beside its config, and publishes where that appliance's management API
@@ -18,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -45,8 +49,25 @@ type Lock struct {
 	f *os.File
 }
 
-// PathFor returns the lock file path for the config file at cfgPath.
+// PathFor returns the lock file path for the config file at cfgPath. It resolves
+// symlinks so a config reached through a symlink and through its target map to
+// one lock file, rather than two locks that would each report no appliance
+// running and let a token command edit the file under a live appliance.
+//
+// When the config file does not exist yet (a first-run token command that will
+// create it), its own symlinks cannot be resolved, so the directory is resolved
+// instead and the base name appended: two spellings of a not-yet-created config
+// that share a resolved directory still take one lock. Only when neither the
+// file nor its directory resolves is the literal path used.
 func PathFor(cfgPath string) string {
+	if resolved, err := filepath.EvalSymlinks(cfgPath); err == nil {
+		return resolved + ".lock"
+	}
+	if dir, base := filepath.Split(cfgPath); base != "" {
+		if resolvedDir, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolvedDir, base) + ".lock"
+		}
+	}
 	return cfgPath + ".lock"
 }
 

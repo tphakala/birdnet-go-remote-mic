@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !aix && !solaris
 
 package runlock
 
@@ -180,8 +180,55 @@ func TestNilLockIsNoop(t *testing.T) {
 }
 
 func TestPathFor(t *testing.T) {
-	if got := PathFor("/etc/remotemic/config.yaml"); got != "/etc/remotemic/config.yaml.lock" {
-		t.Errorf("PathFor = %q, want the config path with .lock appended", got)
+	dir := t.TempDir()
+
+	// A path whose file and directory both fail to resolve falls back to the
+	// literal path with .lock appended.
+	missing := filepath.Join(dir, "nope", "config.yaml")
+	if got := PathFor(missing); got != missing+".lock" {
+		t.Errorf("PathFor(missing) = %q, want the literal path with .lock appended", got)
+	}
+
+	// A config reached through a symlink and through its target resolve to the
+	// same lock path, so the appliance and a token command that name it
+	// differently do not each take their own lock and both believe no appliance
+	// is running. The expected side is EvalSymlinks-resolved too, because the temp
+	// root itself may be a symlink (e.g. /var -> /private/var on macOS).
+	target := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(target, []byte("listen: :8554\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "config-link.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := resolvedTarget + ".lock"
+	if got := PathFor(link); got != want {
+		t.Errorf("PathFor(symlink) = %q, want the target's lock %q", got, want)
+	}
+	if got := PathFor(target); got != want {
+		t.Errorf("PathFor(target) = %q, want %q", got, want)
+	}
+
+	// A config that does not exist yet, reached through a symlinked PARENT
+	// directory, still maps to one lock: PathFor resolves the directory even
+	// though the leaf will only be created later.
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "linkdir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	viaReal := PathFor(filepath.Join(realDir, "new.yaml"))
+	viaLink := PathFor(filepath.Join(linkDir, "new.yaml"))
+	if viaReal != viaLink {
+		t.Errorf("first-run parent symlink: PathFor(real) = %q != PathFor(link) = %q", viaReal, viaLink)
 	}
 }
 

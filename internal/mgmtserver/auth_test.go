@@ -204,16 +204,37 @@ func TestAuthHotSwapAppliesToRequests(t *testing.T) {
 	}
 }
 
-func TestGetStatusMapsAuthRequired(t *testing.T) {
-	s := New(&fakeProvider{status: ApplianceStatus{Version: testVersion, AuthRequired: true}})
+func TestGetStatusReportsGuardAuth(t *testing.T) {
+	// /status reports authRequired from the guard (what actually gates requests),
+	// so it agrees with /healthz. An enabled guard reports true; no guard reports
+	// open access.
+	s := New(&fakeProvider{status: ApplianceStatus{Version: testVersion}}, WithAuth(auth.NewGuard(testAuthToken)))
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
-	got := doReq(t, srv, http.MethodGet, pathStatus, "")
+	got := doReq(t, srv, http.MethodGet, pathStatus, testAuthToken)
+	if got.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with a valid bearer", got.status)
+	}
 	var st mgmtapi.ApplianceStatus
 	if err := json.Unmarshal(got.body, &st); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if !st.AuthRequired {
-		t.Error("authRequired = false, want true")
+		t.Error("authRequired = false, want true with an enabled guard")
+	}
+
+	open := New(&fakeProvider{status: ApplianceStatus{Version: testVersion}})
+	osrv := httptest.NewServer(open.Handler())
+	defer osrv.Close()
+	og := doReq(t, osrv, http.MethodGet, pathStatus, "")
+	if og.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with no guard", og.status)
+	}
+	var ost mgmtapi.ApplianceStatus
+	if err := json.Unmarshal(og.body, &ost); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ost.AuthRequired {
+		t.Error("authRequired = true, want false with no guard")
 	}
 }
