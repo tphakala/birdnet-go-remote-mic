@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"time"
 
@@ -84,6 +85,13 @@ func probeChannelLevels(ctx context.Context, device string, rate, channels int) 
 	}
 	resultCh := make(chan result, 1)
 	go func() {
+		// Pin the probe's open and reads to one OS thread, as the capture library
+		// recommends for a reader goroutine, and release it on exit so the thread
+		// returns to the runtime after this ~1s measurement rather than being
+		// terminated. The matching Close runs on the calling goroutine (closeShared),
+		// as it already did.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		s, err := openProbeCapture(device, rate, channels)
 		<-probeOpenSlot
 		if err != nil {

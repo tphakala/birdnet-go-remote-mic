@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -46,15 +47,23 @@ const (
 // loudest are ties and the lowest-numbered of them wins; when every channel is
 // at or below channelSilenceDbfs, or levels is empty, it returns channel 1.
 func loudestChannel(levels []float64) int {
-	if len(levels) == 0 {
-		return 1
+	// Ignore any NaN reading. The RMS computation that feeds this cannot produce a
+	// NaN, but the policy is made explicit here: slices.Max would propagate a NaN
+	// into top, and every comparison below against a NaN top is false, so the
+	// function would silently fall through to channel 1. Skipping NaN means a real
+	// reading always decides the winner, and a channel with no real reading never
+	// wins.
+	top := math.Inf(-1)
+	for _, l := range levels {
+		if !math.IsNaN(l) && l > top {
+			top = l
+		}
 	}
-	top := slices.Max(levels)
 	if top <= channelSilenceDbfs {
 		return 1
 	}
 	for i, l := range levels {
-		if l >= top-channelTieDb {
+		if !math.IsNaN(l) && l >= top-channelTieDb {
 			return i + 1
 		}
 	}
