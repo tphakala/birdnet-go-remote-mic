@@ -61,7 +61,7 @@ export function setFieldError(field, input, errorEl, message) {
 // CLIPBOARD_UNAVAILABLE_MSG is shown when the Clipboard API is absent (an
 // insecure plain-http origin, or an embedded browser). Defined once so every
 // copy path reports it identically.
-export const CLIPBOARD_UNAVAILABLE_MSG = "Copy is unavailable in this browser; select the text and copy it manually.";
+export const CLIPBOARD_UNAVAILABLE_MSG = "Copy is unavailable in this browser; a secure (https) connection is required.";
 // writeToClipboard is the shared clipboard primitive: it never throws, reporting
 // the outcome instead. "unavailable" means the Clipboard API is absent; "failed"
 // means the write was rejected; "ok" means it succeeded. The availability check

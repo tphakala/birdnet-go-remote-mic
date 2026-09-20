@@ -359,6 +359,10 @@ func TestRunListDevicesShowsIdentity(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("got %d lines, want header plus 2:\n%s", len(lines), out.String())
 	}
+	// The address column is labelled ALSA (matching the web UI), not ADDRESS.
+	if h := lines[0]; !strings.Contains(h, "ID") || !strings.Contains(h, "ALSA") || !strings.Contains(h, "LABEL") {
+		t.Errorf("header = %q, want ID / ALSA / LABEL columns", h)
+	}
 	if f := strings.Fields(lines[1]); len(f) < 3 || f[0] != scarlettID || f[1] != addrHW4 || strings.Contains(lines[1], "no stable id") {
 		t.Errorf("scarlett row = %q, want id, address, label and no warning", lines[1])
 	}

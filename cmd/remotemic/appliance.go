@@ -183,9 +183,11 @@ func resolveError(dev *config.Device, err error) (cause, msg string) {
 	case errors.As(err, &nf):
 		return downNotConnected, fmt.Sprintf("Not connected: no device matches %s", dev.Device)
 	case errors.As(err, &amb):
-		// Remove-and-re-add is the remedy the web UI can perform (it enables an
-		// available unit by its own id); the old "bind it by port" advice only
-		// made sense for a CLI user editing the config file.
+		// The remedy works from either surface that shows this message (the web
+		// card and the CLI check): remove this entry and add each unit by its own
+		// id. The web UI enables each available unit by its id; a CLI user
+		// configures each by the id from `devices list`. The old "bind it by port"
+		// wording was config-file jargon the web UI could not act on.
 		return downAmbiguous, fmt.Sprintf("Ambiguous: %s matches %d devices (%s). Remove this entry and re-add each unit by its own id.", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
 	case errors.As(err, &bad):
 		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is in no accepted

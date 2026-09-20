@@ -1184,6 +1184,14 @@ textarea.field-input {
   cursor: not-allowed;
 }
 
+/* A read-only copy-only field (the device id, the certificate fingerprint) is
+   deliberately readonly rather than disabled so it stays focusable and
+   selectable. Give it a muted fill so it does not look editable, but keep the
+   text colour and the text cursor so the value stays readable and selectable. */
+.field-input[readonly] {
+  background: var(--bg-surface-raised);
+}
+
 .field-hint {
   font-size: 11px;
   color: var(--text-muted);
@@ -1704,7 +1712,9 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
    indicator during the ~1.6s pulse (and the transparent focus outline still
    paints in forced-colors mode), so keyboard place is never lost. */
 .copy-btn.copied,
-.lock-tag.copied {
+.copy-btn.copied:focus-visible,
+.lock-tag.copied,
+.lock-tag.copied:focus-visible {
   background: var(--signal-ok-bg);
   border-color: var(--signal-ok);
   color: var(--signal-ok-text);
@@ -2519,10 +2529,12 @@ select.field-input {
   cursor: pointer;
   user-select: none;
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-  /* Give the clickable token chip the same resting chrome as .copy-btn (a raised
-     surface and a solid border) so it reads as an actionable button rather than
-     blending into the static tech-tags beside it, which only hover revealed. */
-  background: var(--bg-surface);
+  /* Give the clickable token chip a resting chrome that reads as an actionable
+     button rather than blending into the static tech-tags beside it (which only
+     hover revealed). It sits on the card's own --bg-surface, so use the raised
+     fill: --bg-surface (as .copy-btn does on the darker endpoint strip) would be
+     invisible here, and the static tags use the darker --bg-page. */
+  background: var(--bg-surface-raised);
   border-color: var(--border-base);
   color: var(--text-secondary);
 }

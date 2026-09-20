@@ -253,7 +253,7 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 	out(w, "config OK: %d device(s), RTSP %s\n", len(cfg.Devices), cfg.Listen)
 	if _, derr := captureDevices(); derr != nil {
 		// The host enumeration failed wholesale (no readable device listing), so
-		// per-device resolution would fail too and print "cannot resolve" for
+		// per-device resolution would fail too and print "Cannot resolve" for
 		// every entry, which tells the operator nothing about the hardware. Report
 		// the probe failure once and mark every device unknown instead.
 		out(w, "  (device probe unavailable: %v)\n", derr)
