@@ -3,7 +3,7 @@
 // concerns (open/close, focus, keyboard, DOM). All state lives in the store and
 // its pure core.
 
-import { elem, formatRelative, setHidden, setText } from "../lib/ui.js";
+import { button, elem, formatRelative, setHidden, setText } from "../lib/ui.js";
 import { TOAST_ICONS, ICON_CLOSE, type ToastType } from "./toast.js";
 import { activeConditions, unreadCount, type CoreState } from "../lib/notifications-core.js";
 import type { Notification, NotificationSeverity } from "../lib/types.js";
@@ -78,13 +78,9 @@ export class NotificationCenter {
     const title = elem("h2", "notif-panel-title", "Notifications");
     const actions = elem("div", "notif-panel-actions");
 
-    const readBtn = elem("button", "btn btn-secondary notif-panel-btn", "Mark all read");
-    readBtn.setAttribute("type", "button");
-    readBtn.addEventListener("click", () => this.store.markAllRead());
+    const readBtn = button({ variant: "secondary", extraClass: "notif-panel-btn", label: "Mark all read", onClick: () => this.store.markAllRead() });
 
-    const clearBtn = elem("button", "btn btn-secondary notif-panel-btn", "Clear");
-    clearBtn.setAttribute("type", "button");
-    clearBtn.addEventListener("click", () => this.store.clearAll());
+    const clearBtn = button({ variant: "secondary", extraClass: "notif-panel-btn", label: "Clear", onClick: () => this.store.clearAll() });
 
     const closeBtn = elem("button", "icon-btn notif-panel-close");
     closeBtn.setAttribute("type", "button");

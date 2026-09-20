@@ -1,6 +1,6 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setBusy, setFieldError, setHidden, setText } from "../lib/ui.js";
+import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, elem, formatUptime, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
@@ -14,6 +14,52 @@ import {
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.js";
 import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
+
+// System Information item icons (Lucide glyphs), one per label. The card splits
+// into a Hardware column (physical machine) and a Software column (OS + build).
+const ICON_PLATFORM =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>';
+const ICON_CPU =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="4" rx="2"></rect><rect width="6" height="6" x="9" y="9" rx="1"></rect><path d="M15 2v2"></path><path d="M15 20v2"></path><path d="M2 15h2"></path><path d="M2 9h2"></path><path d="M20 15h2"></path><path d="M20 9h2"></path><path d="M9 2v2"></path><path d="M9 20v2"></path></svg>';
+const ICON_MEMORY =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="8" rx="1"></rect><path d="M6 16v2"></path><path d="M10 16v2"></path><path d="M14 16v2"></path><path d="M18 16v2"></path></svg>';
+const ICON_STORAGE =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="2" y1="12" y2="12"></line><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path><line x1="6" x2="6.01" y1="16" y2="16"></line><line x1="10" x2="10.01" y1="16" y2="16"></line></svg>';
+const ICON_HOST =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><line x1="6" x2="6.01" y1="6" y2="6"></line><line x1="6" x2="6.01" y1="18" y2="18"></line></svg>';
+const ICON_OS =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="2"></circle></svg>';
+const ICON_KERNEL =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line></svg>';
+const ICON_VERSION =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" x2="7.01" y1="7" y2="7"></line></svg>';
+const ICON_CLOCK =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>';
+
+// Access-token reveal toggle glyphs, swapped by setAuthReveal. 12px to sit on the
+// .btn control beside the token field, matching the copy button's glyph size.
+const ICON_EYE =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+const ICON_EYE_OFF =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+
+// InfoRow is one System Information line: which column it belongs to, its label,
+// the leading icon markup, and the value string.
+interface InfoRow {
+  group: "hw" | "sw";
+  label: string;
+  icon: string;
+  value: string;
+}
+
+// formatByteSize renders a byte count as GB (>= 1 GB) or MB, for the static
+// Memory and Storage totals in System Information. The live usage of each is in
+// the telemetry tiles above.
+function formatByteSize(bytes: number): string {
+  const gb = bytes / 1073741824;
+  if (gb >= 1) return `${gb >= 10 ? Math.round(gb) : gb.toFixed(1)} GB`;
+  return `${Math.round(bytes / 1048576)} MB`;
+}
 
 // OVERRIDE_LABELS maps a serve-override's dotted config field to an operator-
 // facing label. An unmapped field falls back to its dotted path.
@@ -77,7 +123,8 @@ interface DeviceRowRefs {
 
 export class SystemView {
   private tilesEl: HTMLElement | null;
-  private infoEl: HTMLElement | null;
+  private infoHwEl: HTMLElement | null;
+  private infoSwEl: HTMLElement | null;
   private infoCardEl: HTMLElement | null;
   private rowsEl: HTMLElement | null;
   private system: SystemInfo | null = null;
@@ -150,7 +197,8 @@ export class SystemView {
 
   constructor() {
     this.tilesEl = document.getElementById("sys-tiles");
-    this.infoEl = document.getElementById("sys-info");
+    this.infoHwEl = document.getElementById("sys-info-hw");
+    this.infoSwEl = document.getElementById("sys-info-sw");
     this.infoCardEl = document.getElementById("sys-info-card");
     this.rowsEl = document.getElementById("sys-device-rows");
     this.netCardEl = document.getElementById("sys-network-card");
@@ -775,7 +823,9 @@ export class SystemView {
       // The visible label and the accessible name both swap Show/Hide; there is
       // no aria-pressed, so the state is carried by the label rather than by a
       // pressed toggle contradicting a changing label.
-      reveal.textContent = show ? "Hide" : "Show";
+      setButtonLabel(reveal, show ? "Hide" : "Show");
+      const icon = reveal.querySelector<HTMLElement>(".btn-icon");
+      if (icon) icon.innerHTML = show ? ICON_EYE_OFF : ICON_EYE; // trusted static markup
       reveal.setAttribute("aria-label", show ? "Hide access token" : "Show access token");
     }
   }
@@ -1114,7 +1164,7 @@ export class SystemView {
     });
     if (sys.memTotalBytes > 0) {
       specs.push({
-        key: "mem", label: "Memory", sub: `${Math.round(sys.memTotalBytes / 1048576)} MB Total`,
+        key: "mem", label: "Memory", sub: `${formatByteSize(sys.memTotalBytes)} Total`,
         value: String(Math.round(sys.memUsedBytes / 1048576)), unit: "MB used",
         barPct: (sys.memUsedBytes / sys.memTotalBytes) * 100,
       });
@@ -1126,7 +1176,7 @@ export class SystemView {
     });
     if (sys.diskTotalBytes > 0) {
       specs.push({
-        key: "disk", label: "Disk", sub: `${(sys.diskTotalBytes / 1073741824).toFixed(1)} GB Total`,
+        key: "disk", label: "Disk", sub: `${formatByteSize(sys.diskTotalBytes)} Total`,
         value: (sys.diskUsedBytes / 1073741824).toFixed(1), unit: "GB used",
         barPct: (sys.diskUsedBytes / sys.diskTotalBytes) * 100,
       });
@@ -1152,45 +1202,61 @@ export class SystemView {
   // keyed by label, values updated in place, and dt/dd pairs added, removed and
   // ordered only on change rather than clearing the grid every poll.
   private renderInfo(): void {
-    if (!this.infoEl) return;
-    const grid = this.infoEl;
+    const hw = this.infoHwEl;
+    const sw = this.infoSwEl;
+    if (!hw || !sw) return;
     const sys = this.system;
     const st = this.status;
     if (!sys && !st) return;
 
-    const rows: Array<[string, string]> = [];
+    // Two labelled columns: Hardware holds the physical machine's specs, Software
+    // holds the OS and appliance build. The live gauges (CPU %, memory, temp and
+    // disk usage) live in the telemetry tiles above, so this card carries static
+    // facts and shows the memory and storage TOTALS rather than their usage.
+    const rows: InfoRow[] = [];
     if (sys) {
-      rows.push(["Hostname", sys.hostname || "-"]);
-      rows.push(["Platform", sys.platform || "-"]);
-      if (sys.cpuModel) rows.push(["CPU", `${sys.cpuModel}${sys.cpuCores ? ` (${sys.cpuCores} cores)` : ""}`]);
-      if (sys.os) rows.push(["OS", sys.os]);
-      if (sys.kernel) rows.push(["Kernel", sys.kernel]);
+      rows.push({ group: "hw", label: "Platform", icon: ICON_PLATFORM, value: sys.platform || "-" });
+      if (sys.cpuModel || sys.cpuCores) {
+        const cpu = sys.cpuModel
+          ? `${sys.cpuModel}${sys.cpuCores ? ` (${sys.cpuCores} cores)` : ""}`
+          : `${sys.cpuCores} cores`;
+        rows.push({ group: "hw", label: "CPU", icon: ICON_CPU, value: cpu });
+      }
+      if (sys.memTotalBytes > 0) rows.push({ group: "hw", label: "Memory", icon: ICON_MEMORY, value: formatByteSize(sys.memTotalBytes) });
+      if (sys.diskTotalBytes > 0) rows.push({ group: "hw", label: "Storage", icon: ICON_STORAGE, value: formatByteSize(sys.diskTotalBytes) });
+      rows.push({ group: "sw", label: "Hostname", icon: ICON_HOST, value: sys.hostname || "-" });
+      if (sys.os) rows.push({ group: "sw", label: "OS", icon: ICON_OS, value: sys.os });
+      if (sys.kernel) rows.push({ group: "sw", label: "Kernel", icon: ICON_KERNEL, value: sys.kernel });
     }
     if (st) {
-      rows.push(["Version", st.version || "-"]);
-      rows.push(["Uptime", formatUptime(st.uptimeSeconds)]);
-      rows.push(["RTSP Listen", st.rtspListen]);
-      rows.push(["Devices Serving", `${st.devicesServing} / ${st.devicesTotal}`]);
+      rows.push({ group: "sw", label: "Version", icon: ICON_VERSION, value: st.version || "-" });
+      rows.push({ group: "sw", label: "Uptime", icon: ICON_CLOCK, value: formatUptime(st.uptimeSeconds) });
     }
 
-    const want = new Set(rows.map(([k]) => k));
+    const want = new Set(rows.map((r) => r.label));
     for (const [key, pair] of this.infoRows) {
       if (!want.has(key)) { pair.dt.remove(); pair.dd.remove(); this.infoRows.delete(key); }
     }
 
-    let prev: ChildNode | null = null; // previous row's dd
-    for (const [k, v] of rows) {
-      let pair = this.infoRows.get(k);
+    // Track the trailing node per column so each row is ordered within its own
+    // grid rather than a single shared cursor.
+    const prev: Record<"hw" | "sw", ChildNode | null> = { hw: null, sw: null };
+    for (const r of rows) {
+      const grid = r.group === "hw" ? hw : sw;
+      let pair = this.infoRows.get(r.label);
       if (!pair) {
-        pair = { dt: elem("dt", "info-key", k), dd: elem("dd", "info-val mono", v) };
-        this.infoRows.set(k, pair);
+        const dt = elem("dt", "info-key");
+        dt.append(iconSpan(r.icon, "info-key-icon"), document.createTextNode(r.label));
+        pair = { dt, dd: elem("dd", "info-val mono", r.value) };
+        this.infoRows.set(r.label, pair);
       } else {
-        setText(pair.dd, v);
+        setText(pair.dd, r.value);
       }
-      const dtTarget: ChildNode | null = prev ? prev.nextSibling : grid.firstChild;
+      const anchor = prev[r.group];
+      const dtTarget: ChildNode | null = anchor ? anchor.nextSibling : grid.firstChild;
       if (pair.dt !== dtTarget) grid.insertBefore(pair.dt, dtTarget);
       if (pair.dd !== pair.dt.nextSibling) grid.insertBefore(pair.dd, pair.dt.nextSibling);
-      prev = pair.dd;
+      prev[r.group] = pair.dd;
     }
     if (this.infoCardEl) this.infoCardEl.hidden = rows.length === 0;
   }

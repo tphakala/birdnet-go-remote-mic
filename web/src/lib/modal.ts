@@ -1,7 +1,7 @@
 // Shared modal primitives: a focus trap, an app-background inert toggle, and a
 // generic confirm dialog. Kept in one place so every dialog traps focus, hides
 // the background from assistive tech, and behaves consistently.
-import { elem } from "./ui.js";
+import { button, elem } from "./ui.js";
 
 // Monotonic counter giving each confirmDialog invocation unique element ids, so
 // two dialogs cannot collide on aria-labelledby/aria-describedby targets.
@@ -117,10 +117,8 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     body.id = descId;
 
     const actions = elem("div", "settings-actions");
-    const cancel = elem("button", "btn btn-secondary", opts.cancelLabel ?? "Cancel");
-    cancel.setAttribute("type", "button");
-    const confirm = elem("button", `btn ${opts.danger ? "btn-danger" : "btn-primary"}`, opts.confirmLabel ?? "Confirm");
-    confirm.setAttribute("type", "button");
+    const cancel = button({ variant: "secondary", label: opts.cancelLabel ?? "Cancel" });
+    const confirm = button({ variant: opts.danger ? "danger" : "primary", label: opts.confirmLabel ?? "Confirm" });
 
     actions.append(cancel, confirm);
     card.append(title, body, actions);

@@ -1,3 +1,17 @@
+// The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
+// attribute cache refreshed when the toggle flips html[data-theme]. The lit
+// segment colours (green/amber/red) read on both grounds and stay fixed; only
+// the track and unlit-segment tints need to swap, since white-on-light was
+// invisible. Shared by every meter instance.
+let meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
+try {
+  new MutationObserver(() => {
+    meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+} catch {
+  /* no MutationObserver: keep the theme detected at load */
+}
+
 export interface MeterState {
   rms: number;
   peak: number;
@@ -19,6 +33,7 @@ export class VUMeter {
   private isClipped: boolean = false;
 
   private animFrameId: number | null = null;
+  private paused: boolean = false;
   private lastTime: number = performance.now();
   // When the viewer prefers reduced motion, skip the free-running rAF loop and
   // the peak-needle decay animation, redrawing a static bar on each level
@@ -74,7 +89,7 @@ export class VUMeter {
       } else {
         this.peakHoldVal = Math.max(-60, this.peakHoldVal - 3);
       }
-      this.render();
+      if (!this.paused) this.render();
     }
   }
 
@@ -82,6 +97,26 @@ export class VUMeter {
     this.isClipped = false;
     if (this.clipEl) {
       this.clipEl.classList.remove("clipped");
+    }
+  }
+
+  public pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    if (this.animFrameId !== null) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+  }
+
+  public resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.reducedMotion) {
+      this.render();
+    } else {
+      this.lastTime = performance.now(); // avoid a decay jump after the gap
+      this.startLoop();
     }
   }
 
@@ -124,8 +159,13 @@ export class VUMeter {
 
     ctx.clearRect(0, 0, w, h);
 
+    // Track and unlit-segment tints swap with the theme so the "off" lights stay
+    // visible: a dark wash on the light meter ground, a light wash on the dark.
+    const trackBg = meterLightTheme ? "rgba(0, 0, 0, 0.05)" : "rgba(255, 255, 255, 0.04)";
+    const unlitSeg = meterLightTheme ? "rgba(0, 0, 0, 0.10)" : "rgba(255, 255, 255, 0.06)";
+
     // Background track
-    ctx.fillStyle = "rgba(255, 255, 255, 0.04)";
+    ctx.fillStyle = trackBg;
     ctx.fillRect(0, 0, w, h);
 
     // Segmented meter settings
@@ -151,7 +191,7 @@ export class VUMeter {
       if (i < activeSegments) {
         ctx.fillStyle = color;
       } else {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+        ctx.fillStyle = unlitSeg;
       }
 
       ctx.fillRect(x, 0, segWidth, h);
