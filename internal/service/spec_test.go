@@ -2,7 +2,11 @@
 
 package service
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestValidateAcceptsDefaults(t *testing.T) {
 	if err := (ServiceSpec{}).withDefaults().Validate(); err != nil {
@@ -46,6 +50,20 @@ func TestValidateRejectsBadUser(t *testing.T) {
 		if err := spec.Validate(); err == nil {
 			t.Errorf("Validate accepted invalid user %q", u)
 		}
+	}
+}
+
+func TestValidateRejectsSymlinkToSharedDir(t *testing.T) {
+	// A state dir that is itself a symlink resolving into a shared system dir
+	// must be caught by the EvalSymlinks branch, not only by literal matching.
+	dir := t.TempDir()
+	link := filepath.Join(dir, "state-link")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("cannot create symlink on this host: %v", err)
+	}
+	spec := ServiceSpec{StateDir: link}.withDefaults()
+	if err := spec.Validate(); err == nil {
+		t.Fatal("Validate accepted a state dir symlinked to /etc")
 	}
 }
 
