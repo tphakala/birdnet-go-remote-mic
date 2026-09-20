@@ -32,6 +32,12 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		_ = f.Close()
 		return err
 	}
+	// Preserve the existing file's ownership so a privileged writer (an admin
+	// running a CLI command under sudo) does not silently re-home a
+	// service-user-owned config or certificate to root and lock the service out
+	// of its own files. Best-effort: on a first write there is nothing to match,
+	// and on a filesystem without ownership the chown is moot.
+	preserveOwner(f, target)
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
