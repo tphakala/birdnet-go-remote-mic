@@ -234,7 +234,7 @@ func runListDevices(w io.Writer) error {
 	for _, d := range devs {
 		label := d.Label
 		if !d.IDStable {
-			label += " (no stable id: card index can change after a reboot)"
+			label += " (no stable id; card index (can change after a reboot))"
 		}
 		out(tw, "%s\t%s\t%s\n", d.ID, d.HWAddr, label)
 	}
