@@ -1,4 +1,4 @@
-# birdnet-go-remote-mic
+# BirdNET-Go Remote Mic
 
 [![CI](https://github.com/tphakala/birdnet-go-remote-mic/actions/workflows/ci.yml/badge.svg)](https://github.com/tphakala/birdnet-go-remote-mic/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/tphakala/birdnet-go-remote-mic/branch/main/graph/badge.svg)](https://codecov.io/gh/tphakala/birdnet-go-remote-mic)
@@ -7,38 +7,106 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/github/sponsors/tphakala?logo=githubsponsors&color=ea4aaa&label=Sponsor)](https://github.com/sponsors/tphakala)
 
-A small, pure-Go remote microphone appliance for [BirdNET-Go](https://github.com/tphakala/birdnet-go).
+**A standalone network microphone for [BirdNET-Go](https://github.com/tphakala/birdnet-go).**
+One pure-Go binary does the whole job: it captures audio from local capture
+hardware, encodes it (Opus for birdsong, raw PCM for ultrasonic recording), and
+publishes it as a standard RTSP/RTP stream on your LAN. BirdNET-Go discovers it
+automatically over mDNS and pulls the stream with its native ingest client.
 
-Runs as a single static binary on a Raspberry Pi Zero 2 W (arm64) or an older
-32-bit Pi (arm), captures local audio, and streams it over the LAN as standard
-RTSP/RTP.
-BirdNET-Go discovers the mic automatically over mDNS and pulls the stream with
-its native ingest client. No ffmpeg, no third-party media server, no external
-processes: just one binary you control.
+There is nothing else to run: no ffmpeg, no separate media server, no glue
+scripts. Install the binary, enable a capture device from the built-in web UI,
+and BirdNET-Go starts listening. It is happy on a Raspberry Pi Zero 2 W (arm64)
+or an older 32-bit Pi (arm), the same class of hardware BirdNET-Go itself runs
+on.
+
+![The BirdNET-Go Remote Mic dashboard: live per-channel level meters, per-device stream state, and copy-ready RTSP URLs](assets/dashboard.png)
+
+## What it does
+
+- **Captures** audio from any number of local devices (USB or I2S) with no
+  transcoding glue, one binary per host serving one RTSP stream per device.
+- **Encodes** for two jobs over one protocol:
+  - *Normal audio* uses Opus at 48 kHz, mono or stereo, low bandwidth for
+    ordinary birdsong.
+  - *Ultrasonic* uses raw PCM (L16) at high sample rates (up to 256 or 384 kHz)
+    for bat detection, where no lossy codec can carry the signal. On a LAN the
+    uncompressed bandwidth is a non-issue (~4 Mbit/s at 256 kHz mono).
+- **Streams** over a self-implemented RTSP/RTP server, TCP-interleaved by
+  default so the audio arrives lossless and firewall-friendly. ffmpeg, VLC, and
+  BirdNET-Go's own ingest client all play it.
+- **Announces itself** on the LAN over mDNS / DNS-SD, with a manual host:port
+  fallback for networks where multicast does not cross.
+- **Manages itself** through a built-in HTTPS web UI: enable devices, watch live
+  levels, copy RTSP URLs, and set an access token, with no config-file editing.
+
+## Install
+
+Prebuilt releases for Linux **amd64** and **arm64** are on the
+[releases page](https://github.com/tphakala/birdnet-go-remote-mic/releases).
+Every method below installs the same `remote-mic` binary; pick whichever suits
+the host.
+
+### Homebrew (Linux)
+
+```sh
+brew install tphakala/tap/birdnet-go-remote-mic
+```
+
+Upgrade later with `brew upgrade birdnet-go-remote-mic`.
+
+### Debian, Ubuntu, Raspberry Pi OS (.deb)
+
+Download the `.deb` for your architecture from the
+[latest release](https://github.com/tphakala/birdnet-go-remote-mic/releases/latest)
+and install it:
+
+```sh
+sudo apt install ./birdnet-go-remote-mic_*_linux_arm64.deb   # or _amd64
+```
+
+The package installs `/usr/bin/remote-mic` and starts nothing on its own. Set up
+the service when you are ready (see [Run at boot](#run-at-boot-systemd-service)).
+
+### Tarball
+
+Download the `.tar.gz` for your architecture, unpack it, and put the binary on
+your PATH:
+
+```sh
+tar xzf birdnet-go-remote-mic_*_linux_arm64.tar.gz
+sudo install -m 0755 remote-mic /usr/local/bin/remote-mic
+```
+
+### Build from source
+
+Requires Go (version in `go.mod`) and Node (for the web UI). The 32-bit
+Raspberry Pi target (`arm`) has no prebuilt release, so build it here:
+
+```sh
+git clone https://github.com/tphakala/birdnet-go-remote-mic
+cd birdnet-go-remote-mic
+task build:arm64     # or build:amd64, or build:arm for 32-bit Pis
+# the binary lands in bin/remote-mic-<arch>
+```
+
+Once the binary is installed, [run it at boot](#run-at-boot-systemd-service)
+with `sudo remote-mic service install`, then open the web UI and enable a
+device.
 
 ## Web UI
 
-![BirdNET-Go Remote Mic dashboard](assets/dashboard.png)
+A built-in HTTPS management UI (default `:8443`) runs alongside the streams. The
+**Dashboard** (shown above) lists every capture device with live per-channel
+level meters, stream state, negotiated rate and channel count, the RTSP URL with
+one-click copy, and dropped-frame counters. Its **Available Devices** list
+enumerates capture hardware on the host that is not streaming yet, so you enable
+a device straight from the browser with no config-file editing.
 
-A built-in HTTPS management UI (default `:8443`) shows every capture device at a
-glance: live per-channel level meters, stream state, negotiated rate and channel
-count, the RTSP URL with one-click copy, and dropped-frame counters. The
-**Available Devices** list enumerates capture hardware found on the host that is
-not streaming yet, so you enable a device straight from the browser with no
-config-file editing. The **System** tab covers host information and the Access
-Control card for setting or rotating the shared access token.
+![The System tab: host telemetry, per-device stream status, and network and discovery settings](assets/system.png)
 
-## Status
-
-The capture and streaming core is implemented: capture (via
-[go-audio-capture](https://github.com/tphakala/go-audio-capture)), the L16 and
-Opus pipeline, a TCP-interleaved RTSP server that ffmpeg, VLC, and BirdNET-Go's
-own ingest client can play, and mDNS/DNS-SD advertisement so BirdNET-Go can
-discover the mic automatically. On top of that, an HTTPS management API and web
-UI provision and reconfigure devices with in-place hot reload, per-device audio
-level metering streams over SSE, and an optional shared access token gates both
-the API and the RTSP stream. Packaging (phase 6) is still to come. The normative
-design and roadmap live as issues in a separate location.
+The **System** tab covers host information (platform, CPU, memory, temperature,
+disk), per-device stream status, the network and discovery settings, and the
+Access Control card for setting or rotating the shared access token.
 
 ## Discovery
 
@@ -335,20 +403,9 @@ and `task build` work from a clean checkout. A bare `go build ./...` or
 first, or pass `-tags skipfrontend` to compile the Go code against a stub UI
 (what the CI Go jobs do).
 
-## What it does
-
-- **Captures** audio from any number of local devices (USB or I2S) with no
-  transcoding glue, one binary per host serving one RTSP stream per device.
-- **Streams** over a self-implemented RTSP/RTP server, TCP-interleaved by
-  default so the audio arrives lossless and firewall-friendly.
-- **Two modes over one protocol:**
-  - *Normal audio* uses Opus at 48 kHz, mono or stereo, low bandwidth for
-    ordinary birdsong.
-  - *Ultrasonic* uses raw PCM (L16) at high sample rates (up to 256 or 384 kHz)
-    for bat detection, where no lossy codec can carry the signal. On a LAN the
-    uncompressed bandwidth is a non-issue (~4 Mbit/s at 256 kHz mono).
-- **Announces itself** on the LAN over mDNS / DNS-SD, with a manual host:port
-  fallback for networks where multicast does not cross.
+Tagged releases (`v*`) are built by GoReleaser (`.goreleaser.yaml`): Linux
+amd64/arm64 tarballs and `.deb` packages, plus the Homebrew formula pushed to
+[tphakala/homebrew-tap](https://github.com/tphakala/homebrew-tap).
 
 ## Design principles
 
