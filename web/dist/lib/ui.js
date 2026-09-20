@@ -58,19 +58,50 @@ export function setFieldError(field, input, errorEl, message) {
     if (errorEl)
         errorEl.textContent = message;
 }
-// copyText writes value to the clipboard and reports the outcome as a toast.
-// navigator.clipboard is absent on an insecure (plain http) origin and in some
-// embedded browsers; instead of silently doing nothing, say so, so the operator
-// knows to select and copy by hand. Shared by every Copy button so the
-// unavailable/failed cases read the same everywhere.
-export function copyText(value, successMessage) {
-    if (!navigator.clipboard) {
-        showToast("Copy is unavailable in this browser; select the text and copy it manually.", "warn");
-        return;
+// CLIPBOARD_UNAVAILABLE_MSG is shown when the Clipboard API is absent (an
+// insecure plain-http origin, or an embedded browser). Defined once so every
+// copy path reports it identically.
+export const CLIPBOARD_UNAVAILABLE_MSG = "Copy is unavailable in this browser; it may need a secure (https) connection.";
+// writeToClipboard is the shared clipboard primitive: it never throws, reporting
+// the outcome instead. "unavailable" means the Clipboard API is absent; "failed"
+// means the write was rejected; "ok" means it succeeded. The availability check
+// and the rejection catch live here so a caller cannot silently no-op (the old
+// Copy URL bug) or leak an unhandled rejection. Callers add their own feedback (a
+// toast, a button pulse) on the result.
+export async function writeToClipboard(value) {
+    // The Clipboard API is missing outright, or present but unusable outside a
+    // secure context (plain http on a non-localhost origin, and some embedded
+    // browsers). Treat both as "unavailable" so the caller shows the actionable
+    // message instead of a bare "Copy failed".
+    if (!navigator.clipboard || window.isSecureContext === false)
+        return "unavailable";
+    try {
+        await navigator.clipboard.writeText(value);
+        return "ok";
     }
-    navigator.clipboard.writeText(value)
-        .then(() => showToast(successMessage))
-        .catch(() => showToast("Copy failed", "error"));
+    catch {
+        return "failed";
+    }
+}
+// reportClipboardFailure shows the standard toast for a non-ok writeToClipboard
+// result, so the unavailable and failed cases read the same at every Copy button.
+export function reportClipboardFailure(result) {
+    if (result === "unavailable")
+        showToast(CLIPBOARD_UNAVAILABLE_MSG, "warn");
+    else
+        showToast("Copy failed", "error");
+}
+// copyText writes value to the clipboard and reports the outcome as a toast: the
+// success message on success, and the shared unavailable/failed toast otherwise.
+// Used by the plain Copy buttons; the dashboard's copy buttons call
+// writeToClipboard directly so they can add their "copied" pulse.
+export function copyText(value, successMessage) {
+    void writeToClipboard(value).then((result) => {
+        if (result === "ok")
+            showToast(successMessage);
+        else
+            reportClipboardFailure(result);
+    });
 }
 // setText and setHidden write only when the value actually changes. A card is
 // re-synced on every 3 s poll, so an unconditional write would dirty the DOM and,

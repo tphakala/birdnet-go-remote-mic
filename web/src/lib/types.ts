@@ -104,6 +104,16 @@ export interface ConfigUpdateResult {
   restartRequired: boolean;
 }
 
+// Health is the open /healthz response: liveness, version, and whether the
+// appliance requires an access token. The boot sequence reads authRequired to
+// decide whether to settle access before firing gated requests. authRequired is
+// absent on an older appliance that predates token auth.
+export interface Health {
+  status: string;
+  version: string;
+  authRequired?: boolean;
+}
+
 // ConfigOverride names one config field a serve CLI flag overrode for this run:
 // the value in force now (effective) versus what the config file holds
 // (persisted). Present only when the two differ.

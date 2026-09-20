@@ -3,7 +3,8 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { clearBusy, deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, setBusy, setHidden, setText } from "../lib/ui.js";
+import { clearBusy, deviceStateBadge, elem, formatUptime, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, writeToClipboard } from "../lib/ui.js";
+import { channelLabel, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 // Trusted static SVG icon markup (no interpolation of runtime data).
@@ -115,15 +116,6 @@ function iconSpan(markup, className) {
     // Static trusted markup only; never runtime/user data.
     s.innerHTML = markup;
     return s;
-}
-// channelLabel renders the streamed channel selection, e.g. "Ch 1", "Ch 1+2",
-// or "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.
-function channelLabel(channels) {
-    if (!channels.length)
-        return "";
-    if (channels.length === 1)
-        return `Ch ${channels[0]}`;
-    return "Ch " + channels.join("+");
 }
 // The runtime device carries the runtime-visible configured fields; project it
 // to the config shape as a fallback base for the device-list patch.
@@ -387,7 +379,9 @@ export class DashboardView {
     buildAvailableCard(d) {
         const card = elem("div", "config-device-card available-card");
         const info = elem("div", "available-info");
-        info.appendChild(elem("div", "device-title", d.friendlyName || d.device));
+        // Fall back to the short ALSA address, not the long stable id, when the card
+        // has no friendly name: the address is what the rest of the card shows.
+        info.appendChild(elem("div", "device-title", d.friendlyName || d.hwAddr || d.device));
         const sub = elem("div", "available-sub");
         const addr = elem("span", "mono", d.hwAddr ?? d.device);
         addr.title = `Device id: ${d.device}`;
@@ -402,7 +396,7 @@ export class DashboardView {
         enableBtn.setAttribute("type", "button");
         // Name the device in the accessible label: there is one Enable button per
         // available device, so a bare "Enable" is ambiguous to a screen-reader user.
-        enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.device}`);
+        enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.hwAddr || d.device}`);
         if (this.provisioning.has(d.device))
             setBusy(enableBtn, "Enabling...");
         enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
@@ -578,10 +572,12 @@ export class DashboardView {
         lockEl.setAttribute("aria-label", TOKEN_ARIA);
         lockEl.title = "Pulling this stream requires the access token. Click to copy it.";
         lockEl.dataset.focus = "token";
-        // Hidden until syncCard shows it (serving and auth required). Building it
-        // hidden means restoreFocus does not land focus on it right before syncCard
-        // would hide it again, dropping focus to <body>.
-        lockEl.hidden = true;
+        // Build it with the SAME predicate syncCard uses (serving and auth required)
+        // rather than always hidden: mount() runs restoreFocus BEFORE the following
+        // syncCard, so a keyboard user who was on the Token tag before a rebuild
+        // lands back on it when it should be visible, and still falls back cleanly to
+        // the settings button when it should not.
+        lockEl.hidden = !(serving && !!this.status?.authRequired);
         lockEl.appendChild(iconSpan(ICON_LOCK, "icon-copy"));
         lockEl.appendChild(elem("span", "copy-label", TOKEN_LABEL));
         // aria-label names the action ("Copy access token"); a described-by span adds
@@ -825,9 +821,10 @@ export class DashboardView {
         const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
         const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : serving ? `ALSA: ${d.device}` : "No matching hardware";
         let hwText = showHw ? `${addr} · ${hw}` : addr;
-        // A card-index id can name a different device after a reboot or replug.
+        // A card-index id can name a different device after a reboot or replug; the
+        // settings panel's Device id hint carries the remedy (remove and re-add).
         if (d.idStable === false)
-            hwText += " · pinned to a card index";
+            hwText += " · card index (can change after a reboot)";
         setText(entry.hwEl, hwText);
         if (entry.hwEl.title !== `Device id: ${d.device}`)
             entry.hwEl.title = `Device id: ${d.device}`;
@@ -839,7 +836,10 @@ export class DashboardView {
         setHidden(entry.modeTag, !serving);
         setText(entry.rateTag, `${rate.toLocaleString("en-US")} Hz`);
         setHidden(entry.rateTag, !serving);
-        const chLabel = channelLabel(d.channels);
+        // Show every streamed channel (the union across the device's streams), so the
+        // header channel tag agrees with the per-channel tally lights below rather
+        // than showing only the first stream's channels (d.channels).
+        const chLabel = channelLabel(d.streamedChannels ?? d.channels);
         setText(entry.chTag, chLabel);
         setHidden(entry.chTag, !serving || !chLabel);
         setHidden(entry.lockEl, !serving || !this.status?.authRequired);
@@ -878,9 +878,9 @@ export class DashboardView {
             // Mark each captured channel live when a stream carries it. Rows index
             // hardware channels from 0, selections number them from 1.
             if (entry.live.rows.length > 1) {
-                const streamed = new Set(d.streamedChannels ?? d.channels);
+                const states = tallyStates(d.streamedChannels ?? d.channels, entry.live.rows.length);
                 entry.live.rows.forEach((row, i) => {
-                    const on = streamed.has(i + 1);
+                    const on = states[i];
                     row.classList.toggle("ch-live", on);
                     row.classList.toggle("ch-off", !on);
                     const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
@@ -1079,6 +1079,7 @@ export class DashboardView {
                 friendlyName: entry.device.friendlyName,
                 supportedRates: entry.device.supportedRates,
                 supportedChannels: entry.device.supportedChannels,
+                idStable: entry.device.idStable,
             });
             entry.settingsForm = form;
             // Record what the form was built from, so an out-of-band change is detected.
@@ -1252,7 +1253,7 @@ export class DashboardView {
     // path edit is reflected in the copied URL.
     handleCopyUrl(btn, urlEl) {
         const shown = urlEl?.textContent;
-        if (!shown || !navigator.clipboard)
+        if (!shown)
             return;
         let url = shown;
         const token = this.status?.authRequired ? getToken() : null;
@@ -1261,14 +1262,19 @@ export class DashboardView {
             // never a literal "rtsp://" that appears later in the path.
             url = shown.replace(/^rtsp:\/\//, `rtsp://mic:${token}@`);
         }
-        navigator.clipboard.writeText(url).then(() => {
+        // Route through the shared clipboard primitive so a plain-http origin (no
+        // Clipboard API) reports the same "unavailable" toast as every other Copy
+        // button instead of silently doing nothing.
+        void writeToClipboard(url).then((result) => {
+            if (result !== "ok") {
+                reportClipboardFailure(result);
+                return;
+            }
             if (token)
                 showToast("Stream URL copied with the access token included.");
             // With the token included the toast already announces the copy, so the
             // accessible name stays put rather than announcing it twice.
             flashCopied(btn, btn.querySelector(".copy-label"), COPY_LABEL, COPY_ARIA, token ? COPY_ARIA : COPY_ARIA_DONE);
-        }).catch(() => {
-            showToast("Copy failed", "error");
         });
     }
     // handleCopyToken copies the access token this browser signed in with. The
@@ -1281,17 +1287,17 @@ export class DashboardView {
             showToast("This browser does not hold the access token. Run remote-mic token get on the appliance.", "warn");
             return;
         }
-        if (!navigator.clipboard) {
-            showToast("Copying needs a secure (https) connection.", "error");
-            return;
-        }
-        navigator.clipboard.writeText(token).then(() => {
+        // Route through the shared clipboard primitive so an unavailable or failed
+        // copy reports the same toast as every other Copy button.
+        void writeToClipboard(token).then((result) => {
+            if (result !== "ok") {
+                reportClipboardFailure(result);
+                return;
+            }
             showToast("Access token copied.");
             // The toast announces the copy, so the accessible name stays fixed rather
             // than announcing it twice (mirrors the credentialed Copy URL path).
             flashCopied(btn, btn.querySelector(".copy-label"), TOKEN_LABEL, TOKEN_ARIA, TOKEN_ARIA);
-        }).catch(() => {
-            showToast("Copy failed", "error");
         });
     }
     updateTelemetryFromStatus() {

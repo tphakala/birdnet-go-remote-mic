@@ -1,5 +1,6 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { elem } from "../lib/ui.js";
+import { copyText, elem } from "../lib/ui.js";
+import { bitrateFollowsDefault, defaultOpusBitrate } from "../lib/device-settings-core.js";
 const CHEVRON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
 const CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 // Standard ALSA capture rates offered for PCM when the device's own supported
@@ -8,14 +9,6 @@ const CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" strok
 // Keep in sync with candidateRates in internal/audio/hardware.go.
 const STANDARD_RATES = [16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 256000, 384000];
 const MIN_BITRATE = 64000;
-// Opus bitrate default: 128 kbps for each channel carried, capped at the top of
-// the bitrate range Opus supports (510 kbps). Keep in sync with
-// config.OpusDefaultBitrate.
-const OPUS_BITRATE_PER_CHANNEL = 128000;
-const OPUS_MAX_BITRATE = 510000;
-function defaultOpusBitrate(channels) {
-    return Math.min(OPUS_BITRATE_PER_CHANNEL * Math.max(1, channels), OPUS_MAX_BITRATE);
-}
 const BITRATE_OPTIONS = [
     { val: "64000", label: "64 kbps" },
     { val: "96000", label: "96 kbps" },
@@ -32,10 +25,10 @@ let formSeq = 0;
 /**
  * The editable settings controls for one device. Builds its own DOM (into
  * `element`), tracks dirtiness via the onDirty callback, validates field
- * formats, and returns the edited DeviceConfig via collect(). The device
- * id is fixed and not shown here; the caller supplies it back on save. Fields
- * are grouped Capture (what the hardware delivers) then Stream (how it is named,
- * addressed, and encoded).
+ * formats, and returns the edited DeviceConfig via collect(). The device id is
+ * fixed: it is shown read-only at the top (reachable, with a Copy button) and
+ * the caller supplies it back on save. Fields are grouped Capture (what the
+ * hardware delivers) then Stream (how it is named, addressed, and encoded).
  */
 export class DeviceSettingsForm {
     element;
@@ -84,6 +77,13 @@ export class DeviceSettingsForm {
     build() {
         const d = this.device;
         const uid = ++formSeq;
+        // Read-only device identity, shown first: the persisted id that pins this
+        // entry to its hardware, reachable as focusable, selectable text with a Copy
+        // button. A title tooltip alone (the old treatment) does not reach keyboard,
+        // touch, or screen-reader users, which matters for telling two identical
+        // units apart. It is fixed metadata: no change listener, never marks the
+        // form dirty, and not part of collect().
+        this.buildIdentity(uid);
         const grid = elem("div", "form-grid-2col");
         // Resolve the codec mode the form actually opens on BEFORE building the
         // channel field. modeOptions() may not offer the saved mode (Opus on
@@ -184,7 +184,7 @@ export class DeviceSettingsForm {
         // even on a device with more capture channels (a PCM-shaped selection).
         const defaultRate = defaultOpusBitrate(Math.min(2, d.channels.length));
         const saved = d.opus?.bitrate || defaultRate;
-        this.bitrateFollows = saved === defaultRate;
+        this.bitrateFollows = bitrateFollowsDefault(d.opus?.bitrate, d.channels.length);
         const bitrate = this.buildDropdown("Opus bitrate", this.bitrateOptions(saved), this.selectedBitrate(saved));
         this.bitrateHidden = bitrate.hidden;
         this.bitrateDrop = bitrate.dropdown;
@@ -251,6 +251,49 @@ export class DeviceSettingsForm {
             if (this.ready)
                 this.validate();
         });
+    }
+    // buildIdentity renders the read-only "Device id" row (a focusable, selectable
+    // mono input plus a Copy button) and a hint that explains the id's stability
+    // and, for a card-index id, the remedy (remove and re-add to pin by identity).
+    // Read-only: it carries no change listener and is never read by collect().
+    buildIdentity(uid) {
+        const field = elem("div", "form-field");
+        const inputId = `set-${uid}-devid`;
+        const label = this.label("Device id");
+        label.setAttribute("for", inputId);
+        field.appendChild(label);
+        const row = elem("div", "auth-token-row");
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "field-input mono";
+        input.id = inputId;
+        input.value = this.device.device;
+        input.readOnly = true;
+        input.spellcheck = false;
+        const hintId = `${inputId}-hint`;
+        input.setAttribute("aria-describedby", hintId);
+        const copyBtn = elem("button", "btn btn-secondary", "Copy");
+        copyBtn.setAttribute("type", "button");
+        copyBtn.setAttribute("aria-label", "Copy device id");
+        copyBtn.addEventListener("click", () => copyText(this.device.device, "Device id copied."));
+        row.append(input, copyBtn);
+        field.appendChild(row);
+        field.appendChild(this.hint(this.identityHint(), hintId));
+        this.element.appendChild(field);
+    }
+    // identityHint explains the persisted id: for a card-index id (idStable false)
+    // it warns it can change and gives the remedy; for a stable id it says the id
+    // follows the hardware; and when the stability is unknown (idStable absent,
+    // e.g. the hardware could not be matched or probed) it says so rather than
+    // claiming the id is stable.
+    identityHint() {
+        if (this.hardware.idStable === false) {
+            return "This id is a card index and can change after a reboot or replug. Remove and re-add this device to pin it by its stable identity.";
+        }
+        if (this.hardware.idStable === true) {
+            return "The stable id this device is pinned to. It follows the hardware across reboots and re-plugging into another port.";
+        }
+        return "The stability of this id is unknown: the hardware could not be matched or probed.";
     }
     // syncDefaultBitrate moves the Opus bitrate to the default for the selected
     // channel count while it is still following the default. It is a no-op outside
