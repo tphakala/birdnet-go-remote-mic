@@ -251,6 +251,166 @@ func TestOpenCaptureFallsBackToS32AndDownconverts(t *testing.T) {
 	}
 }
 
+// s243Stream emits fixed interleaved S24_3LE data (24-bit samples packed in 3
+// bytes), for exercising OpenCapture's S24_3LE fallback and its converting source.
+type s243Stream struct {
+	neg     capture.Config
+	samples [][3]byte
+	closed  bool
+}
+
+func (s *s243Stream) Negotiated() capture.Config { return s.neg }
+func (s *s243Stream) Start() error               { return nil }
+func (s *s243Stream) Read(buf []byte) (int, error) {
+	for i, smp := range s.samples {
+		copy(buf[i*3:], smp[:])
+	}
+	return len(s.samples) / s.neg.Channels, nil
+}
+func (s *s243Stream) Close() error { s.closed = true; return nil }
+
+func TestOpenCaptureFallsBackToS243LEAndDownconverts(t *testing.T) {
+	// The Apogee HypeMiC (issue #76) exposes only native 24-bit packed capture, so
+	// S16, S32, and S24_LE all fail and the device opens in S24_3LE. Negotiation
+	// walks captureFormats in order and each 3-byte sample is downconverted to its
+	// top 16 bits before reaching the pipeline.
+	defer swapMonoProbe()()
+	fake := &s243Stream{
+		neg:     capture.Config{Rate: 96000, Channels: 1, PeriodFrames: 2},
+		samples: [][3]byte{{0x11, 0x22, 0x33}, {0x44, 0x55, 0x66}},
+	}
+	var tried []capture.Format
+	prev := openStream
+	openStream = func(cfg capture.Config) (captureStream, error) {
+		tried = append(tried, cfg.Format)
+		if cfg.Format == capture.FormatS243LE {
+			return fake, nil
+		}
+		return nil, &capture.BadFormatError{Channels: cfg.Channels, Format: cfg.Format}
+	}
+	defer func() { openStream = prev }()
+
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 96000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
+	if err != nil {
+		t.Fatalf("OpenCapture: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	wantTried := []capture.Format{capture.FormatS16LE, capture.FormatS32LE, capture.FormatS24LE, capture.FormatS243LE}
+	if len(tried) != len(wantTried) {
+		t.Fatalf("tried formats = %v, want %v", tried, wantTried)
+	}
+	for i, w := range wantTried {
+		if tried[i] != w {
+			t.Fatalf("tried formats = %v, want %v", tried, wantTried)
+		}
+	}
+	if r, ch := src.Negotiated(); r != 96000 || ch != 1 {
+		t.Errorf("Negotiated = %d, %d; want 96000, 1", r, ch)
+	}
+	p, err := src.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if p.Frames != 2 {
+		t.Errorf("frames = %d, want 2", p.Frames)
+	}
+	// int16(sample24>>8): the top 16 bits, i.e. bytes [1] and [2] of each sample.
+	want := []int16{0x3322, 0x6655}
+	if len(p.Buf) != len(want)*2 {
+		t.Fatalf("buf len = %d, want %d", len(p.Buf), len(want)*2)
+	}
+	for i, w := range want {
+		if got := int16(binary.LittleEndian.Uint16(p.Buf[i*2:])); got != w {
+			t.Errorf("sample %d = %#04x, want %#04x", i, uint16(got), uint16(w))
+		}
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !fake.closed {
+		t.Error("Close did not close the underlying S24_3LE stream")
+	}
+}
+
+// s24leStream emits fixed interleaved S24_LE data: 24 valid bits in the low 3
+// bytes of a 4-byte word. Its 4th byte is deliberately non-zero (unreliable
+// device padding) so a test can prove the converting source ignores it.
+type s24leStream struct {
+	neg    capture.Config
+	words  [][4]byte
+	closed bool
+}
+
+func (s *s24leStream) Negotiated() capture.Config { return s.neg }
+func (s *s24leStream) Start() error               { return nil }
+func (s *s24leStream) Read(buf []byte) (int, error) {
+	for i, w := range s.words {
+		copy(buf[i*4:], w[:])
+	}
+	return len(s.words) / s.neg.Channels, nil
+}
+func (s *s24leStream) Close() error { s.closed = true; return nil }
+
+func TestOpenCaptureFallsBackToS24LEAndDownconverts(t *testing.T) {
+	// A 24-in-32 interface: S16 and S32 fail and the device opens in S24_LE, before
+	// S24_3LE is tried. The 4th byte of each word is unreliable padding (here 0xFF
+	// then 0x00); the converting source must reduce from the low-3-byte 24-bit
+	// value and ignore that byte, so the same 24-bit values as the S24_3LE case
+	// yield the same S16 output.
+	defer swapMonoProbe()()
+	fake := &s24leStream{
+		neg:   capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 2},
+		words: [][4]byte{{0x11, 0x22, 0x33, 0xFF}, {0x44, 0x55, 0x66, 0x00}},
+	}
+	var tried []capture.Format
+	prev := openStream
+	openStream = func(cfg capture.Config) (captureStream, error) {
+		tried = append(tried, cfg.Format)
+		if cfg.Format == capture.FormatS24LE {
+			return fake, nil
+		}
+		return nil, &capture.BadFormatError{Channels: cfg.Channels, Format: cfg.Format}
+	}
+	defer func() { openStream = prev }()
+
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
+	if err != nil {
+		t.Fatalf("OpenCapture: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	// Negotiation stops at S24_LE, so S24_3LE is never tried.
+	wantTried := []capture.Format{capture.FormatS16LE, capture.FormatS32LE, capture.FormatS24LE}
+	if len(tried) != len(wantTried) {
+		t.Fatalf("tried formats = %v, want %v", tried, wantTried)
+	}
+	for i, w := range wantTried {
+		if tried[i] != w {
+			t.Fatalf("tried formats = %v, want %v", tried, wantTried)
+		}
+	}
+	p, err := src.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	want := []int16{0x3322, 0x6655}
+	if len(p.Buf) != len(want)*2 {
+		t.Fatalf("buf len = %d, want %d", len(p.Buf), len(want)*2)
+	}
+	for i, w := range want {
+		if got := int16(binary.LittleEndian.Uint16(p.Buf[i*2:])); got != w {
+			t.Errorf("sample %d = %#04x, want %#04x (padding byte must not leak)", i, uint16(got), uint16(w))
+		}
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !fake.closed {
+		t.Error("Close did not close the underlying S24_LE stream")
+	}
+}
+
 func TestOpenCapturePrefersRateErrorAcrossFormats(t *testing.T) {
 	// preferRateError must surface a *BadRateError over a raw driver error
 	// whichever format produced it, and when BOTH formats reject the rate it must

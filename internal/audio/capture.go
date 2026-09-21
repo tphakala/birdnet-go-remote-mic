@@ -43,8 +43,8 @@ type captureSource struct {
 // the whole send path (L16 packetization, SDP byte math, Opus encode) is
 // S16-only, and this fails loud the moment a new stream format is added to
 // validation without wiring the rest of the pipeline. It is distinct from the
-// hardware CAPTURE format, which OpenCaptureAt negotiates (S16 or S32) and
-// downconverts to S16 so this output contract always holds.
+// hardware CAPTURE format, which OpenCaptureAt negotiates (S16, S32, or 24-bit
+// S24_LE / S24_3LE) and downconverts to S16 so this output contract always holds.
 func captureFormat(format string) (capture.Format, error) {
 	switch format {
 	case "s16", "":
@@ -55,18 +55,22 @@ func captureFormat(format string) (capture.Format, error) {
 }
 
 // captureFormats is the order OpenCaptureAt negotiates the hardware capture
-// format in: S16LE first (the common case, no conversion needed), then S32LE as
-// the fallback for 24/32-bit-only interfaces (e.g. the ZOOM AMS-24). The stream
-// output stays S16 either way; an S32 capture is downconverted.
-var captureFormats = []capture.Format{capture.FormatS16LE, capture.FormatS32LE}
+// format in: S16LE first (the common case, no conversion needed), then the wider
+// fallbacks for interfaces that do not expose S16. S32LE stays ahead of the
+// 24-bit formats so a device that already opened in S32 (e.g. the ZOOM AMS-24)
+// keeps doing so, then S24LE (24-in-32) and S24_3LE (24 packed in 3 bytes, the
+// native format of USB mics like the Apogee HypeMiC that offer only 24-bit). The
+// stream output stays S16 either way; any wider capture is downconverted.
+var captureFormats = []capture.Format{capture.FormatS16LE, capture.FormatS32LE, capture.FormatS24LE, capture.FormatS243LE}
 
 // openNegotiate opens the device at the requested rate, trying each capture
 // format in captureFormats order and returning the first that opens along with
 // the format it opened with. A failure to open one format does not stop the
-// next: a device can accept the requested rate only in the wider S32 format, so
-// even a *BadRateError from S16 must not short-circuit the S32 attempt. When no
-// format opens it returns the most informative error, preferring a *BadRateError
-// (which carries the supported rate range) over a raw driver error.
+// next: a device can accept the requested rate only in a wider format (S32 or a
+// 24-bit format), so even a *BadRateError from S16 must not short-circuit the
+// remaining attempts. When no format opens it returns the most informative error,
+// preferring a *BadRateError (which carries the supported rate range) over a raw
+// driver error.
 func openNegotiate(device string, rate, channels int) (captureStream, capture.Format, error) {
 	var chosenErr error
 	for _, f := range captureFormats {
@@ -157,8 +161,9 @@ func OpenCapture(dev *config.Device) (Source, error) {
 // channels, which the caller resolved (ResolveOpenChannels over the union of the
 // device's streams) so the rate probe, the busy gate and the open all agree on
 // one count without re-probing. It negotiates the hardware capture format (S16LE
-// preferred, S32LE fallback) and, for an S32 device, wraps the stream so every
-// period is downconverted to S16LE. It returns the UNSELECTED base source
+// preferred, then S32LE and the 24-bit S24LE / S24_3LE fallbacks) and, for a
+// wider-than-S16 device, wraps the stream so every period is downconverted to
+// S16LE. It returns the UNSELECTED base source
 // carrying every opened channel: the fan-out layer meters all of them once, then
 // each stream extracts its own channels with NewSelectingSource. It enforces the
 // honest-rate policy: go-audio-capture already fails a rate it cannot deliver
@@ -209,13 +214,11 @@ func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 			buf:        make([]byte, n.PeriodFrames*frameBytes),
 		}, nil
 	case capture.FormatS32LE:
-		return &convertingSource{
-			s:        s,
-			rate:     n.Rate,
-			channels: n.Channels,
-			in:       make([]byte, n.PeriodFrames*n.Channels*4), // S32LE
-			out:      make([]byte, n.PeriodFrames*n.Channels*2), // S16LE
-		}, nil
+		return newConvertingSource(s, n, format, downconvertS32ToS16), nil
+	case capture.FormatS24LE:
+		return newConvertingSource(s, n, format, downconvertS24LEToS16), nil
+	case capture.FormatS243LE:
+		return newConvertingSource(s, n, format, downconvertS243LEToS16), nil
 	default:
 		_ = s.Close()
 		return nil, fmt.Errorf("audio: negotiated unsupported capture format %v", format)
@@ -303,17 +306,39 @@ func (c *captureSource) Read() (Period, error) {
 
 func (c *captureSource) Close() error { return c.s.Close() }
 
-// convertingSource wraps an S32LE capture stream and delivers S16LE periods, so
-// a 24/32-bit-only device looks like any other S16 Source to the pipeline. It
-// keeps two reused buffers: in receives the raw S32 period from the stream, out
-// holds its S16 reduction. Like captureSource it is single-consumer; out is
-// valid only until the next Read.
+// convertingSource wraps a wider-than-S16 capture stream (S32LE, or the 24-bit
+// S24LE / S24_3LE) and delivers S16LE periods, so a 24/32-bit-only device looks
+// like any other S16 Source to the pipeline. It keeps two reused buffers: in
+// receives the raw capture period from the stream, out holds its S16 reduction.
+// srcBytes is the width of one captured sample and reduce is the format-specific
+// reduction to S16LE; both come from the negotiated capture format. Like
+// captureSource it is single-consumer; out is valid only until the next Read.
 type convertingSource struct {
 	s        captureStream
 	rate     int
 	channels int
-	in       []byte // S32LE read buffer
-	out      []byte // S16LE output buffer
+	srcBytes int                       // bytes per captured sample (from the capture Format)
+	reduce   func(dst, src []byte) int // capture-format-specific reduction to S16LE
+	in       []byte                    // raw capture read buffer
+	out      []byte                    // S16LE output buffer
+}
+
+// newConvertingSource builds a convertingSource for the negotiated wide capture
+// format. It derives the captured sample width from format.BytesPerSample() (so
+// the read buffer can never drift from what the stream delivers) and sizes the
+// output buffer to the S16LE reduction (2 bytes per sample). reduce must be the
+// reduction matching format.
+func newConvertingSource(s captureStream, n capture.Config, format capture.Format, reduce func(dst, src []byte) int) *convertingSource {
+	srcBytes := format.BytesPerSample()
+	return &convertingSource{
+		s:        s,
+		rate:     n.Rate,
+		channels: n.Channels,
+		srcBytes: srcBytes,
+		reduce:   reduce,
+		in:       make([]byte, n.PeriodFrames*n.Channels*srcBytes),
+		out:      make([]byte, n.PeriodFrames*n.Channels*2), // S16LE
+	}
 }
 
 func (c *convertingSource) Negotiated() (rate, channels int) { return c.rate, c.channels }
@@ -323,7 +348,7 @@ func (c *convertingSource) Read() (Period, error) {
 	if err != nil {
 		return Period{}, err
 	}
-	nbytes := downconvertS32ToS16(c.out, c.in[:n*c.channels*4])
+	nbytes := c.reduce(c.out, c.in[:n*c.channels*c.srcBytes])
 	return Period{Buf: c.out[:nbytes], Frames: n}, nil
 }
 
