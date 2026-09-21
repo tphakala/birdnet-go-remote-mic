@@ -170,10 +170,11 @@ func rateProbeChannel(supported []int) int {
 // the probe still fails fast on a busy device rather than blocking, and it may run
 // while the device is free.
 //
-// It queries both capture formats (S16LE and S32LE) and keeps the union,
-// because OpenCaptureAt negotiates the capture format automatically (S16
-// preferred, S32 fallback), so a rate a device offers only in S32 is still
-// usable. Any query error (device busy or gone, or a format the device rejects)
+// It queries every format in captureFormats (S16LE, S32LE, and the 24-bit
+// S24LE / S24_3LE) and keeps the union, because OpenCaptureAt negotiates the
+// capture format automatically (S16 preferred, the wider formats as fallbacks),
+// so a rate a device offers only in a wider format is still usable. Any query
+// error (device busy or gone, or a format the device rejects)
 // simply contributes no rates. When nothing in candidates is supported it
 // returns nil so the caller falls back to the static rate list rather than
 // reporting a misleading empty set.
@@ -203,17 +204,18 @@ func ProbeRates(deviceID string, channels int, candidates []int) []int {
 // ProbeChannels returns the subset of candidate channel counts the device accepts,
 // for the config UI's Channels control. It reuses the same non-blocking HW_REFINE
 // capability query as ProbeRates (no exclusive open), querying each candidate
-// against both capture formats and keeping any count at least one format accepts.
+// against every format in captureFormats and keeping any count at least one
+// format accepts.
 //
 // A channel count is accepted when SupportedRates returns a nil error: the
 // unconstrained refine pins the channel count and succeeds, which proves the
 // hardware supports that count for that format, independently of whether any
 // standard rate falls in the device's window (so a count usable only at a
 // non-standard rate is still reported). A count the device rejects at every
-// format yields *BadFormatError from each and is omitted. When nothing is
-// determinable (device busy or gone, or capability queries unsupported) it
-// returns nil, so the caller falls back to the static [1, 2] list rather than
-// reporting a misleading empty set.
+// format in captureFormats yields *BadFormatError from each and is omitted.
+// When nothing is determinable (device busy or gone, or capability queries
+// unsupported) it returns nil, so the caller falls back to the static [1, 2]
+// list rather than reporting a misleading empty set.
 func ProbeChannels(deviceID string, candidates []int) []int {
 	out := make([]int, 0, len(candidates))
 	for _, ch := range candidates {
@@ -237,8 +239,8 @@ func ProbeChannels(deviceID string, candidates []int) []int {
 // caller uses it to skip a contended device without stalling on the exclusive
 // open.
 //
-// It probes the configured channel count across both capture formats. A nil
-// error, or any error other than ErrDeviceInUse, means the device is not held
+// It probes the configured channel count across every format in captureFormats.
+// A nil error, or any error other than ErrDeviceInUse, means the device is not held
 // exclusively by another process (a *BadFormatError is only reachable after a
 // successful O_NONBLOCK open, and ErrDeviceGone means the device is missing, not
 // busy), so the real open should proceed and surface any failure. Only when every

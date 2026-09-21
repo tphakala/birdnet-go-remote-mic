@@ -25,6 +25,8 @@ BirdNET-Go itself runs on.
 
 - **Captures** audio from any number of local devices (USB or I2S) with no
   transcoding glue, one binary per host serving one RTSP stream per device.
+  Devices that expose only 24-bit or 32-bit PCM (such as many USB microphones)
+  are captured at their native depth and reduced to 16-bit for the stream.
 - **Encodes** for two jobs over one protocol:
   - *Normal audio* uses Opus at 48 kHz, mono or stereo, low bandwidth for
     ordinary birdsong.

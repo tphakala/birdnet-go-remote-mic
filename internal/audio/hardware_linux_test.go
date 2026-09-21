@@ -351,7 +351,7 @@ func TestProbeRatesS32OnlyDevice(t *testing.T) {
 }
 
 func TestProbeRatesFallsBackWhenDeviceUnavailable(t *testing.T) {
-	// Both format queries fail (device busy or gone): report nil so the caller
+	// Every format query fails (device busy or gone): report nil so the caller
 	// falls back to the static rate list.
 	restore := swapVerifiedRates(func(string, int, capture.Format) (capture.RateSupport, error) {
 		return capture.RateSupport{}, capture.ErrDeviceInUse
