@@ -20,3 +20,25 @@ export function tallyStates(streamed: number[], rowCount: number): boolean[] {
   for (let i = 0; i < rowCount; i++) out.push(set.has(i + 1));
   return out;
 }
+
+// captureFormatLabel renders a negotiated hardware capture format token as the
+// bit depth an operator reads on a device row. The management API reports one of
+// s16, s24_le, s24_3le or s32; the stream is always S16LE, so a wider capture
+// (24- or 32-bit) is downconverted, which this surfaces. f32 is mapped ahead of
+// the capture layer ever negotiating it, and any other token falls back to its
+// uppercased form so a future format still shows.
+export function captureFormatLabel(token: string): string {
+  switch (token) {
+    case "s16":
+      return "16-bit";
+    case "s24_le":
+    case "s24_3le":
+      return "24-bit";
+    case "s32":
+      return "32-bit";
+    case "f32":
+      return "32-bit float";
+    default:
+      return token.toUpperCase();
+  }
+}

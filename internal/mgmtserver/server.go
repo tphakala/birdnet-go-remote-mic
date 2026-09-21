@@ -71,9 +71,13 @@ type DeviceStatus struct {
 	State              DeviceState
 	NegotiatedRate     int
 	NegotiatedChannels int
-	ClientConnected    bool
-	DroppedFrames      int64
-	Error              string
+	// NegotiatedFormat is the hardware capture format token the device negotiated
+	// (s16, s24_le, s24_3le, s32); empty when the device never opened. A wider
+	// capture is downconverted to S16LE, so this surfaces that reduction.
+	NegotiatedFormat string
+	ClientConnected  bool
+	DroppedFrames    int64
+	Error            string
 	// FriendlyName is a human-facing label derived from the sound card name,
 	// empty when the device id resolved to no present hardware.
 	FriendlyName string
@@ -350,6 +354,9 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	}
 	if d.NegotiatedChannels > 0 {
 		out.NegotiatedChannels = ptr(d.NegotiatedChannels)
+	}
+	if d.NegotiatedFormat != "" {
+		out.NegotiatedFormat = ptr(d.NegotiatedFormat)
 	}
 	if d.Error != "" {
 		out.Error = ptr(d.Error)

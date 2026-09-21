@@ -82,6 +82,10 @@ type deviceRuntime struct {
 	streams  []*streamRuntime
 	rate     int
 	channels int // opened hardware channel count (every channel is metered)
+	// format is the negotiated hardware capture format token (s16, s24_le,
+	// s24_3le, s32); a wider capture is downconverted to S16LE for the stream.
+	// Set at open, read without a lock like rate and channels.
+	format string
 	// friendlyName is the sound card's human label; supportedRates and
 	// supportedChannels are the rate and channel-count sets the device accepted at
 	// the startup probe. All static per run and read without a lock.
@@ -134,7 +138,7 @@ var runtimeGen atomic.Uint64
 // client is connected. Each stream extracts its own channels from the shared
 // capture with a selecting source, so the device opens the hardware exactly once.
 func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
-	base, err := audio.OpenCaptureAt(dev, openCh)
+	base, capFormat, err := audio.OpenCaptureAt(dev, openCh)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
@@ -182,6 +186,7 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 		streams:  streams,
 		rate:     rate,
 		channels: channels,
+		format:   capFormat.String(),
 	}, nil
 }
 

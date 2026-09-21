@@ -28,6 +28,7 @@ const (
 	devHW2        = "hw:2,0"
 	nameAudioMoth = "AudioMoth"
 	testIfaceIP   = "192.168.1.5"
+	testFmtS243LE = "s24_3le"
 )
 
 func TestProviderAvailableDevicesFiltersConfigured(t *testing.T) {
@@ -114,6 +115,43 @@ func TestProviderStatusCountsServing(t *testing.T) {
 	st := p.Status()
 	if st.DevicesTotal != 2 || st.DevicesServing != 1 {
 		t.Errorf("want serving=1 total=2, got serving=%d total=%d", st.DevicesServing, st.DevicesTotal)
+	}
+}
+
+func TestDeviceRuntimeStatusReportsNegotiated(t *testing.T) {
+	// status() surfaces the negotiated rate, channel count and capture format only
+	// for a device that actually opened (src != nil). A wider capture (here the
+	// packed 24-bit s24_3le) is downconverted to the S16LE stream, and the token is
+	// what the appliance reports so an operator can see that reduction.
+	stream := config.Stream{Path: "/garden", Mode: config.ModeOpus, Channels: []int{1}}
+	opened := &deviceRuntime{
+		dev: config.Device{
+			Name: "garden", Device: devHW1, Rate: 48000, Format: testFmtS16,
+			Streams: []config.Stream{stream},
+		},
+		state:    mgmtserver.StateServing,
+		src:      audio.NewFakeSource(48000, 1, nil),
+		rate:     48000,
+		channels: 1,
+		format:   testFmtS243LE,
+		streams:  []*streamRuntime{{stream: stream}},
+	}
+	ds := opened.status()
+	if ds.NegotiatedRate != 48000 || ds.NegotiatedChannels != 1 {
+		t.Errorf("negotiated rate/channels = %d/%d, want 48000/1", ds.NegotiatedRate, ds.NegotiatedChannels)
+	}
+	if ds.NegotiatedFormat != testFmtS243LE {
+		t.Errorf("negotiatedFormat = %q, want s24_3le", ds.NegotiatedFormat)
+	}
+
+	// A device that never opened (src nil) reports no negotiated values, even if a
+	// stale token lingered on the record: the src != nil gate must hide it.
+	unopened := skippedRecord("attic", "/attic", "open capture: device busy")
+	unopened.format = testFmtS243LE
+	ds = unopened.status()
+	if ds.NegotiatedRate != 0 || ds.NegotiatedChannels != 0 || ds.NegotiatedFormat != "" {
+		t.Errorf("unopened device reported negotiated values: %d/%d/%q",
+			ds.NegotiatedRate, ds.NegotiatedChannels, ds.NegotiatedFormat)
 	}
 }
 

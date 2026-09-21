@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { channelLabel, tallyStates } from "../src/lib/dashboard-core.js";
+import { captureFormatLabel, channelLabel, tallyStates } from "../src/lib/dashboard-core.js";
 
 test("channelLabel renders mono, contiguous, and non-contiguous selections", () => {
   assert.equal(channelLabel([]), "");
@@ -27,4 +27,14 @@ test("tallyStates lights the streamed 1-based channels across the row count", ()
   assert.deepEqual(tallyStates([], 3), [false, false, false]);
   // A streamed channel beyond the row count does not overflow the output.
   assert.deepEqual(tallyStates([5], 2), [false, false]);
+});
+
+test("captureFormatLabel renders bit depth for negotiated formats and falls back", () => {
+  assert.equal(captureFormatLabel("s16"), "16-bit");
+  assert.equal(captureFormatLabel("s24_le"), "24-bit");
+  assert.equal(captureFormatLabel("s24_3le"), "24-bit");
+  assert.equal(captureFormatLabel("s32"), "32-bit");
+  assert.equal(captureFormatLabel("f32"), "32-bit float");
+  // An unrecognised token (a future capture format) shows its uppercased form.
+  assert.equal(captureFormatLabel("s20_3le"), "S20_3LE");
 });

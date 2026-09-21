@@ -5,3 +5,14 @@
 ignore:
   - "internal/mgmtapi/**"
   - "cmd/**"
+
+# The default patch status uses codecov's ratcheting auto-target, which can fail
+# a change that only touches a defensive or unreachable error guard (it raises
+# the diff's uncovered-line ratio) even when the meaningful new code is tested.
+# Hold new code to a fixed 80% so a genuinely tested change is not blocked by an
+# untestable guard on a line it happened to touch.
+coverage:
+  status:
+    patch:
+      default:
+        target: 80%

@@ -837,6 +837,14 @@ components:
         negotiatedChannels:
           type: integer
           description: Channel count the hardware actually delivers. Absent unless the device opened.
+        negotiatedFormat:
+          type: string
+          description: >
+            Hardware capture sample format the device negotiated, as a short
+            token (s16, s24_le, s24_3le, or s32). Absent unless the device
+            opened. The stream is always delivered as S16LE, so a wider capture
+            format means the audio is downconverted to 16-bit; this surfaces
+            that reduction.
         clientConnected:
           type: boolean
           description: >

@@ -541,6 +541,7 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	if rt.src != nil {
 		ds.NegotiatedRate = rt.rate
 		ds.NegotiatedChannels = rt.channels
+		ds.NegotiatedFormat = rt.format
 	}
 	// Only a serving device can hold a client slot. A device that died after
 	// startup keeps its track pointers until process exit, and slots are released

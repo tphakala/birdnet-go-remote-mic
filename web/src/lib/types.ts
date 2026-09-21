@@ -186,6 +186,10 @@ export interface Device {
   state: DeviceState;
   negotiatedRate?: number;
   negotiatedChannels?: number;
+  // Hardware capture format token the device negotiated (s16, s24_le, s24_3le,
+  // s32). Absent unless the device opened, or from an older appliance. A wider
+  // capture is downconverted to the S16LE stream.
+  negotiatedFormat?: string;
   clientConnected: boolean;
   droppedFrames: number;
   opus?: OpusSettings;
