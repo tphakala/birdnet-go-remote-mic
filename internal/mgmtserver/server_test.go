@@ -70,6 +70,7 @@ func servingOpus() DeviceStatus {
 		State:              StateServing,
 		NegotiatedRate:     48000,
 		NegotiatedChannels: 1,
+		NegotiatedFormat:   "s24_3le",
 		ClientConnected:    true,
 		DroppedFrames:      12,
 		Streams:            []StreamStatus{{Path: "/garden", ClientConnected: true, DroppedFrames: 12}},
@@ -225,6 +226,9 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.NegotiatedChannels == nil || *d.NegotiatedChannels != 1 {
 		t.Errorf("negotiatedChannels = %v, want 1", d.NegotiatedChannels)
 	}
+	if d.NegotiatedFormat == nil || *d.NegotiatedFormat != "s24_3le" {
+		t.Errorf("negotiatedFormat = %v, want s24_3le", d.NegotiatedFormat)
+	}
 	if !d.ClientConnected || d.DroppedFrames != 12 {
 		t.Errorf("runtime fields wrong: connected=%v dropped=%d", d.ClientConnected, d.DroppedFrames)
 	}
@@ -256,8 +260,8 @@ func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	if d.Mode != mgmtapi.Pcm {
 		t.Errorf("mode = %q, want pcm", d.Mode)
 	}
-	if d.NegotiatedRate != nil || d.NegotiatedChannels != nil {
-		t.Errorf("skipped device must have no negotiated values: %v %v", d.NegotiatedRate, d.NegotiatedChannels)
+	if d.NegotiatedRate != nil || d.NegotiatedChannels != nil || d.NegotiatedFormat != nil {
+		t.Errorf("skipped device must have no negotiated values: %v %v %v", d.NegotiatedRate, d.NegotiatedChannels, d.NegotiatedFormat)
 	}
 	if d.ClientConnected || d.DroppedFrames != 0 {
 		t.Errorf("skipped device runtime should be zero: connected=%v dropped=%d", d.ClientConnected, d.DroppedFrames)

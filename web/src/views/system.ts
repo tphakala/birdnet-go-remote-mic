@@ -14,6 +14,7 @@ import {
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.js";
 import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
+import { captureFormatLabel } from "../lib/dashboard-core.js";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
 // into a Hardware column (physical machine) and a Software column (OS + build).
@@ -1285,7 +1286,13 @@ export class SystemView {
     if (r.alsa.title !== `Device id: ${d.device}`) r.alsa.title = `Device id: ${d.device}`;
     setText(r.path, d.path);
     const rate = d.negotiatedRate ?? d.rate;
-    setText(r.codec, `${modeLabel(d.mode)} ${rate.toLocaleString("en-US")} Hz`);
+    const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
+    setText(r.codec, `${modeLabel(d.mode)} ${rate.toLocaleString("en-US")} Hz${negFormat}`);
+    // The format is the hardware capture depth; the RTSP stream stays 16-bit.
+    const codecTitle = d.negotiatedFormat
+      ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
+      : "";
+    if (r.codec.title !== codecTitle) r.codec.title = codecTitle;
     setText(r.client, d.clientConnected ? "Connected" : "-");
     const badge = deviceStateBadge(d.state);
     if (r.stateSpan.className !== badge.cls) r.stateSpan.className = badge.cls;

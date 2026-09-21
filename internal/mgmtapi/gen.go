@@ -476,6 +476,9 @@ type Device struct {
 	// NegotiatedChannels Channel count the hardware actually delivers. Absent unless the device opened.
 	NegotiatedChannels *int `json:"negotiatedChannels,omitempty"`
 
+	// NegotiatedFormat Hardware capture sample format the device negotiated, as a short token (s16, s24_le, s24_3le, or s32). Absent unless the device opened. The stream is always delivered as S16LE, so a wider capture format means the audio is downconverted to 16-bit; this surfaces that reduction.
+	NegotiatedFormat *string `json:"negotiatedFormat,omitempty"`
+
 	// NegotiatedRate Sample rate the hardware actually delivers. Absent unless the device opened (the appliance refuses a rate mismatch, so when present it equals rate).
 	NegotiatedRate *int `json:"negotiatedRate,omitempty"`
 

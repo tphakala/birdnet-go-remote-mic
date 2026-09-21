@@ -77,7 +77,7 @@ func TestOpenCaptureAtRejectsNegotiatedBelowOpenCount(t *testing.T) {
 	// the buffer, so OpenCaptureAt must reject before Start and close the stream.
 	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
 	defer restore()
-	if _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2); err == nil {
+	if _, _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2); err == nil {
 		t.Fatal("OpenCaptureAt accepted a device negotiating 1 channel when 2 were opened, want error")
 	}
 	if stub.started {
@@ -104,6 +104,45 @@ func TestOpenCapturePassesS16Format(t *testing.T) {
 	defer func() { _ = src.Close() }()
 	if got != capture.FormatS16LE {
 		t.Errorf("openStream got Format %v, want FormatS16LE", got)
+	}
+}
+
+func TestOpenCaptureAtReturnsNegotiatedFormat(t *testing.T) {
+	// The negotiated hardware capture format is surfaced in device status, so
+	// OpenCaptureAt returns it alongside the source. A native-S16 device reports
+	// s16; a device that only opens in a wider format (here S24_3LE, the Apogee
+	// HypeMiC case from #76) reports that wider format even though the stream is
+	// downconverted to S16LE.
+	cases := []struct {
+		name       string
+		openFormat capture.Format
+		want       capture.Format
+	}{
+		{"native s16", capture.FormatS16LE, capture.FormatS16LE},
+		{"wide s32", capture.FormatS32LE, capture.FormatS32LE},
+		{"wide s24_le", capture.FormatS24LE, capture.FormatS24LE},
+		{"wide s24_3le", capture.FormatS243LE, capture.FormatS243LE},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := openStream
+			openStream = func(cfg capture.Config) (captureStream, error) {
+				if cfg.Format != tc.openFormat {
+					return nil, &capture.BadFormatError{Channels: cfg.Channels, Format: cfg.Format}
+				}
+				return &stubStream{neg: capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960}}, nil
+			}
+			defer func() { openStream = prev }()
+
+			src, format, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 1)
+			if err != nil {
+				t.Fatalf("OpenCaptureAt: %v", err)
+			}
+			defer func() { _ = src.Close() }()
+			if format != tc.want {
+				t.Errorf("negotiated format = %v (%q), want %v", format, format.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -501,7 +540,7 @@ func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
 		return &stubStream{neg: capture.Config{Rate: 48000, Channels: cfg.Channels, PeriodFrames: 960}}, nil
 	}
 	defer func() { openStream = prev }()
-	src, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2)
+	src, _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2)
 	if err != nil {
 		t.Fatalf("OpenCaptureAt: %v", err)
 	}

@@ -154,7 +154,8 @@ func maxSelected(selection []int) int {
 // caller today; it is kept for callers and tests that just want "open dev"
 // without managing the count. See OpenCaptureAt.
 func OpenCapture(dev *config.Device) (Source, error) {
-	return OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.StreamChannelUnion()))
+	src, _, err := OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.StreamChannelUnion()))
+	return src, err
 }
 
 // OpenCaptureAt opens and starts a capture stream for dev at openCh hardware
@@ -170,23 +171,23 @@ func OpenCapture(dev *config.Device) (Source, error) {
 // exactly, and OpenCaptureAt double-checks the negotiated rate matches the
 // request. The caller's read goroutine should runtime.LockOSThread so the capture
 // loop is not descheduled mid-period.
-func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
+func OpenCaptureAt(dev *config.Device, openCh int) (Source, capture.Format, error) {
 	// dev.Format is the stream OUTPUT format; guard it (S16-only) before touching
 	// hardware. The capture format is negotiated separately below.
 	if _, err := captureFormat(dev.Format); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if openCh < 1 {
 		openCh = 1
 	}
 	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	n := s.Negotiated()
 	if n.Rate != dev.Rate {
 		_ = s.Close()
-		return nil, fmt.Errorf("audio: negotiated rate %d Hz does not match requested %d Hz", n.Rate, dev.Rate)
+		return nil, 0, fmt.Errorf("audio: negotiated rate %d Hz does not match requested %d Hz", n.Rate, dev.Rate)
 	}
 	// Honesty check on the channel count, mirroring the rate check: a stream's
 	// selecting source extracts channel indices up to the opened count from the
@@ -197,11 +198,11 @@ func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 	// panic in the capture pump.
 	if n.Channels < openCh {
 		_ = s.Close()
-		return nil, fmt.Errorf("audio: device negotiated %d channels but %d were requested", n.Channels, openCh)
+		return nil, 0, fmt.Errorf("audio: device negotiated %d channels but %d were requested", n.Channels, openCh)
 	}
 	if err := s.Start(); err != nil {
 		_ = s.Close()
-		return nil, err
+		return nil, 0, err
 	}
 	switch format {
 	case capture.FormatS16LE:
@@ -212,16 +213,16 @@ func OpenCaptureAt(dev *config.Device, openCh int) (Source, error) {
 			channels:   n.Channels,
 			frameBytes: frameBytes,
 			buf:        make([]byte, n.PeriodFrames*frameBytes),
-		}, nil
+		}, format, nil
 	case capture.FormatS32LE:
-		return newConvertingSource(s, n, format, downconvertS32ToS16), nil
+		return newConvertingSource(s, n, format, downconvertS32ToS16), format, nil
 	case capture.FormatS24LE:
-		return newConvertingSource(s, n, format, downconvertS24LEToS16), nil
+		return newConvertingSource(s, n, format, downconvertS24LEToS16), format, nil
 	case capture.FormatS243LE:
-		return newConvertingSource(s, n, format, downconvertS243LEToS16), nil
+		return newConvertingSource(s, n, format, downconvertS243LEToS16), format, nil
 	default:
 		_ = s.Close()
-		return nil, fmt.Errorf("audio: negotiated unsupported capture format %v", format)
+		return nil, 0, fmt.Errorf("audio: negotiated unsupported capture format %v", format)
 	}
 }
 

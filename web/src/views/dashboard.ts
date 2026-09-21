@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, writeToClipboard } from "../lib/ui.js";
-import { channelLabel, tallyStates } from "../lib/dashboard-core.js";
+import { captureFormatLabel, channelLabel, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -973,7 +973,14 @@ export class DashboardView {
       if (entry.live.urlEl.title !== url) entry.live.urlEl.title = url;
       setText(entry.live.clientsEl, d.clientConnected ? "1 connected" : "0 connected");
       setText(entry.live.droppedEl, String(d.droppedFrames));
-      setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz`);
+      const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
+      setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}`);
+      // The label is the hardware capture format; the RTSP stream is always 16-bit,
+      // so name that in a tooltip rather than let "· 24-bit" read as the stream depth.
+      const negTitle = d.negotiatedFormat
+        ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
+        : "";
+      if (entry.live.negotiatedEl.title !== negTitle) entry.live.negotiatedEl.title = negTitle;
       // Mark each captured channel live when a stream carries it, and (with the
       // per-device "hide inactive channels" preference, on by default) hide the
       // rows no stream carries. Runs for every device, mono included, so a single

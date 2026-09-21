@@ -26,7 +26,8 @@ const (
 // openProbeCapture opens the capture the channel probe reads. It is a package
 // var so the probe's timing and error handling are testable without hardware.
 var openProbeCapture = func(device string, rate, channels int) (audio.Source, error) {
-	return audio.OpenCaptureAt(&config.Device{Device: device, Rate: rate, Format: "s16"}, channels)
+	src, _, err := audio.OpenCaptureAt(&config.Device{Device: device, Rate: rate, Format: "s16"}, channels)
+	return src, err
 }
 
 // probeOpenSlot admits one probe device open at a time. The capture open cannot
