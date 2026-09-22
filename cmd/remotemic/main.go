@@ -64,7 +64,8 @@ var resolveOpenChannels = audio.ResolveOpenChannels
 // appliance keeps capturing and serving audio (non-fatal, like the management
 // listener) rather than the failure being swallowed in the serve goroutine.
 // WriteTimeout is left unset so a /debug/pprof/profile?seconds=N capture can stream
-// its full duration; ReadHeaderTimeout still bounds a stalled client (gosec G112).
+// its full duration; ReadHeaderTimeout, ReadTimeout, and IdleTimeout still bound a
+// slow or idle client (gosec G112), matching the management listener.
 func startPprof(ctx context.Context, addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -77,7 +78,15 @@ func startPprof(ctx context.Context, addr string) {
 		log.Printf("pprof disabled: cannot listen on %s: %v", addr, err)
 		return
 	}
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// WriteTimeout stays unset so a /debug/pprof/profile?seconds=N capture can
+		// stream its full duration; the read and idle timeouts bound a slow or idle
+		// client without truncating that response.
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
