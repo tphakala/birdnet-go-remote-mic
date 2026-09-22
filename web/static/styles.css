@@ -1670,7 +1670,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .dropdown-trigger:focus-visible,
 .channel-checkbox:has(input:focus-visible),
 .toast-dismiss:focus-visible,
-.btn-link:focus-visible {
+.btn-link:focus-visible,
+.filter-chip:focus-visible,
+.stat-tile.is-action:focus-visible,
+.notif-chip-btn:focus-visible,
+.ev-source-pill:focus-visible,
+.notif-panel-all:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
@@ -2291,6 +2296,437 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   color: var(--text-secondary);
   line-height: 1.4;
   word-break: break-word;
+}
+
+/* Bell panel footer: the way into the full Events page. */
+.notif-panel-foot {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+  text-align: center;
+}
+
+.notif-panel-all {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-cyan-text);
+  text-decoration: none;
+  border-radius: var(--radius-xs);
+}
+
+.notif-panel-all:hover {
+  text-decoration: underline;
+}
+
+/* Title and an optional unread dot share the row's leading slot. */
+.notif-row-titlewrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ==================== EVENTS VIEW ==================== */
+
+/* Summary tiles. The surface matches the System view's resource tiles; the value
+   takes the tile's tone so a count reads as its severity at a glance. */
+.ev-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.stat-tile {
+  --tone: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  font: inherit;
+  text-align: left;
+  color: inherit;
+}
+.stat-tile.tone-error { --tone: var(--signal-crit-text); }
+.stat-tile.tone-warn  { --tone: var(--signal-warn-text); }
+.stat-tile.tone-info  { --tone: var(--signal-ok-text); }
+
+.stat-tile.is-action {
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.stat-tile.is-action:hover {
+  border-color: var(--border-highlight);
+  background: var(--bg-surface-raised);
+}
+.stat-tile.is-on {
+  border-color: var(--tone);
+  background: var(--bg-surface-raised);
+}
+/* A non-zero active-issue count lights the tile's border in its tone. */
+.stat-tile.is-alert {
+  border-color: var(--tone);
+  box-shadow: inset 0 0 0 1px var(--tone);
+}
+
+.stat-tile-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.stat-tile-value {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+.stat-tile:not(.tone-neutral) .stat-tile-value {
+  color: var(--tone);
+}
+
+.stat-tile-caption {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-height: 1em;
+}
+
+/* Card heads carry right-aligned actions on this page. */
+.ev-section-head {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ev-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ev-unread-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 8px;
+  line-height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan-text);
+}
+
+/* Toolbar: the search box on top, the facet chip groups stacked below it. */
+.ev-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ev-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ev-search-icon {
+  position: absolute;
+  left: 11px;
+  display: inline-flex;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ev-search-input {
+  width: 100%;
+  padding-left: 32px;
+  padding-right: 36px;
+}
+
+.ev-search-kbd {
+  position: absolute;
+  right: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.ev-search:focus-within .ev-search-kbd {
+  display: none;
+}
+
+.ev-facets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-chips-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h-tag);
+  padding: 0 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-base);
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: capitalize;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.filter-chip:hover {
+  border-color: var(--border-highlight);
+  color: var(--text-primary);
+}
+.filter-chip.is-on {
+  border-color: var(--accent-cyan);
+  background: var(--accent-cyan-bg);
+  color: var(--text-primary);
+}
+/* A zero-count chip reads in the muted colour so facets with matches stand out;
+   the label still meets AA against the page. On hover it brightens to primary
+   like any other chip (a higher-specificity rule, else .is-empty would win). */
+.filter-chip.is-empty {
+  color: var(--text-muted);
+}
+.filter-chip.is-empty:hover {
+  color: var(--text-primary);
+}
+
+.filter-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.filter-chip-dot.tone-error { background: var(--signal-crit); }
+.filter-chip-dot.tone-warn  { background: var(--signal-warn); }
+.filter-chip-dot.tone-info  { background: var(--signal-ok); }
+
+.filter-chip-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.filter-chip.is-on .filter-chip-count {
+  color: var(--accent-cyan-text);
+}
+
+/* Filter status line. */
+.ev-filterbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-height: var(--control-h-tag);
+}
+
+.ev-source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h-tag);
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--accent-cyan);
+  background: var(--accent-cyan-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ev-source-pill-key {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.ev-source-pill-x {
+  display: inline-flex;
+  color: var(--text-secondary);
+}
+
+.ev-reset {
+  color: var(--accent-cyan-text);
+  font-size: 12px;
+}
+
+/* The log. Rows reuse the bell's .notif-row family with a roomier layout. */
+.ev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ev-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 8px 0 2px;
+  padding: 4px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+}
+.ev-day:first-child {
+  margin-top: 0;
+}
+
+/* Keep a focused control clear of the sticky day header when focus scrolls it
+   into view. It sits on the focused element (a chip button), not the row: focus
+   moves to the control, so the row's own scroll margin would never apply. */
+.ev-list :focus-visible {
+  scroll-margin-top: 40px;
+}
+.ev-row {
+  padding: 10px 12px;
+  gap: 12px;
+  transition: border-color 0.15s ease;
+}
+.ev-row:hover {
+  border-color: var(--border-base);
+}
+.ev-row .notif-row-title {
+  font-size: 13px;
+  margin: 0;
+  line-height: 1.35;
+}
+.ev-row .notif-row-msg {
+  font-size: 13px;
+}
+.ev-row.is-unread {
+  background: var(--bg-surface-raised);
+}
+
+.ev-unread-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+}
+
+.ev-when {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ev-abs-time {
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.notif-chip-btn {
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+.notif-chip-btn.notif-chip-source {
+  font-family: var(--font-mono);
+}
+.notif-chip-btn:hover {
+  background: var(--accent-cyan-bg);
+  color: var(--accent-cyan-text);
+}
+
+/* Condition lifecycle badge: ongoing in the row's severity tone, resolved in
+   the OK tone. */
+.ev-life {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+  line-height: 15px;
+  border-radius: var(--radius-full);
+  border: 1px solid currentColor;
+}
+.ev-life-ongoing {
+  color: var(--sev, var(--signal-warn-text));
+}
+.ev-life-resolved {
+  color: var(--signal-ok-text);
+}
+
+.ev-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 32px 16px;
+  text-align: center;
+}
+.ev-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ev-empty-body {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.ev-retention-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+/* Windows High Contrast / forced-colors flattens the background and border tints
+   the toggle, alert and unread states rely on, so restate them with keyword
+   borders and system colours. */
+@media (forced-colors: active) {
+  .filter-chip.is-on,
+  .stat-tile.is-on {
+    border: 2px solid Highlight;
+  }
+  .stat-tile.is-alert {
+    border: 2px solid CanvasText;
+  }
+  .ev-unread-dot {
+    background: CanvasText;
+    forced-color-adjust: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .ev-row .notif-row-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .ev-search-kbd {
+    display: none;
+  }
 }
 
 /* Responsive Rules */

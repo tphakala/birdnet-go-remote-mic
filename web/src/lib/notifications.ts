@@ -28,9 +28,10 @@ const STORAGE_KEY = "remote-mic-notifications";
 const GAP_RELOAD_DELAY_MS = 400;
 // On a stable connection with no reconnect or gap, applySnapshot never runs to
 // prune, so live events accumulate unbounded. Once the client holds more than
-// this (comfortably above the server's ~100-entry ring) a reload re-syncs and
-// prunes back down. The server ring is the real bound; this just triggers it.
-const MAX_LIVE_ITEMS = 200;
+// this (comfortably above the server's 500-entry ring plus its pinned active
+// conditions) a reload re-syncs and prunes back down. The server ring is the
+// real bound; this just triggers it.
+const MAX_LIVE_ITEMS = 1000;
 
 // isSnapshot rejects a response that is not a notification snapshot. A proxy or
 // captive portal can answer a 200 with a non-JSON body, which api.request
@@ -61,6 +62,10 @@ export class NotificationStore extends EventTarget {
   // (while a newer load that SUCCEEDS still wins over an older, slower one).
   private loadSeq = 0;
   private appliedSeq = 0;
+  // Latched true once a snapshot has been applied. Until then a consumer cannot
+  // tell an empty log from an unfetched one; the Events page uses this to show a
+  // loading state rather than asserting "no events".
+  private loadedOnce = false;
 
   constructor() {
     super();
@@ -78,6 +83,12 @@ export class NotificationStore extends EventTarget {
 
   public getState(): CoreState {
     return this.state;
+  }
+
+  // hasLoaded reports whether a snapshot has been applied yet, so a consumer can
+  // distinguish a genuinely empty log from one not fetched (or failed to fetch).
+  public hasLoaded(): boolean {
+    return this.loadedOnce;
   }
 
   // load fetches the authoritative snapshot and folds it in. A failure (a 501
@@ -101,6 +112,7 @@ export class NotificationStore extends EventTarget {
       return;
     }
     applySnapshot(this.state, snap, Date.now());
+    this.loadedOnce = true;
     this.appliedSeq = seq;
     this.persist();
     this.emitChange();

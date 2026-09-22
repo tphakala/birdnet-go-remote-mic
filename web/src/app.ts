@@ -2,6 +2,7 @@ import { router } from "./lib/router.js";
 import { store } from "./lib/store.js";
 import { DashboardView } from "./views/dashboard.js";
 import { SystemView } from "./views/system.js";
+import { EventsView } from "./views/events.js";
 import { NotificationStore } from "./lib/notifications.js";
 import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
@@ -11,7 +12,6 @@ class App {
   public init(): void {
     this.initTheme();
     this.initNav();
-    this.initViews();
     initLoginModal();
 
     // Construct the notification store (and its bell) before polling starts so
@@ -19,6 +19,7 @@ class App {
     // stream; the store re-syncs the snapshot on every (re)connect.
     const notifications = new NotificationStore();
     new NotificationCenter(notifications);
+    this.initViews(notifications);
 
     router.init();
     // Push a stored token into the clients before the first request so a
@@ -51,15 +52,16 @@ class App {
     document.querySelectorAll<HTMLElement>(".nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
         const view = btn.dataset.view;
-        if (view === "dashboard" || view === "system") {
+        if (view === "dashboard" || view === "events" || view === "system") {
           router.navigate(view);
         }
       });
     });
   }
 
-  private initViews(): void {
+  private initViews(notifications: NotificationStore): void {
     new DashboardView();
+    new EventsView(notifications);
     new SystemView();
   }
 }

@@ -305,7 +305,9 @@ paths:
         history entry still in the ring merged with every active condition (even
         ones the ring has trimmed), in ascending id order. Clients bootstrap and
         re-sync from this; the /events stream is best effort, so a gap in
-        streamed ids means a dropped event and the client refetches here.
+        streamed ids means a dropped event and the client refetches here. The
+        ring keeps the most recent 500 history entries in memory only: there is
+        no time-based expiry, and a restart (a new bootId) starts it empty.
       responses:
         "200":
           description: The current notification snapshot.

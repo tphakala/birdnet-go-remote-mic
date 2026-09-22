@@ -202,6 +202,33 @@ func TestSnapshotDoesNotDuplicateActiveStillInRing(t *testing.T) {
 	}
 }
 
+func TestDefaultCapacityKeepsNewest(t *testing.T) {
+	// The default ring depth is a shared contract: web/src/views/events.ts pins it
+	// as RETAINED_MAX and the OpenAPI /notifications description quotes it, so a
+	// change here must move both.
+	if defaultCapacity != 500 {
+		t.Fatalf("defaultCapacity = %d, want 500; update RETAINED_MAX in web/src/views/events.ts and the /notifications description in api/openapi.yaml with it", defaultCapacity)
+	}
+	c := NewCenter()
+	for i := 0; i < defaultCapacity+1; i++ {
+		c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "x"})
+	}
+	snap := c.Snapshot()
+	if got := len(snap.Notifications); got != defaultCapacity {
+		t.Fatalf("ring entries = %d, want %d (bounded at default capacity)", got, defaultCapacity)
+	}
+	// Ids 1..defaultCapacity+1 were published; the ring keeps the newest, so the
+	// oldest (id 1) is trimmed and the window is [2, defaultCapacity+1].
+	first := snap.Notifications[0].ID
+	last := snap.Notifications[len(snap.Notifications)-1].ID
+	if first != 2 {
+		t.Errorf("first id = %d, want 2 (oldest trimmed)", first)
+	}
+	if last != uint64(defaultCapacity+1) {
+		t.Errorf("last id = %d, want %d (newest retained)", last, defaultCapacity+1)
+	}
+}
+
 func TestSubscribeReceivesPublishedInOrder(t *testing.T) {
 	c := NewCenter()
 	ch, cancel := c.Subscribe()

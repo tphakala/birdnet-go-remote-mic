@@ -3,34 +3,17 @@
 // concerns (open/close, focus, keyboard, DOM). All state lives in the store and
 // its pure core.
 
-import { button, elem, formatRelative, setHidden, setText } from "../lib/ui.js";
-import { TOAST_ICONS, ICON_CLOSE, type ToastType } from "./toast.js";
+import { button, elem, setHidden, setText } from "../lib/ui.js";
+import { ICON_CLOSE } from "./toast.js";
+import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.js";
 import { activeConditions, unreadCount, type CoreState } from "../lib/notifications-core.js";
-import type { Notification, NotificationSeverity } from "../lib/types.js";
 import type { NotificationStore } from "../lib/notifications.js";
 
-// Notification severity maps onto the toast icon set so the center and the
-// toasts show the same glyphs (warning uses the "warn" toast icon).
-const SEVERITY_TO_TOAST: Record<NotificationSeverity, ToastType> = {
-  error: "error",
-  warning: "warn",
-  info: "info",
-};
-
-// Spoken severity prefix: the icon is aria-hidden and color is not announced, so
-// a screen reader would otherwise not hear whether a row is an error or info.
-const SEVERITY_LABEL: Record<NotificationSeverity, string> = {
-  error: "Error",
-  warning: "Warning",
-  info: "Info",
-};
-
-// RESTAMP_MS is how often an open panel refreshes its relative "N ago" times.
-// renderPanel stamps them once per render and only re-renders on a store change,
-// so without this a panel left open with no new events would freeze its times.
-// Low frequency is fine: times are minute-resolution above a minute, and a
-// passive panel does not need second-accurate updates.
-const RESTAMP_MS = 15_000;
+// The popover renders at most this many history rows. The server ring holds up to
+// 500 entries; the Events page (#/events) shows the full log, so the bell need not
+// rebuild the whole ring on every live event. Active issues are always shown in
+// full above the history.
+const PANEL_HISTORY_MAX = 50;
 
 export class NotificationCenter {
   private readonly store: NotificationStore;
@@ -93,11 +76,25 @@ export class NotificationCenter {
 
     this.activeEl = elem("div", "notif-active");
     this.listEl = elem("div", "notif-list");
-    this.emptyEl = elem("p", "notif-empty", "No notifications since start.");
+    this.emptyEl = elem("p", "notif-empty", "No notifications. Older and cleared events are on the Events page.");
     const body = elem("div", "notif-body");
     body.append(this.activeEl, this.listEl, this.emptyEl);
 
-    panel.append(head, body);
+    // The popover shows what is still undismissed; the Events page keeps the full
+    // log (cleared entries included), so point there for anything older.
+    const foot = elem("div", "notif-panel-foot");
+    const all = elem("a", "notif-panel-all", "View all events");
+    all.setAttribute("href", "#/events");
+    // Already on #/events the hash does not change, so close explicitly too.
+    all.addEventListener("click", () => {
+      this.close();
+      // Closing the panel would drop focus to the body; move it into the main
+      // content after the route swaps the visible view.
+      requestAnimationFrame(() => document.getElementById("main-content")?.focus());
+    });
+    foot.append(all);
+
+    panel.append(head, body, foot);
     return panel;
   }
 
@@ -123,71 +120,26 @@ export class NotificationCenter {
     const activeIds = new Set(active.map((n) => n.id));
     const history = [...state.items.values()]
       .filter((n) => !state.dismissed.has(n.id) && !activeIds.has(n.id))
-      .sort((a, b) => b.id - a.id);
+      .sort((a, b) => b.id - a.id)
+      .slice(0, PANEL_HISTORY_MAX);
 
     this.activeEl.replaceChildren();
     if (active.length > 0) {
       const label = `${active.length} active ${active.length === 1 ? "issue" : "issues"}`;
       this.activeEl.append(elem("div", "notif-group-head", label));
-      for (const n of active) this.activeEl.append(this.renderRow(n, nowMs, offsetMs));
+      for (const n of active) this.activeEl.append(renderNotificationRow(n, { nowMs, offsetMs }));
     }
 
     this.listEl.replaceChildren();
-    for (const n of history) this.listEl.append(this.renderRow(n, nowMs, offsetMs));
+    for (const n of history) this.listEl.append(renderNotificationRow(n, { nowMs, offsetMs }));
 
     setHidden(this.emptyEl, active.length > 0 || history.length > 0);
   }
 
-  // relTime renders one event's ISO timestamp as a relative "N ago" string,
-  // correcting for server clock skew. Shared by the initial render and the
-  // open-panel restamp so the two cannot drift.
-  private relTime(iso: string, offsetMs: number, nowMs: number): string {
-    return formatRelative(Date.parse(iso) + offsetMs, nowMs);
-  }
-
-  private renderRow(n: Notification, nowMs: number, offsetMs: number): HTMLElement {
-    // One lookup feeds both the severity badge colour and the glyph, so a row
-    // can never end up with an error colour and an info icon.
-    const sev = SEVERITY_TO_TOAST[n.severity] ?? "info";
-    const row = elem("div", `notif-row sev-${sev}`);
-
-    const icon = elem("span", "notif-row-icon sev-badge");
-    icon.setAttribute("aria-hidden", "true");
-    icon.innerHTML = TOAST_ICONS[sev]; // trusted markup
-
-    const main = elem("div", "notif-row-main");
-
-    const top = elem("div", "notif-row-top");
-    const title = elem("span", "notif-row-title");
-    title.append(elem("span", "visually-hidden", `${SEVERITY_LABEL[n.severity]}: `));
-    title.append(document.createTextNode(n.title));
-    top.append(title);
-    const time = elem("time", "notif-row-time", this.relTime(n.time, offsetMs, nowMs));
-    time.setAttribute("datetime", n.time);
-    top.append(time);
-
-    const meta = elem("div", "notif-row-meta");
-    meta.append(elem("span", "notif-chip", n.category));
-    if (n.source) meta.append(elem("span", "notif-chip notif-chip-source", n.source));
-
-    main.append(top, meta);
-    if (n.message) main.append(elem("div", "notif-row-msg", n.message));
-
-    row.append(icon, main);
-    return row;
-  }
-
-  // restampTimes refreshes the "N ago" text of every row's <time> element from
-  // its datetime attribute, so a panel left open keeps its relative times
-  // current without a full re-render (which would disturb scroll and focus).
+  // restampTimes keeps an open panel's relative "N ago" times current without a
+  // full re-render (which would disturb scroll and focus).
   private restampTimes(): void {
-    const nowMs = Date.now();
-    const offsetMs = this.store.getState().serverOffsetMs;
-    const times = this.panel.querySelectorAll<HTMLElement>("time.notif-row-time");
-    times.forEach((t) => {
-      const iso = t.getAttribute("datetime");
-      if (iso) setText(t, this.relTime(iso, offsetMs, nowMs));
-    });
+    restampRows(this.panel, this.store.getState().serverOffsetMs);
   }
 
   private toggle(): void {

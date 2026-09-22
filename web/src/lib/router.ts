@@ -1,4 +1,4 @@
-export type ViewName = "dashboard" | "system";
+export type ViewName = "dashboard" | "events" | "system";
 
 export class Router extends EventTarget {
   private currentView: ViewName = "dashboard";
@@ -24,7 +24,7 @@ export class Router extends EventTarget {
     const rawHash = window.location.hash.replace(/^#\/?/, "");
     let view: ViewName = "dashboard";
 
-    if (rawHash === "system") {
+    if (rawHash === "system" || rawHash === "events") {
       view = rawHash;
     }
 
