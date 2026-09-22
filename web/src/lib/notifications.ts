@@ -28,9 +28,10 @@ const STORAGE_KEY = "remote-mic-notifications";
 const GAP_RELOAD_DELAY_MS = 400;
 // On a stable connection with no reconnect or gap, applySnapshot never runs to
 // prune, so live events accumulate unbounded. Once the client holds more than
-// this (comfortably above the server's ~100-entry ring) a reload re-syncs and
-// prunes back down. The server ring is the real bound; this just triggers it.
-const MAX_LIVE_ITEMS = 200;
+// this (comfortably above the server's 500-entry ring plus its pinned active
+// conditions) a reload re-syncs and prunes back down. The server ring is the
+// real bound; this just triggers it.
+const MAX_LIVE_ITEMS = 1000;
 
 // isSnapshot rejects a response that is not a notification snapshot. A proxy or
 // captive portal can answer a 200 with a non-JSON body, which api.request

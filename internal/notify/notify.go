@@ -111,9 +111,12 @@ type Publisher interface {
 const (
 	// notificationEvent is the SSE event name every notification streams under.
 	notificationEvent = "notification"
-	// defaultCapacity is the ring depth: enough discrete history for the panel
-	// without unbounded growth. Active conditions are pinned separately.
-	defaultCapacity = 100
+	// defaultCapacity is the ring depth: enough discrete history for the web
+	// UI's Events page without unbounded growth. History is bounded by count,
+	// never by age, and lives in RAM only (a restart starts empty). At a few
+	// hundred bytes per entry the full ring stays well under 1 MB. Active
+	// conditions are pinned separately.
+	defaultCapacity = 500
 	// subscriberBuffer is the per-subscriber channel depth. It absorbs a startup
 	// burst (one entry per configured device plus "started"); a slow client that
 	// fills it drops rather than blocking the publisher.
@@ -148,7 +151,7 @@ type Center struct {
 // Option configures a Center.
 type Option func(*Center)
 
-// WithCapacity sets the discrete-history ring depth (default 100). Values below
+// WithCapacity sets the discrete-history ring depth (default 500). Values below
 // one are ignored.
 func WithCapacity(n int) Option {
 	return func(c *Center) {

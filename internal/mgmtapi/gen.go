@@ -1100,7 +1100,7 @@ type ClientInterface interface {
 
 	// ListNotifications List notifications
 	//
-	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
 	//
 	// Corresponds with GET /notifications (the `ListNotifications` operationId).
 	ListNotifications(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1403,7 +1403,7 @@ func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (
 
 // ListNotifications List notifications
 //
-// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
 //
 // Corresponds with GET /notifications (the `ListNotifications` operationId).
 func (c *Client) ListNotifications(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2305,7 +2305,7 @@ type ClientWithResponsesInterface interface {
 
 	// ListNotificationsWithResponse List notifications
 	//
-	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -3441,7 +3441,7 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 
 // ListNotificationsWithResponse List notifications
 //
-// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here.
+// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
 //
 // Returns a wrapper object for the known response body format(s).
 //
