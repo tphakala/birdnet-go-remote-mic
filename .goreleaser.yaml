@@ -29,6 +29,13 @@ builds:
       - CGO_ENABLED=0
     flags:
       - -trimpath
+      # Profile-guided optimization. The committed cmd/remotemic/default.pgo is
+      # named by explicit path (not -pgo=auto, which silently builds WITHOUT PGO
+      # when the profile is absent) so a release fails loudly rather than shipping
+      # a non-PGO binary if the profile ever goes missing. The path is relative to
+      # the module root, where goreleaser runs the build. The profile is
+      # GOARCH-independent, so one profile guides the amd64, arm64, and arm builds.
+      - -pgo=cmd/remotemic/default.pgo
     # main.version is the ldflags target the binary prints (cmd/remotemic/main.go:
     # `var version = "dev"`), surfaced by `remote-mic version`. {{ .Tag }} (not
     # {{ .Version }}, which strips the leading v) keeps the released version

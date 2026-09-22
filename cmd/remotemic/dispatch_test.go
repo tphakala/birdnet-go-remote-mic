@@ -222,7 +222,7 @@ func TestDispatchHelpPaths(t *testing.T) {
 func TestParseServeFlagsUsesConfigEnv(t *testing.T) {
 	const p = "/etc/remotemic/from-env.yaml"
 	t.Setenv(configEnv, p)
-	cfgPath, _, check, err := parseServeFlags(nil, &bytes.Buffer{})
+	cfgPath, _, check, _, err := parseServeFlags(nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
 	}

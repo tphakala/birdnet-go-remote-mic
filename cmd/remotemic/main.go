@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -50,6 +52,45 @@ var deviceInUse = audio.DeviceInUse
 // rounding its selection up to a count the card supports. It is a package var
 // so the open retry's per-attempt resolution is testable without hardware.
 var resolveOpenChannels = audio.ResolveOpenChannels
+
+// startPprof serves net/http/pprof diagnostics on addr until ctx is cancelled. It
+// is only reached when the operator passes --pprof: the endpoints expose CPU/heap
+// profiles, a live goroutine dump, and the command line with no authentication, so
+// on a field appliance addr should be loopback (127.0.0.1:port). The handlers are
+// served from a private mux so this listener exposes only pprof; note that
+// importing net/http/pprof also registers them on http.DefaultServeMux via its
+// init, so the appliance must never serve http.DefaultServeMux. The bind is
+// synchronous so a bad address or a port already in use is reported here and the
+// appliance keeps capturing and serving audio (non-fatal, like the management
+// listener) rather than the failure being swallowed in the serve goroutine.
+// WriteTimeout is left unset so a /debug/pprof/profile?seconds=N capture can stream
+// its full duration; ReadHeaderTimeout still bounds a stalled client (gosec G112).
+func startPprof(ctx context.Context, addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("pprof disabled: cannot listen on %s: %v", addr, err)
+		return
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		log.Printf("pprof: serving diagnostics on %s", ln.Addr())
+		if serr := srv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+			log.Printf("pprof: %v", serr)
+		}
+	}()
+}
 
 func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr))
@@ -293,7 +334,7 @@ func acquireRunLock(cfgPath string) (*runlock.Lock, error) {
 	return lock, nil
 }
 
-func run(cfgPath string, ov serveOverrides, check bool) error {
+func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error {
 	startTime := time.Now()
 
 	// Take the run lock before loading the config (serve only, never --check).
@@ -392,6 +433,15 @@ func run(cfgPath string, ov serveOverrides, check bool) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Optional profiling endpoint, off unless the operator passes --pprof. Started
+	// after the signal context exists so it shuts down with the appliance, and only
+	// once the config validated. It exposes net/http/pprof to collect a CPU profile
+	// under real load (to refresh the committed PGO profile) or debug a live
+	// appliance; a bad address is non-fatal and only disables pprof.
+	if pprofAddr != "" {
+		startPprof(ctx, pprofAddr)
+	}
 
 	// The stream-events adapter turns RTSP client connect and disconnect
 	// callbacks into notification-center entries, collapsing the churn of a
