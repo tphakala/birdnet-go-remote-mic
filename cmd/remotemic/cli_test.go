@@ -16,11 +16,12 @@ import (
 )
 
 const (
-	flagConfig  = "-config"
-	flagListen  = "-listen"
-	listenAddr9 = ":9000"
-	mgmtAddr7   = ":7443"
-	cfgPathX    = "x.yaml"
+	flagConfig    = "-config"
+	flagListen    = "-listen"
+	listenAddr9   = ":9000"
+	mgmtAddr7     = ":7443"
+	cfgPathX      = "x.yaml"
+	pprofAddr6060 = "127.0.0.1:6060"
 )
 
 // TestApplyServeOverridesUnsetLeavesConfig asserts a flag the operator did not
@@ -91,9 +92,10 @@ func TestApplyServeOverridesDiscoveryFalse(t *testing.T) {
 // every override flag name matches the key applyServeOverrides reads, catching a
 // flag-name/set-key mismatch that would silently disable an override.
 func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
-	cfgPath, ov, check, err := parseServeFlags([]string{
+	cfgPath, ov, check, pprofAddr, err := parseServeFlags([]string{
 		flagConfig, cfgPathX, flagListen, listenAddr9, "-mgmt-listen", mgmtAddr7,
 		"-cert-dir", "/c", "-management=false", "-discovery=false", "-check",
+		"-pprof", pprofAddr6060,
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
@@ -103,6 +105,9 @@ func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
 	}
 	if !check {
 		t.Error("--check should parse to check=true")
+	}
+	if pprofAddr != pprofAddr6060 {
+		t.Errorf("pprofAddr = %q, want 127.0.0.1:6060", pprofAddr)
 	}
 	for _, k := range []string{keyListen, keyMgmtListen, "cert-dir", "management", keyDiscovery} {
 		if !ov.set[k] {
@@ -120,9 +125,12 @@ func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
 // TestParseServeFlagsUnsetMarksNothing asserts an unset flag never lands in
 // ov.set, so config values are preserved.
 func TestParseServeFlagsUnsetMarksNothing(t *testing.T) {
-	_, ov, check, err := parseServeFlags(nil, &bytes.Buffer{})
+	_, ov, check, pprofAddr, err := parseServeFlags(nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
+	}
+	if pprofAddr != "" {
+		t.Errorf("unset -pprof should yield empty addr, got %q", pprofAddr)
 	}
 	if len(ov.set) != 0 {
 		t.Errorf("no flags passed, but ov.set = %v", ov.set)
@@ -135,7 +143,7 @@ func TestParseServeFlagsUnsetMarksNothing(t *testing.T) {
 // TestParseServeFlagsRejectsPositional asserts stray positional arguments error
 // instead of being silently ignored.
 func TestParseServeFlagsRejectsPositional(t *testing.T) {
-	if _, _, _, err := parseServeFlags([]string{flagConfig, cfgPathX, "stray"}, &bytes.Buffer{}); err == nil {
+	if _, _, _, _, err := parseServeFlags([]string{flagConfig, cfgPathX, "stray"}, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected an error on a stray positional argument")
 	}
 }
