@@ -66,10 +66,13 @@ function rowSig(unread: boolean, lc: Lifecycle | undefined): string {
   return `${unread ? "u" : "r"}|${life}`;
 }
 
-// dayKey buckets a skew-corrected instant by the viewer's local calendar day.
+// dayKey buckets a skew-corrected instant by the viewer's local calendar day,
+// as a local YYYY-MM-DD string (getMonth is zero-based, hence the +1).
 function dayKey(ms: number): string {
   const d = new Date(ms);
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
 function dayLabel(ms: number, nowMs: number): string {
