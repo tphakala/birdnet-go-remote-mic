@@ -9,6 +9,12 @@ import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-r
 import { activeConditions, unreadCount, type CoreState } from "../lib/notifications-core.js";
 import type { NotificationStore } from "../lib/notifications.js";
 
+// The popover renders at most this many history rows. The server ring holds up to
+// 500 entries; the Events page (#/events) shows the full log, so the bell need not
+// rebuild the whole ring on every live event. Active issues are always shown in
+// full above the history.
+const PANEL_HISTORY_MAX = 50;
+
 export class NotificationCenter {
   private readonly store: NotificationStore;
   private bell!: HTMLElement;
@@ -70,7 +76,7 @@ export class NotificationCenter {
 
     this.activeEl = elem("div", "notif-active");
     this.listEl = elem("div", "notif-list");
-    this.emptyEl = elem("p", "notif-empty", "No notifications since start.");
+    this.emptyEl = elem("p", "notif-empty", "No notifications. Older and cleared events are on the Events page.");
     const body = elem("div", "notif-body");
     body.append(this.activeEl, this.listEl, this.emptyEl);
 
@@ -80,7 +86,12 @@ export class NotificationCenter {
     const all = elem("a", "notif-panel-all", "View all events");
     all.setAttribute("href", "#/events");
     // Already on #/events the hash does not change, so close explicitly too.
-    all.addEventListener("click", () => this.close());
+    all.addEventListener("click", () => {
+      this.close();
+      // Closing the panel would drop focus to the body; move it into the main
+      // content after the route swaps the visible view.
+      requestAnimationFrame(() => document.getElementById("main-content")?.focus());
+    });
     foot.append(all);
 
     panel.append(head, body, foot);
@@ -109,7 +120,8 @@ export class NotificationCenter {
     const activeIds = new Set(active.map((n) => n.id));
     const history = [...state.items.values()]
       .filter((n) => !state.dismissed.has(n.id) && !activeIds.has(n.id))
-      .sort((a, b) => b.id - a.id);
+      .sort((a, b) => b.id - a.id)
+      .slice(0, PANEL_HISTORY_MAX);
 
     this.activeEl.replaceChildren();
     if (active.length > 0) {

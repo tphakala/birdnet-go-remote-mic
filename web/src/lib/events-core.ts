@@ -1,9 +1,9 @@
 // I/O-free logic behind the Events page: the filter model, faceted counts, the
 // onset/clear lifecycle pairing, and small formatters. Like notifications-core it
 // has no DOM, fetch, storage or timers, so it is unit-tested with node:test. The
-// page reads the same NotificationStore state as the bell but ignores the
-// per-browser dismissed set: clearing the bell tidies the popover, it never hides
-// an entry from the full event log.
+// page reads the same NotificationStore state as the bell but does not hide
+// entries in the per-browser dismissed set; they only count as read, so clearing
+// the bell tidies the popover without removing an entry from the full event log.
 
 import type { Notification, NotificationSeverity } from "./types.js";
 
@@ -117,7 +117,8 @@ export function conditionLifecycles(items: Iterable<Notification>): Map<number, 
 }
 
 // formatDuration renders a span as a compact label: seconds under a minute,
-// minutes under an hour, then hours and days with a zero-padded minor unit.
+// minutes under an hour, then hours with a zero-padded minutes field and days
+// with an unpadded hours field.
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "";
   const s = Math.floor(ms / 1000);

@@ -2,16 +2,21 @@
 // option, each with an optional live count. An empty selection means "all", the
 // convention the Events page filters use. The group owns its DOM and reports the
 // new selection through onChange; the caller owns the filter state and pushes
-// counts and selection back in, so the component never holds a second copy of
-// the truth.
+// counts and selection back in. The component keeps only a mirror of the current
+// selection, used to drive its own pressed and dimmed styling.
 
 import { elem, setText } from "../lib/ui.js";
+import type { ToastType } from "./toast.js";
+
+// Module counter for unique label ids, so each group's aria-labelledby points at
+// its own label (mirrors custom-dropdown's dropdownSeq).
+let chipsSeq = 0;
 
 export interface ChipOption {
   value: string;
   label: string;
   // tone tints the chip's leading dot (a severity), omitted for neutral facets.
-  tone?: "error" | "warn" | "info";
+  tone?: ToastType;
 }
 
 export interface FilterChipsOptions {
@@ -36,8 +41,10 @@ export class FilterChips {
     this.onChange = opts.onChange;
     this.el = elem("div", "filter-chips");
     this.el.setAttribute("role", "group");
-    this.el.setAttribute("aria-label", opts.label);
-    this.el.append(elem("span", "filter-chips-label", opts.label));
+    const labelEl = elem("span", "filter-chips-label", opts.label);
+    labelEl.id = `filter-chips-label-${++chipsSeq}`;
+    this.el.setAttribute("aria-labelledby", labelEl.id);
+    this.el.append(labelEl);
     for (const o of opts.options) this.addChip(o);
   }
 

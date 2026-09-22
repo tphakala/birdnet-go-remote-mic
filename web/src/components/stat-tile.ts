@@ -1,12 +1,13 @@
 // StatTile is a reusable summary tile: a label, a large value, and a short
 // caption, optionally toned (a severity) and optionally pressable. A pressable
 // tile renders as a toggle button so it can double as a filter shortcut; a plain
-// tile is a static div. Updates write only on change (setText), so a tile can be
-// re-synced on every store change without churning the DOM.
+// tile is a static div. set() writes the value and caption only on change
+// (setText), so a tile can be re-synced on every store change without churning the
+// DOM.
 
 import { elem, setText } from "../lib/ui.js";
 
-export type TileTone = "error" | "warn" | "info" | "ok" | "neutral";
+export type TileTone = "error" | "warn" | "info" | "neutral";
 
 export interface StatTileOptions {
   label: string;

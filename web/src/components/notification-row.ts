@@ -1,8 +1,10 @@
 // One notification rendered as a row, shared by the bell's popover (compact) and
 // the Events page (full). Keeping a single renderer means the two surfaces cannot
-// drift in how they show severity, chips, or times. The full variant adds an
-// absolute timestamp, an unread marker, the condition lifecycle badge, and
-// clickable chips that narrow the page's filter.
+// drift in how they show severity, chips, or times. The full variant renders as an
+// <article> with a heading title (h3 by default, or the tag given by headingLevel)
+// and an absolute timestamp; the unread marker, the lifecycle badge, and clickable
+// filter chips are independent opt-in options (unread, lifecycle, onChip) that the
+// Events page turns on.
 
 import { elem, formatRelative, setText } from "../lib/ui.js";
 import { TOAST_ICONS, type ToastType } from "./toast.js";
@@ -25,9 +27,9 @@ export const SEVERITY_LABEL: Record<NotificationSeverity, string> = {
   info: "Info",
 };
 
-// RESTAMP_MS is how often a visible list refreshes its relative "N ago" times and
-// ongoing durations. Times are minute-resolution above a minute, so a passive
-// list does not need second-accurate updates.
+// RESTAMP_MS is how often a visible list refreshes its relative "N ago" times, its
+// absolute times and tooltips, and ongoing durations. Times are minute-resolution
+// above a minute, so a passive list does not need second-accurate updates.
 export const RESTAMP_MS = 15_000;
 
 // ChipFacet names the filter a clicked chip narrows.
@@ -39,6 +41,9 @@ export interface RowOptions {
   offsetMs: number;
   // full selects the Events-page layout; omitted renders the compact bell row.
   full?: boolean;
+  // headingLevel picks the title's heading tag for a full row (default h3), so a
+  // caller can nest it correctly under its own headings. Ignored for compact rows.
+  headingLevel?: "h3" | "h4";
   unread?: boolean;
   lifecycle?: Lifecycle;
   // onChip makes the category and source chips buttons that apply a filter.
@@ -51,16 +56,23 @@ export function relTime(iso: string, offsetMs: number, nowMs: number): string {
   return formatRelative(Date.parse(iso) + offsetMs, nowMs);
 }
 
+// Constructing an Intl formatter is far costlier than formatting with one, and
+// restampRows runs both over every row on each tick, so hoist them to module
+// scope and reuse them. ABS_TIME_FMT matches the old toLocaleTimeString options;
+// FULL_FMT's explicit fields match toLocaleString's numeric default.
+const ABS_TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const FULL_FMT = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" });
+
 // absTime renders an event's timestamp in the viewer's locale, skew corrected.
 function absTime(iso: string, offsetMs: number): string {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return iso;
-  return new Date(ms + offsetMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return ABS_TIME_FMT.format(ms + offsetMs);
 }
 
 function fullTimestamp(iso: string, offsetMs: number): string {
   const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? new Date(ms + offsetMs).toLocaleString() : iso;
+  return Number.isFinite(ms) ? FULL_FMT.format(ms + offsetMs) : iso;
 }
 
 function chip(label: string, extraClass: string, facet: ChipFacet, value: string, opts: RowOptions): HTMLElement {
@@ -112,7 +124,7 @@ export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLEl
 
   const top = elem("div", "notif-row-top");
   const titleWrap = elem("div", "notif-row-titlewrap");
-  const title = elem(opts.full ? "h3" : "span", "notif-row-title");
+  const title = elem(opts.full ? (opts.headingLevel ?? "h3") : "span", "notif-row-title");
   title.append(elem("span", "visually-hidden", `${SEVERITY_LABEL[n.severity]}: `));
   title.append(document.createTextNode(n.title));
   titleWrap.append(title);
@@ -147,14 +159,27 @@ export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLEl
   return row;
 }
 
-// restampRows refreshes every relative time and ongoing-duration badge under
-// root from its data attributes, so a list left open stays current without a
-// full re-render (which would disturb scroll and focus).
+// restampRows refreshes every relative time, its full-timestamp tooltip, the
+// absolute time on full rows, and every ongoing-duration badge under root, so
+// a list left open stays current (including after a clock-skew correction) without
+// a full re-render (which would disturb scroll and focus).
 export function restampRows(root: ParentNode, offsetMs: number): void {
   const nowMs = Date.now();
   root.querySelectorAll<HTMLElement>("time.notif-row-time").forEach((t) => {
     const iso = t.getAttribute("datetime");
-    if (iso) setText(t, relTime(iso, offsetMs, nowMs));
+    if (!iso) return;
+    setText(t, relTime(iso, offsetMs, nowMs));
+    // The tooltip is the skew-corrected full timestamp; a later offset change must
+    // move it too. Diffed so an unchanged offset does not churn the DOM.
+    const full = fullTimestamp(iso, offsetMs);
+    if (t.title !== full) t.title = full;
+  });
+  // Full rows show an absolute time beside the relative time; restamp it from the
+  // row's own datetime so a skew correction moves it in step.
+  root.querySelectorAll<HTMLElement>(".ev-row").forEach((row) => {
+    const abs = row.querySelector<HTMLElement>(".ev-abs-time");
+    const iso = row.querySelector<HTMLElement>("time.notif-row-time")?.getAttribute("datetime");
+    if (abs && iso) setText(abs, absTime(iso, offsetMs));
   });
   root.querySelectorAll<HTMLElement>(".ev-life-ongoing[data-since]").forEach((b) => {
     const since = Number(b.dataset.since);

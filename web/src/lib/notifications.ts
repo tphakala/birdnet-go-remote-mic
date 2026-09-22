@@ -62,6 +62,10 @@ export class NotificationStore extends EventTarget {
   // (while a newer load that SUCCEEDS still wins over an older, slower one).
   private loadSeq = 0;
   private appliedSeq = 0;
+  // Latched true once a snapshot has been applied. Until then a consumer cannot
+  // tell an empty log from an unfetched one; the Events page uses this to show a
+  // loading state rather than asserting "no events".
+  private loadedOnce = false;
 
   constructor() {
     super();
@@ -79,6 +83,12 @@ export class NotificationStore extends EventTarget {
 
   public getState(): CoreState {
     return this.state;
+  }
+
+  // hasLoaded reports whether a snapshot has been applied yet, so a consumer can
+  // distinguish a genuinely empty log from one not fetched (or failed to fetch).
+  public hasLoaded(): boolean {
+    return this.loadedOnce;
   }
 
   // load fetches the authoritative snapshot and folds it in. A failure (a 501
@@ -102,6 +112,7 @@ export class NotificationStore extends EventTarget {
       return;
     }
     applySnapshot(this.state, snap, Date.now());
+    this.loadedOnce = true;
     this.appliedSeq = seq;
     this.persist();
     this.emitChange();

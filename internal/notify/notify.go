@@ -116,6 +116,8 @@ const (
 	// never by age, and lives in RAM only (a restart starts empty). At a few
 	// hundred bytes per entry the full ring stays well under 1 MB. Active
 	// conditions are pinned separately.
+	// This value is a shared contract: web/src/views/events.ts pins it as
+	// RETAINED_MAX and the OpenAPI /notifications description quotes it.
 	defaultCapacity = 500
 	// subscriberBuffer is the per-subscriber channel depth. It absorbs a startup
 	// burst (one entry per configured device plus "started"); a slow client that

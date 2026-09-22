@@ -2327,7 +2327,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 /* ==================== EVENTS VIEW ==================== */
 
-/* Summary tiles. The shape matches the System view's resource tiles; the value
+/* Summary tiles. The surface matches the System view's resource tiles; the value
    takes the tile's tone so a count reads as its severity at a glance. */
 .ev-tiles {
   display: grid;
@@ -2352,7 +2352,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .stat-tile.tone-error { --tone: var(--signal-crit-text); }
 .stat-tile.tone-warn  { --tone: var(--signal-warn-text); }
 .stat-tile.tone-info  { --tone: var(--signal-ok-text); }
-.stat-tile.tone-ok    { --tone: var(--signal-ok-text); }
 
 .stat-tile.is-action {
   cursor: pointer;
@@ -2418,7 +2417,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   color: var(--accent-cyan-text);
 }
 
-/* Toolbar: search on the left, facet chip groups filling the rest. */
+/* Toolbar: the search box on top, the facet chip groups stacked below it. */
 .ev-toolbar {
   display: flex;
   flex-direction: column;
@@ -2509,8 +2508,14 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   background: var(--accent-cyan-bg);
   color: var(--text-primary);
 }
+/* A zero-count chip reads in the muted colour so facets with matches stand out;
+   the label still meets AA against the page. On hover it brightens to primary
+   like any other chip (a higher-specificity rule, else .is-empty would win). */
 .filter-chip.is-empty {
-  opacity: 0.55;
+  color: var(--text-muted);
+}
+.filter-chip.is-empty:hover {
+  color: var(--text-primary);
 }
 
 .filter-chip-dot {
@@ -2556,11 +2561,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: 12px;
   cursor: pointer;
 }
-.ev-source-pill[hidden] {
-  display: none;
-}
 .ev-source-pill-key {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 .ev-source-pill-x {
@@ -2597,6 +2599,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   margin-top: 0;
 }
 
+/* Keep a focused control clear of the sticky day header when focus scrolls it
+   into view. It sits on the focused element (a chip button), not the row: focus
+   moves to the control, so the row's own scroll margin would never apply. */
+.ev-list :focus-visible {
+  scroll-margin-top: 40px;
+}
 .ev-row {
   padding: 10px 12px;
   gap: 12px;
@@ -2611,7 +2619,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   line-height: 1.35;
 }
 .ev-row .notif-row-msg {
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .ev-row.is-unread {
   background: var(--bg-surface-raised);
@@ -2675,9 +2683,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   padding: 32px 16px;
   text-align: center;
 }
-.ev-empty[hidden] {
-  display: none;
-}
 .ev-empty-title {
   font-size: 14px;
   font-weight: 600;
@@ -2694,6 +2699,23 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   color: var(--text-muted);
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
+}
+
+/* Windows High Contrast / forced-colors flattens the background and border tints
+   the toggle, alert and unread states rely on, so restate them with keyword
+   borders and system colours. */
+@media (forced-colors: active) {
+  .filter-chip.is-on,
+  .stat-tile.is-on {
+    border: 2px solid Highlight;
+  }
+  .stat-tile.is-alert {
+    border: 2px solid CanvasText;
+  }
+  .ev-unread-dot {
+    background: CanvasText;
+    forced-color-adjust: none;
+  }
 }
 
 @media (max-width: 768px) {

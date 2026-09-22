@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  CATEGORIES,
   conditionLifecycles,
   emptyFilter,
   exportJSON,
@@ -133,4 +134,121 @@ test("exportJSON writes a chronological log", () => {
   assert.equal(out.bootId, "boot-a");
   assert.equal(out.exportedAt, "2026-09-22T11:00:00Z");
   assert.deepEqual(out.events.map((n) => n.id), [1, 3]);
+});
+
+test("facetCounts honours a category selection when counting severities", () => {
+  const f = emptyFilter();
+  f.categories.add("device");
+  const c = facetCounts(sample, f);
+  // Only the device entry (id 2, an error) survives the category filter, so the
+  // severity counts collapse onto it.
+  assert.deepEqual(c.severity, { error: 1, warning: 0, info: 0 });
+});
+
+test("facetCounts under a source selection counts both facets exactly", () => {
+  const f = emptyFilter();
+  f.source = "usbmic";
+  const c = facetCounts(sample, f);
+  // usbmic carries the device error (id 2) and the audio warning (id 3).
+  assert.deepEqual(c.severity, { error: 1, warning: 1, info: 0 });
+  assert.deepEqual(
+    [...c.category.entries()],
+    [["device", 1], ["audio", 1], ["stream", 0], ["system", 0], ["config", 0]],
+  );
+});
+
+test("conditionLifecycles pairs interleaved keys independently", () => {
+  const items = [
+    notif({ id: 1, kind: "onset", key: "k1", time: "2026-09-22T10:00:00Z" }),
+    notif({ id: 2, kind: "onset", key: "k2", time: "2026-09-22T10:01:00Z" }),
+    notif({ id: 3, kind: "clear", key: "k1", time: "2026-09-22T10:02:00Z" }),
+    notif({ id: 4, kind: "clear", key: "k2", time: "2026-09-22T10:05:00Z" }),
+  ];
+  const lc = conditionLifecycles(items);
+  assert.deepEqual(lc.get(1), { state: "resolved", durationMs: 120_000 });
+  assert.deepEqual(lc.get(3), { state: "resolved", durationMs: 120_000 });
+  assert.deepEqual(lc.get(2), { state: "resolved", durationMs: 240_000 });
+  assert.deepEqual(lc.get(4), { state: "resolved", durationMs: 240_000 });
+});
+
+test("conditionLifecycles pairs two cycles on one key separately", () => {
+  const items = [
+    notif({ id: 1, kind: "onset", key: "k", time: "2026-09-22T10:00:00Z" }),
+    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:03:00Z" }),
+    notif({ id: 3, kind: "onset", key: "k", time: "2026-09-22T10:10:00Z" }),
+    notif({ id: 4, kind: "clear", key: "k", time: "2026-09-22T10:15:00Z" }),
+  ];
+  const lc = conditionLifecycles(items);
+  assert.deepEqual(lc.get(1), { state: "resolved", durationMs: 180_000 });
+  assert.deepEqual(lc.get(2), { state: "resolved", durationMs: 180_000 });
+  assert.deepEqual(lc.get(3), { state: "resolved", durationMs: 300_000 });
+  assert.deepEqual(lc.get(4), { state: "resolved", durationMs: 300_000 });
+});
+
+test("conditionLifecycles clamps a clear stamped before its onset to zero", () => {
+  const items = [
+    notif({ id: 1, kind: "onset", key: "k", time: "2026-09-22T10:05:00Z" }),
+    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:00:00Z" }),
+  ];
+  assert.deepEqual(conditionLifecycles(items).get(2), { state: "resolved", durationMs: 0 });
+});
+
+test("conditionLifecycles reports null duration for an unparseable time", () => {
+  const items = [
+    notif({ id: 1, kind: "onset", key: "k", time: "not-a-date" }),
+    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:00:00Z" }),
+  ];
+  assert.deepEqual(conditionLifecycles(items).get(2), { state: "resolved", durationMs: null });
+});
+
+test("conditionLifecycles ignores a keyless onset", () => {
+  const lc = conditionLifecycles([notif({ id: 1, kind: "onset" })]);
+  assert.equal(lc.has(1), false);
+  assert.equal(lc.size, 0);
+});
+
+test("isFilterActive is true for a source-only or category-only filter", () => {
+  const bySource = emptyFilter();
+  bySource.source = "usbmic";
+  assert.equal(isFilterActive(bySource), true);
+  const byCategory = emptyFilter();
+  byCategory.categories.add("device");
+  assert.equal(isFilterActive(byCategory), true);
+});
+
+test("query matches the title alone", () => {
+  const f = emptyFilter();
+  f.query = "appliance";
+  assert.deepEqual(filterEvents(sample, f).map((n) => n.id), [1]);
+});
+
+test("filterEvents returns newest first regardless of input order", () => {
+  const shuffled = [sample[1], sample[3], sample[0], sample[2]];
+  assert.deepEqual(filterEvents(shuffled, emptyFilter()).map((n) => n.id), [4, 3, 2, 1]);
+});
+
+test("formatDuration crosses unit boundaries cleanly", () => {
+  assert.equal(formatDuration(59_999), "59s");
+  assert.equal(formatDuration(60_000), "1m");
+  assert.equal(formatDuration(3_600_000), "1h 00m");
+  assert.equal(formatDuration(86_400_000), "1d 0h");
+  assert.equal(formatDuration(Number.POSITIVE_INFINITY), "");
+});
+
+test("exportJSON leaves its input untouched and carries whole events", () => {
+  const input = [sample[1], sample[0]];
+  const out = JSON.parse(exportJSON(input, "boot-a", "2026-09-22T11:00:00Z")) as {
+    events: Notification[];
+  };
+  // exportJSON sorts a copy, so the caller's array order is unchanged.
+  assert.deepEqual(input.map((n) => n.id), [2, 1]);
+  // Oldest first, and each entry is the whole event object (sample[1] has every
+  // field populated, so it round-trips exactly).
+  assert.deepEqual(out.events.map((n) => n.id), [1, 2]);
+  assert.deepEqual(out.events[1], sample[1]);
+});
+
+test("facetCounts appends an unknown category after the fixed order", () => {
+  const c = facetCounts([notif({ id: 9, category: "future" as Notification["category"] })], emptyFilter());
+  assert.deepEqual([...c.category.keys()], [...CATEGORIES, "future"]);
 });
