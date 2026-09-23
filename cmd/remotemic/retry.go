@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"maps"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -163,6 +164,18 @@ func (a *appliance) armRetryTimer() {
 // clock.
 func (a *appliance) onRetryDue() {
 	now := time.Now()
+	// The pass below walks the configured devices, so a retry state under any
+	// other name would never have its deadline consumed, and armRetryTimer would
+	// re-arm a zero delay for it forever. The reconcile drops such state when a
+	// device is removed or disabled; dropping it here too keeps a missed cleanup
+	// from turning into a busy loop on the run loop.
+	enabled := make(map[string]bool, len(a.cfg.Devices))
+	for i := range a.cfg.Devices {
+		if a.cfg.Devices[i].IsEnabled() {
+			enabled[a.cfg.Devices[i].Name] = true
+		}
+	}
+	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool { return !enabled[name] })
 	recovered := false
 	attempted := false
 	for i := range a.cfg.Devices {

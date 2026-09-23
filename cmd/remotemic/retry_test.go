@@ -305,6 +305,78 @@ func TestRetryStopsWhenDeviceDisabled(t *testing.T) {
 	})
 }
 
+// TestRetryStopsWhenDeviceRemoved pins that removing a down device from the
+// configuration ends its retries, and leaves the device that stays alone.
+func TestRetryStopsWhenDeviceRemoved(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		keep := testDevice("scarlett", idScarlett, "/s", 48000)
+		next := fakeOpener(log)
+		app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+			if dev.Name == "moth" {
+				log.add("open:" + dev.Name + "@" + dev.Device)
+				return nil, errors.New("device or resource busy")
+			}
+			return next(dev, hub)
+		}
+		app.reconcile(&config.Config{Devices: []config.Device{keep, testDevice("moth", idMoth, "/m", 48000)}})
+		if !app.retrying("moth") {
+			t.Fatal("precondition: the failing device has no retry in flight")
+		}
+		app.reconcile(&config.Config{Devices: []config.Device{keep}})
+		if _, ok := app.retries["moth"]; ok {
+			t.Error("the removed device still has retry state")
+		}
+
+		runFor(t, app, 10*time.Minute)
+
+		if got := opens(log, "moth"); got != 1 {
+			t.Errorf("moth opens = %d, want 1: a removed device must not be retried", got)
+		}
+		if s := app.devices["scarlett"].currentState(); s != mgmtserver.StateServing {
+			t.Errorf("scarlett state = %s, want serving", s)
+		}
+	})
+}
+
+// TestRetryDropsStateForUnknownDevice pins the run-loop defence: a retry state
+// whose name is not a configured device is dropped by the next pass rather than
+// re-arming a zero-delay timer forever.
+func TestRetryDropsStateForUnknownDevice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, _, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		app.retries["ghost"] = &retryState{attempts: 1, next: time.Now()}
+		app.armRetryTimer()
+
+		// Drive the run loop by hand so a busy loop fails on a bound instead of
+		// hanging: with nothing else due, a minute holds at most a few passes.
+		passes := 0
+		deadline := time.After(time.Minute)
+	loop:
+		for {
+			select {
+			case <-app.retryDue:
+				passes++
+				if passes > 10 {
+					t.Fatalf("onRetryDue ran %d times within a minute, want a bounded few: the unconfigured state keeps re-arming the timer", passes)
+				}
+				app.onRetryDue()
+			case res := <-app.pumpDone:
+				app.onPumpDone(res)
+			case <-deadline:
+				break loop
+			}
+		}
+
+		if _, ok := app.retries["ghost"]; ok {
+			t.Error("retry state for an unconfigured device was not dropped")
+		}
+	})
+}
+
 // TestRetryBackoffResetsAfterStableService pins the reset: a device that served
 // for retryResetAfter after recovering starts its next failure at the shortest
 // delay, while one that fails again soon after recovering continues its backoff.
