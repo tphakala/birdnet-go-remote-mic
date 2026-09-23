@@ -39,9 +39,10 @@ const (
 	// failure starts the backoff over from the shortest delay. A device that keeps
 	// dying soon after each recovery continues from where its backoff was.
 	retryResetAfter = 10 * time.Minute
-	// retryLogEvery bounds the per-attempt logging once a device has failed more
-	// than a few times: attempts 1 to 3 are logged, then every retryLogEvery-th,
-	// which is about once an hour at the capped delay.
+	// retryLogFirst and retryLogEvery bound the per-attempt logging: the first
+	// retryLogFirst attempts are logged, then every retryLogEvery-th, which is
+	// about once an hour at the capped delay.
+	retryLogFirst = 3
 	retryLogEvery = 12
 )
 
@@ -72,7 +73,7 @@ func backoffDelay(failures int) time.Duration {
 
 // logAttempt reports whether the given attempt number is one to log, so a
 // permanently failing device does not flood the log.
-func logAttempt(n int) bool { return n <= 3 || n%retryLogEvery == 0 }
+func logAttempt(n int) bool { return n <= retryLogFirst || n%retryLogEvery == 0 }
 
 // retryableCause reports whether a down cause is one a later restart of the same
 // device can fix on its own: an open error (busy in another process, a transient
@@ -106,8 +107,7 @@ func (a *appliance) retrying(name string) bool {
 func (a *appliance) scheduleRetry(dev *config.Device) {
 	name := dev.Name
 	if config.IsCardIndexID(dev.Device) || !retryableCause(a.downReason[name]) {
-		delete(a.retries, name)
-		a.armRetryTimer()
+		a.dropRetry(name)
 		return
 	}
 	now := time.Now()
@@ -127,6 +127,13 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 	if logAttempt(st.attempts) {
 		log.Printf("device %q: retrying in %s (failure %d)", name, delay, st.attempts)
 	}
+	a.armRetryTimer()
+}
+
+// dropRetry ends any unattended restart of the device, for a down cause a retry
+// cannot fix (a disconnect is brought back by the hardware-change retry).
+func (a *appliance) dropRetry(name string) {
+	delete(a.retries, name)
 	a.armRetryTimer()
 }
 
@@ -240,14 +247,20 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
 	st.settleAt = time.Now().Add(retrySettle)
 }
 
-// finishRecovery clears the down condition of a device that came back and has
-// stayed up, exactly as a config-save or hardware-change restart does.
+// finishRecovery clears the down condition of a device that is serving again. A
+// config-save or hardware-change restart calls it as soon as the open succeeds;
+// an unattended retry calls it once the restart has served for retrySettle.
 func (a *appliance) finishRecovery(name string, rt *deviceRuntime) {
+	// A device is "recovered" only when it comes up from a down state (it could
+	// not be opened, or it died after opening), which is exactly while its down
+	// condition is active; a healthy param-change restart has none.
 	if _, down := a.downReason[name]; !down {
 		return
 	}
 	delete(a.downReason, name)
 	log.Printf("device %q recovered", name)
+	// Clear takes the category, source and key from the stored onset, so only
+	// severity, title and message are set here.
 	a.notifier.Clear(deviceDownKey(name), notify.Notification{
 		Severity: notify.SeverityInfo,
 		Title:    "Device recovered",
@@ -255,9 +268,10 @@ func (a *appliance) finishRecovery(name string, rt *deviceRuntime) {
 	})
 }
 
-// logDownf logs a device failure unless the current unattended retry attempt is
-// one that logAttempt skips.
-func (a *appliance) logDownf(format string, args ...any) {
+// logAttemptf logs a line from opening a device unless the current unattended
+// retry attempt is one that logAttempt skips, so a device that keeps failing,
+// or keeps opening and dying, does not log every attempt.
+func (a *appliance) logAttemptf(format string, args ...any) {
 	if !a.quietDown {
 		log.Printf(format, args...)
 	}

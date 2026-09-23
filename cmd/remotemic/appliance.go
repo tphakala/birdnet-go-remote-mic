@@ -513,7 +513,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	d := *dev
 	rt, err := a.open(&d, a.hub)
 	if err != nil {
-		a.logDownf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
+		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
 		// so a device that keeps failing across successive reconciles enters the
 		// condition once, not once per retry.
@@ -540,9 +540,9 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	a.alive++
 	go a.pump(rt)
 	if len(rt.streams) == 1 {
-		log.Printf("capture %q: %d Hz, %d ch on %s%s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path)
+		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path)
 	} else {
-		log.Printf("capture %q: %d Hz, %d ch on %s%s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams))
+		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams))
 	}
 	return rt
 }
@@ -564,7 +564,7 @@ func atAddr(hw *audio.Hardware) string {
 // raising its down condition with the given cause. The last known capabilities
 // are kept so the settings form still offers the device's rates.
 func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, title, msg string) *deviceRuntime {
-	a.logDownf("skipping device %q: %s", dev.Name, msg)
+	a.logAttemptf("skipping device %q: %s", dev.Name, msg)
 	n := deviceDownOnset(dev.Name, title, msg)
 	a.markDown(dev.Name, cause, &n)
 	rates, channels := a.rememberCaps(dev.Device, nil, nil)
@@ -590,7 +590,6 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 // retry in flight, including a device still waiting out its settle after an
 // unattended restart (its condition is still active, so it is cleared here).
 func (a *appliance) startDevice(dev *config.Device) {
-	_, wasDown := a.downReason[dev.Name]
 	delete(a.retries, dev.Name)
 	rt := a.openAndStart(dev)
 	a.devices[dev.Name] = rt
@@ -599,19 +598,7 @@ func (a *appliance) startDevice(dev *config.Device) {
 		return
 	}
 	a.armRetryTimer()
-	delete(a.downReason, dev.Name)
-	// A device is "recovered" only when it comes up from a down state (it could
-	// not be opened, or it died after opening), which is exactly while its down
-	// condition is active.
-	if wasDown {
-		// Clear takes the category, source and key from the stored onset, so only
-		// severity, title and message are set here.
-		a.notifier.Clear(deviceDownKey(dev.Name), notify.Notification{
-			Severity: notify.SeverityInfo,
-			Title:    "Device recovered",
-			Message:  fmt.Sprintf("Capturing again at %d Hz, %d ch", rt.rate, rt.channels),
-		})
-	}
+	a.finishRecovery(dev.Name, rt)
 }
 
 // stop tears down a serving device the reconcile deliberately removed or is about
@@ -851,7 +838,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			n := deviceDownOnset(name, "Device disconnected", msg)
 			a.markDown(name, downDisconnected, &n)
 			// The hardware-change retry brings it back, not the backoff.
-			a.scheduleRetry(&res.rt.dev)
+			a.dropRetry(name)
 		} else {
 			// The pump died but the device did not read as lost: it still resolves to
 			// present hardware, or the failure could not be confirmed as a loss (a

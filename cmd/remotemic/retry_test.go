@@ -291,6 +291,9 @@ func TestRetryStopsWhenDeviceDisabled(t *testing.T) {
 		failOpenTimes(app, log, 1<<30)
 		dev := testDevice("moth", idMoth, "/m", 48000)
 		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		if !app.retrying("moth") {
+			t.Fatal("precondition: the failing device has no retry in flight")
+		}
 		dev.Enabled = new(false)
 		app.reconcile(&config.Config{Devices: []config.Device{dev}})
 
