@@ -5,12 +5,14 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	stdlog "log"
-	"os"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	capture "github.com/tphakala/go-audio-capture"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -93,6 +95,17 @@ func shutdownApp(app *appliance, cancel func()) {
 // that is present but cannot be opened (held by another process) serves again on
 // its own once the open succeeds, with no config save, publishing exactly one
 // onset and one clear however many attempts it took.
+// captureLog redirects the standard logger into a buffer for the rest of the
+// test and restores the previous writer afterwards.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var out bytes.Buffer
+	prev := stdlog.Writer()
+	stdlog.SetOutput(&out)
+	t.Cleanup(func() { stdlog.SetOutput(prev) })
+	return &out
+}
+
 func TestRetryRestartsDeviceThatFailsToOpen(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)
@@ -506,23 +519,45 @@ func TestRetryRecoversFromResolveFailure(t *testing.T) {
 // logs what the device came back on.
 func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var out bytes.Buffer
-		stdlog.SetOutput(&out)
-		t.Cleanup(func() { stdlog.SetOutput(os.Stderr) })
+		out := captureLog(t)
 		app, opLog, cancel := newTestAppliance(t)
 		defer shutdownApp(app, cancel)
-		// Five failed opens put the recovering retry past the logged attempts.
-		failOpenTimes(app, opLog, 5)
-		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		// Five failed opens, then opens succeed; deaths makes an opened capture
+		// fail its first read.
+		fails, deaths := 5, 0
+		opener := fakeOpenerWith(opLog, func(rate, channels int) audio.Source {
+			if deaths > 0 {
+				deaths--
+				return failingSource{rate, channels}
+			}
+			return newBlockingSource(rate, channels)
+		})
+		app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+			if fails > 0 {
+				fails--
+				opLog.add("open:" + dev.Name + "@" + dev.Device)
+				return nil, errors.New("device or resource busy")
+			}
+			return opener(dev, hub)
+		}
+		const rate = 48000
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", rate)}})
+
+		// Outage 1: the startup open and retries 1 and 2 log their failures;
+		// retries 3 and 4 are quiet, and retry 5 opens the device.
 		runFor(t, app, 5*time.Minute)
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
 			t.Fatalf("precondition: moth state = %s, want serving", s)
 		}
-		if !strings.Contains(out.String(), `device "moth" recovered: capturing at 48000 Hz`) {
-			t.Errorf("no recovery line with the rate in the log:\n%s", out.String())
+		if got := strings.Count(out.String(), `skipping device "moth"`); got != 3 {
+			t.Errorf("logged open failures = %d, want 3: attempts past the logged ones must be quiet\n%s", got, out.String())
+		}
+		if want := fmt.Sprintf(`device "moth" recovered: capturing at %d Hz`, rate); !strings.Contains(out.String(), want) {
+			t.Errorf("no recovery line %q in the log:\n%s", want, out.String())
 		}
 
-		// Well inside retryResetAfter, so the backoff carries on from 6 failures.
+		// Outage 2 begins inside retryResetAfter, so the backoff carries on to
+		// 6 attempts while the outage's own failure count starts at 1.
 		out.Reset()
 		rt := app.devices["moth"]
 		app.stop(rt)
@@ -530,11 +565,27 @@ func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
 		res := <-app.pumpDone
 		app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
 
-		if got := app.retries["moth"].attempts; got != 6 {
-			t.Errorf("attempts = %d, want 6: the backoff should carry on", got)
+		st := app.retries["moth"]
+		if st == nil || !app.retrying("moth") {
+			t.Fatalf("retry state = %+v, retrying %v; want a retry in flight", st, app.retrying("moth"))
 		}
-		if !strings.Contains(out.String(), `device "moth": retrying in 5m0s (failure 1)`) {
-			t.Errorf("the new outage's first failure was not logged as failure 1:\n%s", out.String())
+		if st.attempts != 6 || st.failures != 1 {
+			t.Errorf("attempts, failures = %d, %d; want 6, 1", st.attempts, st.failures)
+		}
+		if want := fmt.Sprintf(`device "moth": retrying in %s (failure 1)`, backoffDelay(6)); !strings.Contains(out.String(), want) {
+			t.Errorf("no %q in the log:\n%s", want, out.String())
+		}
+
+		// Retry 1 of outage 2 opens the device and its capture dies during the
+		// settle. Both the retry and the death are within the outage's first
+		// logged failures, so both are logged.
+		out.Reset()
+		deaths = 1
+		runFor(t, app, backoffDelay(6)+time.Second)
+		for _, want := range []string{`device "moth": retry 1`, `capture "moth"`, `device "moth" failed:`} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("no %q in the log:\n%s", want, out.String())
+			}
 		}
 	})
 }
@@ -672,9 +723,7 @@ func TestRetryStopsWhenDeviceDisappears(t *testing.T) {
 // missing, the backoff is dropped, and nothing else would record why.
 func TestRetryQuietAttemptLogsEndOfRetry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var out bytes.Buffer
-		stdlog.SetOutput(&out)
-		t.Cleanup(func() { stdlog.SetOutput(os.Stderr) })
+		out := captureLog(t)
 		app, opLog, cancel := newTestAppliance(t)
 		defer shutdownApp(app, cancel)
 		host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
@@ -696,6 +745,36 @@ func TestRetryQuietAttemptLogsEndOfRetry(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), `skipping device "moth": Not connected`) {
 			t.Errorf("the quiet attempt that ended the retry left no log line:\n%s", out.String())
+		}
+	})
+}
+
+// TestRetryLostDeviceDropsRetry pins that a device lost while its retried
+// restart is settling leaves the backoff: the hardware-change retry brings a
+// disconnected device back, so a lingering retry state would only keep it
+// marked as retrying.
+func TestRetryLostDeviceDropsRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, opLog, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, opLog, 1)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		runFor(t, app, retryBackoff[0]+time.Second)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing || !app.retrying("moth") {
+			t.Fatalf("precondition: moth = %s, retrying %v; want serving and settling", s, app.retrying("moth"))
+		}
+
+		rt := app.devices["moth"]
+		app.stop(rt)
+		rt.superseded = false
+		res := <-app.pumpDone
+		app.onPumpDone(pumpResult{rt: res.rt, err: capture.ErrDeviceGone})
+
+		if _, ok := app.retries["moth"]; ok {
+			t.Error("a lost device kept its retry state")
+		}
+		if act := applianceCenter(t, app).Active(); len(act) != 1 || act[0].Title != titleDisconnected {
+			t.Errorf("active = %+v, want one Device disconnected", act)
 		}
 	})
 }
