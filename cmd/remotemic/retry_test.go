@@ -167,6 +167,63 @@ func TestRetryDeviceThatDiesAfterOpenDoesNotFlap(t *testing.T) {
 	})
 }
 
+// TestRetryCauseSwitchKeepsOneCondition pins the markDown keep-rule in both
+// directions: while an unattended restart is in flight, a failure that moves
+// between two retryable causes (the capture died, then the reopen failed busy,
+// or the other way round) keeps the one active condition instead of resolving
+// it and raising a new onset on the switch.
+func TestRetryCauseSwitchKeepsOneCondition(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// failOpens is how many opens fail busy; deaths is how many opened
+		// captures fail their first read. Opens fail first, then captures die.
+		failOpens, deaths int
+		diesFirst         bool
+	}{
+		{name: "died then open failed", failOpens: 2, deaths: 1, diesFirst: true},
+		{name: "open failed then died", failOpens: 1, deaths: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				app, log, cancel := newTestAppliance(t)
+				defer shutdownApp(app, cancel)
+				deaths := tc.deaths
+				opener := fakeOpenerWith(log, func(rate, channels int) audio.Source {
+					if deaths > 0 {
+						deaths--
+						return failingSource{rate, channels}
+					}
+					return newBlockingSource(rate, channels)
+				})
+				// diesFirst: the first open succeeds and dies, then the opens fail.
+				fails, opened := tc.failOpens, false
+				app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+					if fails > 0 && (!tc.diesFirst || opened) {
+						fails--
+						log.add("open:" + dev.Name + "@" + dev.Device)
+						return nil, errors.New("device or resource busy")
+					}
+					opened = true
+					return opener(dev, hub)
+				}
+				app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+
+				runFor(t, app, 10*time.Minute)
+
+				if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+					t.Fatalf("moth state = %s, want serving", s)
+				}
+				if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+					t.Errorf("down onsets = %d, want 1", got)
+				}
+				if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+					t.Errorf("down clears (including cause-change resolves) = %d, want 1", got)
+				}
+			})
+		})
+	}
+}
+
 // TestRetryPermanentFailureBacksOff pins the bound on a device that never comes
 // back: attempts follow the backoff schedule (5 s, 10 s, 30 s, 1 min, 2 min, then
 // every 5 min), so an hour costs 17 opens, and the condition is raised once and

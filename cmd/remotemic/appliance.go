@@ -181,7 +181,9 @@ const (
 // rather than the first one. The exception is an unattended restart in flight
 // whose failure moves between two retryable causes (a pump that died, then an
 // open that failed): the existing condition is kept, so a device alternating
-// between them is not re-notified on every attempt.
+// between them is not re-notified on every attempt. The trade-off is that the
+// active notification keeps the first cause's text; the device record's error
+// always carries the latest one.
 func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 	if prev, ok := a.downReason[name]; ok && prev != cause {
 		if a.retrying(name) && retryableCause(prev) && retryableCause(cause) {

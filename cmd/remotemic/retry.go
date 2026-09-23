@@ -89,10 +89,12 @@ func retryableCause(cause string) bool {
 }
 
 // retrying reports whether the device has an unattended restart in flight: a
-// retry state that has not completed a settle since its last failure.
+// retry state that has not completed a settle since its last failure. It holds
+// across the whole cycle, including while an attempt's open runs (when neither
+// deadline is set), so markDown keeps the condition on a cause switch there too.
 func (a *appliance) retrying(name string) bool {
 	st := a.retries[name]
-	return st != nil && (!st.next.IsZero() || !st.settleAt.IsZero())
+	return st != nil && st.recoveredAt.IsZero()
 }
 
 // scheduleRetry arms the next unattended restart of a device that just went
