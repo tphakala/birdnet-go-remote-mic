@@ -3,7 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	stdlog "log"
+	"os"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -488,6 +491,45 @@ func TestRetryRecoversFromResolveFailure(t *testing.T) {
 		}
 		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
 			t.Errorf("down clears = %d, want 1", got)
+		}
+	})
+}
+
+// TestRetryNewOutageIsLoggedFromItsFirstFailure pins that a device which fails
+// again after a completed recovery is logged from its first failure, even though
+// its backoff carries on from the earlier outage, and that the recovery itself
+// logs what the device came back on.
+func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var out bytes.Buffer
+		stdlog.SetOutput(&out)
+		t.Cleanup(func() { stdlog.SetOutput(os.Stderr) })
+		app, opLog, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		// Five failed opens put the recovering retry past the logged attempts.
+		failOpenTimes(app, opLog, 5)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		runFor(t, app, 5*time.Minute)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("precondition: moth state = %s, want serving", s)
+		}
+		if !strings.Contains(out.String(), `device "moth" recovered: capturing at 48000 Hz`) {
+			t.Errorf("no recovery line with the rate in the log:\n%s", out.String())
+		}
+
+		// Well inside retryResetAfter, so the backoff carries on from 6 failures.
+		out.Reset()
+		rt := app.devices["moth"]
+		app.stop(rt)
+		rt.superseded = false
+		res := <-app.pumpDone
+		app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
+
+		if got := app.retries["moth"].attempts; got != 6 {
+			t.Errorf("attempts = %d, want 6: the backoff should carry on", got)
+		}
+		if !strings.Contains(out.String(), `device "moth": retrying in 5m0s (failure 1)`) {
+			t.Errorf("the new outage's first failure was not logged as failure 1:\n%s", out.String())
 		}
 	})
 }

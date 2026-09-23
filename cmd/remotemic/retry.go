@@ -8,6 +8,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
@@ -54,6 +55,11 @@ type retryState struct {
 	// attempts counts consecutive failures since the backoff last reset; it picks
 	// the delay before the next attempt.
 	attempts int
+	// failures counts consecutive failures in the current outage, starting over
+	// when a failure follows a completed settle. It gates the logging, so a new
+	// outage is logged from its first failure even when attempts carries on from
+	// an earlier one; attempts alone picks the delay.
+	failures int
 	// next is when the next restart attempt is due; zero while none is pending.
 	next time.Time
 	// settleAt is when a device restarted by a retry counts as recovered; zero
@@ -116,16 +122,21 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 		st = &retryState{}
 		a.retries[name] = st
 	}
-	if !st.recoveredAt.IsZero() && now.Sub(st.recoveredAt) >= retryResetAfter {
-		st.attempts = 0
+	if !st.recoveredAt.IsZero() {
+		// A failure after a completed settle starts a new outage.
+		st.failures = 0
+		if now.Sub(st.recoveredAt) >= retryResetAfter {
+			st.attempts = 0
+		}
 	}
 	st.recoveredAt = time.Time{}
 	st.settleAt = time.Time{}
 	st.attempts++
+	st.failures++
 	delay := backoffDelay(st.attempts)
 	st.next = now.Add(delay)
-	if logAttempt(st.attempts) {
-		log.Printf("device %q: retrying in %s (failure %d)", name, delay, st.attempts)
+	if logAttempt(st.failures) {
+		log.Printf("device %q: retrying in %s (failure %d)", name, delay, st.failures)
 	}
 	a.armRetryTimer()
 }
@@ -203,7 +214,7 @@ func (a *appliance) onRetryDue() {
 			recovered = true
 		case !st.next.IsZero() && !now.Before(st.next):
 			st.next = time.Time{}
-			if rt == nil || !d.IsEnabled() {
+			if rt == nil {
 				continue
 			}
 			if s := rt.currentState(); s != mgmtserver.StateSkipped && s != mgmtserver.StateFailed {
@@ -232,11 +243,14 @@ func (a *appliance) onRetryDue() {
 // retrySettle (see onRetryDue); on failure the next attempt is scheduled. Failure
 // logs inside the open are silenced on attempts logAttempt skips.
 func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
-	n := st.attempts + 1
-	if logAttempt(n) {
-		log.Printf("device %q: retry attempt %d", d.Name, n)
+	// Retry n follows failure n. Its open logs are gated on the failure it would
+	// become, failure n+1, so they appear exactly when scheduleRetry logs that
+	// failure.
+	loud := logAttempt(st.failures + 1)
+	if loud {
+		log.Printf("device %q: retry %d", d.Name, st.failures)
 	}
-	a.quietDown = !logAttempt(n)
+	a.quietDown = !loud
 	rt := a.openAndStart(d)
 	a.quietDown = false
 	a.devices[d.Name] = rt
@@ -258,7 +272,7 @@ func (a *appliance) finishRecovery(name string, rt *deviceRuntime) {
 		return
 	}
 	delete(a.downReason, name)
-	log.Printf("device %q recovered", name)
+	log.Printf("device %q recovered: capturing at %d Hz, %d ch%s", name, rt.rate, rt.channels, atAddr(&audio.Hardware{HWAddr: rt.hwAddr, Label: rt.friendlyName}))
 	// Clear takes the category, source and key from the stored onset, so only
 	// severity, title and message are set here.
 	a.notifier.Clear(deviceDownKey(name), notify.Notification{

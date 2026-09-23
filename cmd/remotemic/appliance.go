@@ -853,7 +853,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			if config.IsCardIndexID(res.rt.dev.Device) {
 				restart = "it restarts on the next config save"
 			}
-			if !a.retrying(name) || logAttempt(a.retries[name].attempts+1) {
+			if !a.retrying(name) || logAttempt(a.retries[name].failures+1) {
 				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
 			}
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
