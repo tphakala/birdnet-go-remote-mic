@@ -299,6 +299,9 @@ func TestRetryStopsWhenDeviceDisabled(t *testing.T) {
 		}
 		dev.Enabled = new(false)
 		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		if _, ok := app.retries["moth"]; ok {
+			t.Error("disabling the device left its retry state behind")
+		}
 
 		runFor(t, app, 10*time.Minute)
 
@@ -530,6 +533,134 @@ func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), `device "moth": retrying in 5m0s (failure 1)`) {
 			t.Errorf("the new outage's first failure was not logged as failure 1:\n%s", out.String())
+		}
+	})
+}
+
+// TestRetryConfigSaveRecoversRetryingDevice pins that a config save that brings
+// back a device with a retry in flight, whether it is backing off or waiting
+// out its settle, clears its condition exactly once and ends the retry: the
+// save deletes the retry state, so nothing else would ever clear it.
+func TestRetryConfigSaveRecoversRetryingDevice(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// settling lets one retry open the device before the save, so the save
+		// restarts a device that is serving but not yet recovered.
+		settling bool
+	}{
+		{name: "backing off"},
+		{name: "settling", settling: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				app, opLog, cancel := newTestAppliance(t)
+				defer shutdownApp(app, cancel)
+				broken := true
+				next := app.open
+				app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+					if broken {
+						opLog.add("open:" + dev.Name + "@" + dev.Device)
+						return nil, errors.New("device or resource busy")
+					}
+					return next(dev, hub)
+				}
+				dev := testDevice("moth", idMoth, "/m", 48000)
+				app.reconcile(&config.Config{Devices: []config.Device{dev}})
+				if tc.settling {
+					broken = false
+					runFor(t, app, retryBackoff[0]+time.Second)
+					if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing || !app.retrying("moth") {
+						t.Fatalf("precondition: moth = %s, retrying %v; want serving and settling", s, app.retrying("moth"))
+					}
+					// A rate change makes the save restart the serving device.
+					dev.Rate = 96000
+				} else {
+					runFor(t, app, time.Minute)
+					if !app.retrying("moth") {
+						t.Fatal("precondition: no retry in flight")
+					}
+					broken = false
+				}
+
+				app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+				if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+					t.Fatalf("moth state = %s, want serving after the save", s)
+				}
+				if _, ok := app.retries["moth"]; ok {
+					t.Error("the save left retry state behind")
+				}
+				runFor(t, app, time.Minute)
+				if act := applianceCenter(t, app).Active(); len(act) != 0 {
+					t.Errorf("active = %+v, want the down condition cleared", act)
+				}
+				if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+					t.Errorf("down clears = %d, want 1", got)
+				}
+			})
+		})
+	}
+}
+
+// TestRetryFailedMessageMatchesRestartPath pins the failed-while-present text:
+// a stable id says it restarts on its own, a card-index id (never restarted
+// unattended) says it waits for a config save.
+func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, want string
+	}{
+		{name: "stable id", id: idMoth, want: "restarts automatically"},
+		{name: "card index", id: addrHW3, want: "restarts on the next config save"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _, cancel := newTestAppliance(t)
+			defer cancel()
+			defer app.closeAll()
+			withHost(app, &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}})
+			app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", tc.id, "/m", 48000)}})
+			rt := app.devices["moth"]
+			app.stop(rt)
+			rt.superseded = false
+			res := <-app.pumpDone
+			app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
+
+			act := applianceCenter(t, app).Active()
+			if len(act) != 1 || act[0].Title != "Device failed" {
+				t.Fatalf("active = %+v, want one Device failed", act)
+			}
+			if !strings.Contains(act[0].Message, tc.want) {
+				t.Errorf("message = %q, want it to say %q", act[0].Message, tc.want)
+			}
+		})
+	}
+}
+
+// TestRetryStopsWhenDeviceDisappears pins that a retry which finds the device
+// gone hands it to the hardware-change path: the condition is re-raised as not
+// connected and the backoff state is dropped.
+func TestRetryStopsWhenDeviceDisappears(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, opLog, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
+		withHost(app, host)
+		failOpenTimes(app, opLog, 1<<30)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		if !app.retrying("moth") {
+			t.Fatal("precondition: no retry in flight")
+		}
+
+		host.devs = nil
+		runFor(t, app, time.Minute)
+
+		if _, ok := app.retries["moth"]; ok {
+			t.Error("retry state survived the device disappearing")
+		}
+		if act := applianceCenter(t, app).Active(); len(act) != 1 || act[0].Title != "Device not connected" {
+			t.Errorf("active = %+v, want one Device not connected", act)
+		}
+		if got := opens(opLog, "moth"); got != 1 {
+			t.Errorf("opens = %d, want 1: an absent device is not opened", got)
 		}
 	})
 }
