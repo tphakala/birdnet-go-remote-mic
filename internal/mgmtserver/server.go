@@ -32,7 +32,8 @@ const (
 	// captures from, or the open failed. The error says which.
 	StateSkipped DeviceState = "skipped"
 	// StateFailed means the device died after opening; its RTSP path returns 404
-	// until the device is reconnected or the config is saved.
+	// until the device restarts: on a backoff while it is still present, when it
+	// is reconnected, or on a config save (a card-index id only on a save).
 	StateFailed DeviceState = "failed"
 	// StateDisabled means the device is configured but intentionally not opened
 	// (its Enabled flag is false). It is not captured or streamed until it is

@@ -864,7 +864,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// entry is not retried unattended, so it waits for a config save.
 			restart := "it restarts automatically when capture works again"
 			if config.IsCardIndexID(res.rt.dev.Device) {
-				restart = "it restarts on the next config save or capture hardware change"
+				restart = "it restarts on the next config save"
 			}
 			if !a.retrying(name) || logAttempt(a.retries[name].attempts+1) {
 				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)

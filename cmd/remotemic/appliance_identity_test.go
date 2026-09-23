@@ -521,13 +521,13 @@ func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
 	}
 }
 
-// TestPersistentNonHardwareFailureDoesNotArm pins the fix for a device that opens
+// TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry pins the fix for a device that opens
 // fine and then keeps dying for a non-hardware reason (a deterministic encoder
 // fault, an EIO right after open): while the device is still present, the failure
 // is reported as failed and does NOT arm the enumeration retry. Arming it would
 // restart and re-notify the device every enumeration tick, flapping the down
 // condition forever; it is retried on a backoff instead (see retry_test.go).
-func TestPersistentNonHardwareFailureDoesNotArm(t *testing.T) {
+func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
 	app, _, cancel := newTestAppliance(t)
 	defer cancel()
 	defer app.closeAll()
