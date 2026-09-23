@@ -150,10 +150,91 @@ test open real ALSA hardware. Use `audio.NewFakeSource` and the existing seams.
 - Put logic that can be tested without a DOM into a `*-core.ts` module with a
   matching test in `web/test/`.
 
+## Linting policy
+
+golangci-lint v2 with `.golangci.yaml` (shared with go-audio-stream so the audio
+projects keep one standard). Zero findings is the bar: `max-issues-per-linter`
+and `max-same-issues` are 0 and `new: false`, so pre-existing code is linted
+too. Enabled linters include staticcheck, revive, gocritic (style, diagnostic,
+and performance tags), errorlint, errname, exhaustive, nilerr, nilnil,
+copyloopvar, prealloc, goconst, dupl, gocyclo, gocognit (limit 50), iface,
+predeclared, unconvert, wastedassign, thelper, and testifylint. `unused` is
+disabled.
+
+- Fix the finding rather than suppress it. When a suppression is genuinely
+  right, it names the linter and says why on the same line:
+  `//nolint:nilnil // a nil lock with no error means "serve without a lock"`.
+  A bare `//nolint` is not acceptable.
+- `exhaustive` treats a `default:` as exhaustive, but prefer listing every enum
+  case in a switch so a new value is caught by the compiler and linter.
+- Custom gocritic ruleguard matchers live in `rules/*.go` (build tag
+  `ruleguard`, ignored by the normal toolchain). Add a matcher there when a
+  pattern should be banned project-wide.
+
+## Go conventions (Go 1.27): modern Go is mandatory
+
+This project MUST follow modern Go patterns. The module targets Go 1.27
+(`go 1.27` in `go.mod`), which is likely newer than an LLM's training data:
+language and standard library features up to and including Go 1.27 are
+available and expected, and older idioms that they replace are treated as
+defects in review. Do not lower the `go` directive, and do not write code "for
+compatibility" with older Go versions. When unsure whether an API exists in Go
+1.27, check with `go doc <pkg>.<Symbol>` rather than falling back to an older
+pattern.
+
+Hard constraints:
+
+- Pure Go only, `CGO_ENABLED=0`, one static binary. Never add a dependency that
+  needs cgo, and never add a dependency when the standard library or an
+  existing dependency does the job. The direct dependency list is short on
+  purpose; justify any addition in the PR.
+- The loop variable is per-iteration (Go 1.22+): never write `v := v` copies.
+- No `init()` functions. Package-level variables are limited to read-only
+  tables and swappable test seams (such as `execSelf`); wire everything else
+  explicitly.
+- `context.Context` is the first parameter, named `ctx`.
+
+Required idioms (the codebase already uses them; new code MUST too):
+
+- `any`, never `interface{}`.
+- `for i := range n` over integers; `min`/`max` builtins.
+- `slices` and `maps` packages instead of hand-written loops or `sort.Slice`
+  (`slices.SortFunc` with `cmp.Compare`). `internal/reload/plan.go` still uses
+  `sort`; migrate it if you touch it.
+- `strings.Cut`, `strings.SplitSeq`/`FieldsSeq` instead of `Split` plus
+  indexing.
+- Range-over-func iterators (`iter.Seq`, `iter.Seq2`) when a function yields a
+  sequence, instead of building a throwaway slice or a callback API.
+- `sync.WaitGroup.Go` for new goroutine fan-out instead of `Add(1)` plus
+  `defer Done()`.
+- Typed atomics (`atomic.Bool`, `atomic.Int64`, `atomic.Pointer[T]`), not the
+  function-style `atomic.AddInt64` on bare integers.
+- `new(expr)` for a pointer to a value (for example `new(true)` for the `*bool`
+  config fields) instead of a helper function or temporary variable.
+- Errors: wrap with `fmt.Errorf("...: %w", err)`, compare with `errors.Is`, and
+  extract with `errors.As` (or `errors.AsType`). Sentinel errors are
+  `ErrXxx`, error types are `XxxError` (enforced by errname). Use
+  `errors.New` for constant messages.
+- Logging is the standard library `log` package. Messages are lowercase and
+  lead with what they concern: the subsystem (`pprof: ...`) or the device
+  (`device %q disconnected: ...`). Do not introduce a logging framework.
+- Comments explain why, not what. Match the comment density and tone of the
+  surrounding code.
+
+## Tests
+
+- Standard library `testing` only (no testify), table-driven where it helps,
+  failure messages in `got X, want Y` form.
+- Mark independent tests `t.Parallel()`. Use `testing/synctest` for code that
+  depends on timers or tickers rather than real sleeps, `t.Context()` for a
+  test-scoped context, and `b.Loop()` in benchmarks.
+- Test helpers call `t.Helper()` (enforced by thelper).
+- No real hardware or network beyond loopback in unit tests; reach for the
+  existing seams and fakes. Avoid `time.Sleep` for synchronization in new
+  tests (prefer channels or `synctest`).
+
 ## Code style
 
-- Go: gofmt, golangci-lint clean (config in `.golangci.yaml`), comments explain
-  why rather than restating what. Match the density and tone of nearby code.
 - Never use em dashes or en dashes anywhere (code, comments, docs, commits).
   Use commas, colons, semicolons, parentheses, or a plain hyphen.
 - Commit subjects follow Conventional Commits with a scope where it helps:
