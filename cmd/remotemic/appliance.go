@@ -123,7 +123,8 @@ type appliance struct {
 	// name, from its first failure for a cause a later restart can fix (see
 	// scheduleRetry) through its settle; a recovered device keeps it until its next
 	// failure, so the backoff can tell whether it served for retryResetAfter. An
-	// entry therefore does not mean the device is down; retrying does.
+	// entry therefore does not mean the device is down; retrying means its down
+	// condition is still active (it may already be serving, in its settle).
 	// retryTimer fires at the earliest pending retry or settle deadline and
 	// signals retryDue (buffered depth 1, coalescing), which the run loop drains
 	// into onRetryDue. quietDown silences the open's log lines during a retry
@@ -801,7 +802,8 @@ func (a *appliance) publish(cfg *config.Config) {
 // it restarts when it is reconnected (see retryDown). A device that failed while
 // still present is retried on a backoff instead (see scheduleRetry), since
 // re-arming the enumeration retry for a device that keeps failing would restart
-// and re-notify it every enumeration tick.
+// and re-notify it every enumeration tick. Neither path restarts a card-index
+// id, which waits for a config save.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
 	if res.rt.superseded {

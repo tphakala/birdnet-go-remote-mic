@@ -782,7 +782,7 @@ func TestRetryLostDeviceDropsRetry(t *testing.T) {
 func TestBackoffDelay(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		failures int
+		attempts int
 		want     time.Duration
 	}{
 		{0, 5 * time.Second},
@@ -794,8 +794,8 @@ func TestBackoffDelay(t *testing.T) {
 		{6, 5 * time.Minute},
 		{100, 5 * time.Minute},
 	} {
-		if got := backoffDelay(tc.failures); got != tc.want {
-			t.Errorf("backoffDelay(%d) = %s, want %s", tc.failures, got, tc.want)
+		if got := backoffDelay(tc.attempts); got != tc.want {
+			t.Errorf("backoffDelay(%d) = %s, want %s", tc.attempts, got, tc.want)
 		}
 	}
 }

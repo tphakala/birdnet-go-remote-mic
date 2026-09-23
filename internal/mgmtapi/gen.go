@@ -493,7 +493,7 @@ type Device struct {
 	// Rate Requested capture sample rate in Hz (as configured).
 	Rate int `json:"rate"`
 
-	// State serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, it resolves to hardware another entry already captures from, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device restarts. A device bound by a stable id that failed or could not be opened while still present is retried automatically with a growing delay; one that was unplugged restarts when it is reconnected; a card-index id restarts only on a config save. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
+	// State serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, it resolves to hardware another entry already captures from, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart. Recovery of a skipped or failed device: one bound by a stable id that could not be opened, or failed, while still present is retried automatically with a growing delay; one that was unplugged restarts when it is reconnected; a card-index id restarts only on a config save.
 	State DeviceState `json:"state"`
 
 	// StreamedChannels Every 1-based capture channel that at least one of the device's streams carries, ascending and unique: the union of the stream selections, where channels describes only the first stream. The UI marks these channels as live on the level meters.
@@ -561,7 +561,7 @@ type DeviceLevels struct {
 	Name string `json:"name"`
 }
 
-// DeviceState serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, it resolves to hardware another entry already captures from, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device restarts. A device bound by a stable id that failed or could not be opened while still present is retried automatically with a growing delay; one that was unplugged restarts when it is reconnected; a card-index id restarts only on a config save. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart.
+// DeviceState serving: capturing and available over RTSP. skipped: not opened (the device is not connected, its id matches several devices, it resolves to hardware another entry already captures from, or the open failed); error says why. failed: died after opening; its RTSP path returns 404 until the device restarts. disabled: configured but intentionally not opened (its enabled flag is false); not captured or streamed until re-enabled, which is hot-applied without a restart. Recovery of a skipped or failed device: one bound by a stable id that could not be opened, or failed, while still present is retried automatically with a growing delay; one that was unplugged restarts when it is reconnected; a card-index id restarts only on a config save.
 type DeviceState string
 
 // DiscoverySettings mDNS/DNS-SD advertisement settings.

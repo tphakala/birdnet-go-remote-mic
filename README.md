@@ -399,8 +399,8 @@ For a local end-to-end check without hardware, use the ALSA loopback
   restart has kept serving for 30 seconds, so a device that keeps failing is
   reported once, not on every attempt; its RTSP path serves again as soon as
   the restart opens it. A config save or a hardware change restarts it at once,
-  clears the notification as soon as it opens, and starts the delays over. A card-index device is not retried this
-  way either.
+  clears the notification as soon as it opens, and starts the delays over. A
+  card-index device is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous

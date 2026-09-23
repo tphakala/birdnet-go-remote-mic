@@ -40,9 +40,9 @@ const (
 	// failure starts the backoff over from the shortest delay. A device that keeps
 	// dying soon after each recovery continues from where its backoff was.
 	retryResetAfter = 10 * time.Minute
-	// retryLogFirst and retryLogEvery bound the per-attempt logging: the first
-	// retryLogFirst attempts are logged, then every retryLogEvery-th, which is
-	// about once an hour at the capped delay.
+	// retryLogFirst and retryLogEvery bound the retry logging: the first
+	// retryLogFirst failures of each outage are logged, then every
+	// retryLogEvery-th, which is about once an hour at the capped delay.
 	retryLogFirst = 3
 	retryLogEvery = 12
 )
@@ -70,15 +70,16 @@ type retryState struct {
 	recoveredAt time.Time
 }
 
-// backoffDelay returns the delay before the attempt that follows the given
-// number of consecutive failures (at least 1).
-func backoffDelay(failures int) time.Duration {
-	i := min(max(failures, 1), len(retryBackoff)) - 1
+// backoffDelay returns the delay before the next attempt, given the backoff's
+// attempt count (retryState.attempts, at least 1).
+func backoffDelay(attempts int) time.Duration {
+	i := min(max(attempts, 1), len(retryBackoff)) - 1
 	return retryBackoff[i]
 }
 
-// logAttempt reports whether the given attempt number is one to log, so a
-// permanently failing device does not flood the log.
+// logAttempt reports whether failure number n of the current outage
+// (retryState.failures) is one to log, so a permanently failing device does not
+// flood the log.
 func logAttempt(n int) bool { return n <= retryLogFirst || n%retryLogEvery == 0 }
 
 // retryableCause reports whether a down cause is one a later restart of the same
@@ -141,8 +142,9 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 	a.armRetryTimer()
 }
 
-// dropRetry ends any unattended restart of the device, for a down cause a retry
-// cannot fix (a disconnect is brought back by the hardware-change retry).
+// dropRetry ends any unattended restart of the device: for a card-index id,
+// which is never restarted unattended, and for a down cause a retry cannot fix
+// (a disconnect is brought back by the hardware-change retry).
 func (a *appliance) dropRetry(name string) {
 	delete(a.retries, name)
 	a.armRetryTimer()
@@ -219,6 +221,9 @@ func (a *appliance) onRetryDue() {
 			recovered = true
 		case !st.next.IsZero() && !now.Before(st.next):
 			st.next = time.Time{}
+			// Defensive: every path that replaces or restarts a down device
+			// (startDevice, reconcileRecords) deletes its retry state first, so a
+			// due retry is expected to find a skipped or failed record here.
 			if rt == nil {
 				continue
 			}

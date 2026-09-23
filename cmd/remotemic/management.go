@@ -85,7 +85,8 @@ type provider struct {
 	// Swap, so one lost-device failure arms exactly one retry. A pump that dies
 	// while its device is still present does not arm this enumeration retry, since
 	// re-arming a persistent non-hardware fault would restart it every tick; it
-	// is retried on a backoff instead (see scheduleRetry). Atomic because
+	// is retried on a backoff instead (see scheduleRetry), unless it is bound by
+	// a card-index id, which only a config save restarts. Atomic because
 	// onPumpDone (run loop) writes it while the enumeration goroutine reads and
 	// clears it.
 	retryArmed atomic.Bool
