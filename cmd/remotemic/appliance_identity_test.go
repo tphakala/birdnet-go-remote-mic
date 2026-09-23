@@ -27,6 +27,8 @@ const (
 	// titleDisconnected is the onset title a lost device raises; several tests
 	// assert it, so it lives here rather than as a repeated literal.
 	titleDisconnected = "Device disconnected"
+	titleFailed       = "Device failed"
+	titleNotConnected = "Device not connected"
 )
 
 // fakeHost is a host device list the appliance resolves configured ids against,
@@ -144,7 +146,7 @@ func TestReconcileRefusesAbsentDevice(t *testing.T) {
 		t.Errorf("an absent device was opened: %v", log.snapshot())
 	}
 	act := applianceCenter(t, app).Active()
-	if len(act) != 1 || act[0].Key != deviceDownKey("moth") || act[0].Title != "Device not connected" {
+	if len(act) != 1 || act[0].Key != deviceDownKey("moth") || act[0].Title != titleNotConnected {
 		t.Errorf("active = %+v, want one Device not connected condition for moth", act)
 	}
 }
@@ -484,7 +486,7 @@ func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
 
 	host.devs = nil
 	app.retryDown()
-	if act := center.Active(); len(act) != 1 || act[0].Title != "Device not connected" {
+	if act := center.Active(); len(act) != 1 || act[0].Title != titleNotConnected {
 		t.Errorf("active after the retry = %+v, want the condition re-raised as Device not connected", act)
 	}
 }
@@ -521,13 +523,14 @@ func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
 	}
 }
 
-// TestPersistentNonHardwareFailureDoesNotArm pins the fix for a device that opens
-// fine and then keeps dying for a non-hardware reason (a deterministic encoder
-// fault, an EIO right after open): while the device is still present, the failure
-// is reported as failed and does NOT arm an unattended retry. Arming it would
+// TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry pins the fix for a
+// device that opens fine and then keeps dying for a non-hardware reason (a
+// deterministic encoder fault, an EIO right after open): while the device is
+// still present, the failure is reported as failed and does NOT arm the
+// enumeration retry. Arming it would
 // restart and re-notify the device every enumeration tick, flapping the down
-// condition forever.
-func TestPersistentNonHardwareFailureDoesNotArm(t *testing.T) {
+// condition forever; it is retried on a backoff instead (see retry_test.go).
+func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
 	app, _, cancel := newTestAppliance(t)
 	defer cancel()
 	defer app.closeAll()
@@ -550,9 +553,12 @@ func TestPersistentNonHardwareFailureDoesNotArm(t *testing.T) {
 	app.onPumpDone(pumpResult{rt: drain.rt, err: errors.New("encoder fault")})
 
 	if app.prov.retryArmed.Load() {
-		t.Error("a persistent non-hardware failure armed a retry; it would flap the condition forever")
+		t.Error("a persistent non-hardware failure armed the enumeration retry; it would flap the condition forever")
 	}
-	if act := center.Active(); len(act) != 1 || act[0].Title != "Device failed" {
+	if !app.retrying("moth") {
+		t.Error("a failed-while-present device was not scheduled for a backoff retry")
+	}
+	if act := center.Active(); len(act) != 1 || act[0].Title != titleFailed {
 		t.Fatalf("active after the failure = %+v, want one Device failed", act)
 	}
 }

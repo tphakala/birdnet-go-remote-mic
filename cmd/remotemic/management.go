@@ -83,8 +83,10 @@ type provider struct {
 	// was lost (unplugged or powered off). The next enumeration signals hwChanged
 	// even when the hardware signature is unchanged, then clears the flag with
 	// Swap, so one lost-device failure arms exactly one retry. A pump that dies
-	// while its device is still present does not arm a retry, since re-arming a
-	// persistent non-hardware fault would restart it every tick. Atomic because
+	// while its device is still present does not arm this enumeration retry, since
+	// re-arming a persistent non-hardware fault would restart it every tick; it
+	// is retried on a backoff instead (see scheduleRetry), unless it is bound by
+	// a card-index id, which only a config save restarts. Atomic because
 	// onPumpDone (run loop) writes it while the enumeration goroutine reads and
 	// clears it.
 	retryArmed atomic.Bool

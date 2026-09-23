@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
 
@@ -80,7 +81,9 @@ type appliance struct {
 	// downReason holds the cause class of each device's active down condition,
 	// keyed by device name, so a change of cause (not connected becoming
 	// ambiguous) re-raises the condition instead of being swallowed by the
-	// idempotent Onset. An entry exists exactly while the down key is active.
+	// idempotent Onset. The exception is a switch between two retryable causes
+	// while an unattended retry is in flight, which keeps the first cause (see
+	// markDown). An entry exists exactly while the down key is active.
 	downReason map[string]string
 	// capsCache holds the last non-empty probed capabilities per device id. A
 	// re-probe during a hot reload can transiently report nothing (the card is
@@ -115,6 +118,21 @@ type appliance struct {
 	// fake. Never store a typed-nil concrete: it would pass the != nil guard below
 	// and call Apply on a nil receiver.
 	monitors monitor.Monitors
+
+	// retries holds the unattended restart state of each device, keyed by device
+	// name, from its first failure for a cause a later restart can fix (see
+	// scheduleRetry) through its settle; a recovered device keeps it until its next
+	// failure, so the backoff can tell whether it served for retryResetAfter. An
+	// entry therefore does not mean the device is down; retrying means its down
+	// condition is still active (it may already be serving, in its settle).
+	// retryTimer fires at the earliest pending retry or settle deadline and
+	// signals retryDue (buffered depth 1, coalescing), which the run loop drains
+	// into onRetryDue. quietDown silences the open's log lines during a retry
+	// attempt that logAttempt skips.
+	retries    map[string]*retryState
+	retryTimer *time.Timer
+	retryDue   chan struct{}
+	quietDown  bool
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard, notifier notify.Publisher) *appliance {
@@ -135,6 +153,8 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		devices:    map[string]*deviceRuntime{},
 		downReason: map[string]string{},
 		capsCache:  map[string]deviceCaps{},
+		retries:    map[string]*retryState{},
+		retryDue:   make(chan struct{}, 1),
 		pumpDone:   make(chan pumpResult, pumpBacklog),
 		open:       openDeviceRetry,
 		resolve:    audio.Resolve,
@@ -149,7 +169,8 @@ type hwResult struct {
 }
 
 // Cause classes for a device's down condition. A change of class while the
-// device stays down re-raises the condition (see markDown).
+// device stays down re-raises the condition, except between two retryable
+// classes during an unattended retry (see markDown).
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
@@ -164,9 +185,17 @@ const (
 // markDown raises the device's down condition. Onset is idempotent per key, so
 // when the device is already down for a different cause the old condition is
 // resolved first and the new one raised, so the operator sees the current cause
-// rather than the first one.
+// rather than the first one. The exception is an unattended restart in flight
+// whose failure moves between two retryable causes (a pump that died, then an
+// open that failed): the existing condition is kept, so a device alternating
+// between them is not re-notified on every attempt. The trade-off is that the
+// active notification keeps the first cause's text; the device record's error
+// always carries the latest one.
 func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 	if prev, ok := a.downReason[name]; ok && prev != cause {
+		if a.retrying(name) && retryableCause(prev) && retryableCause(cause) {
+			return
+		}
 		a.notifier.Resolve(deviceDownKey(name), "the cause changed")
 	}
 	a.downReason[name] = cause
@@ -418,6 +447,18 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // the wrong microphone. A card-index id whose resolution failed for another
 // reason (the host exposes no /proc/asound listing, as in some containers) is
 // still opened, since the open itself addresses the card directly.
+// restartHint says, in a down notification, how the device comes back: a
+// card-index id waits for a config save (it is never restarted unattended),
+// anything else is retried by the backoff. The open-failure, resolve-failure
+// and failed-while-present messages share it so their promise cannot drift; the
+// disconnect message has its own wording (it comes back on reconnect).
+func restartHint(dev *config.Device) string {
+	if config.IsCardIndexID(dev.Device) {
+		return "it restarts on the next config save"
+	}
+	return "it restarts automatically when capture works again"
+}
+
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	res := a.hw[dev.Device]
 	hw := res.hw
@@ -443,6 +484,10 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 				title = "Device ambiguous"
 			case downMalformed:
 				title = "Invalid device id"
+			case downResolve:
+				// Only this cause is retried by the backoff; the others wait for
+				// the hardware or the config to change, as their text says.
+				msg += "; " + restartHint(dev)
 			}
 			return a.skipDevice(dev, &hw, cause, title, msg)
 		}
@@ -491,11 +536,11 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	d := *dev
 	rt, err := a.open(&d, a.hub)
 	if err != nil {
-		log.Printf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
+		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
 		// so a device that keeps failing across successive reconciles enters the
 		// condition once, not once per retry.
-		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v", dev.Device, atAddr(&hw), err))
+		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v; %s", dev.Device, atAddr(&hw), err, restartHint(dev)))
 		a.markDown(dev.Name, downOpenFailed, &n)
 		return &deviceRuntime{
 			dev:               *dev,
@@ -518,9 +563,9 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	a.alive++
 	go a.pump(rt)
 	if len(rt.streams) == 1 {
-		log.Printf("capture %q: %d Hz, %d ch on %s%s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path)
+		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path)
 	} else {
-		log.Printf("capture %q: %d Hz, %d ch on %s%s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams))
+		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams))
 	}
 	return rt
 }
@@ -542,7 +587,14 @@ func atAddr(hw *audio.Hardware) string {
 // raising its down condition with the given cause. The last known capabilities
 // are kept so the settings form still offers the device's rates.
 func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, title, msg string) *deviceRuntime {
-	log.Printf("skipping device %q: %s", dev.Name, msg)
+	if retryableCause(cause) {
+		a.logAttemptf("skipping device %q: %s", dev.Name, msg)
+	} else {
+		// A cause a retry cannot fix ends any backoff in flight (scheduleRetry
+		// drops it without logging), so this line is the only record of why the
+		// device stopped being retried; never silence it.
+		log.Printf("skipping device %q: %s", dev.Name, msg)
+	}
 	n := deviceDownOnset(dev.Name, title, msg)
 	a.markDown(dev.Name, cause, &n)
 	rates, channels := a.rememberCaps(dev.Device, nil, nil)
@@ -557,37 +609,27 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 	}
 }
 
-// startDevice opens a device via openAndStart, stores its runtime, and clears the
-// device's down condition when a previously skipped or failed device is now
-// serving. The open-failure onset is emitted inside openAndStart; the recovery
-// clear lives here because it needs the previous record for the name, read before
-// the reassignment. A healthy param-change restart (prev already serving) clears
-// nothing, and Clear is idempotent, so a first start with no prior condition is
-// silent too.
+// startDevice opens a device via openAndStart at startup, on a config save, or
+// on a hardware change, stores its runtime, and clears the device's down condition when a
+// device that was down is now serving. The open-failure onset is emitted inside
+// openAndStart. A healthy param-change restart has no active down condition, so
+// it clears nothing, and a first start with no prior condition is silent too.
+//
+// None of these is an unattended retry, so it starts the device's backoff over:
+// a failure here schedules the first, shortest retry when scheduleRetry accepts
+// the cause (a stable id and a retryable cause), and a success ends any
+// retry in flight, including a device still waiting out its settle after an
+// unattended restart (its condition is still active, so it is cleared here).
 func (a *appliance) startDevice(dev *config.Device) {
-	prev := a.devices[dev.Name]
+	delete(a.retries, dev.Name)
 	rt := a.openAndStart(dev)
 	a.devices[dev.Name] = rt
 	if rt.currentState() != mgmtserver.StateServing {
+		a.scheduleRetry(dev)
 		return
 	}
-	delete(a.downReason, dev.Name)
-	if prev == nil {
-		return
-	}
-	// A device is "recovered" only when it comes up from a down state (it could
-	// not be opened, or it died after opening). A healthy param-change restart
-	// (prev already serving) is not a recovery. Clear is idempotent, so a
-	// first-time start with no prior condition would be a no-op anyway.
-	if s := prev.currentState(); s == mgmtserver.StateSkipped || s == mgmtserver.StateFailed {
-		// Clear takes the category, source and key from the stored onset, so only
-		// severity, title and message are set here.
-		a.notifier.Clear(deviceDownKey(dev.Name), notify.Notification{
-			Severity: notify.SeverityInfo,
-			Title:    "Device recovered",
-			Message:  fmt.Sprintf("Capturing again at %d Hz, %d ch", rt.rate, rt.channels),
-		})
-	}
+	a.armRetryTimer()
+	a.finishRecovery(dev.Name, rt)
 }
 
 // stop tears down a serving device the reconcile deliberately removed or is about
@@ -730,6 +772,7 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		// healthy device being disabled emits nothing.
 		a.notifier.Resolve(deviceDownKey(d.Name), "device disabled")
 		delete(a.downReason, d.Name)
+		delete(a.retries, d.Name)
 		hw := a.hw[d.Device].hw
 		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: hw.Label, hwAddr: hw.HWAddr}
 	}
@@ -749,8 +792,10 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		// a no-op for it.
 		a.notifier.Resolve(deviceDownKey(name), "device removed from the configuration")
 		delete(a.downReason, name)
+		delete(a.retries, name)
 		delete(a.devices, name)
 	}
+	a.armRetryTimer()
 }
 
 // publish snapshots the device records in config order and hands them to the
@@ -768,12 +813,13 @@ func (a *appliance) publish(cfg *config.Config) {
 // onPumpDone handles a pump ending. A pump the reconcile stopped (superseded) only
 // adjusts the alive count; its teardown already happened. A pump that stopped on
 // its own is a device that died after startup: its track and meter are retired
-// and its record marked failed. Its paths return 404 until a config reload or a
-// change in the host's capture hardware (see retryDown) starts it again. It arms
-// an unattended retry only when the device was lost (unplugged or powered off); a
-// failure that is not a confirmed loss does not arm one, since re-arming a
-// still-present device that keeps failing would restart and re-notify it every
-// enumeration tick.
+// and its record marked failed. Its paths return 404 until it starts again. A
+// device that was lost (unplugged or powered off) arms the enumeration retry, so
+// it restarts when it is reconnected (see retryDown). A device that failed while
+// still present is retried on a backoff instead (see scheduleRetry), since
+// re-arming the enumeration retry for a device that keeps failing would restart
+// and re-notify it every enumeration tick. Neither path restarts a card-index
+// id, which waits for a config save.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
 	if res.rt.superseded {
@@ -823,16 +869,26 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			log.Printf("device %q disconnected: %v; its %d stream path(s) return 404 until it comes back", name, res.err, len(res.rt.streams))
 			n := deviceDownOnset(name, "Device disconnected", msg)
 			a.markDown(name, downDisconnected, &n)
+			// The hardware-change retry brings it back, not the backoff.
+			a.dropRetry(name)
 		} else {
 			// The pump died but the device did not read as lost: it still resolves to
 			// present hardware, or the failure could not be confirmed as a loss (a
-			// deterministic encoder fault, an EIO right after open). Do NOT arm a
-			// retry: an armed retry would restart it every enumeration tick, which
-			// flaps the onset/clear condition and climbs announceGen forever. It
-			// restarts on the next config save or host hardware change instead.
-			log.Printf("device %q failed: %v; its %d stream path(s) return 404 until it restarts on a config save or a capture hardware change", name, res.err, len(res.rt.streams))
-			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until the device restarts on the next config save or capture hardware change", res.err))
+			// deterministic encoder fault, an EIO right after open, a pump that died a
+			// moment before the kernel removed the card). Do NOT arm the enumeration
+			// retry: it would restart the device every enumeration tick, flapping the
+			// onset/clear condition and climbing announceGen forever. Retry it on a
+			// backoff instead (scheduleRetry), which keeps the condition active across
+			// attempts and clears it once a retried restart has stayed up for
+			// retrySettle (a config save or hardware change clears it at once). A card-index
+			// entry is not retried unattended, so it waits for a config save.
+			restart := restartHint(&res.rt.dev)
+			if !a.retrying(name) || logAttempt(a.retries[name].failures+1) {
+				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
+			}
+			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
 			a.markDown(name, downFailed, &n)
+			a.scheduleRetry(&res.rt.dev)
 		}
 	}
 	a.publish(&a.cfg)
@@ -910,6 +966,7 @@ func (a *appliance) restartAnnounce() {
 // closeAll releases every serving device's capture source at shutdown so the
 // ALSA hardware is freed promptly rather than at process exit.
 func (a *appliance) closeAll() {
+	a.stopRetries()
 	for _, rt := range a.devices {
 		if rt.currentState() == mgmtserver.StateServing && rt.fanout != nil {
 			_ = rt.fanout.Close()
