@@ -126,6 +126,17 @@ test open real ALSA hardware. Use `audio.NewFakeSource` and the existing seams.
   Do not call `rtsp.MarshalInterleaved` per RTP packet (it allocates); it is
   acceptable once per SR interval. Avoid allocations per period in general: the
   target hardware is a Pi Zero 2 W.
+- Optimize for the unattended state. The appliance spends almost all of its
+  life with no browser open (and often with no RTSP client either), so that
+  is the state to make cheap. Work that exists only for the web UI or the
+  management API (levels metering and marshaling, sampling, formatting,
+  JSON encoding) must not run on a timer or in the capture path when nobody
+  is consuming it: gate it on a live consumer count, as `internal/levels`
+  does (`Meter.Observe` returns early and the sampler skips its tick while
+  the hub's `subs` is zero; the SSE marshal runs only with a browser
+  connected), or compute it lazily on request. Background work is justified
+  only when it serves the appliance itself: capture, streaming, hotplug
+  recovery, or condition monitors that raise alerts.
 - Rotating or enabling the access token must evict live RTSP sessions, not just
   challenge the next request: the writer checks `Auth.Snapshot()` (enabled
   flag plus generation, read together) on every frame and tears down a session
