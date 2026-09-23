@@ -179,7 +179,9 @@ func TestRetryCauseSwitchKeepsOneCondition(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// failOpens is how many opens fail busy; deaths is how many opened
-		// captures fail their first read. Opens fail first, then captures die.
+		// captures fail their first read. Opens fail first, then captures die,
+		// unless diesFirst: then the first open succeeds and dies before the
+		// failing opens.
 		failOpens, deaths int
 		diesFirst         bool
 	}{

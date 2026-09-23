@@ -178,15 +178,20 @@ func (a *appliance) armRetryTimer() {
 // onRetryDue runs on the run loop when the retry timer fires. It completes the
 // settle of every restarted device that has served for retrySettle, and makes
 // one restart attempt for every down device whose backoff has elapsed. A stale
-// or early signal does nothing, since each deadline is checked against the
-// clock.
+// or early signal completes and attempts nothing, since each deadline is checked
+// against the clock.
+//
+// The run loop's select has no priority, so a pump that died right at the
+// settle deadline can be handled after this pass: the settle then completes
+// (clear and re-announce) and onPumpDone raises a fresh onset right after. The
+// window is one run-loop turn wide, and the device is retried as usual.
 func (a *appliance) onRetryDue() {
 	now := time.Now()
-	// The pass below walks the configured devices, so a retry state under any
-	// other name would never have its deadline consumed, and armRetryTimer would
-	// re-arm a zero delay for it forever. The reconcile drops such state when a
-	// device is removed or disabled; dropping it here too keeps a missed cleanup
-	// from turning into a busy loop on the run loop.
+	// Drop retry state for any name that is not an enabled configured device,
+	// mirroring the reconcile's cleanup on remove and disable. The pass below only
+	// walks configured devices, so a state under an unconfigured name would never
+	// have its deadline consumed and armRetryTimer would re-arm a zero delay for it
+	// forever; this keeps a missed cleanup from becoming a busy loop.
 	enabled := make(map[string]bool, len(a.cfg.Devices))
 	for i := range a.cfg.Devices {
 		if a.cfg.Devices[i].IsEnabled() {
@@ -240,8 +245,9 @@ func (a *appliance) onRetryDue() {
 
 // attemptRetry makes one unattended restart attempt. On success the device
 // serves at once but its down condition stays active until it has served for
-// retrySettle (see onRetryDue); on failure the next attempt is scheduled. Failure
-// logs inside the open are silenced on attempts logAttempt skips.
+// retrySettle (see onRetryDue); on failure the next attempt is scheduled. The
+// open's own log lines, failure and success alike, are silenced on attempts
+// logAttempt skips; finishRecovery logs the recovery either way.
 func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
 	// Retry n follows failure n. Its open logs are gated on the failure it would
 	// become, failure n+1, so they appear exactly when scheduleRetry logs that

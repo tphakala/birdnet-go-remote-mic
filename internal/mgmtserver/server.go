@@ -29,7 +29,8 @@ const (
 	StateServing DeviceState = "serving"
 	// StateSkipped means the device was not opened: it is not connected, its id
 	// matches several devices, it resolves to hardware another entry already
-	// captures from, or the open failed. The error says which.
+	// captures from, or the open failed. The error says which. A stable-id device
+	// skipped because its open or resolve failed is retried on a backoff.
 	StateSkipped DeviceState = "skipped"
 	// StateFailed means the device died after opening; its RTSP path returns 404
 	// until the device restarts: on a backoff while it is still present, when it

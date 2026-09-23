@@ -523,10 +523,11 @@ func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
 	}
 }
 
-// TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry pins the fix for a device that opens
-// fine and then keeps dying for a non-hardware reason (a deterministic encoder
-// fault, an EIO right after open): while the device is still present, the failure
-// is reported as failed and does NOT arm the enumeration retry. Arming it would
+// TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry pins the fix for a
+// device that opens fine and then keeps dying for a non-hardware reason (a
+// deterministic encoder fault, an EIO right after open): while the device is
+// still present, the failure is reported as failed and does NOT arm the
+// enumeration retry. Arming it would
 // restart and re-notify the device every enumeration tick, flapping the down
 // condition forever; it is retried on a backoff instead (see retry_test.go).
 func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
@@ -552,7 +553,7 @@ func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
 	app.onPumpDone(pumpResult{rt: drain.rt, err: errors.New("encoder fault")})
 
 	if app.prov.retryArmed.Load() {
-		t.Error("a persistent non-hardware failure armed a retry; it would flap the condition forever")
+		t.Error("a persistent non-hardware failure armed the enumeration retry; it would flap the condition forever")
 	}
 	if !app.retrying("moth") {
 		t.Error("a failed-while-present device was not scheduled for a backoff retry")

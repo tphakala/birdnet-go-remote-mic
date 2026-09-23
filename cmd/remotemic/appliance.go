@@ -81,7 +81,9 @@ type appliance struct {
 	// downReason holds the cause class of each device's active down condition,
 	// keyed by device name, so a change of cause (not connected becoming
 	// ambiguous) re-raises the condition instead of being swallowed by the
-	// idempotent Onset. An entry exists exactly while the down key is active.
+	// idempotent Onset. The exception is a switch between two retryable causes
+	// while an unattended retry is in flight, which keeps the first cause (see
+	// markDown). An entry exists exactly while the down key is active.
 	downReason map[string]string
 	// capsCache holds the last non-empty probed capabilities per device id. A
 	// re-probe during a hot reload can transiently report nothing (the card is
@@ -117,12 +119,15 @@ type appliance struct {
 	// and call Apply on a nil receiver.
 	monitors monitor.Monitors
 
-	// retries holds the unattended restart state of each device that is down for a
-	// cause a later restart can fix (see scheduleRetry), keyed by device name.
+	// retries holds the unattended restart state of each device, keyed by device
+	// name, from its first failure for a cause a later restart can fix (see
+	// scheduleRetry) through its settle; a recovered device keeps it until its next
+	// failure, so the backoff can tell whether it served for retryResetAfter. An
+	// entry therefore does not mean the device is down; retrying does.
 	// retryTimer fires at the earliest pending retry or settle deadline and
 	// signals retryDue (buffered depth 1, coalescing), which the run loop drains
-	// into onRetryDue. quietDown silences failure logs during a retry attempt that
-	// logAttempt skips.
+	// into onRetryDue. quietDown silences the open's log lines during a retry
+	// attempt that logAttempt skips.
 	retries    map[string]*retryState
 	retryTimer *time.Timer
 	retryDue   chan struct{}
@@ -163,7 +168,8 @@ type hwResult struct {
 }
 
 // Cause classes for a device's down condition. A change of class while the
-// device stays down re-raises the condition (see markDown).
+// device stays down re-raises the condition, except between two retryable
+// classes during an unattended retry (see markDown).
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
@@ -579,14 +585,15 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 	}
 }
 
-// startDevice opens a device via openAndStart for a config save or a hardware
-// change, stores its runtime, and clears the device's down condition when a
+// startDevice opens a device via openAndStart at startup, on a config save, or
+// on a hardware change, stores its runtime, and clears the device's down condition when a
 // device that was down is now serving. The open-failure onset is emitted inside
 // openAndStart. A healthy param-change restart has no active down condition, so
 // it clears nothing, and a first start with no prior condition is silent too.
 //
-// This is an explicit restart, so it starts the device's unattended backoff over:
-// a failure here schedules the first, shortest retry, and a success ends any
+// None of these is an unattended retry, so it starts the device's backoff over:
+// a failure here schedules the first, shortest retry when scheduleRetry accepts
+// the cause (a stable id and a retryable cause), and a success ends any
 // retry in flight, including a device still waiting out its settle after an
 // unattended restart (its condition is still active, so it is cleared here).
 func (a *appliance) startDevice(dev *config.Device) {
@@ -847,7 +854,8 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// retry: it would restart the device every enumeration tick, flapping the
 			// onset/clear condition and climbing announceGen forever. Retry it on a
 			// backoff instead (scheduleRetry), which keeps the condition active across
-			// attempts and clears it only once a restart has stayed up. A card-index
+			// attempts and clears it once a retried restart has stayed up for
+			// retrySettle (a config save or hardware change clears it at once). A card-index
 			// entry is not retried unattended, so it waits for a config save.
 			restart := "it restarts automatically when capture works again"
 			if config.IsCardIndexID(res.rt.dev.Device) {

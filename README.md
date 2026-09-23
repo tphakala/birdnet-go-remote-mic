@@ -395,11 +395,11 @@ For a local end-to-end check without hardware, use the ALSA loopback
   or encoder error) is retried on its own with a growing delay: 5 s, 10 s,
   30 s, 1 min, 2 min, then every 5 minutes, while the process is up (with
   management disabled the process exits once nothing serves, as above). Its
-  error notification stays raised across attempts and clears only once a
-  retried restart has kept serving for 30 seconds, so a device that keeps
-  failing is reported once, not on every attempt; its RTSP path serves again as
-  soon as the restart opens it. A config save or a hardware change restarts it
-  at once and starts the delays over. A card-index device is not retried this
+  error notification stays raised across attempts and clears once a retried
+  restart has kept serving for 30 seconds, so a device that keeps failing is
+  reported once, not on every attempt; its RTSP path serves again as soon as
+  the restart opens it. A config save or a hardware change restarts it at once,
+  clears the notification as soon as it opens, and starts the delays over. A card-index device is not retried this
   way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
