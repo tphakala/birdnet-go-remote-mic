@@ -388,6 +388,13 @@ For a local end-to-end check without hardware, use the ALSA loopback
   rebuilt (a config save, a retry that starts a device, or process exit), because
   the dnssd responder cannot retire a single service, so a discoverer that picks
   it up meanwhile gets 404.
+- A device that is still plugged in but down (it could not be opened, for
+  example because another process holds it, or its capture died with a driver
+  or encoder error) is retried on its own with a growing delay: 5 s, 10 s,
+  30 s, 1 min, 2 min, then every 5 minutes. Its "device down" notification stays
+  raised across attempts and clears only once a restart has kept serving for
+  30 seconds, so a device that keeps failing is reported once, not on every
+  attempt. A card-index device is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous

@@ -590,6 +590,8 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			req.reply <- nil
 		case <-prov.hwChanged:
 			app.retryDown()
+		case <-app.retryDue:
+			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
 			if app.alive == 0 && !mgmtServing {

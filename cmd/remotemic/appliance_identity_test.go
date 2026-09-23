@@ -524,9 +524,9 @@ func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
 // TestPersistentNonHardwareFailureDoesNotArm pins the fix for a device that opens
 // fine and then keeps dying for a non-hardware reason (a deterministic encoder
 // fault, an EIO right after open): while the device is still present, the failure
-// is reported as failed and does NOT arm an unattended retry. Arming it would
+// is reported as failed and does NOT arm the enumeration retry. Arming it would
 // restart and re-notify the device every enumeration tick, flapping the down
-// condition forever.
+// condition forever; it is retried on a backoff instead (see retry_test.go).
 func TestPersistentNonHardwareFailureDoesNotArm(t *testing.T) {
 	app, _, cancel := newTestAppliance(t)
 	defer cancel()
@@ -551,6 +551,9 @@ func TestPersistentNonHardwareFailureDoesNotArm(t *testing.T) {
 
 	if app.prov.retryArmed.Load() {
 		t.Error("a persistent non-hardware failure armed a retry; it would flap the condition forever")
+	}
+	if !app.retrying("moth") {
+		t.Error("a failed-while-present device was not scheduled for a backoff retry")
 	}
 	if act := center.Active(); len(act) != 1 || act[0].Title != "Device failed" {
 		t.Fatalf("active after the failure = %+v, want one Device failed", act)

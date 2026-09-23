@@ -83,6 +83,12 @@ func (l *fakeOpenLog) snapshot() []string {
 // through log. It mirrors production openDevice: one metered base capture fanned
 // out into one runtime per configured stream.
 func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
+	return fakeOpenerWith(log, func(rate, channels int) audio.Source { return newBlockingSource(rate, channels) })
+}
+
+// fakeOpenerWith is fakeOpener around the capture source newSrc builds, so a test
+// can open a device whose capture fails after the open succeeds.
+func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Source) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
 	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 		log.add("open:" + dev.Name + "@" + dev.Device)
 		// Mirror production ResolveOpenChannels: open at >= the highest selected
@@ -93,7 +99,7 @@ func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRunt
 		if u := dev.StreamChannelUnion(); len(u) > 0 {
 			openCh = u[len(u)-1]
 		}
-		metered := audio.NewMeteredSource(loggingClose{newBlockingSource(dev.Rate, openCh), dev.Name, log}, hub.Meter(dev.Name, openCh))
+		metered := audio.NewMeteredSource(loggingClose{newSrc(dev.Rate, openCh), dev.Name, log}, hub.Meter(dev.Name, openCh))
 		streams := make([]*streamRuntime, 0, len(dev.Streams))
 		for i := range dev.Streams {
 			s := dev.Streams[i]

@@ -1,0 +1,315 @@
+//go:build linux
+
+package main
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
+)
+
+var errTestEIO = errors.New("input/output error")
+
+// failingSource is a capture that opens fine and then fails its first read, as a
+// device does after an EIO right after open or a deterministic fault.
+type failingSource struct{ rate, channels int }
+
+func (f failingSource) Negotiated() (rate, channels int) { return f.rate, f.channels }
+func (failingSource) Read() (audio.Period, error)        { return audio.Period{}, errTestEIO }
+func (failingSource) Close() error                       { return nil }
+
+// runFor stands in for the serve run loop for d of (synctest) time: it hands
+// retry-timer signals to onRetryDue and pump endings to onPumpDone, the two
+// events an unattended retry drives.
+func runFor(t *testing.T, app *appliance, d time.Duration) {
+	t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case <-app.retryDue:
+			app.onRetryDue()
+		case res := <-app.pumpDone:
+			app.onPumpDone(res)
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// failOpenTimes makes the first n opens fail with a busy error and the rest open
+// through the fake opener. A failed open is logged like a successful one, so
+// opens counts every attempt.
+func failOpenTimes(app *appliance, log *fakeOpenLog, n int) {
+	next := app.open
+	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+		if n > 0 {
+			n--
+			log.add("open:" + dev.Name + "@" + dev.Device)
+			return nil, errors.New("device or resource busy")
+		}
+		return next(dev, hub)
+	}
+}
+
+// countDown counts the device's down-condition entries of the given kind in the
+// notification history.
+func countDown(t *testing.T, app *appliance, name string, kind notify.Kind) int {
+	t.Helper()
+	n := 0
+	for _, e := range applianceCenter(t, app).Snapshot().Notifications {
+		if e.Key == deviceDownKey(name) && e.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// opens counts how many times the fake opener opened the named device.
+func opens(log *fakeOpenLog, name string) int {
+	return strings.Count(strings.Join(log.snapshot(), " "), "open:"+name+"@")
+}
+
+// shutdownApp stops the appliance at the end of a synctest bubble so every pump
+// goroutine and the retry timer are gone before the bubble returns.
+func shutdownApp(app *appliance, cancel func()) {
+	app.closeAll()
+	cancel()
+	synctest.Wait()
+}
+
+// TestRetryRestartsDeviceThatFailsToOpen is the #92 acceptance case: a device
+// that is present but cannot be opened (held by another process) serves again on
+// its own once the open succeeds, with no config save, publishing exactly one
+// onset and one clear however many attempts it took.
+func TestRetryRestartsDeviceThatFailsToOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 3)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateSkipped {
+			t.Fatalf("moth state = %s, want skipped after the failed open", s)
+		}
+		genBefore := app.announceGen
+
+		runFor(t, app, 5*time.Minute)
+
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the retries", s)
+		}
+		if !app.srv.HasTrack("/m") {
+			t.Error("the restarted device's RTSP track was not registered")
+		}
+		if got := opens(log, "moth"); got != 4 {
+			t.Errorf("opens = %d, want 4 (the startup open and three retries)", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+			t.Errorf("down onsets = %d, want 1", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Errorf("down clears = %d, want 1", got)
+		}
+		if act := applianceCenter(t, app).Active(); len(act) != 0 {
+			t.Errorf("active = %+v, want the down condition cleared", act)
+		}
+		if got := app.announceGen - genBefore; got != 1 {
+			t.Errorf("announcement rebuilds = %d, want 1 (on recovery only)", got)
+		}
+	})
+}
+
+// TestRetryDeviceThatDiesAfterOpenDoesNotFlap pins the settle window: a device
+// whose capture opens and then dies at once is not reported recovered on each
+// attempt. The condition stays active until a restart stays up for retrySettle,
+// so the history holds one onset and one clear, and the advertisement is rebuilt
+// once.
+func TestRetryDeviceThatDiesAfterOpenDoesNotFlap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		deaths := 3
+		app.open = fakeOpenerWith(log, func(rate, channels int) audio.Source {
+			if deaths > 0 {
+				deaths--
+				return failingSource{rate, channels}
+			}
+			return newBlockingSource(rate, channels)
+		})
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		genBefore := app.announceGen
+
+		runFor(t, app, 5*time.Minute)
+
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving once a restart stays up", s)
+		}
+		if got := opens(log, "moth"); got != 4 {
+			t.Errorf("opens = %d, want 4", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+			t.Errorf("down onsets = %d, want 1", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Errorf("down clears = %d, want 1", got)
+		}
+		if got := app.announceGen - genBefore; got != 1 {
+			t.Errorf("announcement rebuilds = %d, want 1", got)
+		}
+	})
+}
+
+// TestRetryPermanentFailureBacksOff pins the bound on a device that never comes
+// back: attempts follow the backoff schedule (5 s, 10 s, 30 s, 1 min, 2 min, then
+// every 5 min), so an hour costs 17 opens, and the condition is raised once and
+// never cleared or re-announced.
+func TestRetryPermanentFailureBacksOff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 1<<30)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		genBefore := app.announceGen
+
+		runFor(t, app, time.Hour)
+
+		// The startup open, then retries at 5, 15, 45, 105, 225 s and every 300 s
+		// from 525 s to 3525 s.
+		if got := opens(log, "moth"); got != 17 {
+			t.Errorf("opens in an hour = %d, want 17", got)
+		}
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateSkipped {
+			t.Errorf("moth state = %s, want skipped", s)
+		}
+		if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+			t.Errorf("down onsets = %d, want 1", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindClear); got != 0 {
+			t.Errorf("down clears = %d, want 0", got)
+		}
+		if app.announceGen != genBefore {
+			t.Errorf("announceGen = %d, want %d: a failed attempt must not rebuild the advertisement", app.announceGen, genBefore)
+		}
+		if !app.retrying("moth") {
+			t.Error("the device stopped being retried")
+		}
+	})
+}
+
+// TestRetrySkipsCardIndexEntry pins the safety rule: a card-index entry is never
+// restarted unattended, since its index may name different hardware by the time
+// a retry runs. It waits for a config save.
+func TestRetrySkipsCardIndexEntry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 1<<30)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("byindex", addrHW3, "/a", 48000)}})
+
+		runFor(t, app, 10*time.Minute)
+
+		if got := opens(log, "byindex"); got != 1 {
+			t.Errorf("opens = %d, want 1: a card-index entry must not be retried unattended", got)
+		}
+		if app.retrying("byindex") {
+			t.Error("a card-index entry has a retry in flight")
+		}
+	})
+}
+
+// TestRetryStopsWhenDeviceDisabled pins that disabling a down device ends its
+// retries: nothing reopens a device the operator turned off.
+func TestRetryStopsWhenDeviceDisabled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 1<<30)
+		dev := testDevice("moth", idMoth, "/m", 48000)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		dev.Enabled = new(false)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+		runFor(t, app, 10*time.Minute)
+
+		if got := opens(log, "moth"); got != 1 {
+			t.Errorf("opens = %d, want 1: a disabled device must not be retried", got)
+		}
+		if len(app.retries) != 0 {
+			t.Errorf("retries = %v, want none after the device was disabled", app.retries)
+		}
+	})
+}
+
+// TestRetryBackoffResetsAfterStableService pins the reset: a device that served
+// for retryResetAfter after recovering starts its next failure at the shortest
+// delay, while one that fails again soon after recovering continues its backoff.
+func TestRetryBackoffResetsAfterStableService(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		served       time.Duration
+		wantAttempts int
+	}{
+		{name: "stable", served: retryResetAfter + time.Minute, wantAttempts: 1},
+		{name: "unstable", served: time.Minute, wantAttempts: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				app, log, cancel := newTestAppliance(t)
+				defer shutdownApp(app, cancel)
+				failOpenTimes(app, log, 1)
+				app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+				// The retry at 5 s opens it; it settles at 35 s.
+				runFor(t, app, retryBackoff[0]+retrySettle+tc.served)
+				if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+					t.Fatalf("moth state = %s, want serving", s)
+				}
+
+				// Kill the running device as a still-present failure.
+				rt := app.devices["moth"]
+				app.stop(rt)
+				rt.superseded = false
+				res := <-app.pumpDone
+				app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
+
+				st := app.retries["moth"]
+				if st == nil {
+					t.Fatal("no retry was scheduled for the failed device")
+				}
+				if st.attempts != tc.wantAttempts {
+					t.Errorf("attempts = %d, want %d", st.attempts, tc.wantAttempts)
+				}
+				if got, want := time.Until(st.next), backoffDelay(tc.wantAttempts); got != want {
+					t.Errorf("next retry in %s, want %s", got, want)
+				}
+			})
+		})
+	}
+}
+
+func TestBackoffDelay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, 5 * time.Second},
+		{1, 5 * time.Second},
+		{2, 10 * time.Second},
+		{3, 30 * time.Second},
+		{4, time.Minute},
+		{5, 2 * time.Minute},
+		{6, 5 * time.Minute},
+		{100, 5 * time.Minute},
+	} {
+		if got := backoffDelay(tc.failures); got != tc.want {
+			t.Errorf("backoffDelay(%d) = %s, want %s", tc.failures, got, tc.want)
+		}
+	}
+}
