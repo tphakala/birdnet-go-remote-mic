@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Instructions for AI coding agents (Claude Code, Antigravity/Gemini, and others)
-working in this repository. `CLAUDE.md` imports this file, so keep project
-guidance here and only here.
+working in this repository. This is the single source of project guidance;
+do not add a separate `CLAUDE.md` or `GEMINI.md` that could drift from it.
 
 ## What this is
 
