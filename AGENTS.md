@@ -143,12 +143,150 @@ test open real ALSA hardware. Use `audio.NewFakeSource` and the existing seams.
 - After editing the spec: `task api:lint`, `task api:generate`, then commit the
   regenerated `internal/mgmtapi/gen.go` together with the spec.
 
-## Web UI conventions
+## Web UI (frontend)
 
-- Accessibility is a gate, not a nicety: `web:a11y` and the contrast token test
-  run in CI. Keep keyboard focus, labels, and contrast intact.
-- Put logic that can be tested without a DOM into a `*-core.ts` module with a
-  matching test in `web/test/`.
+The UI is deliberately framework-free. Do NOT introduce React, Svelte, Vue,
+Lit, a virtual DOM, a bundler, a CSS framework, or any npm runtime dependency.
+The output must stay plain ES modules that `tsc` emits and Go embeds.
+
+### Toolchain and modules
+
+- TypeScript in strict mode (`web/tsconfig.json`: `strict`, `noImplicitAny`,
+  `noUnusedLocals`, `noUnusedParameters`), target and module ES2022. Every
+  build step runs through `npx -p <pinned tool>` from `Taskfile.yml`: `tsc`
+  (typescript 7), `oxlint --deny-warnings`, and `html-validate` with the
+  recommended and a11y presets. Zero warnings is the bar, as on the Go side.
+- Relative imports carry the emitted `.js` extension
+  (`import { store } from "./lib/store.js"`); there are no bare package imports.
+- `static/index.html` is the one page and holds the static skeleton: header,
+  nav, one `.view-container` per view, toast regions, and live regions. It
+  loads `app.js` as a module. `static/styles.css` is the one stylesheet. Fonts
+  (Inter, JetBrains Mono) are self-hosted woff2 in `static/fonts`, and icons are
+  inline SVG. Never load anything from a CDN: the
+  appliance often runs on a LAN with no internet access.
+
+### Structure
+
+- `src/app.ts`: bootstrap only (theme, nav, views, notification center,
+  `store.start()`).
+- `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the only REST
+  client; it raises `ApiError` from RFC 9457 problem bodies and handles the
+  Bearer token and 401), `sse.ts` (`sse`, the fetch-streaming SSE client with
+  reconnect and heartbeat watchdog), `store.ts` (`store`, app state), `router.ts`
+  (`router`, hash routes `#/dashboard`, `#/events`, `#/system`), `modal.ts`
+  (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and formatting
+  helpers), `types.ts` (API types).
+- `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
+  `CustomDropdown`, `VUMeter`, `DeviceSettingsForm`, `NotificationCenter`,
+  toast,
+  modals).
+- `src/views/`: one class per route (`DashboardView`, `EventsView`,
+  `SystemView`) bound to an existing `.view-container`.
+- `src/lib/*-core.ts`: pure logic with no DOM, no timers, no storage, and no
+  network (a transform over plain values). Every non-trivial decision (filtering,
+  grouping, formatting, diffing, validation) belongs here, with a matching
+  `web/test/*.test.ts` run by `node:test`.
+
+### State and reactivity
+
+There is no reactive framework; reactivity is explicit events plus idempotent
+reconcile:
+
+- `AppStore` (`lib/store.ts`) and `NotificationStore` (`lib/notifications.ts`)
+  extend `EventTarget` and own all server state. They poll the REST API, consume
+  SSE, and announce changes with named `CustomEvent`s (`devices`, `status`,
+  `config`, `system`, `available`, `levels`, `connection`, `loaderror`,
+  `authrequired`, `authok`, and `change` on the notification store).
+- Views and components subscribe with `addEventListener` and treat the view as
+  a function of `store.getState()`. They never keep a second copy of server
+  state or fetch on their own; mutations go through store or `api` methods,
+  then the view re-renders from the next event.
+- Coalesce bursts: a view schedules one `reconcile()` per microtask
+  (`queueMicrotask` behind a `renderScheduled` flag) so several events in one
+  tick cause one pass.
+- Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries
+  (element refs by id), create an entry once, patch only the fields that
+  changed (`setText` and `setHidden` write only on change), rebuild an element
+  only when its shape changes, and reorder with a diff so steady-state renders
+  move no nodes. Replacing `innerHTML` or re-creating a list on every update is
+  a bug here: it drops keyboard focus and screen reader position on every
+  poll or SSE tick.
+- Guard async races explicitly. The store uses monotonic generation counters so
+  a stale in-flight response cannot overwrite fresher state; the SSE client
+  uses a generation to cancel a superseded connect loop. Follow the same
+  pattern for any new async write path.
+- High-rate data (levels at 10 Hz) goes straight to the component that draws it
+  (the canvas `VUMeter`), not through a full view reconcile.
+
+### Components
+
+- A component is a TypeScript class that builds its own DOM with `elem()` or
+  `document.createElement` in the constructor, exposes its root as
+  `readonly el`, and offers a small imperative API (`set(...)`, `update(...)`).
+  The caller owns the state and pushes it in; the component reports user intent
+  through callbacks in its options object (for example `onChange`). Components
+  do not import the store unless they are app-level (notification center, login
+  modal).
+- Create buttons with the `button()` factory from `lib/ui.ts` so sizing, icons,
+  and labels stay consistent. Show work in progress with `setBusy`/`clearBusy`
+  (aria-disabled plus aria-busy), never by toggling `disabled` on a focused
+  control, which drops focus.
+- Unique ids for `aria-labelledby`/`aria-describedby` come from a
+  module-level sequence counter (see `dropdownSeq`, `chipsSeq`).
+- Reuse before adding: `showToast` for transient feedback, `confirmDialog` for
+  confirmations, `renderLoadError` for load failure with Retry,
+  `apiErrorMessage`/`setFieldError` for API errors, `copyText` for clipboard,
+  `formatUptime`/`formatRelative` for time, shared icon constants such as
+  `ICON_COPY` and `TOAST_ICONS`.
+
+### DOM safety
+
+- Runtime data is only ever written with `textContent` (via `elem`, `setText`)
+  or attributes. `innerHTML` is allowed solely for trusted, static inline SVG
+  constants; mark each such assignment with a `// static, trusted markup`
+  comment.
+  Never interpolate device names, config values, API responses, or any user
+  input into markup.
+- Browser storage (`localStorage`) holds only per-browser preferences (theme,
+  access token, collapsed sections, dismissed notifications). Wrap access so a
+  storage-blocked browser still works (`readBoolPref`/`writeBoolPref`).
+
+### Accessibility (a CI gate, not a nicety)
+
+- `web:a11y` (html-validate a11y on `index.html`) and the WCAG contrast token
+  test (`web/test/contrast.test.ts`) must pass. The contrast test only checks
+  the token pairs listed in its `PAIRS` table, so any new colored surface or
+  text-on-background combination needs a new entry there.
+- Everything is operable by keyboard with a visible focus ring. Modals trap
+  focus with `trapFocus`, make the background inert with `setAppInert`, and
+  return focus to the invoker on close. Updates must not steal or drop focus.
+- Use native elements and correct ARIA: toggles use `aria-pressed`, groups are
+  labeled, decorative icons are `aria-hidden` (`iconSpan`). Announce state
+  changes through the existing live regions: polite `toast-root` and `role=status`
+  elements for notices, the assertive `toast-alerts` region for errors.
+- Honor `prefers-reduced-motion`; any new animation needs a reduced-motion
+  fallback in `styles.css`.
+
+### Styling
+
+- Colors, spacing, radii, and type come from CSS custom properties defined on
+  `:root` (dark is the default theme) and overridden in
+  `:root[data-theme="light"]`. Use the tokens; do not hard-code colors or add
+  one-off per-theme overrides for a single element. If a token pair fails
+  contrast, fix the token.
+- Theme is the `data-theme` attribute on `<html>`, persisted per browser.
+- Class names are plain, descriptive kebab-case (`.view-container`,
+  `.meter-canvas-container`). Apart from `.visually-hidden` there are no
+  utility classes; style by component.
+- UI copy is plain English matching the existing wording (Title Case for
+  headings and section titles). Say what happened and what to do next; no raw
+  error codes without context.
+
+### Keeping the UI and API in sync
+
+`src/lib/types.ts` is hand-written to mirror `api/openapi.yaml`. When the spec
+changes, update `types.ts` and the `api.ts` methods in the same change. SSE
+event names and payloads must match the spec's `/events` documentation.
 
 ## Linting policy
 
