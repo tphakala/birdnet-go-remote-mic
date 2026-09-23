@@ -105,7 +105,7 @@ test open real ALSA hardware. Use `audio.NewFakeSource` and the existing seams.
   the host monitor. Parsers are platform-neutral; readers are Linux-only.
 - `internal/service`: installs a systemd unit running as a least-privilege
   system user (deb-family today).
-- `internal/runlock`: advisory lock beside the config marking a live appliance,
+- `internal/runlock`: advisory lock at `<config path>.lock` marking a live appliance,
   so token commands go through its API instead of editing a file it will
   overwrite.
 - `internal/atomicfile`: atomic durable file replace (config, certs).
@@ -126,6 +126,11 @@ test open real ALSA hardware. Use `audio.NewFakeSource` and the existing seams.
   Do not call `rtsp.MarshalInterleaved` per RTP packet (it allocates); it is
   acceptable once per SR interval. Avoid allocations per period in general: the
   target hardware is a Pi Zero 2 W.
+- Rotating or enabling the access token must evict live RTSP sessions, not just
+  challenge the next request: the writer checks `Auth.Snapshot()` (enabled
+  flag plus generation, read together) on every frame and tears down a session
+  authorized under an older generation. Clients that keep alive with RTCP only
+  would otherwise stream on forever.
 - Config changes apply live through `internal/reload`; prefer in-place
   reconciliation over process restarts.
 - Keep platform-neutral packages free of Linux-only imports; put Linux-only
@@ -158,6 +163,9 @@ The output must stay plain ES modules that `tsc` emits and Go embeds.
   recommended and a11y presets. Zero warnings is the bar, as on the Go side.
 - Relative imports carry the emitted `.js` extension
   (`import { store } from "./lib/store.js"`); there are no bare package imports.
+  `tsconfig.json` sets `moduleResolution: "bundler"` only as a tsc resolution
+  mode; there is no bundler, and the browser loads the emitted files as is, so
+  an extensionless import breaks at runtime.
 - `static/index.html` is the one page and holds the static skeleton: header,
   nav, one `.view-container` per view, toast regions, and live regions. It
   loads `app.js` as a module. `static/styles.css` is the one stylesheet. Fonts
@@ -169,8 +177,9 @@ The output must stay plain ES modules that `tsc` emits and Go embeds.
 
 - `src/app.ts`: bootstrap only (theme, nav, views, notification center,
   `store.start()`).
-- `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the only REST
-  client; it raises `ApiError` from RFC 9457 problem bodies and handles the
+- `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the REST
+  client; the one deliberate exception is the restart modal's raw
+  `fetch("/api/v1/healthz")` probe while the appliance is restarting; it raises `ApiError` from RFC 9457 problem bodies and handles the
   Bearer token and 401), `sse.ts` (`sse`, the fetch-streaming SSE client with
   reconnect and heartbeat watchdog), `store.ts` (`store`, app state), `router.ts`
   (`router`, hash routes `#/dashboard`, `#/events`, `#/system`), `modal.ts`
@@ -201,9 +210,13 @@ reconcile:
   a function of `store.getState()`. They never keep a second copy of server
   state or fetch on their own; mutations go through store or `api` methods,
   then the view re-renders from the next event.
-- Coalesce bursts: a view schedules one `reconcile()` per microtask
-  (`queueMicrotask` behind a `renderScheduled` flag) so several events in one
-  tick cause one pass.
+- Coalesce bursts where several events trigger the same pass: `DashboardView`
+  schedules one `reconcile()` per microtask (`queueMicrotask` behind a
+  `renderScheduled` flag). `EventsView` renders only while visible and marks
+  itself dirty otherwise. `SystemView` patches just the section each event
+  affects.
+- Never clobber user input: a form the user is editing is not repopulated from
+  a store event (`SystemView` tracks `netDirty`, `authDirty`, `notifyDirty`).
 - Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries
   (element refs by id), create an entry once, patch only the fields that
   changed (`setText` and `setHidden` write only on change), rebuild an element
@@ -243,13 +256,16 @@ reconcile:
 
 - Runtime data is only ever written with `textContent` (via `elem`, `setText`)
   or attributes. `innerHTML` is allowed solely for trusted, static inline SVG
-  constants; mark each such assignment with a `// static, trusted markup`
-  comment.
+  constants; mark each new such assignment with a `// static, trusted markup`
+  comment (a few older sites lack it).
   Never interpolate device names, config values, API responses, or any user
   input into markup.
 - Browser storage (`localStorage`) holds only per-browser preferences (theme,
   access token, collapsed sections, dismissed notifications). Wrap access so a
-  storage-blocked browser still works (`readBoolPref`/`writeBoolPref`).
+  storage-blocked browser still works (`readBoolPref`/`writeBoolPref`, and the
+  try/catch in `auth.ts` and `notifications.ts`). The theme read and write in
+  `app.ts` are currently unwrapped, which is a known defect to fix, not a
+  pattern to copy.
 
 ### Accessibility (a CI gate, not a nicety)
 
@@ -332,25 +348,33 @@ Hard constraints:
   explicitly.
 - `context.Context` is the first parameter, named `ctx`.
 
-Required idioms (the codebase already uses them; new code MUST too):
+Required idioms. Most are already used throughout the codebase; the ones
+marked "not yet adopted" have zero uses today because the code predates them,
+but new code MUST use them anyway and existing code migrates when touched:
 
 - `any`, never `interface{}`.
 - `for i := range n` over integers; `min`/`max` builtins.
 - `slices` and `maps` packages instead of hand-written loops or `sort.Slice`
   (`slices.SortFunc` with `cmp.Compare`). `internal/reload/plan.go` still uses
   `sort`; migrate it if you touch it.
-- `strings.Cut`, `strings.SplitSeq`/`FieldsSeq` instead of `Split` plus
-  indexing.
+- `strings.Cut`, and `strings.SplitSeq`/`FieldsSeq` when iterating over parts,
+  instead of `Split` into a throwaway slice. Indexing `strings.Fields` is fine
+  for fixed-column formats such as `/proc/stat`.
 - Range-over-func iterators (`iter.Seq`, `iter.Seq2`) when a function yields a
-  sequence, instead of building a throwaway slice or a callback API.
-- `sync.WaitGroup.Go` for new goroutine fan-out instead of `Add(1)` plus
-  `defer Done()`.
+  sequence, instead of building a throwaway slice or a callback API (not yet
+  adopted).
+- `sync.WaitGroup.Go` (Go 1.25+) for goroutine fan-out instead of `Add(1)`
+  plus `defer Done()` (not yet adopted; existing `wg.Add` sites migrate when
+  touched).
 - Typed atomics (`atomic.Bool`, `atomic.Int64`, `atomic.Pointer[T]`), not the
   function-style `atomic.AddInt64` on bare integers.
-- `new(expr)` for a pointer to a value (for example `new(true)` for the `*bool`
-  config fields) instead of a helper function or temporary variable.
+- `new(expr)` (Go 1.26+) for a pointer to a value, for example `new(true)` for
+  the `*bool` config fields, instead of a helper or a temporary variable. The
+  existing `ptr[T]` helper (`internal/mgmtserver/server.go`) and `ptrInt`
+  (config tests) predate this; do not add new helpers like them.
 - Errors: wrap with `fmt.Errorf("...: %w", err)`, compare with `errors.Is`, and
-  extract with `errors.As` (or `errors.AsType`). Sentinel errors are
+  extract with `errors.AsType` (Go 1.26+; not yet adopted, the existing code
+  uses `errors.As`). Sentinel errors are
   `ErrXxx`, error types are `XxxError` (enforced by errname). Use
   `errors.New` for constant messages.
 - Logging is the standard library `log` package. Messages are lowercase and
@@ -363,9 +387,11 @@ Required idioms (the codebase already uses them; new code MUST too):
 
 - Standard library `testing` only (no testify), table-driven where it helps,
   failure messages in `got X, want Y` form.
-- Mark independent tests `t.Parallel()`. Use `testing/synctest` for code that
-  depends on timers or tickers rather than real sleeps, `t.Context()` for a
-  test-scoped context, and `b.Loop()` in benchmarks.
+- Mark independent tests `t.Parallel()`. In new tests use `testing/synctest`
+  for code that depends on timers or tickers rather than real sleeps,
+  `t.Context()` for a test-scoped context instead of `context.Background()`
+  plus cancel, and `b.Loop()` in benchmarks. Existing tests mostly predate
+  these (one `synctest` user, no `t.Context` or `b.Loop` yet).
 - Test helpers call `t.Helper()` (enforced by thelper).
 - No real hardware or network beyond loopback in unit tests; reach for the
   existing seams and fakes. Avoid `time.Sleep` for synchronization in new
