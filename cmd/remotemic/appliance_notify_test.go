@@ -119,7 +119,7 @@ func TestOnPumpDoneDeathEmitsDownOnset(t *testing.T) {
 	if n.Key != deviceDownKey("a") || n.Severity != notify.SeverityError || n.Kind != notify.KindOnset {
 		t.Errorf("death onset = %+v, want error/onset on the down key", n)
 	}
-	if n.Title != "Device failed" {
+	if n.Title != titleFailed {
 		t.Errorf("death onset title = %q, want Device failed", n.Title)
 	}
 }

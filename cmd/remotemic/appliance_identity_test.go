@@ -27,6 +27,8 @@ const (
 	// titleDisconnected is the onset title a lost device raises; several tests
 	// assert it, so it lives here rather than as a repeated literal.
 	titleDisconnected = "Device disconnected"
+	titleFailed       = "Device failed"
+	titleNotConnected = "Device not connected"
 )
 
 // fakeHost is a host device list the appliance resolves configured ids against,
@@ -144,7 +146,7 @@ func TestReconcileRefusesAbsentDevice(t *testing.T) {
 		t.Errorf("an absent device was opened: %v", log.snapshot())
 	}
 	act := applianceCenter(t, app).Active()
-	if len(act) != 1 || act[0].Key != deviceDownKey("moth") || act[0].Title != "Device not connected" {
+	if len(act) != 1 || act[0].Key != deviceDownKey("moth") || act[0].Title != titleNotConnected {
 		t.Errorf("active = %+v, want one Device not connected condition for moth", act)
 	}
 }
@@ -484,7 +486,7 @@ func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
 
 	host.devs = nil
 	app.retryDown()
-	if act := center.Active(); len(act) != 1 || act[0].Title != "Device not connected" {
+	if act := center.Active(); len(act) != 1 || act[0].Title != titleNotConnected {
 		t.Errorf("active after the retry = %+v, want the condition re-raised as Device not connected", act)
 	}
 }
@@ -555,7 +557,7 @@ func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
 	if !app.retrying("moth") {
 		t.Error("a failed-while-present device was not scheduled for a backoff retry")
 	}
-	if act := center.Active(); len(act) != 1 || act[0].Title != "Device failed" {
+	if act := center.Active(); len(act) != 1 || act[0].Title != titleFailed {
 		t.Fatalf("active after the failure = %+v, want one Device failed", act)
 	}
 }

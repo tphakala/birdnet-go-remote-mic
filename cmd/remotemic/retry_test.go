@@ -625,7 +625,7 @@ func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
 			app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
 
 			act := applianceCenter(t, app).Active()
-			if len(act) != 1 || act[0].Title != "Device failed" {
+			if len(act) != 1 || act[0].Title != titleFailed {
 				t.Fatalf("active = %+v, want one Device failed", act)
 			}
 			if !strings.Contains(act[0].Message, tc.want) {
@@ -656,7 +656,7 @@ func TestRetryStopsWhenDeviceDisappears(t *testing.T) {
 		if _, ok := app.retries["moth"]; ok {
 			t.Error("retry state survived the device disappearing")
 		}
-		if act := applianceCenter(t, app).Active(); len(act) != 1 || act[0].Title != "Device not connected" {
+		if act := applianceCenter(t, app).Active(); len(act) != 1 || act[0].Title != titleNotConnected {
 			t.Errorf("active = %+v, want one Device not connected", act)
 		}
 		if got := opens(opLog, "moth"); got != 1 {
