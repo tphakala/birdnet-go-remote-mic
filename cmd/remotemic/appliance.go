@@ -447,6 +447,18 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // the wrong microphone. A card-index id whose resolution failed for another
 // reason (the host exposes no /proc/asound listing, as in some containers) is
 // still opened, since the open itself addresses the card directly.
+// restartHint says, in a down notification, how the device comes back: a
+// card-index id waits for a config save (it is never restarted unattended),
+// anything else is retried by the backoff. The open-failure, resolve-failure
+// and failed-while-present messages share it so their promise cannot drift; the
+// disconnect message has its own wording (it comes back on reconnect).
+func restartHint(dev *config.Device) string {
+	if config.IsCardIndexID(dev.Device) {
+		return "it restarts on the next config save"
+	}
+	return "it restarts automatically when capture works again"
+}
+
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	res := a.hw[dev.Device]
 	hw := res.hw
@@ -472,6 +484,10 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 				title = "Device ambiguous"
 			case downMalformed:
 				title = "Invalid device id"
+			case downResolve:
+				// Only this cause is retried by the backoff; the others wait for
+				// the hardware or the config to change, as their text says.
+				msg += "; " + restartHint(dev)
 			}
 			return a.skipDevice(dev, &hw, cause, title, msg)
 		}
@@ -524,7 +540,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		// Record the open failure as a down-condition onset. Onset is idempotent,
 		// so a device that keeps failing across successive reconciles enters the
 		// condition once, not once per retry.
-		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v", dev.Device, atAddr(&hw), err))
+		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v; %s", dev.Device, atAddr(&hw), err, restartHint(dev)))
 		a.markDown(dev.Name, downOpenFailed, &n)
 		return &deviceRuntime{
 			dev:               *dev,
@@ -866,10 +882,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// attempts and clears it once a retried restart has stayed up for
 			// retrySettle (a config save or hardware change clears it at once). A card-index
 			// entry is not retried unattended, so it waits for a config save.
-			restart := "it restarts automatically when capture works again"
-			if config.IsCardIndexID(res.rt.dev.Device) {
-				restart = "it restarts on the next config save"
-			}
+			restart := restartHint(&res.rt.dev)
 			if !a.retrying(name) || logAttempt(a.retries[name].failures+1) {
 				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
 			}

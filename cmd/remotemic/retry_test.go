@@ -23,6 +23,9 @@ import (
 
 var errTestEIO = errors.New("input/output error")
 
+// wantAutoRestart is the phrase a down message for a stable id carries.
+const wantAutoRestart = "restarts automatically"
+
 // failingSource is a capture that opens fine and then fails its first read, as a
 // device does after an EIO right after open or a deterministic fault.
 type failingSource struct{ rate, channels int }
@@ -662,7 +665,7 @@ func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
 	for _, tc := range []struct {
 		name, id, want string
 	}{
-		{name: "stable id", id: idMoth, want: "restarts automatically"},
+		{name: "stable id", id: idMoth, want: wantAutoRestart},
 		{name: "card index", id: addrHW3, want: "restarts on the next config save"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -777,6 +780,41 @@ func TestRetryLostDeviceDropsRetry(t *testing.T) {
 			t.Errorf("active = %+v, want one Device disconnected", act)
 		}
 	})
+}
+
+// TestRetryOpenFailureMessageMatchesRestartPath pins the open-failure and
+// resolve-failure onset text: a stable id is retried automatically, a
+// card-index id waits for a config save.
+func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, want string
+		resolveFails   bool
+	}{
+		{name: "open fails, stable id", id: idMoth, want: wantAutoRestart},
+		{name: "open fails, card index", id: addrHW3, want: "restarts on the next config save"},
+		{name: "resolve fails, stable id", id: idMoth, want: wantAutoRestart, resolveFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _, cancel := newTestAppliance(t)
+			defer cancel()
+			defer app.closeAll()
+			if tc.resolveFails {
+				app.resolve = func(string) (audio.Hardware, error) {
+					return audio.Hardware{}, errors.New("reading the sound card listing: input/output error")
+				}
+			}
+			failOpen(app)
+			app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", tc.id, "/m", 48000)}})
+
+			act := applianceCenter(t, app).Active()
+			if len(act) != 1 {
+				t.Fatalf("active = %+v, want one down condition", act)
+			}
+			if !strings.Contains(act[0].Message, tc.want) {
+				t.Errorf("message = %q, want it to say %q", act[0].Message, tc.want)
+			}
+		})
+	}
 }
 
 func TestBackoffDelay(t *testing.T) {
