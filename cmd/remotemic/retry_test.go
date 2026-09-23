@@ -423,6 +423,72 @@ func TestRetryBackoffResetsAfterStableService(t *testing.T) {
 	}
 }
 
+// TestRetryConfigSaveResetsBackoff pins that an explicit restart starts the
+// backoff over: a device that has backed off for a while and is then saved
+// again (and still fails) is next retried after the shortest delay.
+func TestRetryConfigSaveResetsBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 1<<30)
+		cfg := config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}}
+		app.reconcile(&cfg)
+		runFor(t, app, 2*time.Minute)
+		if st := app.retries["moth"]; st == nil || st.attempts < 4 {
+			t.Fatalf("precondition: retry state = %+v, want several failures", st)
+		}
+
+		app.reconcile(&cfg)
+
+		st := app.retries["moth"]
+		if st == nil {
+			t.Fatal("no retry was scheduled after the config save")
+		}
+		if st.attempts != 1 {
+			t.Errorf("attempts = %d, want 1 after a config save", st.attempts)
+		}
+		if got, want := time.Until(st.next), backoffDelay(1); got != want {
+			t.Errorf("next retry in %s, want %s", got, want)
+		}
+	})
+}
+
+// TestRetryRecoversFromResolveFailure pins that a resolve failure that is not
+// about the device itself (the host's device listing could not be read) is
+// retried like an open failure, and that each attempt resolves the id afresh
+// rather than reusing the failed resolution.
+func TestRetryRecoversFromResolveFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, _, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failures := 2
+		resolve := app.resolve
+		app.resolve = func(id string) (audio.Hardware, error) {
+			if failures > 0 {
+				failures--
+				return audio.Hardware{}, errors.New("reading the sound card listing: input/output error")
+			}
+			return resolve(id)
+		}
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateSkipped {
+			t.Fatalf("moth state = %s, want skipped after the failed resolve", s)
+		}
+
+		runFor(t, app, 5*time.Minute)
+
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving once the id resolves again", s)
+		}
+		if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+			t.Errorf("down onsets = %d, want 1", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Errorf("down clears = %d, want 1", got)
+		}
+	})
+}
+
 func TestBackoffDelay(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
