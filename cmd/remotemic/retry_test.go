@@ -64,8 +64,9 @@ func failOpenTimes(app *appliance, log *fakeOpenLog, n int) {
 func countDown(t *testing.T, app *appliance, name string, kind notify.Kind) int {
 	t.Helper()
 	n := 0
-	for _, e := range applianceCenter(t, app).Snapshot().Notifications {
-		if e.Key == deviceDownKey(name) && e.Kind == kind {
+	ns := applianceCenter(t, app).Snapshot().Notifications
+	for i := range ns {
+		if ns[i].Key == deviceDownKey(name) && ns[i].Kind == kind {
 			n++
 		}
 	}
