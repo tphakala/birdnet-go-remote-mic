@@ -137,6 +137,31 @@ test open real ALSA hardware. Use `audio.NewFakeSource` and the existing seams.
   connected), or compute it lazily on request. Background work is justified
   only when it serves the appliance itself: capture, streaming, hotplug
   recovery, or condition monitors that raise alerts.
+- Recover automatically and safely. The appliance runs unattended for months,
+  often out of physical reach, so an unexpected event (device unplugged or
+  erroring, capture overrun, encoder fault, client vanishing mid-stream,
+  corrupt or missing file, clock step, network change) must end in automatic
+  recovery, not a state that waits for a human. Rules for recovery code:
+  - Degrade per device and per stream, never the whole process: one failing
+    device must not stop the others, and the management API stays up with zero
+    devices serving.
+  - Retry with backoff and a bounded rate, never a hot loop, and never
+    re-notify on every attempt (the notification center's flap and hysteresis
+    helpers exist for this).
+  - Recovery must be safe: never guess when a guess can do harm. The existing
+    precedent is that a card-index device id is not restarted unattended,
+    because after a hotplug the index may name a different microphone. Never
+    destroy operator data (an installed certificate, a config file) to
+    self-heal from an error that might be transient.
+  - Make every failure and recovery visible: a notification onset on failure
+    and a clear on recovery, plus a log line.
+  - The last line of defense is systemd (`Restart=always`, `RestartSec=5` in
+    `internal/service/unit.go`), so a clean exit or crash restarts the process.
+    Treat that as a backstop, not a recovery strategy: in-process recovery
+    keeps the other streams running.
+  - A panic in a goroutine kills the whole process. Code that runs callbacks
+    or third-party logic on a long-lived goroutine recovers per call (see
+    `deliverTap` in `internal/levels`).
 - Rotating or enabling the access token must evict live RTSP sessions, not just
   challenge the next request: the writer checks `Auth.Snapshot()` (enabled
   flag plus generation, read together) on every frame and tears down a session
