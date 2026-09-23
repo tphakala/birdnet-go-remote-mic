@@ -570,7 +570,14 @@ func atAddr(hw *audio.Hardware) string {
 // raising its down condition with the given cause. The last known capabilities
 // are kept so the settings form still offers the device's rates.
 func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, title, msg string) *deviceRuntime {
-	a.logAttemptf("skipping device %q: %s", dev.Name, msg)
+	if retryableCause(cause) {
+		a.logAttemptf("skipping device %q: %s", dev.Name, msg)
+	} else {
+		// A cause a retry cannot fix ends any backoff in flight (scheduleRetry
+		// drops it without logging), so this line is the only record of why the
+		// device stopped being retried; never silence it.
+		log.Printf("skipping device %q: %s", dev.Name, msg)
+	}
 	n := deviceDownOnset(dev.Name, title, msg)
 	a.markDown(dev.Name, cause, &n)
 	rates, channels := a.rememberCaps(dev.Device, nil, nil)

@@ -667,6 +667,39 @@ func TestRetryStopsWhenDeviceDisappears(t *testing.T) {
 	})
 }
 
+// TestRetryQuietAttemptLogsEndOfRetry pins that a retry attempt whose own log
+// lines are silenced still logs a cause that ends the retry: the device went
+// missing, the backoff is dropped, and nothing else would record why.
+func TestRetryQuietAttemptLogsEndOfRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var out bytes.Buffer
+		stdlog.SetOutput(&out)
+		t.Cleanup(func() { stdlog.SetOutput(os.Stderr) })
+		app, opLog, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
+		withHost(app, host)
+		failOpenTimes(app, opLog, 1<<30)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		// Failures at 0, 5 and 15 s; the retry due at 45 s is the first quiet one.
+		runFor(t, app, 20*time.Second)
+		if st := app.retries["moth"]; st == nil || logAttempt(st.failures+1) {
+			t.Fatalf("precondition: retry state = %+v, want the next attempt quiet", st)
+		}
+
+		out.Reset()
+		host.devs = nil
+		runFor(t, app, 30*time.Second)
+
+		if app.retrying("moth") {
+			t.Fatal("precondition: the retry did not end on the missing device")
+		}
+		if !strings.Contains(out.String(), `skipping device "moth": Not connected`) {
+			t.Errorf("the quiet attempt that ended the retry left no log line:\n%s", out.String())
+		}
+	})
+}
+
 func TestBackoffDelay(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

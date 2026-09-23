@@ -245,9 +245,11 @@ func (a *appliance) onRetryDue() {
 
 // attemptRetry makes one unattended restart attempt. On success the device
 // serves at once but its down condition stays active until it has served for
-// retrySettle (see onRetryDue); on failure the next attempt is scheduled. The
-// open's own log lines, failure and success alike, are silenced on attempts
-// logAttempt skips; finishRecovery logs the recovery either way.
+// retrySettle (see onRetryDue); on a failure scheduleRetry either schedules the
+// next attempt or, for a cause a retry cannot fix, ends the retry. The open's own
+// log lines, failure and success alike, are silenced on attempts logAttempt
+// skips, except the line for a cause that ends the retry (see skipDevice);
+// finishRecovery logs a recovery either way.
 func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
 	// Retry n follows failure n. Its open logs are gated on the failure it would
 	// become, failure n+1, so they appear exactly when scheduleRetry logs that
