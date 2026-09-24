@@ -502,7 +502,7 @@ func TestEnsureRefusesDanglingPinnedSymlink(t *testing.T) {
 	}
 }
 
-func TestEnsureRegeneratesUnreadableUnpinnedPair(t *testing.T) {
+func TestEnsureRegeneratesDanglingUnpinnedLink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "mgmt-cert.pem")

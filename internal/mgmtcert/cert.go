@@ -42,11 +42,11 @@ const pemTypeCertificate = "CERTIFICATE"
 // file that exists and cannot be read (a permission change, an I/O error, a
 // symlink whose target is gone) is left untouched and Ensure returns a
 // *PinnedReadError, since regenerating over it would destroy the operator's
-// certificate over what may be a transient fault. An unpinned
-// pair is reused when it is in date and covers every host in hosts; when it is
-// in date but a name is missing (the appliance's address changed) its existing
-// SANs are carried forward and it is regenerated; a missing, unreadable, or
-// expired unpinned pair is regenerated from hosts. The key file is written with
+// certificate over what may be a transient fault. An unpinned pair is reused
+// when it is in date and covers every host in hosts; when it is in date but a
+// name is missing (the appliance's address changed) its existing SANs are
+// carried forward and it is regenerated; a missing, unreadable, or expired
+// unpinned pair is regenerated from hosts. The key file is written with
 // owner-only permissions.
 func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 	pinned := Pinned(certPath)
@@ -79,8 +79,9 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 		}
 	}
 	if pinned {
-		// The pin marker is present but the pair is missing or does not parse, so
-		// there is nothing to preserve. Drop the stale marker and self-heal.
+		// The pin marker is present but the pair is incomplete (a file is missing)
+		// or does not parse, so it cannot be served. Drop the stale marker and
+		// self-heal; generate overwrites whichever pinned file still exists.
 		_ = os.Remove(PinPath(certPath))
 		atomicfile.SyncDir(filepath.Dir(PinPath(certPath)))
 	}
@@ -90,7 +91,10 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 // PinnedReadError reports that a pinned (operator-installed) certificate or key
 // file exists but could not be read. Ensure returns it instead of regenerating,
 // so the operator's pair survives a fault that may be transient or fixable (a
-// permission change, an I/O error, a certificate volume not mounted yet).
+// permission change, an I/O error, a certificate volume not mounted yet). The
+// appliance does not retry: the management API stays off until the process
+// restarts, and a run that still has devices serving does not restart on its
+// own.
 type PinnedReadError struct {
 	Path string
 	Err  error
