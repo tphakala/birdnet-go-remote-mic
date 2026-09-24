@@ -1,6 +1,7 @@
 import { api, ApiError } from "./api.js";
 import { sse } from "./sse.js";
 import { getToken, setToken } from "./auth.js";
+import { LatestGate } from "./latest-core.js";
 import type {
   ApplianceStatus,
   AvailableDevice,
@@ -33,26 +34,22 @@ export class AppStore extends EventTarget {
   };
 
   private pollIntervalTimer: number | null = null;
-  // Monotonic generation for config writes. A GET /config that was already in
-  // flight when a newer applyConfig (or a newer refreshConfig) landed must not
-  // overwrite the fresher value with its stale body, which would resurrect a
-  // stale base for the next queued mutation. Both writers bump it; a refresh
-  // commits only while its captured generation is still current.
-  private configEpoch = 0;
-  // Monotonic generation for available-device refreshes. Overlapping polls can
-  // resolve out of order (a provision/removal triggers an extra refresh that can
-  // race the 3s poll), so an older response must not overwrite a newer one and
-  // restore a stale Enable card.
-  private availableEpoch = 0;
-  // Monotonic generations for the polled status, devices, and system reads. The
-  // poll timer does not wait for a tick to finish (and an action can trigger an
-  // extra refresh), so on a slow link a newer read can resolve first; the older
-  // body must not then overwrite it and briefly undo a device state change. The
+  // One ordering gate per polled resource (see LatestGate). The poll timer does
+  // not wait for a tick to finish, and a provision, removal, or save triggers an
+  // extra refresh, so reads of one resource overlap and can resolve out of
+  // order. The gate keeps an older body from overwriting a newer one (a stale
+  // device state, a stale Enable card, a stale config base for the next queued
+  // mutation) without dropping a response just because a newer read started,
+  // which would starve every view on a link slower than the poll interval. The
   // poll deliberately does not skip ticks instead: the API client sets no fetch
   // timeout, so a hung request would stop polling for good.
-  private statusEpoch = 0;
-  private devicesEpoch = 0;
-  private systemEpoch = 0;
+  private statusGate = new LatestGate();
+  private devicesGate = new LatestGate();
+  private systemGate = new LatestGate();
+  private availableGate = new LatestGate();
+  // applyConfig invalidates this one, so a GET /config already in flight cannot
+  // overwrite the authoritative PATCH result when it resolves later.
+  private configGate = new LatestGate();
   // loginPending is set from the first 401 until a token is accepted, so a
   // burst of rejected requests (the initial load fires five) opens one prompt
   // and the generic load-error state is suppressed in favor of it.
@@ -258,9 +255,9 @@ export class AppStore extends EventTarget {
         this.refreshAvailable(),
         // Poll config too so a change made by another client (or another tab)
         // reflects here within one interval instead of only after a reload. The
-        // configEpoch guard makes this safe against the lost-update race that
+        // configGate makes this safe against the lost-update race that
         // originally kept config out of the poll: an in-flight GET that resolves
-        // after a newer applyConfig/refreshConfig is dropped.
+        // after a newer applyConfig or a newer applied refresh is dropped.
         this.refreshConfig(),
       ]);
     }, intervalMs);
@@ -274,47 +271,52 @@ export class AppStore extends EventTarget {
     sse.stop();
   }
 
+  // Each refresh below follows the same shape: take a gate token, fetch, and
+  // apply only if the gate accepts it. A refresh whose body is dropped, or that
+  // fails after a newer body was applied, still reports success: fresher data is
+  // in place, so loadInitial must not raise a load error for it.
+
   public async refreshStatus(): Promise<boolean> {
-    const epoch = ++this.statusEpoch;
+    const token = this.statusGate.begin();
     try {
       const status = await api.getStatus();
-      if (epoch !== this.statusEpoch) return true;
+      if (!this.statusGate.accept(token)) return true;
       this.state.status = status;
       this.dispatchEvent(new CustomEvent("status", { detail: this.state.status }));
       return true;
     } catch (err) {
       console.warn("Failed to refresh status:", err);
-      return false;
+      return this.statusGate.superseded(token);
     }
   }
 
   public async refreshAvailable(): Promise<boolean> {
-    const epoch = ++this.availableEpoch;
+    const token = this.availableGate.begin();
     try {
       const available = await api.getAvailableDevices();
-      // A newer refreshAvailable started while this GET was in flight; its result
-      // is fresher, so drop this stale body rather than restoring a stale list.
-      if (epoch !== this.availableEpoch) return true;
+      if (!this.availableGate.accept(token)) return true;
       this.state.available = available;
       this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
       return true;
     } catch (err) {
       console.warn("Failed to refresh available devices:", err);
-      return false;
+      return this.availableGate.superseded(token);
     }
   }
 
   public async refreshDevices(): Promise<boolean> {
-    const epoch = ++this.devicesEpoch;
+    const token = this.devicesGate.begin();
     try {
       const devices = await api.getDevices();
-      if (epoch !== this.devicesEpoch) return true;
       // Defensive normalization at the store boundary: the contract guarantees
       // channels is an array, but every consumer indexes it, so a malformed
-      // payload becomes an empty selection rather than a runtime error.
+      // payload becomes an empty selection rather than a runtime error. It runs
+      // before accept so a payload that throws here (not an array at all) never
+      // marks this token applied and so never drops an older valid response.
       for (const d of devices) {
         if (!Array.isArray(d.channels)) d.channels = [];
       }
+      if (!this.devicesGate.accept(token)) return true;
       this.state.devices = devices;
       // Drop level entries for devices that are no longer present so the map
       // does not grow without bound as devices are added or removed.
@@ -326,37 +328,37 @@ export class AppStore extends EventTarget {
       return true;
     } catch (err) {
       console.warn("Failed to refresh devices:", err);
-      return false;
+      return this.devicesGate.superseded(token);
     }
   }
 
   public async refreshSystem(): Promise<boolean> {
-    const epoch = ++this.systemEpoch;
+    const token = this.systemGate.begin();
     try {
       const system = await api.getSystem();
-      if (epoch !== this.systemEpoch) return true;
+      if (!this.systemGate.accept(token)) return true;
       this.state.system = system;
       this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
       return true;
     } catch {
       // System info is optional, non-fatal.
-      return false;
+      return this.systemGate.superseded(token);
     }
   }
 
   public async refreshConfig(): Promise<boolean> {
-    const epoch = ++this.configEpoch;
+    const token = this.configGate.begin();
     try {
       const config = await api.getConfig();
-      // A newer applyConfig or refreshConfig ran while this GET was in flight;
-      // its result is fresher, so drop this stale body rather than clobbering it.
-      if (epoch !== this.configEpoch) return true;
+      // A newer applyConfig or applied refreshConfig landed while this GET was in
+      // flight; its result is fresher, so drop this stale body.
+      if (!this.configGate.accept(token)) return true;
       this.state.config = config;
       this.dispatchEvent(new CustomEvent("config", { detail: this.state.config }));
       return true;
     } catch (err) {
       console.warn("Failed to refresh config:", err);
-      return false;
+      return this.configGate.superseded(token);
     }
   }
 
@@ -370,10 +372,10 @@ export class AppStore extends EventTarget {
   // the request body) seeds a config that was never loaded (initial GET failed)
   // and picks up any server-side normalization.
   public applyConfig(config: Config): void {
-    // Bump the generation so a GET /config already in flight (from an overlapping
+    // Invalidate the gate so a GET /config already in flight (from an overlapping
     // refreshConfig) cannot overwrite this authoritative PATCH result when it
     // resolves later.
-    ++this.configEpoch;
+    this.configGate.invalidate();
     this.state.config = config;
     this.dispatchEvent(new CustomEvent("config", { detail: config }));
   }

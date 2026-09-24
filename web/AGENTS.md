@@ -76,9 +76,12 @@ reconcile:
   reorder with a diff so steady-state renders move no nodes. Replacing
   `innerHTML` or re-creating a list per update is a bug: it drops keyboard
   focus and screen reader position on every poll or SSE tick.
-- Guard async races. The store uses monotonic generation counters so a stale
-  response cannot overwrite fresher state; the SSE client uses a generation to
-  cancel a superseded connect loop. Do the same for any new async write path.
+- Guard async races. The store puts a `LatestGate` (`lib/latest-core.ts`) on
+  each polled resource so an older response cannot overwrite a newer applied
+  one; never drop a response merely because a newer request started, which
+  starves the view on a link slower than the poll. The SSE client uses a
+  generation to cancel a superseded connect loop. Do the same for any new
+  async write path.
 - High-rate data (levels at 10 Hz) goes straight to the component that draws
   it (the canvas `VUMeter`), not through a view reconcile.
 
