@@ -216,21 +216,130 @@ func gateSeq(t *testing.T, pattern ...bool) (active func() bool, calls *int) {
 	}, &n
 }
 
-// tonePeriods returns count mono 48 kHz S16LE periods of samples frames each,
-// carrying a sweeping tone so consecutive Opus frames differ and the encoder's
-// cross-frame state shapes its output.
-func tonePeriods(count, samples int) [][]byte {
-	periods := make([][]byte, count)
-	for k := range periods {
-		b := make([]byte, samples*2)
-		for i := range samples {
-			n := float64(k*samples + i)
-			v := int16(8000 * math.Sin(2*math.Pi*(300+n/40)*n/48000))
-			binary.LittleEndian.PutUint16(b[i*2:], uint16(v))
+// tonePCM returns the given number of frames of interleaved S16LE PCM at 48
+// kHz with ch channels, a different sweeping tone per channel, so a dropped,
+// shifted or swapped sample changes the encoded packets.
+func tonePCM(frames, ch int) []byte {
+	b := make([]byte, frames*ch*2)
+	for i := range frames {
+		n := float64(i)
+		for c := range ch {
+			v := int16(7000 * math.Sin(2*math.Pi*(300+150*float64(c)+n/40)*n/48000))
+			binary.LittleEndian.PutUint16(b[(i*ch+c)*2:], uint16(v))
 		}
-		periods[k] = b
 	}
-	return periods
+	return b
+}
+
+// splitPeriods cuts pcm (ch channels) into periods holding the given number of
+// frames each; a short tail becomes the last period.
+func splitPeriods(pcm []byte, frames, ch int) [][]byte {
+	size := frames * ch * 2
+	var out [][]byte
+	for len(pcm) > 0 {
+		n := min(size, len(pcm))
+		out = append(out, pcm[:n])
+		pcm = pcm[n:]
+	}
+	return out
+}
+
+// referenceOpus encodes pcm with a freshly built encoder in consecutive whole
+// 960-frame chunks, dropping a partial tail, exactly as a stage fed the same
+// audio must.
+func referenceOpus(t *testing.T, cfg config.Opus, pcm []byte, ch int) [][]byte {
+	t.Helper()
+	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: cfg.EffectiveBitrate(ch)})
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	frame := make([]int16, opusFrameSamplesTest*ch)
+	buf := make([]byte, 4000)
+	chunk := opusFrameSamplesTest * ch * 2
+	out := make([][]byte, 0, len(pcm)/chunk)
+	for ; len(pcm) >= chunk; pcm = pcm[chunk:] {
+		for i := range frame {
+			frame[i] = int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+		}
+		n, err := enc.Encode(frame, buf)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		out = append(out, append([]byte(nil), buf[:n]...))
+	}
+	return out
+}
+
+// runOpus runs an Opus stage over periods and returns copies of the payloads.
+func runOpus(t *testing.T, cfg config.Opus, periods [][]byte, ch int, active func() bool) [][]byte {
+	t.Helper()
+	var out [][]byte
+	err := pipeline.NewOpus(cfg).Run(audio.NewFakeSource(48000, ch, periods), active, func(f pipeline.Frame) error {
+		out = append(out, append([]byte(nil), f.Payload...))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return out
+}
+
+// TestOpusStageArbitraryPeriodSizes pins the accumulate loop on the periods
+// real capture delivers, whose size the driver negotiates: a period can end
+// mid-frame, carry the rest of one frame and the start of the next, or hold
+// several whole frames. For each size the stage must emit exactly what a fresh
+// encoder emits for the same audio cut into 960-frame chunks.
+func TestOpusStageArbitraryPeriodSizes(t *testing.T) {
+	t.Parallel()
+	cfg := config.Opus{Bitrate: 64000}
+	for _, ch := range []int{1, 2} {
+		for _, frames := range []int{441, 1024, 1500, 2881} {
+			pcm := tonePCM(6*frames, ch)
+			want := referenceOpus(t, cfg, pcm, ch)
+			got := runOpus(t, cfg, splitPeriods(pcm, frames, ch), ch, nil)
+			if len(got) != len(want) {
+				t.Errorf("%d ch, %d-frame periods: emitted %d frames, want %d", ch, frames, len(got), len(want))
+				continue
+			}
+			for i := range want {
+				if !bytes.Equal(got[i], want[i]) {
+					t.Errorf("%d ch, %d-frame periods: frame %d differs from a fresh encoder's", ch, frames, i)
+					break
+				}
+			}
+		}
+	}
+}
+
+// TestOpusStageStartsIdleThenPlays pins the usual path for a real client: the
+// stream starts with no client, so the first periods are drained unencoded, and
+// once a client plays the stage emits exactly what a fresh encoder emits for the
+// audio from that point on. Stereo, with periods that straddle frame
+// boundaries, so the channel interleave survives the idle stretch too.
+func TestOpusStageStartsIdleThenPlays(t *testing.T) {
+	t.Parallel()
+	const ch, frames = 2, 1024
+	cfg := config.Opus{Bitrate: 96000}
+	periods := splitPeriods(tonePCM(8*frames, ch), frames, ch)
+	active, calls := gateSeq(t, false, false, true, true, true, true, true, true)
+
+	got := runOpus(t, cfg, periods, ch, active)
+	if *calls != len(periods) {
+		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+	}
+	var played []byte
+	for _, p := range periods[2:] {
+		played = append(played, p...)
+	}
+	want := referenceOpus(t, cfg, played, ch)
+	if len(got) != len(want) {
+		t.Fatalf("emitted %d frames, want %d (only the audio after the client started)", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("frame %d after the client started differs from a fresh encoder's", i)
+		}
+	}
 }
 
 // TestPCMStageSkipsInactivePeriods pins the idle gate on the L16 path: a period
@@ -273,7 +382,7 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 // emitted.
 func TestOpusStageIdleEmitsNothing(t *testing.T) {
 	t.Parallel()
-	periods := tonePeriods(8, 480)
+	periods := splitPeriods(tonePCM(8*480, 1), 480, 1)
 	active, calls := gateSeq(t, false, false, false, false, false, false, false, false)
 	frames := 0
 	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewFakeSource(48000, 1, periods), active, func(pipeline.Frame) error {
@@ -301,7 +410,7 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 	// 480-sample periods: two make one 960-sample frame. Periods 0-2 are active
 	// (one full frame plus a half frame left in the accumulator), 3-4 idle, and
 	// 5-10 active again (three frames).
-	periods := tonePeriods(11, 480)
+	periods := splitPeriods(tonePCM(11*480, 1), 480, 1)
 	pattern := []bool{true, true, true, false, false, true, true, true, true, true, true}
 	cfg := config.Opus{Bitrate: 64000}
 
