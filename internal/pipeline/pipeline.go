@@ -37,9 +37,12 @@ type Frame struct {
 // period is read, and a period read while it reports false is drained but not
 // packetized or encoded. That is how a stream with no playing client costs
 // only the read: its frames would be discarded downstream anyway. A stateful
-// stage (Opus) starts from a clean state on the next active period, so the
-// first frames a new client receives carry no encoder history from before it
-// connected. A nil active means always active.
+// stage (Opus) that has seen at least one inactive period starts from a clean
+// state on the next active one, so a client connecting to an idle stream gets
+// no encoder history from before it connected. (A teardown and a new PLAY that
+// both land within one period are not seen as idle; that client continues the
+// running stream, as it did before the gate existed.) A nil active means
+// always active.
 type Stage interface {
 	Run(src audio.Source, active func() bool, emit func(Frame) error) error
 }
@@ -81,8 +84,8 @@ func (p *pcmStage) Run(src audio.Source, active func() bool, emit func(Frame) er
 			}
 			return err
 		}
-		// The packetizer keeps no state between periods, so an idle stretch needs
-		// no resume step: skipping the byte swap is the whole saving.
+		// The packetizer keeps no stream state between periods, so an idle stretch
+		// needs no resume step.
 		if active != nil && !active() {
 			continue
 		}

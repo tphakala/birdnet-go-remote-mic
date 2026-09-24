@@ -278,10 +278,10 @@ func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 }
 
 // HostCPU reads host CPU utilization by diffing /proc/stat over the caller's own
-// polling interval. Unlike Sampler it runs no goroutine: the host monitor calls
-// Read once per 10 s poll, so the figure is the average load across the full poll
-// window rather than a 2 s sub-window snapshot, and a failed read reports ok=false
-// so the monitor's sensor-gone resolve works for CPU as it does for the other
+// polling interval. The host monitor calls Read once per 10 s poll, so the figure
+// is the average load across the full poll window (CPUGauge, which serves GET
+// /system, keeps its own window instead), and a failed read reports ok=false so
+// the monitor's sensor-gone resolve works for CPU as it does for the other
 // sensors. It is owned by the single host-monitor poll goroutine, so it needs no
 // lock.
 type HostCPU struct {

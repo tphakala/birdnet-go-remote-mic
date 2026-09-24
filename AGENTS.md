@@ -87,14 +87,15 @@ Other tasks: `task test`, `task lint`, `task fmt`, `task web:test`,
   Do not call `rtsp.MarshalInterleaved` per RTP packet (it allocates); once per
   SR interval is fine. Avoid per-period allocations: the target is a Pi Zero 2 W.
 - Optimize for the unattended state. The appliance almost always runs with no
-  browser open, often with no RTSP client either. Work that exists only for the
-  web UI or management API (levels metering, sampling, formatting, JSON
-  encoding) must not run on a timer or in the capture path without a consumer:
-  gate it on a live consumer count, as `internal/levels` does (`Meter.Observe`
-  returns early and the sampler skips its tick while the hub's `subs` is zero)
-  and the encode stages do (gated on the RTSP feed's active flag), or compute it
-  lazily on request, as `sysinfo.CPUGauge` does. Background work is justified
-  only for capture, streaming, hotplug recovery, or condition monitors that
+  browser open, often with no RTSP client either. Work that exists only for a
+  consumer that may be absent (the web UI or management API: levels metering,
+  sampling, formatting, JSON encoding; an RTSP client: encoding) must not run
+  on a timer or in the capture path without that consumer: gate it on a live
+  consumer, as `internal/levels` does (`Meter.Observe` returns early and the
+  sampler skips its tick while the hub's `subs` is zero) and the encode stages
+  do (gated on the RTSP feed's active flag), or compute it lazily on request,
+  as `sysinfo.CPUGauge` does. Background work is justified only for capture,
+  streaming to a playing client, hotplug recovery, or condition monitors that
   raise alerts.
 - Recover automatically and safely. The appliance runs unattended for months,
   often out of reach, so any unexpected event (device unplugged or erroring,
@@ -228,7 +229,8 @@ thelper, and testifylint. `unused` is disabled.
 - `internal/pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM`
   (L16) and `NewOpus` (960-sample frames). `Frame.Captured` is capture time.
   `Run` takes an `active` gate (`ChanSource.Active`): with no client playing,
-  a stage drains periods without encoding, and Opus resets on resume.
+  a stage drains periods without encoding, and Opus resets its encoder when
+  play resumes after an idle period it saw.
 - `internal/rtspserver`: minimal RTSP server, one playing client per path.
   SETUP echoes client-chosen interleaved channels; PLAY returns RTP-Info.
   `writer.go` is the single writer per connection. `ChanSource` buffers only
