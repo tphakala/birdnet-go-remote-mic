@@ -262,7 +262,22 @@ test("applyLive prunes history the server ring has trimmed", () => {
   applyLive(s, notif({ id: 4 }), NOW);
   // The ring holds the last 3 ids below nextId 5: 2, 3 and 4.
   assert.deepEqual([...s.items.keys()].sort((a, b) => a - b), [2, 3, 4]);
-  assert.equal(s.dismissed.has(1), false, "dismissed is pruned in lockstep");
+  assert.equal(s.dismissed.has(1), false, "a dismissed id below the floor is pruned");
+});
+
+// Dismissed ids restored from storage before the first snapshot name entries the
+// client has not fetched yet. Pruning must not treat "not held" as "trimmed", or
+// those entries come back into the bell once the snapshot lands.
+test("pruneToRing keeps a dismissed id above the floor that has not arrived yet", () => {
+  const s = deserialize(JSON.stringify({ bootId: "boot-a", readWatermark: 0, dismissed: [7, 8] }));
+  s.capacity = 3;
+  // Live frames only (no snapshot yet): ids 9..12 push the floor to 13 - 3 = 10.
+  for (const id of [9, 10, 11, 12]) applyLive(s, notif({ id }), NOW);
+  assert.deepEqual([...s.dismissed].sort((a, b) => a - b), [], "ids 7 and 8 are below the floor now");
+  const t = deserialize(JSON.stringify({ bootId: "boot-a", readWatermark: 0, dismissed: [11] }));
+  t.capacity = 3;
+  for (const id of [9, 10, 12]) applyLive(t, notif({ id }), NOW);
+  assert.equal(t.dismissed.has(11), true, "an unfetched id above the floor keeps its dismissal");
 });
 
 test("applyLive keeps a trimmed onset whose condition is still active", () => {

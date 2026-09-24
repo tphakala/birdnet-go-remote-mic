@@ -180,7 +180,7 @@ export function applyLive(
 // without gaps, so the ring holds exactly the last `capacity` ids below nextId,
 // and anything older survives on the server only as the onset of a still-active
 // condition. The client mirrors that bound, keeping those onsets, and prunes the
-// dismissed set in lockstep so neither grows between re-syncs.
+// dismissed set by the same floor so neither grows between re-syncs.
 export function pruneToRing(state: CoreState): CoreState {
   const floor = state.nextId - state.capacity;
   let stale = false;
@@ -196,8 +196,12 @@ export function pruneToRing(state: CoreState): CoreState {
   for (const id of state.items.keys()) {
     if (id < floor && !pinned.has(id)) state.items.delete(id);
   }
+  // Prune dismissed ids by the same floor, never by "not held": before the first
+  // snapshot the items hold only live frames, while dismissed ids restored from
+  // storage may name entries not fetched yet. Dropping those would bring cleared
+  // entries back into the bell once the snapshot lands.
   for (const id of state.dismissed) {
-    if (!state.items.has(id)) state.dismissed.delete(id);
+    if (id < floor && !pinned.has(id)) state.dismissed.delete(id);
   }
   return state;
 }
