@@ -386,10 +386,13 @@ func (a *appliance) runningParams() map[string]config.Device {
 // or a failure), then reports the result. The fan-out reader runs on this
 // goroutine, locked to its OS thread so the capture read is not descheduled
 // mid-period; each stream's pipeline runs on its own goroutine so N encodes fan
-// across cores and a slow encoder cannot blow the capture period budget. When the
-// capture ends the fan-out closes the stream feeds, so every stage goroutine
-// returns, and pump waits for them before reporting so no stage outlives the
-// device's teardown.
+// across cores and a slow encoder cannot blow the capture period budget. Each
+// stage is gated on its own stream feed's active flag, so it encodes only while
+// a client plays that stream and otherwise just drains its periods (the fan-out
+// never backs up); an idle appliance pays for capture and the fan-out but not
+// for encoding. When the capture ends the fan-out closes the stream feeds, so
+// every stage goroutine returns, and pump waits for them before reporting so no
+// stage outlives the device's teardown.
 func (a *appliance) pump(rt *deviceRuntime) {
 	runtime.LockOSThread()
 	var wg sync.WaitGroup
@@ -399,10 +402,8 @@ func (a *appliance) pump(rt *deviceRuntime) {
 	var stageErr error
 	for i := range rt.streams {
 		sr := rt.streams[i]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := sr.stage.Run(sr.src, func(f pipeline.Frame) error {
+		wg.Go(func() {
+			err := sr.stage.Run(sr.src, sr.frames.Active, func(f pipeline.Frame) error {
 				if !sr.frames.Push(f) {
 					drops := sr.dropped.Add(1)
 					if drops%50 == 1 {
@@ -418,14 +419,17 @@ func (a *appliance) pump(rt *deviceRuntime) {
 			// periods, spuriously tripping the drop monitor). So end the whole device:
 			// record the fault and close the fan-out, which unblocks the reader below and
 			// drives onPumpDone to fail the device (its paths 404 until it restarts), matching
-			// the pre-fan-out contract. On shutdown a.ctx.Err() is set and the stage
-			// returns that, which is a clean stop, not a fault.
+			// the pre-fan-out contract. On shutdown a stage returns a.ctx.Err() from
+			// emit or nil once the closed fan-out ends its source (an idle stage, which
+			// never emits, only the latter); either is a clean stop, not a fault.
+			// Because a stage encodes only while a client plays, an encode fault
+			// surfaces at a client's PLAY, not at open (see retrySettle).
 			if err != nil && a.ctx.Err() == nil {
 				log.Printf("%s (%s): capture pipeline stopped: %v", rt.dev.Name, sr.stream.Path, err)
 				stageOnce.Do(func() { stageErr = err })
 				_ = rt.fanout.Close()
 			}
-		}()
+		})
 	}
 	perr := rt.fanout.Run()
 	wg.Wait()

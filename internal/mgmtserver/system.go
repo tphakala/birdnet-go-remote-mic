@@ -26,8 +26,9 @@ type NetworkInterface struct {
 
 // SystemInfo is the host's hardware facts and live metrics. The optional
 // pointer fields are nil when the underlying source is unavailable (for
-// example TempCelsius off Raspberry Pi hardware, or CPUPercent before the
-// sampler has two readings). Empty strings likewise mean "unknown".
+// example TempCelsius off Raspberry Pi hardware, or CPUPercent when the host's
+// CPU counters cannot be read or give no basis for a ratio). Empty strings
+// likewise mean "unknown".
 type SystemInfo struct {
 	Platform    string
 	OS          string

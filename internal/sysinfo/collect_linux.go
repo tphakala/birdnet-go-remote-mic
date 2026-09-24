@@ -3,75 +3,110 @@
 package sysinfo
 
 import (
-	"context"
-	"math"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 )
 
-// Sampler tracks host CPU utilization by periodically diffing /proc/stat. It is
-// safe for concurrent use: the collector reads Percent from a handler goroutine
-// while the sampler goroutine updates it.
-type Sampler struct {
-	pct     atomic.Uint64 // math.Float64bits of the latest percentage
-	hasData atomic.Bool
+// cpuGaugeMinWindow, cpuGaugeStale and cpuGaugeSample bound the window a
+// CPUGauge diffs over. Requests closer together than the minimum (two browser
+// tabs polling out of step) reuse the last figure rather than diffing over a
+// sliver of a second, whose few scheduler ticks make the percentage noisy. A
+// reading older than the stale limit (no browser open for a while) would
+// average over the idle gap, so the gauge instead samples a fresh
+// cpuGaugeSample window inside the request, as it does for the very first
+// request. A quarter second spans 25 ticks per core at the usual USER_HZ of
+// 100, so about 1% resolution on a four-core Pi Zero 2 W. The web UI polls every
+// 3 s (web/src/lib/store.ts startPolling), which sits between the minimum and
+// the stale limit, so a visible tab pays for the sample only on its first poll;
+// a background tab the browser throttles to about one poll a minute pays on
+// each.
+const (
+	cpuGaugeMinWindow = time.Second
+	cpuGaugeStale     = 30 * time.Second
+	cpuGaugeSample    = 250 * time.Millisecond
+)
 
-	// Owned solely by the sampler goroutine.
-	prevIdle  uint64
-	prevTotal uint64
+// CPUGauge reports host CPU utilization for GET /system on demand: a request
+// diffs /proc/stat against the gauge's previous reading, so it runs no
+// goroutine and costs nothing while nobody asks. The appliance usually runs with
+// no browser open, and a background sampler would read /proc/stat forever for no
+// consumer. When there is no reading from the last cpuGaugeStale, the request
+// itself samples for cpuGaugeSample, so every figure covers a window at most
+// cpuGaugeStale long that ended at most cpuGaugeMinWindow before the call. It
+// is safe for concurrent use by handler goroutines; the zero value reads the
+// real /proc/stat.
+type CPUGauge struct {
+	read func() (idle, total uint64, ok bool)
+
+	mu                  sync.Mutex
+	at                  time.Time // when prev was read; zero before the first successful read
+	prevIdle, prevTotal uint64
+	last                float64 // the last reported figure, reused inside cpuGaugeMinWindow
+	lastOK              bool
 }
 
-// NewSampler starts a background sampler that refreshes CPU utilization every
-// interval until ctx is cancelled. It primes the first /proc/stat reading so
-// the next tick can produce a value.
-func NewSampler(ctx context.Context, interval time.Duration) *Sampler {
-	s := &Sampler{}
-	if idle, total, ok := readCPUStat(); ok {
-		s.prevIdle, s.prevTotal = idle, total
-	}
-	go s.loop(ctx, interval)
-	return s
+// NewCPUGauge returns a CPUGauge reading the real /proc/stat. It reads nothing
+// until the first Percent call.
+func NewCPUGauge() *CPUGauge { return newCPUGauge(readCPUStat) }
+
+// newCPUGauge is the seam: it builds a CPUGauge over an injectable /proc/stat
+// reader so the sample, reuse, and stale paths are testable without a fixed file.
+func newCPUGauge(read func() (idle, total uint64, ok bool)) *CPUGauge {
+	return &CPUGauge{read: read}
 }
 
-func (s *Sampler) loop(ctx context.Context, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			idle, total, ok := readCPUStat()
-			if !ok {
-				continue
-			}
-			pct, valid := cpuBusyPercent(s.prevIdle, s.prevTotal, idle, total)
-			s.prevIdle, s.prevTotal = idle, total
-			if !valid {
-				continue
-			}
-			s.pct.Store(math.Float64bits(pct))
-			s.hasData.Store(true)
-		}
-	}
-}
-
-// Percent returns the latest CPU utilization percentage. ok is false on a nil
-// sampler or before two readings have been taken.
-func (s *Sampler) Percent() (pct float64, ok bool) {
-	if s == nil || !s.hasData.Load() {
+// Percent returns host CPU utilization over the window since the gauge's
+// previous reading, which all callers share. A call less than cpuGaugeMinWindow
+// after that reading returns the last figure without reading; a call with no
+// reading from the last cpuGaugeStale samples cpuGaugeSample first, holding the
+// lock meanwhile so concurrent callers wait and then reuse its figure. ok is
+// false on a nil gauge, when /proc/stat cannot be read, and when the counters
+// give no basis for a ratio (no ticks elapsed, or a counter that went
+// backwards).
+func (g *CPUGauge) Percent() (pct float64, ok bool) {
+	if g == nil {
 		return 0, false
 	}
-	return math.Float64frombits(s.pct.Load()), true
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	read := g.read
+	if read == nil {
+		read = readCPUStat
+	}
+	now := time.Now()
+	if !g.at.IsZero() && now.Sub(g.at) < cpuGaugeMinWindow {
+		return g.last, g.lastOK
+	}
+	idle, total, ok := read()
+	if !ok {
+		// Keep prev and its time: the next successful read still diffs over a real
+		// window (or samples afresh, if the failure outlasted the stale limit).
+		g.last, g.lastOK = 0, false
+		return 0, false
+	}
+	if g.at.IsZero() || now.Sub(g.at) > cpuGaugeStale {
+		// No recent reading to diff against: take this one as the start of a short
+		// window measured now, rather than report nothing or average over the gap.
+		g.prevIdle, g.prevTotal, g.at = idle, total, now
+		time.Sleep(cpuGaugeSample)
+		if idle, total, ok = read(); !ok {
+			g.last, g.lastOK = 0, false
+			return 0, false
+		}
+		now = time.Now()
+	}
+	pct, valid := cpuBusyPercent(g.prevIdle, g.prevTotal, idle, total)
+	g.prevIdle, g.prevTotal, g.at = idle, total, now
+	g.last, g.lastOK = pct, valid
+	return pct, valid
 }
 
 // readCPUStat reads and parses the aggregate line of /proc/stat.
@@ -122,14 +157,16 @@ func gatherStatic() staticFacts {
 
 // Collect gathers a full SystemInfo snapshot. dataPath is any path on the
 // filesystem whose usage should be reported (the appliance's config directory).
-// sampler may be nil, in which case CPUPercent is absent. Static host facts are
-// cached after the first call; the live fields (memory, disk, temperature, CPU
-// percent, network) are read every call. Every source is best effort: an
-// unreadable file leaves its field zero or absent rather than failing the whole
-// snapshot. It returns mgmtserver.SystemInfo directly (the shared API DTO)
+// cpu may be nil, in which case CPUPercent is absent (as it is when the gauge
+// cannot read /proc/stat or its counters give no basis for a ratio). Static
+// host facts are cached after the first call;
+// memory, disk, temperature and network are read every call, and CPU percent
+// follows the gauge's own window rules (see CPUGauge.Percent). Every source is
+// best effort: an unreadable file leaves its field zero or absent rather than
+// failing the whole snapshot. It returns mgmtserver.SystemInfo directly (the shared API DTO)
 // rather than a private struct, collapsing what would be a triple mapping into
 // one; sysinfo depends on mgmtserver, not the reverse, so there is no cycle.
-func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
+func Collect(dataPath string, cpu *CPUGauge) mgmtserver.SystemInfo {
 	staticOnce.Do(func() { staticInfo = gatherStatic() })
 	si := mgmtserver.SystemInfo{
 		Platform: staticInfo.platform,
@@ -150,7 +187,7 @@ func Collect(dataPath string, sampler *Sampler) mgmtserver.SystemInfo {
 	if c, ok := ReadTemp(); ok {
 		si.TempCelsius = &c
 	}
-	if p, ok := sampler.Percent(); ok {
+	if p, ok := cpu.Percent(); ok {
 		si.CPUPercent = &p
 	}
 	si.Network = readInterfaces()
@@ -244,10 +281,10 @@ func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 }
 
 // HostCPU reads host CPU utilization by diffing /proc/stat over the caller's own
-// polling interval. Unlike Sampler it runs no goroutine: the host monitor calls
-// Read once per 10 s poll, so the figure is the average load across the full poll
-// window rather than a 2 s sub-window snapshot, and a failed read reports ok=false
-// so the monitor's sensor-gone resolve works for CPU as it does for the other
+// polling interval. The host monitor calls Read once per 10 s poll, so the figure
+// is the average load across the full poll window (CPUGauge, which serves GET
+// /system, keeps its own window instead), and a failed read reports ok=false so
+// the monitor's sensor-gone resolve works for CPU as it does for the other
 // sensors. It is owned by the single host-monitor poll goroutine, so it needs no
 // lock.
 type HostCPU struct {

@@ -32,9 +32,15 @@ const (
 	// retrySettle is how long a device restarted by an unattended retry must keep
 	// serving before it counts as recovered: only then is its down condition
 	// cleared and the mDNS advertisement rebuilt. A device that opens and then
-	// dies right away (an EIO after open, a deterministic encoder fault) would
-	// otherwise publish a clear and a fresh onset, and rebuild the advertisement,
-	// on every attempt. Its RTSP paths serve for the whole window.
+	// dies right away (an EIO after open, a configuration the encoder or stage
+	// rejects at start) would otherwise publish a clear and a fresh onset, and
+	// rebuild the advertisement, on every attempt. Its RTSP paths serve for the
+	// whole window. The guard sees a fault in the encode itself only when a
+	// client plays during the window: a stage encodes only while a client plays
+	// (see pipeline.Stage), so with no client such a fault passes the settle and
+	// surfaces at the next PLAY. No encode path is known to fail at runtime (the
+	// frame length and output buffer are fixed and periods hold whole sample
+	// frames); if one appears, settle only after real encode work.
 	retrySettle = 30 * time.Second
 	// retryResetAfter is how long a recovered device must serve before a later
 	// failure starts the backoff over from the shortest delay. A device that keeps

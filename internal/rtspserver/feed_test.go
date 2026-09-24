@@ -21,6 +21,25 @@ func TestPushDiscardedWhileInactive(t *testing.T) {
 	}
 }
 
+// TestActiveFollowsSetActive pins the gate the pipeline stage polls: Active is
+// false until a client plays, true while it does, and false again after it
+// stops, so a stream with no client skips its encode.
+func TestActiveFollowsSetActive(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	if c.Active() {
+		t.Fatal("a new source reports Active; the stage would encode for no client")
+	}
+	c.SetActive(true)
+	if !c.Active() {
+		t.Fatal("Active = false after SetActive(true)")
+	}
+	c.SetActive(false)
+	if c.Active() {
+		t.Fatal("Active = true after SetActive(false)")
+	}
+}
+
 func TestActivateDrainsStaleFrames(t *testing.T) {
 	c := NewChanSource(4)
 	c.SetActive(true)

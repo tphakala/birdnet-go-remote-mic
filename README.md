@@ -397,8 +397,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
   management disabled the process exits once nothing serves, as above). Its
   error notification stays raised across attempts and clears once a retried
   restart has kept serving for 30 seconds, so a device that keeps failing is
-  reported once, not on every attempt; its RTSP path serves again as soon as
-  the restart opens it. A config save or a hardware change restarts it at once,
+  reported once, not on every attempt. (A stream encodes only while a client
+  plays it, so an encode error that only shows during playback is seen again
+  at each client's PLAY rather than kept raised.) Its RTSP path serves again
+  as soon as the restart opens it. A config save or a hardware change restarts it at once,
   clears the notification as soon as it opens, and starts the delays over. A
   card-index device is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are

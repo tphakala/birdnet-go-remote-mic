@@ -3,69 +3,209 @@
 package sysinfo
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
-func TestSamplerNilAndBeforeData(t *testing.T) {
-	var nilSampler *Sampler
-	if v, ok := nilSampler.Percent(); ok || v != 0 {
-		t.Errorf("nil sampler Percent = %v, %v; want 0, false", v, ok)
+// cpuStat is one scripted /proc/stat reading for the CPUGauge tests.
+type cpuStat struct {
+	idle, total uint64
+	ok          bool
+}
+
+// scriptedCPUStat returns a /proc/stat reader that yields steps in order and a
+// pointer to how many reads it served. Reading past the script fails the test:
+// every read a test causes must be one it planned for.
+func scriptedCPUStat(t *testing.T, steps ...cpuStat) (read func() (uint64, uint64, bool), reads *int) {
+	t.Helper()
+	n := 0
+	return func() (uint64, uint64, bool) {
+		if n >= len(steps) {
+			t.Errorf("unplanned /proc/stat read %d (script has %d)", n+1, len(steps))
+			return 0, 0, false
+		}
+		s := steps[n]
+		n++
+		return s.idle, s.total, s.ok
+	}, &n
+}
+
+// TestCPUGaugePercent pins the on-demand gauge's window rules end to end:
+// the first call samples a short window inside the request instead of reporting
+// nothing, a call inside the minimum window reuses the last figure without
+// reading, a call inside the stale limit diffs against the previous reading, a
+// failed read keeps both that reading and its time, and a stale reading is
+// replaced by a fresh sample rather than averaged over the gap. synctest's fake
+// clock drives both the sample and the gaps.
+func TestCPUGaugePercent(t *testing.T) {
+	t.Parallel()
+	var nilGauge *CPUGauge
+	if v, ok := nilGauge.Percent(); ok || v != 0 {
+		t.Errorf("nil gauge Percent = (%v, %v), want (0, false)", v, ok)
 	}
-	fresh := &Sampler{}
-	if v, ok := fresh.Percent(); ok || v != 0 {
-		t.Errorf("fresh sampler Percent = %v, %v; want 0, false", v, ok)
+
+	synctest.Test(t, func(t *testing.T) {
+		read, reads := scriptedCPUStat(t,
+			cpuStat{100, 200, true},     // 1: first call, start of the in-request sample
+			cpuStat{150, 400, true},     // 2: end of the sample: dTotal 200, dIdle 50 -> 75%
+			cpuStat{250, 600, true},     // 3: a poll 3 s later: dTotal 200, dIdle 100 -> 50%
+			cpuStat{0, 0, false},        // 4: a failed read
+			cpuStat{350, 1000, true},    // 5: diffs against read 3: dTotal 400, dIdle 100 -> 75%
+			cpuStat{0, 0, false},        // 6: another failed read
+			cpuStat{1350, 2000, true},   // 7: stale (time kept at read 5): sample start
+			cpuStat{1400, 2400, true},   // 8: sample end: dTotal 400, dIdle 50 -> 87.5%
+			cpuStat{1500, 2600, true},   // 9: exactly cpuGaugeStale later, still fresh: dTotal 200, dIdle 100 -> 50%
+			cpuStat{9000, 9100, true},   // 10: past the stale limit: sample start
+			cpuStat{9150, 9300, true},   // 11: sample end: dTotal 200, dIdle 150 -> 25%
+			cpuStat{9100, 9500, true},   // 12: idle counter went backwards: no basis
+			cpuStat{9200, 9900, true},   // 13: diffs against read 12: dTotal 400, dIdle 100 -> 75%
+			cpuStat{20000, 21000, true}, // 14: past the stale limit: sample start
+			cpuStat{0, 0, false},        // 15: the sample's second read fails
+		)
+		g := newCPUGauge(read)
+		want := func(step string, wantPct float64, wantOK bool, wantReads int) {
+			t.Helper()
+			pct, ok := g.Percent()
+			if ok != wantOK || (ok && pct != wantPct) {
+				t.Fatalf("%s: Percent = (%v, %v), want (%v, %v)", step, pct, ok, wantPct, wantOK)
+			}
+			if *reads != wantReads {
+				t.Fatalf("%s: %d /proc/stat reads so far, want %d", step, *reads, wantReads)
+			}
+		}
+
+		want("first call samples in the request", 75, true, 2)
+		time.Sleep(cpuGaugeMinWindow / 10)
+		want("a second tab inside the minimum window reuses the figure", 75, true, 2)
+		time.Sleep(3 * cpuGaugeMinWindow)
+		want("a poll inside the stale limit diffs against the last reading", 50, true, 3)
+		time.Sleep(2 * cpuGaugeMinWindow)
+		want("a failed read reports nothing", 0, false, 4)
+		time.Sleep(2 * cpuGaugeMinWindow)
+		want("the next success still diffs against the reading before the failure", 75, true, 5)
+
+		// The failure must keep the reading's time too: 20 s later a read fails,
+		// and 15 s after that the reading (not the failure) is 35 s old, past the
+		// stale limit, so the gauge samples afresh instead of diffing over the gap.
+		time.Sleep(cpuGaugeStale - 10*time.Second)
+		want("a later failed read reports nothing", 0, false, 6)
+		time.Sleep(15 * time.Second)
+		want("staleness is measured from the last reading, not the failure", 87.5, true, 8)
+
+		time.Sleep(cpuGaugeStale)
+		want("a reading exactly cpuGaugeStale old is still diffed", 50, true, 9)
+		time.Sleep(cpuGaugeStale + cpuGaugeMinWindow)
+		want("a stale reading is replaced by a fresh sample, not averaged over the gap", 25, true, 11)
+		time.Sleep(3 * cpuGaugeMinWindow)
+		want("counters with no basis for a ratio report nothing", 0, false, 12)
+		time.Sleep(cpuGaugeMinWindow / 10)
+		want("inside the minimum window the no-basis result is reused, not re-read", 0, false, 12)
+		time.Sleep(3 * cpuGaugeMinWindow)
+		want("the reading after a no-basis one diffs against it", 75, true, 13)
+
+		// A stale sample whose second read fails must not leave the old figure to
+		// be reused: a caller waiting on the lock would take it as a fresh one.
+		time.Sleep(cpuGaugeStale + cpuGaugeMinWindow)
+		want("a sample whose second read fails reports nothing", 0, false, 15)
+		time.Sleep(cpuGaugeMinWindow / 10)
+		want("a caller right after the failed sample reuses absent, not the stale 75%", 0, false, 15)
+	})
+}
+
+// TestCPUGaugeConcurrent drives Percent from several goroutines at once, as
+// several browser tabs do. Under -race it proves the gauge's state is guarded;
+// the read count proves the first caller's in-request sample serves the others
+// instead of each taking its own. It runs on the real clock (one 250 ms sample)
+// rather than in a synctest bubble: callers waiting on the gauge's mutex are not
+// durably blocked, so the bubble's fake clock could never advance past the
+// sample's sleep.
+func TestCPUGaugeConcurrent(t *testing.T) {
+	t.Parallel()
+	read, reads := scriptedCPUStat(t, cpuStat{100, 200, true}, cpuStat{150, 300, true}) // 50%
+	g := newCPUGauge(read)
+	const callers = 8
+	results := make(chan float64, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() {
+			pct, ok := g.Percent()
+			if !ok {
+				t.Error("a concurrent Percent reported no figure")
+			}
+			results <- pct
+		})
+	}
+	wg.Wait()
+	close(results)
+	for pct := range results {
+		if pct != 50 {
+			t.Errorf("concurrent Percent = %v, want 50 (the one shared sample)", pct)
+		}
+	}
+	// Reading reads after wg.Wait is ordered after every Percent call.
+	if *reads != 2 {
+		t.Errorf("%d concurrent callers caused %d /proc/stat reads, want 2 (one shared sample)", callers, *reads)
 	}
 }
 
-func TestSamplerProducesValueAndStopsOnCancel(t *testing.T) {
-	baseGoroutines := runtime.NumGoroutine()
-	ctx, cancel := context.WithCancel(context.Background())
-	s := NewSampler(ctx, 2*time.Millisecond)
-
-	// Poll until the loop has taken its second /proc/stat reading and published
-	// a value (hasData). System load is irrelevant: an idle host yields 0%, ok.
-	deadline := time.Now().Add(2 * time.Second)
-	var (
-		v  float64
-		ok bool
-	)
-	for time.Now().Before(deadline) {
-		if v, ok = s.Percent(); ok {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+// TestCPUGaugeRealClock pins the production constructor and the zero value
+// against the real /proc/stat on the real clock: each must be a usable gauge
+// that actually reads the file, since a nil constructor result or a zero value
+// that cannot read would each leave GET /system without cpuPercent. The figure
+// itself is only range-checked when one comes back: a CPU going offline during
+// the 250 ms sample, or idle plus iowait dropping, legitimately reports no basis.
+func TestCPUGaugeRealClock(t *testing.T) {
+	t.Parallel()
+	var zero CPUGauge
+	for name, g := range map[string]*CPUGauge{"NewCPUGauge": NewCPUGauge(), "zero value": &zero} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if g == nil {
+				t.Fatal("gauge is nil, want a usable gauge")
+			}
+			v, ok := g.Percent()
+			if ok && (v < 0 || v > 100) {
+				t.Errorf("Percent = %v, want a figure in [0,100]", v)
+			}
+			// Only a successful /proc/stat read records a reading time; this goroutine
+			// is the gauge's only user, so reading it without the lock is safe.
+			if g.at.IsZero() {
+				t.Error("no successful /proc/stat read recorded, want the gauge to read the real file")
+			}
+		})
 	}
+}
+
+// TestReadCPUStatReal pins that the real /proc/stat parses, the one part of the
+// gauge the scripted tests cannot reach.
+func TestReadCPUStatReal(t *testing.T) {
+	t.Parallel()
+	idle, total, ok := readCPUStat()
 	if !ok {
-		t.Fatal("sampler never produced a value after two readings")
+		t.Fatal("readCPUStat could not read or parse /proc/stat")
 	}
-	if v < 0 || v > 100 {
-		t.Errorf("cpu percent = %v, out of [0,100]", v)
+	if total == 0 || idle > total {
+		t.Errorf("readCPUStat = (idle %d, total %d), want 0 < total and idle <= total", idle, total)
 	}
+}
 
-	// Cancelling ctx stops the loop goroutine; a later read stays safe and keeps
-	// the last published value.
-	cancel()
-	if _, ok := s.Percent(); !ok {
-		t.Error("Percent after cancel lost its last value")
-	}
-	// The loop goroutine must actually exit: poll for the count to settle back
-	// to the pre-sampler baseline (a small tolerance absorbs runtime churn).
-	deadline = time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= baseGoroutines+1 {
-			break
+// TestCollectReportsCPU pins that Collect reports the gauge's figure, so the
+// on-demand gauge actually reaches GET /system.
+func TestCollectReportsCPU(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		read, _ := scriptedCPUStat(t, cpuStat{100, 200, true}, cpuStat{150, 400, true}) // 75%
+		si := Collect(dir, newCPUGauge(read))
+		if si.CPUPercent == nil || *si.CPUPercent != 75 {
+			t.Fatalf("Collect CPUPercent = %v, want 75", si.CPUPercent)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if n := runtime.NumGoroutine(); n > baseGoroutines+1 {
-		t.Errorf("sampler goroutine did not exit after cancel: %d goroutines, baseline %d", n, baseGoroutines)
-	}
+	})
 }
 
 func TestCollectSmoke(t *testing.T) {
@@ -80,9 +220,9 @@ func TestCollectSmoke(t *testing.T) {
 	if si.MemTotal <= 0 {
 		t.Errorf("MemTotal = %d, want > 0", si.MemTotal)
 	}
-	// A nil sampler must leave CPUPercent absent, not panic.
+	// A nil gauge must leave CPUPercent absent, not panic.
 	if si.CPUPercent != nil {
-		t.Errorf("CPUPercent = %v with nil sampler, want nil", *si.CPUPercent)
+		t.Errorf("CPUPercent = %v with nil gauge, want nil", *si.CPUPercent)
 	}
 }
 

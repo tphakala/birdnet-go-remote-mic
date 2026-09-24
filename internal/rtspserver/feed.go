@@ -71,6 +71,12 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 	}
 }
 
+// Active reports whether a client is playing, so frames pushed now are queued
+// for it (buffer space permitting) rather than discarded. The pipeline stage
+// polls it once per period and skips encoding while it is false (see
+// pipeline.Stage); it is one atomic load.
+func (c *ChanSource) Active() bool { return c.active.Load() }
+
 // SetActive toggles delivery. Activation first drains any frames left over
 // from a previous session.
 func (c *ChanSource) SetActive(active bool) {

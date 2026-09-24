@@ -106,9 +106,11 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	}
 
 	// Push only after PLAY: delivery is gated on activation, and the fake
-	// source is finite, so pumping earlier would discard every period.
+	// source is finite, so pumping earlier would discard every period. The stage
+	// is gated on the feed exactly as the appliance wires it, so this also proves
+	// PLAY opens the encode gate.
 	go func() {
-		_ = pipeline.NewPCM(1).Run(fakeSrc, func(f pipeline.Frame) error {
+		_ = pipeline.NewPCM(1).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
 			frames.Push(f)
 			return nil
 		})
@@ -192,9 +194,10 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	}
 
 	// Push only after PLAY: delivery is gated on activation, and the fake
-	// source is finite, so pumping earlier would discard every period.
+	// source is finite, so pumping earlier would discard every period. The stage
+	// is gated on the feed exactly as the appliance wires it.
 	go func() {
-		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, func(f pipeline.Frame) error {
+		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
 			frames.Push(f)
 			return nil
 		})

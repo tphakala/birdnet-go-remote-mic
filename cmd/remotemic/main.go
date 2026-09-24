@@ -476,13 +476,13 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
 	mgmtServing := false
-	// Sample host CPU utilization for GET /system, but only while the management API
-	// is enabled: it is the sole consumer now that the host monitor diffs /proc/stat
-	// over its own poll window (hostReader.cpu) instead of reading this 2 s snapshot.
-	// One /proc/stat read every two seconds; Collect tolerates a nil sampler and
-	// then omits CPUPercent, so a disabled API pays nothing for it.
+	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
+	// only when a request asks, so an appliance with no browser open does no
+	// sampling work at all. It exists only while the management API is enabled (its
+	// sole consumer; the host monitor diffs /proc/stat over its own poll window in
+	// hostReader.cpu). Collect tolerates a nil gauge and omits CPUPercent.
 	if mgmtEnabled {
-		prov.sampler = sysinfo.NewSampler(ctx, 2*time.Second)
+		prov.cpu = sysinfo.NewCPUGauge()
 		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard)
 	}
 	defer func() {

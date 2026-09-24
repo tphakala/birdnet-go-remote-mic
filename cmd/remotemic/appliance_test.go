@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -208,6 +209,96 @@ func TestApplianceReconcileStartsDevice(t *testing.T) {
 	}
 	if !app.srv.HasTrack("/a") {
 		t.Fatal("start did not register the RTSP track")
+	}
+}
+
+// recordedGate is the active gate the pump handed one stream's stage.
+type recordedGate struct {
+	path   string
+	active func() bool
+}
+
+// gateRecorder is a pipeline.Stage that hands the active gate it was given to
+// the test, tagged with its stream's path, then drains its source until the
+// device stops.
+type gateRecorder struct {
+	path  string
+	gates chan<- recordedGate
+}
+
+func (g gateRecorder) Run(src audio.Source, active func() bool, _ func(pipeline.Frame) error) error {
+	g.gates <- recordedGate{path: g.path, active: active}
+	for {
+		if _, err := src.Read(); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// TestAppliancePumpGatesStageOnFeed pins the production wiring of the encode
+// gate: the pump must hand each stage its own stream feed's active flag, so a
+// stream encodes exactly while a client plays it. A nil gate would bring back
+// encoding for no client, a gate that never opens would stream nothing to a
+// playing client, and a sibling's gate would encode one stream on another's
+// client; the stage-level tests cannot see any of these, because they pass the
+// gate themselves. The device has two streams so the last case is visible.
+func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	dev := testDevice("a", "hw:0", "/a", 48000)
+	dev.Streams = append(dev.Streams, config.Stream{Path: "/a2", Mode: config.ModePCM, Channels: []int{1}})
+	// One slot per stream, so no stage blocks handing over its gate.
+	gates := make(chan recordedGate, len(dev.Streams))
+	open := fakeOpener(log)
+	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+		rt, err := open(dev, hub)
+		if err != nil {
+			return nil, err
+		}
+		for _, sr := range rt.streams {
+			sr.stage = gateRecorder{path: sr.stream.Path, gates: gates}
+		}
+		return rt, nil
+	}
+
+	app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+	got := make(map[string]func() bool)
+	for range dev.Streams {
+		select {
+		case r := <-gates:
+			if r.active == nil {
+				t.Fatalf("the pump passed stream %s a nil gate: its stage would encode with no client playing", r.path)
+			}
+			got[r.path] = r.active
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the pump ran %d of %d stream stages", len(got), len(dev.Streams))
+		}
+	}
+	feeds := make(map[string]*rtspserver.ChanSource)
+	for _, sr := range app.devices["a"].streams {
+		feeds[sr.stream.Path] = sr.frames
+	}
+	// check asserts every stream's gate against the one path that should be open
+	// ("" for none).
+	check := func(when, open string) {
+		t.Helper()
+		for path, active := range got {
+			if want := path == open; active() != want {
+				t.Errorf("%s: gate of %s = %v, want %v", when, path, active(), want)
+			}
+		}
+	}
+	check("before any client plays", "")
+	for _, path := range []string{"/a", "/a2"} {
+		feeds[path].SetActive(true)
+		check("while only "+path+" plays", path)
+		feeds[path].SetActive(false)
+		check("after "+path+" stops", "")
 	}
 }
 

@@ -30,7 +30,7 @@ func TestPCMStageRoundTrip(t *testing.T) {
 
 	var got []byte
 	var totalDur uint32
-	err := pipeline.NewPCM(ch).Run(src, func(f pipeline.Frame) error {
+	err := pipeline.NewPCM(ch).Run(src, nil, func(f pipeline.Frame) error {
 		le := make([]byte, len(f.Payload))
 		for i := 0; i+1 < len(f.Payload); i += 2 {
 			binary.LittleEndian.PutUint16(le[i:i+2], binary.BigEndian.Uint16(f.Payload[i:i+2]))
@@ -58,7 +58,7 @@ func TestPCMStagePayloadCap(t *testing.T) {
 	src := audio.NewFakeSource(rate, ch, [][]byte{period})
 
 	count := 0
-	err := pipeline.NewPCM(ch).Run(src, func(f pipeline.Frame) error {
+	err := pipeline.NewPCM(ch).Run(src, nil, func(f pipeline.Frame) error {
 		count++
 		if len(f.Payload)%frameBytes != 0 {
 			t.Errorf("payload len %d not frame-aligned", len(f.Payload))
@@ -96,7 +96,7 @@ func TestOpusStageFraming(t *testing.T) {
 	}
 	pcm := make([]int16, opusFrameSamplesTest)
 	frames := 0
-	err = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(src, func(f pipeline.Frame) error {
+	err = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(src, nil, func(f pipeline.Frame) error {
 		frames++
 		if f.Duration != 960 {
 			t.Errorf("frame %d duration = %d, want 960", frames, f.Duration)
@@ -145,7 +145,7 @@ func TestOpusStageStereo(t *testing.T) {
 	pcm := make([]int16, opusFrameSamplesTest*ch)
 	frames := 0
 	var sumL2, sumR2 float64 // decoded per-channel energy (left vs right)
-	err = pipeline.NewOpus(config.Opus{Bitrate: 96000}).Run(src, func(f pipeline.Frame) error {
+	err = pipeline.NewOpus(config.Opus{Bitrate: 96000}).Run(src, nil, func(f pipeline.Frame) error {
 		frames++
 		if f.Duration != 960 {
 			t.Errorf("frame %d duration = %d, want 960", frames, f.Duration)
@@ -186,7 +186,7 @@ func TestOpusStageRejectsTooManyChannels(t *testing.T) {
 	// The config layer already forbids more than two Opus channels; the stage
 	// guards independently, so a 3-channel source is rejected, not encoded.
 	src := audio.NewFakeSource(48000, 3, [][]byte{make([]byte, 960*3*2)})
-	err := pipeline.NewOpus(config.Opus{Bitrate: 96000}).Run(src, func(pipeline.Frame) error { return nil })
+	err := pipeline.NewOpus(config.Opus{Bitrate: 96000}).Run(src, nil, func(pipeline.Frame) error { return nil })
 	if err == nil {
 		t.Fatal("Run accepted a 3-channel source, want an error")
 	}
@@ -198,6 +198,241 @@ func TestOpusStageRejectsTooManyChannels(t *testing.T) {
 }
 
 const opusFrameSamplesTest = 960
+
+// gateSeq returns an active gate that answers from pattern, one entry per call,
+// and a pointer to the call count. A call past the pattern fails the test: the
+// Stage contract is exactly one gate call per period read.
+func gateSeq(t *testing.T, pattern ...bool) (active func() bool, calls *int) {
+	t.Helper()
+	n := 0
+	return func() bool {
+		if n >= len(pattern) {
+			t.Errorf("active gate called %d times, want one call per period (%d)", n+1, len(pattern))
+			return false
+		}
+		v := pattern[n]
+		n++
+		return v
+	}, &n
+}
+
+// tonePCM returns the given number of frames of interleaved S16LE PCM at 48
+// kHz with ch channels, a different sweeping tone per channel, so a dropped,
+// shifted or swapped sample changes the encoded packets.
+func tonePCM(frames, ch int) []byte {
+	b := make([]byte, frames*ch*2)
+	for i := range frames {
+		n := float64(i)
+		for c := range ch {
+			v := int16(7000 * math.Sin(2*math.Pi*(300+150*float64(c)+n/40)*n/48000))
+			binary.LittleEndian.PutUint16(b[(i*ch+c)*2:], uint16(v))
+		}
+	}
+	return b
+}
+
+// splitPeriods cuts pcm (ch channels) into periods holding the given number of
+// frames each; a short tail becomes the last period.
+func splitPeriods(pcm []byte, frames, ch int) [][]byte {
+	size := frames * ch * 2
+	var out [][]byte
+	for len(pcm) > 0 {
+		n := min(size, len(pcm))
+		out = append(out, pcm[:n])
+		pcm = pcm[n:]
+	}
+	return out
+}
+
+// referenceOpus encodes pcm with a freshly built encoder in consecutive whole
+// 960-frame chunks, dropping a partial tail, exactly as a stage fed the same
+// audio must.
+func referenceOpus(t *testing.T, cfg config.Opus, pcm []byte, ch int) [][]byte {
+	t.Helper()
+	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: cfg.EffectiveBitrate(ch)})
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	frame := make([]int16, opusFrameSamplesTest*ch)
+	buf := make([]byte, 4000)
+	chunk := opusFrameSamplesTest * ch * 2
+	out := make([][]byte, 0, len(pcm)/chunk)
+	for ; len(pcm) >= chunk; pcm = pcm[chunk:] {
+		for i := range frame {
+			frame[i] = int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+		}
+		n, err := enc.Encode(frame, buf)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		out = append(out, append([]byte(nil), buf[:n]...))
+	}
+	return out
+}
+
+// runOpus runs an Opus stage over periods and returns copies of the payloads.
+func runOpus(t *testing.T, cfg config.Opus, periods [][]byte, ch int, active func() bool) [][]byte {
+	t.Helper()
+	var out [][]byte
+	err := pipeline.NewOpus(cfg).Run(audio.NewFakeSource(48000, ch, periods), active, func(f pipeline.Frame) error {
+		out = append(out, append([]byte(nil), f.Payload...))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return out
+}
+
+// TestOpusStageArbitraryPeriodSizes pins the accumulate loop on the periods
+// real capture delivers, whose size the driver negotiates: a period can end
+// mid-frame, carry the rest of one frame and the start of the next, or hold
+// several whole frames. For each size the stage must emit exactly what a fresh
+// encoder emits for the same audio cut into 960-frame chunks.
+func TestOpusStageArbitraryPeriodSizes(t *testing.T) {
+	t.Parallel()
+	cfg := config.Opus{Bitrate: 64000}
+	for _, ch := range []int{1, 2} {
+		for _, frames := range []int{441, 1024, 1500, 2881} {
+			pcm := tonePCM(6*frames, ch)
+			want := referenceOpus(t, cfg, pcm, ch)
+			got := runOpus(t, cfg, splitPeriods(pcm, frames, ch), ch, nil)
+			if len(got) != len(want) {
+				t.Errorf("%d ch, %d-frame periods: emitted %d frames, want %d", ch, frames, len(got), len(want))
+				continue
+			}
+			for i := range want {
+				if !bytes.Equal(got[i], want[i]) {
+					t.Errorf("%d ch, %d-frame periods: frame %d differs from a fresh encoder's", ch, frames, i)
+					break
+				}
+			}
+		}
+	}
+}
+
+// TestOpusStageStartsIdleThenPlays pins the usual path for a real client: the
+// stream starts with no client, so the first periods are drained unencoded, and
+// once a client plays the stage emits exactly what a fresh encoder emits for the
+// audio from that point on. Stereo, with periods that straddle frame
+// boundaries, so the channel interleave survives the idle stretch too.
+func TestOpusStageStartsIdleThenPlays(t *testing.T) {
+	t.Parallel()
+	const ch, frames = 2, 1024
+	cfg := config.Opus{Bitrate: 96000}
+	periods := splitPeriods(tonePCM(8*frames, ch), frames, ch)
+	active, calls := gateSeq(t, false, false, true, true, true, true, true, true)
+
+	got := runOpus(t, cfg, periods, ch, active)
+	if *calls != len(periods) {
+		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+	}
+	var played []byte
+	for _, p := range periods[2:] {
+		played = append(played, p...)
+	}
+	want := referenceOpus(t, cfg, played, ch)
+	if len(got) != len(want) {
+		t.Fatalf("emitted %d frames, want %d (only the audio after the client started)", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("frame %d after the client started differs from a fresh encoder's", i)
+		}
+	}
+}
+
+// TestPCMStageSkipsInactivePeriods pins the idle gate on the L16 path: a period
+// read while the gate is closed is drained (the source still reaches EOF) but
+// emits nothing, and the periods read while it is open pass through intact.
+func TestPCMStageSkipsInactivePeriods(t *testing.T) {
+	t.Parallel()
+	const rate, ch = 48000, 1
+	periods := make([][]byte, 4)
+	for k := range periods {
+		b := make([]byte, 960*2)
+		for i := range 960 {
+			binary.LittleEndian.PutUint16(b[i*2:], uint16(int16(k*1000+i)))
+		}
+		periods[k] = b
+	}
+	active, calls := gateSeq(t, false, true, false, true)
+
+	var got []byte
+	err := pipeline.NewPCM(ch).Run(audio.NewFakeSource(rate, ch, periods), active, func(f pipeline.Frame) error {
+		for i := 0; i+1 < len(f.Payload); i += 2 {
+			got = binary.LittleEndian.AppendUint16(got, binary.BigEndian.Uint16(f.Payload[i:i+2]))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *calls != len(periods) {
+		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+	}
+	want := append(append([]byte{}, periods[1]...), periods[3]...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("emitted %d bytes, want exactly the two active periods (%d bytes)", len(got), len(want))
+	}
+}
+
+// TestOpusStageIdleEmitsNothing pins that a stream nobody plays encodes nothing:
+// with the gate closed throughout, every period is drained and no frame is
+// emitted.
+func TestOpusStageIdleEmitsNothing(t *testing.T) {
+	t.Parallel()
+	periods := splitPeriods(tonePCM(8*480, 1), 480, 1)
+	active, calls := gateSeq(t, false, false, false, false, false, false, false, false)
+	frames := 0
+	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewFakeSource(48000, 1, periods), active, func(pipeline.Frame) error {
+		frames++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if frames != 0 {
+		t.Errorf("emitted %d frames with the gate closed, want 0", frames)
+	}
+	if *calls != len(periods) {
+		t.Errorf("active gate called %d times, want %d (every period drained)", *calls, len(periods))
+	}
+}
+
+// TestOpusStageResumesWithFreshEncoder pins the resume contract: after an idle
+// stretch, the stage emits exactly what a freshly built encoder emits for the
+// same post-activation PCM. That fails if the encoder is not reset (its history
+// from before the gap shapes the packets) or if the partial frame accumulated
+// before the gap is kept (the frame boundaries shift).
+func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
+	t.Parallel()
+	// 480-sample periods: two make one 960-sample frame. Periods 0-2 are active
+	// (one full frame plus a half frame left in the accumulator), 3-4 idle, and
+	// 5-10 active again (three frames).
+	periods := splitPeriods(tonePCM(11*480, 1), 480, 1)
+	pattern := []bool{true, true, true, false, false, true, true, true, true, true, true}
+	cfg := config.Opus{Bitrate: 64000}
+
+	active, _ := gateSeq(t, pattern...)
+	got := runOpus(t, cfg, periods, 1, active)
+	if len(got) != 4 {
+		t.Fatalf("emitted %d frames, want 4 (1 before the gap, 3 after)", len(got))
+	}
+	var resumed []byte
+	for _, p := range periods[5:] {
+		resumed = append(resumed, p...)
+	}
+	want := referenceOpus(t, cfg, resumed, 1)
+	if len(want) != 3 {
+		t.Fatalf("reference run emitted %d frames, want 3", len(want))
+	}
+	for i, w := range want {
+		if !bytes.Equal(got[1+i], w) {
+			t.Errorf("frame %d after resume differs from a fresh encoder's frame %d", i+1, i+1)
+		}
+	}
+}
 
 func TestSDPSpec(t *testing.T) {
 	pcm := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "m", 256000, 1)
