@@ -269,15 +269,26 @@ test("applyLive prunes history the server ring has trimmed", () => {
 // client has not fetched yet. Pruning must not treat "not held" as "trimmed", or
 // those entries come back into the bell once the snapshot lands.
 test("pruneToRing keeps a dismissed id above the floor that has not arrived yet", () => {
-  const s = deserialize(JSON.stringify({ bootId: "boot-a", readWatermark: 0, dismissed: [7, 8] }));
-  s.capacity = 3;
-  // Live frames only (no snapshot yet): ids 9..12 push the floor to 13 - 3 = 10.
-  for (const id of [9, 10, 11, 12]) applyLive(s, notif({ id }), NOW);
-  assert.deepEqual([...s.dismissed].sort((a, b) => a - b), [], "ids 7 and 8 are below the floor now");
-  const t = deserialize(JSON.stringify({ bootId: "boot-a", readWatermark: 0, dismissed: [11] }));
-  t.capacity = 3;
-  for (const id of [9, 10, 12]) applyLive(t, notif({ id }), NOW);
-  assert.equal(t.dismissed.has(11), true, "an unfetched id above the floor keeps its dismissal");
+  // Restored before the first snapshot: 8 is below the floor-to-be, 11 at it,
+  // 12 above it. The live frames for 11 and 12 were dropped in transit (a gap,
+  // which also schedules a re-sync that has not landed yet).
+  const s = deserialize(JSON.stringify({ bootId: "boot-a", readWatermark: 0, dismissed: [8, 11, 12] }));
+  s.capacity = 5;
+  // Live 6..15 leave nextId 16, so the floor is 16 - 5 = 11.
+  for (let id = 6; id <= 15; id++) {
+    if (id !== 11 && id !== 12) applyLive(s, notif({ id }), NOW);
+  }
+  assert.deepEqual([...s.dismissed].sort((a, b) => a - b), [11, 12], "8 is pruned; the floor id and above keep their dismissal");
+});
+
+test("pruneToRing keeps the dismissal of a pinned onset below the floor", () => {
+  const s = initialState();
+  const onset = notif({ id: 1, kind: "onset", key: "dev:mic", severity: "error" });
+  applySnapshot(s, snap({ capacity: 2, notifications: [onset, notif({ id: 2 })] }), NOW);
+  s.dismissed.add(1);
+  applyLive(s, notif({ id: 3 }), NOW);
+  applyLive(s, notif({ id: 4 }), NOW);
+  assert.equal(s.dismissed.has(1), true, "the onset is still held, so its dismissal stays");
 });
 
 test("applyLive keeps a trimmed onset whose condition is still active", () => {

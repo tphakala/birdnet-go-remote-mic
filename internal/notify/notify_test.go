@@ -85,7 +85,26 @@ func TestPublishStampsUptime(t *testing.T) {
 		t.Errorf("snapshot uptimeMs = %d, want 120000", snap.UptimeMs)
 	}
 	if !snap.ServerTime.Equal(now) {
-		t.Errorf("snapshot serverTime = %v, want %v (same read as uptime)", snap.ServerTime, now)
+		t.Errorf("snapshot serverTime = %v, want %v", snap.ServerTime, now)
+	}
+}
+
+// TestSnapshotReadsClockOnce uses a clock that advances on every call, so a
+// Snapshot that read it twice (once for serverTime, once for uptime) would
+// report a pair that disagrees. The pair must describe one instant: serverTime
+// minus the start reading equals uptimeMs.
+func TestSnapshotReadsClockOnce(t *testing.T) {
+	t.Parallel()
+	base := time.Unix(1_700_000_000, 0).UTC()
+	now := base
+	c := NewCenter(WithClock(func() time.Time {
+		read := now
+		now = now.Add(7 * time.Millisecond)
+		return read
+	}))
+	snap := c.Snapshot()
+	if got := snap.ServerTime.Sub(base).Milliseconds(); got != snap.UptimeMs {
+		t.Errorf("serverTime is %d ms after start but uptimeMs = %d; want one clock read", got, snap.UptimeMs)
 	}
 }
 
@@ -250,7 +269,7 @@ func TestDefaultCapacityKeepsNewest(t *testing.T) {
 	// The OpenAPI /notifications description quotes the default ring depth, so a
 	// change here must move it too. The web UI reads it from Snapshot.Capacity.
 	if defaultCapacity != 500 {
-		t.Fatalf("defaultCapacity = %d, want 500; update the /notifications description in api/openapi.yaml with it", defaultCapacity)
+		t.Fatalf("defaultCapacity = %d, want 500; update the /notifications description in api/openapi.yaml, DEFAULT_CAPACITY in web/src/lib/notifications-core.ts and the size estimate in internal/mgmtserver/gzip.go with it", defaultCapacity)
 	}
 	c := NewCenter()
 	for range defaultCapacity + 1 {

@@ -1219,8 +1219,9 @@ components:
           type: string
           format: date-time
           description: >
-            The appliance's wall-clock time when the snapshot was taken, so a
-            client can correct relative timestamps for clock skew.
+            The appliance's wall-clock time when the snapshot was taken. It is
+            informational: an appliance without a real-time clock can step it,
+            so place entries in time from uptimeMs rather than from wall times.
           examples: ["2026-09-12T11:03:00Z"]
         uptimeMs:
           type: integer

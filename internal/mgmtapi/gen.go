@@ -753,7 +753,7 @@ type NotificationSnapshot struct {
 	// Notifications History and active conditions, ascending by id.
 	Notifications []Notification `json:"notifications"`
 
-	// ServerTime The appliance's wall-clock time when the snapshot was taken, so a client can correct relative timestamps for clock skew.
+	// ServerTime The appliance's wall-clock time when the snapshot was taken. It is informational: an appliance without a real-time clock can step it, so place entries in time from uptimeMs rather than from wall times.
 	//
 	//
 	// Examples: 2026-09-12T11:03:00Z

@@ -181,7 +181,9 @@ export function applyLive(
 // without gaps, so the ring holds exactly the last `capacity` ids below nextId,
 // and anything older survives on the server only as the onset of a still-active
 // condition. The client mirrors that bound, keeping those onsets, and prunes the
-// dismissed set by the same floor so neither grows between re-syncs.
+// dismissed set by the same floor so neither grows between re-syncs. The work
+// runs only once an item falls below the floor; until then a dismissed id below
+// it waits for that moment or for the next snapshot.
 export function pruneToRing(state: CoreState): CoreState {
   const floor = state.nextId - state.capacity;
   let stale = false;

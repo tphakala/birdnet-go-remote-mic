@@ -17,7 +17,7 @@ import (
 // endpoints gain little from it. BestSpeed keeps the CPU cost low on a Pi Zero;
 // JSON this repetitive compresses well even at that level.
 //
-// A flate compressor allocates about 800 KB of tables whatever the level, so
+// A flate compressor allocates about 800 KB of tables even at BestSpeed, so
 // writers are pooled per handler and Reset onto each response rather than
 // built per request. Reset also clears the error a previous response left
 // behind when its client went away mid-body.
@@ -51,6 +51,9 @@ func gzipGET(path string, next http.Handler) http.Handler {
 		// away mid-body; there is nobody left to report it to, and the next
 		// Reset clears it.
 		_ = gz.Close()
+		// Detach from the finished response before pooling, so an idle pool does
+		// not keep it (and its request, bearer token included) reachable.
+		gz.Reset(io.Discard)
 		pool.Put(gz)
 	})
 }

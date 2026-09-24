@@ -24,7 +24,7 @@ export class NotificationCenter {
   private activeEl!: HTMLElement;
   private listEl!: HTMLElement;
   private emptyEl!: HTMLElement;
-  // "Showing 50 of N" beside the Events link, shown only when history is capped,
+  // "Showing 50 of N events" beside the Events link, shown only when history is capped,
   // so a badge counting more unread entries than the list shows is explained.
   private countEl!: HTMLElement;
   private isOpen = false;

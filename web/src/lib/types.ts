@@ -329,7 +329,7 @@ export type NotificationKind = "event" | "onset" | "clear";
 // `notification` SSE event). id is a monotonic per-boot integer; key is present
 // on onset and clear entries and absent on discrete events; source names the
 // subject (device name, track path, remote address) for a chip. uptimeMs is the
-// server's monotonic process uptime at publish; unlike the wall-clock time, a
+// notification center's monotonic uptime at publish; unlike the wall-clock time, a
 // server clock step does not move it.
 export interface Notification {
   id: number;

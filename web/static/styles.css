@@ -2314,7 +2314,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   padding: 8px 12px;
 }
 
-/* "Showing 50 of N" when the popover caps its history. */
+/* "Showing 50 of N events" when the popover caps its history. */
 .notif-panel-count {
   font-size: 12px;
   color: var(--text-muted);
@@ -2730,8 +2730,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   padding-top: 10px;
 }
 
-/* A lone switch with nothing beside it; min-height lifts the 20px track to the
-   24px target size, as .device-toggle does. */
+/* A switch outside any form row; min-height lifts the 20px track to the 24px
+   target size, as .device-toggle does. */
 .ev-shortcut-toggle {
   min-height: 24px;
 }

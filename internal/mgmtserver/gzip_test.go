@@ -182,6 +182,32 @@ func TestNotificationsHeadMatchesGet(t *testing.T) {
 	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
 		t.Errorf("HEAD Vary = %q, want it to name Accept-Encoding", got)
 	}
+	// The headers above are set before the handler runs, so they alone would
+	// also pass on an error answer; HEAD must reach the snapshot handler.
+	if rec.Code != http.StatusOK {
+		t.Errorf("HEAD status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("HEAD Content-Type = %q, want the GET's application/json", got)
+	}
+}
+
+// TestGzipDropsContentLengthOnWrite covers a handler that sets Content-Length
+// and writes without calling WriteHeader, so only Write can drop the header.
+func TestGzipDropsContentLengthOnWrite(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat(`{"k":"v"}`, 100)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = io.WriteString(w, body)
+	})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
+	req.Header.Set("Accept-Encoding", encGzip)
+	rec := httptest.NewRecorder()
+	gzipGET("/x", inner).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Length"); got != "" {
+		t.Errorf("Content-Length = %q, want none on a gzip body", got)
+	}
 }
 
 // TestNotificationsUnauthorizedNotCompressed pins the wiring order: the bearer
