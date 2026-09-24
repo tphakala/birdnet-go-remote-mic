@@ -480,6 +480,9 @@ export class EventsView {
 
   private retryLoad(): void {
     this.retrying = true;
+    // Empty the status region first: setText writes only on change, so a repeat
+    // failure would otherwise leave the same text in place and say nothing.
+    setText(this.announceEl, "");
     this.render();
     // The Retry button is hidden by that render; keep keyboard focus on the page.
     this.logTitle.focus();
