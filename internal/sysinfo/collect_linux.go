@@ -15,26 +15,32 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 )
 
-// cpuGaugeMinWindow and cpuGaugeStale bound the window a CPUGauge diffs over.
-// Requests closer together than the minimum (two browser tabs polling out of
-// step) reuse the last figure rather than diffing over a sliver of a second,
-// whose few scheduler ticks make the percentage noisy. A gap longer than the
-// stale limit (no browser open for a while) would average over the idle gap, so
-// the gauge re-primes instead of reporting it. The web UI polls every 3 s, which
-// sits inside both bounds.
+// cpuGaugeMinWindow, cpuGaugeStale and cpuGaugeSample bound the window a
+// CPUGauge diffs over. Requests closer together than the minimum (two browser
+// tabs polling out of step) reuse the last figure rather than diffing over a
+// sliver of a second, whose few scheduler ticks make the percentage noisy. A
+// reading older than the stale limit (no browser open for a while) would
+// average over the idle gap, so the gauge instead samples a fresh
+// cpuGaugeSample window inside the request, as it does for the very first
+// request. A quarter second spans 25 ticks per core at the usual USER_HZ of
+// 100, so about 1% resolution on a four-core Pi Zero 2 W. The web UI polls every
+// 3 s (web/src/lib/store.ts startPolling), which
+// sits between the minimum and the stale limit, so only its first poll pays for
+// the sample.
 const (
 	cpuGaugeMinWindow = time.Second
 	cpuGaugeStale     = 30 * time.Second
+	cpuGaugeSample    = 250 * time.Millisecond
 )
 
-// CPUGauge reports host CPU utilization for GET /system on demand: each Percent
-// call reads /proc/stat and diffs it against the previous call's reading, so it
-// runs no goroutine and costs nothing while nobody asks. The appliance usually
-// runs with no browser open, and a background sampler would read /proc/stat
-// forever for no consumer. The first call, and the first after a gap longer
-// than cpuGaugeStale, has no usable window: it primes and reports ok=false, and
-// the next poll gets a value. It is safe for concurrent use by handler
-// goroutines.
+// CPUGauge reports host CPU utilization for GET /system on demand: a request
+// diffs /proc/stat against the gauge's previous reading, so it runs no
+// goroutine and costs nothing while nobody asks. The appliance usually runs with
+// no browser open, and a background sampler would read /proc/stat forever for no
+// consumer. When there is no reading from the last cpuGaugeStale, the request
+// itself samples for cpuGaugeSample, so every successful call reports a figure
+// covering at most the last 30 s. It is safe for concurrent use by handler
+// goroutines; the zero value reads the real /proc/stat.
 type CPUGauge struct {
 	read func() (idle, total uint64, ok bool)
 
@@ -50,36 +56,52 @@ type CPUGauge struct {
 func NewCPUGauge() *CPUGauge { return newCPUGauge(readCPUStat) }
 
 // newCPUGauge is the seam: it builds a CPUGauge over an injectable /proc/stat
-// reader so the prime, reuse, and stale paths are testable without a fixed file.
+// reader so the sample, reuse, and stale paths are testable without a fixed file.
 func newCPUGauge(read func() (idle, total uint64, ok bool)) *CPUGauge {
 	return &CPUGauge{read: read}
 }
 
-// Percent returns host CPU utilization since the previous call. ok is false on a
-// nil gauge, on a /proc/stat read failure, and on a call that only primes (the
-// first, or the first after an idle gap).
+// Percent returns host CPU utilization over the window since the gauge's
+// previous reading, which all callers share. A call less than cpuGaugeMinWindow
+// after that reading returns the last figure without reading; a call with no
+// reading from the last cpuGaugeStale samples cpuGaugeSample first, holding the
+// lock meanwhile so concurrent callers wait and then reuse its figure. ok is
+// false on a nil gauge, when /proc/stat cannot be read, and when the counters
+// give no basis for a ratio (no ticks elapsed, or an idle counter that went
+// backwards).
 func (g *CPUGauge) Percent() (pct float64, ok bool) {
 	if g == nil {
 		return 0, false
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	read := g.read
+	if read == nil {
+		read = readCPUStat
+	}
 	now := time.Now()
 	if !g.at.IsZero() && now.Sub(g.at) < cpuGaugeMinWindow {
 		return g.last, g.lastOK
 	}
-	idle, total, ok := g.read()
+	idle, total, ok := read()
 	if !ok {
 		// Keep prev and its time: the next successful read still diffs over a real
-		// window (or re-primes, if the failure outlasted the stale limit).
+		// window (or samples afresh, if the failure outlasted the stale limit).
 		g.last, g.lastOK = 0, false
 		return 0, false
 	}
-	fresh := !g.at.IsZero() && now.Sub(g.at) <= cpuGaugeStale
-	pct, valid := 0.0, false
-	if fresh {
-		pct, valid = cpuBusyPercent(g.prevIdle, g.prevTotal, idle, total)
+	if g.at.IsZero() || now.Sub(g.at) > cpuGaugeStale {
+		// No recent reading to diff against: take this one as the start of a short
+		// window measured now, rather than report nothing or average over the gap.
+		g.prevIdle, g.prevTotal, g.at = idle, total, now
+		time.Sleep(cpuGaugeSample)
+		if idle, total, ok = read(); !ok {
+			g.last, g.lastOK = 0, false
+			return 0, false
+		}
+		now = time.Now()
 	}
+	pct, valid := cpuBusyPercent(g.prevIdle, g.prevTotal, idle, total)
 	g.prevIdle, g.prevTotal, g.at = idle, total, now
 	g.last, g.lastOK = pct, valid
 	return pct, valid
@@ -133,12 +155,12 @@ func gatherStatic() staticFacts {
 
 // Collect gathers a full SystemInfo snapshot. dataPath is any path on the
 // filesystem whose usage should be reported (the appliance's config directory).
-// cpu may be nil, in which case CPUPercent is absent (as it is on a call where
-// the gauge only primes). Static host facts are
-// cached after the first call; the live fields (memory, disk, temperature, CPU
-// percent, network) are read every call. Every source is best effort: an
-// unreadable file leaves its field zero or absent rather than failing the whole
-// snapshot. It returns mgmtserver.SystemInfo directly (the shared API DTO)
+// cpu may be nil, in which case CPUPercent is absent (as it is when the gauge
+// cannot read /proc/stat). Static host facts are cached after the first call;
+// memory, disk, temperature and network are read every call, and CPU percent
+// follows the gauge's own window rules (see CPUGauge.Percent). Every source is
+// best effort: an unreadable file leaves its field zero or absent rather than
+// failing the whole snapshot. It returns mgmtserver.SystemInfo directly (the shared API DTO)
 // rather than a private struct, collapsing what would be a triple mapping into
 // one; sysinfo depends on mgmtserver, not the reverse, so there is no cycle.
 func Collect(dataPath string, cpu *CPUGauge) mgmtserver.SystemInfo {

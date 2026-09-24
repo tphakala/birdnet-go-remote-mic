@@ -1605,10 +1605,11 @@ components:
           maximum: 100
           description: >
             Host CPU utilization across all cores, as a percentage, averaged
-            since the previous GET /system. Computed on demand, so it is absent
-            on the first request and on the first after a gap of more than 30
-            seconds; polling every few seconds yields a value from the second
-            request on.
+            over the window since the server's previous CPU reading. The window
+            is shared by all clients and is at most 30 seconds long: when there
+            is no reading that recent, the server samples for a quarter second
+            before responding. Absent only when the host's CPU counters cannot
+            be read or give no basis for a ratio.
         memTotalBytes:
           type: integer
           format: int64
