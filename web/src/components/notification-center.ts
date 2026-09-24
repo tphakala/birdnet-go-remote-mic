@@ -9,10 +9,10 @@ import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-r
 import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
 import type { NotificationStore } from "../lib/notifications.js";
 
-// The popover renders at most this many history rows. The server ring holds up to
-// 500 entries; the Events page (#/events) shows the full log, so the bell need not
-// rebuild the whole ring on every live event. Active issues are always shown in
-// full above the history.
+// The popover renders at most this many history rows. The server ring holds far
+// more (its capacity, 500 by default); the Events page (#/events) shows the full
+// log, so the bell need not rebuild the whole ring on every live event. Active
+// issues are always shown in full above the history.
 const PANEL_HISTORY_MAX = 50;
 
 export class NotificationCenter {
@@ -91,8 +91,9 @@ export class NotificationCenter {
     // Already on #/events the hash does not change, so close explicitly too.
     all.addEventListener("click", () => {
       this.close();
-      // Closing the panel would drop focus to the body; move it into the main
-      // content after the route swaps the visible view.
+      // Closing the panel would drop focus to the body. The router moves focus to
+      // the main content on a view change, but already on #/events the hash does
+      // not change, so do it here too (a harmless repeat otherwise).
       requestAnimationFrame(() => document.getElementById("main-content")?.focus());
     });
     this.countEl = elem("span", "notif-panel-count");
@@ -140,7 +141,7 @@ export class NotificationCenter {
 
     setHidden(this.emptyEl, active.length > 0 || history.length > 0);
     const capped = allHistory.length > history.length;
-    setText(this.countEl, capped ? `Showing ${history.length} of ${allHistory.length}.` : "");
+    setText(this.countEl, capped ? `Showing ${history.length} of ${allHistory.length} events` : "");
     setHidden(this.countEl, !capped);
   }
 

@@ -126,8 +126,10 @@ const (
 	// never by age, and lives in RAM only (a restart starts empty). At a few
 	// hundred bytes per entry the full ring stays well under 1 MB. Active
 	// conditions are pinned separately.
-	// The snapshot reports it as Capacity so the web UI need not pin it; the
-	// OpenAPI /notifications description quotes it.
+	// The snapshot reports it as Capacity, so the web UI reads it from there
+	// (web/src/lib/notifications-core.ts keeps DEFAULT_CAPACITY only as the
+	// value before the first snapshot). The OpenAPI /notifications description
+	// and the size estimate in internal/mgmtserver/gzip.go quote it too.
 	defaultCapacity = 500
 	// subscriberBuffer is the per-subscriber channel depth. It absorbs a startup
 	// burst (one entry per configured device plus "started"); a slow client that

@@ -2272,6 +2272,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   gap: 4px;
   margin: 3px 0;
 }
+/* Clickable chips grow their hit area 5px up and down (.notif-chip-btn::before),
+   so wrapped lines of them need a 10px row gap or the areas would overlap and a
+   tap between lines would land on the wrong chip. */
+.notif-row-meta:has(.notif-chip-btn) {
+  row-gap: 10px;
+}
 
 .notif-chip {
   font-size: 10px;
@@ -2287,7 +2293,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .notif-chip-source {
   text-transform: none;
-  letter-spacing: 0;
   font-family: var(--font-mono);
 }
 
@@ -2723,6 +2728,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   gap: 8px 24px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
+}
+
+/* A lone switch with nothing beside it; min-height lifts the 20px track to the
+   24px target size, as .device-toggle does. */
+.ev-shortcut-toggle {
+  min-height: 24px;
 }
 
 .ev-retention-note {

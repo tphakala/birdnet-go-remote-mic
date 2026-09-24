@@ -83,6 +83,14 @@ function isoTime(ms: number): string {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : "";
 }
 
+// setDatetime writes a <time> element's machine-readable value, diffed so an
+// unchanged time does not churn the DOM. An unknown time removes the attribute:
+// an empty datetime is not a valid value.
+function setDatetime(t: HTMLElement, iso: string): void {
+  if (iso === "") t.removeAttribute("datetime");
+  else if (t.getAttribute("datetime") !== iso) t.setAttribute("datetime", iso);
+}
+
 function chip(label: string, extraClass: string, facet: ChipFacet, value: string, opts: RowOptions): HTMLElement {
   if (!opts.onChip) return elem("span", `notif-chip ${extraClass}`.trim(), label);
   const b = elem("button", `notif-chip notif-chip-btn ${extraClass}`.trim(), label);
@@ -129,7 +137,7 @@ export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLEl
 
   const icon = elem("span", "notif-row-icon sev-badge");
   icon.setAttribute("aria-hidden", "true");
-  icon.innerHTML = TOAST_ICONS[sev]; // trusted markup
+  icon.innerHTML = TOAST_ICONS[sev]; // static, trusted markup
 
   const main = elem("div", "notif-row-main");
 
@@ -150,7 +158,7 @@ export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLEl
   const atMs = opts.toMs(n.uptimeMs);
   const time = elem("time", "notif-row-time", relTime(atMs, opts.nowMs));
   time.dataset.uptime = String(n.uptimeMs);
-  time.setAttribute("datetime", isoTime(atMs));
+  setDatetime(time, isoTime(atMs));
   time.title = fullTimestamp(atMs);
   if (opts.full) {
     const when = elem("div", "ev-when");
@@ -182,8 +190,7 @@ export function restampRows(root: ParentNode, toMs: UptimeToMs): void {
   root.querySelectorAll<HTMLElement>("time.notif-row-time[data-uptime]").forEach((t) => {
     const atMs = toMs(Number(t.dataset.uptime));
     setText(t, relTime(atMs, nowMs));
-    const iso = isoTime(atMs);
-    if (t.getAttribute("datetime") !== iso) t.setAttribute("datetime", iso);
+    setDatetime(t, isoTime(atMs));
     const full = fullTimestamp(atMs);
     if (t.title !== full) t.title = full;
     // Full rows show an absolute time beside the relative one, in the same slot.

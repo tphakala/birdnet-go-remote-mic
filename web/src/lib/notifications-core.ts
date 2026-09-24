@@ -75,9 +75,8 @@ export function eventTimeMs(state: CoreState, n: Notification): number {
 // restarted since this browser last synced) it resets the per-browser read
 // state, since ids restart from 1 and would otherwise be misread as already
 // seen. Items merge by id, nextId, the ring capacity and the clock anchor are
-// refreshed, and the
-// dismissed set is pruned to ids still present so it cannot grow without bound
-// as old entries age out of the ring. bootChanged is true only on a genuine
+// refreshed, and the dismissed set is pruned to ids still present so it cannot
+// grow without bound as old entries age out of the ring. bootChanged is true only on a genuine
 // restart, never on the first load.
 export function applySnapshot(
   state: CoreState,
@@ -106,9 +105,11 @@ export function applySnapshot(
   // larger. A boot change legitimately restarts the sequence.
   state.nextId = bootChanged ? snap.nextId : Math.max(state.nextId, snap.nextId);
 
-  // Re-anchor on every snapshot: its uptime and the browser's now were read at
-  // (nearly) one instant, so this also absorbs any browser clock step since the
-  // last sync. Request latency skews it by milliseconds, which no label shows.
+  // Re-anchor on every snapshot, which also absorbs any browser clock step since
+  // the last sync. nowMs is read after the response arrived, so every mapped
+  // time runs late by the request's latency: usually well under a second, which
+  // minute-resolution labels hide, but a fetch that spans a laptop sleep skews
+  // them until the next re-sync.
   state.anchor = { browserMs: nowMs, uptimeMs: snap.uptimeMs };
   if (Number.isSafeInteger(snap.capacity) && snap.capacity >= 1) state.capacity = snap.capacity;
 
@@ -141,7 +142,7 @@ export function applySnapshot(
 // isNewError is the toast trigger: a genuinely new error-severity entry that is
 // unread and not dismissed. A duplicate (already known, for instance replayed
 // after an SSE reconnect) sets neither, and the id-keyed map means it cannot
-// double count. nowMs anchors the clock when no snapshot has done so yet, and the
+// double count. nowMs anchors the clock when no anchor exists yet, and the
 // history is then pruned to the server's ring depth (see pruneToRing), so a
 // long-lived connection stays bounded without a re-sync.
 export function applyLive(

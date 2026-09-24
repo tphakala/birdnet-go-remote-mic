@@ -347,9 +347,10 @@ export interface Notification {
 
 // NotificationSnapshot is the full current state a client bootstraps and
 // re-syncs from: the boot identity, the server wall clock and monotonic uptime
-// read at one instant (the pair a client maps entry uptimes to its own clock
-// with), the ring depth, the next id that will be assigned, and every ring entry
-// merged with every active condition, ascending by id.
+// read at one instant (the client pairs uptimeMs with its own clock on receipt
+// to place entries; serverTime is informational), the ring depth, the next id
+// that will be assigned, and every ring entry merged with every active
+// condition, ascending by id.
 export interface NotificationSnapshot {
   bootId: string;
   serverTime: string;

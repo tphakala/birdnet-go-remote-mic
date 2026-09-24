@@ -73,6 +73,9 @@ func TestPublishStampsUptime(t *testing.T) {
 	snap := c.Snapshot()
 
 	want := []int64{1500, 90_000}
+	if len(snap.Notifications) != len(want) {
+		t.Fatalf("got %d entries, want %d", len(snap.Notifications), len(want))
+	}
 	for i, n := range snap.Notifications {
 		if n.UptimeMs != want[i] {
 			t.Errorf("entry %d uptimeMs = %d, want %d", n.ID, n.UptimeMs, want[i])

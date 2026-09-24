@@ -222,7 +222,7 @@ export class EventsView {
   private build(): void {
     const tilesEl = elem("div", "ev-tiles");
     this.tiles = {
-      active: new StatTile({ label: "Active issues", tone: "info" }),
+      active: new StatTile({ label: "Active Issues", tone: "info" }),
       error: new StatTile({ label: "Errors", tone: "error", onClick: () => this.soloSeverity("error") }),
       warning: new StatTile({ label: "Warnings", tone: "warn", onClick: () => this.soloSeverity("warning") }),
       info: new StatTile({ label: "Info", tone: "info", onClick: () => this.soloSeverity("info") }),
@@ -253,8 +253,8 @@ export class EventsView {
 
   private buildActiveCard(): HTMLElement {
     const card = elem("section", "config-section-card ev-active-card");
-    card.setAttribute("aria-label", "Active issues");
-    const { head, descEl } = this.sectionHead(ICON_ALERT, "Active issues", "");
+    card.setAttribute("aria-label", "Active Issues");
+    const { head, descEl } = this.sectionHead(ICON_ALERT, "Active Issues", "");
     this.activeDesc = descEl;
     this.activeList = elem("div", "ev-list ev-active-list");
     card.append(head, this.activeList);
@@ -265,10 +265,10 @@ export class EventsView {
 
   private buildLogCard(): HTMLElement {
     const card = elem("section", "config-section-card ev-log-card");
-    card.setAttribute("aria-label", "Event log");
+    card.setAttribute("aria-label", "Event Log");
     const { head, titleEl, actions } = this.sectionHead(
       ICON_LOG,
-      "Event log",
+      "Event Log",
       "Recent events from this boot, including those cleared from the bell.",
     );
     // Focus lands here when the row holding keyboard focus disappears (a
@@ -390,7 +390,7 @@ export class EventsView {
     });
     const track = elem("span", "switch-track");
     track.append(elem("span", "switch-thumb"));
-    wrap.append(input, track, elem("span", "switch-label", "Press / to jump to search"));
+    wrap.append(input, track, elem("span", "switch-label", "Use / to jump to search"));
     return wrap;
   }
 
@@ -625,7 +625,7 @@ export class EventsView {
       if (items.length === 0) {
         if (failed) {
           setText(this.emptyTitle, "Could not load the event log");
-          setText(this.emptyBody, "The appliance did not answer. Check the connection, then retry.");
+          setText(this.emptyBody, "The event log could not be loaded from the appliance. Check the connection, then retry.");
         } else if (loading) {
           setText(this.emptyTitle, "Loading events");
           setText(this.emptyBody, "Waiting for the event log from the appliance.");
