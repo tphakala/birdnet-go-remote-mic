@@ -84,6 +84,9 @@ func Regenerate(certPath, keyPath string, hosts []string) (tls.Certificate, erro
 	if err := os.Remove(PinPath(certPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return tls.Certificate{}, fmt.Errorf("clear certificate pin: %w", err)
 	}
+	// Make the removal durable, or a power cut can bring the pin back and
+	// silently undo the operator's regenerate on the next start.
+	atomicfile.SyncDir(filepath.Dir(PinPath(certPath)))
 	return cert, nil
 }
 
@@ -148,6 +151,14 @@ func writePair(certPath string, certPEM []byte, keyPath string, keyPEM []byte) e
 	if err := os.Rename(keyStaged, keyDst); err != nil {
 		_ = os.Remove(keyStaged)
 		return fmt.Errorf("commit key: %w", err)
+	}
+	// atomicfile.Write synced the staging renames, not these two commits; without
+	// this a power cut can bring back the old pair after a regenerate or install.
+	// It also orders the commits before Install writes the pin marker.
+	certDir, keyDir := filepath.Dir(certDst), filepath.Dir(keyDst)
+	atomicfile.SyncDir(certDir)
+	if keyDir != certDir {
+		atomicfile.SyncDir(keyDir)
 	}
 	return nil
 }

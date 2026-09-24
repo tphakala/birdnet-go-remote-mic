@@ -57,16 +57,19 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmp, target); err != nil {
 		return err
 	}
-	syncDir(dir)
+	SyncDir(dir)
 	return nil
 }
 
-// syncDir fsyncs dir so a rename inside it is durable. It is best effort and
-// reports nothing: the new contents are already in place, and failing the write
-// now would tell the caller its change did not happen when it did (a config
-// PATCH would answer 500 over a file that already holds the new config). Some
-// filesystems cannot sync a directory at all and return EINVAL.
-func syncDir(dir string) {
+// SyncDir fsyncs dir so a rename into it, or a removal from it, is durable.
+// Write calls it itself; a caller that renames or removes files on its own (the
+// certificate pair commit, a pin marker removal) calls it after the last such
+// change. It is best effort and reports nothing: the change is already in
+// place, and failing now would tell the caller its change did not happen when
+// it did (a config PATCH would answer 500 over a file that already holds the
+// new config). Some filesystems cannot sync a directory at all and return
+// EINVAL.
+func SyncDir(dir string) {
 	d, err := os.Open(dir)
 	if err != nil {
 		return

@@ -20,7 +20,10 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 )
 
 // certValidity is how long a freshly generated certificate stays valid. It is
@@ -79,6 +82,7 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 		// The pin marker is present but the pair is missing or does not parse, so
 		// there is nothing to preserve. Drop the stale marker and self-heal.
 		_ = os.Remove(PinPath(certPath))
+		atomicfile.SyncDir(filepath.Dir(PinPath(certPath)))
 	}
 	return generate(certPath, keyPath, hosts)
 }
