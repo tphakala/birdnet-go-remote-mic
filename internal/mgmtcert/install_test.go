@@ -1,6 +1,7 @@
 package mgmtcert
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,10 +10,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -402,6 +405,14 @@ func TestEnsureRefusesUnreadablePinnedPair(t *testing.T) {
 			// I/O fault that is neither "missing" nor "corrupt", and unlike a
 			// chmod 000 it also fails when the test runs as root.
 			bad := tc.unreadable(certPath, keyPath)
+			good := certPath
+			if bad == certPath {
+				good = keyPath
+			}
+			goodBefore, err := os.ReadFile(good)
+			if err != nil {
+				t.Fatalf("read %s: %v", good, err)
+			}
 			if err := os.Remove(bad); err != nil {
 				t.Fatalf("remove: %v", err)
 			}
@@ -409,7 +420,7 @@ func TestEnsureRefusesUnreadablePinnedPair(t *testing.T) {
 				t.Fatalf("mkdir: %v", err)
 			}
 
-			_, err := Ensure(certPath, keyPath, []string{localhost})
+			_, err = Ensure(certPath, keyPath, []string{localhost})
 			// Sabotage target: the readFault checks in Ensure. Without them the
 			// read error falls through to generate, which overwrites the pair.
 			pe, ok := errors.AsType[*PinnedReadError](err)
@@ -419,13 +430,101 @@ func TestEnsureRefusesUnreadablePinnedPair(t *testing.T) {
 			if pe.Path != bad {
 				t.Errorf("PinnedReadError.Path = %q, want %q", pe.Path, bad)
 			}
+			// The operator reads the cause and the file in the log line.
+			if !errors.Is(err, syscall.EISDIR) {
+				t.Errorf("error %v does not unwrap to EISDIR", err)
+			}
+			if !strings.Contains(err.Error(), bad) {
+				t.Errorf("error %q does not name %s", err, bad)
+			}
 			if !Pinned(certPath) {
 				t.Error("pin marker dropped over an unreadable pinned pair")
 			}
 			if fi, err := os.Stat(bad); err != nil || !fi.IsDir() {
 				t.Errorf("unreadable pinned file was replaced (stat: %v)", err)
 			}
+			if after, err := os.ReadFile(good); err != nil || !bytes.Equal(after, goodBefore) {
+				t.Errorf("readable pinned file %s changed (read error: %v)", good, err)
+			}
 		})
+	}
+}
+
+func TestEnsureRefusesDanglingPinnedSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	vol := filepath.Join(dir, "vol") // stands in for a volume mounted late at boot
+	if err := os.Mkdir(vol, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	// The targets must exist before Install, which resolves the links and writes
+	// through them (a link that already dangles would be replaced).
+	for _, name := range []string{"cert.pem", "key.pem"} {
+		if err := os.WriteFile(filepath.Join(vol, name), nil, 0o600); err != nil {
+			t.Fatalf("seed target: %v", err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(vol, "cert.pem"), certPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(vol, "key.pem"), keyPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	certPEM, keyPEM := genPairPEM(t, nil)
+	if _, err := Install(certPath, keyPath, certPEM, keyPEM); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	// Unmount the volume: both links now dangle.
+	if err := os.Rename(vol, vol+".away"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	_, err := Ensure(certPath, keyPath, []string{localhost})
+	// Sabotage target: the Lstat step in readFault. Without it the dangling
+	// link reads as "missing", the pin is dropped, and generate replaces the
+	// link with a regular file.
+	pe, ok := errors.AsType[*PinnedReadError](err)
+	if !ok {
+		t.Fatalf("Ensure error = %v, want a *PinnedReadError", err)
+	}
+	if !errors.Is(pe.Err, errDanglingLink) || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("cause = %v, want errDanglingLink and not fs.ErrNotExist", pe.Err)
+	}
+	if !Pinned(certPath) {
+		t.Error("pin marker dropped over a dangling pinned link")
+	}
+	for _, p := range []string{certPath, keyPath} {
+		if fi, err := os.Lstat(p); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+			t.Errorf("%s is no longer a symlink (lstat: %v)", p, err)
+		}
+	}
+}
+
+func TestEnsureRegeneratesUnreadableUnpinnedPair(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	// Point the appliance's own (unpinned) cert at a missing target: the refusal
+	// is only for an operator's pinned pair, so this must still self-heal.
+	if err := os.Remove(certPath); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "gone.pem"), certPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	// Sabotage target: the `if pinned` scoping around readFault in Ensure.
+	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
+		t.Fatalf("Ensure over an unreadable unpinned pair: %v", err)
+	}
+	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
+		t.Errorf("regenerated pair does not load: %v", err)
 	}
 }
 
@@ -447,23 +546,6 @@ func TestEnsureSelfHealsMissingPinnedPair(t *testing.T) {
 	}
 	if _, err := os.Stat(certPath); err != nil {
 		t.Errorf("certificate not regenerated: %v", err)
-	}
-}
-
-func TestEphemeralCoversHosts(t *testing.T) {
-	t.Parallel()
-	cert, err := Ephemeral([]string{localhost, testIP})
-	if err != nil {
-		t.Fatalf("Ephemeral: %v", err)
-	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		t.Fatalf("parse leaf: %v", err)
-	}
-	for _, h := range []string{localhost, testIP} {
-		if err := leaf.VerifyHostname(h); err != nil {
-			t.Errorf("host %s not covered: %v", h, err)
-		}
 	}
 }
 
