@@ -68,6 +68,8 @@ func notificationSnapshotToWire(snap *notify.Snapshot) mgmtapi.NotificationSnaps
 	return mgmtapi.NotificationSnapshot{
 		BootId:        snap.BootID,
 		ServerTime:    snap.ServerTime,
+		UptimeMs:      snap.UptimeMs,
+		Capacity:      snap.Capacity,
 		NextId:        int64(snap.NextID),
 		Notifications: ns,
 	}
@@ -80,6 +82,7 @@ func notificationToWire(n *notify.Notification) mgmtapi.Notification {
 		Id:       int64(n.ID),
 		BootId:   n.BootID,
 		Time:     n.Time,
+		UptimeMs: n.UptimeMs,
 		Severity: mgmtapi.NotificationSeverity(n.Severity),
 		Category: mgmtapi.NotificationCategory(n.Category),
 		Kind:     mgmtapi.NotificationKind(n.Kind),

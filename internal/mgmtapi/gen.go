@@ -692,7 +692,8 @@ type Notification struct {
 	// Examples: garden
 	Source *string `json:"source,omitempty"`
 
-	// Time When the entry was published (appliance wall clock).
+	// Time When the entry was published (appliance wall clock). An appliance without a real-time clock can step this clock by hours when NTP first syncs, so entries published before the step carry a wrong time; uptimeMs does not have that problem.
+	//
 	//
 	// Examples: 2026-09-12T11:03:00Z
 	Time time.Time `json:"time"`
@@ -701,6 +702,12 @@ type Notification struct {
 	//
 	// Examples: Device failed
 	Title string `json:"title"`
+
+	// UptimeMs Milliseconds since this boot's process started, read from a monotonic clock that a wall-clock step does not move. The difference between two entries' uptimeMs is the true time between them, and a client places an entry in time by offsetting it from the snapshot's uptimeMs and serverTime pair.
+	//
+	//
+	// Examples: 93500
+	UptimeMs int64 `json:"uptimeMs"`
 }
 
 // NotificationCategory The subsystem a notification concerns.
@@ -731,6 +738,12 @@ type NotificationSnapshot struct {
 	// Examples: 4a2b1c8e9f0d3e5a
 	BootId string `json:"bootId"`
 
+	// Capacity How many history entries the ring keeps. Ids below nextId minus capacity have been trimmed, except onsets of conditions that are still active, which stay pinned.
+	//
+	//
+	// Examples: 500
+	Capacity int `json:"capacity"`
+
 	// NextId The id the next published notification will take. A streamed id at or beyond a previously seen nextId with earlier ids missing means a dropped event; the client refetches this snapshot.
 	//
 	//
@@ -745,6 +758,12 @@ type NotificationSnapshot struct {
 	//
 	// Examples: 2026-09-12T11:03:00Z
 	ServerTime time.Time `json:"serverTime"`
+
+	// UptimeMs The process uptime in milliseconds at the same instant as serverTime. An entry happened (uptimeMs minus the entry's uptimeMs) milliseconds before the snapshot, whatever its wall-clock time says.
+	//
+	//
+	// Examples: 120000
+	UptimeMs int64 `json:"uptimeMs"`
 }
 
 // OpusSettings Opus encoder settings, used only when mode is opus.
@@ -1100,7 +1119,7 @@ type ClientInterface interface {
 
 	// ListNotifications List notifications
 	//
-	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
+	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty. A full snapshot runs to about 165 KB of JSON, so the response is gzip-compressed when the request's Accept-Encoding allows it.
 	//
 	// Corresponds with GET /notifications (the `ListNotifications` operationId).
 	ListNotifications(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1403,7 +1422,7 @@ func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (
 
 // ListNotifications List notifications
 //
-// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
+// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty. A full snapshot runs to about 165 KB of JSON, so the response is gzip-compressed when the request's Accept-Encoding allows it.
 //
 // Corresponds with GET /notifications (the `ListNotifications` operationId).
 func (c *Client) ListNotifications(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2305,7 +2324,7 @@ type ClientWithResponsesInterface interface {
 
 	// ListNotificationsWithResponse List notifications
 	//
-	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
+	// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty. A full snapshot runs to about 165 KB of JSON, so the response is gzip-compressed when the request's Accept-Encoding allows it.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -3441,7 +3460,7 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 
 // ListNotificationsWithResponse List notifications
 //
-// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty.
+// The current notification snapshot: the boot identity, the server's wall-clock time, the next id that will be assigned, and every discrete history entry still in the ring merged with every active condition (even ones the ring has trimmed), in ascending id order. Clients bootstrap and re-sync from this; the /events stream is best effort, so a gap in streamed ids means a dropped event and the client refetches here. The ring keeps the most recent 500 history entries in memory only: there is no time-based expiry, and a restart (a new bootId) starts it empty. A full snapshot runs to about 165 KB of JSON, so the response is gzip-compressed when the request's Accept-Encoding allows it.
 //
 // Returns a wrapper object for the known response body format(s).
 //

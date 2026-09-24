@@ -2281,8 +2281,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   border-radius: var(--radius-full);
   background: var(--bg-surface-active);
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  /* Capitalized, matching the Events page's category filter chips. */
+  text-transform: capitalize;
 }
 
 .notif-chip-source {
@@ -2300,9 +2300,19 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 /* Bell panel footer: the way into the full Events page. */
 .notif-panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: baseline;
+  gap: 4px 10px;
   border-top: 1px solid var(--border-subtle);
   padding: 8px 12px;
-  text-align: center;
+}
+
+/* "Showing 50 of N" when the popover caps its history. */
+.notif-panel-count {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .notif-panel-all {
@@ -2646,9 +2656,18 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .notif-chip-btn {
+  position: relative;
   border: none;
   font-family: inherit;
   cursor: pointer;
+}
+/* The chip is 15px tall to sit inline with the row meta; a transparent
+   pseudo-element grows its hit area to 25px so it meets the 24px minimum
+   target size (WCAG 2.5.8) on touch screens without changing the layout. */
+.notif-chip-btn::before {
+  content: "";
+  position: absolute;
+  inset: -5px 0;
 }
 .notif-chip-btn.notif-chip-source {
   font-family: var(--font-mono);
@@ -2694,23 +2713,45 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   margin-bottom: 6px;
 }
 
-.ev-retention-note {
-  font-size: 11px;
-  color: var(--text-muted);
+/* Log card footer: the retention note beside the per-browser "/" shortcut
+   switch, wrapping onto two lines on a narrow screen. */
+.ev-log-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
 }
 
+.ev-retention-note {
+  flex: 1 1 280px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Windows High Contrast / forced-colors flattens the background and border tints
    the toggle, alert and unread states rely on, so restate them with keyword
-   borders and system colours. */
+   colours. The border keeps its 1px width and an inset outline adds the second
+   pixel, so toggling a state never shifts the layout. A focused control keeps
+   its focus ring (the shared focus-visible outline) instead. */
 @media (forced-colors: active) {
   .filter-chip.is-on,
   .stat-tile.is-on {
-    border: 2px solid Highlight;
+    border-color: Highlight;
+  }
+  .filter-chip.is-on:not(:focus-visible),
+  .stat-tile.is-on:not(:focus-visible) {
+    outline: 1px solid Highlight;
+    outline-offset: -2px;
   }
   .stat-tile.is-alert {
-    border: 2px solid CanvasText;
+    border-color: CanvasText;
+  }
+  .stat-tile.is-alert:not(:focus-visible) {
+    outline: 1px solid CanvasText;
+    outline-offset: -2px;
   }
   .ev-unread-dot {
     background: CanvasText;

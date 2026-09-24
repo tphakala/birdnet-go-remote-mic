@@ -60,17 +60,23 @@ const (
 	KindClear Kind = "clear"
 )
 
-// Notification is one entry in the center. ID, BootID and Time are always
-// stamped by the Center at publish time. The condition methods also set Kind
-// (Onset sets onset; Clear and Resolve set clear) and Clear sets Key from its
-// key argument; a caller of Publish fills every remaining field itself. Key
+// Notification is one entry in the center. ID, BootID, Time and UptimeMs are
+// always stamped by the Center at publish time. The condition methods also set
+// Kind (Onset sets onset; Clear and Resolve set clear) and Clear sets Key from
+// its key argument; a caller of Publish fills every remaining field itself. Key
 // identifies a condition (empty for discrete events) and Source names the
 // subject (device name, track path, remote address) so the UI can render it as
 // a chip.
+//
+// UptimeMs is the Center's age in milliseconds at publish, read from the
+// monotonic clock. Time is wall clock, and a Pi without an RTC can step it by
+// hours once NTP syncs, so clients measure condition durations and place
+// entries in time from UptimeMs, which a clock step does not move.
 type Notification struct {
 	ID       uint64    `json:"id"`
 	BootID   string    `json:"bootId"`
 	Time     time.Time `json:"time"`
+	UptimeMs int64     `json:"uptimeMs"`
 	Severity Severity  `json:"severity"`
 	Category Category  `json:"category"`
 	Kind     Kind      `json:"kind"`
@@ -81,12 +87,16 @@ type Notification struct {
 }
 
 // Snapshot is the full current state a client bootstraps and re-syncs from: the
-// boot identity, the server's wall clock, the next ID that will be assigned, and
-// every discrete entry still in the ring merged with every active onset (even
-// ones the ring has trimmed), in ascending ID order.
+// boot identity, the server's wall clock and uptime read at one instant (the
+// anchor a client maps entry uptimes onto its own clock with), the ring depth,
+// the next ID that will be assigned, and every discrete entry still in the ring
+// merged with every active onset (even ones the ring has trimmed), in ascending
+// ID order.
 type Snapshot struct {
 	BootID        string         `json:"bootId"`
 	ServerTime    time.Time      `json:"serverTime"`
+	UptimeMs      int64          `json:"uptimeMs"`
+	Capacity      int            `json:"capacity"`
 	NextID        uint64         `json:"nextId"`
 	Notifications []Notification `json:"notifications"`
 }
@@ -116,8 +126,8 @@ const (
 	// never by age, and lives in RAM only (a restart starts empty). At a few
 	// hundred bytes per entry the full ring stays well under 1 MB. Active
 	// conditions are pinned separately.
-	// This value is a shared contract: web/src/views/events.ts pins it as
-	// RETAINED_MAX and the OpenAPI /notifications description quotes it.
+	// The snapshot reports it as Capacity so the web UI need not pin it; the
+	// OpenAPI /notifications description quotes it.
 	defaultCapacity = 500
 	// subscriberBuffer is the per-subscriber channel depth. It absorbs a startup
 	// burst (one entry per configured device plus "started"); a slow client that
@@ -141,6 +151,9 @@ var randRead = rand.Read
 type Center struct {
 	clock    func() time.Time
 	capacity int
+	// start is the clock reading at construction. With time.Now it carries a
+	// monotonic reading, so clock().Sub(start) is immune to wall-clock steps.
+	start time.Time
 
 	mu     sync.Mutex
 	bootID string
@@ -186,6 +199,7 @@ func NewCenter(opts ...Option) *Center {
 	}
 	c.ring = newRing(c.capacity)
 	c.bootID = newBootID()
+	c.start = c.clock()
 	return c
 }
 
@@ -227,15 +241,24 @@ func (c *Center) Subscribe() (events <-chan sse.Event, cancel func()) {
 	return c.bc.Subscribe()
 }
 
-// publishLocked stamps n in place with the next ID, the boot id and the clock
-// time, appends it to the ring, and broadcasts it to every subscriber without
+// uptimeMs is the Center's age at now in milliseconds. time.Time.Sub uses the
+// monotonic readings when both carry one (always, with the default clock), so
+// a wall-clock step between start and now does not skew it.
+func (c *Center) uptimeMs(now time.Time) int64 {
+	return now.Sub(c.start).Milliseconds()
+}
+
+// publishLocked stamps n in place with the next ID, the boot id, the clock time
+// and the uptime, appends it to the ring, and broadcasts it to every subscriber without
 // blocking. The caller holds c.mu and reads the stamped fields back through n
 // for the active-map bookkeeping the condition methods do.
 func (c *Center) publishLocked(n *Notification) {
 	c.nextID++
 	n.ID = c.nextID
 	n.BootID = c.bootID
-	n.Time = c.clock()
+	now := c.clock()
+	n.Time = now
+	n.UptimeMs = c.uptimeMs(now)
 	c.ring.push(n)
 	// Marshal once. This fails only for a time whose year is outside [0,9999],
 	// which a real clock never produces. The entry is already in the ring so the
@@ -348,7 +371,8 @@ func (c *Center) Resolve(key, reason string) bool {
 
 // Snapshot returns the full current state: every ring entry merged with any
 // active onset the ring has already trimmed, in ascending ID order, plus the
-// boot id, the server clock, and the next ID to be assigned.
+// boot id, the server clock and uptime, the ring depth, and the next ID to be
+// assigned.
 func (c *Center) Snapshot() Snapshot {
 	if c == nil {
 		return Snapshot{}
@@ -369,9 +393,13 @@ func (c *Center) Snapshot() Snapshot {
 		}
 	}
 	slices.SortFunc(entries, func(a, b Notification) int { return cmp.Compare(a.ID, b.ID) })
+	// One clock read, so the wall time and the uptime describe the same instant.
+	now := c.clock()
 	return Snapshot{
 		BootID:        c.bootID,
-		ServerTime:    c.clock(),
+		ServerTime:    now,
+		UptimeMs:      c.uptimeMs(now),
+		Capacity:      c.capacity,
 		NextID:        c.nextID + 1,
 		Notifications: entries,
 	}
@@ -395,7 +423,7 @@ func (c *Center) Active() []Notification {
 
 // Started builds the first ring entry cmd publishes right after constructing the
 // Center: an info system event naming the running version. Publish stamps its
-// ID, boot id and time.
+// ID, boot id, time and uptime.
 func Started(version string) Notification {
 	return Notification{
 		Severity: SeverityInfo,

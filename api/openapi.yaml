@@ -307,7 +307,9 @@ paths:
         re-sync from this; the /events stream is best effort, so a gap in
         streamed ids means a dropped event and the client refetches here. The
         ring keeps the most recent 500 history entries in memory only: there is
-        no time-based expiry, and a restart (a new bootId) starts it empty.
+        no time-based expiry, and a restart (a new bootId) starts it empty. A
+        full snapshot runs to about 165 KB of JSON, so the response is
+        gzip-compressed when the request's Accept-Encoding allows it.
       responses:
         "200":
           description: The current notification snapshot.
@@ -1144,7 +1146,7 @@ components:
     Notification:
       type: object
       description: One notification entry.
-      required: [id, bootId, time, severity, category, kind, title, message]
+      required: [id, bootId, time, uptimeMs, severity, category, kind, title, message]
       properties:
         id:
           type: integer
@@ -1161,8 +1163,23 @@ components:
         time:
           type: string
           format: date-time
-          description: When the entry was published (appliance wall clock).
+          description: >
+            When the entry was published (appliance wall clock). An appliance
+            without a real-time clock can step this clock by hours when NTP
+            first syncs, so entries published before the step carry a wrong
+            time; uptimeMs does not have that problem.
           examples: ["2026-09-12T11:03:00Z"]
+        uptimeMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Milliseconds since this boot's process started, read from a
+            monotonic clock that a wall-clock step does not move. The difference
+            between two entries' uptimeMs is the true time between them, and a
+            client places an entry in time by offsetting it from the snapshot's
+            uptimeMs and serverTime pair.
+          examples: [93500]
         severity:
           $ref: "#/components/schemas/NotificationSeverity"
         category:
@@ -1190,7 +1207,7 @@ components:
     NotificationSnapshot:
       type: object
       description: The full current notification state a client bootstraps and re-syncs from.
-      required: [bootId, serverTime, nextId, notifications]
+      required: [bootId, serverTime, uptimeMs, capacity, nextId, notifications]
       properties:
         bootId:
           type: string
@@ -1203,6 +1220,23 @@ components:
             The appliance's wall-clock time when the snapshot was taken, so a
             client can correct relative timestamps for clock skew.
           examples: ["2026-09-12T11:03:00Z"]
+        uptimeMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            The process uptime in milliseconds at the same instant as
+            serverTime. An entry happened (uptimeMs minus the entry's uptimeMs)
+            milliseconds before the snapshot, whatever its wall-clock time says.
+          examples: [120000]
+        capacity:
+          type: integer
+          minimum: 1
+          description: >
+            How many history entries the ring keeps. Ids below nextId minus
+            capacity have been trimmed, except onsets of conditions that are
+            still active, which stay pinned.
+          examples: [500]
         nextId:
           type: integer
           format: int64

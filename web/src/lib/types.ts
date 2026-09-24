@@ -328,11 +328,14 @@ export type NotificationKind = "event" | "onset" | "clear";
 // Notification is one entry in the center (GET /notifications and the
 // `notification` SSE event). id is a monotonic per-boot integer; key is present
 // on onset and clear entries and absent on discrete events; source names the
-// subject (device name, track path, remote address) for a chip.
+// subject (device name, track path, remote address) for a chip. uptimeMs is the
+// server's monotonic process uptime at publish; unlike the wall-clock time, a
+// server clock step does not move it.
 export interface Notification {
   id: number;
   bootId: string;
   time: string;
+  uptimeMs: number;
   severity: NotificationSeverity;
   category: NotificationCategory;
   kind: NotificationKind;
@@ -343,12 +346,15 @@ export interface Notification {
 }
 
 // NotificationSnapshot is the full current state a client bootstraps and
-// re-syncs from: the boot identity, the server wall clock (for clock-skew
-// correction on an RTC-less host), the next id that will be assigned, and every
-// ring entry merged with every active condition, ascending by id.
+// re-syncs from: the boot identity, the server wall clock and monotonic uptime
+// read at one instant (the pair a client maps entry uptimes to its own clock
+// with), the ring depth, the next id that will be assigned, and every ring entry
+// merged with every active condition, ascending by id.
 export interface NotificationSnapshot {
   bootId: string;
   serverTime: string;
+  uptimeMs: number;
+  capacity: number;
   nextId: number;
   notifications: Notification[];
 }

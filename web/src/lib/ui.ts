@@ -131,6 +131,25 @@ export function writeBoolPref(key: string, value: boolean): void {
   }
 }
 
+// How long a download's object URL outlives the click. Some WebKit builds start
+// the download asynchronously and cancel it when the URL is revoked on the next
+// tick; half a minute is ample, and the blob is small.
+const DOWNLOAD_REVOKE_MS = 30_000;
+
+// downloadBlob saves blob under filename through a temporary object URL and a
+// synthetic link click, then revokes the URL once the download has had time to
+// start.
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
+}
+
 // apiErrorMessage reduces any thrown value to a short human string: an ApiError
 // shows its problem title, any other Error its message, and anything else its
 // string form. Shared so the several save/PATCH catch blocks map failures the

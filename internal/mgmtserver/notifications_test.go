@@ -26,7 +26,7 @@ func TestNotificationWireParity(t *testing.T) {
 	// the hand-tagged struct to the generated one).
 	now := time.Unix(1_700_000_000, 0).UTC()
 	src := notify.Notification{
-		ID: 7, BootID: testBootID, Time: now,
+		ID: 7, BootID: testBootID, Time: now, UptimeMs: 93_500,
 		Severity: notify.SeverityWarning, Category: notify.CategoryStream, Kind: notify.KindOnset,
 		Key: "stream:garden:flap", Source: "garden from 10.0.0.5",
 		Title: "Client reconnecting repeatedly", Message: "more than 3 connects in 60s",
@@ -39,7 +39,7 @@ func TestNotificationWireParity(t *testing.T) {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		t.Fatalf("notify.Notification JSON does not fit mgmtapi.Notification: %v", err)
 	}
-	if wire.Id != int64(src.ID) || wire.BootId != src.BootID || !wire.Time.Equal(now) {
+	if wire.Id != int64(src.ID) || wire.BootId != src.BootID || !wire.Time.Equal(now) || wire.UptimeMs != src.UptimeMs {
 		t.Errorf("scalar drift: %+v", wire)
 	}
 	if string(wire.Severity) != string(src.Severity) ||
@@ -101,10 +101,12 @@ func TestListNotificationsMapsSnapshot(t *testing.T) {
 	src := &fakeSnapshotter{snap: notify.Snapshot{
 		BootID:     testBootID,
 		ServerTime: now,
+		UptimeMs:   120_000,
+		Capacity:   500,
 		NextID:     3,
 		Notifications: []notify.Notification{
 			{
-				ID: 1, BootID: testBootID, Time: now,
+				ID: 1, BootID: testBootID, Time: now, UptimeMs: 1_500,
 				Severity: notify.SeverityError, Category: notify.CategoryDevice, Kind: notify.KindOnset,
 				Key: "device:garden:down", Source: "garden",
 				Title: "Device failed", Message: "Capture stopped",
@@ -128,12 +130,18 @@ func TestListNotificationsMapsSnapshot(t *testing.T) {
 	if got.BootId != testBootID || got.NextId != 3 || !got.ServerTime.Equal(now) {
 		t.Errorf("envelope wrong: bootId=%q nextId=%d serverTime=%v", got.BootId, got.NextId, got.ServerTime)
 	}
+	if got.UptimeMs != 120_000 || got.Capacity != 500 {
+		t.Errorf("envelope uptimeMs/capacity = %d/%d, want 120000/500", got.UptimeMs, got.Capacity)
+	}
 	if len(got.Notifications) != 2 {
 		t.Fatalf("notifications len = %d, want 2", len(got.Notifications))
 	}
 	n0 := got.Notifications[0]
 	if n0.Id != 1 || n0.Severity != mgmtapi.Error || n0.Category != mgmtapi.NotificationCategoryDevice || n0.Kind != mgmtapi.Onset {
 		t.Errorf("entry 0 scalar fields wrong: %+v", n0)
+	}
+	if n0.UptimeMs != 1_500 {
+		t.Errorf("entry 0 uptimeMs = %d, want 1500", n0.UptimeMs)
 	}
 	if n0.Title != "Device failed" || n0.Message != "Capture stopped" || !n0.Time.Equal(now) {
 		t.Errorf("entry 0 title/message/time wrong: title=%q message=%q time=%v", n0.Title, n0.Message, n0.Time)

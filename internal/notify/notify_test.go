@@ -57,6 +57,47 @@ func TestPublishStampsBootIDAndTime(t *testing.T) {
 	}
 }
 
+// TestPublishStampsUptime checks that every entry carries the Center's age at its
+// own publish, and that the snapshot's uptime and serverTime come from one read.
+func TestPublishStampsUptime(t *testing.T) {
+	t.Parallel()
+	base := time.Unix(1_700_000_000, 0).UTC()
+	now := base
+	c := NewCenter(WithClock(func() time.Time { return now }))
+
+	now = base.Add(1500 * time.Millisecond)
+	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "a"})
+	now = base.Add(90 * time.Second)
+	c.Onset(Notification{Category: CategoryDevice, Key: testDeviceKey, Title: testDownTitle})
+	now = base.Add(2 * time.Minute)
+	snap := c.Snapshot()
+
+	want := []int64{1500, 90_000}
+	for i, n := range snap.Notifications {
+		if n.UptimeMs != want[i] {
+			t.Errorf("entry %d uptimeMs = %d, want %d", n.ID, n.UptimeMs, want[i])
+		}
+	}
+	if snap.UptimeMs != 120_000 {
+		t.Errorf("snapshot uptimeMs = %d, want 120000", snap.UptimeMs)
+	}
+	if !snap.ServerTime.Equal(now) {
+		t.Errorf("snapshot serverTime = %v, want %v (same read as uptime)", snap.ServerTime, now)
+	}
+}
+
+// TestDefaultStartIsMonotonic guards the property that makes uptime immune to a
+// wall-clock step: with the default clock the start reading carries a monotonic
+// component, and time.Time.Sub then ignores the wall clock entirely. A wall-only
+// reading (Round(0) strips the monotonic part) would print without the "m=".
+func TestDefaultStartIsMonotonic(t *testing.T) {
+	t.Parallel()
+	c := NewCenter()
+	if !strings.Contains(c.start.String(), " m=") {
+		t.Fatalf("start %q has no monotonic reading", c.start.String())
+	}
+}
+
 func TestOnsetIdempotentAndActive(t *testing.T) {
 	c := NewCenter()
 	on := Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Title: "Device failed"}
@@ -203,17 +244,19 @@ func TestSnapshotDoesNotDuplicateActiveStillInRing(t *testing.T) {
 }
 
 func TestDefaultCapacityKeepsNewest(t *testing.T) {
-	// The default ring depth is a shared contract: web/src/views/events.ts pins it
-	// as RETAINED_MAX and the OpenAPI /notifications description quotes it, so a
-	// change here must move both.
+	// The OpenAPI /notifications description quotes the default ring depth, so a
+	// change here must move it too. The web UI reads it from Snapshot.Capacity.
 	if defaultCapacity != 500 {
-		t.Fatalf("defaultCapacity = %d, want 500; update RETAINED_MAX in web/src/views/events.ts and the /notifications description in api/openapi.yaml with it", defaultCapacity)
+		t.Fatalf("defaultCapacity = %d, want 500; update the /notifications description in api/openapi.yaml with it", defaultCapacity)
 	}
 	c := NewCenter()
-	for i := 0; i < defaultCapacity+1; i++ {
+	for range defaultCapacity + 1 {
 		c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "x"})
 	}
 	snap := c.Snapshot()
+	if snap.Capacity != defaultCapacity {
+		t.Errorf("snapshot capacity = %d, want %d", snap.Capacity, defaultCapacity)
+	}
 	if got := len(snap.Notifications); got != defaultCapacity {
 		t.Fatalf("ring entries = %d, want %d (bounded at default capacity)", got, defaultCapacity)
 	}

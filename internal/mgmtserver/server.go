@@ -216,8 +216,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	// The bearer gate wraps the API subtree only (the generated routes and the
 	// hand-written event stream); static assets below stay open. With no guard
-	// mounted requireBearer is a no-op passthrough.
-	api := requireBearer(s.guard, generated)
+	// mounted requireBearer is a no-op passthrough. Compression sits inside the
+	// gate, so a 401 is never compressed.
+	api := requireBearer(s.guard, gzipGET(BasePath+"/notifications", generated))
 	if s.eventStream == nil && s.staticFS == nil {
 		return api
 	}
