@@ -5,8 +5,11 @@
 package atomicfile
 
 import (
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Write writes data to path via a temp file in the same directory followed by
@@ -64,16 +67,21 @@ func Write(path string, data []byte, perm os.FileMode) error {
 // SyncDir fsyncs dir so a rename into it, or a removal from it, is durable.
 // Write calls it itself; a caller that renames or removes files on its own (the
 // certificate pair commit, a pin marker removal) calls it after the last such
-// change. It is best effort and reports nothing: the change is already in
+// change. It is best effort and returns nothing: the change is already in
 // place, and failing now would tell the caller its change did not happen when
 // it did (a config PATCH would answer 500 over a file that already holds the
-// new config). Some filesystems cannot sync a directory at all and return
-// EINVAL.
+// new config). A failure is logged instead, so a change that may not survive a
+// power cut is still visible. Some filesystems cannot sync a directory at all
+// and return EINVAL; that is expected and not logged.
 func SyncDir(dir string) {
 	d, err := os.Open(dir)
 	if err != nil {
+		// err (an *os.PathError) already names the directory.
+		log.Printf("atomicfile: directory sync skipped: %v (the change is in place but may not survive a power cut)", err)
 		return
 	}
-	_ = d.Sync()
+	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		log.Printf("atomicfile: directory sync failed: %v (the change is in place but may not survive a power cut)", err)
+	}
 	_ = d.Close()
 }
