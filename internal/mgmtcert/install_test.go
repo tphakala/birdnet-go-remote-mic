@@ -380,6 +380,93 @@ func TestEnsureUnpinsUnloadablePinnedPair(t *testing.T) {
 	}
 }
 
+func TestEnsureRefusesUnreadablePinnedPair(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		unreadable func(certPath, keyPath string) string
+	}{
+		{"cert", func(c, _ string) string { return c }},
+		{"key", func(_, k string) string { return k }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			certPath := filepath.Join(dir, "mgmt-cert.pem")
+			keyPath := filepath.Join(dir, "mgmt-key.pem")
+			certPEM, keyPEM := genPairPEM(t, nil)
+			if _, err := Install(certPath, keyPath, certPEM, keyPEM); err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			// Replace one file with a directory: reading it fails with EISDIR, an
+			// I/O fault that is neither "missing" nor "corrupt", and unlike a
+			// chmod 000 it also fails when the test runs as root.
+			bad := tc.unreadable(certPath, keyPath)
+			if err := os.Remove(bad); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			if err := os.Mkdir(bad, 0o700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+
+			_, err := Ensure(certPath, keyPath, []string{localhost})
+			// Sabotage target: the readFault checks in Ensure. Without them the
+			// read error falls through to generate, which overwrites the pair.
+			pe, ok := errors.AsType[*PinnedReadError](err)
+			if !ok {
+				t.Fatalf("Ensure error = %v, want a *PinnedReadError", err)
+			}
+			if pe.Path != bad {
+				t.Errorf("PinnedReadError.Path = %q, want %q", pe.Path, bad)
+			}
+			if !Pinned(certPath) {
+				t.Error("pin marker dropped over an unreadable pinned pair")
+			}
+			if fi, err := os.Stat(bad); err != nil || !fi.IsDir() {
+				t.Errorf("unreadable pinned file was replaced (stat: %v)", err)
+			}
+		})
+	}
+}
+
+func TestEnsureSelfHealsMissingPinnedPair(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "mgmt-cert.pem")
+	keyPath := filepath.Join(dir, "mgmt-key.pem")
+	if err := os.WriteFile(PinPath(certPath), []byte("installed\n"), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+
+	// A missing file is not a read fault: there is nothing to preserve.
+	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if Pinned(certPath) {
+		t.Error("stale pin marker kept for a missing pinned pair")
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		t.Errorf("certificate not regenerated: %v", err)
+	}
+}
+
+func TestEphemeralCoversHosts(t *testing.T) {
+	t.Parallel()
+	cert, err := Ephemeral([]string{localhost, testIP})
+	if err != nil {
+		t.Fatalf("Ephemeral: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	for _, h := range []string{localhost, testIP} {
+		if err := leaf.VerifyHostname(h); err != nil {
+			t.Errorf("host %s not covered: %v", h, err)
+		}
+	}
+}
+
 func TestEnsureCarriesForwardSANsOnDrift(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "mgmt-cert.pem")

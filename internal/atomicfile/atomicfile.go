@@ -10,7 +10,10 @@ import (
 )
 
 // Write writes data to path via a temp file in the same directory followed by
-// an atomic rename, fsyncing the contents first so the replacement is durable.
+// an atomic rename. The contents are fsynced before the rename and the
+// directory after it, so the replacement survives a power cut: without the
+// directory sync, ext4 can lose the rename itself and come back with the old
+// file (or, depending on mount options, an empty one).
 // If path is a symlink, its target is rewritten rather than replaced with a
 // regular file, so an operator's symlinked config or certificate path survives.
 func Write(path string, data []byte, perm os.FileMode) error {
@@ -51,5 +54,23 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, target)
+	if err := os.Rename(tmp, target); err != nil {
+		return err
+	}
+	syncDir(dir)
+	return nil
+}
+
+// syncDir fsyncs dir so a rename inside it is durable. It is best effort and
+// reports nothing: the new contents are already in place, and failing the write
+// now would tell the caller its change did not happen when it did (a config
+// PATCH would answer 500 over a file that already holds the new config). Some
+// filesystems cannot sync a directory at all and return EINVAL.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
 }

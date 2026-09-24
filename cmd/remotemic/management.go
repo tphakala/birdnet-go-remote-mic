@@ -626,6 +626,21 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	prov.keyPath = keyPath
 
 	cert, err := mgmtcert.Ensure(certPath, keyPath, certHosts())
+	if pe, ok := errors.AsType[*mgmtcert.PinnedReadError](err); ok {
+		// The installed certificate exists but cannot be read. Leave it on disk
+		// untouched and serve a throwaway certificate for this run, so the API
+		// stays reachable for diagnosis instead of going dark on an unattended
+		// appliance. The next start tries the installed pair again.
+		log.Printf("management certificate: %v; serving a temporary self-signed certificate for this run", pe)
+		center.Publish(notify.Notification{
+			Severity: notify.SeverityWarning,
+			Category: notify.CategorySystem,
+			Kind:     notify.KindEvent,
+			Title:    "Installed certificate unreadable",
+			Message:  "The installed TLS certificate could not be read, so a temporary self-signed certificate is in use until the next restart: " + pe.Error(),
+		})
+		cert, err = mgmtcert.Ephemeral(certHosts())
+	}
 	if err != nil {
 		log.Printf("management API disabled: cannot prepare TLS certificate: %v", err)
 		return closedMgmt(), false

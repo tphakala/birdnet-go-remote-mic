@@ -379,7 +379,7 @@ func TestHandlerServesReadEndpointsUnderBasePath(t *testing.T) {
 		if resp.StatusCode != 404 {
 			t.Errorf("status = %d, want 404", resp.StatusCode)
 		}
-		if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		if ct := resp.Header.Get("Content-Type"); ct != problemJSONType {
 			t.Errorf("content-type = %q, want application/problem+json", ct)
 		}
 	})
@@ -406,10 +406,42 @@ func TestHandlerServesReadEndpointsUnderBasePath(t *testing.T) {
 		if resp.StatusCode != 400 {
 			t.Errorf("status = %d, want 400", resp.StatusCode)
 		}
-		if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		if ct := resp.Header.Get("Content-Type"); ct != problemJSONType {
 			t.Errorf("content-type = %q, want application/problem+json", ct)
 		}
 	})
+}
+
+func TestOversizedBodyYieldsProblem413(t *testing.T) {
+	t.Parallel()
+	h := New(&fakeProvider{}).Handler()
+	for _, tc := range []struct {
+		name string
+		size int
+		want int
+	}{
+		// Just under the cap still decodes (and fails as a 501 from the
+		// unconfigured store), so the cap does not reject legitimate bodies.
+		{"under cap", maxRequestBody - 64, http.StatusNotImplemented},
+		{"over cap", maxRequestBody + 1, http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `{"discovery":{"enabled":true},"pad":"` + strings.Repeat("a", tc.size) + `"}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/api/v1/config", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			// Sabotage target: limitBody in Handler. Without it the oversized
+			// body decodes in full and the store's 501 comes back instead.
+			if rec.Code != tc.want {
+				t.Errorf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != problemJSONType {
+				t.Errorf("content-type = %q, want application/problem+json", ct)
+			}
+		})
+	}
 }
 
 func TestEventsRoutedToStreamHandlerWhenMounted(t *testing.T) {

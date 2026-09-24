@@ -44,6 +44,15 @@ export class AppStore extends EventTarget {
   // race the 3s poll), so an older response must not overwrite a newer one and
   // restore a stale Enable card.
   private availableEpoch = 0;
+  // Monotonic generations for the polled status, devices, and system reads. The
+  // poll timer does not wait for a tick to finish (and an action can trigger an
+  // extra refresh), so on a slow link a newer read can resolve first; the older
+  // body must not then overwrite it and briefly undo a device state change. The
+  // poll deliberately does not skip ticks instead: the API client sets no fetch
+  // timeout, so a hung request would stop polling for good.
+  private statusEpoch = 0;
+  private devicesEpoch = 0;
+  private systemEpoch = 0;
   // loginPending is set from the first 401 until a token is accepted, so a
   // burst of rejected requests (the initial load fires five) opens one prompt
   // and the generic load-error state is suppressed in favor of it.
@@ -266,8 +275,11 @@ export class AppStore extends EventTarget {
   }
 
   public async refreshStatus(): Promise<boolean> {
+    const epoch = ++this.statusEpoch;
     try {
-      this.state.status = await api.getStatus();
+      const status = await api.getStatus();
+      if (epoch !== this.statusEpoch) return true;
+      this.state.status = status;
       this.dispatchEvent(new CustomEvent("status", { detail: this.state.status }));
       return true;
     } catch (err) {
@@ -293,8 +305,10 @@ export class AppStore extends EventTarget {
   }
 
   public async refreshDevices(): Promise<boolean> {
+    const epoch = ++this.devicesEpoch;
     try {
       const devices = await api.getDevices();
+      if (epoch !== this.devicesEpoch) return true;
       // Defensive normalization at the store boundary: the contract guarantees
       // channels is an array, but every consumer indexes it, so a malformed
       // payload becomes an empty selection rather than a runtime error.
@@ -317,8 +331,11 @@ export class AppStore extends EventTarget {
   }
 
   public async refreshSystem(): Promise<boolean> {
+    const epoch = ++this.systemEpoch;
     try {
-      this.state.system = await api.getSystem();
+      const system = await api.getSystem();
+      if (epoch !== this.systemEpoch) return true;
+      this.state.system = system;
       this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
       return true;
     } catch {

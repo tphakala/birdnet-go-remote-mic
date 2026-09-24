@@ -110,8 +110,7 @@ reconcile:
 - `localStorage` holds only per-browser preferences (theme, access token,
   collapsed sections, dismissed notifications). Wrap access so a
   storage-blocked browser still works (`readBoolPref`/`writeBoolPref`, the
-  try/catch in `auth.ts` and `notifications.ts`). The theme read and write in
-  `app.ts` are still unwrapped: a known defect to fix, not a pattern to copy.
+  try/catch in `auth.ts`, `notifications.ts`, and the theme code in `app.ts`).
 
 ## Accessibility (a CI gate, not a nicety)
 
