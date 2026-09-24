@@ -41,8 +41,10 @@ type Frame struct {
 // state on the next active one, so a client connecting to an idle stream gets
 // no encoder history from before it connected. (A teardown and a new PLAY that
 // both land within one period are not seen as idle; that client continues the
-// running stream, as it did before the gate existed.) A nil active means
-// always active.
+// running stream, as it did before the gate existed. If the fan-out saw the
+// gap and handed the stage an empty period, the continued stream also skips
+// that period's samples: a PCM stream has a one-period gap, an Opus frame
+// joins the samples either side of it.) A nil active means always active.
 type Stage interface {
 	Run(src audio.Source, active func() bool, emit func(Frame) error) error
 }

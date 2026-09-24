@@ -127,10 +127,17 @@ type appliance struct {
 	// condition is still active (it may already be serving, in its settle).
 	// retryTimer fires at the earliest pending retry or settle deadline and
 	// signals retryDue (buffered depth 1, coalescing), which the run loop drains
-	// into onRetryDue. quietDown silences the open's log lines during a retry
-	// attempt that logAttempt skips.
+	// into onRetryDue; retryAt is the deadline it was last armed for, so
+	// re-arming for an unchanged deadline is a no-op. It is zero while stopped,
+	// and onRetryDue zeroes it before re-arming; a timer left armed across that
+	// (a stale signal's pass) only costs one spurious, harmless pass. Between a
+	// firing and onRetryDue it still holds the spent deadline, which is safe
+	// because the signal is pending.
+	// quietDown silences the open's log lines during a retry attempt that
+	// logAttempt skips.
 	retries    map[string]*retryState
 	retryTimer *time.Timer
+	retryAt    time.Time
 	retryDue   chan struct{}
 	quietDown  bool
 }
@@ -205,28 +212,25 @@ func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 // resolveError explains why a configured device was not opened after its id
 // failed to resolve, returning the cause class and the operator-facing message.
 func resolveError(dev *config.Device, err error) (cause, msg string) {
-	var nf *capture.DeviceNotFoundError
-	var amb *capture.AmbiguousDeviceError
-	var bad *capture.BadDeviceError
-	switch {
-	case errors.As(err, &nf):
+	if _, ok := errors.AsType[*capture.DeviceNotFoundError](err); ok {
 		return downNotConnected, fmt.Sprintf("Not connected: no device matches %s", dev.Device)
-	case errors.As(err, &amb):
+	}
+	if amb, ok := errors.AsType[*capture.AmbiguousDeviceError](err); ok {
 		// The remedy works from either surface that shows this message (the web
 		// card and the CLI check): remove this entry and add each unit by its own
 		// id. The web UI enables each available unit by its id; a CLI user
 		// configures each by the id from `devices list`. The old "bind it by port"
 		// wording was config-file jargon the web UI could not act on.
 		return downAmbiguous, fmt.Sprintf("Ambiguous: %s matches %d devices (%s). Remove this entry and re-add each unit by its own id.", dev.Device, len(amb.Matches), strings.Join(amb.Matches, ", "))
-	case errors.As(err, &bad):
+	}
+	if _, ok := errors.AsType[*capture.BadDeviceError](err); ok {
 		// A malformed id ("plughw:1,0", "hw:Loopback,1", a typo) is in no accepted
 		// form and can never open. IsCardIndexID classifies these by shape as card
 		// indexes, but unlike a real card index no reboot can make them resolve, so
 		// report them as malformed and tell the operator to fix the id.
 		return downMalformed, fmt.Sprintf("Malformed device id %s: %v. Re-add the device to bind it to real hardware.", dev.Device, err)
-	default:
-		return downResolve, fmt.Sprintf("Cannot resolve %s: %v", dev.Device, err)
 	}
+	return downResolve, fmt.Sprintf("Cannot resolve %s: %v", dev.Device, err)
 }
 
 // refreshHardware resolves every configured device id against the host's
@@ -267,8 +271,7 @@ func (a *appliance) refreshHardware(cfg *config.Config) {
 		// re-offered as available and re-provisioned into a dead entry while the
 		// ambiguous entry stands; the operator's remedy is to delete it and re-add
 		// each unit by its port id.
-		var amb *capture.AmbiguousDeviceError
-		if errors.As(err, &amb) {
+		if amb, ok := errors.AsType[*capture.AmbiguousDeviceError](err); ok {
 			for _, m := range amb.Matches {
 				ids[m] = true
 			}
@@ -389,10 +392,12 @@ func (a *appliance) runningParams() map[string]config.Device {
 // across cores and a slow encoder cannot blow the capture period budget. Each
 // stage is gated on its own stream feed's active flag, so it encodes only while
 // a client plays that stream and otherwise just drains its periods (the fan-out
-// never backs up); an idle appliance pays for capture and the fan-out but not
-// for encoding. When the capture ends the fan-out closes the stream feeds, so
-// every stage goroutine returns, and pump waits for them before reporting so no
-// stage outlives the device's teardown.
+// never backs up). The fan-out is gated the same way: it hands an idle stream an
+// empty period instead of a copy, so an idle appliance pays for the capture read
+// but not for copying, channel extraction, or encoding. When the capture ends
+// the fan-out closes the stream feeds, so every stage goroutine returns, and
+// pump waits for them before reporting so no stage outlives the device's
+// teardown.
 func (a *appliance) pump(rt *deviceRuntime) {
 	runtime.LockOSThread()
 	var wg sync.WaitGroup
@@ -467,18 +472,18 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	res := a.hw[dev.Device]
 	hw := res.hw
 	if res.err != nil {
-		var nf *capture.DeviceNotFoundError
-		var amb *capture.AmbiguousDeviceError
-		var bad *capture.BadDeviceError
+		_, nf := errors.AsType[*capture.DeviceNotFoundError](res.err)
+		_, amb := errors.AsType[*capture.AmbiguousDeviceError](res.err)
+		_, bad := errors.AsType[*capture.BadDeviceError](res.err)
 		// A malformed id (*BadDeviceError) is refused here rather than falling
 		// through to an open that can only fail. IsCardIndexID returns true for a
 		// malformed id (for example "plughw:1,0"), so the !IsCardIndexID term does
-		// NOT catch it; the explicit errors.As(&bad) term is what refuses it, and
-		// reporting it as malformed is more useful than a generic open failure
-		// mislabelled as a card index a few lines down. A card index whose
-		// enumeration merely failed resolves to a wrapped ErrDeviceGone, not
-		// *BadDeviceError, so it still falls through to the container-fallback open.
-		if !config.IsCardIndexID(dev.Device) || errors.As(res.err, &nf) || errors.As(res.err, &amb) || errors.As(res.err, &bad) {
+		// NOT catch it; the explicit bad term is what refuses it, and reporting it
+		// as malformed is more useful than a generic open failure mislabelled as a
+		// card index a few lines down. A card index whose enumeration merely failed
+		// resolves to a wrapped ErrDeviceGone, not *BadDeviceError, so it still
+		// falls through to the container-fallback open.
+		if !config.IsCardIndexID(dev.Device) || nf || amb || bad {
 			cause, msg := resolveError(dev, res.err)
 			title := "Device unavailable"
 			switch cause {
@@ -852,8 +857,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 		lost := errors.Is(res.err, capture.ErrDeviceGone)
 		if !lost {
 			if _, rerr := a.resolve(res.rt.dev.Device); rerr != nil {
-				var nf *capture.DeviceNotFoundError
-				lost = errors.As(rerr, &nf)
+				_, lost = errors.AsType[*capture.DeviceNotFoundError](rerr)
 			}
 		}
 		if lost {
@@ -887,7 +891,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// retrySettle (a config save or hardware change clears it at once). A card-index
 			// entry is not retried unattended, so it waits for a config save.
 			restart := restartHint(&res.rt.dev)
-			if !a.retrying(name) || logAttempt(a.retries[name].failures+1) {
+			if a.nextFailureLogged(name) {
 				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
 			}
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
@@ -924,7 +928,7 @@ func (a *appliance) retryDown() {
 			// it waits for an explicit config save rather than restarting here.
 			continue
 		}
-		if s := rt.currentState(); s != mgmtserver.StateSkipped && s != mgmtserver.StateFailed {
+		if !isDown(rt.currentState()) {
 			continue
 		}
 		a.startDevice(&d)

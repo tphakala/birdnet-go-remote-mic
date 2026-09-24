@@ -88,6 +88,37 @@ func backoffDelay(attempts int) time.Duration {
 // flood the log.
 func logAttempt(n int) bool { return n <= retryLogFirst || n%retryLogEvery == 0 }
 
+// nextFailureLogged reports whether the device's next failure is one to log.
+// A device with no restart in flight starts a new outage at failure 1, which is
+// always logged; one mid-retry is gated by logAttempt on the failure count it
+// is about to reach. It is the one place that decision is made, shared by the
+// retry scheduling, the retry attempt, and a pump death, so their logging
+// cannot drift apart.
+func (a *appliance) nextFailureLogged(name string) bool {
+	if !a.retrying(name) {
+		return true
+	}
+	return logAttempt(a.retries[name].failures + 1)
+}
+
+// enabledInConfig reports whether name is an enabled device in the current
+// configuration.
+func (a *appliance) enabledInConfig(name string) bool {
+	for i := range a.cfg.Devices {
+		if a.cfg.Devices[i].Name == name {
+			return a.cfg.Devices[i].IsEnabled()
+		}
+	}
+	return false
+}
+
+// isDown reports whether a device record is down: skipped (it could not be
+// opened) or failed (it died after opening). Both unattended restart paths,
+// the backoff retry and the hardware-change retry, restart only a down device.
+func isDown(s mgmtserver.DeviceState) bool {
+	return s == mgmtserver.StateSkipped || s == mgmtserver.StateFailed
+}
+
 // retryableCause reports whether a down cause is one a later restart of the same
 // device can fix on its own: an open error (busy in another process, a transient
 // driver error), a pump that died while the device stayed present, or a resolve
@@ -123,6 +154,7 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 		a.dropRetry(name)
 		return
 	}
+	loud := a.nextFailureLogged(name)
 	now := time.Now()
 	st := a.retries[name]
 	if st == nil {
@@ -142,7 +174,7 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 	st.failures++
 	delay := backoffDelay(st.attempts)
 	st.next = now.Add(delay)
-	if logAttempt(st.failures) {
+	if loud {
 		log.Printf("device %q: retrying in %s (failure %d)", name, delay, st.failures)
 	}
 	a.armRetryTimer()
@@ -153,17 +185,19 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 // (a disconnect is brought back by the hardware-change retry).
 func (a *appliance) dropRetry(name string) {
 	delete(a.retries, name)
+	// Re-arm even when there was no state here: startDevice deletes the state
+	// before it opens, so the timer may still be armed for that deadline.
+	// armRetryTimer is a no-op when the earliest deadline has not changed.
 	a.armRetryTimer()
 }
 
-// armRetryTimer (re)arms the single retry timer for the earliest pending retry
-// or settle deadline. The timer only signals retryDue; the run loop does the
-// work in onRetryDue, so the appliance state stays single-goroutine.
+// armRetryTimer arms the single retry timer for the earliest pending retry or
+// settle deadline, stops it when none is pending, and leaves it alone when that
+// deadline has not changed. Callers touching several devices in one pass may
+// call it per device; only a changed deadline costs a timer reset. The timer
+// only signals retryDue; the run loop does the work in onRetryDue, so the
+// appliance state stays single-goroutine.
 func (a *appliance) armRetryTimer() {
-	if a.retryTimer != nil {
-		a.retryTimer.Stop()
-		a.retryTimer = nil
-	}
 	var due time.Time
 	for _, st := range a.retries {
 		for _, t := range [...]time.Time{st.next, st.settleAt} {
@@ -172,15 +206,31 @@ func (a *appliance) armRetryTimer() {
 			}
 		}
 	}
-	if due.IsZero() {
+	if due.Equal(a.retryAt) {
 		return
 	}
-	a.retryTimer = time.AfterFunc(time.Until(due), func() {
-		select {
-		case a.retryDue <- struct{}{}:
-		default:
+	a.retryAt = due
+	if due.IsZero() {
+		if a.retryTimer != nil {
+			a.retryTimer.Stop()
 		}
-	})
+		return
+	}
+	if a.retryTimer == nil {
+		a.retryTimer = time.AfterFunc(time.Until(due), a.signalRetryDue)
+		return
+	}
+	a.retryTimer.Reset(time.Until(due))
+}
+
+// signalRetryDue is the retry timer's callback. The send never blocks: retryDue
+// holds one pending signal, and a signal already pending covers this one,
+// because onRetryDue checks every deadline against the clock.
+func (a *appliance) signalRetryDue() {
+	select {
+	case a.retryDue <- struct{}{}:
+	default:
+	}
 }
 
 // onRetryDue runs on the run loop when the retry timer fires. It completes the
@@ -194,23 +244,23 @@ func (a *appliance) armRetryTimer() {
 // (clear and re-announce) and onPumpDone raises a fresh onset right after. The
 // window is one run-loop turn wide, and the device is retried as usual.
 func (a *appliance) onRetryDue() {
+	// Forget the armed deadline so the armRetryTimer below recomputes and arms
+	// afresh rather than trusting it. A stale signal may arrive while the timer
+	// is armed for a later deadline; re-arming for that deadline is harmless.
+	a.retryAt = time.Time{}
 	now := time.Now()
 	// Drop retry state for any name that is not an enabled configured device,
 	// mirroring the reconcile's cleanup on remove and disable. The pass below only
 	// walks configured devices, so a state under an unconfigured name would never
 	// have its deadline consumed and armRetryTimer would re-arm a zero delay for it
-	// forever; this keeps a missed cleanup from becoming a busy loop.
-	enabled := make(map[string]bool, len(a.cfg.Devices))
-	for i := range a.cfg.Devices {
-		if a.cfg.Devices[i].IsEnabled() {
-			enabled[a.cfg.Devices[i].Name] = true
-		}
-	}
-	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool { return !enabled[name] })
+	// forever; this keeps a missed cleanup from becoming a busy loop. It checks the
+	// configuration itself rather than the device records, so it does not depend
+	// on reconcileRecords, the cleanup it backstops.
+	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool { return !a.enabledInConfig(name) })
 	recovered := false
 	attempted := false
 	for i := range a.cfg.Devices {
-		d := a.cfg.Devices[i]
+		d := &a.cfg.Devices[i]
 		st := a.retries[d.Name]
 		if st == nil {
 			continue
@@ -230,10 +280,7 @@ func (a *appliance) onRetryDue() {
 			// Defensive: every path that replaces or restarts a down device
 			// (startDevice, reconcileRecords) deletes its retry state first, so a
 			// due retry is expected to find a skipped or failed record here.
-			if rt == nil {
-				continue
-			}
-			if s := rt.currentState(); s != mgmtserver.StateSkipped && s != mgmtserver.StateFailed {
+			if rt == nil || !isDown(rt.currentState()) {
 				continue
 			}
 			if !attempted {
@@ -242,7 +289,7 @@ func (a *appliance) onRetryDue() {
 				a.refreshHardware(&a.cfg)
 				attempted = true
 			}
-			a.attemptRetry(&d, st)
+			a.attemptRetry(d, st)
 		}
 	}
 	if attempted {
@@ -265,7 +312,7 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
 	// Retry n follows failure n. Its open logs are gated on the failure it would
 	// become, failure n+1, so they appear exactly when scheduleRetry logs that
 	// failure.
-	loud := logAttempt(st.failures + 1)
+	loud := a.nextFailureLogged(d.Name)
 	if loud {
 		log.Printf("device %q: retry %d", d.Name, st.failures)
 	}
@@ -316,4 +363,5 @@ func (a *appliance) stopRetries() {
 		a.retryTimer.Stop()
 		a.retryTimer = nil
 	}
+	a.retryAt = time.Time{}
 }

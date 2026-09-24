@@ -185,7 +185,8 @@ var runtimeGen atomic.Uint64
 // hardware channel count openCh, meters every opened channel once, and fans the
 // capture out into one pipeline stage, SDP, and RTSP track per configured stream.
 // The meter and fan-out run on the capture pump regardless of whether any RTSP
-// client is connected. Each stream extracts its own channels from the shared
+// client is connected, but the fan-out copies a period only for a stream a
+// client is playing. Each stream extracts its own channels from the shared
 // capture with a selecting source, so the device opens the hardware exactly once.
 func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
 	base, capFormat, err := audio.OpenCaptureAt(dev, openCh)
@@ -219,12 +220,10 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 	// Meter every captured channel once on the shared reader, then fan the metered
 	// capture out to each stream's selecting source. Registering the meter after the
 	// fallible build above keeps a device that fails there out of the levels hub.
+	// Each consumer is gated on its stream feed's active flag, so a stream with no
+	// client playing costs no per-period copy or channel extraction.
 	metered := audio.NewMeteredSource(base, hub.Meter(dev.Name, channels))
-	drops := make([]*atomic.Uint64, len(streams))
-	for i := range streams {
-		drops[i] = &streams[i].dropped
-	}
-	fanout, consumers := audio.NewFanout(metered, dev.Name, drops)
+	fanout, consumers := audio.NewFanout(metered, dev.Name, fanoutStreams(streams))
 	for i := range streams {
 		streams[i].src = audio.NewSelectingSource(consumers[i], channels, streams[i].stream.Channels)
 	}
@@ -301,14 +300,11 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 // fallback can open once it frees and resolves to stereo. Everything else (a
 // busy or transiently failing device) is retried.
 func permanentOpenError(err error) bool {
-	var (
-		badDev  *capture.BadDeviceError
-		badCfg  *capture.ConfigError
-		missing *capture.DeviceNotFoundError
-		amb     *capture.AmbiguousDeviceError
-	)
-	return errors.As(err, &badDev) || errors.As(err, &badCfg) ||
-		errors.As(err, &missing) || errors.As(err, &amb)
+	_, badDev := errors.AsType[*capture.BadDeviceError](err)
+	_, badCfg := errors.AsType[*capture.ConfigError](err)
+	_, missing := errors.AsType[*capture.DeviceNotFoundError](err)
+	_, amb := errors.AsType[*capture.AmbiguousDeviceError](err)
+	return badDev || badCfg || missing || amb
 }
 
 // lockState builds the run-lock state for a serving management API. certPath
@@ -746,6 +742,17 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 		}
 	}
 	return infos, port, nil
+}
+
+// fanoutStreams describes each stream's fan-out consumer: its drop counter,
+// shared with the stream's downstream frame drops, and its feed's active flag,
+// so the fan-out hands an idle stream empty periods instead of copied audio.
+func fanoutStreams(streams []*streamRuntime) []audio.FanoutStream {
+	out := make([]audio.FanoutStream, len(streams))
+	for i, sr := range streams {
+		out[i] = audio.FanoutStream{Dropped: &sr.dropped, Active: sr.frames.Active}
+	}
+	return out
 }
 
 // buildStage builds one stream's pipeline stage and its RTP payload type.

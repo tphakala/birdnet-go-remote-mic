@@ -136,8 +136,7 @@ func toExit(err error, stderr io.Writer) int {
 	case errors.Is(err, flag.ErrHelp):
 		return 0
 	}
-	var ue *usageError
-	if errors.As(err, &ue) {
+	if ue, ok := errors.AsType[*usageError](err); ok {
 		if !ue.printed {
 			out(stderr, "remote-mic: %v\n", err)
 		}

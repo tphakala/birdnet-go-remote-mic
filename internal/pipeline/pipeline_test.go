@@ -15,6 +15,7 @@ import (
 )
 
 func TestPCMStageRoundTrip(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 48000, 1
 	periodFrames := rate / 50 // 960
 
@@ -52,6 +53,7 @@ func TestPCMStageRoundTrip(t *testing.T) {
 }
 
 func TestPCMStagePayloadCap(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 384000, 2
 	frameBytes := 2 * ch
 	period := make([]byte, 8000*frameBytes) // 32000 bytes, above the 15360 cap
@@ -77,6 +79,7 @@ func TestPCMStagePayloadCap(t *testing.T) {
 }
 
 func TestOpusStageFraming(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 48000, 1
 	// Four 480-sample periods => 1920 samples => two 960-sample Opus frames.
 	periods := make([][]byte, 4)
@@ -119,6 +122,7 @@ func TestOpusStageFraming(t *testing.T) {
 }
 
 func TestOpusStageStereo(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 48000, 2
 	// Four 480-frame stereo periods => 1920 frames => two 960-frame Opus frames.
 	// Each frame carries opusFrameSamplesTest*ch interleaved samples.
@@ -183,6 +187,7 @@ func TestOpusStageStereo(t *testing.T) {
 }
 
 func TestOpusStageRejectsTooManyChannels(t *testing.T) {
+	t.Parallel()
 	// The config layer already forbids more than two Opus channels; the stage
 	// guards independently, so a 3-channel source is rejected, not encoded.
 	src := audio.NewFakeSource(48000, 3, [][]byte{make([]byte, 960*3*2)})
@@ -400,6 +405,64 @@ func TestOpusStageIdleEmitsNothing(t *testing.T) {
 	}
 }
 
+// TestStagesIgnoreEmptyPeriodWhileActive pins what an active stage does with
+// the empty period the fan-out hands an idle stream, which an active stage sees
+// when a client starts playing between the fan-out's gate and its own: nothing.
+// Each stage's output must equal its output for the real periods alone.
+func TestStagesIgnoreEmptyPeriodWhileActive(t *testing.T) {
+	t.Parallel()
+	t.Run("pcm", func(t *testing.T) {
+		t.Parallel()
+		const rate, ch, frames = 48000, 1, 960
+		audioPeriods := splitPeriods(tonePCM(2*frames, ch), frames, ch)
+		periods := [][]byte{audioPeriods[0], nil, audioPeriods[1]}
+		var got []byte
+		var dur uint32
+		err := pipeline.NewPCM(ch).Run(audio.NewFakeSource(rate, ch, periods), nil, func(f pipeline.Frame) error {
+			if len(f.Payload) == 0 || f.Duration == 0 {
+				t.Errorf("got an empty frame (%d bytes, duration %d), want none", len(f.Payload), f.Duration)
+			}
+			for i := 0; i+1 < len(f.Payload); i += 2 {
+				got = binary.LittleEndian.AppendUint16(got, binary.BigEndian.Uint16(f.Payload[i:]))
+			}
+			dur += f.Duration
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Run: got error %v, want none", err)
+		}
+		if want := append(append([]byte{}, audioPeriods[0]...), audioPeriods[1]...); !bytes.Equal(got, want) {
+			t.Errorf("got %d bytes of PCM, want exactly the %d bytes of the real periods", len(got), len(want))
+		}
+		if dur != 2*frames {
+			t.Errorf("got total duration %d, want %d", dur, 2*frames)
+		}
+	})
+	t.Run("opus", func(t *testing.T) {
+		t.Parallel()
+		// 480-sample periods, two per 960-sample frame, with an empty period in
+		// the middle of each frame: a stage that treated it as a boundary would
+		// encode a partial frame.
+		cfg := config.Opus{Bitrate: 64000}
+		audioPeriods := splitPeriods(tonePCM(4*480, 1), 480, 1)
+		periods := [][]byte{audioPeriods[0], nil, audioPeriods[1], audioPeriods[2], nil, audioPeriods[3]}
+		got := runOpus(t, cfg, periods, 1, nil)
+		var all []byte
+		for _, p := range audioPeriods {
+			all = append(all, p...)
+		}
+		want := referenceOpus(t, cfg, all, 1)
+		if len(got) != len(want) {
+			t.Fatalf("got %d frames, want %d (the real periods alone)", len(got), len(want))
+		}
+		for i := range want {
+			if !bytes.Equal(got[i], want[i]) {
+				t.Errorf("frame %d differs from the frame for the real periods alone", i)
+			}
+		}
+	})
+}
+
 // TestOpusStageResumesWithFreshEncoder pins the resume contract: after an idle
 // stretch, the stage emits exactly what a freshly built encoder emits for the
 // same post-activation PCM. That fails if the encoder is not reset (its history
@@ -435,6 +498,7 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 }
 
 func TestSDPSpec(t *testing.T) {
+	t.Parallel()
 	pcm := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "m", 256000, 1)
 	if pcm.EncodingName != "L16" || pcm.ClockRate != 256000 || pcm.Channels != 1 || pcm.PayloadType != 96 || pcm.Ptime != 20 {
 		t.Errorf("PCM spec unexpected: %+v", pcm)
@@ -467,6 +531,7 @@ func TestSDPSpec(t *testing.T) {
 // helpers the RTP writer wiring and mDNS advertisement use, so a DESCRIBE can
 // never announce a payload type or codec the stream does not actually send.
 func TestPayloadTypeAndCodecName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		mode    config.Mode
 		payload int
@@ -494,6 +559,7 @@ func TestPayloadTypeAndCodecName(t *testing.T) {
 // TestSDPSpecOpusDefaultBitrate asserts a stream with no configured bitrate
 // advertises the per-channel default (128 kbps per channel) rather than none.
 func TestSDPSpecOpusDefaultBitrate(t *testing.T) {
+	t.Parallel()
 	mono := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Channels: []int{1}}, "m", 48000, 1)
 	if !strings.Contains(mono.FMTP, "maxaveragebitrate=128000") {
 		t.Errorf("mono fmtp = %q, want maxaveragebitrate=128000", mono.FMTP)

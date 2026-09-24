@@ -51,7 +51,7 @@ func serveWith(t *testing.T, cfg Config, tr *Track) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() { cancel(); _ = ln.Close() })
 	go func() {
 		for {
@@ -83,7 +83,7 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	var pts []time.Duration
 	done := make(chan struct{})
 	var once sync.Once
-	client, err := rtsp.Dial(context.Background(), rtsp.Config{
+	client, err := rtsp.Dial(t.Context(), rtsp.Config{
 		URL:     "rtsp://" + addr + testPath,
 		Timeout: 5 * time.Second,
 		OnFrame: func(fr audiostream.Frame) {
@@ -109,8 +109,9 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	// source is finite, so pumping earlier would discard every period. The stage
 	// is gated on the feed exactly as the appliance wires it, so this also proves
 	// PLAY opens the encode gate.
+	stageErr := make(chan error, 1)
 	go func() {
-		_ = pipeline.NewPCM(1).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
+		stageErr <- pipeline.NewPCM(1).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
 			frames.Push(f)
 			return nil
 		})
@@ -120,6 +121,15 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for the ingest client to receive the audio")
+	}
+
+	select {
+	case err := <-stageErr:
+		if err != nil {
+			t.Errorf("stage Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stage to finish")
 	}
 
 	mu.Lock()
@@ -166,7 +176,7 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	decoded := 0
 	done := make(chan struct{})
 	var once sync.Once
-	client, err := rtsp.Dial(context.Background(), rtsp.Config{
+	client, err := rtsp.Dial(t.Context(), rtsp.Config{
 		URL:     "rtsp://" + addr + testPath,
 		Timeout: 5 * time.Second,
 		OnFrame: func(fr audiostream.Frame) {
@@ -196,8 +206,9 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	// Push only after PLAY: delivery is gated on activation, and the fake
 	// source is finite, so pumping earlier would discard every period. The stage
 	// is gated on the feed exactly as the appliance wires it.
+	stageErr := make(chan error, 1)
 	go func() {
-		_ = pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
+		stageErr <- pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
 			frames.Push(f)
 			return nil
 		})
@@ -208,23 +219,32 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Opus frames")
 	}
+
+	select {
+	case err := <-stageErr:
+		if err != nil {
+			t.Errorf("stage Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stage to finish")
+	}
 }
 
 // drivePlay runs the client's DESCRIBE/SETUP/PLAY after Dial (which only does
 // OPTIONS), selecting the first described track.
 func drivePlay(t *testing.T, client *rtsp.Client) error {
 	t.Helper()
-	tracks, err := client.Describe(context.Background())
+	tracks, err := client.Describe(t.Context())
 	if err != nil {
 		return err
 	}
 	if len(tracks) == 0 {
 		return errNoTracks
 	}
-	if err := client.Setup(context.Background(), tracks[0], rtsp.SetupOptions{}); err != nil {
+	if err := client.Setup(t.Context(), tracks[0], rtsp.SetupOptions{}); err != nil {
 		return err
 	}
-	return client.Play(context.Background())
+	return client.Play(t.Context())
 }
 
 var errNoTracks = errors.New("no tracks described")
@@ -279,7 +299,7 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	}
 	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1, writerDone: make(chan struct{})}
 
 	var wg sync.WaitGroup
@@ -325,7 +345,7 @@ func TestWriterTearsDownOnWriteError(t *testing.T) {
 	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, writerDone: make(chan struct{})}
 
 	done := make(chan struct{})

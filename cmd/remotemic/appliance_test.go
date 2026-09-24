@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,22 +34,28 @@ const (
 // blockingSource is a fake audio.Source whose Read blocks until Close, so a
 // capture pump built on it stays alive until the appliance deliberately stops
 // it. That makes reconcile lifecycle tests deterministic: a pump ends exactly
-// when the test (or a reconcile) closes its source, never on its own.
+// when the test (or a reconcile) closes its source, or when the test fails it
+// on demand through kill (see killDevice), never on its own.
 type blockingSource struct {
 	rate, channels int
 	closed         chan struct{}
+	kill           chan error
 	once           sync.Once
 }
 
 func newBlockingSource(rate, channels int) *blockingSource {
-	return &blockingSource{rate: rate, channels: channels, closed: make(chan struct{})}
+	return &blockingSource{rate: rate, channels: channels, closed: make(chan struct{}), kill: make(chan error, 1)}
 }
 
 func (b *blockingSource) Negotiated() (rate, channels int) { return b.rate, b.channels }
 
 func (b *blockingSource) Read() (audio.Period, error) {
-	<-b.closed
-	return audio.Period{}, io.EOF
+	select {
+	case <-b.closed:
+		return audio.Period{}, io.EOF
+	case err := <-b.kill:
+		return audio.Period{}, err
+	}
 }
 
 func (b *blockingSource) Close() error {
@@ -60,10 +65,50 @@ func (b *blockingSource) Close() error {
 
 // fakeOpenLog records the open and close events an appliance drives, so a test
 // can assert their ordering (a hardware-swap restart must close both devices
-// before it reopens either).
+// before it reopens either). It also keeps each device's most recently opened
+// blocking source, so killDevice can fail that device's capture.
 type fakeOpenLog struct {
-	mu     sync.Mutex
-	events []string
+	mu      sync.Mutex
+	events  []string
+	sources map[string]*blockingSource
+}
+
+func (l *fakeOpenLog) setSource(name string, src *blockingSource) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.sources == nil {
+		l.sources = make(map[string]*blockingSource)
+	}
+	l.sources[name] = src
+}
+
+func (l *fakeOpenLog) source(name string) *blockingSource {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sources[name]
+}
+
+// killDevice fails the named device's running capture with err and processes
+// the pump's ending, so a test drives the real pump-death path (the fan-out read
+// fails, the pump reports it, onPumpDone handles it) rather than stopping the
+// device and faking the result.
+func killDevice(t *testing.T, app *appliance, log *fakeOpenLog, name string, err error) {
+	t.Helper()
+	src := log.source(name)
+	if src == nil {
+		t.Fatalf("no blocking source was opened for %q", name)
+	}
+	select {
+	case src.kill <- err:
+	default:
+		t.Fatalf("%q's source already has a failure queued; its pump is gone", name)
+	}
+	select {
+	case res := <-app.pumpDone:
+		app.onPumpDone(res)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%q's pump did not report after its capture failed", name)
+	}
 }
 
 func (l *fakeOpenLog) add(s string) {
@@ -100,7 +145,11 @@ func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Sour
 		if u := dev.StreamChannelUnion(); len(u) > 0 {
 			openCh = u[len(u)-1]
 		}
-		metered := audio.NewMeteredSource(loggingClose{newSrc(dev.Rate, openCh), dev.Name, log}, hub.Meter(dev.Name, openCh))
+		src := newSrc(dev.Rate, openCh)
+		if bs, ok := src.(*blockingSource); ok {
+			log.setSource(dev.Name, bs)
+		}
+		metered := audio.NewMeteredSource(loggingClose{src, dev.Name, log}, hub.Meter(dev.Name, openCh))
 		streams := make([]*streamRuntime, 0, len(dev.Streams))
 		for i := range dev.Streams {
 			s := dev.Streams[i]
@@ -112,11 +161,7 @@ func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Sour
 				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Frames: frames},
 			})
 		}
-		drops := make([]*atomic.Uint64, len(streams))
-		for i := range streams {
-			drops[i] = &streams[i].dropped
-		}
-		fanout, consumers := audio.NewFanout(metered, dev.Name, drops)
+		fanout, consumers := audio.NewFanout(metered, dev.Name, fanoutStreams(streams))
 		for i := range streams {
 			streams[i].src = audio.NewSelectingSource(consumers[i], openCh, streams[i].stream.Channels)
 		}
@@ -163,7 +208,7 @@ func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFun
 	startAnnounce = func(context.Context, string, []*deviceRuntime, bool) {}
 	t.Cleanup(func() { startAnnounce = prevAnnounce })
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	log := &fakeOpenLog{}
 	// One guard is shared by the RTSP server and the appliance, exactly as
 	// main.go wires them, so a token applied by reconcile enforces on the stream
@@ -183,6 +228,9 @@ func newTestAppliance(t *testing.T) (*appliance, *fakeOpenLog, context.CancelFun
 	app.resolve = func(id string) (audio.Hardware, error) {
 		return audio.Hardware{ID: id, HWAddr: id, IDStable: true}, nil
 	}
+	// A test that hits an open failure arms a real retry timer; stop it so it
+	// does not outlive the test.
+	t.Cleanup(app.stopRetries)
 	return app, log, cancel
 }
 
