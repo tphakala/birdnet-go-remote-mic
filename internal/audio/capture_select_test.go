@@ -84,6 +84,22 @@ func TestSelectingSourceExtractsChannels(t *testing.T) {
 	}
 }
 
+// TestSelectingSourceEmptyPeriod pins the contract the fan-out's idle gate
+// relies on: an idle stream's empty period (nil buffer, zero frames) passes
+// through a channel subset as an empty period, not an error that would fail
+// the stream's stage.
+func TestSelectingSourceEmptyPeriod(t *testing.T) {
+	t.Parallel()
+	src := NewSelectingSource(NewFakeSource(48000, 4, [][]byte{nil}), 4, []int{1, 3})
+	p, err := src.Read()
+	if err != nil {
+		t.Fatalf("Read: got error %v, want none", err)
+	}
+	if p.Frames != 0 || len(p.Buf) != 0 {
+		t.Errorf("got %d frames, %d bytes, want an empty period", p.Frames, len(p.Buf))
+	}
+}
+
 func TestSelectingSourceReusesBufferAcrossReads(t *testing.T) {
 	t.Parallel()
 	// Two periods of DIFFERENT frame counts through one selecting source: the
