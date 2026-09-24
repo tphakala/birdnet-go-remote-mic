@@ -32,10 +32,10 @@ func buildMonitors(ctx context.Context, hub *levels.Hub, dataPath string, drops 
 // place the two meet.
 type hostReader struct {
 	// cpu diffs /proc/stat over the host monitor's own 10 s poll window, rather
-	// than sharing GET /system's on-demand gauge, whose window is whatever gap
-	// separates the browser's polls. It averages the full window and reports
-	// ok=false on a read failure, so the monitor's sensor-gone resolve works for
-	// CPU too.
+	// than sharing GET /system's on-demand gauge, whose window depends on when
+	// requests arrive (see sysinfo.CPUGauge). It averages the full window and
+	// reports ok=false on a read failure, so the monitor's sensor-gone resolve
+	// works for CPU too.
 	cpu      *sysinfo.HostCPU
 	dataPath string
 }

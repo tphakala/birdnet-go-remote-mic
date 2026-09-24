@@ -24,9 +24,10 @@ import (
 // cpuGaugeSample window inside the request, as it does for the very first
 // request. A quarter second spans 25 ticks per core at the usual USER_HZ of
 // 100, so about 1% resolution on a four-core Pi Zero 2 W. The web UI polls every
-// 3 s (web/src/lib/store.ts startPolling), which
-// sits between the minimum and the stale limit, so only its first poll pays for
-// the sample.
+// 3 s (web/src/lib/store.ts startPolling), which sits between the minimum and
+// the stale limit, so a visible tab pays for the sample only on its first poll;
+// a background tab the browser throttles to about one poll a minute pays on
+// each.
 const (
 	cpuGaugeMinWindow = time.Second
 	cpuGaugeStale     = 30 * time.Second
@@ -38,9 +39,10 @@ const (
 // goroutine and costs nothing while nobody asks. The appliance usually runs with
 // no browser open, and a background sampler would read /proc/stat forever for no
 // consumer. When there is no reading from the last cpuGaugeStale, the request
-// itself samples for cpuGaugeSample, so every successful call reports a figure
-// covering at most the last 30 s. It is safe for concurrent use by handler
-// goroutines; the zero value reads the real /proc/stat.
+// itself samples for cpuGaugeSample, so every figure covers a window at most
+// cpuGaugeStale long that ended at most cpuGaugeMinWindow before the call. It
+// is safe for concurrent use by handler goroutines; the zero value reads the
+// real /proc/stat.
 type CPUGauge struct {
 	read func() (idle, total uint64, ok bool)
 
@@ -67,7 +69,7 @@ func newCPUGauge(read func() (idle, total uint64, ok bool)) *CPUGauge {
 // reading from the last cpuGaugeStale samples cpuGaugeSample first, holding the
 // lock meanwhile so concurrent callers wait and then reuse its figure. ok is
 // false on a nil gauge, when /proc/stat cannot be read, and when the counters
-// give no basis for a ratio (no ticks elapsed, or an idle counter that went
+// give no basis for a ratio (no ticks elapsed, or a counter that went
 // backwards).
 func (g *CPUGauge) Percent() (pct float64, ok bool) {
 	if g == nil {
@@ -156,7 +158,8 @@ func gatherStatic() staticFacts {
 // Collect gathers a full SystemInfo snapshot. dataPath is any path on the
 // filesystem whose usage should be reported (the appliance's config directory).
 // cpu may be nil, in which case CPUPercent is absent (as it is when the gauge
-// cannot read /proc/stat). Static host facts are cached after the first call;
+// cannot read /proc/stat or its counters give no basis for a ratio). Static
+// host facts are cached after the first call;
 // memory, disk, temperature and network are read every call, and CPU percent
 // follows the gauge's own window rules (see CPUGauge.Percent). Every source is
 // best effort: an unreadable file leaves its field zero or absent rather than

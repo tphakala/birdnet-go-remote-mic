@@ -1605,11 +1605,13 @@ components:
           maximum: 100
           description: >
             Host CPU utilization across all cores, as a percentage, averaged
-            over the window since the server's previous CPU reading. The window
-            is shared by all clients and is at most 30 seconds long: when there
-            is no reading that recent, the server samples for a quarter second
-            before responding. Absent only when the host's CPU counters cannot
-            be read or give no basis for a ratio.
+            over the window between the server's two latest CPU readings. The
+            readings are shared by all clients; a request less than a second
+            after the latest one reuses its figure. The window is at most 30
+            seconds long: when the latest reading is older than that, the
+            server samples for a quarter second before responding. Absent only
+            when the host's CPU counters cannot be read or give no basis for a
+            ratio.
         memTotalBytes:
           type: integer
           format: int64

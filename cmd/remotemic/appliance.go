@@ -419,9 +419,9 @@ func (a *appliance) pump(rt *deviceRuntime) {
 			// periods, spuriously tripping the drop monitor). So end the whole device:
 			// record the fault and close the fan-out, which unblocks the reader below and
 			// drives onPumpDone to fail the device (its paths 404 until it restarts), matching
-			// the pre-fan-out contract. On shutdown a stage with a playing client
-			// returns a.ctx.Err() from emit, and an idle one returns nil once the
-			// closed fan-out ends its source; either is a clean stop, not a fault.
+			// the pre-fan-out contract. On shutdown a stage returns a.ctx.Err() from
+			// emit or nil once the closed fan-out ends its source (an idle stage, which
+			// never emits, only the latter); either is a clean stop, not a fault.
 			// Because a stage encodes only while a client plays, an encode fault
 			// surfaces at a client's PLAY, not at open (see retrySettle).
 			if err != nil && a.ctx.Err() == nil {

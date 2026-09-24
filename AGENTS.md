@@ -155,7 +155,7 @@ them; new code MUST use them and existing code migrates when touched:
   Indexing `strings.Fields` is fine for fixed-column formats like `/proc/stat`.
 - (new) Range-over-func iterators (`iter.Seq`, `iter.Seq2`) instead of a
   throwaway slice or a callback API.
-- (new) `sync.WaitGroup.Go` instead of `Add(1)` plus `defer Done()`.
+- `sync.WaitGroup.Go` instead of `Add(1)` plus `defer Done()`.
 - Typed atomics (`atomic.Bool`, `atomic.Int64`, `atomic.Pointer[T]`), not
   `atomic.AddInt64` on bare integers.
 - `new(expr)` for a pointer to a value (`new(true)` for the `*bool` config
