@@ -131,6 +131,25 @@ export function writeBoolPref(key: string, value: boolean): void {
   }
 }
 
+// How long a download's object URL outlives the click. Some browsers start
+// the download asynchronously and cancel it when the URL is revoked on the next
+// tick; half a minute is ample, and holding the blob that long is harmless.
+const DOWNLOAD_REVOKE_MS = 30_000;
+
+// downloadBlob saves blob under filename through a temporary object URL and a
+// synthetic link click, then revokes the URL once the download has had time to
+// start.
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
+}
+
 // apiErrorMessage reduces any thrown value to a short human string: an ApiError
 // shows its problem title, any other Error its message, and anything else its
 // string form. Shared so the several save/PATCH catch blocks map failures the
@@ -231,12 +250,12 @@ export function formatUptime(totalSeconds: number, opts: { seconds?: boolean } =
 }
 
 // formatRelative renders the age of an event as a compact "N ago" string, given
-// two epoch-millisecond instants (the event and now). Callers correct the event
-// time for server clock skew before calling, so this stays a pure, browser-free
+// two epoch-millisecond instants (the event and now). Callers map the event onto
+// the browser clock before calling, so this stays a pure, browser-free
 // formatter. A future-dated instant (small forward skew) clamps to "just now".
 export function formatRelative(fromMs: number, toMs: number): string {
-  // An unparseable timestamp (Date.parse -> NaN) would otherwise fall through
-  // every threshold to "NaN ago"; render nothing instead.
+  // An unknown instant (NaN) would otherwise fall through every threshold to
+  // "NaN ago"; render nothing instead.
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return "";
   const s = Math.floor(Math.max(0, toMs - fromMs) / 1000);
   if (s < 10) return "just now";

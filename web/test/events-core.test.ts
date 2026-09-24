@@ -22,6 +22,7 @@ function notif(over: Partial<Notification> & { id: number }): Notification {
     id: over.id,
     bootId: over.bootId ?? "boot-a",
     time: over.time ?? "2026-09-22T10:00:00Z",
+    uptimeMs: over.uptimeMs ?? 0,
     severity: over.severity ?? "info",
     category: over.category ?? "system",
     kind: over.kind ?? "event",
@@ -91,15 +92,15 @@ test("facetCounts appends an unknown category", () => {
 
 test("conditionLifecycles pairs onset and clear by key", () => {
   const items = [
-    notif({ id: 1, kind: "onset", key: "k", time: "2026-09-22T10:00:00Z" }),
-    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:03:00Z" }),
-    notif({ id: 3, kind: "onset", key: "k", time: "2026-09-22T10:10:00Z" }),
+    notif({ id: 1, kind: "onset", key: "k", uptimeMs: 0 }),
+    notif({ id: 2, kind: "clear", key: "k", uptimeMs: 180_000 }),
+    notif({ id: 3, kind: "onset", key: "k", uptimeMs: 600_000 }),
     notif({ id: 4, kind: "event" }),
   ];
   const lc = conditionLifecycles(items);
   assert.deepEqual(lc.get(1), { state: "resolved", durationMs: 180_000 });
   assert.deepEqual(lc.get(2), { state: "resolved", durationMs: 180_000 });
-  assert.deepEqual(lc.get(3), { state: "ongoing", sinceMs: Date.parse("2026-09-22T10:10:00Z") });
+  assert.deepEqual(lc.get(3), { state: "ongoing", sinceUptimeMs: 600_000 });
   assert.equal(lc.has(4), false);
 });
 
@@ -110,8 +111,8 @@ test("a clear whose onset was trimmed has an unknown duration", () => {
 
 test("conditionLifecycles is order-independent on input", () => {
   const items = [
-    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:00:30Z" }),
-    notif({ id: 1, kind: "onset", key: "k", time: "2026-09-22T10:00:00Z" }),
+    notif({ id: 2, kind: "clear", key: "k", uptimeMs: 30_000 }),
+    notif({ id: 1, kind: "onset", key: "k", uptimeMs: 0 }),
   ];
   assert.deepEqual(conditionLifecycles(items).get(1), { state: "resolved", durationMs: 30_000 });
 });
@@ -159,10 +160,10 @@ test("facetCounts under a source selection counts both facets exactly", () => {
 
 test("conditionLifecycles pairs interleaved keys independently", () => {
   const items = [
-    notif({ id: 1, kind: "onset", key: "k1", time: "2026-09-22T10:00:00Z" }),
-    notif({ id: 2, kind: "onset", key: "k2", time: "2026-09-22T10:01:00Z" }),
-    notif({ id: 3, kind: "clear", key: "k1", time: "2026-09-22T10:02:00Z" }),
-    notif({ id: 4, kind: "clear", key: "k2", time: "2026-09-22T10:05:00Z" }),
+    notif({ id: 1, kind: "onset", key: "k1", uptimeMs: 0 }),
+    notif({ id: 2, kind: "onset", key: "k2", uptimeMs: 60_000 }),
+    notif({ id: 3, kind: "clear", key: "k1", uptimeMs: 120_000 }),
+    notif({ id: 4, kind: "clear", key: "k2", uptimeMs: 300_000 }),
   ];
   const lc = conditionLifecycles(items);
   assert.deepEqual(lc.get(1), { state: "resolved", durationMs: 120_000 });
@@ -173,10 +174,10 @@ test("conditionLifecycles pairs interleaved keys independently", () => {
 
 test("conditionLifecycles pairs two cycles on one key separately", () => {
   const items = [
-    notif({ id: 1, kind: "onset", key: "k", time: "2026-09-22T10:00:00Z" }),
-    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:03:00Z" }),
-    notif({ id: 3, kind: "onset", key: "k", time: "2026-09-22T10:10:00Z" }),
-    notif({ id: 4, kind: "clear", key: "k", time: "2026-09-22T10:15:00Z" }),
+    notif({ id: 1, kind: "onset", key: "k", uptimeMs: 0 }),
+    notif({ id: 2, kind: "clear", key: "k", uptimeMs: 180_000 }),
+    notif({ id: 3, kind: "onset", key: "k", uptimeMs: 600_000 }),
+    notif({ id: 4, kind: "clear", key: "k", uptimeMs: 900_000 }),
   ];
   const lc = conditionLifecycles(items);
   assert.deepEqual(lc.get(1), { state: "resolved", durationMs: 180_000 });
@@ -187,18 +188,29 @@ test("conditionLifecycles pairs two cycles on one key separately", () => {
 
 test("conditionLifecycles clamps a clear stamped before its onset to zero", () => {
   const items = [
-    notif({ id: 1, kind: "onset", key: "k", time: "2026-09-22T10:05:00Z" }),
-    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:00:00Z" }),
+    notif({ id: 1, kind: "onset", key: "k", uptimeMs: 300_000 }),
+    notif({ id: 2, kind: "clear", key: "k", uptimeMs: 0 }),
   ];
   assert.deepEqual(conditionLifecycles(items).get(2), { state: "resolved", durationMs: 0 });
 });
 
-test("conditionLifecycles reports null duration for an unparseable time", () => {
+test("conditionLifecycles reports null duration for a non-finite uptime", () => {
   const items = [
-    notif({ id: 1, kind: "onset", key: "k", time: "not-a-date" }),
-    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:00:00Z" }),
+    notif({ id: 1, kind: "onset", key: "k", uptimeMs: Number.NaN }),
+    notif({ id: 2, kind: "clear", key: "k", uptimeMs: 60_000 }),
   ];
   assert.deepEqual(conditionLifecycles(items).get(2), { state: "resolved", durationMs: null });
+});
+
+// The #88 regression: the server's wall clock stepped from the epoch to the real
+// date between onset and clear (an RTC-less Pi syncing NTP), but the monotonic
+// uptime shows two minutes passed, and that is what the duration must read.
+test("conditionLifecycles ignores a wall-clock step between onset and clear", () => {
+  const items = [
+    notif({ id: 1, kind: "onset", key: "k", time: "1970-01-01T00:00:40Z", uptimeMs: 40_000 }),
+    notif({ id: 2, kind: "clear", key: "k", time: "2026-09-22T10:00:00Z", uptimeMs: 160_000 }),
+  ];
+  assert.deepEqual(conditionLifecycles(items).get(2), { state: "resolved", durationMs: 120_000 });
 });
 
 test("conditionLifecycles ignores a keyless onset", () => {

@@ -26,14 +26,9 @@ import type { NotificationSnapshot } from "./types.js";
 const STORAGE_KEY = "remote-mic-notifications";
 // Coalesce the burst of refetches a gap can trigger into one snapshot request.
 const GAP_RELOAD_DELAY_MS = 400;
-// On a stable connection with no reconnect or gap, applySnapshot never runs to
-// prune, so live events accumulate unbounded. Once the client holds more than
-// this (comfortably above the server's 500-entry ring plus its pinned active
-// conditions) a reload re-syncs and prunes back down. The server ring is the
-// real bound; this just triggers it.
-const MAX_LIVE_ITEMS = 1000;
 
-// isSnapshot rejects a response that is not a notification snapshot. A proxy or
+// isSnapshot rejects a response that is not a notification snapshot (the uptime
+// anchor included, since every entry is placed in time through it). A proxy or
 // captive portal can answer a 200 with a non-JSON body, which api.request
 // surfaces as a string; folding that into applySnapshot would reset the read
 // state on a bogus bootId and then throw iterating a missing notifications array.
@@ -43,6 +38,8 @@ function isSnapshot(v: unknown): v is NotificationSnapshot {
   return (
     typeof s.bootId === "string" &&
     typeof s.serverTime === "string" &&
+    typeof s.uptimeMs === "number" &&
+    Number.isFinite(s.uptimeMs) &&
     Number.isFinite(s.nextId) &&
     Array.isArray(s.notifications) &&
     // Every entry must be well-formed AND belong to the snapshot's own boot, so
@@ -66,6 +63,9 @@ export class NotificationStore extends EventTarget {
   // tell an empty log from an unfetched one; the Events page uses this to show a
   // loading state rather than asserting "no events".
   private loadedOnce = false;
+  // True while the latest load attempt failed and none has succeeded since, so
+  // the Events page can offer Retry instead of waiting on "Loading" forever.
+  private loadFailed = false;
 
   constructor() {
     super();
@@ -91,9 +91,15 @@ export class NotificationStore extends EventTarget {
     return this.loadedOnce;
   }
 
+  // hasFailed reports whether the most recent load failed with no success since.
+  public hasFailed(): boolean {
+    return this.loadFailed;
+  }
+
   // load fetches the authoritative snapshot and folds it in. A failure (a 501
   // when no source is mounted, a 401 handled by the shared auth flow, or a
-  // transient error) is swallowed so the bell keeps working from its last state.
+  // transient error) keeps the bell working from its last state; it only sets
+  // the failure flag and emits a change so a page can show it.
   public async load(): Promise<void> {
     const seq = ++this.loadSeq;
     let snap: unknown;
@@ -101,6 +107,7 @@ export class NotificationStore extends EventTarget {
       snap = await api.getNotifications();
     } catch (err) {
       console.warn("Failed to load notifications:", err);
+      this.markFailed(seq);
       return;
     }
     // Skip only if a strictly newer load has ALREADY applied its snapshot; a
@@ -109,12 +116,23 @@ export class NotificationStore extends EventTarget {
     if (seq <= this.appliedSeq) return;
     if (!isSnapshot(snap)) {
       console.warn("Ignoring malformed notifications snapshot");
+      this.markFailed(seq);
       return;
     }
     applySnapshot(this.state, snap, Date.now());
     this.loadedOnce = true;
+    this.loadFailed = false;
     this.appliedSeq = seq;
     this.persist();
+    this.emitChange();
+  }
+
+  // markFailed records a failed load, unless a newer load has already applied a
+  // snapshot (that success is the fresher truth). The change event fires on every
+  // failure, so a page showing a retry in progress learns that it failed again.
+  private markFailed(seq: number): void {
+    if (seq <= this.appliedSeq) return;
+    this.loadFailed = true;
     this.emitChange();
   }
 
@@ -137,7 +155,7 @@ export class NotificationStore extends EventTarget {
     // break the condition logic.
     if (!isNotification(data)) return;
     const n = data;
-    const { gap, isNewError, resync } = applyLive(this.state, n);
+    const { gap, isNewError, resync } = applyLive(this.state, n, Date.now());
     // A frame from a different boot means the appliance restarted; do not fold it
     // into the old boot's state, just reload a fresh snapshot (which resets on
     // the boot change) without persisting or emitting the mismatched frame.
@@ -148,9 +166,9 @@ export class NotificationStore extends EventTarget {
     // Fall back to the title so an error that carries no message still toasts
     // readable text rather than a bare icon.
     if (isNewError) showToast(n.message || n.title, "error");
-    // Reload on a detected gap (re-sync dropped events) or once the in-memory set
-    // has grown past its bound on a long-lived connection (re-sync prunes it).
-    if (gap || this.state.items.size > MAX_LIVE_ITEMS) this.scheduleReload();
+    // Reload on a detected gap to re-sync the dropped events. applyLive already
+    // pruned to the server's ring depth, so a long-lived connection stays bounded.
+    if (gap) this.scheduleReload();
     this.persist();
     this.emitChange();
   }

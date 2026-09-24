@@ -15,16 +15,35 @@ import type { Notification, NotificationSnapshot } from "./types.js";
 // CoreState is the full client state. items is keyed by id (the server assigns
 // monotonic per-boot ids starting at 1). readWatermark is the highest id the
 // user has marked read; an entry is unread when its id is above it and it is not
-// dismissed. serverOffsetMs corrects event timestamps for clock skew on an
-// RTC-less host: it is (browser now - server now) sampled at the last snapshot.
+// dismissed. capacity is the server's ring depth, which bounds how much history
+// the client keeps between re-syncs.
+//
+// anchor pins the server's monotonic uptime to the browser clock: at browserMs
+// the server's uptime was uptimeMs. Every entry is placed in time from its own
+// uptimeMs through this pair (see uptimeToMs) rather than from its wall-clock
+// time, so neither browser/server clock skew nor a server clock step (an
+// RTC-less Pi syncing NTP after boot) misplaces it. Null until the first
+// snapshot or live event arrives.
 export interface CoreState {
   bootId: string | null;
   items: Map<number, Notification>;
   readWatermark: number;
   dismissed: Set<number>;
   nextId: number;
-  serverOffsetMs: number;
+  capacity: number;
+  anchor: ClockAnchor | null;
 }
+
+// ClockAnchor is one simultaneous reading of the browser clock and the server's
+// monotonic uptime.
+export interface ClockAnchor {
+  browserMs: number;
+  uptimeMs: number;
+}
+
+// DEFAULT_CAPACITY is the server's ring depth (notify.defaultCapacity), used
+// until a snapshot reports the real one.
+export const DEFAULT_CAPACITY = 500;
 
 // initialState returns the empty state a fresh browser starts from.
 export function initialState(): CoreState {
@@ -34,17 +53,30 @@ export function initialState(): CoreState {
     readWatermark: 0,
     dismissed: new Set<number>(),
     nextId: 0,
-    serverOffsetMs: 0,
+    capacity: DEFAULT_CAPACITY,
+    anchor: null,
   };
+}
+
+// uptimeToMs maps a server uptime onto the browser clock through the anchor. It
+// returns NaN before any anchor exists; callers render that as an unknown time.
+export function uptimeToMs(state: CoreState, uptimeMs: number): number {
+  if (!state.anchor || !Number.isFinite(uptimeMs)) return NaN;
+  return state.anchor.browserMs - (state.anchor.uptimeMs - uptimeMs);
+}
+
+// eventTimeMs is when an entry happened, on the browser clock.
+export function eventTimeMs(state: CoreState, n: Notification): number {
+  return uptimeToMs(state, n.uptimeMs);
 }
 
 // applySnapshot folds a fetched snapshot into the state. It adopts the snapshot
 // boot identity, and when that identity actually changed (the appliance
 // restarted since this browser last synced) it resets the per-browser read
 // state, since ids restart from 1 and would otherwise be misread as already
-// seen. Items merge by id, nextId and the clock offset are refreshed, and the
-// dismissed set is pruned to ids still present so it cannot grow without bound
-// as old entries age out of the ring. bootChanged is true only on a genuine
+// seen. Items merge by id, nextId, the ring capacity and the clock anchor are
+// refreshed, and the dismissed set is pruned to ids still present so it cannot
+// grow without bound as old entries age out of the ring. bootChanged is true only on a genuine
 // restart, never on the first load.
 export function applySnapshot(
   state: CoreState,
@@ -73,8 +105,13 @@ export function applySnapshot(
   // larger. A boot change legitimately restarts the sequence.
   state.nextId = bootChanged ? snap.nextId : Math.max(state.nextId, snap.nextId);
 
-  const serverMs = Date.parse(snap.serverTime);
-  state.serverOffsetMs = Number.isNaN(serverMs) ? 0 : nowMs - serverMs;
+  // Re-anchor on every snapshot, which also absorbs any browser clock step since
+  // the last sync. nowMs is read after the response arrived, so every mapped
+  // time runs late by the request's latency: usually well under a second, which
+  // minute-resolution labels hide, but a fetch that spans a laptop sleep skews
+  // them until the next re-sync.
+  state.anchor = { browserMs: nowMs, uptimeMs: snap.uptimeMs };
+  if (Number.isSafeInteger(snap.capacity) && snap.capacity >= 1) state.capacity = snap.capacity;
 
   // The snapshot is authoritative for every id below snap.nextId: any such id it
   // omits has aged out of the ring or been cleared. This must compare against
@@ -105,10 +142,13 @@ export function applySnapshot(
 // isNewError is the toast trigger: a genuinely new error-severity entry that is
 // unread and not dismissed. A duplicate (already known, for instance replayed
 // after an SSE reconnect) sets neither, and the id-keyed map means it cannot
-// double count.
+// double count. nowMs anchors the clock when no anchor exists yet, and the
+// history is then pruned to the server's ring depth (see pruneToRing), so a
+// long-lived connection stays bounded without a re-sync.
 export function applyLive(
   state: CoreState,
   n: Notification,
+  nowMs: number,
 ): { state: CoreState; gap: boolean; isNewError: boolean; resync: boolean } {
   if (state.bootId === null) {
     // First event before any snapshot: adopt its boot identity now, so a later
@@ -129,8 +169,44 @@ export function applyLive(
 
   state.items.set(n.id, n);
   if (n.id >= state.nextId) state.nextId = n.id + 1;
+  // The entry was published moments ago, so its uptime reads as "now" well
+  // enough to anchor on until the first snapshot replaces it.
+  state.anchor ??= { browserMs: nowMs, uptimeMs: n.uptimeMs };
+  pruneToRing(state);
 
   return { state, gap, isNewError, resync: false };
+}
+
+// pruneToRing drops what the server's ring has already trimmed: ids are assigned
+// without gaps, so the ring holds exactly the last `capacity` ids below nextId,
+// and anything older survives on the server only as the onset of a still-active
+// condition. The client mirrors that bound, keeping those onsets, and prunes the
+// dismissed set by the same floor so neither grows between re-syncs. The work
+// runs only once an item falls below the floor; until then a dismissed id below
+// it waits for that moment or for the next snapshot.
+export function pruneToRing(state: CoreState): CoreState {
+  const floor = state.nextId - state.capacity;
+  let stale = false;
+  for (const id of state.items.keys()) {
+    if (id < floor) {
+      stale = true;
+      break;
+    }
+  }
+  if (!stale) return state;
+  const pinned = new Set(activeConditions(state).map((n) => n.id));
+  // Deleting the current key while iterating a Map is safe in JS.
+  for (const id of state.items.keys()) {
+    if (id < floor && !pinned.has(id)) state.items.delete(id);
+  }
+  // Prune dismissed ids by the same floor, never by "not held": before the first
+  // snapshot the items hold only live frames, while dismissed ids restored from
+  // storage may name entries not fetched yet. Dropping those would bring cleared
+  // entries back into the bell once the snapshot lands.
+  for (const id of state.dismissed) {
+    if (id < floor && !pinned.has(id)) state.dismissed.delete(id);
+  }
+  return state;
 }
 
 // unreadCount is the badge number: entries above the read watermark that have
@@ -241,6 +317,10 @@ export function isNotification(v: unknown): v is Notification {
     n.id >= 1 &&
     typeof n.bootId === "string" &&
     typeof n.time === "string" &&
+    // Every placement in time and every duration is computed from uptimeMs.
+    typeof n.uptimeMs === "number" &&
+    Number.isFinite(n.uptimeMs) &&
+    n.uptimeMs >= 0 &&
     (n.severity === "error" || n.severity === "warning" || n.severity === "info") &&
     typeof n.category === "string" &&
     typeof n.kind === "string" &&

@@ -283,8 +283,9 @@ the release. The profile is GOARCH-independent; collect a new one with
   call `Describe`, `Setup`, and `Play` explicitly to receive frames.
 - `go get` with a branch name containing a slash fails ("disallowed version
   string"); pin a commit SHA instead.
-- Notification timestamps are wall-clock; a Pi without an RTC can step its
-  clock after NTP syncs, so do not assume they are monotonic.
+- Notification `time` is wall-clock; a Pi without an RTC can step its clock
+  after NTP syncs, so do not assume it is monotonic. Place entries and measure
+  durations from `uptimeMs` (monotonic) instead, as the web UI does.
 - Local test servers: use free high ports (18000 and up), track the PIDs you
   start, and kill only those. Never kill a process just because it holds a
   port or sound device you wanted.

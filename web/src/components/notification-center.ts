@@ -6,13 +6,13 @@
 import { button, elem, setHidden, setText } from "../lib/ui.js";
 import { ICON_CLOSE } from "./toast.js";
 import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.js";
-import { activeConditions, unreadCount, type CoreState } from "../lib/notifications-core.js";
+import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
 import type { NotificationStore } from "../lib/notifications.js";
 
-// The popover renders at most this many history rows. The server ring holds up to
-// 500 entries; the Events page (#/events) shows the full log, so the bell need not
-// rebuild the whole ring on every live event. Active issues are always shown in
-// full above the history.
+// The popover renders at most this many history rows. The server ring holds far
+// more (its capacity, 500 by default); the Events page (#/events) shows the full
+// log, so the bell need not rebuild the whole ring on every live event. Active
+// issues are always shown in full above the history.
 const PANEL_HISTORY_MAX = 50;
 
 export class NotificationCenter {
@@ -24,6 +24,9 @@ export class NotificationCenter {
   private activeEl!: HTMLElement;
   private listEl!: HTMLElement;
   private emptyEl!: HTMLElement;
+  // "Showing 50 of N events" beside the Events link, shown only when history is capped,
+  // so a badge counting more unread entries than the list shows is explained.
+  private countEl!: HTMLElement;
   private isOpen = false;
   // Handle for the interval that refreshes relative times while the panel is
   // open; null when the panel is closed.
@@ -88,11 +91,14 @@ export class NotificationCenter {
     // Already on #/events the hash does not change, so close explicitly too.
     all.addEventListener("click", () => {
       this.close();
-      // Closing the panel would drop focus to the body; move it into the main
-      // content after the route swaps the visible view.
+      // Closing the panel would drop focus to the body. The router moves focus to
+      // the main content on a view change, but already on #/events the hash does
+      // not change, so do it here too (a harmless repeat otherwise).
       requestAnimationFrame(() => document.getElementById("main-content")?.focus());
     });
-    foot.append(all);
+    this.countEl = elem("span", "notif-panel-count");
+    this.countEl.hidden = true;
+    foot.append(this.countEl, all);
 
     panel.append(head, body, foot);
     return panel;
@@ -115,31 +121,35 @@ export class NotificationCenter {
 
   private renderPanel(state: CoreState): void {
     const nowMs = Date.now();
-    const offsetMs = state.serverOffsetMs;
+    const toMs = (u: number): number => uptimeToMs(state, u);
     const active = activeConditions(state).filter((n) => !state.dismissed.has(n.id));
     const activeIds = new Set(active.map((n) => n.id));
-    const history = [...state.items.values()]
+    const allHistory = [...state.items.values()]
       .filter((n) => !state.dismissed.has(n.id) && !activeIds.has(n.id))
-      .sort((a, b) => b.id - a.id)
-      .slice(0, PANEL_HISTORY_MAX);
+      .sort((a, b) => b.id - a.id);
+    const history = allHistory.slice(0, PANEL_HISTORY_MAX);
 
     this.activeEl.replaceChildren();
     if (active.length > 0) {
       const label = `${active.length} active ${active.length === 1 ? "issue" : "issues"}`;
       this.activeEl.append(elem("div", "notif-group-head", label));
-      for (const n of active) this.activeEl.append(renderNotificationRow(n, { nowMs, offsetMs }));
+      for (const n of active) this.activeEl.append(renderNotificationRow(n, { nowMs, toMs }));
     }
 
     this.listEl.replaceChildren();
-    for (const n of history) this.listEl.append(renderNotificationRow(n, { nowMs, offsetMs }));
+    for (const n of history) this.listEl.append(renderNotificationRow(n, { nowMs, toMs }));
 
     setHidden(this.emptyEl, active.length > 0 || history.length > 0);
+    const capped = allHistory.length > history.length;
+    setText(this.countEl, capped ? `Showing ${history.length} of ${allHistory.length} events` : "");
+    setHidden(this.countEl, !capped);
   }
 
   // restampTimes keeps an open panel's relative "N ago" times current without a
   // full re-render (which would disturb scroll and focus).
   private restampTimes(): void {
-    restampRows(this.panel, this.store.getState().serverOffsetMs);
+    const state = this.store.getState();
+    restampRows(this.panel, (u) => uptimeToMs(state, u));
   }
 
   private toggle(): void {

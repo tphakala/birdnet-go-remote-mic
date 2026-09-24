@@ -79,11 +79,13 @@ export function facetCounts(items: Iterable<Notification>, f: EventFilter): Face
 }
 
 // Lifecycle describes where a condition entry sits in its onset/clear pair. An
-// ongoing onset carries the (server-clock) time it started; a resolved pair
-// carries its duration, or null when the partner entry is no longer retained
-// (the ring trimmed the onset of a long-past clear).
+// ongoing onset carries the server uptime it started at; a resolved pair carries
+// its duration, or null when the partner entry is no longer retained (the ring
+// trimmed the onset of a long-past clear). Both come from the entries' monotonic
+// uptimeMs, never their wall-clock times, so a server clock step between onset
+// and clear (an RTC-less Pi syncing NTP) cannot inflate or zero a duration.
 export type Lifecycle =
-  | { state: "ongoing"; sinceMs: number }
+  | { state: "ongoing"; sinceUptimeMs: number }
   | { state: "resolved"; durationMs: number | null };
 
 // conditionLifecycles pairs onset and clear entries by key in id order and
@@ -99,13 +101,15 @@ export function conditionLifecycles(items: Iterable<Notification>): Map<number, 
     if (!n.key) continue;
     if (n.kind === "onset") {
       open.set(n.key, n);
-      out.set(n.id, { state: "ongoing", sinceMs: Date.parse(n.time) });
+      out.set(n.id, { state: "ongoing", sinceUptimeMs: n.uptimeMs });
     } else if (n.kind === "clear") {
       const onset = open.get(n.key);
       open.delete(n.key);
       let durationMs: number | null = null;
       if (onset) {
-        const d = Date.parse(n.time) - Date.parse(onset.time);
+        // Uptime is monotonic within a boot, so a negative span only comes from a
+        // malformed entry; clamp it rather than render "-3s".
+        const d = n.uptimeMs - onset.uptimeMs;
         durationMs = Number.isFinite(d) ? Math.max(0, d) : null;
       }
       const lc: Lifecycle = { state: "resolved", durationMs };

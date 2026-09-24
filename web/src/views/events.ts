@@ -6,14 +6,18 @@
 // events costs nothing off-screen. Rows are cached by id and reused across
 // renders; a row is rebuilt only when its rendered state (unread, lifecycle)
 // changes.
+//
+// Every time on the page (row times, day groups, the oldest-entry caption,
+// ongoing durations) comes from the entries' server uptime mapped onto the
+// browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.js";
-import { button, elem, iconSpan, setHidden, setText } from "../lib/ui.js";
+import { button, downloadBlob, elem, iconSpan, readBoolPref, setHidden, setText, writeBoolPref } from "../lib/ui.js";
 import { showToast } from "../components/toast.js";
 import { FilterChips } from "../components/filter-chips.js";
 import { StatTile } from "../components/stat-tile.js";
 import { RESTAMP_MS, SEVERITY_TO_TOAST, renderNotificationRow, restampRows, type ChipFacet } from "../components/notification-row.js";
-import { activeConditions, type CoreState } from "../lib/notifications-core.js";
+import { activeConditions, eventTimeMs, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
 import {
   CATEGORIES,
   SEVERITIES,
@@ -42,9 +46,10 @@ const ICON_CHECK =
 const ICON_X =
   '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 
-// The ring depth the server keeps (notify.defaultCapacity), quoted in the
-// retention note so an operator knows the log is bounded.
-const RETAINED_MAX = 500;
+// Per-browser opt-out for the "/" search shortcut. A single-character shortcut
+// must be possible to turn off (WCAG 2.1.4): it can fire from speech input or a
+// stray keypress.
+const SLASH_PREF_KEY = "remote-mic-events-slash-shortcut";
 
 const SEVERITY_CHIP_LABEL: Record<NotificationSeverity, string> = {
   error: "Errors",
@@ -57,6 +62,15 @@ interface CachedRow {
   el: HTMLElement;
 }
 
+// FocusMark records where keyboard focus sat inside a row before a render, so it
+// can be put back if the render rebuilt or removed that row.
+interface FocusMark {
+  el: HTMLElement;
+  list: HTMLElement;
+  id: string;
+  index: number;
+}
+
 // rowSig is the part of a row's rendered state that can change after it is
 // first drawn. Relative and absolute times, the tooltip, and ongoing durations
 // are restamped in place, so they are deliberately left out.
@@ -66,8 +80,8 @@ function rowSig(unread: boolean, lc: Lifecycle | undefined): string {
   return `${unread ? "u" : "r"}|${life}`;
 }
 
-// dayKey buckets a skew-corrected instant by the viewer's local calendar day,
-// as a local YYYY-MM-DD string (getMonth is zero-based, hence the +1).
+// dayKey buckets an instant by the viewer's local calendar day, as a local
+// YYYY-MM-DD string (getMonth is zero-based, hence the +1).
 function dayKey(ms: number): string {
   const d = new Date(ms);
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -90,11 +104,11 @@ function dayLabel(ms: number, nowMs: number): string {
 // in the list and keep their relative order are never detached: they are an
 // in-order subsequence once the stale nodes are gone, so the insert walk finds
 // each already at its index and leaves it (and its focus) untouched. A node that
-// is itself removed or rebuilt loses focus, a documented limitation. The removal
-// pass runs first so a node dropped from above no longer shifts the survivors'
-// indices, which would otherwise force a needless move. The parent is expected to
-// hold only managed nodes (rows and day headers here), so indexing its children
-// directly is safe.
+// is itself removed or rebuilt loses focus; render() puts it back (see
+// restoreFocus). The removal pass runs first so a node dropped from above no
+// longer shifts the survivors' indices, which would otherwise force a needless
+// move. The parent is expected to hold only managed nodes (rows and day headers
+// here), so indexing its children directly is safe.
 function syncChildren(parent: HTMLElement, nodes: HTMLElement[]): void {
   const want = new Set(nodes);
   for (const c of Array.from(parent.children)) if (!want.has(c as HTMLElement)) c.remove();
@@ -102,6 +116,14 @@ function syncChildren(parent: HTMLElement, nodes: HTMLElement[]): void {
     if (parent.children[i] !== nodes[i]) parent.insertBefore(nodes[i], parent.children[i] ?? null);
   }
   while (parent.children.length > nodes.length) parent.lastElementChild?.remove();
+}
+
+// RowContext is what every row in one render shares.
+interface RowContext {
+  nowMs: number;
+  toMs: (uptimeMs: number) => number;
+  lifecycles: Map<number, Lifecycle>;
+  isUnread: (n: Notification) => boolean;
 }
 
 export class EventsView {
@@ -119,6 +141,17 @@ export class EventsView {
   // Day headers keyed by dayKey plus label, reused as nodes across renders and
   // pruned to the headers drawn this render.
   private readonly dayCache = new Map<string, HTMLElement>();
+  // The local day the day headers were last drawn for. The restamp tick
+  // re-renders when it changes, so "Today" rolls over to "Yesterday" at
+  // midnight on a page left open with no new events.
+  private renderedDay = "";
+  // Set while a Retry of a failed load is in flight, so the page shows "Loading"
+  // until the store reports the outcome.
+  private retrying = false;
+  // Whether the failure notice was last announced, so it is spoken once per
+  // failure rather than on every render.
+  private failAnnounced = false;
+  private slashShortcut = readBoolPref(SLASH_PREF_KEY, true);
 
   private tiles!: {
     active: StatTile;
@@ -130,6 +163,7 @@ export class EventsView {
   private activeCard!: HTMLElement;
   private activeList!: HTMLElement;
   private activeDesc!: HTMLElement;
+  private logTitle!: HTMLElement;
   private unreadPill!: HTMLElement;
   // bootId the id-keyed caches (the row and active caches) were built under. Ids
   // restart from 1 on an appliance restart, so a cached row for id N would show
@@ -137,6 +171,7 @@ export class EventsView {
   // so it is boot-independent and not cleared here.
   private cacheBoot: string | null = null;
   private search!: HTMLInputElement;
+  private searchKbd!: HTMLElement;
   private sevChips!: FilterChips;
   private catChips!: FilterChips;
   private filterBar!: HTMLElement;
@@ -155,6 +190,8 @@ export class EventsView {
   private emptyTitle!: HTMLElement;
   private emptyBody!: HTMLElement;
   private emptyReset!: HTMLButtonElement;
+  private emptyRetry!: HTMLButtonElement;
+  private retentionNote!: HTMLElement;
 
   constructor(store: NotificationStore) {
     this.store = store;
@@ -167,6 +204,9 @@ export class EventsView {
     this.build();
 
     this.store.addEventListener("change", () => {
+      // Any store change settles a pending Retry: either a snapshot applied or the
+      // store reported the load failed again.
+      this.retrying = false;
       if (this.visible) this.render();
       else this.dirty = true;
     });
@@ -182,7 +222,7 @@ export class EventsView {
   private build(): void {
     const tilesEl = elem("div", "ev-tiles");
     this.tiles = {
-      active: new StatTile({ label: "Active issues", tone: "error" }),
+      active: new StatTile({ label: "Active Issues", tone: "info" }),
       error: new StatTile({ label: "Errors", tone: "error", onClick: () => this.soloSeverity("error") }),
       warning: new StatTile({ label: "Warnings", tone: "warn", onClick: () => this.soloSeverity("warning") }),
       info: new StatTile({ label: "Info", tone: "info", onClick: () => this.soloSeverity("info") }),
@@ -213,8 +253,8 @@ export class EventsView {
 
   private buildActiveCard(): HTMLElement {
     const card = elem("section", "config-section-card ev-active-card");
-    card.setAttribute("aria-label", "Active conditions");
-    const { head, descEl } = this.sectionHead(ICON_ALERT, "Active conditions", "");
+    card.setAttribute("aria-label", "Active Issues");
+    const { head, descEl } = this.sectionHead(ICON_ALERT, "Active Issues", "");
     this.activeDesc = descEl;
     this.activeList = elem("div", "ev-list ev-active-list");
     card.append(head, this.activeList);
@@ -225,12 +265,16 @@ export class EventsView {
 
   private buildLogCard(): HTMLElement {
     const card = elem("section", "config-section-card ev-log-card");
-    card.setAttribute("aria-label", "Event log");
+    card.setAttribute("aria-label", "Event Log");
     const { head, titleEl, actions } = this.sectionHead(
       ICON_LOG,
-      "Event log",
+      "Event Log",
       "Recent events from this boot, including those cleared from the bell.",
     );
+    // Focus lands here when the row holding keyboard focus disappears (a
+    // condition clears, or the ring trims it); see restoreFocus.
+    titleEl.tabIndex = -1;
+    this.logTitle = titleEl;
     this.unreadPill = elem("span", "ev-unread-pill");
     this.unreadPill.hidden = true;
     titleEl.append(this.unreadPill);
@@ -249,7 +293,6 @@ export class EventsView {
     this.search.className = "field-input ev-search-input";
     this.search.placeholder = "Search title, message or source";
     this.search.setAttribute("aria-label", "Search events");
-    this.search.setAttribute("aria-keyshortcuts", "/");
     this.search.autocomplete = "off";
     this.search.spellcheck = false;
     this.search.addEventListener("input", () => {
@@ -264,9 +307,10 @@ export class EventsView {
         setText(this.announceEl, this.resultText.textContent ?? "");
       }, 500);
     });
-    const kbd = elem("kbd", "ev-search-kbd", "/");
-    kbd.setAttribute("aria-hidden", "true");
-    searchWrap.append(this.search, kbd);
+    this.searchKbd = elem("kbd", "ev-search-kbd", "/");
+    this.searchKbd.setAttribute("aria-hidden", "true");
+    searchWrap.append(this.search, this.searchKbd);
+    this.applySlashShortcut();
 
     this.sevChips = new FilterChips({
       label: "Severity",
@@ -319,17 +363,43 @@ export class EventsView {
     this.emptyTitle = elem("p", "ev-empty-title");
     this.emptyBody = elem("p", "ev-empty-body");
     this.emptyReset = button({ variant: "secondary", label: "Reset filters", onClick: () => this.resetFilters() });
-    this.emptyEl.append(this.emptyTitle, this.emptyBody, this.emptyReset);
+    this.emptyRetry = button({ variant: "secondary", label: "Retry", onClick: () => this.retryLoad() });
+    this.emptyEl.append(this.emptyTitle, this.emptyBody, this.emptyReset, this.emptyRetry);
     this.emptyEl.hidden = true;
 
-    const note = elem(
-      "p",
-      "ev-retention-note",
-      `Kept in memory only: the appliance holds the most recent ${RETAINED_MAX} events plus any condition still in effect, and the log starts empty after a restart.`,
-    );
+    const foot = elem("div", "ev-log-foot");
+    this.retentionNote = elem("p", "ev-retention-note");
+    foot.append(this.retentionNote, this.buildSlashToggle());
 
-    card.append(head, toolbar, this.filterBar, this.listEl, this.emptyEl, note);
+    card.append(head, toolbar, this.filterBar, this.listEl, this.emptyEl, foot);
     return card;
+  }
+
+  // buildSlashToggle is the per-browser switch for the "/" shortcut, in the
+  // shared switch-control style.
+  private buildSlashToggle(): HTMLElement {
+    const wrap = elem("label", "switch-control ev-shortcut-toggle");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "visually-hidden";
+    input.checked = this.slashShortcut;
+    input.addEventListener("change", () => {
+      this.slashShortcut = input.checked;
+      writeBoolPref(SLASH_PREF_KEY, input.checked);
+      this.applySlashShortcut();
+    });
+    const track = elem("span", "switch-track");
+    track.append(elem("span", "switch-thumb"));
+    wrap.append(input, track, elem("span", "switch-label", "Use / to jump to search"));
+    return wrap;
+  }
+
+  // applySlashShortcut shows the key hint and advertises the shortcut only while
+  // it is on.
+  private applySlashShortcut(): void {
+    setHidden(this.searchKbd, !this.slashShortcut);
+    if (this.slashShortcut) this.search.setAttribute("aria-keyshortcuts", "/");
+    else this.search.removeAttribute("aria-keyshortcuts");
   }
 
   // ---------- visibility and timers ----------
@@ -339,8 +409,8 @@ export class EventsView {
     this.visible = on;
     if (on) {
       if (this.dirty) this.render();
-      else restampRows(this.root, this.store.getState().serverOffsetMs);
-      this.timer = setInterval(() => restampRows(this.root, this.store.getState().serverOffsetMs), RESTAMP_MS);
+      else this.tick();
+      this.timer = setInterval(() => this.tick(), RESTAMP_MS);
     } else {
       if (this.timer !== null) {
         clearInterval(this.timer);
@@ -349,6 +419,18 @@ export class EventsView {
       // A pending search announcement must not speak once the page is gone.
       this.cancelAnnounce();
     }
+  }
+
+  // tick refreshes the times in place, or re-renders once the local day has
+  // changed since the last render so the day headers and the oldest-entry
+  // caption roll over.
+  private tick(): void {
+    if (dayKey(Date.now()) !== this.renderedDay) {
+      this.render();
+      return;
+    }
+    const state = this.store.getState();
+    restampRows(this.root, (u) => uptimeToMs(state, u));
   }
 
   // cancelAnnounce drops a pending debounced search announcement.
@@ -360,9 +442,9 @@ export class EventsView {
   }
 
   // "/" jumps to the search box while the page is showing, unless the operator
-  // is already typing somewhere.
+  // turned the shortcut off or is already typing somewhere.
   private readonly onKeydown = (e: KeyboardEvent): void => {
-    if (!this.visible || e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!this.visible || !this.slashShortcut || e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     e.preventDefault();
@@ -396,6 +478,17 @@ export class EventsView {
     this.search.focus();
   }
 
+  private retryLoad(): void {
+    this.retrying = true;
+    // Empty the status region first: setText writes only on change, so a repeat
+    // failure would otherwise leave the same text in place and say nothing.
+    setText(this.announceEl, "");
+    this.render();
+    // The Retry button is hidden by that render; keep keyboard focus on the page.
+    this.logTitle.focus();
+    void this.store.load();
+  }
+
   private exportShown(): void {
     const state = this.store.getState();
     const shown = filterEvents(state.items.values(), this.filter);
@@ -404,20 +497,47 @@ export class EventsView {
       return;
     }
     const json = exportJSON(shown, state.bootId, new Date().toISOString());
-    const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `remote-mic-events-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    // Revoke on the next tick: some browsers start the download asynchronously.
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    downloadBlob(
+      new Blob([json], { type: "application/json" }),
+      `remote-mic-events-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+    );
+  }
+
+  // ---------- focus ----------
+
+  // captureFocus notes the row control holding keyboard focus, if any.
+  private captureFocus(): FocusMark | null {
+    const a = document.activeElement;
+    if (!(a instanceof HTMLElement) || !this.root.contains(a)) return null;
+    const row = a.closest<HTMLElement>(".notif-row[data-id]");
+    const list = row?.parentElement;
+    if (!row || !list || row.dataset.id === undefined) return null;
+    const controls = Array.from(row.querySelectorAll<HTMLElement>("button"));
+    return { el: a, list, id: row.dataset.id, index: controls.indexOf(a) };
+  }
+
+  // restoreFocus runs after a render. When the focused control's row was rebuilt,
+  // focus moves to the same control in the new row; when the row is gone, to the
+  // Event log heading, so keyboard focus never falls back to the page body.
+  private restoreFocus(mark: FocusMark | null): void {
+    if (!mark || (mark.el.isConnected && document.activeElement === mark.el)) return;
+    // A user action during the render may have moved focus on purpose.
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const row = mark.list.querySelector<HTMLElement>(`.notif-row[data-id="${mark.id}"]`);
+    const controls = row ? Array.from(row.querySelectorAll<HTMLElement>("button")) : [];
+    const target = controls[mark.index] ?? controls[0] ?? this.logTitle;
+    target.focus();
   }
 
   // ---------- render ----------
 
   private render(): void {
+    const focus = this.captureFocus();
+    this.renderAll();
+    this.restoreFocus(focus);
+  }
+
+  private renderAll(): void {
     this.dirty = false;
     const state = this.store.getState();
     // Ids restart from 1 on an appliance restart, so a cached row keyed by id
@@ -428,19 +548,31 @@ export class EventsView {
       this.cacheBoot = state.bootId;
     }
     const nowMs = Date.now();
+    this.renderedDay = dayKey(nowMs);
     const items = [...state.items.values()];
-    const lifecycles = conditionLifecycles(items);
-    const isUnread = (n: Notification): boolean => n.id > state.readWatermark && !state.dismissed.has(n.id);
+    const ctx: RowContext = {
+      nowMs,
+      toMs: (u) => uptimeToMs(state, u),
+      lifecycles: conditionLifecycles(items),
+      isUnread: (n) => n.id > state.readWatermark && !state.dismissed.has(n.id),
+    };
 
-    // Before the first snapshot (or after a failed load) an empty items list is
-    // "not fetched yet", not "no events"; show a loading state instead of asserting.
+    // Before the first snapshot an empty items list is "not fetched yet", not
+    // "no events"; show a loading state instead of asserting, or the failure
+    // with Retry once a load has failed.
     const loading = !this.store.hasLoaded() && items.length === 0;
+    const failed = loading && this.store.hasFailed() && !this.retrying;
+
+    setText(
+      this.retentionNote,
+      `Kept in memory only: the appliance holds the most recent ${state.capacity} events plus any issue still in effect, and the log starts empty after a restart.`,
+    );
 
     // activeConditions is pure over state; compute it once and share it with the
-    // tiles and the active-conditions card rather than deriving it twice.
+    // tiles and the active-issues card rather than deriving it twice.
     const active = activeConditions(state);
-    this.renderTiles(state, items, nowMs, active, loading);
-    this.renderActive(state, active, lifecycles, isUnread, nowMs);
+    this.renderTiles(state, items, nowMs, active, loading, failed);
+    this.renderActive(active, ctx);
 
     // Facet chips and their counts.
     const counts = facetCounts(items, this.filter);
@@ -471,21 +603,30 @@ export class EventsView {
       setText(this.announceEl, resultLabel);
       this.announce = false;
     }
+    // Speak a load failure once when it appears; it is not a user filter change,
+    // but the page would otherwise sit silently on an error.
+    if (failed && !this.failAnnounced) setText(this.announceEl, "Could not load the event log.");
+    this.failAnnounced = failed;
     setHidden(this.resetBtn, !filterActive);
 
-    const unread = items.filter(isUnread).length;
+    const unread = items.filter(ctx.isUnread).length;
     setText(this.unreadPill, `${unread} unread`);
     setHidden(this.unreadPill, unread === 0);
 
-    this.renderList(shown, lifecycles, isUnread, state.serverOffsetMs, nowMs);
+    this.renderList(state, shown, ctx);
 
-    // Empty states: nothing at all yet, or nothing matching the filter.
+    // Empty states: the load failed, nothing fetched yet, nothing at all, or
+    // nothing matching the filter.
     const empty = shown.length === 0;
     setHidden(this.emptyEl, !empty);
     setHidden(this.listEl, empty);
+    setHidden(this.emptyRetry, !(empty && failed));
     if (empty) {
       if (items.length === 0) {
-        if (loading) {
+        if (failed) {
+          setText(this.emptyTitle, "Could not load the event log");
+          setText(this.emptyBody, "The event log could not be loaded from the appliance. Check the connection, then retry.");
+        } else if (loading) {
           setText(this.emptyTitle, "Loading events");
           setText(this.emptyBody, "Waiting for the event log from the appliance.");
         } else {
@@ -501,11 +642,12 @@ export class EventsView {
     }
   }
 
-  private renderTiles(state: CoreState, items: Notification[], nowMs: number, active: Notification[], loading: boolean): void {
+  private renderTiles(state: CoreState, items: Notification[], nowMs: number, active: Notification[], loading: boolean, failed: boolean): void {
     if (loading) {
       // No snapshot yet: every count is unknown, so show a dash rather than
       // asserting zeros the fetch has not confirmed.
-      this.tiles.active.set("-", "Loading");
+      this.tiles.active.set("-", failed ? "Unavailable" : "Loading");
+      this.tiles.active.setTone("neutral");
       this.tiles.active.setAlert(false);
       this.tiles.error.set("-", "");
       this.tiles.warning.set("-", "");
@@ -513,10 +655,9 @@ export class EventsView {
       this.tiles.retained.set("-", "");
       return;
     }
-    this.tiles.active.set(
-      String(active.length),
-      active.length === 0 ? "All clear" : active.length === 1 ? "Condition in effect" : "Conditions in effect",
-    );
+    this.tiles.active.set(String(active.length), active.length === 0 ? "All clear" : "Still in effect");
+    // Red only when something is wrong: a clear board reads in the OK tone.
+    this.tiles.active.setTone(active.length > 0 ? "error" : "info");
     this.tiles.active.setAlert(active.length > 0);
 
     const bySev: Record<NotificationSeverity, number> = { error: 0, warning: 0, info: 0 };
@@ -531,7 +672,7 @@ export class EventsView {
 
     let caption = "";
     if (oldest) {
-      const ms = Date.parse(oldest.time) + state.serverOffsetMs;
+      const ms = eventTimeMs(state, oldest);
       if (Number.isFinite(ms)) {
         const time = new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         caption = dayKey(ms) === dayKey(nowMs) ? `Oldest ${time}` : `Oldest ${dayLabel(ms, nowMs)} ${time}`;
@@ -540,84 +681,60 @@ export class EventsView {
     this.tiles.retained.set(`${items.length}`, caption || "In memory");
   }
 
-  private renderActive(
-    state: CoreState,
-    active: Notification[],
-    lifecycles: Map<number, Lifecycle>,
-    isUnread: (n: Notification) => boolean,
-    nowMs: number,
-  ): void {
+  // cachedRow returns n's row from cache, rebuilding it only when its rendered
+  // state (unread, lifecycle) changed since it was drawn.
+  private cachedRow(cache: Map<number, CachedRow>, n: Notification, ctx: RowContext, headingLevel: "h3" | "h4"): HTMLElement {
+    const unread = ctx.isUnread(n);
+    const lifecycle = ctx.lifecycles.get(n.id);
+    const sig = rowSig(unread, lifecycle);
+    let cached = cache.get(n.id);
+    if (!cached || cached.sig !== sig) {
+      const el = renderNotificationRow(n, { nowMs: ctx.nowMs, toMs: ctx.toMs, full: true, headingLevel, unread, lifecycle, onChip: this.onChip });
+      cached = { sig, el };
+      cache.set(n.id, cached);
+    }
+    return cached.el;
+  }
+
+  private renderActive(active: Notification[], ctx: RowContext): void {
     const sorted = [...active].sort((a, b) => b.id - a.id);
     setHidden(this.activeCard, sorted.length === 0);
     setText(
       this.activeDesc,
-      `${sorted.length} ${sorted.length === 1 ? "condition is" : "conditions are"} still in effect. They clear on their own when the appliance recovers.`,
+      `${sorted.length} ${sorted.length === 1 ? "issue is" : "issues are"} still in effect. They clear on their own when the appliance recovers.`,
     );
-    // Cache active rows by id so an unchanged render reuses the same nodes and
-    // syncChildren leaves them (and any focus) in place.
-    const nodes: HTMLElement[] = [];
-    const keep = new Set<number>();
-    for (const n of sorted) {
-      const unread = isUnread(n);
-      const lc = lifecycles.get(n.id);
-      const sig = rowSig(unread, lc);
-      let cached = this.activeCache.get(n.id);
-      if (!cached || cached.sig !== sig) {
-        cached = {
-          sig,
-          el: renderNotificationRow(n, {
-            nowMs,
-            offsetMs: state.serverOffsetMs,
-            full: true,
-            // The active card's title is an h2 with no day headers, so its rows are h3.
-            headingLevel: "h3",
-            unread,
-            lifecycle: lc,
-            onChip: this.onChip,
-          }),
-        };
-        this.activeCache.set(n.id, cached);
-      }
-      keep.add(n.id);
-      nodes.push(cached.el);
-    }
-    // A condition that cleared is no longer active, so drop its cached row.
+    // The active card's title is an h2 with no day headers, so its rows are h3.
+    const nodes = sorted.map((n) => this.cachedRow(this.activeCache, n, ctx, "h3"));
+    // An issue that cleared is no longer active, so drop its cached row.
+    const keep = new Set(sorted.map((n) => n.id));
     for (const id of this.activeCache.keys()) {
       if (!keep.has(id)) this.activeCache.delete(id);
     }
     syncChildren(this.activeList, nodes);
-    // Reused rows carry the relative time they were drawn with; bring them up to
-    // date in one pass.
-    restampRows(this.activeList, state.serverOffsetMs);
+    // Reused rows carry the times they were drawn with; bring them up to date.
+    restampRows(this.activeList, ctx.toMs);
   }
 
-  private renderList(
-    shown: Notification[],
-    lifecycles: Map<number, Lifecycle>,
-    isUnread: (n: Notification) => boolean,
-    offsetMs: number,
-    nowMs: number,
-  ): void {
-    const state = this.store.getState();
+  private renderList(state: CoreState, shown: Notification[], ctx: RowContext): void {
     const nodes: HTMLElement[] = [];
     const keepDays = new Set<string>();
-    // null, not "": an unparseable time also yields the "" key, and the first
-    // group must still get its "Unknown time" header.
+    // null, not "": an unknown time also yields the "" key, and the first group
+    // must still get its "Unknown time" header.
     let lastDay: string | null = null;
     for (const n of shown) {
-      const ms = Date.parse(n.time) + offsetMs;
+      const ms = eventTimeMs(state, n);
       const key = Number.isFinite(ms) ? dayKey(ms) : "";
       if (key !== lastDay) {
         lastDay = key;
-        const label = Number.isFinite(ms) ? dayLabel(ms, nowMs) : "Unknown time";
+        const label = Number.isFinite(ms) ? dayLabel(ms, ctx.nowMs) : "Unknown time";
         const dayKeyLabel = `${key}|${label}`;
         let h: HTMLElement;
         if (keepDays.has(dayKeyLabel)) {
           // This day group already appeared earlier in this render. Rows are
-          // ordered by id, not time, so a backward clock step (or two runs of
-          // "Unknown time") can split one label into separate groups. The cache
-          // holds a single node per key and a node cannot sit in two places, so
-          // the repeat gets a fresh uncached header.
+          // ordered by id; uptime-derived times follow id order, but a browser
+          // clock change between re-syncs (or two runs of "Unknown time") can
+          // still split one label. The cache holds a single node per key and a
+          // node cannot sit in two places, so the repeat gets an uncached header.
           h = elem("h3", "ev-day", label);
         } else {
           h = this.dayCache.get(dayKeyLabel) ?? elem("h3", "ev-day", label);
@@ -626,19 +743,8 @@ export class EventsView {
         }
         nodes.push(h);
       }
-      const unread = isUnread(n);
-      const lc = lifecycles.get(n.id);
-      const sig = rowSig(unread, lc);
-      let cached = this.rowCache.get(n.id);
-      if (!cached || cached.sig !== sig) {
-        cached = {
-          sig,
-          // Log rows sit under h3 day headers, so their titles are h4.
-          el: renderNotificationRow(n, { nowMs, offsetMs, full: true, headingLevel: "h4", unread, lifecycle: lc, onChip: this.onChip }),
-        };
-        this.rowCache.set(n.id, cached);
-      }
-      nodes.push(cached.el);
+      // Log rows sit under h3 day headers, so their titles are h4.
+      nodes.push(this.cachedRow(this.rowCache, n, ctx, "h4"));
     }
     // Drop cached rows the server no longer retains so the cache stays bounded
     // by the ring. Rows merely filtered out this render are still in state.items,
@@ -651,8 +757,7 @@ export class EventsView {
       if (!keepDays.has(dk)) this.dayCache.delete(dk);
     }
     syncChildren(this.listEl, nodes);
-    // Reused rows carry the relative time they were drawn with; bring them up to
-    // date in one pass.
-    restampRows(this.listEl, offsetMs);
+    // Reused rows carry the times they were drawn with; bring them up to date.
+    restampRows(this.listEl, ctx.toMs);
   }
 }

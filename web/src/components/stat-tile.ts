@@ -19,9 +19,11 @@ export class StatTile {
   public readonly el: HTMLElement;
   private readonly valueEl: HTMLElement;
   private readonly captionEl: HTMLElement;
+  private tone: TileTone;
 
   constructor(opts: StatTileOptions) {
     const tone = opts.tone ?? "neutral";
+    this.tone = tone;
     if (opts.onClick) {
       const b = document.createElement("button");
       b.type = "button";
@@ -41,6 +43,14 @@ export class StatTile {
   public set(value: string, caption = ""): void {
     setText(this.valueEl, value);
     setText(this.captionEl, caption);
+  }
+
+  // setTone changes the tile's tone, for a count whose meaning flips with its
+  // value (zero active issues is good news, not an error). Writes only on change.
+  public setTone(tone: TileTone): void {
+    if (tone === this.tone) return;
+    this.el.classList.replace(`tone-${this.tone}`, `tone-${tone}`);
+    this.tone = tone;
   }
 
   // setPressed reflects whether the filter this tile toggles is active.

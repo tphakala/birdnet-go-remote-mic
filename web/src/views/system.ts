@@ -1,6 +1,6 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, elem, formatUptime, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
+import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, formatUptime, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
@@ -440,16 +440,7 @@ export class SystemView {
     if (btn) setBusy(btn, "Preparing...");
     try {
       const pem = await api.getCertificatePem();
-      const url = URL.createObjectURL(new Blob([pem], { type: "application/x-pem-file" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "birdnet-go-remote-mic-mgmt.pem";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Revoke on the next tick: revoking synchronously right after click() can
-      // cancel the download before the navigation starts in some browsers.
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      downloadBlob(new Blob([pem], { type: "application/x-pem-file" }), "birdnet-go-remote-mic-mgmt.pem");
       showToast("Certificate downloaded.");
     } catch (err: unknown) {
       showToast(`Download failed: ${apiErrorMessage(err)}`, "error");

@@ -16,12 +16,12 @@ import (
 // that differs from testAuthToken.
 const testAuthToken2 = "z4Wq8nB1cV6xM0jH"
 
-// findNotification returns the first entry in snap matching category, kind and
+// findNotification returns the first entry in ns (a snapshot's notifications) matching category, kind and
 // title, or nil. The emitter tests wire a real *notify.Center as the notifier and
 // read it back, so they exercise the same idempotency the production wiring does.
-func findNotification(snap notify.Snapshot, category notify.Category, kind notify.Kind, title string) *notify.Notification {
-	for i := range snap.Notifications {
-		n := &snap.Notifications[i]
+func findNotification(ns []notify.Notification, category notify.Category, kind notify.Kind, title string) *notify.Notification {
+	for i := range ns {
+		n := &ns[i]
 		if n.Category == category && n.Kind == kind && n.Title == title {
 			return n
 		}
@@ -49,10 +49,10 @@ func TestPatchConfigReloadFailureEmitsReloadFailedAndRestartRequired(t *testing.
 	patchDiscovery(t, s, false)
 
 	snap := center.Snapshot()
-	if findNotification(snap, notify.CategoryConfig, notify.KindEvent, "Config reload failed") == nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindEvent, "Config reload failed") == nil {
 		t.Error("a failed reload must publish a config reload-failed event")
 	}
-	restart := findNotification(snap, notify.CategoryConfig, notify.KindOnset, "Restart required")
+	restart := findNotification(snap.Notifications, notify.CategoryConfig, notify.KindOnset, "Restart required")
 	if restart == nil {
 		t.Fatal("a failed reload must raise a restart-required onset")
 	}
@@ -77,10 +77,10 @@ func TestPatchConfigNoReloaderEmitsRestartRequiredOnly(t *testing.T) {
 	patchDiscovery(t, s, false)
 
 	snap := center.Snapshot()
-	if findNotification(snap, notify.CategoryConfig, notify.KindEvent, "Config reload failed") != nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindEvent, "Config reload failed") != nil {
 		t.Error("without a reloader there is no reload failure to report")
 	}
-	if findNotification(snap, notify.CategoryConfig, notify.KindOnset, "Restart required") == nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindOnset, "Restart required") == nil {
 		t.Error("a persisted change with no reloader must raise a restart-required onset")
 	}
 }
@@ -97,10 +97,10 @@ func TestPatchConfigReloadCancellationEmitsNothing(t *testing.T) {
 	patchDiscovery(t, s, false)
 
 	snap := center.Snapshot()
-	if findNotification(snap, notify.CategoryConfig, notify.KindEvent, "Config reload failed") != nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindEvent, "Config reload failed") != nil {
 		t.Error("a canceled request must not publish a reload-failed event")
 	}
-	if findNotification(snap, notify.CategoryConfig, notify.KindOnset, "Restart required") != nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindOnset, "Restart required") != nil {
 		t.Error("a canceled request must not raise a restart-required onset")
 	}
 	if got := len(center.Active()); got != 0 {
@@ -122,7 +122,7 @@ func TestPatchConfigSuccessfulReloadResolvesRestartRequired(t *testing.T) {
 
 	// First patch cannot hot-apply: the restart-required condition is raised.
 	patchDiscovery(t, s, false)
-	if findNotification(center.Snapshot(), notify.CategoryConfig, notify.KindOnset, "Restart required") == nil {
+	if findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindOnset, "Restart required") == nil {
 		t.Fatal("a failed reload must raise a restart-required onset")
 	}
 	if got := len(center.Active()); got != 1 {
@@ -151,10 +151,10 @@ func TestPatchConfigSuccessfulReloadEmitsNoRestart(t *testing.T) {
 	patchDiscovery(t, s, false)
 
 	snap := center.Snapshot()
-	if findNotification(snap, notify.CategoryConfig, notify.KindOnset, "Restart required") != nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindOnset, "Restart required") != nil {
 		t.Error("a successful hot reload must not raise a restart-required onset")
 	}
-	if findNotification(snap, notify.CategoryConfig, notify.KindEvent, "Config reload failed") != nil {
+	if findNotification(snap.Notifications, notify.CategoryConfig, notify.KindEvent, "Config reload failed") != nil {
 		t.Error("a successful hot reload must not report a reload failure")
 	}
 	if got := len(center.Active()); got != 0 {
@@ -171,7 +171,7 @@ func TestPatchConfigAuthEnableEmitsAuthChanged(t *testing.T) {
 
 	patchAuth(t, s, ptr(testAuthToken))
 
-	n := findNotification(center.Snapshot(), notify.CategoryConfig, notify.KindEvent, "Access control changed")
+	n := findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed")
 	if n == nil {
 		t.Fatal("enabling the token must publish an auth-changed event")
 	}
@@ -192,7 +192,7 @@ func TestPatchConfigAuthRotateEmitsAuthChanged(t *testing.T) {
 
 	patchAuth(t, s, ptr(testAuthToken2))
 
-	n := findNotification(center.Snapshot(), notify.CategoryConfig, notify.KindEvent, "Access control changed")
+	n := findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed")
 	if n == nil {
 		t.Fatal("rotating the token must publish an auth-changed event")
 	}
@@ -210,7 +210,7 @@ func TestPatchConfigAuthDisableEmitsAuthChanged(t *testing.T) {
 
 	patchAuth(t, s, ptr(""))
 
-	n := findNotification(center.Snapshot(), notify.CategoryConfig, notify.KindEvent, "Access control changed")
+	n := findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed")
 	if n == nil {
 		t.Fatal("disabling the token must publish an auth-changed event")
 	}
@@ -233,7 +233,7 @@ func TestPatchConfigUnchangedTokenEmitsNoAuthChanged(t *testing.T) {
 	if got := guard.Generation(); got != genBefore {
 		t.Errorf("generation advanced from %d to %d on an unchanged token", genBefore, got)
 	}
-	if findNotification(center.Snapshot(), notify.CategoryConfig, notify.KindEvent, "Access control changed") != nil {
+	if findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed") != nil {
 		t.Error("re-applying the same token must not publish an auth-changed event")
 	}
 }
@@ -249,7 +249,7 @@ func TestPostSystemRestartEmitsRestartRequested(t *testing.T) {
 	if _, ok := resp.(mgmtapi.PostSystemRestart202JSONResponse); !ok {
 		t.Fatalf("response type %T, want 202", resp)
 	}
-	if findNotification(center.Snapshot(), notify.CategorySystem, notify.KindEvent, "Restart requested") == nil {
+	if findNotification(center.Snapshot().Notifications, notify.CategorySystem, notify.KindEvent, "Restart requested") == nil {
 		t.Error("a restart request must publish a restart-requested event")
 	}
 }

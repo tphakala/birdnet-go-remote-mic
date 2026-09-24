@@ -6,24 +6,32 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_CAPACITY,
   applyLive,
   applySnapshot,
   activeConditions,
   clearAll,
   deserialize,
+  eventTimeMs,
   initialState,
   isNotification,
   markAllRead,
+  pruneToRing,
   serialize,
   unreadCount,
+  uptimeToMs,
 } from "../src/lib/notifications-core.js";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.js";
+
+// A fixed browser clock reading, so anchor arithmetic is exact.
+const NOW = Date.parse("2026-09-12T14:00:05Z");
 
 function notif(over: Partial<Notification> & { id: number }): Notification {
   return {
     id: over.id,
     bootId: over.bootId ?? "boot-a",
     time: over.time ?? "2026-09-12T14:00:00Z",
+    uptimeMs: over.uptimeMs ?? 0,
     severity: over.severity ?? "info",
     category: over.category ?? "system",
     kind: over.kind ?? "event",
@@ -41,6 +49,8 @@ function snap(
   return {
     bootId: over.bootId ?? "boot-a",
     serverTime: over.serverTime ?? "2026-09-12T14:00:05Z",
+    uptimeMs: over.uptimeMs ?? 5_000,
+    capacity: over.capacity ?? 500,
     nextId: over.nextId ?? (ids.length ? Math.max(...ids) + 1 : 1),
     notifications: over.notifications,
   };
@@ -82,7 +92,7 @@ test("a snapshot with a different bootId resets watermark, dismissed, and items"
 test("a live event already in the snapshot does not double count", () => {
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] }), Date.now());
-  const { gap, isNewError } = applyLive(s, notif({ id: 2, message: "replayed" }));
+  const { gap, isNewError } = applyLive(s, notif({ id: 2, message: "replayed" }), NOW);
   assert.equal(s.items.size, 2);
   assert.equal(gap, false);
   assert.equal(isNewError, false);
@@ -91,31 +101,31 @@ test("a live event already in the snapshot does not double count", () => {
 test("a live id gap is reported, and the expected next id is not", () => {
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })] }), Date.now()); // nextId 2
-  assert.equal(applyLive(s, notif({ id: 2 })).gap, false);
-  assert.equal(applyLive(s, notif({ id: 5 })).gap, true);
+  assert.equal(applyLive(s, notif({ id: 2 }), NOW).gap, false);
+  assert.equal(applyLive(s, notif({ id: 5 }), NOW).gap, true);
 });
 
 test("a live error above the watermark toasts; one below it, and a duplicate, do not", () => {
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })] }), Date.now());
   markAllRead(s); // watermark 1
-  const above = applyLive(s, notif({ id: 2, severity: "error", message: "boom" }));
+  const above = applyLive(s, notif({ id: 2, severity: "error", message: "boom" }), NOW);
   assert.equal(above.isNewError, true);
   // Replaying the same error after a reconnect must not toast again.
-  const dup = applyLive(s, notif({ id: 2, severity: "error" }));
+  const dup = applyLive(s, notif({ id: 2, severity: "error" }), NOW);
   assert.equal(dup.isNewError, false);
 
   const below = initialState();
   applySnapshot(below, snap({ notifications: [notif({ id: 5 })] }), Date.now());
   markAllRead(below); // watermark 5
-  const under = applyLive(below, notif({ id: 3, severity: "error" }));
+  const under = applyLive(below, notif({ id: 3, severity: "error" }), NOW);
   assert.equal(under.isNewError, false);
 });
 
 test("a non-error live event never toasts even when unread", () => {
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })] }), Date.now());
-  const warn = applyLive(s, notif({ id: 2, severity: "warning" }));
+  const warn = applyLive(s, notif({ id: 2, severity: "warning" }), NOW);
   assert.equal(warn.isNewError, false);
   assert.equal(unreadCount(s), 2);
 });
@@ -197,22 +207,107 @@ test("deserialize tolerates null, malformed JSON, and wrong-shaped fields", () =
   assert.deepEqual([...mixed.dismissed].sort((a, b) => a - b), [1, 3]);
 });
 
-test("a malformed server time leaves the clock offset at zero", () => {
+test("applySnapshot anchors the server uptime to the browser clock", () => {
   const s = initialState();
-  applySnapshot(s, { bootId: "boot-a", serverTime: "not-a-date", nextId: 2, notifications: [notif({ id: 1 })] }, 10_000);
-  assert.equal(s.serverOffsetMs, 0);
+  applySnapshot(s, snap({ uptimeMs: 120_000, notifications: [notif({ id: 1, uptimeMs: 30_000 })] }), NOW);
+  assert.deepEqual(s.anchor, { browserMs: NOW, uptimeMs: 120_000 });
+  // The entry was published 90s of server uptime before the snapshot.
+  assert.equal(eventTimeMs(s, notif({ id: 1, uptimeMs: 30_000 })), NOW - 90_000);
+  assert.equal(uptimeToMs(s, 120_000), NOW);
 });
 
-test("applySnapshot computes a non-zero serverOffsetMs from the server clock skew", () => {
+// The #88 scenario: an RTC-less Pi stamps an entry with a pre-NTP wall clock (the
+// epoch here), then NTP steps the clock to the real date. The entry's placement
+// comes from its uptime, so it lands where it really happened, not in 1970, and
+// the server/browser skew is irrelevant.
+test("eventTimeMs ignores the entry's wall-clock time across a server clock step", () => {
   const s = initialState();
-  // Server clock reads 5s behind the browser's nowMs at snapshot time.
-  const nowMs = Date.parse("2026-09-12T14:00:05Z");
-  applySnapshot(
-    s,
-    { bootId: "boot-a", serverTime: "2026-09-12T14:00:00Z", nextId: 2, notifications: [notif({ id: 1 })] },
-    nowMs,
-  );
-  assert.equal(s.serverOffsetMs, 5000);
+  const early = notif({ id: 1, time: "1970-01-01T00:00:20Z", uptimeMs: 20_000 });
+  applySnapshot(s, snap({ serverTime: "2026-09-12T14:00:00Z", uptimeMs: 3_620_000, notifications: [early] }), NOW);
+  assert.equal(eventTimeMs(s, early), NOW - 3_600_000);
+});
+
+test("a re-sync moves the anchor to the latest snapshot", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ uptimeMs: 10_000, notifications: [notif({ id: 1 })] }), NOW);
+  applySnapshot(s, snap({ uptimeMs: 70_000, notifications: [notif({ id: 1 })] }), NOW + 60_500);
+  assert.deepEqual(s.anchor, { browserMs: NOW + 60_500, uptimeMs: 70_000 });
+});
+
+test("a live event anchors the clock only when no snapshot has", () => {
+  const s = initialState();
+  applyLive(s, notif({ id: 1, uptimeMs: 4_000 }), NOW);
+  assert.deepEqual(s.anchor, { browserMs: NOW, uptimeMs: 4_000 });
+  applyLive(s, notif({ id: 2, uptimeMs: 9_000 }), NOW + 5_100);
+  assert.deepEqual(s.anchor, { browserMs: NOW, uptimeMs: 4_000 }, "a later live event must not re-anchor");
+});
+
+test("uptimeToMs is NaN before any anchor", () => {
+  assert.equal(Number.isNaN(uptimeToMs(initialState(), 1_000)), true);
+});
+
+test("applySnapshot adopts the reported capacity and ignores an invalid one", () => {
+  const s = initialState();
+  assert.equal(s.capacity, DEFAULT_CAPACITY);
+  applySnapshot(s, snap({ capacity: 200, notifications: [] }), NOW);
+  assert.equal(s.capacity, 200);
+  applySnapshot(s, snap({ capacity: 0, notifications: [] }), NOW);
+  assert.equal(s.capacity, 200);
+});
+
+test("applyLive prunes history the server ring has trimmed", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ capacity: 3, notifications: [notif({ id: 1 }), notif({ id: 2 }), notif({ id: 3 })] }), NOW);
+  s.dismissed.add(1);
+  applyLive(s, notif({ id: 4 }), NOW);
+  // The ring holds the last 3 ids below nextId 5: 2, 3 and 4.
+  assert.deepEqual([...s.items.keys()].sort((a, b) => a - b), [2, 3, 4]);
+  assert.equal(s.dismissed.has(1), false, "a dismissed id below the floor is pruned");
+});
+
+// Dismissed ids restored from storage before the first snapshot name entries the
+// client has not fetched yet. Pruning must not treat "not held" as "trimmed", or
+// those entries come back into the bell once the snapshot lands.
+test("pruneToRing keeps a dismissed id above the floor that has not arrived yet", () => {
+  // Restored before the first snapshot: 8 is below the floor-to-be, 11 at it,
+  // 12 above it. The live frames for 11 and 12 were dropped in transit (a gap,
+  // which also schedules a re-sync that has not landed yet).
+  const s = deserialize(JSON.stringify({ bootId: "boot-a", readWatermark: 0, dismissed: [8, 11, 12] }));
+  s.capacity = 5;
+  // Live 6..15 leave nextId 16, so the floor is 16 - 5 = 11.
+  for (let id = 6; id <= 15; id++) {
+    if (id !== 11 && id !== 12) applyLive(s, notif({ id }), NOW);
+  }
+  assert.deepEqual([...s.dismissed].sort((a, b) => a - b), [11, 12], "8 is pruned; the floor id and above keep their dismissal");
+});
+
+test("pruneToRing keeps the dismissal of a pinned onset below the floor", () => {
+  const s = initialState();
+  const onset = notif({ id: 1, kind: "onset", key: "dev:mic", severity: "error" });
+  applySnapshot(s, snap({ capacity: 2, notifications: [onset, notif({ id: 2 })] }), NOW);
+  s.dismissed.add(1);
+  applyLive(s, notif({ id: 3 }), NOW);
+  applyLive(s, notif({ id: 4 }), NOW);
+  assert.equal(s.dismissed.has(1), true, "the onset is still held, so its dismissal stays");
+});
+
+test("applyLive keeps a trimmed onset whose condition is still active", () => {
+  const s = initialState();
+  const onset = notif({ id: 1, kind: "onset", key: "dev:mic", severity: "error" });
+  applySnapshot(s, snap({ capacity: 2, notifications: [onset, notif({ id: 2 })] }), NOW);
+  applyLive(s, notif({ id: 3 }), NOW);
+  applyLive(s, notif({ id: 4 }), NOW);
+  assert.deepEqual([...s.items.keys()].sort((a, b) => a - b), [1, 3, 4]);
+  // Once cleared, the onset is no longer pinned and ages out like any entry.
+  applyLive(s, notif({ id: 5, kind: "clear", key: "dev:mic" }), NOW);
+  assert.deepEqual([...s.items.keys()].sort((a, b) => a - b), [4, 5]);
+});
+
+test("pruneToRing leaves a state within its bound untouched", () => {
+  const s = initialState();
+  applySnapshot(s, snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] }), NOW);
+  pruneToRing(s);
+  assert.equal(s.items.size, 2);
 });
 
 test("snapshot pruning drops ids aged out of the ring even when a pinned active condition holds a low id", () => {
@@ -255,12 +350,12 @@ test("snapshot pruning drops ids aged out of the ring even when a pinned active 
 test("nextId is monotonic within a boot so a stale snapshot does not cause a spurious gap", () => {
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })], nextId: 2 }), Date.now());
-  assert.equal(applyLive(s, notif({ id: 2 })).gap, false); // advances nextId to 3
+  assert.equal(applyLive(s, notif({ id: 2 }), NOW).gap, false); // advances nextId to 3
   assert.equal(s.nextId, 3);
   // A snapshot taken before that live event (nextId 2) must not roll nextId back.
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })], nextId: 2 }), Date.now());
   assert.equal(s.nextId, 3);
-  assert.equal(applyLive(s, notif({ id: 3 })).gap, false); // next id is not a spurious gap
+  assert.equal(applyLive(s, notif({ id: 3 }), NOW).gap, false); // next id is not a spurious gap
 });
 
 test("clearAll keeps active conditions visible and zeroes unread", () => {
@@ -289,7 +384,7 @@ test("a dismissed id does not toast even as a fresh live error above the waterma
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })] }), Date.now()); // watermark 0
   s.dismissed.add(2); // id 2 was dismissed before its live frame arrives
-  const r = applyLive(s, notif({ id: 2, severity: "error" }));
+  const r = applyLive(s, notif({ id: 2, severity: "error" }), NOW);
   assert.equal(r.isNewError, false);
 });
 
@@ -339,7 +434,7 @@ test("applyLive signals resync and leaves state untouched on a bootId mismatch",
   applySnapshot(s, snap({ bootId: "boot-a", notifications: [notif({ id: 1 })] }), Date.now());
   const sizeBefore = s.items.size;
   // A restart: the new boot sends id 1, which would collide with the old id 1.
-  const r = applyLive(s, notif({ id: 1, bootId: "boot-b", severity: "error", title: "new boot" }));
+  const r = applyLive(s, notif({ id: 1, bootId: "boot-b", severity: "error", title: "new boot" }), NOW);
   assert.equal(r.resync, true);
   assert.equal(r.gap, false);
   assert.equal(r.isNewError, false);
@@ -349,7 +444,7 @@ test("applyLive signals resync and leaves state untouched on a bootId mismatch",
 
 test("applyLive adopts the boot identity before the first snapshot instead of resyncing", () => {
   const s = initialState();
-  const r = applyLive(s, notif({ id: 1, bootId: "boot-x" }));
+  const r = applyLive(s, notif({ id: 1, bootId: "boot-x" }), NOW);
   assert.equal(r.resync, false);
   assert.equal(s.items.size, 1);
   assert.equal(s.bootId, "boot-x");
@@ -357,7 +452,7 @@ test("applyLive adopts the boot identity before the first snapshot instead of re
 
 test("a pre-snapshot live event does not merge into a later different-boot snapshot", () => {
   const s = initialState();
-  applyLive(s, notif({ id: 1, bootId: "boot-a" })); // adopts boot-a
+  applyLive(s, notif({ id: 1, bootId: "boot-a" }), NOW); // adopts boot-a
   const { bootChanged } = applySnapshot(
     s,
     snap({ bootId: "boot-b", notifications: [notif({ id: 1, bootId: "boot-b", title: "fresh" })] }),
@@ -373,35 +468,40 @@ test("isNotification accepts a well-formed notification and rejects malformed on
   assert.equal(isNotification(null), false);
   assert.equal(isNotification("nope"), false);
   assert.equal(
-    isNotification({ id: "x", bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    isNotification({ id: "x", bootId: "b", time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
     false,
   ); // non-numeric id
   assert.equal(
-    isNotification({ id: 1, bootId: "b", time: "t", severity: "critical", category: "system", kind: "event", title: "t", message: "m" }),
+    isNotification({ id: 1, bootId: "b", time: "t", uptimeMs: 0, severity: "critical", category: "system", kind: "event", title: "t", message: "m" }),
     false,
   ); // off-enum severity
   assert.equal(
-    isNotification({ id: 1, time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    isNotification({ id: 1, time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
     false,
   ); // missing bootId
   assert.equal(
-    isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t" }),
+    isNotification({ id: 1, bootId: "b", time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t" }),
     false,
   ); // missing message
   assert.equal(
-    isNotification({ id: 1.5, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    isNotification({ id: 1.5, bootId: "b", time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
     false,
   ); // fractional id
   assert.equal(
-    isNotification({ id: 0, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
+    isNotification({ id: 0, bootId: "b", time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t", message: "m" }),
     false,
   ); // id below 1
   assert.equal(
-    isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m", key: 5 }),
+    isNotification({ id: 1, bootId: "b", time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t", message: "m", key: 5 }),
     false,
   ); // non-string key
   assert.equal(
-    isNotification({ id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m", key: "dev:mic", source: "mic0" }),
+    isNotification({ id: 1, bootId: "b", time: "t", uptimeMs: 0, severity: "info", category: "system", kind: "event", title: "t", message: "m", key: "dev:mic", source: "mic0" }),
     true,
   ); // valid with string key and source
+  const base = { id: 1, bootId: "b", time: "t", severity: "info", category: "system", kind: "event", title: "t", message: "m" };
+  assert.equal(isNotification(base), false); // missing uptimeMs
+  assert.equal(isNotification({ ...base, uptimeMs: -1 }), false); // negative uptime
+  assert.equal(isNotification({ ...base, uptimeMs: Number.NaN }), false); // non-finite uptime
+  assert.equal(isNotification({ ...base, uptimeMs: "5" }), false); // non-numeric uptime
 });
