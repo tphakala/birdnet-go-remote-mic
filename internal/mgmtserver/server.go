@@ -245,15 +245,17 @@ func (s *Server) Handler() http.Handler {
 }
 
 // maxRequestBody caps an API request body. The largest legitimate body is a
-// certificate install (a PEM chain plus key, a few KiB even with several
-// intermediates), so this leaves ample room while keeping a LAN client from
-// making the JSON decoder buffer megabytes on a Pi with little RAM.
+// certificate install, which mgmtcert bounds at 64 KiB of certificate chain plus
+// 16 KiB of key (about 82 KiB once JSON-escaped); keep this well above that sum
+// if those bounds grow. It still keeps a LAN client from making the JSON
+// decoder buffer megabytes on a Pi with little RAM.
 const maxRequestBody = 256 << 10
 
 // limitBody caps every request body at maxRequestBody. A body past the cap
 // fails the generated decoder with *http.MaxBytesError, which the request error
-// handler turns into a 413 problem. It wraps the bearer gate so an
-// unauthenticated body is capped too.
+// handler turns into a 413 problem. It is the outermost wrapper of the generated
+// API routes, so every one of them is capped; the GET-only event stream is
+// mounted separately and reads no body.
 func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)

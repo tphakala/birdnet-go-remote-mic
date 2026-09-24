@@ -440,6 +440,13 @@ func TestOversizedBodyYieldsProblem413(t *testing.T) {
 			if ct := rec.Header().Get("Content-Type"); ct != problemJSONType {
 				t.Errorf("content-type = %q, want application/problem+json", ct)
 			}
+			var p mgmtapi.Problem
+			if err := json.NewDecoder(rec.Body).Decode(&p); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if p.Status == nil || *p.Status != tc.want {
+				t.Errorf("problem status = %v, want %d", p.Status, tc.want)
+			}
 		})
 	}
 }

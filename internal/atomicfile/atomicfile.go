@@ -13,7 +13,7 @@ import (
 // an atomic rename. The contents are fsynced before the rename and the
 // directory after it, so the replacement survives a power cut: without the
 // directory sync, ext4 can lose the rename itself and come back with the old
-// file (or, depending on mount options, an empty one).
+// file.
 // If path is a symlink, its target is rewritten rather than replaced with a
 // regular file, so an operator's symlinked config or certificate path survives.
 func Write(path string, data []byte, perm os.FileMode) error {
