@@ -834,7 +834,7 @@ type SystemInfo struct {
 	// Examples: Raspberry Pi Zero 2 W Rev 1.0
 	CpuModel *string `json:"cpuModel,omitempty"`
 
-	// CpuPercent Recent host CPU utilization across all cores, as a percentage. Absent until the sampler has taken two readings.
+	// CpuPercent Host CPU utilization across all cores, as a percentage, averaged since the previous GET /system. Computed on demand, so it is absent on the first request and on the first after a gap of more than 30 seconds; polling every few seconds yields a value from the second request on.
 	CpuPercent *float64 `json:"cpuPercent,omitempty"`
 
 	// DiskTotalBytes Total bytes of the filesystem holding the appliance's data.

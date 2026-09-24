@@ -71,6 +71,12 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 	}
 }
 
+// Active reports whether a client is playing, so frames pushed now would be
+// delivered. The pipeline stage polls it per period and skips encoding while it
+// is false (see pipeline.Stage). It is one atomic load, cheap enough for the
+// capture path.
+func (c *ChanSource) Active() bool { return c.active.Load() }
+
 // SetActive toggles delivery. Activation first drains any frames left over
 // from a previous session.
 func (c *ChanSource) SetActive(active bool) {

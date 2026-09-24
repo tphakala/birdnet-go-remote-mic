@@ -386,7 +386,9 @@ func (a *appliance) runningParams() map[string]config.Device {
 // or a failure), then reports the result. The fan-out reader runs on this
 // goroutine, locked to its OS thread so the capture read is not descheduled
 // mid-period; each stream's pipeline runs on its own goroutine so N encodes fan
-// across cores and a slow encoder cannot blow the capture period budget. When the
+// across cores and a slow encoder cannot blow the capture period budget. A stage
+// encodes only while its feed has a playing client; otherwise it just drains
+// its periods, so an idle appliance pays for capture but not for encoding. When the
 // capture ends the fan-out closes the stream feeds, so every stage goroutine
 // returns, and pump waits for them before reporting so no stage outlives the
 // device's teardown.
@@ -402,7 +404,10 @@ func (a *appliance) pump(rt *deviceRuntime) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := sr.stage.Run(sr.src, func(f pipeline.Frame) error {
+			// Gating the stage on the feed's active flag skips the encode for every
+			// period no client would receive; the stage still drains its source so the
+			// fan-out never backs up.
+			err := sr.stage.Run(sr.src, sr.frames.Active, func(f pipeline.Frame) error {
 				if !sr.frames.Push(f) {
 					drops := sr.dropped.Add(1)
 					if drops%50 == 1 {

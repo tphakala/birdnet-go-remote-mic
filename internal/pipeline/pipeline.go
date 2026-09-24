@@ -32,8 +32,16 @@ type Frame struct {
 
 // Stage consumes capture periods from src and emits Frames until src ends
 // (io.EOF, returned as nil) or emit returns an error.
+//
+// active gates the work: it is consulted once per period, right after the
+// period is read, and a period read while it reports false is drained but not
+// packetized or encoded. That is how a stream with no playing client costs
+// only the read: its frames would be discarded downstream anyway. A stateful
+// stage (Opus) starts from a clean state on the next active period, so the
+// first frames a new client receives carry no encoder history from before it
+// connected. A nil active means always active.
 type Stage interface {
-	Run(src audio.Source, emit func(Frame) error) error
+	Run(src audio.Source, active func() bool, emit func(Frame) error) error
 }
 
 // maxL16Payload caps an L16 RTP payload at 15360 bytes (20 ms of mono 384 kHz).
@@ -53,7 +61,7 @@ type pcmStage struct {
 // PCM into big-endian L16 RTP payloads.
 func NewPCM(channels int) Stage { return &pcmStage{channels: channels} }
 
-func (p *pcmStage) Run(src audio.Source, emit func(Frame) error) error {
+func (p *pcmStage) Run(src audio.Source, active func() bool, emit func(Frame) error) error {
 	rate, ch := src.Negotiated()
 	frameBytes := 2 * ch
 	maxBytes := (rate / 50) * frameBytes // 20 ms
@@ -72,6 +80,11 @@ func (p *pcmStage) Run(src audio.Source, emit func(Frame) error) error {
 				return nil
 			}
 			return err
+		}
+		// The packetizer keeps no state between periods, so an idle stretch needs
+		// no resume step: skipping the byte swap is the whole saving.
+		if active != nil && !active() {
+			continue
 		}
 		captured := time.Now()
 		if _, err := pk.Split(period.Buf, func(payload []byte) error {
@@ -95,12 +108,15 @@ type opusStage struct {
 // samples per channel); a trailing partial frame at teardown is dropped.
 func NewOpus(cfg config.Opus) Stage { return &opusStage{bitrate: cfg.Bitrate} }
 
-func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
+func (o *opusStage) Run(src audio.Source, active func() bool, emit func(Frame) error) error {
 	rate, ch := src.Negotiated()
 	if rate != 48000 || ch < 1 || ch > 2 {
 		return fmt.Errorf("pipeline: opus requires 48000 Hz with 1 or 2 channels, got %d Hz %d ch", rate, ch)
 	}
 	bitrate := config.Opus{Bitrate: o.bitrate}.EffectiveBitrate(ch)
+	// The encoder is built up front even though a stream usually starts with no
+	// client, so a configuration the encoder rejects fails the stream at open
+	// rather than later, at some client's PLAY.
 	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: bitrate})
 	if err != nil {
 		return err
@@ -114,6 +130,10 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
 	acc := make([]int16, 0, frameSamples) // reused accumulator
 	encBuf := make([]byte, 4000)          // one Opus packet fits easily
+	// idle records that a period was skipped since the last active one, so the
+	// next active period resets the encoder and drops the stale partial frame: a
+	// new client's stream then starts exactly as a freshly built encoder's would.
+	idle := false
 
 	for {
 		period, err := src.Read()
@@ -123,12 +143,30 @@ func (o *opusStage) Run(src audio.Source, emit func(Frame) error) error {
 			}
 			return err
 		}
+		if active != nil && !active() {
+			idle = true
+			continue
+		}
+		if idle {
+			enc.Reset()
+			acc = acc[:0]
+			idle = false
+		}
 		captured := time.Now()
-		samples := len(period.Buf) / 2
-		for i := range samples {
-			acc = append(acc, int16(binary.LittleEndian.Uint16(period.Buf[i*2:])))
+		// Fill the accumulator up to the rest of the current frame per pass, so the
+		// per-sample loop carries no frame-boundary branch.
+		pcm := period.Buf
+		for len(pcm) >= 2 {
+			take := min(frameSamples-len(acc), len(pcm)/2)
+			start := len(acc)
+			acc = acc[:start+take]
+			dst := acc[start:]
+			for i := range dst {
+				dst[i] = int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+			}
+			pcm = pcm[take*2:]
 			if len(acc) < frameSamples {
-				continue
+				break
 			}
 			n, eerr := enc.Encode(acc, encBuf)
 			if eerr != nil {

@@ -1604,8 +1604,11 @@ components:
           minimum: 0
           maximum: 100
           description: >
-            Recent host CPU utilization across all cores, as a percentage.
-            Absent until the sampler has taken two readings.
+            Host CPU utilization across all cores, as a percentage, averaged
+            since the previous GET /system. Computed on demand, so it is absent
+            on the first request and on the first after a gap of more than 30
+            seconds; polling every few seconds yields a value from the second
+            request on.
         memTotalBytes:
           type: integer
           format: int64

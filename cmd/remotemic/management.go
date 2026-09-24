@@ -45,11 +45,12 @@ type provider struct {
 	// reason as discovery: the reconcile loop writes it, GET /status reads it.
 	auth     atomic.Bool
 	dataPath string // filesystem path whose storage usage /system and the host-health disk check report
-	// sampler tracks host CPU utilization for GET /system. It is created only while
-	// the management API is enabled (its sole consumer); the host-health monitor
-	// diffs /proc/stat over its own poll window instead. nil when the API is off,
-	// which sysinfo.Collect tolerates by omitting CPUPercent.
-	sampler *sysinfo.Sampler
+	// cpu reports host CPU utilization for GET /system, read on demand per request
+	// (see sysinfo.CPUGauge) so an appliance with no browser open reads nothing.
+	// The host-health monitor diffs /proc/stat over its own poll window instead.
+	// nil when the API is off, which sysinfo.Collect tolerates by omitting
+	// CPUPercent.
+	cpu     *sysinfo.CPUGauge
 	devices atomic.Pointer[[]*deviceRuntime]
 	// detected is the last enumerated set of host capture devices with their
 	// probed capabilities, refreshed by the background enumeration goroutine.
@@ -140,7 +141,7 @@ var (
 
 // System gathers host hardware facts and live metrics for GET /system.
 func (p *provider) System() mgmtserver.SystemInfo {
-	return sysinfo.Collect(p.dataPath, p.sampler)
+	return sysinfo.Collect(p.dataPath, p.cpu)
 }
 
 // setCertificate describes cert, records its public metadata and chain PEM, and

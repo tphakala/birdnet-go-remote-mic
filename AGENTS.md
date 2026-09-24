@@ -91,9 +91,11 @@ Other tasks: `task test`, `task lint`, `task fmt`, `task web:test`,
   web UI or management API (levels metering, sampling, formatting, JSON
   encoding) must not run on a timer or in the capture path without a consumer:
   gate it on a live consumer count, as `internal/levels` does (`Meter.Observe`
-  returns early and the sampler skips its tick while the hub's `subs` is zero),
-  or compute it lazily on request. Background work is justified only for
-  capture, streaming, hotplug recovery, or condition monitors that raise alerts.
+  returns early and the sampler skips its tick while the hub's `subs` is zero)
+  and the encode stages do (gated on the RTSP feed's active flag), or compute it
+  lazily on request, as `sysinfo.CPUGauge` does. Background work is justified
+  only for capture, streaming, hotplug recovery, or condition monitors that
+  raise alerts.
 - Recover automatically and safely. The appliance runs unattended for months,
   often out of reach, so any unexpected event (device unplugged or erroring,
   overrun, encoder fault, client vanishing, corrupt or missing file, clock
@@ -225,6 +227,8 @@ thelper, and testifylint. `unused` is disabled.
   into per-stream channel subsets.
 - `internal/pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM`
   (L16) and `NewOpus` (960-sample frames). `Frame.Captured` is capture time.
+  `Run` takes an `active` gate (`ChanSource.Active`): with no client playing,
+  a stage drains periods without encoding, and Opus resets on resume.
 - `internal/rtspserver`: minimal RTSP server, one playing client per path.
   SETUP echoes client-chosen interleaved channels; PLAY returns RTP-Info.
   `writer.go` is the single writer per connection. `ChanSource` buffers only
