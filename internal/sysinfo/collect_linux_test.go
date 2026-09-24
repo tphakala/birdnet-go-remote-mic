@@ -51,18 +51,21 @@ func TestCPUGaugePercent(t *testing.T) {
 
 	synctest.Test(t, func(t *testing.T) {
 		read, reads := scriptedCPUStat(t,
-			cpuStat{100, 200, true},   // 1: first call, start of the in-request sample
-			cpuStat{150, 400, true},   // 2: end of the sample: dTotal 200, dIdle 50 -> 75%
-			cpuStat{250, 600, true},   // 3: a poll 3 s later: dTotal 200, dIdle 100 -> 50%
-			cpuStat{0, 0, false},      // 4: a failed read
-			cpuStat{350, 1000, true},  // 5: diffs against read 3: dTotal 400, dIdle 100 -> 75%
-			cpuStat{0, 0, false},      // 6: another failed read
-			cpuStat{1350, 2000, true}, // 7: stale (time kept at read 5): sample start
-			cpuStat{1400, 2400, true}, // 8: sample end: dTotal 400, dIdle 50 -> 87.5%
-			cpuStat{1500, 2600, true}, // 9: exactly cpuGaugeStale later, still fresh: dTotal 200, dIdle 100 -> 50%
-			cpuStat{9000, 9100, true}, // 10: past the stale limit: sample start
-			cpuStat{9150, 9300, true}, // 11: sample end: dTotal 200, dIdle 150 -> 25%
-			cpuStat{9100, 9500, true}, // 12: idle counter went backwards: no basis
+			cpuStat{100, 200, true},     // 1: first call, start of the in-request sample
+			cpuStat{150, 400, true},     // 2: end of the sample: dTotal 200, dIdle 50 -> 75%
+			cpuStat{250, 600, true},     // 3: a poll 3 s later: dTotal 200, dIdle 100 -> 50%
+			cpuStat{0, 0, false},        // 4: a failed read
+			cpuStat{350, 1000, true},    // 5: diffs against read 3: dTotal 400, dIdle 100 -> 75%
+			cpuStat{0, 0, false},        // 6: another failed read
+			cpuStat{1350, 2000, true},   // 7: stale (time kept at read 5): sample start
+			cpuStat{1400, 2400, true},   // 8: sample end: dTotal 400, dIdle 50 -> 87.5%
+			cpuStat{1500, 2600, true},   // 9: exactly cpuGaugeStale later, still fresh: dTotal 200, dIdle 100 -> 50%
+			cpuStat{9000, 9100, true},   // 10: past the stale limit: sample start
+			cpuStat{9150, 9300, true},   // 11: sample end: dTotal 200, dIdle 150 -> 25%
+			cpuStat{9100, 9500, true},   // 12: idle counter went backwards: no basis
+			cpuStat{9200, 9900, true},   // 13: diffs against read 12: dTotal 400, dIdle 100 -> 75%
+			cpuStat{20000, 21000, true}, // 14: past the stale limit: sample start
+			cpuStat{0, 0, false},        // 15: the sample's second read fails
 		)
 		g := newCPUGauge(read)
 		want := func(step string, wantPct float64, wantOK bool, wantReads int) {
@@ -102,6 +105,15 @@ func TestCPUGaugePercent(t *testing.T) {
 		want("counters with no basis for a ratio report nothing", 0, false, 12)
 		time.Sleep(cpuGaugeMinWindow / 10)
 		want("inside the minimum window the no-basis result is reused, not re-read", 0, false, 12)
+		time.Sleep(3 * cpuGaugeMinWindow)
+		want("the reading after a no-basis one diffs against it", 75, true, 13)
+
+		// A stale sample whose second read fails must not leave the old figure to
+		// be reused: a caller waiting on the lock would take it as a fresh one.
+		time.Sleep(cpuGaugeStale + cpuGaugeMinWindow)
+		want("a sample whose second read fails reports nothing", 0, false, 15)
+		time.Sleep(cpuGaugeMinWindow / 10)
+		want("a caller right after the failed sample reuses absent, not the stale 75%", 0, false, 15)
 	})
 }
 
@@ -141,19 +153,32 @@ func TestCPUGaugeConcurrent(t *testing.T) {
 	}
 }
 
-// TestCPUGaugeZeroValue pins that the zero value is usable and reads the real
-// /proc/stat, rather than calling a nil reader.
-func TestCPUGaugeZeroValue(t *testing.T) {
+// TestCPUGaugeRealClock pins the production constructor and the zero value
+// against the real /proc/stat on the real clock: each must be a usable gauge
+// that actually reads the file, since a nil constructor result or a zero value
+// that cannot read would each leave GET /system without cpuPercent. The figure
+// itself is only range-checked when one comes back: a CPU going offline during
+// the 250 ms sample, or idle plus iowait dropping, legitimately reports no basis.
+func TestCPUGaugeRealClock(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		var g CPUGauge
-		// Under the fake clock the sample spans almost no real time, so the kernel
-		// counters may not move and the gauge may report no basis; only a reported
-		// figure is range-checked. Reaching this line without a panic is the point.
-		if v, ok := g.Percent(); ok && (v < 0 || v > 100) {
-			t.Errorf("zero-value gauge Percent = %v, out of [0,100]", v)
-		}
-	})
+	var zero CPUGauge
+	for name, g := range map[string]*CPUGauge{"NewCPUGauge": NewCPUGauge(), "zero value": &zero} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if g == nil {
+				t.Fatal("gauge is nil, want a usable gauge")
+			}
+			v, ok := g.Percent()
+			if ok && (v < 0 || v > 100) {
+				t.Errorf("Percent = %v, want a figure in [0,100]", v)
+			}
+			// Only a successful /proc/stat read records a reading time; this goroutine
+			// is the gauge's only user, so reading it without the lock is safe.
+			if g.at.IsZero() {
+				t.Error("no successful /proc/stat read recorded, want the gauge to read the real file")
+			}
+		})
+	}
 }
 
 // TestReadCPUStatReal pins that the real /proc/stat parses, the one part of the

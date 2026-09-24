@@ -414,25 +414,16 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 	pattern := []bool{true, true, true, false, false, true, true, true, true, true, true}
 	cfg := config.Opus{Bitrate: 64000}
 
-	collect := func(src audio.Source, active func() bool) [][]byte {
-		t.Helper()
-		var out [][]byte
-		err := pipeline.NewOpus(cfg).Run(src, active, func(f pipeline.Frame) error {
-			out = append(out, append([]byte(nil), f.Payload...))
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		return out
-	}
-
 	active, _ := gateSeq(t, pattern...)
-	got := collect(audio.NewFakeSource(48000, 1, periods), active)
+	got := runOpus(t, cfg, periods, 1, active)
 	if len(got) != 4 {
 		t.Fatalf("emitted %d frames, want 4 (1 before the gap, 3 after)", len(got))
 	}
-	want := collect(audio.NewFakeSource(48000, 1, periods[5:]), nil)
+	var resumed []byte
+	for _, p := range periods[5:] {
+		resumed = append(resumed, p...)
+	}
+	want := referenceOpus(t, cfg, resumed, 1)
 	if len(want) != 3 {
 		t.Fatalf("reference run emitted %d frames, want 3", len(want))
 	}
