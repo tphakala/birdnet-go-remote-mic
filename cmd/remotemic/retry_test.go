@@ -856,21 +856,16 @@ func TestStopRetriesStopsTheTimer(t *testing.T) {
 // goroutine, and one onRetryDue pass handles both.
 func TestRetryTimerSignalCoalesces(t *testing.T) {
 	t.Parallel()
-	app := &appliance{retryDue: make(chan struct{}, 1)}
-	done := make(chan struct{})
-	go func() {
+	// In a synctest bubble a blocked send is a deadlock the bubble reports at
+	// once, with no wall-clock timeout to wait out.
+	synctest.Test(t, func(t *testing.T) {
+		app := &appliance{retryDue: make(chan struct{}, 1)}
 		app.signalRetryDue()
 		app.signalRetryDue()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("signalRetryDue blocked with a signal already pending")
-	}
-	if got := len(app.retryDue); got != 1 {
-		t.Errorf("pending signals = %d, want 1", got)
-	}
+		if got := len(app.retryDue); got != 1 {
+			t.Errorf("pending signals = %d, want 1", got)
+		}
+	})
 }
 
 // TestArmRetryTimerFollowsEarliestDeadline pins what the timer is armed for:
@@ -898,20 +893,63 @@ func TestArmRetryTimerFollowsEarliestDeadline(t *testing.T) {
 		earlier := time.Now().Add(10 * time.Second)
 		app.retries["c"] = &retryState{settleAt: earlier}
 		app.armRetryTimer()
-		if !app.retryAt.Equal(earlier) {
-			t.Errorf("armed for %v, want the earlier deadline %v", app.retryAt, earlier)
+		if !app.retryAt.Equal(earlier) || app.retryTimer != timer {
+			t.Errorf("armed for %v (same timer %v), want the earlier deadline %v on the same timer", app.retryAt, app.retryTimer == timer, earlier)
 		}
 		time.Sleep(15 * time.Second)
 		synctest.Wait() // let the timer's callback goroutine run
 		if got := len(app.retryDue); got != 1 {
 			t.Errorf("pending signals at the earlier deadline = %d, want 1", got)
 		}
+		<-app.retryDue
+		app.retryAt = time.Time{} // the signal was consumed, as onRetryDue records
 
+		// With a deadline pending, dropping every state must stop the timer: no
+		// signal arrives when that deadline passes.
+		delete(app.retries, "c")
+		app.armRetryTimer()
+		if !app.retryAt.Equal(first) {
+			t.Fatalf("precondition: armed for %v, want %v", app.retryAt, first)
+		}
 		clear(app.retries)
-		app.retryAt = time.Time{} // the timer fired, as onRetryDue records
 		app.armRetryTimer()
 		if !app.retryAt.IsZero() {
 			t.Errorf("armed for %v with nothing pending, want zero", app.retryAt)
+		}
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+		if got := len(app.retryDue); got != 0 {
+			t.Errorf("pending signals after the dropped deadline = %d, want 0: the timer was not stopped", got)
+		}
+	})
+}
+
+// TestStartDeviceNonRetryableDisarmsTimer pins dropRetry's re-arm: a device in
+// backoff that a config save restarts into a cause a retry cannot fix loses its
+// state in startDevice, and the timer must follow rather than stay armed for
+// the deleted deadline.
+func TestStartDeviceNonRetryableDisarmsTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 1)
+		dev := testDevice("moth", idMoth, "/m", 48000)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		if app.retryAt.IsZero() {
+			t.Fatal("precondition: no retry deadline armed after the failed open")
+		}
+
+		app.resolve = func(id string) (audio.Hardware, error) {
+			return audio.Hardware{}, &capture.DeviceNotFoundError{ID: id}
+		}
+		app.refreshHardware(&app.cfg)
+		app.startDevice(&dev)
+
+		if _, ok := app.retries["moth"]; ok {
+			t.Fatal("precondition: a not-connected device kept its retry state")
+		}
+		if !app.retryAt.IsZero() {
+			t.Errorf("timer still armed for %v after the only retry state was dropped", app.retryAt)
 		}
 	})
 }

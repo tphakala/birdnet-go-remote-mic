@@ -184,10 +184,10 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 // which is never restarted unattended, and for a down cause a retry cannot fix
 // (a disconnect is brought back by the hardware-change retry).
 func (a *appliance) dropRetry(name string) {
-	if _, ok := a.retries[name]; !ok {
-		return
-	}
 	delete(a.retries, name)
+	// Re-arm even when there was no state here: startDevice deletes the state
+	// before it opens, so the timer may still be armed for that deadline.
+	// armRetryTimer is a no-op when the earliest deadline has not changed.
 	a.armRetryTimer()
 }
 
