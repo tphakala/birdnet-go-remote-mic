@@ -172,9 +172,26 @@ tasks:
       - task: web:test
       - task: web:build
 
-  check:
-    desc: Full local gate (build, arm64 + arm builds, vet, lint, api checks, web verify, fmt, race tests)
+  agents:size:
+    desc: Fail if any AGENTS.md exceeds 20 KB
     cmds:
+      # agy silently truncates each instruction file at about 24 KB, dropping
+      # whatever rules sit at the tail. The 20 KB cap leaves headroom.
+      - |
+        fail=0
+        for f in $(git ls-files --cached --others --exclude-standard '*AGENTS.md'); do
+          size=$(wc -c < "$f")
+          if [ "$size" -gt 20480 ]; then
+            echo "$f is $size bytes (limit 20480); split it into module AGENTS.md files"
+            fail=1
+          fi
+        done
+        exit $fail
+
+  check:
+    desc: Full local gate (agents size, build, arm64 + arm builds, vet, lint, api checks, web verify, fmt, race tests)
+    cmds:
+      - task: agents:size
       - task: web:verify
       - task: build:amd64
       - task: build:arm64

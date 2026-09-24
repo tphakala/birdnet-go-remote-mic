@@ -116,6 +116,8 @@ jobs:
       # until CI passed something `task check` would have caught, or the reverse.
       - name: Install Task
         run: npm install --global @go-task/cli@${{ env.TASK_VERSION }}
+      - name: Check AGENTS.md sizes
+        run: task agents:size
       # web:verify runs, in order: tsc --noEmit, oxlint, the html-validate
       # accessibility audit (task web:a11y), the node:test suite (which includes
       # the WCAG token-contrast tests), and finally a rebuild of web/dist.
