@@ -6,13 +6,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
+
+// encGzip is the gzip content coding, as requested and as echoed back.
+const encGzip = "gzip"
 
 func TestAcceptsGzip(t *testing.T) {
 	t.Parallel()
@@ -68,7 +73,7 @@ func TestNotificationsGzipWhenAccepted(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+	if got := rec.Header().Get("Content-Encoding"); got != encGzip {
 		t.Fatalf("Content-Encoding = %q, want gzip", got)
 	}
 	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
@@ -121,7 +126,7 @@ func TestGzipLeavesOtherRoutesAlone(t *testing.T) {
 	t.Parallel()
 	h := gzipTestServer(t)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, BasePath+"/status", http.NoBody)
-	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", encGzip)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if got := rec.Header().Get("Content-Encoding"); got != "" {
@@ -129,5 +134,96 @@ func TestGzipLeavesOtherRoutesAlone(t *testing.T) {
 	}
 	if got := rec.Header().Get("Vary"); strings.Contains(got, "Accept-Encoding") {
 		t.Errorf("GET /status Vary = %q, want no Accept-Encoding", got)
+	}
+}
+
+// TestNotificationsGzipTwiceFromPool serves two compressed responses in a row,
+// so the second one runs on a pooled writer: each body must decode on its own,
+// with nothing of the first response carried into the second.
+func TestNotificationsGzipTwiceFromPool(t *testing.T) {
+	t.Parallel()
+	h := gzipTestServer(t)
+	for i := range 2 {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, BasePath+"/notifications", http.NoBody)
+		req.Header.Set("Accept-Encoding", encGzip)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		zr, err := gzip.NewReader(rec.Body)
+		if err != nil {
+			t.Fatalf("request %d: body is not gzip: %v", i, err)
+		}
+		raw, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("request %d: decompress: %v", i, err)
+		}
+		var snap mgmtapi.NotificationSnapshot
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			t.Fatalf("request %d: not a single snapshot: %v", i, err)
+		}
+		if len(snap.Notifications) != 50 {
+			t.Errorf("request %d: got %d entries, want 50", i, len(snap.Notifications))
+		}
+	}
+}
+
+// TestNotificationsHeadMatchesGet checks that HEAD answers with the headers GET
+// would send (RFC 9110 section 9.3.2), so a cache probing with HEAD sees the
+// same representation.
+func TestNotificationsHeadMatchesGet(t *testing.T) {
+	t.Parallel()
+	h := gzipTestServer(t)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodHead, BasePath+"/notifications", http.NoBody)
+	req.Header.Set("Accept-Encoding", encGzip)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Encoding"); got != encGzip {
+		t.Errorf("HEAD Content-Encoding = %q, want gzip", got)
+	}
+	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
+		t.Errorf("HEAD Vary = %q, want it to name Accept-Encoding", got)
+	}
+}
+
+// TestNotificationsUnauthorizedNotCompressed pins the wiring order: the bearer
+// gate wraps compression, so a rejected request gets a plain 401.
+func TestNotificationsUnauthorizedNotCompressed(t *testing.T) {
+	t.Parallel()
+	s := New(&fakeProvider{}, WithAuth(auth.NewGuard(testAuthToken)), WithNotifications(&fakeSnapshotter{}))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, BasePath+"/notifications", http.NoBody)
+	req.Header.Set("Accept-Encoding", encGzip)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Errorf("401 Content-Encoding = %q, want none", got)
+	}
+}
+
+// TestGzipDropsContentLength uses a handler that declares the uncompressed
+// length: the header must not survive, since it would describe the wrong body.
+func TestGzipDropsContentLength(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat(`{"k":"v"}`, 100)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
+	req.Header.Set("Accept-Encoding", encGzip)
+	rec := httptest.NewRecorder()
+	gzipGET("/x", inner).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Length"); got != "" {
+		t.Errorf("Content-Length = %q, want none on a gzip body", got)
+	}
+	zr, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("body is not gzip: %v", err)
+	}
+	raw, err := io.ReadAll(zr)
+	if err != nil || string(raw) != body {
+		t.Errorf("decompressed body = %q (err %v), want the handler's body", raw, err)
 	}
 }
