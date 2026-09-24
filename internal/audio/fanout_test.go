@@ -293,6 +293,11 @@ func TestFanoutFollowsActiveFlag(t *testing.T) {
 	f.distribute(p)
 	active.Store(true)
 	f.distribute(p)
+	// Check the queue first, so a missing period fails here instead of blocking
+	// the Read on a feed that is never closed.
+	if got := len(cons[0].(*fanoutConsumer).ch); got != 2 {
+		t.Fatalf("got %d queued periods, want 2 (one per distribute)", got)
+	}
 	if got, err := cons[0].Read(); err != nil || got.Frames != 0 || len(got.Buf) != 0 {
 		t.Errorf("period before activation: got %d frames, %d bytes, err %v; want an empty period", got.Frames, len(got.Buf), err)
 	}

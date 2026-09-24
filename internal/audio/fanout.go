@@ -54,10 +54,10 @@ type fanoutConsumer struct {
 
 // FanoutStream describes one fan-out consumer. Dropped, which is required,
 // counts the periods the consumer lost to a full queue; the caller shares it
-// with the stream's downstream frame-drop counter. Active reports whether the stream has a client
-// playing (rtspserver.ChanSource.Active): while it reports false the consumer
-// receives empty periods instead of audio its stage would discard unencoded
-// anyway. A nil Active means always active.
+// with the stream's downstream frame-drop counter. Active reports whether the
+// stream has a client playing (rtspserver.ChanSource.Active): while it reports
+// false the consumer receives empty periods instead of audio its stage would
+// discard unencoded anyway. A nil Active means always active.
 type FanoutStream struct {
 	Dropped *atomic.Uint64
 	Active  func() bool

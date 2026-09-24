@@ -853,7 +853,7 @@ func TestStopRetriesStopsTheTimer(t *testing.T) {
 
 // TestRetryTimerSignalCoalesces pins the non-blocking send: with a signal
 // already pending, a second firing is dropped rather than blocking the timer
-// goroutine, and one onRetryDue pass handles both.
+// goroutine; the pending signal already covers it.
 func TestRetryTimerSignalCoalesces(t *testing.T) {
 	t.Parallel()
 	// In a synctest bubble a blocked send is a deadlock the bubble reports at
@@ -902,7 +902,6 @@ func TestArmRetryTimerFollowsEarliestDeadline(t *testing.T) {
 			t.Errorf("pending signals at the earlier deadline = %d, want 1", got)
 		}
 		<-app.retryDue
-		app.retryAt = time.Time{} // the signal was consumed, as onRetryDue records
 
 		// With a deadline pending, dropping every state must stop the timer: no
 		// signal arrives when that deadline passes.

@@ -244,8 +244,9 @@ func (a *appliance) signalRetryDue() {
 // (clear and re-announce) and onPumpDone raises a fresh onset right after. The
 // window is one run-loop turn wide, and the device is retried as usual.
 func (a *appliance) onRetryDue() {
-	// The timer has fired (or a stale signal arrived); either way the deadline it
-	// was armed for is spent, so the armRetryTimer below must arm afresh.
+	// Forget the armed deadline so the armRetryTimer below recomputes and arms
+	// afresh rather than trusting it. A stale signal may arrive while the timer
+	// is armed for a later deadline; re-arming for that deadline is harmless.
 	a.retryAt = time.Time{}
 	now := time.Now()
 	// Drop retry state for any name that is not an enabled configured device,
