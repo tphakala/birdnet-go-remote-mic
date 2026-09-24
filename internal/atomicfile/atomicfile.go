@@ -5,12 +5,18 @@
 package atomicfile
 
 import (
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Write writes data to path via a temp file in the same directory followed by
-// an atomic rename, fsyncing the contents first so the replacement is durable.
+// an atomic rename. The contents are fsynced before the rename and the
+// directory after it, so the replacement survives a power cut: without the
+// directory sync, ext4 can lose the rename itself and come back with the old
+// file.
 // If path is a symlink, its target is rewritten rather than replaced with a
 // regular file, so an operator's symlinked config or certificate path survives.
 func Write(path string, data []byte, perm os.FileMode) error {
@@ -51,5 +57,31 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, target)
+	if err := os.Rename(tmp, target); err != nil {
+		return err
+	}
+	SyncDir(dir)
+	return nil
+}
+
+// SyncDir fsyncs dir so a rename into it, or a removal from it, is durable.
+// Write calls it itself; a caller that renames or removes files on its own (the
+// certificate pair commit, a pin marker removal) calls it after the last such
+// change. It is best effort and returns nothing: the change is already in
+// place, and failing now would tell the caller its change did not happen when
+// it did (a config PATCH would answer 500 over a file that already holds the
+// new config). A failure is logged instead, so a change that may not survive a
+// power cut is still visible. Some filesystems cannot sync a directory at all
+// and return EINVAL; that is expected and not logged.
+func SyncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		// err (an *os.PathError) already names the directory.
+		log.Printf("atomicfile: directory sync skipped: %v (the change is in place but may not survive a power cut)", err)
+		return
+	}
+	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		log.Printf("atomicfile: directory sync failed: %v (the change is in place but may not survive a power cut)", err)
+	}
+	_ = d.Close()
 }

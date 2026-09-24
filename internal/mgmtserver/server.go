@@ -7,6 +7,7 @@ package mgmtserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"sync"
@@ -196,11 +197,16 @@ var _ mgmtapi.StrictServerInterface = (*Server)(nil)
 // Handler returns the HTTP handler for the management API, with every route
 // mounted under /api/v1. Request-binding and body-decode failures, which the
 // generated code would otherwise report as text/plain, are rendered as RFC 9457
-// problem+json so every error response matches the contract. When staticFS is
+// problem+json so every error response matches the contract. API request bodies
+// are capped at maxRequestBody (413 past it). When staticFS is
 // provided, static assets and SPA fallback routing are mounted at /.
 func (s *Server) Handler() http.Handler {
 	strict := mgmtapi.NewStrictHandlerWithOptions(s, nil, mgmtapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+				writeProblem(w, http.StatusRequestEntityTooLarge, "request body too large", err.Error())
+				return
+			}
 			writeProblem(w, http.StatusBadRequest, "bad request", err.Error())
 		},
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -218,7 +224,7 @@ func (s *Server) Handler() http.Handler {
 	// hand-written event stream); static assets below stay open. With no guard
 	// mounted requireBearer is a no-op passthrough. Compression sits inside the
 	// gate, so a 401 is never compressed.
-	api := requireBearer(s.guard, gzipGET(BasePath+"/notifications", generated))
+	api := limitBody(requireBearer(s.guard, gzipGET(BasePath+"/notifications", generated)))
 	if s.eventStream == nil && s.staticFS == nil {
 		return api
 	}
@@ -236,6 +242,25 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", api)
 	}
 	return mux
+}
+
+// maxRequestBody caps an API request body. The largest legitimate body is a
+// certificate install, which mgmtcert bounds at 64 KiB of certificate chain plus
+// 16 KiB of key (about 82 KiB once JSON-escaped); keep this well above that sum
+// if those bounds grow. It still keeps a LAN client from making the JSON
+// decoder buffer megabytes on a Pi with little RAM.
+const maxRequestBody = 256 << 10
+
+// limitBody caps every request body at maxRequestBody. A body past the cap
+// fails the generated decoder with *http.MaxBytesError, which the request error
+// handler turns into a 413 problem. It is the outermost wrapper of the generated
+// API routes, so every one of them is capped; the GET-only event stream is
+// mounted separately and reads no body.
+func limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // writeProblem sends an RFC 9457 problem detail.

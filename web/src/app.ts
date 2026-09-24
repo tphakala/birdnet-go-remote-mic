@@ -8,6 +8,8 @@ import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 
+const THEME_KEY = "remote-mic-theme";
+
 class App {
   public init(): void {
     this.initTheme();
@@ -33,8 +35,17 @@ class App {
     });
   }
 
+  // initTheme runs first in init, so a storage access that throws (a private
+  // window, site data blocked) would abort the whole app before any view
+  // exists. Both accesses fall back instead: dark theme, and a toggle that
+  // works but does not persist.
   private initTheme(): void {
-    const savedTheme = localStorage.getItem("remote-mic-theme") || "dark";
+    let savedTheme = "dark";
+    try {
+      if (localStorage.getItem(THEME_KEY) === "light") savedTheme = "light";
+    } catch {
+      /* storage unavailable: keep the default theme */
+    }
     document.documentElement.setAttribute("data-theme", savedTheme);
 
     const themeToggleBtn = document.getElementById("theme-toggle-btn");
@@ -43,7 +54,11 @@ class App {
         const currentTheme = document.documentElement.getAttribute("data-theme");
         const nextTheme = currentTheme === "light" ? "dark" : "light";
         document.documentElement.setAttribute("data-theme", nextTheme);
-        localStorage.setItem("remote-mic-theme", nextTheme);
+        try {
+          localStorage.setItem(THEME_KEY, nextTheme);
+        } catch {
+          /* storage unavailable: the theme just does not persist */
+        }
       });
     }
   }

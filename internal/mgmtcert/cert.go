@@ -14,11 +14,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 )
 
 // certValidity is how long a freshly generated certificate stays valid. It is
@@ -32,15 +37,30 @@ const pemTypeCertificate = "CERTIFICATE"
 // Ensure returns a TLS certificate for the management server. When the pair at
 // certPath/keyPath is pinned (an operator installed it) and loads, it is reused
 // verbatim: never regenerated, even once expired, so a custom certificate is
-// never silently replaced. A stale pin whose pair cannot load is dropped and the
-// appliance self-heals. An unpinned pair is reused when it is in date and covers
-// every host in hosts; when it is in date but a name is missing (the appliance's
-// address changed) its existing SANs are carried forward and it is regenerated;
-// a missing, unreadable, or expired unpinned pair is regenerated from hosts. The
-// key file is written with owner-only permissions.
+// never silently replaced. A stale pin is dropped and the appliance self-heals
+// when either pinned file is missing or the pair does not parse, but a pinned
+// file that exists and cannot be read (a permission change, an I/O error, a
+// symlink whose target is gone) is left untouched and Ensure returns a
+// *PinnedReadError, since regenerating over it would destroy the operator's
+// certificate over what may be a transient fault. An unpinned pair is reused
+// when it is in date and covers every host in hosts; when it is in date but a
+// name is missing (the appliance's address changed) its existing SANs are
+// carried forward and it is regenerated; a missing, unreadable, or expired
+// unpinned pair is regenerated from hosts. The key file is written with
+// owner-only permissions.
 func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 	pinned := Pinned(certPath)
-	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+	certPEM, certErr := os.ReadFile(certPath)
+	keyPEM, keyErr := os.ReadFile(keyPath)
+	if pinned {
+		if err := readFault(certPath, certErr); err != nil {
+			return tls.Certificate{}, err
+		}
+		if err := readFault(keyPath, keyErr); err != nil {
+			return tls.Certificate{}, err
+		}
+	}
+	if cert, err := parsePair(certPEM, certErr, keyPEM, keyErr); err == nil {
 		if leaf := leafOf(&cert); leaf != nil {
 			if pinned {
 				// An operator installed this certificate. Reuse it verbatim: never
@@ -59,11 +79,72 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 		}
 	}
 	if pinned {
-		// The pin marker is present but the pair could not be loaded or parsed, so
-		// there is nothing to preserve. Drop the stale marker and self-heal.
+		// The pin marker is present but the pair is incomplete (a file is missing)
+		// or does not parse, so it cannot be served. Drop the stale marker and
+		// self-heal; generate overwrites whichever pinned file still exists.
 		_ = os.Remove(PinPath(certPath))
+		atomicfile.SyncDir(filepath.Dir(PinPath(certPath)))
 	}
 	return generate(certPath, keyPath, hosts)
+}
+
+// PinnedReadError reports that a pinned (operator-installed) certificate or key
+// file exists but could not be read. Ensure returns it instead of regenerating,
+// so the operator's pair survives a fault that may be transient or fixable (a
+// permission change, an I/O error, a certificate volume not mounted yet). The
+// appliance does not retry: the management API stays off until the process
+// restarts, and a run that still has devices serving does not restart on its
+// own.
+type PinnedReadError struct {
+	Path string
+	Err  error
+}
+
+func (e *PinnedReadError) Error() string {
+	return "read installed certificate or key file " + e.Path + ": " + e.Err.Error()
+}
+
+func (e *PinnedReadError) Unwrap() error { return e.Err }
+
+// errDanglingLink is the cause a *PinnedReadError carries for a pinned file that
+// is a symlink to a missing target. It deliberately does not wrap the read's
+// fs.ErrNotExist, so a caller testing errors.Is(err, fs.ErrNotExist) never
+// mistakes the refusal for "missing, safe to regenerate".
+var errDanglingLink = errors.New("symlink target is missing")
+
+// readFault classifies one file read of a pinned pair: nil when the read worked
+// or the file itself does not exist (a missing pinned file is safe to
+// self-heal), and a *PinnedReadError for any other failure. A read that fails
+// with "does not exist" is confirmed with Lstat, because through a symlink it
+// can mean only that the target is gone for now (a volume mounted late at boot),
+// and regenerating would replace the operator's link with a regular file. Like
+// Pinned, it fails safe: only Lstat itself reporting "does not exist" counts as
+// missing.
+func readFault(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return &PinnedReadError{Path: path, Err: err}
+	}
+	_, lerr := os.Lstat(path)
+	switch {
+	case lerr == nil:
+		return &PinnedReadError{Path: path, Err: errDanglingLink}
+	case errors.Is(lerr, fs.ErrNotExist):
+		return nil
+	default:
+		return &PinnedReadError{Path: path, Err: lerr}
+	}
+}
+
+// parsePair parses a certificate and key read from disk, failing when either
+// read failed.
+func parsePair(certPEM []byte, certErr error, keyPEM []byte, keyErr error) (tls.Certificate, error) {
+	if err := errors.Join(certErr, keyErr); err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
 // leafOf returns cert's parsed leaf, using the cached Leaf when present and
@@ -84,7 +165,7 @@ func leafOf(cert *tls.Certificate) *x509.Certificate {
 }
 
 // currentlyValid reports whether leaf is within its validity window now.
-// tls.LoadX509KeyPair verifies only that the PEM parses and the keys match, not
+// tls.X509KeyPair verifies only that the PEM parses and the keys match, not
 // that the certificate is still in date, so an expired pair would otherwise be
 // served forever.
 func currentlyValid(leaf *x509.Certificate) bool {

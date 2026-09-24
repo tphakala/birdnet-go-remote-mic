@@ -603,7 +603,8 @@ func closedMgmt() *mgmt {
 // startManagement generates or loads the self-signed certificate and serves the
 // management API over HTTPS in the background until ctx is cancelled. events, if
 // non-nil, is mounted as the hand-written SSE handler for GET /events. It reports
-// whether the API actually came up: a certificate or listener failure is logged,
+// whether the API actually came up: a certificate or listener failure (including
+// an installed certificate it cannot read, which it never overwrites) is logged,
 // not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
 // the caller does not mistake a configured-but-dead API for an available
 // diagnostic surface when deciding whether to stay alive with no serving device.
@@ -625,6 +626,12 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	prov.certPath = certPath
 	prov.keyPath = keyPath
 
+	// An installed (pinned) certificate that exists but cannot be read comes back
+	// as *mgmtcert.PinnedReadError and takes this path too: the API stays off for
+	// the run rather than regenerating over the operator's certificate, and the
+	// token CLI falls back to editing the config file because no API address is
+	// published. Serving a throwaway certificate instead would leave the token
+	// CLI pinning a file the listener does not present.
 	cert, err := mgmtcert.Ensure(certPath, keyPath, certHosts())
 	if err != nil {
 		log.Printf("management API disabled: cannot prepare TLS certificate: %v", err)
