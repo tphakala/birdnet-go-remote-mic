@@ -101,6 +101,17 @@ func (a *appliance) nextFailureLogged(name string) bool {
 	return logAttempt(a.retries[name].failures + 1)
 }
 
+// enabledInConfig reports whether name is an enabled device in the current
+// configuration.
+func (a *appliance) enabledInConfig(name string) bool {
+	for i := range a.cfg.Devices {
+		if a.cfg.Devices[i].Name == name {
+			return a.cfg.Devices[i].IsEnabled()
+		}
+	}
+	return false
+}
+
 // isDown reports whether a device record is down: skipped (it could not be
 // opened) or failed (it died after opening). Both restart paths, the backoff
 // retry and the hardware-change retry, restart only a down device.
@@ -241,14 +252,10 @@ func (a *appliance) onRetryDue() {
 	// mirroring the reconcile's cleanup on remove and disable. The pass below only
 	// walks configured devices, so a state under an unconfigured name would never
 	// have its deadline consumed and armRetryTimer would re-arm a zero delay for it
-	// forever; this keeps a missed cleanup from becoming a busy loop. The device
-	// records mirror the configuration (reconcileRecords keeps one per configured
-	// device, disabled ones in StateDisabled), so they answer the question
-	// without rebuilding a set from the config on every pass.
-	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool {
-		rt, ok := a.devices[name]
-		return !ok || rt.currentState() == mgmtserver.StateDisabled
-	})
+	// forever; this keeps a missed cleanup from becoming a busy loop. It checks the
+	// configuration itself rather than the device records, so it does not depend
+	// on reconcileRecords, the cleanup it backstops.
+	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool { return !a.enabledInConfig(name) })
 	recovered := false
 	attempted := false
 	for i := range a.cfg.Devices {
@@ -257,13 +264,11 @@ func (a *appliance) onRetryDue() {
 		if st == nil {
 			continue
 		}
-		// The prune above left retry state only for names with a record, so rt is
-		// never nil here.
 		rt := a.devices[d.Name]
 		switch {
 		case !st.settleAt.IsZero() && !now.Before(st.settleAt):
 			st.settleAt = time.Time{}
-			if rt.currentState() != mgmtserver.StateServing {
+			if rt == nil || rt.currentState() != mgmtserver.StateServing {
 				continue
 			}
 			st.recoveredAt = now
@@ -274,7 +279,7 @@ func (a *appliance) onRetryDue() {
 			// Defensive: every path that replaces or restarts a down device
 			// (startDevice, reconcileRecords) deletes its retry state first, so a
 			// due retry is expected to find a skipped or failed record here.
-			if !isDown(rt.currentState()) {
+			if rt == nil || !isDown(rt.currentState()) {
 				continue
 			}
 			if !attempted {

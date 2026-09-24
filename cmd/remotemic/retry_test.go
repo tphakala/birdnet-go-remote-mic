@@ -404,6 +404,30 @@ func TestRetryDropsStateForUnknownDevice(t *testing.T) {
 	})
 }
 
+// TestRetryDropsStateForDisabledDevice pins the other half of the run-loop
+// defence: retry state under a name the configuration has but disables is
+// dropped by the next pass, even though that name still has a device record.
+func TestRetryDropsStateForDisabledDevice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, _, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		dev := testDevice("moth", idMoth, "/m", 48000)
+		dev.Enabled = new(false)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		if _, ok := app.devices["moth"]; !ok {
+			t.Fatal("precondition: the disabled device has no record")
+		}
+		app.retries["moth"] = &retryState{attempts: 1, next: time.Now()}
+		app.armRetryTimer()
+
+		runFor(t, app, time.Minute)
+
+		if _, ok := app.retries["moth"]; ok {
+			t.Error("retry state for a disabled device was not dropped")
+		}
+	})
+}
+
 // TestRetryBackoffResetsAfterStableService pins the reset: a device that served
 // for retryResetAfter after recovering starts its next failure at the shortest
 // delay, while one that fails again soon after recovering continues its backoff.
