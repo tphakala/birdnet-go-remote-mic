@@ -24,16 +24,19 @@ func TestFanoutStreamsWiresFeedAndDrops(t *testing.T) {
 		t.Fatalf("got %d fan-out streams, want %d", len(out), len(streams))
 	}
 	for i := range out {
-		if out[i].Dropped != &streams[i].dropped {
-			t.Errorf("stream %d: Dropped is not the stream's own counter", i)
+		if got, want := out[i].Dropped, &streams[i].dropped; got != want {
+			t.Errorf("stream %d: got Dropped %p, want the stream's own counter %p", i, got, want)
 		}
-		if out[i].Active == nil || out[i].Active() {
-			t.Errorf("stream %d: Active is nil or reports true with no client playing", i)
+		if out[i].Active == nil {
+			t.Fatalf("stream %d: got a nil Active, want the stream feed's", i)
+		}
+		if got := out[i].Active(); got {
+			t.Errorf("stream %d: got Active() %v with no client playing, want false", i, got)
 		}
 	}
 	streams[1].frames.SetActive(true)
-	if out[0].Active() || !out[1].Active() {
-		t.Errorf("after stream 1 plays: Active = %v, %v, want false, true", out[0].Active(), out[1].Active())
+	if got0, got1 := out[0].Active(), out[1].Active(); got0 || !got1 {
+		t.Errorf("after stream 1 plays: got Active() %v, %v, want false, true", got0, got1)
 	}
 }
 
