@@ -94,10 +94,6 @@ func shutdownApp(app *appliance, cancel func()) {
 	synctest.Wait()
 }
 
-// TestRetryRestartsDeviceThatFailsToOpen is the #92 acceptance case: a device
-// that is present but cannot be opened (held by another process) serves again on
-// its own once the open succeeds, with no config save, publishing exactly one
-// onset and one clear however many attempts it took.
 // captureLog redirects the standard logger into a buffer for the rest of the
 // test and restores the previous writer afterwards.
 func captureLog(t *testing.T) *bytes.Buffer {
@@ -109,6 +105,10 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &out
 }
 
+// TestRetryRestartsDeviceThatFailsToOpen is the #92 acceptance case: a device
+// that is present but cannot be opened (held by another process) serves again on
+// its own once the open succeeds, with no config save, publishing exactly one
+// onset and one clear however many attempts it took.
 func TestRetryRestartsDeviceThatFailsToOpen(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)
@@ -414,6 +414,9 @@ func TestRetryBackoffResetsAfterStableService(t *testing.T) {
 		wantAttempts int
 	}{
 		{name: "stable", served: retryResetAfter + time.Minute, wantAttempts: 1},
+		// Exactly retryResetAfter counts as stable: the reset is >=, not >.
+		{name: "boundary", served: retryResetAfter, wantAttempts: 1},
+		{name: "just short", served: retryResetAfter - time.Second, wantAttempts: 2},
 		{name: "unstable", served: time.Minute, wantAttempts: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -429,11 +432,7 @@ func TestRetryBackoffResetsAfterStableService(t *testing.T) {
 				}
 
 				// Kill the running device as a still-present failure.
-				rt := app.devices["moth"]
-				app.stop(rt)
-				rt.superseded = false
-				res := <-app.pumpDone
-				app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
+				killDevice(t, app, log, "moth", errTestEIO)
 
 				st := app.retries["moth"]
 				if st == nil {
@@ -562,11 +561,7 @@ func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
 		// Outage 2 begins inside retryResetAfter, so the backoff carries on to
 		// 6 attempts while the outage's own failure count starts at 1.
 		out.Reset()
-		rt := app.devices["moth"]
-		app.stop(rt)
-		rt.superseded = false
-		res := <-app.pumpDone
-		app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
+		killDevice(t, app, opLog, "moth", errTestEIO)
 
 		st := app.retries["moth"]
 		if st == nil || !app.retrying("moth") {
@@ -669,16 +664,12 @@ func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
 		{name: "card index", id: addrHW3, want: "restarts on the next config save"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			app, _, cancel := newTestAppliance(t)
+			app, log, cancel := newTestAppliance(t)
 			defer cancel()
 			defer app.closeAll()
 			withHost(app, &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}})
 			app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", tc.id, "/m", 48000)}})
-			rt := app.devices["moth"]
-			app.stop(rt)
-			rt.superseded = false
-			res := <-app.pumpDone
-			app.onPumpDone(pumpResult{rt: res.rt, err: errTestEIO})
+			killDevice(t, app, log, "moth", errTestEIO)
 
 			act := applianceCenter(t, app).Active()
 			if len(act) != 1 || act[0].Title != titleFailed {
@@ -767,11 +758,7 @@ func TestRetryLostDeviceDropsRetry(t *testing.T) {
 			t.Fatalf("precondition: moth = %s, retrying %v; want serving and settling", s, app.retrying("moth"))
 		}
 
-		rt := app.devices["moth"]
-		app.stop(rt)
-		rt.superseded = false
-		res := <-app.pumpDone
-		app.onPumpDone(pumpResult{rt: res.rt, err: capture.ErrDeviceGone})
+		killDevice(t, app, opLog, "moth", capture.ErrDeviceGone)
 
 		if _, ok := app.retries["moth"]; ok {
 			t.Error("a lost device kept its retry state")
@@ -815,6 +802,94 @@ func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStopRetriesStopsTheTimer pins shutdown: once stopRetries has run, a
+// pending retry never fires, so no attempt reopens a device after closeAll.
+func TestStopRetriesStopsTheTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpenTimes(app, log, 1)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+		if app.retryTimer == nil {
+			t.Fatal("precondition: no retry timer armed after the failed open")
+		}
+
+		app.stopRetries()
+		if app.retryTimer != nil || !app.retryAt.IsZero() {
+			t.Errorf("after stopRetries: timer %v, retryAt %v; want nil and zero", app.retryTimer, app.retryAt)
+		}
+		runFor(t, app, 10*retryBackoff[0])
+		if got := opens(log, "moth"); got != 1 {
+			t.Errorf("opens = %d, want 1: a retry fired after stopRetries", got)
+		}
+	})
+}
+
+// TestRetryTimerSignalCoalesces pins the non-blocking send: with a signal
+// already pending, a second firing is dropped rather than blocking the timer
+// goroutine, and one onRetryDue pass handles both.
+func TestRetryTimerSignalCoalesces(t *testing.T) {
+	t.Parallel()
+	app := &appliance{retryDue: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() {
+		app.signalRetryDue()
+		app.signalRetryDue()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("signalRetryDue blocked with a signal already pending")
+	}
+	if got := len(app.retryDue); got != 1 {
+		t.Errorf("pending signals = %d, want 1", got)
+	}
+}
+
+// TestArmRetryTimerFollowsEarliestDeadline pins what the timer is armed for:
+// the earliest pending deadline across devices, unmoved by a later one, moved by
+// an earlier one (which then fires on time), and nothing once none is pending.
+// The timer is reused across re-arms rather than re-created.
+func TestArmRetryTimerFollowsEarliestDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app := &appliance{retryDue: make(chan struct{}, 1), retries: map[string]*retryState{}}
+		defer app.stopRetries()
+		first := time.Now().Add(time.Minute)
+		app.retries["a"] = &retryState{next: first}
+		app.armRetryTimer()
+		timer := app.retryTimer
+		if timer == nil || !app.retryAt.Equal(first) {
+			t.Fatalf("armed for %v (timer %v), want %v", app.retryAt, timer, first)
+		}
+
+		app.retries["b"] = &retryState{next: first.Add(time.Minute)}
+		app.armRetryTimer()
+		if app.retryTimer != timer || !app.retryAt.Equal(first) {
+			t.Errorf("a later deadline moved the timer to %v", app.retryAt)
+		}
+
+		earlier := time.Now().Add(10 * time.Second)
+		app.retries["c"] = &retryState{settleAt: earlier}
+		app.armRetryTimer()
+		if !app.retryAt.Equal(earlier) {
+			t.Errorf("armed for %v, want the earlier deadline %v", app.retryAt, earlier)
+		}
+		time.Sleep(15 * time.Second)
+		synctest.Wait() // let the timer's callback goroutine run
+		if got := len(app.retryDue); got != 1 {
+			t.Errorf("pending signals at the earlier deadline = %d, want 1", got)
+		}
+
+		clear(app.retries)
+		app.retryAt = time.Time{} // the timer fired, as onRetryDue records
+		app.armRetryTimer()
+		if !app.retryAt.IsZero() {
+			t.Errorf("armed for %v with nothing pending, want zero", app.retryAt)
+		}
+	})
 }
 
 func TestBackoffDelay(t *testing.T) {

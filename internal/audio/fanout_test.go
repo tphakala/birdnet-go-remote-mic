@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// always builds always-active fan-out streams over the given drop counters.
+func always(drops ...*atomic.Uint64) []FanoutStream {
+	streams := make([]FanoutStream, len(drops))
+	for i, d := range drops {
+		streams[i] = FanoutStream{Dropped: d}
+	}
+	return streams
+}
+
 // drainAll reads a consumer to completion, returning the first byte of every
 // delivered period in order (the tests tag each period by its first byte).
 func drainAll(c Source) []byte {
@@ -29,7 +38,7 @@ func TestFanoutDeliversEveryPeriodToEveryConsumer(t *testing.T) {
 	periods := [][]byte{{1, 0}, {2, 0}, {3, 0}}
 	src := NewFakeSource(48000, 1, periods)
 	drops := []*atomic.Uint64{{}, {}, {}}
-	f, cons := NewFanout(src, "dev", drops)
+	f, cons := NewFanout(src, "dev", always(drops...))
 	if len(cons) != 3 {
 		t.Fatalf("consumers = %d, want 3", len(cons))
 	}
@@ -67,7 +76,7 @@ func TestFanoutDropsForAStalledConsumerWithoutBlocking(t *testing.T) {
 	}
 	src := NewFakeSource(48000, 1, periods)
 	var dropped atomic.Uint64
-	f, _ := NewFanout(src, "dev", []*atomic.Uint64{&dropped})
+	f, _ := NewFanout(src, "dev", always(&dropped))
 
 	done := make(chan error, 1)
 	go func() { done <- f.Run() }()
@@ -105,7 +114,7 @@ func (b *blockingSource) Close() error {
 func TestFanoutCloseUnblocksConsumers(t *testing.T) {
 	src := &blockingSource{rate: 48000, ch: 1, release: make(chan struct{})}
 	var dropped atomic.Uint64
-	f, cons := NewFanout(src, "dev", []*atomic.Uint64{&dropped})
+	f, cons := NewFanout(src, "dev", always(&dropped))
 
 	runErr := make(chan error, 1)
 	go func() { runErr <- f.Run() }()
@@ -160,7 +169,7 @@ func (m *mutatingSource) Close() error { return nil }
 func TestFanoutCopiesReusedBuffer(t *testing.T) {
 	src := &mutatingSource{buf: make([]byte, 2), vals: []byte{1, 2, 3, 4, 5}}
 	var dropped atomic.Uint64
-	f, cons := NewFanout(src, "dev", []*atomic.Uint64{&dropped})
+	f, cons := NewFanout(src, "dev", always(&dropped))
 	// Five periods fit the buffer, so Run queues all five (each a fresh copy of the
 	// reused backing) and then closes the feed on EOF.
 	if err := f.Run(); err != nil {
@@ -199,7 +208,7 @@ func TestFanoutRunPropagatesNonEOFError(t *testing.T) {
 	// a crashed capture.
 	wantErr := errors.New("alsa: read failed")
 	src := &errSource{rate: 48000, ch: 1, err: wantErr}
-	f, _ := NewFanout(src, "dev", []*atomic.Uint64{{}})
+	f, _ := NewFanout(src, "dev", always(new(atomic.Uint64)))
 	if err := f.Run(); !errors.Is(err, wantErr) {
 		t.Fatalf("Run() = %v, want %v", err, wantErr)
 	}
@@ -217,7 +226,7 @@ func TestFanoutMetersEachPeriodOnce(t *testing.T) {
 	// The fan-out reads a metered source, so the meter sees every period exactly
 	// once no matter how many consumers the period fans out to.
 	metered := NewMeteredSource(NewFakeSource(48000, 1, periods), &obs)
-	f, cons := NewFanout(metered, "dev", []*atomic.Uint64{{}, {}})
+	f, cons := NewFanout(metered, "dev", always(new(atomic.Uint64), new(atomic.Uint64)))
 	results := make(chan []byte, len(cons))
 	for _, c := range cons {
 		go func(c Source) { results <- drainAll(c) }(c)
@@ -236,5 +245,116 @@ func TestFanoutMetersEachPeriodOnce(t *testing.T) {
 	// metering N times would mean the fan-out read the source per consumer.
 	if got := obs.n.Load(); got != int64(len(periods)) {
 		t.Errorf("Observe called %d times, want %d (once per period, not per consumer)", got, len(periods))
+	}
+}
+
+func TestFanoutIdleConsumerGetsEmptyPeriods(t *testing.T) {
+	t.Parallel()
+	// One active and one idle consumer: the active one sees every period's audio,
+	// the idle one the same number of periods, each empty, so its stage keeps its
+	// cadence without paying for a copy or a channel extraction.
+	periods := [][]byte{{1, 0}, {2, 0}, {3, 0}}
+	src := NewFakeSource(48000, 1, periods)
+	streams := []FanoutStream{
+		{Dropped: new(atomic.Uint64), Active: func() bool { return true }},
+		{Dropped: new(atomic.Uint64), Active: func() bool { return false }},
+	}
+	f, cons := NewFanout(src, "dev", streams)
+	if err := f.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := drainAll(cons[0]); !bytes.Equal(got, []byte{1, 2, 3}) {
+		t.Errorf("active consumer got %v, want [1 2 3]", got)
+	}
+	n := 0
+	for {
+		p, err := cons[1].Read()
+		if err != nil {
+			break
+		}
+		n++
+		if len(p.Buf) != 0 || p.Frames != 0 {
+			t.Errorf("idle consumer period %d: got %d bytes, %d frames, want an empty period", n, len(p.Buf), p.Frames)
+		}
+	}
+	if n != len(periods) {
+		t.Errorf("idle consumer got %d periods, want %d", n, len(periods))
+	}
+}
+
+func TestFanoutFollowsActiveFlag(t *testing.T) {
+	t.Parallel()
+	// The active flag is consulted per period, so a client that starts playing
+	// gets audio from the next period on.
+	var active atomic.Bool
+	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev",
+		[]FanoutStream{{Dropped: new(atomic.Uint64), Active: active.Load}})
+	p := Period{Buf: []byte{7, 0}, Frames: 1}
+	f.distribute(p)
+	active.Store(true)
+	f.distribute(p)
+	if got, _ := cons[0].Read(); got.Frames != 0 {
+		t.Errorf("period before activation: got %d frames, want 0", got.Frames)
+	}
+	if got, _ := cons[0].Read(); got.Frames != 1 || !bytes.Equal(got.Buf, []byte{7, 0}) {
+		t.Errorf("period after activation: got %v (%d frames), want [7 0] (1 frame)", got.Buf, got.Frames)
+	}
+}
+
+func TestFanoutDistributeAllocs(t *testing.T) {
+	// Not parallel: AllocsPerRun counts process-wide allocations.
+	tests := []struct {
+		name   string
+		active []bool
+		want   float64
+	}{
+		{"all idle", []bool{false, false}, 0},
+		{"one active", []bool{true, false}, 1},
+		{"all active", []bool{true, true}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			streams := make([]FanoutStream, len(tt.active))
+			for i, a := range tt.active {
+				streams[i] = FanoutStream{Dropped: new(atomic.Uint64), Active: func() bool { return a }}
+			}
+			f, cons := NewFanout(NewFakeSource(48000, 2, nil), "dev", streams)
+			p := Period{Buf: make([]byte, 4096), Frames: 1024}
+			got := testing.AllocsPerRun(100, func() {
+				f.distribute(p)
+				for _, c := range cons {
+					_, _ = c.Read()
+				}
+			})
+			if got != tt.want {
+				t.Errorf("allocs per period = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// BenchmarkFanoutDistribute measures the per-period fan-out cost for two
+// streams of a 384 kHz stereo device (10 ms periods), idle and playing.
+func BenchmarkFanoutDistribute(b *testing.B) {
+	for _, active := range []bool{false, true} {
+		name := "idle"
+		if active {
+			name = "active"
+		}
+		b.Run(name, func(b *testing.B) {
+			on := func() bool { return active }
+			f, cons := NewFanout(NewFakeSource(384000, 2, nil), "dev", []FanoutStream{
+				{Dropped: new(atomic.Uint64), Active: on},
+				{Dropped: new(atomic.Uint64), Active: on},
+			})
+			p := Period{Buf: make([]byte, 3840*4), Frames: 3840}
+			b.ReportAllocs()
+			for b.Loop() {
+				f.distribute(p)
+				for _, c := range cons {
+					_, _ = c.Read()
+				}
+			}
+		})
 	}
 }

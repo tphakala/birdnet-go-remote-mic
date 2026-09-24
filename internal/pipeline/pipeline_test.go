@@ -15,6 +15,7 @@ import (
 )
 
 func TestPCMStageRoundTrip(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 48000, 1
 	periodFrames := rate / 50 // 960
 
@@ -52,6 +53,7 @@ func TestPCMStageRoundTrip(t *testing.T) {
 }
 
 func TestPCMStagePayloadCap(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 384000, 2
 	frameBytes := 2 * ch
 	period := make([]byte, 8000*frameBytes) // 32000 bytes, above the 15360 cap
@@ -77,6 +79,7 @@ func TestPCMStagePayloadCap(t *testing.T) {
 }
 
 func TestOpusStageFraming(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 48000, 1
 	// Four 480-sample periods => 1920 samples => two 960-sample Opus frames.
 	periods := make([][]byte, 4)
@@ -119,6 +122,7 @@ func TestOpusStageFraming(t *testing.T) {
 }
 
 func TestOpusStageStereo(t *testing.T) {
+	t.Parallel()
 	const rate, ch = 48000, 2
 	// Four 480-frame stereo periods => 1920 frames => two 960-frame Opus frames.
 	// Each frame carries opusFrameSamplesTest*ch interleaved samples.
@@ -183,6 +187,7 @@ func TestOpusStageStereo(t *testing.T) {
 }
 
 func TestOpusStageRejectsTooManyChannels(t *testing.T) {
+	t.Parallel()
 	// The config layer already forbids more than two Opus channels; the stage
 	// guards independently, so a 3-channel source is rejected, not encoded.
 	src := audio.NewFakeSource(48000, 3, [][]byte{make([]byte, 960*3*2)})
@@ -435,6 +440,7 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 }
 
 func TestSDPSpec(t *testing.T) {
+	t.Parallel()
 	pcm := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "m", 256000, 1)
 	if pcm.EncodingName != "L16" || pcm.ClockRate != 256000 || pcm.Channels != 1 || pcm.PayloadType != 96 || pcm.Ptime != 20 {
 		t.Errorf("PCM spec unexpected: %+v", pcm)
@@ -467,6 +473,7 @@ func TestSDPSpec(t *testing.T) {
 // helpers the RTP writer wiring and mDNS advertisement use, so a DESCRIBE can
 // never announce a payload type or codec the stream does not actually send.
 func TestPayloadTypeAndCodecName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		mode    config.Mode
 		payload int
@@ -494,6 +501,7 @@ func TestPayloadTypeAndCodecName(t *testing.T) {
 // TestSDPSpecOpusDefaultBitrate asserts a stream with no configured bitrate
 // advertises the per-channel default (128 kbps per channel) rather than none.
 func TestSDPSpecOpusDefaultBitrate(t *testing.T) {
+	t.Parallel()
 	mono := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Channels: []int{1}}, "m", 48000, 1)
 	if !strings.Contains(mono.FMTP, "maxaveragebitrate=128000") {
 		t.Errorf("mono fmtp = %q, want maxaveragebitrate=128000", mono.FMTP)

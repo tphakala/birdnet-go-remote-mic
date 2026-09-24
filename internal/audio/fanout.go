@@ -26,6 +26,12 @@ const fanoutBuffer = 8
 // distributing N encodes onto N goroutines (the consumers' pipelines) keeps the
 // per-period work off the capture read loop, so a slow encoder cannot blow the
 // capture period budget.
+//
+// A consumer whose stream has no client playing is handed an empty period in
+// place of the copy, and when no consumer has one the copy is skipped
+// altogether, so an unattended appliance allocates nothing per period here. The
+// empty period still flows through the consumer's pipeline, so its stage keeps
+// its per-period cadence and sees the idle stretch.
 type Fanout struct {
 	src       Source
 	name      string
@@ -42,24 +48,36 @@ type fanoutConsumer struct {
 	rate, channels int
 	ch             chan Period
 	dropped        *atomic.Uint64
+	active         func() bool
+}
+
+// FanoutStream describes one fan-out consumer. Dropped counts the periods the
+// consumer lost to a full queue; the caller shares it with the stream's
+// downstream frame-drop counter. Active reports whether the stream has a client
+// playing (rtspserver.ChanSource.Active): while it reports false the consumer
+// receives empty periods instead of audio its stage would discard unencoded
+// anyway. A nil Active means always active.
+type FanoutStream struct {
+	Dropped *atomic.Uint64
+	Active  func() bool
 }
 
 // NewFanout builds a Fanout over src (typically a metered base capture, so every
-// channel is metered once here) with one consumer per entry in dropped. It
-// returns the Fanout and the consumer Sources in the same order; each consumer's
-// drop counter is the matching dropped pointer, so a caller can share it with the
-// stream's downstream frame-drop counter. name labels drop logs. The consumers
-// are ready to read immediately; they block until Run starts feeding them.
-func NewFanout(src Source, name string, dropped []*atomic.Uint64) (*Fanout, []Source) {
+// channel is metered once here) with one consumer per entry in streams. It
+// returns the Fanout and the consumer Sources in the same order. name labels
+// drop logs. The consumers are ready to read immediately; they block until Run
+// starts feeding them.
+func NewFanout(src Source, name string, streams []FanoutStream) (*Fanout, []Source) {
 	rate, channels := src.Negotiated()
-	consumers := make([]*fanoutConsumer, len(dropped))
-	out := make([]Source, len(dropped))
-	for i := range dropped {
+	consumers := make([]*fanoutConsumer, len(streams))
+	out := make([]Source, len(streams))
+	for i, st := range streams {
 		c := &fanoutConsumer{
 			rate:     rate,
 			channels: channels,
 			ch:       make(chan Period, fanoutBuffer),
-			dropped:  dropped[i],
+			dropped:  st.Dropped,
+			active:   st.Active,
 		}
 		consumers[i] = c
 		out[i] = c
@@ -68,11 +86,12 @@ func NewFanout(src Source, name string, dropped []*atomic.Uint64) (*Fanout, []So
 }
 
 // Run reads the upstream source until it ends, copying each period and handing
-// the copy to every consumer that can accept it without blocking. It returns when
-// the source ends: nil on a clean EOF (a deliberate Close) or the source's error.
-// On return it closes every consumer feed so each consumer's Read reports EOF and
-// its pipeline goroutine exits. Run is the sole reader of src and the sole closer
-// of the consumer channels, so no lock is needed.
+// the copy to every active consumer that can accept it without blocking (an idle
+// consumer gets an empty period instead). It returns when the source ends: nil
+// on a clean EOF (a deliberate Close) or the source's error. On return it closes
+// every consumer feed so each consumer's Read reports EOF and its pipeline
+// goroutine exits. Run is the sole reader of src and the sole closer of the
+// consumer channels, so no lock is needed.
 func (f *Fanout) Run() error {
 	for {
 		p, err := f.src.Read()
@@ -83,23 +102,43 @@ func (f *Fanout) Run() error {
 			}
 			return err
 		}
-		// The upstream buffer is reused on the next Read, and consumers hold their
-		// period until their pipeline reads it, so copy once into fresh storage the
-		// consumers can share (it is never mutated after this point).
-		buf := make([]byte, len(p.Buf))
-		copy(buf, p.Buf)
-		cp := Period{Buf: buf, Frames: p.Frames}
-		for _, c := range f.consumers {
-			select {
-			case c.ch <- cp:
-			default:
-				// The consumer's queue is full: its encoder or client is not keeping
-				// up. Drop this period for that stream only; the shared reader must not
-				// block or the capture overruns for every stream.
-				n := c.dropped.Add(1)
-				if n%50 == 1 {
-					log.Printf("%s: fan-out dropping periods for a stream (encoder or client not keeping up, total: %d)", f.name, n)
-				}
+		f.distribute(p)
+	}
+}
+
+// distribute hands one upstream period to every consumer without blocking.
+//
+// The upstream buffer is reused on the next Read, and consumers hold their
+// period until their pipeline reads it, so the period is copied once into fresh
+// storage the consumers share (never mutated after this point). The copy is
+// made for the first active consumer, so a period no client plays costs no
+// allocation. An idle consumer gets an empty period: zero frames make any
+// channel extraction downstream a no-op. A client that starts playing between
+// this check and its stage's own gate loses only this period, as it would had
+// it connected one period later.
+func (f *Fanout) distribute(p Period) {
+	var cp Period
+	copied := false
+	for _, c := range f.consumers {
+		var send Period
+		if c.active == nil || c.active() {
+			if !copied {
+				buf := make([]byte, len(p.Buf))
+				copy(buf, p.Buf)
+				cp = Period{Buf: buf, Frames: p.Frames}
+				copied = true
+			}
+			send = cp
+		}
+		select {
+		case c.ch <- send:
+		default:
+			// The consumer's queue is full: its encoder or client is not keeping up.
+			// Drop this period for that stream only; the shared reader must not block
+			// or the capture overruns for every stream.
+			n := c.dropped.Add(1)
+			if n%50 == 1 {
+				log.Printf("%s: fan-out dropping periods for a stream (encoder or client not keeping up, total: %d)", f.name, n)
 			}
 		}
 	}

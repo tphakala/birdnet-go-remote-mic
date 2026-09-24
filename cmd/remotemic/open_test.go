@@ -141,8 +141,7 @@ func TestOpenDeviceRetryStopsOnPermanentError(t *testing.T) {
 
 	dev := &config.Device{Name: "bad", Device: "usb:zz", Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
 	_, err := openDeviceRetry(dev, levels.NewHub())
-	var bad *capture.BadDeviceError
-	if !errors.As(err, &bad) {
+	if _, ok := errors.AsType[*capture.BadDeviceError](err); !ok {
 		t.Fatalf("openDeviceRetry error = %v, want *capture.BadDeviceError", err)
 	}
 	if attempts != 1 {
