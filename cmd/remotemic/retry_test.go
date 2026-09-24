@@ -750,7 +750,7 @@ func TestRetryQuietAttemptLogsEndOfRetry(t *testing.T) {
 		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 		// Failures at 0, 5 and 15 s; the retry due at 45 s is the first quiet one.
 		runFor(t, app, 20*time.Second)
-		if st := app.retries["moth"]; st == nil || logAttempt(st.failures+1) {
+		if st := app.retries["moth"]; st == nil || app.nextFailureLogged("moth") {
 			t.Fatalf("precondition: retry state = %+v, want the next attempt quiet", st)
 		}
 

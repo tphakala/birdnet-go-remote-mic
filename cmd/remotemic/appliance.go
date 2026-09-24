@@ -128,7 +128,9 @@ type appliance struct {
 	// retryTimer fires at the earliest pending retry or settle deadline and
 	// signals retryDue (buffered depth 1, coalescing), which the run loop drains
 	// into onRetryDue; retryAt is the deadline it is armed for, zero while it is
-	// stopped or has fired, so re-arming for an unchanged deadline is a no-op.
+	// stopped or once onRetryDue has consumed its signal, so re-arming for an
+	// unchanged deadline is a no-op. Between a firing and onRetryDue it still
+	// holds the spent deadline, which is safe because the signal is pending.
 	// quietDown silences the open's log lines during a retry attempt that
 	// logAttempt skips.
 	retries    map[string]*retryState

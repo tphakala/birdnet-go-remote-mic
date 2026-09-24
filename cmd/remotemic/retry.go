@@ -113,8 +113,8 @@ func (a *appliance) enabledInConfig(name string) bool {
 }
 
 // isDown reports whether a device record is down: skipped (it could not be
-// opened) or failed (it died after opening). Both restart paths, the backoff
-// retry and the hardware-change retry, restart only a down device.
+// opened) or failed (it died after opening). Both unattended restart paths,
+// the backoff retry and the hardware-change retry, restart only a down device.
 func isDown(s mgmtserver.DeviceState) bool {
 	return s == mgmtserver.StateSkipped || s == mgmtserver.StateFailed
 }

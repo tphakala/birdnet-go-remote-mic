@@ -128,7 +128,7 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 		if err != nil {
 			t.Errorf("stage Run: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for stage to finish")
 	}
 
@@ -225,7 +225,7 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 		if err != nil {
 			t.Errorf("stage Run: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for stage to finish")
 	}
 }

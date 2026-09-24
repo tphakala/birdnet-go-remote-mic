@@ -293,8 +293,8 @@ func TestFanoutFollowsActiveFlag(t *testing.T) {
 	f.distribute(p)
 	active.Store(true)
 	f.distribute(p)
-	if got, _ := cons[0].Read(); got.Frames != 0 {
-		t.Errorf("period before activation: got %d frames, want 0", got.Frames)
+	if got, err := cons[0].Read(); err != nil || got.Frames != 0 || len(got.Buf) != 0 {
+		t.Errorf("period before activation: got %d frames, %d bytes, err %v; want an empty period", got.Frames, len(got.Buf), err)
 	}
 	if got, _ := cons[0].Read(); got.Frames != 1 || !bytes.Equal(got.Buf, []byte{7, 0}) {
 		t.Errorf("period after activation: got %v (%d frames), want [7 0] (1 frame)", got.Buf, got.Frames)
@@ -310,6 +310,7 @@ func TestFanoutDistributeAllocs(t *testing.T) {
 	}{
 		{"all idle", []bool{false, false}, 0},
 		{"one active", []bool{true, false}, 1},
+		{"second active", []bool{false, true}, 1},
 		{"all active", []bool{true, true}, 1},
 	}
 	for _, tt := range tests {

@@ -98,8 +98,17 @@ func killDevice(t *testing.T, app *appliance, log *fakeOpenLog, name string, err
 	if src == nil {
 		t.Fatalf("no blocking source was opened for %q", name)
 	}
-	src.kill <- err
-	app.onPumpDone(<-app.pumpDone)
+	select {
+	case src.kill <- err:
+	default:
+		t.Fatalf("%q's source already has a failure queued; its pump is gone", name)
+	}
+	select {
+	case res := <-app.pumpDone:
+		app.onPumpDone(res)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%q's pump did not report after its capture failed", name)
+	}
 }
 
 func (l *fakeOpenLog) add(s string) {

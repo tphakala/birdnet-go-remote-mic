@@ -43,7 +43,8 @@ type Fanout struct {
 // period arrives or the feed closes (the shared reader ended). dropped is shared
 // with the owning stream runtime so a fan-out drop and a downstream frame drop
 // accumulate into the one "audio lost for this stream" counter the host monitor
-// reads.
+// reads. active is the stream's play gate (nil means always active); while it
+// reports false the consumer gets empty periods and costs no copy.
 type fanoutConsumer struct {
 	rate, channels int
 	ch             chan Period
@@ -51,9 +52,9 @@ type fanoutConsumer struct {
 	active         func() bool
 }
 
-// FanoutStream describes one fan-out consumer. Dropped counts the periods the
-// consumer lost to a full queue; the caller shares it with the stream's
-// downstream frame-drop counter. Active reports whether the stream has a client
+// FanoutStream describes one fan-out consumer. Dropped, which is required,
+// counts the periods the consumer lost to a full queue; the caller shares it
+// with the stream's downstream frame-drop counter. Active reports whether the stream has a client
 // playing (rtspserver.ChanSource.Active): while it reports false the consumer
 // receives empty periods instead of audio its stage would discard unencoded
 // anyway. A nil Active means always active.
@@ -114,8 +115,10 @@ func (f *Fanout) Run() error {
 // made for the first active consumer, so a period no client plays costs no
 // allocation. An idle consumer gets an empty period: zero frames make any
 // channel extraction downstream a no-op. A client that starts playing between
-// this check and its stage's own gate loses only this period, as it would had
-// it connected one period later.
+// this check and its stage's own gate loses this period, plus any empty
+// periods still queued for a stage that had fallen behind, as it would had it
+// connected that much later; it gets no audio captured while the stream sat
+// idle.
 func (f *Fanout) distribute(p Period) {
 	var cp Period
 	copied := false
