@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -208,6 +209,71 @@ func TestApplianceReconcileStartsDevice(t *testing.T) {
 	}
 	if !app.srv.HasTrack("/a") {
 		t.Fatal("start did not register the RTSP track")
+	}
+}
+
+// gateRecorder is a pipeline.Stage that hands the active gate it was given to
+// the test, then drains its source until the device stops.
+type gateRecorder struct{ gates chan<- func() bool }
+
+func (g gateRecorder) Run(src audio.Source, active func() bool, _ func(pipeline.Frame) error) error {
+	g.gates <- active
+	for {
+		if _, err := src.Read(); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// TestAppliancePumpGatesStageOnFeed pins the production wiring of the encode
+// gate: the pump must hand each stage its own stream feed's active flag, so a
+// stream encodes exactly while a client plays it. A nil gate would bring back
+// encoding for no client, and a gate that never opens would stream nothing to a
+// playing client; the stage-level tests cannot see either, because they pass
+// the gate themselves.
+func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
+	app, log, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	// testDevice configures one stream, so one slot holds the only gate sent.
+	gates := make(chan func() bool, 1)
+	open := fakeOpener(log)
+	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+		rt, err := open(dev, hub)
+		if err != nil {
+			return nil, err
+		}
+		for _, sr := range rt.streams {
+			sr.stage = gateRecorder{gates: gates}
+		}
+		return rt, nil
+	}
+
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice("a", "hw:0", "/a", 48000)}})
+
+	var active func() bool
+	select {
+	case active = <-gates:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pump never ran the stream's stage")
+	}
+	if active == nil {
+		t.Fatal("the pump passed a nil gate: the stage would encode with no client playing")
+	}
+	feed := app.devices["a"].streams[0].frames
+	if got := active(); got {
+		t.Errorf("gate before any client plays = %v, want false", got)
+	}
+	feed.SetActive(true)
+	if got := active(); !got {
+		t.Errorf("gate after the stream's feed activated = %v, want true (a playing client would get no audio)", got)
+	}
+	feed.SetActive(false)
+	if got := active(); got {
+		t.Errorf("gate after the stream's feed deactivated = %v, want false", got)
 	}
 }
 
