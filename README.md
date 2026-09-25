@@ -281,7 +281,10 @@ holds a lock file beside its config (`config.yaml.lock`) that records where the
 API listens. When the appliance is stopped, the commands edit the config file
 and the change applies at the next start. An appliance running without its
 management API has no config writer, so the commands edit the file too and the
-running process keeps its current token until it restarts. A command run while
+running process keeps its current token until it restarts, or until its API
+comes back (an API that failed to start, for example on a certificate it could
+not read, is retried in the background and applies the edited file when it
+comes up). A command run while
 the appliance is still starting up, before it has published where its API
 listens, asks you to retry in a few seconds. The config is written 0600, so run
 the commands as the account the appliance runs as.
@@ -397,10 +400,11 @@ For a local end-to-end check without hardware, use the ALSA loopback
   management disabled the process exits once nothing serves, as above). Its
   error notification stays raised across attempts and clears once a retried
   restart has kept serving for 30 seconds, so a device that keeps failing is
-  reported once, not on every attempt. (A stream encodes only while a client
-  plays it, so an encode error that only shows during playback is seen again
-  at each client's PLAY rather than kept raised.) Its RTSP path serves again
-  as soon as the restart opens it. A config save or a hardware change restarts it at once,
+  reported once, not on every attempt. A stream encodes only while a client
+  plays it, so after an encoder error the notification clears only once a
+  client has played the restarted device and it has kept encoding for 30
+  seconds; until then it stays raised while the device serves. Its RTSP path
+  serves again as soon as the restart opens it. A config save or a hardware change restarts it at once,
   clears the notification as soon as it opens, and starts the delays over. A
   card-index device is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are

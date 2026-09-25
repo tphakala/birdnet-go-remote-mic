@@ -1013,10 +1013,12 @@ components:
       properties:
         device:
           type: string
+          maxLength: 256
           description: Capture device id to enable, as reported by GET /devices/available.
           examples: ["usb:1235:8218:s=S1A2B3:if=0,0"]
         name:
           type: string
+          maxLength: 128
           description: Optional unique device name; derived from the hardware label when omitted.
         mode:
           $ref: "#/components/schemas/StreamMode"
@@ -1292,10 +1294,13 @@ components:
       properties:
         name:
           type: string
+          maxLength: 128
         device:
           type: string
+          maxLength: 256
         path:
           type: string
+          maxLength: 128
         mode:
           $ref: "#/components/schemas/StreamMode"
         rate:
@@ -1353,6 +1358,7 @@ components:
       properties:
         path:
           type: string
+          maxLength: 128
           description: RTSP path serving this stream; unique across every device's streams.
           examples: [/garden]
         mode:

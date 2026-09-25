@@ -20,10 +20,7 @@ import (
 	"math/big"
 	"net"
 	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 )
 
 // certValidity is how long a freshly generated certificate stays valid. It is
@@ -53,10 +50,10 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 	certPEM, certErr := os.ReadFile(certPath)
 	keyPEM, keyErr := os.ReadFile(keyPath)
 	if pinned {
-		if err := readFault(certPath, certErr); err != nil {
+		if err := readFault(certPath, certErr, os.Lstat); err != nil {
 			return tls.Certificate{}, err
 		}
-		if err := readFault(keyPath, keyErr); err != nil {
+		if err := readFault(keyPath, keyErr, os.Lstat); err != nil {
 			return tls.Certificate{}, err
 		}
 	}
@@ -82,8 +79,9 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 		// The pin marker is present but the pair is incomplete (a file is missing)
 		// or does not parse, so it cannot be served. Drop the stale marker and
 		// self-heal; generate overwrites whichever pinned file still exists.
-		_ = os.Remove(PinPath(certPath))
-		atomicfile.SyncDir(filepath.Dir(PinPath(certPath)))
+		// A removal failure is not fatal here: generate still runs, and a marker
+		// that survives only pins the regenerated pair.
+		_ = unpin(certPath)
 	}
 	return generate(certPath, keyPath, hosts)
 }
@@ -119,15 +117,15 @@ var errDanglingLink = errors.New("symlink target is missing")
 // can mean only that the target is gone for now (a volume mounted late at boot),
 // and regenerating would replace the operator's link with a regular file. Like
 // Pinned, it fails safe: only Lstat itself reporting "does not exist" counts as
-// missing.
-func readFault(path string, err error) error {
+// missing. lstat is os.Lstat outside tests.
+func readFault(path string, err error, lstat func(string) (fs.FileInfo, error)) error {
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		return &PinnedReadError{Path: path, Err: err}
 	}
-	_, lerr := os.Lstat(path)
+	_, lerr := lstat(path)
 	switch {
 	case lerr == nil:
 		return &PinnedReadError{Path: path, Err: errDanglingLink}

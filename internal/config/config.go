@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,6 +27,16 @@ const maxDevices = 32
 // ProvisionDeviceRequest.channels maxItems and covers common multi-channel USB
 // interfaces (2/4/6/8 channels).
 const MaxChannels = 8
+
+// Length caps, in characters, for the free-form device strings, matching the
+// API contract's maxLength. They are far above any real value; they exist so a
+// hand-edited config cannot carry names many KiB long, which would make every
+// full-array PATCH /config from the web UI exceed the API body cap.
+const (
+	MaxNameLen     = 128
+	MaxDeviceIDLen = 256
+	MaxPathLen     = 128
+)
 
 // NormalizeChannels returns a sorted, de-duplicated copy of a channel selection.
 // ApplyDefaults and the device-provisioning path share it so the canonical
@@ -559,8 +570,14 @@ func (c *Config) validateDevices() error {
 		if strings.ContainsAny(d.Name, "\r\n") {
 			return &ValidationError{field("name"), "must not contain CR or LF"}
 		}
+		if utf8.RuneCountInString(d.Name) > MaxNameLen {
+			return &ValidationError{field("name"), fmt.Sprintf("must be at most %d characters", MaxNameLen)}
+		}
 		if d.Device == "" {
 			return &ValidationError{field("device"), "must not be empty"}
+		}
+		if utf8.RuneCountInString(d.Device) > MaxDeviceIDLen {
+			return &ValidationError{field("device"), fmt.Sprintf("must be at most %d characters", MaxDeviceIDLen)}
 		}
 		if d.Format != "s16" {
 			return &ValidationError{field("format"), "must be s16"}
@@ -727,6 +744,8 @@ func validatePath(p string) string {
 		return "must not contain whitespace"
 	case strings.HasSuffix(p, "/trackID=0"):
 		return "must not end with /trackID=0 (reserved for the per-track SETUP URL)"
+	case utf8.RuneCountInString(p) > MaxPathLen:
+		return fmt.Sprintf("must be at most %d characters", MaxPathLen)
 	default:
 		return ""
 	}

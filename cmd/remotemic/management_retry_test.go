@@ -1,0 +1,212 @@
+//go:build linux
+
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+)
+
+// fakeMgmt returns a handle that looks like a running API at addr, whose Wait
+// returns once stop is closed.
+func fakeMgmt(addr string, stop chan struct{}) *mgmt {
+	return &mgmt{addr: addr, certPath: "cert.pem", done: stop}
+}
+
+func TestRetryManagementBacksOffThenDelivers(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		delays := []time.Duration{time.Second, 2 * time.Second}
+		start := time.Now()
+		var at []time.Duration
+		stop := make(chan struct{})
+		attempt := func() (*mgmt, error) {
+			at = append(at, time.Since(start))
+			if len(at) < 3 {
+				return nil, errors.New("still broken")
+			}
+			return fakeMgmt("127.0.0.1:8443", stop), nil
+		}
+		h := retryManagement(t.Context(), attempt, delays, errors.New("broken"))
+
+		ep := <-h.Up()
+		if ep.addr != "127.0.0.1:8443" || ep.certPath != "cert.pem" {
+			t.Errorf("got endpoint %+v, want the recovered API's address and certificate", ep)
+		}
+		// The first delay, then the second, then the last delay repeating.
+		want := []time.Duration{time.Second, 3 * time.Second, 5 * time.Second}
+		if len(at) != len(want) {
+			t.Fatalf("got %d attempts, want %d", len(at), len(want))
+		}
+		for i := range want {
+			if at[i] != want[i] {
+				t.Errorf("attempt %d at %s, want %s", i+1, at[i], want[i])
+			}
+		}
+
+		// Wait follows the recovered API: it blocks until that API shuts down.
+		waited := make(chan struct{})
+		go func() { h.Wait(); close(waited) }()
+		synctest.Wait()
+		select {
+		case <-waited:
+			t.Fatal("Wait returned while the recovered API is still serving")
+		default:
+		}
+		close(stop)
+		<-waited
+	})
+}
+
+func TestRetryManagementStopsOnCancel(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		attempts := 0
+		attempt := func() (*mgmt, error) {
+			attempts++
+			return nil, errors.New("broken")
+		}
+		h := retryManagement(ctx, attempt, []time.Duration{time.Minute}, errors.New("broken"))
+		time.Sleep(150 * time.Second)
+		cancel()
+		h.Wait()
+		if attempts != 2 {
+			t.Errorf("got %d attempts in 150 s at one per minute, want 2", attempts)
+		}
+		select {
+		case <-h.Up():
+			t.Error("a retry that never succeeded must not deliver an endpoint")
+		default:
+		}
+	})
+}
+
+// TestStartManagementRecoversAfterCertFailure drives the real bring-up: the
+// certificate cannot be written at start (cert_dir is a regular file), then the
+// fault clears and the background retry brings the API up over TLS.
+func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
+	t.Parallel()
+	certDir := filepath.Join(t.TempDir(), "certs")
+	if err := os.WriteFile(certDir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: certDir}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	p := &mgmtParams{cfgPath: cfgPath, cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
+	if ok {
+		t.Fatal("a certificate failure must report management unavailable")
+	}
+	if err := os.Remove(certDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var ep mgmtEndpoint
+	select {
+	case ep = <-h.Up():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background retry did not bring the API up after the fault cleared")
+	}
+	if ep.certPath != filepath.Join(certDir, "mgmt-cert.pem") {
+		t.Errorf("got certificate path %q, want the one under cert_dir", ep.certPath)
+	}
+	if leaf := dialLeaf(t, ep.addr); leaf == nil {
+		t.Fatal("the recovered API did not present a certificate")
+	}
+	cancel()
+	h.Wait()
+}
+
+func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
+	// The token CLI edited the file while no API was published.
+	edited := startup.Clone()
+	edited.Auth.Token = "edited-while-down-token"
+	if err := config.Save(cfgPath, &edited); err != nil {
+		t.Fatal(err)
+	}
+	onDisk, err := config.LoadOrDefault(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var applied []config.Config
+	reloader := func(_ context.Context, c config.Config) error {
+		applied = append(applied, c)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader}
+	p.certPath = filepath.Join(dir, "mgmt-cert.pem")
+	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+
+	h, err := recoverManagement(ctx, p)
+	if err != nil {
+		t.Fatalf("recoverManagement: %v", err)
+	}
+	if len(applied) != 1 || applied[0].Auth.Token != edited.Auth.Token {
+		t.Fatalf("got reloads %+v, want one applying the edited token", applied)
+	}
+	if p.storeCfg.Auth.Token != edited.Auth.Token {
+		t.Errorf("store seeded with token %q, want the edited file's", p.storeCfg.Auth.Token)
+	}
+	if startup.Auth.Token != "" {
+		t.Error("the startup snapshot run() holds must not be written through")
+	}
+	cancel()
+	h.Wait()
+
+	// A second attempt with the file unchanged since the last one applies nothing.
+	p.storeCfg = &onDisk
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	defer cancel2()
+	h2, err := recoverManagement(ctx2, p)
+	if err != nil {
+		t.Fatalf("recoverManagement: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Errorf("got %d reloads, want none for an unchanged file", len(applied)-1)
+	}
+	cancel2()
+	h2.Wait()
+}
+
+func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("listen: [not, a, string\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
+	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider()}
+	// Valid certificate paths, so the attempt fails only for the config.
+	p.certPath = filepath.Join(dir, "mgmt-cert.pem")
+	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h, err := recoverManagement(ctx, p)
+	if err == nil {
+		cancel()
+		h.Wait()
+		t.Fatal("a config file that no longer loads must fail the attempt")
+	}
+}

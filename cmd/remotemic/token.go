@@ -374,7 +374,8 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 	res.pid = st.PID
 	if st.MgmtAddr == "" {
 		// Without its management API the appliance has no config writer, so the
-		// file edit is safe; it only takes effect at the next start.
+		// file edit is safe; it takes effect at the next start, or when the API
+		// comes back through its background retry (see recoverManagement).
 		res.outcome = changedFileRestart
 		return res, saveToken(cfgPath, token, check)
 	}
@@ -433,7 +434,7 @@ func reportChange(w io.Writer, res changeResult, headline string) {
 		out(w, "The appliance picks up the change when it next starts.\n")
 	case changedFileRestart:
 		out(w, "The running appliance (pid %d) has no management API to apply it through,\n"+
-			"so it keeps its previous setting until it restarts.\n", res.pid)
+			"so it keeps its previous setting until it restarts or its API comes back.\n", res.pid)
 	case changedLive:
 		out(w, "The running appliance (pid %d) applied it immediately.\n", res.pid)
 	case changedLiveRestart:

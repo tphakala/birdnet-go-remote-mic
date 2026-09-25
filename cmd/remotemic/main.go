@@ -163,6 +163,30 @@ type deviceRuntime struct {
 	// restarted on the same RTSP path is not torn down by the old pump's exit.
 	// Set and read only on the run-loop goroutine.
 	superseded bool
+
+	// encoded records that a stage of this runtime has emitted an encoded frame,
+	// which happens only while a client plays (see pipeline.Stage). An unattended
+	// retry after an encode fault waits for it before its settle (see
+	// retryState.needEncode). Set once by the stage goroutines, read by the run
+	// loop.
+	encoded atomic.Bool
+	// awaitEncode asks the stage goroutines to wake the run loop (through
+	// retryDue) when the first frame is encoded. Set by the run loop before it
+	// checks encoded, and read by a stage after it sets encoded, so one side
+	// always sees the other.
+	awaitEncode atomic.Bool
+}
+
+// noteEncoded records the first encoded frame, waking the run loop when a retry
+// is waiting for it. It costs one atomic load per frame after the first.
+func (rt *deviceRuntime) noteEncoded(wake func()) {
+	if rt.encoded.Load() {
+		return
+	}
+	rt.encoded.Store(true)
+	if rt.awaitEncode.Load() {
+		wake()
+	}
 }
 
 // droppedTotal sums every stream's dropped-audio counter, the device-level figure
@@ -316,6 +340,19 @@ func lockState(pid int, mgmtAddr, certPath string) runlock.State {
 		certPath = abs
 	}
 	return runlock.State{PID: pid, MgmtAddr: mgmtAddr, CertPath: certPath}
+}
+
+// publishRunLock records this process in the run lock, with the management
+// API's endpoint when ep is non-nil (nil means no API is serving, so no API
+// handler can rewrite the config file). A write failure is logged, not fatal.
+func publishRunLock(lock *runlock.Lock, cfgPath string, ep *mgmtEndpoint) {
+	st := runlock.State{PID: os.Getpid()}
+	if ep != nil {
+		st = lockState(st.PID, ep.addr, ep.certPath)
+	}
+	if err := lock.Publish(st); err != nil {
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), err)
+	}
 }
 
 // acquireRunLock takes the process-lifetime run lock beside cfgPath. Holding it
@@ -487,13 +524,12 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	}()
 
 	// Publish where the management API listens (nothing when it is not serving,
-	// which also means no API handler can rewrite the config file).
-	st := runlock.State{PID: os.Getpid()}
+	// which also means no API handler can rewrite the config file). An API that
+	// comes up later through its background retry republishes from the run loop.
 	if mgmtServing {
-		st = lockState(os.Getpid(), management.addr, management.certPath)
-	}
-	if perr := lock.Publish(st); perr != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), perr)
+		publishRunLock(lock, cfgPath, &mgmtEndpoint{addr: management.addr, certPath: management.certPath})
+	} else {
+		publishRunLock(lock, cfgPath, nil)
 	}
 
 	// Drive the level sampler for the lifetime of the process.
@@ -584,6 +620,12 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 		case req := <-reconcileCh:
 			app.reconcile(&req.cfg)
 			req.reply <- nil
+		case ep := <-management.Up():
+			// The management API came up through its background retry: from now on
+			// it is the diagnostic surface that keeps a zero-serving appliance up,
+			// and the token commands switch from editing the file to the live API.
+			mgmtServing = true
+			publishRunLock(lock, cfgPath, &ep)
 		case <-prov.hwChanged:
 			app.retryDown()
 		case <-app.retryDue:

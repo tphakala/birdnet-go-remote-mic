@@ -81,13 +81,23 @@ func Regenerate(certPath, keyPath string, hosts []string) (tls.Certificate, erro
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	if err := os.Remove(PinPath(certPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := unpin(certPath); err != nil {
 		return tls.Certificate{}, fmt.Errorf("clear certificate pin: %w", err)
 	}
-	// Make the removal durable, or a power cut can bring the pin back and
-	// silently undo the operator's regenerate on the next start.
-	atomicfile.SyncDir(filepath.Dir(PinPath(certPath)))
 	return cert, nil
+}
+
+// unpin removes certPath's pin marker, if any, and syncs its directory so the
+// removal is durable: otherwise a power cut can bring the pin back, silently
+// undoing a regenerate (or a self-heal of a broken pinned pair) on the next
+// start.
+func unpin(certPath string) error {
+	marker := PinPath(certPath)
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	atomicfile.SyncDir(filepath.Dir(marker))
+	return nil
 }
 
 // Install validates an operator-supplied certificate and private key, persists

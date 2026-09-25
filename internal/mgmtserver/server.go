@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"sync"
@@ -204,7 +205,7 @@ func (s *Server) Handler() http.Handler {
 	strict := mgmtapi.NewStrictHandlerWithOptions(s, nil, mgmtapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-				writeProblem(w, http.StatusRequestEntityTooLarge, "request body too large", err.Error())
+				writeProblem(w, http.StatusRequestEntityTooLarge, "request body too large", fmt.Sprintf("the request body exceeds the %d KiB limit", maxRequestBody>>10))
 				return
 			}
 			writeProblem(w, http.StatusBadRequest, "bad request", err.Error())

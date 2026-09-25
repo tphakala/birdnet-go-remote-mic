@@ -175,11 +175,13 @@ func TestProviderDeviceLookup(t *testing.T) {
 }
 
 func TestClosedMgmtWaitReturns(t *testing.T) {
-	// A nil handle (management disabled) and a closed handle (cert failure) must
-	// both make Wait return immediately so shutdown never blocks on them.
+	// A nil handle (management disabled) must make Wait return immediately so
+	// shutdown never blocks on it, and report no retry.
 	var nilHandle *mgmt
 	nilHandle.Wait()
-	closedMgmt().Wait()
+	if nilHandle.Up() != nil {
+		t.Error("a nil handle must report no retry")
+	}
 }
 
 func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
@@ -198,7 +200,11 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
-	h.Wait() // the returned handle must not block shutdown
+	if h.Up() == nil {
+		t.Error("a certificate failure must leave a background retry running")
+	}
+	cancel()
+	h.Wait() // cancelling ctx must stop the retry, so the handle does not block shutdown
 }
 
 func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
@@ -221,6 +227,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
+	cancel()
 	h.Wait()
 }
 

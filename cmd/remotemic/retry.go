@@ -35,12 +35,11 @@ const (
 	// dies right away (an EIO after open, a configuration the encoder or stage
 	// rejects at start) would otherwise publish a clear and a fresh onset, and
 	// rebuild the advertisement, on every attempt. Its RTSP paths serve for the
-	// whole window. The guard sees a fault in the encode itself only when a
-	// client plays during the window: a stage encodes only while a client plays
-	// (see pipeline.Stage), so with no client such a fault passes the settle and
-	// surfaces at the next PLAY. No encode path is known to fail at runtime (the
-	// frame length and output buffer are fixed and periods hold whole sample
-	// frames); if one appears, settle only after real encode work.
+	// whole window. A fault in the encode itself surfaces only while a client
+	// plays (a stage encodes only then, see pipeline.Stage), so a restart after
+	// an encode fault must also prove its encoder: its settle starts only once it
+	// has encoded a frame (see retryState.needEncode), and until a client plays
+	// the device keeps its down condition while it serves.
 	retrySettle = 30 * time.Second
 	// retryResetAfter is how long a recovered device must serve before a later
 	// failure starts the backoff over from the shortest delay. A device that keeps
@@ -74,6 +73,19 @@ type retryState struct {
 	// recoveredAt is when the device last completed a settle, used to reset the
 	// backoff once it has served for retryResetAfter.
 	recoveredAt time.Time
+	// needEncode marks an outage that includes an encode fault. A restart then
+	// counts as recovered only after it has encoded for retrySettle: serving
+	// alone proves nothing, because with no client playing nothing is encoded,
+	// and settling on time alone would clear the condition and rebuild mDNS only
+	// for the next PLAY to fault again, once per client connect.
+	needEncode bool
+	// encodeSeen records that the current restart has encoded a frame, so its
+	// settle deadline counts from then (needEncode only).
+	encodeSeen bool
+	// awaitEncode marks a restart that served its settle window without encoding
+	// (needEncode only). It has no deadline: the stage wakes the run loop when
+	// the first frame is encoded (deviceRuntime.noteEncoded).
+	awaitEncode bool
 }
 
 // backoffDelay returns the delay before the next attempt, given the backoff's
@@ -164,12 +176,15 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 	if !st.recoveredAt.IsZero() {
 		// A failure after a completed settle starts a new outage.
 		st.failures = 0
+		st.needEncode = false
 		if now.Sub(st.recoveredAt) >= retryResetAfter {
 			st.attempts = 0
 		}
 	}
 	st.recoveredAt = time.Time{}
 	st.settleAt = time.Time{}
+	st.encodeSeen = false
+	st.awaitEncode = false
 	st.attempts++
 	st.failures++
 	delay := backoffDelay(st.attempts)
@@ -233,11 +248,13 @@ func (a *appliance) signalRetryDue() {
 	}
 }
 
-// onRetryDue runs on the run loop when the retry timer fires. It completes the
-// settle of every restarted device that has served for retrySettle, and makes
-// one restart attempt for every down device whose backoff has elapsed. A stale
-// or early signal completes and attempts nothing, since each deadline is checked
-// against the clock.
+// onRetryDue runs on the run loop when the retry timer fires, or when a restart
+// waiting to prove its encoder encodes its first frame. It completes the settle
+// of every restarted device that has served for retrySettle (after an encode
+// fault, retrySettle counted from its first encoded frame), and makes one
+// restart attempt for every down device whose backoff has elapsed. A stale or
+// early signal completes and attempts nothing, since each deadline is checked
+// against the clock and each encode wait against the runtime.
 //
 // The run loop's select has no priority, so a pump that died right at the
 // settle deadline can be handled after this pass: the settle then completes
@@ -267,12 +284,39 @@ func (a *appliance) onRetryDue() {
 		}
 		rt := a.devices[d.Name]
 		switch {
+		case st.awaitEncode:
+			// Woken by the restart's first encoded frame (or by any other due
+			// work, in which case nothing has changed yet).
+			if rt == nil || rt.currentState() != mgmtserver.StateServing || !rt.encoded.Load() {
+				continue
+			}
+			st.awaitEncode = false
+			st.encodeSeen = true
+			st.settleAt = now.Add(retrySettle)
 		case !st.settleAt.IsZero() && !now.Before(st.settleAt):
 			st.settleAt = time.Time{}
 			if rt == nil || rt.currentState() != mgmtserver.StateServing {
 				continue
 			}
+			if st.needEncode && !st.encodeSeen {
+				// The restart has served its window, but only real encode work
+				// proves an encode fault is gone. rt.awaitEncode was set when the
+				// attempt succeeded, so a frame encoded from here on wakes the loop.
+				if rt.encoded.Load() {
+					st.encodeSeen = true
+					st.settleAt = now.Add(retrySettle)
+				} else {
+					st.awaitEncode = true
+					if !logAttempt(st.failures) {
+						continue
+					}
+					log.Printf("device %q: serving again; its failure clears once a client plays and encoding succeeds", d.Name)
+				}
+				continue
+			}
 			st.recoveredAt = now
+			st.needEncode = false
+			st.encodeSeen = false
 			a.finishRecovery(d.Name, rt)
 			recovered = true
 		case !st.next.IsZero() && !now.Before(st.next):
@@ -303,7 +347,8 @@ func (a *appliance) onRetryDue() {
 
 // attemptRetry makes one unattended restart attempt. On success the device
 // serves at once but its down condition stays active until it has served for
-// retrySettle (see onRetryDue); on a failure scheduleRetry either schedules the
+// retrySettle, and after an encode fault until it has also encoded (see
+// onRetryDue); on a failure scheduleRetry either schedules the
 // next attempt or, for a cause a retry cannot fix, ends the retry. The open's own
 // log lines, failure and success alike, are silenced on attempts logAttempt
 // skips, except the line for a cause that ends the retry (see skipDevice);
@@ -323,6 +368,11 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
 	if rt.currentState() != mgmtserver.StateServing {
 		a.scheduleRetry(d)
 		return
+	}
+	if st.needEncode {
+		// Ask the stages to wake the run loop at the first encoded frame, before
+		// any check of rt.encoded (see deviceRuntime.awaitEncode).
+		rt.awaitEncode.Store(true)
 	}
 	st.settleAt = time.Now().Add(retrySettle)
 }

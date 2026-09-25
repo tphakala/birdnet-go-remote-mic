@@ -8,6 +8,7 @@ import { api } from "./api.js";
 import { sse } from "./sse.js";
 import { store } from "./store.js";
 import { showToast } from "../components/toast.js";
+import { LatestGate } from "./latest-core.js";
 import {
   applyLive,
   applySnapshot,
@@ -52,13 +53,12 @@ function isSnapshot(v: unknown): v is NotificationSnapshot {
 export class NotificationStore extends EventTarget {
   private state: CoreState;
   private gapReloadTimer: number | null = null;
-  // load() sequencing. loadSeq tickets each call; appliedSeq records the highest
-  // ticket whose snapshot was actually applied. A load applies only when no newer
-  // load has applied yet, and appliedSeq advances only after a successful apply,
-  // so a newer load that FAILS cannot discard an older load's valid snapshot
-  // (while a newer load that SUCCEEDS still wins over an older, slower one).
-  private loadSeq = 0;
-  private appliedSeq = 0;
+  // load() ordering (see LatestGate). Each call takes a token; a snapshot
+  // applies only when no newer load has applied yet, and the token is recorded
+  // as applied only after a successful apply, so a newer load that FAILS cannot
+  // discard an older load's valid snapshot (while a newer load that SUCCEEDS
+  // still wins over an older, slower one).
+  private loadGate = new LatestGate();
   // Latched true once a snapshot has been applied. Until then a consumer cannot
   // tell an empty log from an unfetched one; the Events page uses this to show a
   // loading state rather than asserting "no events".
@@ -101,28 +101,31 @@ export class NotificationStore extends EventTarget {
   // transient error) keeps the bell working from its last state; it only sets
   // the failure flag and emits a change so a page can show it.
   public async load(): Promise<void> {
-    const seq = ++this.loadSeq;
+    const token = this.loadGate.begin();
     let snap: unknown;
     try {
       snap = await api.getNotifications();
     } catch (err) {
       console.warn("Failed to load notifications:", err);
-      this.markFailed(seq);
+      this.markFailed(token);
       return;
     }
     // Skip only if a strictly newer load has ALREADY applied its snapshot; a
     // newer load that merely started (and may still fail) must not discard this
     // valid result.
-    if (seq <= this.appliedSeq) return;
+    if (this.loadGate.superseded(token)) return;
     if (!isSnapshot(snap)) {
       console.warn("Ignoring malformed notifications snapshot");
-      this.markFailed(seq);
+      this.markFailed(token);
       return;
     }
     applySnapshot(this.state, snap, Date.now());
     this.loadedOnce = true;
     this.loadFailed = false;
-    this.appliedSeq = seq;
+    // Recorded only after a successful apply (as before), so a snapshot that
+    // throws while folding in never marks this token applied. Nothing awaits
+    // between the superseded check above and here, so accept cannot refuse.
+    this.loadGate.accept(token);
     this.persist();
     this.emitChange();
   }
@@ -130,8 +133,8 @@ export class NotificationStore extends EventTarget {
   // markFailed records a failed load, unless a newer load has already applied a
   // snapshot (that success is the fresher truth). The change event fires on every
   // failure, so a page showing a retry in progress learns that it failed again.
-  private markFailed(seq: number): void {
-    if (seq <= this.appliedSeq) return;
+  private markFailed(token: number): void {
+    if (this.loadGate.superseded(token)) return;
     this.loadFailed = true;
     this.emitChange();
   }

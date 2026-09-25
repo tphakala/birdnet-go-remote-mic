@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -582,6 +583,17 @@ type mgmt struct {
 	// so a token command can pin it.
 	certPath string
 	done     chan struct{}
+	// up delivers the endpoint once when a background retry brings up an API
+	// that failed to start (see retryManagement); nil when the API came up at
+	// once.
+	up chan mgmtEndpoint
+}
+
+// mgmtEndpoint is where a management API that came up late listens, handed to
+// the run loop so it can republish the run lock.
+type mgmtEndpoint struct {
+	addr     string
+	certPath string
 }
 
 // Wait blocks until the management API has finished shutting down. It is safe on
@@ -592,50 +604,97 @@ func (m *mgmt) Wait() {
 	}
 }
 
-// closedMgmt returns a handle that is already done, for the paths where no
-// server is running (a cert failure) so callers can Wait unconditionally.
-func closedMgmt() *mgmt {
-	done := make(chan struct{})
-	close(done)
-	return &mgmt{done: done}
+// Up returns the channel that delivers the endpoint of an API brought up by a
+// background retry. It is nil (never ready in a select) on a nil handle and on
+// one that is not retrying.
+func (m *mgmt) Up() <-chan mgmtEndpoint {
+	if m == nil {
+		return nil
+	}
+	return m.up
+}
+
+// mgmtParams carries what serveManagement needs to bring the API up, so a
+// background retry can repeat the attempt with the same inputs.
+type mgmtParams struct {
+	cfgPath string
+	// cfg drives the listener bind and certificate location, so the serve
+	// override flags (--mgmt-listen, --cert-dir) take effect for the run.
+	cfg *config.Config
+	// storeCfg is the override-free on-disk config that seeds the persistence
+	// store, so a later PATCH /config never bakes an ephemeral override into
+	// config.yaml (issue #29).
+	storeCfg  *config.Config
+	prov      *provider
+	events    http.Handler
+	center    *notify.Center
+	restartFn func()
+	reloader  mgmtserver.Reloader
+	guard     *auth.Guard
+	certPath  string
+	keyPath   string
 }
 
 // startManagement generates or loads the self-signed certificate and serves the
 // management API over HTTPS in the background until ctx is cancelled. events, if
 // non-nil, is mounted as the hand-written SSE handler for GET /events. It reports
-// whether the API actually came up: a certificate or listener failure (including
+// whether the API actually came up. A certificate or listener failure (including
 // an installed certificate it cannot read, which it never overwrites) is logged,
-// not fatal (the appliance keeps capturing and serving RTSP), but ok is false so
+// not fatal (the appliance keeps capturing and serving RTSP), and ok is false so
 // the caller does not mistake a configured-but-dead API for an available
 // diagnostic surface when deciding whether to stay alive with no serving device.
-// cfg drives the actual listener binds and certificate location, so serve
-// override flags (--mgmt-listen, --cert-dir) take effect for this run. storeCfg
-// is the override-free on-disk config that seeds the persistence store, so a
-// later PATCH /config never bakes an ephemeral override into config.yaml
-// (issue #29).
+// The attempt is then retried in the background with backoff (see
+// retryManagement), and the handle's Up channel reports when one succeeds.
 func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, center *notify.Center, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
-	certDir := cfg.Management.CertDir
+	return startManagementWith(ctx, &mgmtParams{
+		cfgPath:   cfgPath,
+		cfg:       cfg,
+		storeCfg:  storeCfg,
+		prov:      prov,
+		events:    events,
+		center:    center,
+		restartFn: restartFn,
+		reloader:  reloader,
+		guard:     guard,
+	}, mgmtRetryBackoff[:])
+}
+
+// startManagementWith is startManagement with the retry delays as a parameter,
+// so tests can retry without waiting out the real backoff.
+func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Duration) (handle *mgmt, ok bool) {
+	certDir := p.cfg.Management.CertDir
 	if certDir == "" {
-		certDir = filepath.Dir(cfgPath)
+		certDir = filepath.Dir(p.cfgPath)
 	}
-	certPath := filepath.Join(certDir, "mgmt-cert.pem")
-	keyPath := filepath.Join(certDir, "mgmt-key.pem")
+	p.certPath = filepath.Join(certDir, "mgmt-cert.pem")
+	p.keyPath = filepath.Join(certDir, "mgmt-key.pem")
 	// setCertificate reads certPath to decide the Managed flag (a pin marker sits
 	// beside it), and Regenerate/Install write here, so publish the paths before
 	// the certificate is prepared.
-	prov.certPath = certPath
-	prov.keyPath = keyPath
+	p.prov.certPath = p.certPath
+	p.prov.keyPath = p.keyPath
 
-	// An installed (pinned) certificate that exists but cannot be read comes back
-	// as *mgmtcert.PinnedReadError and takes this path too: the API stays off for
-	// the run rather than regenerating over the operator's certificate, and the
-	// token CLI falls back to editing the config file because no API address is
-	// published. Serving a throwaway certificate instead would leave the token
-	// CLI pinning a file the listener does not present.
-	cert, err := mgmtcert.Ensure(certPath, keyPath, certHosts())
+	h, err := serveManagement(ctx, p)
+	if err == nil {
+		return h, true
+	}
+	log.Printf("management API disabled: %v (retrying in the background)", err)
+	return retryManagement(ctx, func() (*mgmt, error) { return recoverManagement(ctx, p) }, delays, err), false
+}
+
+// serveManagement makes one attempt to bring the API up: prepare the
+// certificate, bind the listener, and serve until ctx is cancelled.
+//
+// An installed (pinned) certificate that exists but cannot be read comes back as
+// *mgmtcert.PinnedReadError and fails the attempt: the API stays off rather than
+// regenerating over the operator's certificate, and the token CLI falls back to
+// editing the config file because no API address is published. Serving a
+// throwaway certificate instead would leave the token CLI pinning a file the
+// listener does not present.
+func serveManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
+	cert, err := mgmtcert.Ensure(p.certPath, p.keyPath, certHosts())
 	if err != nil {
-		log.Printf("management API disabled: cannot prepare TLS certificate: %v", err)
-		return closedMgmt(), false
+		return nil, fmt.Errorf("cannot prepare TLS certificate: %w", err)
 	}
 
 	// Publish the certificate as the snapshot the TLS GetCertificate callback
@@ -645,51 +704,50 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 	// GetCertificate (the API stays up) while the certificate endpoints stay
 	// unmounted and return 501. A metadata fault never takes the appliance down.
 	certMounted := true
-	if serr := prov.setCertificate(&cert); serr != nil {
+	if serr := p.prov.setCertificate(&cert); serr != nil {
 		log.Printf("management certificate metadata unavailable: %v (certificate endpoints disabled)", serr)
 		certMounted = false
-		prov.cert.Store(&certState{tls: &cert})
+		p.prov.cert.Store(&certState{tls: &cert})
 	}
 
 	// Bind synchronously so a listen failure (for example the port already in
-	// use) is observed here and reported through ok, rather than being swallowed
+	// use) is observed here and reported, rather than being swallowed
 	// asynchronously inside the serve goroutine.
-	ln, err := net.Listen("tcp", cfg.Management.Listen)
+	ln, err := net.Listen("tcp", p.cfg.Management.Listen)
 	if err != nil {
-		log.Printf("management API disabled: cannot listen on %s: %v", cfg.Management.Listen, err)
-		return closedMgmt(), false
+		return nil, fmt.Errorf("cannot listen on %s: %w", p.cfg.Management.Listen, err)
 	}
 
 	opts := []mgmtserver.Option{
-		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(cfgPath, storeCfg)),
-		mgmtserver.WithSystemInfo(prov),
-		mgmtserver.WithRestart(restartFn),
-		mgmtserver.WithAuth(guard),
+		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(p.cfgPath, p.storeCfg)),
+		mgmtserver.WithSystemInfo(p.prov),
+		mgmtserver.WithRestart(p.restartFn),
+		mgmtserver.WithAuth(p.guard),
 		mgmtserver.WithChannelProbe(probeChannelLevels),
 	}
 	if certMounted {
-		opts = append(opts, mgmtserver.WithCertificateManager(prov))
+		opts = append(opts, mgmtserver.WithCertificateManager(p.prov))
 	}
-	if reloader != nil {
-		opts = append(opts, mgmtserver.WithReloader(reloader))
+	if p.reloader != nil {
+		opts = append(opts, mgmtserver.WithReloader(p.reloader))
 	}
 	if dfs, err := web.DistFS(); err == nil {
 		opts = append(opts, mgmtserver.WithStaticAssets(dfs))
 	} else {
 		log.Printf("web UI assets unavailable: %v (management API still serves JSON endpoints)", err)
 	}
-	if events != nil {
-		opts = append(opts, mgmtserver.WithEventStream(events))
+	if p.events != nil {
+		opts = append(opts, mgmtserver.WithEventStream(p.events))
 	}
 	// The notification center is both the snapshot source for GET /notifications
 	// and the publisher the management-side emitters (config reload, restart,
 	// auth change) write to, so wire both faces from the one object.
-	if center != nil {
-		opts = append(opts, mgmtserver.WithNotifications(center), mgmtserver.WithNotifier(center))
+	if p.center != nil {
+		opts = append(opts, mgmtserver.WithNotifications(p.center), mgmtserver.WithNotifier(p.center))
 	}
 
 	srv := &http.Server{
-		Handler:           mgmtserver.New(prov, opts...).Handler(),
+		Handler:           mgmtserver.New(p.prov, opts...).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -705,7 +763,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		ErrorLog: mgmtserver.NewFilteredErrorLog(log.Default()),
 		TLSConfig: &tls.Config{
 			MinVersion:     tls.VersionTLS12,
-			GetCertificate: prov.tlsCertificate,
+			GetCertificate: p.prov.tlsCertificate,
 			// Disable TLS session resumption so a certificate swap (regenerate or
 			// install) reaches every connection. A resumed session would keep the
 			// certificate context established before the swap, and GetCertificate is
@@ -733,8 +791,8 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		}
 	}()
 
-	log.Printf("management API on https://%s%s (certificate at %s)", cfg.Management.Listen, mgmtserver.BasePath, certPath)
-	return &mgmt{done: done, addr: ln.Addr().String(), certPath: certPath}, true
+	log.Printf("management API on https://%s%s (certificate at %s)", p.cfg.Management.Listen, mgmtserver.BasePath, p.certPath)
+	return &mgmt{done: done, addr: ln.Addr().String(), certPath: p.certPath}, nil
 }
 
 // toCertInfo adapts the mgmtcert metadata into the mgmtserver domain type, so

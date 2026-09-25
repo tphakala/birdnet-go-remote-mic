@@ -469,6 +469,13 @@ body {
   transform: scale(0.97);
 }
 
+/* The theme toggle carries a moon and a sun; only the current theme's icon
+   shows. Dark is the default, so anything but data-theme="light" is dark. */
+:root[data-theme="light"] .theme-toggle .theme-icon-dark,
+:root:not([data-theme="light"]) .theme-toggle .theme-icon-light {
+  display: none;
+}
+
 /* Telemetry Dashboard Ribbon */
 .telemetry-strip {
   display: grid;
