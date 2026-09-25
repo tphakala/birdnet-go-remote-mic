@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
 )
@@ -134,6 +135,40 @@ func TestSelectingSourceReusesBufferAcrossReads(t *testing.T) {
 		if r2[f][0] != val(1000)(f, 0) || r2[f][1] != val(1000)(f, 2) {
 			t.Fatalf("period 2 frame %d = %v (stale-buffer regression?)", f, r2[f])
 		}
+	}
+}
+
+// taggedSource returns one fixed period, then io.EOF.
+type taggedSource struct {
+	Source
+	p    Period
+	done bool
+}
+
+func (s *taggedSource) Read() (Period, error) {
+	if s.done {
+		return Period{}, io.EOF
+	}
+	s.done = true
+	return s.p, nil
+}
+
+func TestSelectingSourceKeepsSessionAndCaptureTime(t *testing.T) {
+	t.Parallel()
+	// The fan-out tags a period with its play session and capture time; a
+	// stream's channel selection sits between the fan-out and the stage, so
+	// it must pass both through, or the stage would encode a stale period.
+	captured := time.Unix(1700000000, 0)
+	inner := &taggedSource{
+		Source: NewFakeSource(48000, 4, nil),
+		p:      Period{Buf: interleave(2, 4, func(f, c int) int16 { return int16(f + c) }), Frames: 2, Session: 7, Captured: captured},
+	}
+	got, err := NewSelectingSource(inner, 4, []int{2}).Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.Session != 7 || !got.Captured.Equal(captured) {
+		t.Errorf("got session %d captured %v, want 7 and %v", got.Session, got.Captured, captured)
 	}
 }
 

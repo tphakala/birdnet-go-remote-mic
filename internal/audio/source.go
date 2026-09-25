@@ -2,7 +2,10 @@
 // and provides a hardware-free fake for tests.
 package audio
 
-import "io"
+import (
+	"io"
+	"time"
+)
 
 // Period is one capture period of interleaved S16LE PCM. Buf is owned by the
 // receiver only until the next Read (single-consumer, the underlying buffer is
@@ -10,6 +13,15 @@ import "io"
 type Period struct {
 	Buf    []byte
 	Frames int
+	// Session is the play session of the stream a fan-out consumer's period
+	// was sent for (see FanoutStream.Gate), so a stage can drop a period queued
+	// for an earlier client rather than encode it for the next one. Zero means
+	// untagged: a period straight from a capture, or a consumer with no gate.
+	Session uint64
+	// Captured is when the fan-out read the period from the capture, so a stage
+	// that has fallen behind still stamps its frames with their capture time.
+	// Zero means untagged, and the stage stamps its own read time.
+	Captured time.Time
 }
 
 // Source delivers periods of S16LE PCM. Read blocks until a period is available

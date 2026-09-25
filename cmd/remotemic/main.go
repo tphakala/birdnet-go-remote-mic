@@ -812,12 +812,13 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 }
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,
-// shared with the stream's downstream frame drops, and its feed's active flag,
-// so the fan-out sends an idle stream nothing instead of copied audio.
+// shared with the stream's downstream frame drops, and its feed's play session,
+// so the fan-out sends an idle stream nothing instead of copied audio and tags
+// each period it sends with the session it was sent for.
 func fanoutStreams(streams []*streamRuntime) []audio.FanoutStream {
 	out := make([]audio.FanoutStream, len(streams))
 	for i, sr := range streams {
-		out[i] = audio.FanoutStream{Dropped: &sr.dropped, Active: sr.frames.Active}
+		out[i] = audio.FanoutStream{Dropped: &sr.dropped, Gate: sr.frames.Session}
 	}
 	return out
 }

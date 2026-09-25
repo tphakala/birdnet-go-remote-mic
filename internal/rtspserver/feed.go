@@ -15,9 +15,9 @@ var ErrSourceClosed = errors.New("rtspserver: frame source closed")
 // ChanSource is a bounded FrameSource: the pipeline Pushes frames and the
 // playing session's writer Nexts them. Delivery is gated on an active flag so
 // no audio is buffered (or copied) while no client is playing; activation
-// drains the frames left queued for the previous client (pipeline.Stage names
-// the edges this does not cover). Push copies the payload so the pipeline's
-// buffer reuse is safe.
+// drains the frames left queued for the previous client, and Push drops a
+// frame produced for an earlier play session (see pipeline.Stage). Push copies
+// the payload so the pipeline's buffer reuse is safe.
 type ChanSource struct {
 	ch        chan pipeline.Frame
 	done      chan struct{}
@@ -26,6 +26,9 @@ type ChanSource struct {
 	// remaining bits), so Session reads the pair in one atomic load: a stage
 	// could otherwise see a new session's flag with the old session's number.
 	state atomic.Uint64
+	// drained, when set, runs in SetActive(true) between the drain and the
+	// session bump; a test seam that pins that order. Nil in production.
+	drained func()
 }
 
 // sessionActive is the active flag in ChanSource.state; the play session
@@ -59,17 +62,23 @@ func (c *ChanSource) Next(ctx context.Context) (pipeline.Frame, error) {
 }
 
 // Push copies and enqueues a frame when a client is playing; while inactive it
-// discards without copying and reports true (a discard is not a drop). It
+// discards without copying and reports true (a discard is not a drop). A frame
+// tagged with another play session than the current one (pipeline.Frame.
+// Session) was produced for an earlier client, overtaken by a teardown and the
+// next PLAY while it was being encoded, and is discarded the same way; an
+// untagged frame (session zero) is delivered to whichever client plays. It
 // returns false only when the buffer is full (a slow client); the caller
 // should keep capturing and let the writer fall behind.
 func (c *ChanSource) Push(f pipeline.Frame) bool {
-	if !c.Active() {
+	active, session := c.Session()
+	if !active || (f.Session != 0 && f.Session != session) {
 		return true
 	}
 	cp := pipeline.Frame{
 		Payload:  append([]byte(nil), f.Payload...),
 		Duration: f.Duration,
 		Captured: f.Captured,
+		Session:  f.Session,
 	}
 	select {
 	case c.ch <- cp:
@@ -96,7 +105,9 @@ func (c *ChanSource) Session() (active bool, session uint64) {
 }
 
 // SetActive toggles delivery. Activation first drains any frames left over
-// from a previous session, then starts a new play session.
+// from a previous session, then starts a new play session. The order matters:
+// starting the session first would let the drain discard the new client's
+// first frames, pushed between the two.
 func (c *ChanSource) SetActive(active bool) {
 	if !active {
 		c.state.And(^uint64(sessionActive))
@@ -106,6 +117,9 @@ func (c *ChanSource) SetActive(active bool) {
 		select {
 		case <-c.ch:
 		default:
+			if c.drained != nil {
+				c.drained()
+			}
 			c.update(func(s uint64) uint64 { return ((s>>1)+1)<<1 | sessionActive })
 			return
 		}

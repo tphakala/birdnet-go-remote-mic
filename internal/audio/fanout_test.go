@@ -248,6 +248,44 @@ func TestFanoutMetersEachPeriodOnce(t *testing.T) {
 	}
 }
 
+// gateOf returns a fan-out gate that always reports active and session.
+func gateOf(active bool, session uint64) func() (bool, uint64) {
+	return func() (bool, uint64) { return active, session }
+}
+
+func TestFanoutTagsSessionAndCaptureTime(t *testing.T) {
+	t.Parallel()
+	// Each consumer's period carries the session its own gate reported, so a
+	// stage can tell a period queued for an earlier client, and the time the
+	// period was read, so a lagging stage stamps its capture time. A consumer
+	// with no gate gets an untagged session.
+	var session atomic.Uint64
+	session.Store(3)
+	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev", []FanoutStream{
+		{Dropped: new(atomic.Uint64), Gate: func() (bool, uint64) { return true, session.Load() }},
+		{Dropped: new(atomic.Uint64), Gate: gateOf(true, 9)},
+		{Dropped: new(atomic.Uint64)},
+	})
+	before := time.Now()
+	f.distribute(Period{Buf: []byte{1, 0}, Frames: 1})
+	session.Store(4)
+	f.distribute(Period{Buf: []byte{2, 0}, Frames: 1})
+	for i, want := range [][]uint64{{3, 4}, {9, 9}, {0, 0}} {
+		for j, w := range want {
+			p, err := cons[i].Read()
+			if err != nil {
+				t.Fatalf("consumer %d read %d: %v", i, j, err)
+			}
+			if p.Session != w {
+				t.Errorf("consumer %d period %d: got session %d, want %d", i, j, p.Session, w)
+			}
+			if p.Captured.Before(before) {
+				t.Errorf("consumer %d period %d: got Captured %v, want at or after %v", i, j, p.Captured, before)
+			}
+		}
+	}
+}
+
 func TestFanoutIdleConsumerGetsNothing(t *testing.T) {
 	t.Parallel()
 	// One active and one idle consumer: the active one sees every period's audio,
@@ -256,8 +294,8 @@ func TestFanoutIdleConsumerGetsNothing(t *testing.T) {
 	periods := [][]byte{{1, 0}, {2, 0}, {3, 0}}
 	src := NewFakeSource(48000, 1, periods)
 	streams := []FanoutStream{
-		{Dropped: new(atomic.Uint64), Active: func() bool { return true }},
-		{Dropped: new(atomic.Uint64), Active: func() bool { return false }},
+		{Dropped: new(atomic.Uint64), Gate: gateOf(true, 1)},
+		{Dropped: new(atomic.Uint64), Gate: gateOf(false, 1)},
 	}
 	f, cons := NewFanout(src, "dev", streams)
 	if err := f.Run(); err != nil {
@@ -278,7 +316,7 @@ func TestFanoutIdleConsumerNeverDrops(t *testing.T) {
 	// the host monitor's drop alert for a stream nobody plays.
 	dropped := new(atomic.Uint64)
 	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev",
-		[]FanoutStream{{Dropped: dropped, Active: func() bool { return false }}})
+		[]FanoutStream{{Dropped: dropped, Gate: gateOf(false, 1)}})
 	p := Period{Buf: []byte{7, 0}, Frames: 1}
 	for range 3 * fanoutBuffer {
 		f.distribute(p)
@@ -297,8 +335,9 @@ func TestFanoutFollowsActiveFlag(t *testing.T) {
 	// gets audio from the next period on, and a stream nobody plays is sent
 	// nothing.
 	var active atomic.Bool
+	gate := func() (bool, uint64) { return active.Load(), 1 }
 	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev",
-		[]FanoutStream{{Dropped: new(atomic.Uint64), Active: active.Load}})
+		[]FanoutStream{{Dropped: new(atomic.Uint64), Gate: gate}})
 	p := Period{Buf: []byte{7, 0}, Frames: 1}
 	f.distribute(p)
 	active.Store(true)
@@ -329,7 +368,7 @@ func TestFanoutDistributeAllocs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			streams := make([]FanoutStream, len(tt.active))
 			for i, a := range tt.active {
-				streams[i] = FanoutStream{Dropped: new(atomic.Uint64), Active: func() bool { return a }}
+				streams[i] = FanoutStream{Dropped: new(atomic.Uint64), Gate: gateOf(a, 1)}
 			}
 			f, cons := NewFanout(NewFakeSource(48000, 2, nil), "dev", streams)
 			p := Period{Buf: make([]byte, 4096), Frames: 1024}
@@ -359,10 +398,10 @@ func BenchmarkFanoutDistribute(b *testing.B) {
 			name = "active"
 		}
 		b.Run(name, func(b *testing.B) {
-			on := func() bool { return active }
+			on := gateOf(active, 1)
 			f, cons := NewFanout(NewFakeSource(384000, 2, nil), "dev", []FanoutStream{
-				{Dropped: new(atomic.Uint64), Active: on},
-				{Dropped: new(atomic.Uint64), Active: on},
+				{Dropped: new(atomic.Uint64), Gate: on},
+				{Dropped: new(atomic.Uint64), Gate: on},
 			})
 			p := Period{Buf: make([]byte, 3840*4), Frames: 3840}
 			b.ReportAllocs()

@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // fanoutBuffer is the per-consumer period queue depth. A consumer whose pipeline
@@ -31,7 +32,10 @@ const fanoutBuffer = 8
 // consumer has one the copy is skipped altogether, so an unattended appliance
 // allocates nothing per period here and never wakes an idle stream's stage.
 // The stage does not need the idle stretch to be visible: it resets its
-// encoder on the play session its gate reports (see pipeline.Gate).
+// encoder on the play session its gate reports (see pipeline.Gate). Each
+// period sent is tagged with the play session it was sent for and the time it
+// was read from the capture, so a stage that has fallen behind drops what was
+// queued for an earlier client and stamps the rest with their capture time.
 type Fanout struct {
 	src       Source
 	name      string
@@ -43,24 +47,26 @@ type Fanout struct {
 // period arrives or the feed closes (the shared reader ended). dropped is shared
 // with the owning stream runtime so a fan-out drop and a downstream frame drop
 // accumulate into the one "audio lost for this stream" counter the host monitor
-// reads. active is the stream's play gate (nil means always active); while it
-// reports false the consumer is sent nothing and costs no copy.
+// reads. gate is the stream's play gate (nil means always active, untagged);
+// while it reports inactive the consumer is sent nothing and costs no copy.
 type fanoutConsumer struct {
 	rate, channels int
 	ch             chan Period
 	dropped        *atomic.Uint64
-	active         func() bool
+	gate           func() (active bool, session uint64)
 }
 
 // FanoutStream describes one fan-out consumer. Dropped, which is required,
 // counts the periods the consumer lost to a full queue; the caller shares it
-// with the stream's downstream frame-drop counter. Active reports whether the
-// stream has a client playing (rtspserver.ChanSource.Active): while it reports
-// false the consumer is sent no periods, since its stage would discard them
-// unencoded anyway. A nil Active means always active.
+// with the stream's downstream frame-drop counter. Gate reports whether the
+// stream has a client playing and which play session it is
+// (rtspserver.ChanSource.Session): while it reports inactive the consumer is
+// sent no periods, since its stage would discard them unencoded anyway, and
+// each period sent carries the session in Period.Session. A nil Gate means
+// always active, with periods left untagged.
 type FanoutStream struct {
 	Dropped *atomic.Uint64
-	Active  func() bool
+	Gate    func() (active bool, session uint64)
 }
 
 // NewFanout builds a Fanout over src (typically a metered base capture, so every
@@ -78,7 +84,7 @@ func NewFanout(src Source, name string, streams []FanoutStream) (*Fanout, []Sour
 			channels: channels,
 			ch:       make(chan Period, fanoutBuffer),
 			dropped:  st.Dropped,
-			active:   st.Active,
+			gate:     st.Gate,
 		}
 		consumers[i] = c
 		out[i] = c
@@ -118,23 +124,31 @@ func (f *Fanout) Run() error {
 // stage nor fill its queue and count a drop. A client that starts playing
 // after this check loses this period, as it would had it connected that much
 // later; it gets no audio captured while the stream sat idle. Periods already
-// queued for a stage that had fallen behind stay queued across a teardown, so
-// a client that starts playing before the stage reads them gets them.
+// queued for a stage that had fallen behind stay queued across a teardown, but
+// each carries the session it was sent for, so the stage drops them rather
+// than encode them for a client that starts playing before it reads them.
 func (f *Fanout) distribute(p Period) {
 	var cp Period
 	copied := false
 	for _, c := range f.consumers {
-		if c.active != nil && !c.active() {
-			continue
+		var session uint64
+		if c.gate != nil {
+			var on bool
+			if on, session = c.gate(); !on {
+				continue
+			}
 		}
 		if !copied {
 			buf := make([]byte, len(p.Buf))
 			copy(buf, p.Buf)
-			cp = Period{Buf: buf, Frames: p.Frames}
+			cp = Period{Buf: buf, Frames: p.Frames, Captured: time.Now()}
 			copied = true
 		}
+		// The storage is shared; only the session tag differs per consumer.
+		out := cp
+		out.Session = session
 		select {
-		case c.ch <- cp:
+		case c.ch <- out:
 		default:
 			// The consumer's queue is full: its encoder or client is not keeping up.
 			// Drop this period for that stream only; the shared reader must not block

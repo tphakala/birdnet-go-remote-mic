@@ -27,16 +27,18 @@ func TestFanoutStreamsWiresFeedAndDrops(t *testing.T) {
 		if got, want := out[i].Dropped, &streams[i].dropped; got != want {
 			t.Errorf("stream %d: got Dropped %p, want the stream's own counter %p", i, got, want)
 		}
-		if out[i].Active == nil {
-			t.Fatalf("stream %d: got a nil Active, want the stream feed's", i)
+		if out[i].Gate == nil {
+			t.Fatalf("stream %d: got a nil Gate, want the stream feed's", i)
 		}
-		if got := out[i].Active(); got {
-			t.Errorf("stream %d: got Active() %v with no client playing, want false", i, got)
+		if got, _ := out[i].Gate(); got {
+			t.Errorf("stream %d: got an active Gate with no client playing, want inactive", i)
 		}
 	}
 	streams[1].frames.SetActive(true)
-	if got0, got1 := out[0].Active(), out[1].Active(); got0 || !got1 {
-		t.Errorf("after stream 1 plays: got Active() %v, %v, want false, true", got0, got1)
+	on0, _ := out[0].Gate()
+	on1, s1 := out[1].Gate()
+	if _, want := streams[1].frames.Session(); on0 || !on1 || s1 != want {
+		t.Errorf("after stream 1 plays: got Gate() %v, (%v, %d), want false, (true, %d)", on0, on1, s1, want)
 	}
 }
 
