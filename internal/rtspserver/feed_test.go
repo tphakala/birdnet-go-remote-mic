@@ -3,6 +3,7 @@ package rtspserver
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,5 +108,29 @@ func TestSessionAdvancesOnEveryActivation(t *testing.T) {
 	}
 	if c.Active() != on {
 		t.Errorf("Active() = %v, want it to match Session()'s %v", c.Active(), on)
+	}
+}
+
+// TestSetActiveConcurrentKeepsEverySession pins that SetActive is safe to call
+// from several goroutines: every activation's session bump survives, and a
+// deactivation never writes back a stale session or flag. A load-then-store
+// update would lose bumps under this contention, so a later client could be
+// handed an old session and keep the previous client's encoder state.
+func TestSetActiveConcurrentKeepsEverySession(t *testing.T) {
+	t.Parallel()
+	const workers, rounds = 4, 20000
+	c := NewChanSource(1)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for range rounds {
+				c.SetActive(true)
+				c.SetActive(false)
+			}
+		})
+	}
+	wg.Wait()
+	if on, s := c.Session(); on || s != workers*rounds {
+		t.Errorf("after %d activations: Session() = (%v, %d), want (false, %d)", workers*rounds, on, s, workers*rounds)
 	}
 }
