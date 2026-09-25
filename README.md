@@ -240,10 +240,11 @@ opens a different device in its place. Give each of the two units its own port
 id, not just one; `remote-mic devices list`, the web UI, and the ambiguity error
 (shown by the web UI and `--check`) all name the port id to use.
 
-Changes made through the web UI or the management API are limited to 128
-characters for a device name and a stream path, and 2048 for a device id. A
+A name, id or path set through the web UI or the management API is limited to
+128 characters for a device name and a stream path, and 2048 for a device id. A
 config file that exceeds them still loads, so an upgrade never stops an
-appliance from starting; shorten the value before saving it from the UI.
+appliance from starting, and a value already in the file does not block other
+changes; only a new over-long value is refused.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
@@ -379,10 +380,9 @@ For a local end-to-end check without hardware, use the ALSA loopback
 ### Multi-device behaviour
 
 - A device that fails to open, is not connected, or whose id is ambiguous is
-  logged and skipped. While the
-  management API is serving (it is enabled by default) the process stays up so its status API
-  keeps reporting every skipped device and its open error, even when no device
-  opens at all. With management disabled, or while its API has not come up yet,
+  logged and skipped. While the management API is serving (it is enabled by
+  default) the process stays up so its status API keeps reporting every
+  skipped device and its open error, even when no device opens at all. With management disabled, or while its API has not come up yet,
   there is nothing to keep alive, so a total open failure exits nonzero and lets
   a supervisor restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
@@ -412,8 +412,8 @@ For a local end-to-end check without hardware, use the ALSA loopback
   plays it, so after an encoder error on a stream the notification clears only
   once a client has played that stream on the restarted device and encoding
   worked, and the device has then kept serving for 30 seconds; until then it
-  stays raised while the device serves. Its RTSP path
-  serves again as soon as the restart opens it. A config save or a hardware change restarts it at once,
+  stays raised while the device serves. Its RTSP path serves again as soon as
+  the restart opens it. A config save or a hardware change restarts it at once,
   clears the notification as soon as it opens, and starts the delays over. A
   card-index device is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are

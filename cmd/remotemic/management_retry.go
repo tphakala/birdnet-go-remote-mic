@@ -118,7 +118,7 @@ func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 				Category: notify.CategoryConfig,
 				Kind:     notify.KindEvent,
 				Title:    "Config file applied",
-				Message:  "Applied the config file edited while the management API was down",
+				Message:  "Applied the config file edited while the management API was down (for example by remote-mic token)",
 			})
 		}
 		// A fresh pointer, not a write through p.storeCfg: run() still holds the
@@ -138,7 +138,7 @@ func serveRecovered(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 	p.center.Clear(mgmtDownKey, notify.Notification{
 		Severity: notify.SeverityInfo,
 		Title:    "Management API recovered",
-		Message:  "The web UI and API are serving again",
+		Message:  "The web UI and API are now serving",
 	})
 	return h, nil
 }

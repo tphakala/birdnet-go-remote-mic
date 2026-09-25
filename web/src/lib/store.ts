@@ -289,9 +289,9 @@ export class AppStore extends EventTarget {
   // both still announce nearly every tick (which the System view's certificate
   // refresh and the uptime displays rely on). config and available announce
   // every poll, because mutation flows repaint from the config event. The first
-  // applied value always announces, and a failed read resets its tracker; the
-  // per-tick status announcement is what repairs a view that swapped in a load
-  // error even when a later read returns data it showed before.
+  // applied value always announces, and a failed read resets its tracker, so the
+  // next successful read announces even when it returns data a view showed
+  // before swapping in a load error; that is what repairs the view.
 
   public refreshStatus(): Promise<boolean> {
     return gatedRefresh(

@@ -255,10 +255,10 @@ func (a *appliance) signalRetryDue() {
 // a restart waiting to prove its encoders encodes its first frame. It completes
 // the settle of every restarted device that has served for retrySettle (after
 // an encode fault, counted from when the run loop first sees every faulted
-// stream encoded), and makes one
-// restart attempt for every down device whose backoff has elapsed. A stale or
-// early signal completes and attempts nothing, since each deadline is checked
-// against the clock and each encode wait against the runtime.
+// stream encoded), and makes one restart attempt for every down device whose
+// backoff has elapsed. A stale or early signal completes and attempts nothing,
+// since each deadline is checked against the clock and each encode wait
+// against the runtime.
 //
 // The run loop's select has no priority, so a pump that died right at the
 // settle deadline can be handled after this pass: the settle then completes
@@ -353,8 +353,7 @@ func (a *appliance) onRetryDue() {
 // attemptRetry makes one unattended restart attempt. On success the device
 // serves at once but its down condition stays active until it has served for
 // retrySettle, and after an encode fault until each faulted stream has also
-// encoded (see
-// onRetryDue); on a failure scheduleRetry either schedules the
+// encoded (see onRetryDue); on a failure scheduleRetry either schedules the
 // next attempt or, for a cause a retry cannot fix, ends the retry. The open's own
 // log lines, failure and success alike, are silenced on attempts logAttempt
 // skips, except the line for a cause that ends the retry (see skipDevice);

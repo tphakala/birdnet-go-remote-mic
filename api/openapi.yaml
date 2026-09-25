@@ -1289,7 +1289,10 @@ components:
         the full set is in streams. On a PATCH, a body carrying streams is
         authoritative and the flat fields are ignored; a body omitting streams
         defines a single stream from the flat fields, and is rejected when it
-        would collapse an existing multi-stream device.
+        would collapse an existing multi-stream device. The maxLength limits on
+        name, device and path apply to values a write introduces; a value
+        already in the config file (which loads without them) may exceed them
+        in a response.
       required: [name, device, path, mode, rate, channels, format]
       properties:
         name:
@@ -1359,7 +1362,7 @@ components:
         path:
           type: string
           maxLength: 128
-          description: RTSP path serving this stream; unique across every device's streams.
+          description: RTSP path serving this stream; unique across every device's streams. The maxLength applies to a path a write introduces (see DeviceConfig).
           examples: [/garden]
         mode:
           $ref: "#/components/schemas/StreamMode"
