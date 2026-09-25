@@ -41,6 +41,10 @@ type blockingSource struct {
 	closed         chan struct{}
 	kill           chan error
 	once           sync.Once
+	// closedErr is what Read returns once closed; nil means io.EOF. The real
+	// capture returns capture.ErrClosed, which tests of the pump's error
+	// selection must use.
+	closedErr error
 }
 
 func newBlockingSource(rate, channels int) *blockingSource {
@@ -52,6 +56,9 @@ func (b *blockingSource) Negotiated() (rate, channels int) { return b.rate, b.ch
 func (b *blockingSource) Read() (audio.Period, error) {
 	select {
 	case <-b.closed:
+		if b.closedErr != nil {
+			return audio.Period{}, b.closedErr
+		}
 		return audio.Period{}, io.EOF
 	case err := <-b.kill:
 		return audio.Period{}, err

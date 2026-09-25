@@ -8,6 +8,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	capture "github.com/tphakala/go-audio-capture"
+
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
@@ -62,7 +64,13 @@ func (s scriptedStage) Run(src audio.Source, _ func() bool, emit func(pipeline.F
 // of failing it.
 func scriptedStages(t *testing.T, app *appliance, log *fakeOpenLog) func(path string) chan bool {
 	t.Helper()
-	next := fakeOpenerWith(log, func(rate, channels int) audio.Source { return newBlockingSource(rate, channels) })
+	// The source reports capture.ErrClosed once closed, as the real capture does,
+	// so a stage fault must win over the fan-out's error to be seen.
+	next := fakeOpenerWith(log, func(rate, channels int) audio.Source {
+		src := newBlockingSource(rate, channels)
+		src.closedErr = capture.ErrClosed
+		return src
+	})
 	var latest map[string]chan bool
 	var latestRT *deviceRuntime
 	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {

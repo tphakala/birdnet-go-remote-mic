@@ -400,8 +400,8 @@ func (a *appliance) runningParams() map[string]config.Device {
 // but not for copying, channel extraction, or encoding. When the capture ends
 // the fan-out closes the stream feeds, so every stage goroutine returns, and
 // pump waits for them before reporting so no stage outlives the device's
-// teardown. The result names the stream whose stage (an encode fault) ended
-// the device, if the capture did not, and each stream's first encoded frame is
+// teardown. When a stage (an encode fault) ended the device, the result carries
+// that stage's error and names its stream; each stream's first encoded frame is
 // recorded on it (noteEncoded) for the unattended retry's settle.
 func (a *appliance) pump(rt *deviceRuntime) {
 	runtime.LockOSThread()
@@ -445,10 +445,14 @@ func (a *appliance) pump(rt *deviceRuntime) {
 	}
 	perr := rt.fanout.Run()
 	wg.Wait()
-	// A stage fault that ended the device surfaces as the pump result when the
-	// fan-out's own read ended cleanly (a closed source reports EOF, i.e. nil here).
+	// A stage fault that ended the device is the pump result, whatever the
+	// fan-out's read returned after the stage closed it: a real capture reports
+	// capture.ErrClosed once closed, not EOF, so keying on a clean fan-out end
+	// would hide every encode fault on hardware. A stage faults only on its own;
+	// when the capture fails first every stage sees its source end and returns
+	// nil, so stageErr is set only for a genuine stage fault.
 	res := pumpResult{rt: rt, err: perr}
-	if perr == nil && stageErr != nil {
+	if stageErr != nil {
 		res.err, res.faultPath = stageErr, faultPath
 	}
 	a.pumpDone <- res
