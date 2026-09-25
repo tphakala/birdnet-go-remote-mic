@@ -10,6 +10,7 @@
 // and the dismissed set) is per browser and survives reloads, but is reset when
 // the appliance restarts (a new bootId), because ids restart from 1 each boot.
 
+import { LatestGate } from "./latest-core.js";
 import type { Notification, NotificationSnapshot } from "./types.js";
 
 // CoreState is the full client state. items is keyed by id (the server assigns
@@ -61,8 +62,14 @@ export function initialState(): CoreState {
 // uptimeToMs maps a server uptime onto the browser clock through the anchor. It
 // returns NaN before any anchor exists; callers render that as an unknown time.
 export function uptimeToMs(state: CoreState, uptimeMs: number): number {
-  if (!state.anchor || !Number.isFinite(uptimeMs)) return NaN;
-  return state.anchor.browserMs - (state.anchor.uptimeMs - uptimeMs);
+  return anchorToMs(state.anchor, uptimeMs);
+}
+
+// anchorToMs maps a server uptime onto the browser clock through anchor, or NaN
+// without one.
+export function anchorToMs(anchor: ClockAnchor | null, uptimeMs: number): number {
+  if (!anchor || !Number.isFinite(uptimeMs)) return NaN;
+  return anchor.browserMs - (anchor.uptimeMs - uptimeMs);
 }
 
 // eventTimeMs is when an entry happened, on the browser clock.
@@ -106,10 +113,8 @@ export function applySnapshot(
   state.nextId = bootChanged ? snap.nextId : Math.max(state.nextId, snap.nextId);
 
   // Re-anchor on every snapshot, which also absorbs any browser clock step since
-  // the last sync. nowMs is read after the response arrived, so every mapped
-  // time runs late by the request's latency: usually well under a second, which
-  // minute-resolution labels hide, but a fetch that spans a laptop sleep skews
-  // them until the next re-sync.
+  // the last sync. The shell passes the midpoint of the request (see
+  // requestMidpoint), which halves the error a one-way latency would add.
   state.anchor = { browserMs: nowMs, uptimeMs: snap.uptimeMs };
   if (Number.isSafeInteger(snap.capacity) && snap.capacity >= 1) state.capacity = snap.capacity;
 
@@ -224,15 +229,17 @@ export function unreadCount(state: CoreState): number {
 // latest entry is an onset. Ascending by id so the panel renders them in a
 // stable order.
 export function activeConditions(state: CoreState): Notification[] {
+  // One pass keeping the highest-id onset/clear per key, with no sort over every
+  // item: only the survivors are sorted below, and there are far fewer of them.
   const latestByKey = new Map<string, Notification>();
-  const sorted = [...state.items.values()].sort((a, b) => a.id - b.id);
-  for (const n of sorted) {
-    if (!n.key) continue;
-    if (n.kind === "onset" || n.kind === "clear") latestByKey.set(n.key, n);
+  for (const n of state.items.values()) {
+    if (!n.key || (n.kind !== "onset" && n.kind !== "clear")) continue;
+    const prev = latestByKey.get(n.key);
+    if (!prev || n.id > prev.id) latestByKey.set(n.key, n);
   }
-  return [...latestByKey.values()]
-    .filter((n) => n.kind === "onset")
-    .sort((a, b) => a.id - b.id);
+  const out: Notification[] = [];
+  for (const n of latestByKey.values()) if (n.kind === "onset") out.push(n);
+  return out.sort((a, b) => a.id - b.id);
 }
 
 // markAllRead advances the watermark past every known entry so the badge goes
@@ -331,4 +338,122 @@ export function isNotification(v: unknown): v is Notification {
     (n.key === undefined || typeof n.key === "string") &&
     (n.source === undefined || typeof n.source === "string")
   );
+}
+
+// isSnapshot rejects a response that is not a notification snapshot (the uptime
+// anchor included, since every entry is placed in time through it). A proxy or
+// captive portal can answer a 200 with a non-JSON body, which api.request
+// surfaces as a string; folding that into applySnapshot would reset the read
+// state on a bogus bootId and then throw iterating a missing notifications array.
+export function isSnapshot(v: unknown): v is NotificationSnapshot {
+  if (typeof v !== "object" || v === null) return false;
+  const s = v as Partial<NotificationSnapshot>;
+  return (
+    typeof s.bootId === "string" &&
+    typeof s.serverTime === "string" &&
+    typeof s.uptimeMs === "number" &&
+    Number.isFinite(s.uptimeMs) &&
+    Number.isFinite(s.nextId) &&
+    Array.isArray(s.notifications) &&
+    // Every entry must be well-formed AND belong to the snapshot's own boot, so
+    // a snapshot cannot label itself one boot while carrying another boot's
+    // entries (which would persist as stale history or active conditions).
+    s.notifications.every((n) => isNotification(n) && n.bootId === s.bootId)
+  );
+}
+
+// requestMidpoint is the browser instant a snapshot is anchored at: halfway
+// between the time before the request and the time after the response. The
+// server read its uptime somewhere inside that window, so the midpoint is off
+// by at most half the round trip, where the arrival time alone runs late by
+// the whole server-to-browser leg.
+export function requestMidpoint(beforeMs: number, afterMs: number): number {
+  return beforeMs + (afterMs - beforeMs) / 2;
+}
+
+// CLOCK_STEP_TOLERANCE_MS is how far the browser wall clock may drift from its
+// monotonic clock since the anchor before it counts as a step. Timer jitter and
+// NTP slewing stay far below it; a manual change, an NTP step, or a suspend
+// (performance.now does not advance during sleep in most browsers) exceed it.
+export const CLOCK_STEP_TOLERANCE_MS = 2_000;
+
+// ClockReference pairs the wall clock (Date.now) with the monotonic clock
+// (performance.now) read together when the anchor was taken.
+export interface ClockReference {
+  wallMs: number;
+  monoMs: number;
+}
+
+// clockStepped reports whether the wall clock has moved differently from the
+// monotonic clock since ref by more than the tolerance. Every mapped time rests
+// on the wall clock at the anchor, so a step means the anchor must be re-taken.
+export function clockStepped(ref: ClockReference, wallMs: number, monoMs: number): boolean {
+  const drift = wallMs - ref.wallMs - (monoMs - ref.monoMs);
+  return Math.abs(drift) > CLOCK_STEP_TOLERANCE_MS;
+}
+
+// Re-sync backoff: the first retry of a failed re-sync waits RESYNC_BASE_MS and
+// each further failure doubles it, capped at RESYNC_MAX_MS, so a snapshot
+// endpoint that keeps failing costs at most one request a minute.
+export const RESYNC_BASE_MS = 2_000;
+export const RESYNC_MAX_MS = 60_000;
+
+// resyncDelay is the wait before re-sync retry number attempt (1-based; lower
+// values count as the first retry).
+export function resyncDelay(attempt: number): number {
+  const n = Math.max(1, Math.floor(attempt));
+  // Clamp the exponent so a long outage cannot overflow the product.
+  return Math.min(RESYNC_MAX_MS, RESYNC_BASE_MS * 2 ** Math.min(n - 1, 16));
+}
+
+// LoadTracker holds the ordering and outcome rules for snapshot loads, so they
+// are unit tested without the shell's network and timers. Each load takes a
+// token from begin(). A snapshot applies only when no newer load has applied
+// yet (canApply), and the token is recorded as applied only after a successful
+// apply (applied), so a newer load that FAILS cannot discard an older load's
+// valid snapshot, while a newer load that SUCCEEDS still wins over an older,
+// slower one.
+export class LoadTracker {
+  private readonly gate = new LatestGate();
+  // Latched true once a snapshot has been applied. Until then a consumer cannot
+  // tell an empty log from an unfetched one.
+  private loadedOnce = false;
+  // True while the latest counted load failed and none has succeeded since.
+  private failed = false;
+
+  begin(): number {
+    return this.gate.begin();
+  }
+
+  // canApply reports whether token's snapshot may be applied: only a strictly
+  // newer load that has ALREADY applied supersedes it, not one merely started.
+  canApply(token: number): boolean {
+    return !this.gate.superseded(token);
+  }
+
+  // applied records a successful apply of token's snapshot. Call it only after
+  // canApply returned true with nothing awaited in between.
+  applied(token: number): void {
+    this.gate.accept(token);
+    this.loadedOnce = true;
+    this.failed = false;
+  }
+
+  // fail records a failed load and reports whether it counts: a failure is
+  // ignored once a newer load has applied a snapshot (that success is the
+  // fresher truth). A counted failure reports true every time, so a page
+  // showing a retry in progress learns that it failed again.
+  fail(token: number): boolean {
+    if (this.gate.superseded(token)) return false;
+    this.failed = true;
+    return true;
+  }
+
+  hasLoaded(): boolean {
+    return this.loadedOnce;
+  }
+
+  hasFailed(): boolean {
+    return this.failed;
+  }
 }

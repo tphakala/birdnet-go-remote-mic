@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, writeToClipboard } from "../lib/ui.js";
+import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
 import { captureFormatLabel, channelLabel, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
@@ -681,27 +681,16 @@ export class DashboardView {
     // Streaming enable/disable toggle. A disabled device stays configured but is
     // not opened; toggling persists the flag and a config reload applies it at
     // once, starting or stopping the device. Reuses the shared switch style.
-    const toggleLabel = elem("label", "switch-control device-toggle");
-    toggleLabel.title = "Stream this device (applies immediately)";
-    const toggleInput = document.createElement("input");
-    toggleInput.type = "checkbox";
-    toggleInput.className = "visually-hidden";
-    // role=switch + aria-checked announces "switch, on/off" rather than the bare
-    // "checkbox, checked"; syncCard keeps aria-checked in sync with checked.
-    toggleInput.setAttribute("role", "switch");
+    // The visible "Stream" caption keeps the bare track from reading as an
+    // unlabeled control; it is hidden from assistive tech because syncCard names
+    // the input with an aria-label, and it would otherwise be announced twice.
+    // syncCard also keeps aria-checked in sync with checked.
+    const { el: toggleLabel, input: toggleInput } = switchControl({
+      caption: "Stream",
+      extraClass: "device-toggle",
+      title: "Stream this device (applies immediately)",
+    });
     toggleInput.dataset.focus = "toggle";
-    const toggleTrack = elem("span", "switch-track");
-    toggleTrack.appendChild(elem("span", "switch-thumb"));
-    // Visible caption so the bare track is not an unlabeled control, matching the
-    // System-view discovery switch. Hidden from assistive tech (the input already
-    // carries an aria-label) so it is not announced twice. It sits before the
-    // input so the input stays adjacent to the track for the `input + .switch-track`
-    // state selectors.
-    const toggleCaption = elem("span", "switch-caption", "Stream");
-    toggleCaption.setAttribute("aria-hidden", "true");
-    toggleLabel.appendChild(toggleCaption);
-    toggleLabel.appendChild(toggleInput);
-    toggleLabel.appendChild(toggleTrack);
     tags.appendChild(toggleLabel);
 
     // Settings disclosure. It sits at the right end of the footer, directly

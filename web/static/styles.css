@@ -1687,6 +1687,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   outline-offset: 2px;
 }
 
+/* A route change moves focus to the view's section (tabindex=-1) only so a
+   screen reader announces the page; it is not an interactive control, and a
+   ring around the whole page would be noise. */
+.view-container:focus {
+  outline: none;
+}
+
 /* Text fields glow instead of taking the hard outline: an accent border with a
    soft bloom (--focus-glow) reads as "active" without boxing the field in.
    The transparent outline is not decoration: forced-colors mode (Windows High
@@ -2374,6 +2381,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .stat-tile.tone-error { --tone: var(--signal-crit-text); }
 .stat-tile.tone-warn  { --tone: var(--signal-warn-text); }
 .stat-tile.tone-info  { --tone: var(--signal-ok-text); }
+.stat-tile.tone-ok    { --tone: var(--signal-ok-text); }
 
 .stat-tile.is-action {
   cursor: pointer;
@@ -2480,6 +2488,36 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 .ev-search:focus-within .ev-search-kbd {
   display: none;
+}
+
+/* The search box with its "/" shortcut switch beside it; the switch wraps under
+   the box on a narrow screen. */
+.ev-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.ev-search-row .ev-search {
+  flex: 1 1 260px;
+}
+
+/* A failed snapshot while entries are listed: the log may be incomplete. */
+.ev-load-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--signal-warn);
+  border-radius: var(--radius-md);
+  background: var(--signal-warn-bg);
+}
+.ev-load-notice-text {
+  flex: 1 1 260px;
+  font-size: 12px;
+  color: var(--text-primary);
 }
 
 .ev-facets {
@@ -2725,14 +2763,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   margin-bottom: 6px;
 }
 
-/* Log card footer: the retention note beside the per-browser "/" shortcut
-   switch, wrapping onto two lines on a narrow screen. */
+/* Log card footer: the retention note. */
 .ev-log-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 24px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
 }
@@ -2763,6 +2795,30 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   .stat-tile.is-on:not(:focus-visible) {
     outline: 1px solid Highlight;
     outline-offset: -2px;
+  }
+  /* A pressed control is also filled with the system selection colours, so its
+     state still reads while it is focused, when the focus ring replaces the
+     inset outline above and only the 1px border would be left. The fill opts
+     out of forcing so it is not flattened again; every colour inside is a
+     system keyword, so it still follows the user's theme. */
+  .filter-chip.is-on,
+  .stat-tile.is-on {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .filter-chip.is-on .filter-chip-count,
+  .stat-tile.is-on .stat-tile-label,
+  .stat-tile.is-on .stat-tile-value,
+  .stat-tile.is-on .stat-tile-caption {
+    color: HighlightText;
+  }
+  .filter-chip.is-on .filter-chip-dot {
+    background: HighlightText;
+  }
+  .filter-chip.is-on:focus-visible,
+  .stat-tile.is-on:focus-visible {
+    outline-color: CanvasText;
   }
   .stat-tile.is-alert {
     border-color: CanvasText;

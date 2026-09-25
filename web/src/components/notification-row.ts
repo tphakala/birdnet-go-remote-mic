@@ -33,8 +33,9 @@ export const SEVERITY_LABEL: Record<NotificationSeverity, string> = {
   info: "Info",
 };
 
-// RESTAMP_MS is how often a visible list refreshes its relative "N ago" times, its
-// absolute times and tooltips, and ongoing durations. Times are minute-resolution
+// RESTAMP_MS is how often a visible list refreshes its relative "N ago" times and
+// ongoing durations (and its absolute times and tooltips, when a re-sync moved
+// the clock anchor). Times are minute-resolution
 // above a minute, so a passive list does not need second-accurate updates.
 export const RESTAMP_MS = 15_000;
 
@@ -59,8 +60,8 @@ export interface RowOptions {
 }
 
 // Constructing an Intl formatter is far costlier than formatting with one, and
-// restampRows runs both over every row on each tick, so hoist them to module
-// scope and reuse them. ABS_TIME_FMT matches the old toLocaleTimeString options;
+// every row render and every anchor move format with both, so hoist them to
+// module scope and reuse them. ABS_TIME_FMT matches the old toLocaleTimeString options;
 // FULL_FMT's explicit fields match toLocaleString's numeric default.
 const ABS_TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const FULL_FMT = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" });
@@ -158,6 +159,9 @@ export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLEl
   const atMs = opts.toMs(n.uptimeMs);
   const time = elem("time", "notif-row-time", relTime(atMs, opts.nowMs));
   time.dataset.uptime = String(n.uptimeMs);
+  // The instant the absolute fields below were formatted for; restampRows
+  // re-formats them only when the mapped instant moves.
+  time.dataset.at = String(atMs);
   setDatetime(time, isoTime(atMs));
   time.title = fullTimestamp(atMs);
   if (opts.full) {
@@ -180,16 +184,22 @@ export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLEl
   return row;
 }
 
-// restampRows refreshes every relative time, its datetime and full-timestamp
-// tooltip, the absolute time on full rows, and every ongoing-duration badge under
-// root, so a list left open stays current (including after a re-sync moves the
-// clock anchor) without a full re-render (which would disturb scroll and focus).
-// Every write is diffed, so an unchanged time does not churn the DOM.
+// restampRows refreshes every relative time and every ongoing-duration badge
+// under root, so a list left open stays current without a full re-render (which
+// would disturb scroll and focus). A row's mapped instant moves only when a
+// re-sync moves the clock anchor, so its datetime, full-timestamp tooltip and
+// the absolute time on full rows are re-formatted only when that instant
+// differs from the one the row was last stamped with (data-at); on a plain
+// tick only the relative text is formatted. Every write is diffed, so an
+// unchanged time does not churn the DOM.
 export function restampRows(root: ParentNode, toMs: UptimeToMs): void {
   const nowMs = Date.now();
   root.querySelectorAll<HTMLElement>("time.notif-row-time[data-uptime]").forEach((t) => {
     const atMs = toMs(Number(t.dataset.uptime));
     setText(t, relTime(atMs, nowMs));
+    const at = String(atMs);
+    if (t.dataset.at === at) return;
+    t.dataset.at = at;
     setDatetime(t, isoTime(atMs));
     const full = fullTimestamp(atMs);
     if (t.title !== full) t.title = full;

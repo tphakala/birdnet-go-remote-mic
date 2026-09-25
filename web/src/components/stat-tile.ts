@@ -7,7 +7,9 @@
 
 import { elem, setText } from "../lib/ui.js";
 
-export type TileTone = "error" | "warn" | "info" | "neutral";
+// ok is "all clear", distinct from info (a severity) even where the two share a
+// colour, so the intent reads in the markup and the stylesheet.
+export type TileTone = "error" | "warn" | "info" | "ok" | "neutral";
 
 export interface StatTileOptions {
   label: string;

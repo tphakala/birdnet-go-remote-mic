@@ -23,6 +23,10 @@ declare module "node:assert/strict" {
   export default assert;
 }
 
+// process.env, for the tests that pin the time zone (Node re-reads TZ on
+// assignment).
+declare const process: { env: Record<string, string | undefined> };
+
 declare module "node:fs" {
   export function readFileSync(path: string, encoding: "utf8"): string;
 }
