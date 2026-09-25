@@ -125,9 +125,9 @@ behaviour), the whole advertisement is rebuilt, because
 the responder cannot retire a single service; a retry or hardware change that
 would advertise exactly what is already advertised skips the rebuild. A
 device that dies mid-run stays advertised until the next rebuild (see
-Multi-device behaviour). If the responder cannot start (no network yet at
-boot) or stops, it is restarted with a growing delay (5 s, 30 s, 2 min, then
-every 5 minutes) until it runs. Automatic
+Multi-device behaviour). If the responder cannot start (its socket cannot be
+opened, or registering a name fails), it is retried with a growing delay
+(5 s, 30 s, 2 min, then every 5 minutes) until it runs. Automatic
 discovery on the BirdNET-Go side is not available yet, so for now you add each
 mic in BirdNET-Go by its `host:port` plus path; the advertisement is already in
 place for when that support lands. Set `discovery.enabled: false` to turn the
@@ -254,7 +254,7 @@ DNS label (63 bytes), and the appliance keeps 6 of those free for the
 it advertises at most 57 bytes: a longer device name is cut, keeping the
 stream path it gets for a device with several streams (a path that alone is
 longer is cut too). Names that would then be the same (compared without
-case, as DNS compares them) are kept apart: the later one in config order
+ASCII case, as DNS compares them) are kept apart: the later one in config order
 advertises with a ` #2` suffix (` #3` and so on for more), its name cut
 further to make room.
 

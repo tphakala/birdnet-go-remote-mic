@@ -7,6 +7,7 @@ package announce
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -35,7 +36,7 @@ const (
 
 // Info is what the appliance advertises.
 type Info struct {
-	Name     string // instance name (dnssd renames on conflict)
+	Name     string // instance name; Run adds " #N" to a local duplicate, dnssd renames on a conflict with another host
 	Path     string // RTSP path of this stream, e.g. "/stream"
 	Port     int    // RTSP port
 	Codec    string // "L16" or "opus"
@@ -82,18 +83,30 @@ func distinctNames(infos []Info) []string {
 	taken := make(map[string]bool, len(infos))
 	for i := range infos {
 		name := infos[i].Name
-		for n := 2; taken[strings.ToLower(name)]; n++ {
+		for n := 2; taken[asciiLower(name)]; n++ {
 			suffix := " #" + strconv.Itoa(n)
 			name = CutName(infos[i].Name, NameBudget-len(suffix)) + suffix
 		}
-		taken[strings.ToLower(name)] = true
+		taken[asciiLower(name)] = true
 		names[i] = name
 	}
 	return names
 }
 
+// asciiLower folds ASCII letters only, as DNS compares names (RFC 4343): two
+// names that differ only in the case of a non-ASCII letter are distinct.
+func asciiLower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
 // CutName returns s cut to at most n bytes at a rune boundary (nothing when n
-// is not positive), without a trailing space.
+// is not positive), with the space left at the cut trimmed. A name that fits
+// is returned unchanged.
 func CutName(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -109,12 +122,13 @@ func CutName(s string, n int) string {
 // production.
 var newResponder = dnssd.NewResponder
 
-// responderBackoff is the delay before each restart of a responder that
-// failed, indexed by consecutive failures; the last entry repeats. A responder
-// fails when the host has no usable interface yet (a boot before the network
-// is up) or its interfaces change under it, both of which fix themselves, so
-// it is retried rather than leaving the appliance undiscoverable until the
-// next rebuild of its advertisement.
+// responderBackoff is the delay before each retry of a responder that failed,
+// indexed by consecutive failures; the last entry repeats. A running dnssd
+// responder does not stop on its own (a boot before the network is up, or an
+// interface change, leaves it running), so what fails is starting it: its
+// socket cannot be opened, or registering a service fails (the probe for a
+// name gives up). Both can clear, so the start is retried rather than leaving
+// the appliance undiscoverable until the next rebuild of its advertisement.
 var responderBackoff = [...]time.Duration{
 	5 * time.Second,
 	30 * time.Second,
@@ -131,6 +145,10 @@ const (
 	// about once an hour at the capped delay.
 	responderLogFirst = 3
 	responderLogEvery = 12
+	// responderUp is how long a retried responder must run before Run logs it
+	// as running again. Registering a service gives up within dnssd's 60 s
+	// probe timeout, so one still running after this has registered.
+	responderUp = 2 * time.Minute
 )
 
 // Run advertises every service until ctx is cancelled, at which point dnssd
@@ -138,9 +156,11 @@ const (
 // would collide are kept distinct (see distinctNames). A service the records
 // cannot describe (no services, a bad name) is an error returned at once, so
 // the caller can warn and keep serving without discovery. A responder that
-// cannot start, or stops, is restarted on a backoff until ctx is cancelled,
-// its failures logged without flooding the log, so a network that comes up
-// late or changes does not leave the appliance undiscoverable.
+// fails to start (see responderBackoff) is retried on a backoff until ctx is
+// cancelled, its failures logged without flooding the log and its recovery
+// logged once. The retry reuses the responder once it exists: dnssd has no
+// Close, and only a responder that ran to ctx's end releases its socket, so
+// building one per attempt would leak a socket each time.
 //
 // Known limitation: a device that dies mid-run keeps its advertisement until
 // the caller rebuilds it; clients that discover it get a 404 from the RTSP
@@ -163,53 +183,77 @@ func Run(ctx context.Context, infos []Info) error {
 		}
 		srvs[i] = srv
 	}
-	attempts, failures := 0, 0
-	for {
+	var resp dnssd.Responder
+	failures := 0
+	for ctx.Err() == nil {
 		started := time.Now()
-		err := respond(ctx, srvs)
+		var up *time.Timer
+		if failures > 0 {
+			n := failures
+			up = time.AfterFunc(responderUp, func() {
+				log.Printf("mDNS responder running again after %d failure(s)", n)
+			})
+		}
+		var err error
+		resp, err = respond(ctx, resp, srvs)
+		if up != nil {
+			up.Stop()
+		}
 		select {
 		case <-ctx.Done():
 			// Cancelled: whatever the responder returned is its clean stop.
 			return nil
 		default:
 		}
-		if time.Since(started) >= responderStable {
-			attempts, failures = 0, 0
+		if errors.Is(err, errAdd) {
+			return err
 		}
-		attempts++
+		if time.Since(started) >= responderStable {
+			failures = 0
+		}
 		failures++
-		delay := responderBackoff[min(attempts, len(responderBackoff))-1]
+		delay := responderBackoff[min(failures, len(responderBackoff))-1]
 		if failures <= responderLogFirst || failures%responderLogEvery == 0 {
-			log.Printf("mDNS responder stopped: %v; restarting it in %s (failure %d)", err, delay, failures)
+			log.Printf("mDNS responder could not start: %v; retrying in %s (failure %d)", err, delay, failures)
 		}
 		t := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return nil
 		case <-t.C:
 		}
 	}
+	return nil
 }
 
-// respond runs one responder over srvs until ctx is cancelled or it fails,
-// returning why it stopped. A responder that returns no error while ctx is
-// still live stopped all the same, so that is reported as a failure too.
-func respond(ctx context.Context, srvs []dnssd.Service) error {
-	resp, err := newResponder()
-	if err != nil {
-		return err
-	}
-	for i := range srvs {
-		if _, err := resp.Add(srvs[i]); err != nil {
-			return err
+// respond runs resp over srvs until ctx is cancelled or it fails, building it
+// first when resp is nil, and returns the responder to retry with and why it
+// stopped. A responder that was built is kept for the retry, so its socket is
+// reused rather than leaked (a Respond called again registers what the failed
+// one did not). A responder that returns no error while ctx is still live
+// stopped all the same, so that is reported as a failure too.
+func respond(ctx context.Context, resp dnssd.Responder, srvs []dnssd.Service) (dnssd.Responder, error) {
+	if resp == nil {
+		r, err := newResponder()
+		if err != nil {
+			return nil, err
 		}
+		for i := range srvs {
+			if _, err := r.Add(srvs[i]); err != nil {
+				return nil, fmt.Errorf("%w: %w", errAdd, err)
+			}
+		}
+		resp = r
 	}
 	if err := resp.Respond(ctx); err != nil {
-		return err
+		return resp, err
 	}
-	return errResponderStopped
+	return resp, errResponderStopped
 }
+
+// errAdd marks a service the responder refused, which no retry can fix: Run
+// returns it, as it returns a service the records cannot describe.
+var errAdd = errors.New("announce: responder refused a service")
 
 // errResponderStopped reports a responder that returned without an error
 // while it was still meant to run.

@@ -96,6 +96,7 @@ func TestDistinctNames(t *testing.T) {
 		{"distinct kept", []string{g, "pond"}, []string{g, "pond"}},
 		{"duplicate numbered", []string{g, g, g}, []string{g, g2, g3}},
 		{"case folded", []string{"Garden", g}, []string{"Garden", g2}},
+		{"non-ASCII case kept", []string{"Äänikortti", "äänikortti"}, []string{"Äänikortti", "äänikortti"}},
 		{"numbered name taken", []string{g, g2, g}, []string{g, g2, g3}},
 		{"cut to budget", []string{long, long}, []string{long, long[:NameBudget-3] + " #2"}},
 		{"cut on a rune", []string{umlauts, umlauts}, []string{umlauts, strings.Repeat("ä", (NameBudget-3)/2) + " #2"}},
@@ -119,94 +120,160 @@ func TestDistinctNames(t *testing.T) {
 	}
 }
 
-// fakeResponders builds fake responders: the first fails of them fail at
-// once, the rest block until their context ends. It records every name
-// registered with them.
+// fakeResponders stands in for dnssd. Building a responder fails while
+// buildFails is positive (a socket that cannot be opened); a built
+// responder's Respond fails at once while respondFails is positive (a
+// registration that gives up), otherwise runs until its context ends, or, with
+// runFor set, fails after running that long. It records every build, every
+// Respond, and every name registered.
 type fakeResponders struct {
-	mu    sync.Mutex
-	made  int
-	fails int
-	names []string
+	mu           sync.Mutex
+	made         int
+	responds     int
+	buildFails   int
+	respondFails int
+	runFor       time.Duration
+	addFails     bool
+	names        []string
 }
 
 // fakeResponder is one responder built by fakeResponders.
 type fakeResponder struct {
 	dnssd.Responder
-	r    *fakeResponders
-	fail bool
+	r *fakeResponders
 }
 
 //nolint:gocritic // dnssd.Responder fixes the by-value signature.
 func (f *fakeResponder) Add(srv dnssd.Service) (dnssd.ServiceHandle, error) {
 	f.r.mu.Lock()
 	defer f.r.mu.Unlock()
+	if f.r.addFails {
+		return nil, errTestAdd
+	}
 	f.r.names = append(f.r.names, srv.Name)
 	return nil, nil //nolint:nilnil // the caller ignores the handle
 }
 
 func (f *fakeResponder) Respond(ctx context.Context) error {
-	if f.fail {
-		return errTestNoInterface
+	f.r.mu.Lock()
+	f.r.responds++
+	fail := f.r.respondFails > 0
+	if fail {
+		f.r.respondFails--
+	}
+	runFor := f.r.runFor
+	f.r.mu.Unlock()
+	if fail {
+		return errTestProbe
+	}
+	if runFor > 0 {
+		t := time.NewTimer(runFor)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			return errTestProbe
+		}
 	}
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-var errTestNoInterface = errors.New("no usable interface")
+var (
+	errTestProbe  = errors.New("probe gave up")
+	errTestSocket = errors.New("no socket")
+	errTestAdd    = errors.New("bad service")
+)
 
-func (r *fakeResponders) built() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.made
+// TestRunReturnsRefusedService pins that a service the responder refuses ends
+// Run with an error instead of retrying: no retry can fix it, so the caller
+// warns and serves without discovery.
+func TestRunReturnsRefusedService(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		withResponders(t, &fakeResponders{addFails: true})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			done <- Run(ctx, []Info{{Name: testMic, Path: "/a", Port: 18999, Codec: testCodec, Rate: 48000, Channels: 1}})
+		}()
+		// Past several backoff delays, so a Run that retried the refused
+		// service would still be retrying.
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, errTestAdd) {
+				t.Errorf("got Run error %v, want the refused service's", err)
+			}
+		default:
+			t.Error("Run is still retrying a service the responder refused")
+			cancel()
+			<-done
+		}
+	})
 }
 
-// withResponders swaps the responder seam for fakes whose first fails
-// responders fail. A test using it does not run in parallel: the seam is
-// package state.
-func withResponders(t *testing.T, fails int) *fakeResponders {
+// counts returns how many responders were built and how many Respond calls
+// were made.
+func (r *fakeResponders) counts() (made, responds int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.made, r.responds
+}
+
+// withResponders swaps the responder seam for fakes. A test using it does not
+// run in parallel: the seam is package state.
+func withResponders(t *testing.T, r *fakeResponders) *fakeResponders {
 	t.Helper()
-	r := &fakeResponders{fails: fails}
 	prev := newResponder
 	newResponder = func() (dnssd.Responder, error) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		if r.buildFails > 0 {
+			r.buildFails--
+			return nil, errTestSocket
+		}
 		r.made++
-		return &fakeResponder{r: r, fail: r.made <= r.fails}, nil
+		return &fakeResponder{r: r}, nil
 	}
 	t.Cleanup(func() { newResponder = prev })
 	return r
 }
 
-// TestRunRestartsFailedResponder pins that a responder that cannot start is
-// restarted on the backoff until one runs, so an appliance booted before its
-// network is up becomes discoverable without a rebuild of its advertisement,
-// and that the services it registers carry distinct names.
-func TestRunRestartsFailedResponder(t *testing.T) {
+// TestRunRetriesFailedResponder pins that a responder that cannot start is
+// retried on the backoff until one runs, and that a built responder is reused
+// for the retry: dnssd has no Close, so building one per attempt would leak its
+// socket. The services it registers carry distinct names.
+func TestRunRetriesFailedResponder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r := withResponders(t, 2)
+		r := withResponders(t, &fakeResponders{buildFails: 1, respondFails: 2})
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		info := Info{Name: testMic, Path: "/a", Port: 18999, Codec: testCodec, Rate: 48000, Channels: 1}
 		go func() { done <- Run(ctx, []Info{info, info}) }()
 		synctest.Wait()
-		if got := r.built(); got != 1 {
-			t.Fatalf("got %d responders at start, want 1", got)
+		if made, responds := r.counts(); made != 0 || responds != 0 {
+			t.Fatalf("after a failed build: %d built, %d Respond calls; want none", made, responds)
 		}
-		time.Sleep(responderBackoff[0])
-		synctest.Wait()
-		if got := r.built(); got != 2 {
-			t.Fatalf("got %d responders after the first delay, want 2", got)
+		steps := []struct{ made, responds int }{
+			{1, 1}, // built, its registration fails
+			{1, 2}, // the same responder retried, fails again
+			{1, 3}, // the same responder retried, runs
 		}
-		time.Sleep(responderBackoff[1])
-		synctest.Wait()
-		if got := r.built(); got != 3 {
-			t.Fatalf("got %d responders after the second delay, want 3", got)
+		for i, want := range steps {
+			time.Sleep(responderBackoff[i])
+			synctest.Wait()
+			if made, responds := r.counts(); made != want.made || responds != want.responds {
+				t.Fatalf("after delay %d: %d built, %d Respond calls; want %d and %d", i+1, made, responds, want.made, want.responds)
+			}
 		}
-		// The third runs, and nothing is rebuilt while it does.
+		// It runs, and nothing is retried or rebuilt while it does.
 		time.Sleep(time.Hour)
 		synctest.Wait()
-		if got := r.built(); got != 3 {
-			t.Errorf("got %d responders while one runs, want 3", got)
+		if made, responds := r.counts(); made != 1 || responds != 3 {
+			t.Errorf("while one runs: %d built, %d Respond calls; want 1 and 3", made, responds)
 		}
 		cancel()
 		if err := <-done; err != nil {
@@ -214,26 +281,57 @@ func TestRunRestartsFailedResponder(t *testing.T) {
 		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if want := []string{testMic, testMic + " #2"}; len(r.names) < 2 || !slices.Equal(r.names[len(r.names)-2:], want) {
-			t.Errorf("got registered names %q, want the running responder's to be %q", r.names, want)
+		if want := []string{testMic, testMic + " #2"}; !slices.Equal(r.names, want) {
+			t.Errorf("got registered names %q, want %q once", r.names, want)
 		}
 	})
 }
 
-// TestRunCancelDuringBackoff pins that a cancel while Run waits to restart a
-// failed responder ends it cleanly.
+// TestRunBackoffRestartsAfterStableRun pins that a responder that ran for
+// responderStable before failing starts the backoff over from the shortest
+// delay, rather than climbing on from the failures before it.
+func TestRunBackoffRestartsAfterStableRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := withResponders(t, &fakeResponders{respondFails: 1, runFor: responderStable})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go func() {
+			_ = Run(ctx, []Info{{Name: testMic, Path: "/a", Port: 18999, Codec: testCodec, Rate: 48000, Channels: 1}})
+		}()
+		// The first Respond fails at once; the second, one delay later, runs
+		// for responderStable and then fails. Having run that long, it is
+		// retried after the shortest delay again, not the second.
+		time.Sleep(responderBackoff[0] + responderStable + responderBackoff[0])
+		synctest.Wait()
+		if _, responds := r.counts(); responds != 3 {
+			t.Errorf("got %d Respond calls one shortest delay after a stable run failed, want 3", responds)
+		}
+	})
+}
+
+// TestRunCancelDuringBackoff pins that a cancel while Run waits to retry a
+// failed responder ends it at once, without waiting out the delay or starting
+// another attempt.
 func TestRunCancelDuringBackoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		withResponders(t, 1<<30)
+		r := withResponders(t, &fakeResponders{respondFails: 1 << 30})
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() {
 			done <- Run(ctx, []Info{{Name: testMic, Path: "/a", Port: 18999, Codec: testCodec, Rate: 48000, Channels: 1}})
 		}()
 		synctest.Wait()
+		_, before := r.counts()
+		start := time.Now()
 		cancel()
 		if err := <-done; err != nil {
 			t.Errorf("got Run error %v, want nil on cancel", err)
+		}
+		if waited := time.Since(start); waited != 0 {
+			t.Errorf("Run returned %s after the cancel, want at once (it waited out the backoff)", waited)
+		}
+		if _, after := r.counts(); after != before {
+			t.Errorf("got %d Respond calls after the cancel, want none", after-before)
 		}
 	})
 }

@@ -941,8 +941,9 @@ func newServeReloader(ctx context.Context, reconcileCh chan<- reconcileReq, ov s
 // startAnnounce advertises every serving device over mDNS in the background.
 // Failure is logged, not fatal: the appliance still serves on a
 // multicast-blocked network, where the manual host:port entry is the fallback.
-// A device that dies later keeps its advertisement until the process exits
-// (dnssd cannot retire a single service); clients get 404. It is a package var
+// A device that dies later keeps its advertisement until the advertisement is
+// next rebuilt (see appliance.restartAnnounce; dnssd cannot retire a single
+// service); clients get 404 meanwhile. It is a package var
 // so reconcile tests can swap in a stub and assert announceGen without a real
 // responder multicasting on the test host's LAN.
 var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRuntime, authRequired bool) {
