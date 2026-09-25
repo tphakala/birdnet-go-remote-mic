@@ -43,6 +43,14 @@ export function captureFormatLabel(token: string): string {
   }
 }
 
+// needsNotificationsFallback reports whether the app should load the
+// notifications snapshot directly once the post-boot or post-login grace has
+// passed: when none has loaded, or when the stream is still down (a previous
+// session's snapshot is not fresh, and only a connected stream re-syncs it).
+export function needsNotificationsFallback(hasLoaded: boolean, connected: boolean): boolean {
+  return !hasLoaded || !connected;
+}
+
 // bannerIsError reports whether a non-serving device's banner shows the error
 // icon rather than the warning one. A failed device does, except one that was
 // unplugged: it is waiting to be reconnected, not broken.

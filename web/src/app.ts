@@ -7,6 +7,7 @@ import { NotificationStore } from "./lib/notifications.js";
 import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
+import { needsNotificationsFallback } from "./lib/dashboard-core.js";
 
 const THEME_KEY = "remote-mic-theme";
 
@@ -45,7 +46,7 @@ class App {
     // re-login the previous session's snapshot would otherwise count as fresh.
     const armNotificationsFallback = (): void => {
       window.setTimeout(() => {
-        if (!notifications.hasLoaded() || !store.getState().connected) void notifications.load();
+        if (needsNotificationsFallback(notifications.hasLoaded(), store.getState().connected)) void notifications.load();
       }, NOTIFICATIONS_FALLBACK_MS);
     };
     store.addEventListener("authok", armNotificationsFallback);

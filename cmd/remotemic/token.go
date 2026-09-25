@@ -561,7 +561,7 @@ func checkOwner(cfgPath, command string, args []string) error {
 	// sudo takes a numeric uid as '#uid' when the account has no name here.
 	who, sudoUser := "uid "+uid, "'#"+uid+"'"
 	if u, err := user.LookupId(uid); err == nil && u.Username != "" {
-		who, sudoUser = fmt.Sprintf("%q (uid %s)", u.Username, uid), u.Username
+		who, sudoUser = fmt.Sprintf("%q (uid %s)", u.Username, uid), shellQuote(u.Username)
 	}
 	return fmt.Errorf("%s is owned by %s; run this command as that account: sudo -u %s %s",
 		what, who, sudoUser, rerunCommand(command, args, cfgPath))
@@ -579,6 +579,7 @@ func rerunCommand(command string, args []string, cfgPath string) string {
 		case a == "--config" || a == "-config":
 			i++ // drop the value too
 		case strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "-config="):
+		case a == "--": // nothing may follow it, and --config is appended below
 		default:
 			parts = append(parts, shellQuote(a))
 		}

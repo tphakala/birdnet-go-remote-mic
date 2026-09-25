@@ -307,8 +307,9 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 // another id and one that has left the host, so the detected view tells them
 // apart: gone (404), not owned under another id (409). Both views come from
 // the last background enumeration, so a device unplugged moments ago may still
-// read as available and be provisioned; it then shows as not connected and
-// starts when plugged back in, as any configured device does.
+// read as available and be provisioned; it then shows as not connected, like
+// any configured device that is unplugged (and, bound by a stable id, starts
+// when plugged back in).
 func (s *Server) unavailable(id string) mgmtapi.ProvisionDeviceResponseObject {
 	if slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool { return ad.ID == id }) {
 		return nil

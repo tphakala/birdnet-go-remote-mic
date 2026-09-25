@@ -7,7 +7,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../src/lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, needsNotificationsFallback, tallyStates } from "../src/lib/dashboard-core.js";
+
+test("needsNotificationsFallback loads when nothing loaded or the stream is down", () => {
+  assert.equal(needsNotificationsFallback(true, true), false); // healthy: the connect re-sync loaded it
+  assert.equal(needsNotificationsFallback(false, true), true); // connected but the re-sync has not landed
+  assert.equal(needsNotificationsFallback(true, false), true); // a previous session's snapshot, stream down
+  assert.equal(needsNotificationsFallback(false, false), true);
+});
 
 test("bannerIsError: a failed device is an error unless it was unplugged", () => {
   assert.equal(bannerIsError("failed", "failed"), true);

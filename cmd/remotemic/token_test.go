@@ -998,6 +998,8 @@ func TestRerunCommand(t *testing.T) {
 	}{
 		{"flags kept", []string{"--force", "--config", cfg}, cfg, "remote-mic token generate --force --config " + cfg},
 		{"equals form dropped", []string{"-config=/x.yaml", "-quiet"}, "/x.yaml", "remote-mic token generate -quiet --config /x.yaml"},
+		{"double-dash equals form dropped", []string{"--config=/x.yaml", "-force"}, "/x.yaml", "remote-mic token generate -force --config /x.yaml"},
+		{"terminator dropped", []string{"-force", "--"}, cfg, "remote-mic token generate -force --config " + cfg},
 		{"no config flag", nil, cfg, "remote-mic token generate --config " + cfg},
 		{"quoted path", nil, "/tmp/my dir/it's.yaml", `remote-mic token generate --config '/tmp/my dir/it'\''s.yaml'`},
 	} {
