@@ -36,7 +36,9 @@ import (
 const pumpBacklog = 64
 
 // pumpResult reports a device's capture pump goroutine ending, with the error
-// that stopped it (nil on a clean EOF or a deliberate stop).
+// that stopped it. A deliberate stop may still carry an error (a real capture
+// returns capture.ErrClosed once closed), so onPumpDone decides by superseded
+// and the appliance context, never by a nil error.
 type pumpResult struct {
 	rt  *deviceRuntime
 	err error
@@ -406,8 +408,8 @@ func (a *appliance) runningParams() map[string]config.Device {
 func (a *appliance) pump(rt *deviceRuntime) {
 	runtime.LockOSThread()
 	var wg sync.WaitGroup
-	// stageErr records the first spontaneous per-stream pipeline fault so it can be
-	// reported as the pump's result when the fan-out itself ended cleanly.
+	// stageErr records the first spontaneous per-stream pipeline fault, which is
+	// reported as the pump's result in place of the fan-out's error.
 	var stageOnce sync.Once
 	var stageErr error
 	var faultPath string
@@ -448,9 +450,11 @@ func (a *appliance) pump(rt *deviceRuntime) {
 	// A stage fault that ended the device is the pump result, whatever the
 	// fan-out's read returned after the stage closed it: a real capture reports
 	// capture.ErrClosed once closed, not EOF, so keying on a clean fan-out end
-	// would hide every encode fault on hardware. A stage faults only on its own;
-	// when the capture fails first every stage sees its source end and returns
-	// nil, so stageErr is set only for a genuine stage fault.
+	// would hide every encode fault on hardware. A stage faults only on its own:
+	// when the capture fails first, each stage drains its queued periods, sees
+	// its source end and normally returns nil, so stageErr is set only for a
+	// genuine stage fault (one on a queued period can still win over the
+	// capture error, an unlikely double fault).
 	res := pumpResult{rt: rt, err: perr}
 	if stageErr != nil {
 		res.err, res.faultPath = stageErr, faultPath

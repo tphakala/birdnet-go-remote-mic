@@ -89,7 +89,8 @@ func NewFanout(src Source, name string, streams []FanoutStream) (*Fanout, []Sour
 // Run reads the upstream source until it ends, copying each period and handing
 // the copy to every active consumer that can accept it without blocking (an idle
 // consumer gets an empty period instead). It returns when the source ends: nil
-// on a clean EOF (a deliberate Close) or the source's error. On return it closes
+// on EOF, else the source's error (a real capture closed on purpose returns
+// capture.ErrClosed, not EOF). On return it closes
 // every consumer feed so each consumer's Read reports EOF and its pipeline
 // goroutine exits. Run is the sole reader of src and the sole closer of the
 // consumer channels, so no lock is needed.

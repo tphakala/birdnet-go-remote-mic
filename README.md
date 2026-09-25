@@ -382,9 +382,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
 - A device that fails to open, is not connected, or whose id is ambiguous is
   logged and skipped. While the management API is serving (it is enabled by
   default) the process stays up so its status API keeps reporting every
-  skipped device and its open error, even when no device opens at all. With management disabled, or while its API has not come up yet,
-  there is nothing to keep alive, so a total open failure exits nonzero and lets
-  a supervisor restart the process.
+  skipped device and its open error, even when no device opens at all. With
+  management disabled, or while its API has not come up yet, there is nothing
+  to keep alive, so a total open failure exits nonzero and lets a supervisor
+  restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
   while the other devices keep serving. The appliance rescans the host's
   capture hardware every 15 seconds, and when the set of devices changes it
