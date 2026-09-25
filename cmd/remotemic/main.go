@@ -5,6 +5,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -358,54 +359,119 @@ func lockState(pid int, mgmtAddr, certPath string) runlock.State {
 	return runlock.State{PID: pid, MgmtAddr: mgmtAddr, CertPath: certPath}
 }
 
-// publishRunLock records this process in the run lock, with the management
-// API's endpoint when ep is non-nil (nil means no API is serving, so no API
-// handler can rewrite the config file). A write failure is logged, not fatal.
-func publishRunLock(lock *runlock.Lock, cfgPath string, ep *mgmtEndpoint) {
-	st := runlock.State{PID: os.Getpid()}
+// runLockState is the run-lock state recording this process, with the
+// management API's endpoint when ep is non-nil (nil means no API is serving,
+// so no API handler can rewrite the config file).
+func runLockState(ep *mgmtEndpoint) runlock.State {
+	pid := os.Getpid()
 	if ep != nil {
-		st = lockState(st.PID, ep.addr, ep.certPath)
+		return lockState(pid, ep.addr, ep.certPath)
 	}
-	if err := lock.Publish(st); err != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), err)
-	}
+	return runlock.State{PID: pid}
 }
 
-// runLockPublisher writes the run lock for run() at startup and for the
-// management supervisor, which publishes from its own goroutine so the lock
-// tracks each API transition (up, stopped, a background attempt) as it
-// happens. The mutex keeps a write from interleaving with another. A nil
-// *runLockPublisher is a no-op, for tests that drive the retry without a lock.
+// runLockRetryDelay is how long runLockPublisher waits before rewriting a run
+// lock whose last write failed.
+const runLockRetryDelay = 30 * time.Second
+
+// runLockPublisher writes the run lock for run() and for the management
+// supervisor, which publishes from its own goroutine so the lock tracks each
+// API transition (up, stopped, a background attempt) as it happens. The mutex
+// keeps a write from interleaving with another.
+//
+// A failed write can leave the lock empty (Publish truncates before it
+// writes), which the token commands read as "starting up" for as long as it
+// stays that way. So the publisher remembers the state it wants published and,
+// after a failure, rewrites the latest one every runLockRetryDelay until a
+// write succeeds, logging the first failure and the recovery rather than every
+// attempt. A nil *runLockPublisher is a no-op, for tests that drive the retry
+// without a lock.
 type runLockPublisher struct {
 	mu      sync.Mutex
 	lock    *runlock.Lock
 	cfgPath string
+	// write replaces lock.Publish when non-nil, for tests.
+	write func(runlock.State) error
+	// retryDelay replaces runLockRetryDelay when non-zero, for tests.
+	retryDelay time.Duration
+
+	want    runlock.State // the latest state asked for
+	failing bool          // the last write failed; a retry is pending
+	retry   *time.Timer
+	stopped bool
 }
 
 // publish records this process in the run lock, with the management API's
-// endpoint when ep is non-nil (see publishRunLock).
+// endpoint when ep is non-nil (see runLockState).
 func (p *runLockPublisher) publish(ep *mgmtEndpoint) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	publishRunLock(p.lock, p.cfgPath, ep)
+	p.set(runLockState(ep))
 }
 
 // starting marks the appliance as starting up in the run lock, while a
 // background attempt reloads the config file and brings the API up. A token
 // command reading the lock then asks the operator to try again rather than
 // editing a file the attempt may already have read, which the API it brings up
-// would later overwrite. A write failure is logged, not fatal.
+// would later overwrite.
 func (p *runLockPublisher) starting() {
+	p.set(runlock.State{})
+}
+
+// set makes st the state the lock should hold and writes it.
+func (p *runLockPublisher) set(st runlock.State) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err := p.lock.Publish(runlock.State{}); err != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v (token commands may edit the config file during this management API attempt)", runlock.PathFor(p.cfgPath), err)
+	p.want = st
+	p.flush()
+}
+
+// flush writes p.want, arming a retry when the write fails. p.mu is held.
+func (p *runLockPublisher) flush() {
+	if p.stopped {
+		return
+	}
+	if p.retry != nil {
+		p.retry.Stop()
+		p.retry = nil
+	}
+	write := p.write
+	if write == nil {
+		write = p.lock.Publish
+	}
+	err := write(p.want)
+	if err == nil {
+		if p.failing {
+			log.Printf("run lock %s written again", runlock.PathFor(p.cfgPath))
+			p.failing = false
+		}
+		return
+	}
+	delay := cmp.Or(p.retryDelay, runLockRetryDelay)
+	if !p.failing {
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands may misread this appliance's state; retrying every %s)", runlock.PathFor(p.cfgPath), err, delay)
+		p.failing = true
+	}
+	p.retry = time.AfterFunc(delay, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.flush()
+	})
+}
+
+// stop ends the publisher before run() releases the lock: no further write,
+// and no pending retry.
+func (p *runLockPublisher) stop() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
+	if p.retry != nil {
+		p.retry.Stop()
+		p.retry = nil
 	}
 }
 
@@ -564,12 +630,17 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
 	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath}
-	// Publish this process with no API before management starts: from then on
-	// the management supervisor publishes where its API listens, or that none
-	// serves, so a write here after it started could erase its endpoint. When
-	// management is disabled, this no-API state stays, which also means no API
-	// handler can rewrite the config file.
-	runLock.publish(nil)
+	defer runLock.stop()
+	// With management disabled, publish this process with no API: the token
+	// commands edit the file directly, and no API handler can rewrite it. With
+	// management enabled, startManagement publishes the first state itself
+	// (where its API listens, or that none serves) before its supervisor can
+	// publish, so the order is structural; until then the lock reads as
+	// starting, so a token command asks the operator to retry instead of
+	// editing a file the API is about to be seeded from.
+	if !mgmtEnabled {
+		runLock.publish(nil)
+	}
 	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
 	// only when a request asks, so an appliance with no browser open does no
 	// sampling work at all. It exists only while the management API is enabled (its
@@ -641,28 +712,13 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// up later. When the API is not serving (management disabled, or it failed to
 	// start or stopped and its supervisor has not brought it back) there is
 	// nothing to keep alive, so a total open failure is fatal and lets systemd
-	// restart the process. A deliberate all-disabled config is reported
-	// distinctly, since a restart cannot clear it. Both exit decisions read the
-	// supervisor's state when they are made, so an API it brought back a moment
-	// ago counts. They are made only here and when a pump ends: an API that
-	// stops, or whose retry ends, after the last pump already ended leaves the
-	// process up, not what a fresh start would decide. It recovers in process
-	// while a retry can still bring something back (the API retry, a down
-	// device that is still present, a hotplug of one bound by stable id), but
-	// once the config file disabled management and no device can come back
-	// unattended (a card-index device waits for a config save), it idles until
-	// restarted.
-	if app.serving() == 0 && management.serving() == nil {
-		if app.allDisabled() {
-			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
-		}
-		if mgmtEnabled {
-			// The API's own retry was just logged as running in the background, but
-			// exiting ends it; name both failures, so the log does not read as if
-			// only the devices were at fault.
-			return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above)")
-		}
-		return errors.New("no configured capture device could be opened")
+	// restart the process (see startupExit). Every exit decision reads the
+	// supervisor's state when it is made, so an API it brought back a moment ago
+	// counts, and the run loop retakes it whenever that state can turn against
+	// staying up: when a pump ends, and when the API stops on its own or its
+	// retry gives up (see runExit).
+	if err := startupExit(app.serving(), management.serving() != nil, app.allDisabled(), mgmtEnabled); err != nil {
+		return err
 	}
 
 	srvErr := make(chan error, 1)
@@ -706,11 +762,12 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
-			if app.alive == 0 && management.serving() == nil {
-				if app.lastPumpErr != nil {
-					return fmt.Errorf("all capture devices stopped, last error: %w", app.lastPumpErr)
-				}
-				return nil
+			if exit, err := runExit(app.alive, management.serving() != nil, app.lastPumpErr, false); exit {
+				return err
+			}
+		case <-management.lostC():
+			if exit, err := runExit(app.alive, management.serving() != nil, app.lastPumpErr, true); exit {
+				return err
 			}
 		case serr := <-srvErr:
 			if serr != nil {
@@ -722,6 +779,49 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			shutdown()
 			return nil
 		}
+	}
+}
+
+// startupExit is run()'s exit decision after the initial reconcile: nil keeps
+// the appliance up, an error ends it. With a device serving, or with an API
+// serving as a diagnostic surface, it stays up. Otherwise a deliberate
+// all-disabled config is reported distinctly, since a restart cannot clear it,
+// and a total open failure names the management failure too when management is
+// enabled: the API's retry was just logged as running in the background, but
+// exiting ends it, so the log must not read as if only the devices were at
+// fault.
+func startupExit(serving int, apiServing, allDisabled, mgmtEnabled bool) error {
+	switch {
+	case serving > 0 || apiServing:
+		return nil
+	case allDisabled:
+		return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
+	case mgmtEnabled:
+		return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above)")
+	default:
+		return errors.New("no configured capture device could be opened")
+	}
+}
+
+// runExit is the run loop's exit decision, taken when a pump ends and, with
+// apiLost, when the management API stopped on its own or its retry gave up.
+// The appliance stays up while a capture pump is alive or an API serves;
+// otherwise nothing keeps it up, and exiting lets systemd restart it, as a
+// fresh start would decide. An appliance whose last pump ended exits cleanly
+// unless a pump failed; one that lost its API names that, since the API was
+// what kept it up.
+func runExit(alive int, apiServing bool, lastPumpErr error, apiLost bool) (exit bool, err error) {
+	switch {
+	case alive > 0 || apiServing:
+		return false, nil
+	case apiLost && lastPumpErr != nil:
+		return true, fmt.Errorf("no capture device is serving and the management API that kept the appliance up is gone, last device error: %w", lastPumpErr)
+	case apiLost:
+		return true, errors.New("no capture device is serving and the management API that kept the appliance up is gone")
+	case lastPumpErr != nil:
+		return true, fmt.Errorf("all capture devices stopped, last error: %w", lastPumpErr)
+	default:
+		return true, nil
 	}
 }
 

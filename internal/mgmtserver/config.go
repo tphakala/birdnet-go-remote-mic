@@ -211,7 +211,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 		s.guard.Set(cur.Auth.Token)
 		nowEnabled, genAfter := s.guard.Snapshot()
 		if genAfter != genBefore && s.notifier != nil {
-			s.notifier.Publish(authChangedNotification(wasEnabled, nowEnabled))
+			s.notifier.Publish(AuthChangedNotification(wasEnabled, nowEnabled))
 		}
 	}
 
@@ -244,16 +244,9 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 		} else {
 			restartRequired = false
 			// The running pipeline now matches the persisted config, so clear any
-			// restart-required condition an earlier failed hot reload raised. This is
-			// a normal condition end (the change applied), not a vanished subject, so
-			// Clear carries a specific message rather than Resolve's generic one.
-			// Clear is a no-op when the condition is not active.
+			// restart-required condition an earlier failed hot reload raised.
 			if s.notifier != nil {
-				s.notifier.Clear(configRestartKey, notify.Notification{
-					Severity: notify.SeverityInfo,
-					Title:    "Restart no longer required",
-					Message:  "The configuration was applied live, so the pending restart is no longer needed.",
-				})
+				ClearRestartRequired(s.notifier)
 			}
 		}
 	}
@@ -277,11 +270,27 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	}, nil
 }
 
-// authChangedNotification builds the config.auth_changed event from the guard's
+// ClearRestartRequired ends the restart-required condition a failed hot reload
+// raised, once a config was applied live so the running pipeline matches the
+// persisted one. It is a normal condition end (the change applied), not a
+// vanished subject, so Clear carries a specific message rather than Resolve's
+// generic one. Clear is a no-op when the condition is not active. The appliance
+// also calls it when it applies a config file edited while the API was down.
+func ClearRestartRequired(p notify.Publisher) {
+	p.Clear(configRestartKey, notify.Notification{
+		Severity: notify.SeverityInfo,
+		Title:    "Restart no longer required",
+		Message:  "The configuration was applied live, so the pending restart is no longer needed.",
+	})
+}
+
+// AuthChangedNotification builds the config.auth_changed event from the guard's
 // enabled state before and after a token change. The generation moved, so the
 // token is not unchanged: it was enabled (open to protected), disabled (protected
-// to open), or rotated (a new token while it stayed protected).
-func authChangedNotification(wasEnabled, nowEnabled bool) notify.Notification {
+// to open), or rotated (a new token while it stayed protected). The appliance
+// also publishes it when a config file edited while the API was down changes
+// the token.
+func AuthChangedNotification(wasEnabled, nowEnabled bool) notify.Notification {
 	var msg string
 	switch {
 	case !wasEnabled && nowEnabled:

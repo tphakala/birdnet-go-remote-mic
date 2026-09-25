@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // gzipGET compresses the response to a GET (or HEAD) for exactly path when the
@@ -22,57 +23,104 @@ import (
 // built per request. Reset also clears the error a previous response left
 // behind when its client went away mid-body.
 func gzipGET(path string, next http.Handler) http.Handler {
-	pool := sync.Pool{New: func() any {
+	return newGzipHandler(path, next)
+}
+
+// gzipHandler is gzipGET's handler. news counts the writers the pool built,
+// so a test can see that a writer is reused.
+type gzipHandler struct {
+	path string
+	next http.Handler
+	pool sync.Pool
+	news atomic.Int64
+}
+
+func newGzipHandler(path string, next http.Handler) *gzipHandler {
+	h := &gzipHandler{path: path, next: next}
+	h.pool.New = func() any {
+		h.news.Add(1)
 		// Only an invalid level fails, and BestSpeed is valid.
 		gz, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
 		return gz
-	}}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// HEAD answers with GET's headers (RFC 9110 section 9.3.2), so it takes the
-		// same branch; net/http discards the body bytes of a HEAD response.
-		if (r.Method != http.MethodGet && r.Method != http.MethodHead) || r.URL.Path != path {
-			next.ServeHTTP(w, r)
-			return
-		}
-		// A cache between client and appliance must key on the encoding, whichever
-		// one this request gets.
-		w.Header().Add("Vary", "Accept-Encoding")
-		if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		// The pool's New only ever returns *gzip.Writer.
-		gz := pool.Get().(*gzip.Writer)
-		gz.Reset(w)
-		w.Header().Set("Content-Encoding", "gzip")
-		gw := &gzipResponseWriter{ResponseWriter: w, gz: gz}
-		next.ServeHTTP(gw, r)
+	}
+	return h
+}
+
+func (h *gzipHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// HEAD answers with GET's headers (RFC 9110 section 9.3.2), so it takes the
+	// same branch; net/http discards the body bytes of a HEAD response.
+	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || r.URL.Path != h.path {
+		h.next.ServeHTTP(w, r)
+		return
+	}
+	// A cache between client and appliance must key on the encoding, whichever
+	// one this request gets.
+	w.Header().Add("Vary", "Accept-Encoding")
+	if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		h.next.ServeHTTP(w, r)
+		return
+	}
+	// The pool's New only ever returns *gzip.Writer.
+	gz := h.pool.Get().(*gzip.Writer)
+	gz.Reset(w)
+	gw := &gzipResponseWriter{ResponseWriter: w, gz: gz}
+	h.next.ServeHTTP(gw, r)
+	if !gw.wroteHeader {
+		// A handler that wrote nothing still answers 200, with an empty
+		// compressed body.
+		gw.WriteHeader(http.StatusOK)
+	}
+	if !gw.plain {
 		// Close flushes the trailer. A write error here means the client went
 		// away mid-body; there is nobody left to report it to, and the next
 		// Reset clears it.
 		_ = gz.Close()
-		// Detach from the finished response before pooling, so an idle pool does
-		// not keep it (and its request, bearer token included) reachable.
-		gz.Reset(io.Discard)
-		pool.Put(gz)
-	})
+	}
+	// Detach from the finished response before pooling, so an idle pool does
+	// not keep it (and its request, bearer token included) reachable.
+	gz.Reset(io.Discard)
+	h.pool.Put(gz)
 }
 
-// gzipResponseWriter routes the body through the gzip writer. WriteHeader drops
-// any Content-Length the handler set, since it would describe the uncompressed
-// body.
+// gzipResponseWriter routes the body through the gzip writer. The encoding is
+// decided when the status is written: a status that carries no body (204,
+// 304) is sent as is, since a Content-Encoding header and a gzip trailer on it
+// would be wrong; any other drops the Content-Length the handler set, which
+// would describe the uncompressed body.
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gz *gzip.Writer
+	gz          *gzip.Writer
+	wroteHeader bool
+	plain       bool // the status carries no body, so nothing is compressed
 }
 
 func (g *gzipResponseWriter) WriteHeader(status int) {
-	g.Header().Del("Content-Length")
+	if g.wroteHeader {
+		g.ResponseWriter.WriteHeader(status)
+		return
+	}
+	// An informational status is not the final response.
+	if status >= http.StatusContinue && status < http.StatusOK {
+		g.ResponseWriter.WriteHeader(status)
+		return
+	}
+	g.wroteHeader = true
+	if status == http.StatusNoContent || status == http.StatusNotModified {
+		g.plain = true
+	} else {
+		g.Header().Set("Content-Encoding", "gzip")
+		g.Header().Del("Content-Length")
+	}
 	g.ResponseWriter.WriteHeader(status)
 }
 
 func (g *gzipResponseWriter) Write(p []byte) (int, error) {
-	g.Header().Del("Content-Length")
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.plain {
+		return g.ResponseWriter.Write(p)
+	}
 	return g.gz.Write(p)
 }
 

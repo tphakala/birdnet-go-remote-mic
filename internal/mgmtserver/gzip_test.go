@@ -182,8 +182,8 @@ func TestNotificationsHeadMatchesGet(t *testing.T) {
 	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
 		t.Errorf("HEAD Vary = %q, want it to name Accept-Encoding", got)
 	}
-	// The headers above are set before the handler runs, so they alone would
-	// also pass on an error answer; HEAD must reach the snapshot handler.
+	// The headers above would also pass on an error answer with a body; HEAD
+	// must reach the snapshot handler.
 	if rec.Code != http.StatusOK {
 		t.Errorf("HEAD status = %d, want 200", rec.Code)
 	}
@@ -251,5 +251,45 @@ func TestGzipDropsContentLength(t *testing.T) {
 	raw, err := io.ReadAll(zr)
 	if err != nil || string(raw) != body {
 		t.Errorf("decompressed body = %q (err %v), want the handler's body", raw, err)
+	}
+}
+
+// TestGzipBodylessStatusStaysPlain pins that a status that carries no body
+// (204, 304) goes out without a Content-Encoding header or a gzip trailer,
+// while a handler that writes nothing at all still answers a valid (empty)
+// gzip body.
+func TestGzipBodylessStatusStaysPlain(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusNoContent, http.StatusNotModified} {
+		inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
+		req.Header.Set("Accept-Encoding", encGzip)
+		rec := httptest.NewRecorder()
+		gzipGET("/x", inner).ServeHTTP(rec, req)
+		if rec.Code != status {
+			t.Errorf("status = %d, want %d", rec.Code, status)
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Errorf("%d: Content-Encoding = %q, want none", status, got)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("%d: body has %d bytes, want none", status, rec.Body.Len())
+		}
+	}
+
+	silent := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
+	req.Header.Set("Accept-Encoding", encGzip)
+	rec := httptest.NewRecorder()
+	gzipGET("/x", silent).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Encoding"); rec.Code != http.StatusOK || got != encGzip {
+		t.Fatalf("silent handler: status %d, Content-Encoding %q; want 200 gzip", rec.Code, got)
+	}
+	zr, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("silent handler body is not gzip: %v", err)
+	}
+	if raw, err := io.ReadAll(zr); err != nil || len(raw) != 0 {
+		t.Errorf("silent handler body = %q (err %v), want empty", raw, err)
 	}
 }

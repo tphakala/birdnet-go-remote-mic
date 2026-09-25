@@ -3,8 +3,11 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
@@ -34,7 +37,8 @@ func TestPublishRunLock(t *testing.T) {
 		}
 	})
 
-	publishRunLock(lock, cfgPath, nil)
+	pub := &runLockPublisher{lock: lock, cfgPath: cfgPath}
+	pub.publish(nil)
 	st, ok, err := runlock.ReadState(lockPath)
 	if err != nil || !ok {
 		t.Fatalf("ReadState = %+v, %v, %v; want a published state", st, ok, err)
@@ -43,7 +47,7 @@ func TestPublishRunLock(t *testing.T) {
 		t.Errorf("got %+v, want no management endpoint while no API serves", st)
 	}
 
-	publishRunLock(lock, cfgPath, &mgmtEndpoint{addr: testMgmtAddr, certPath: testCertFile})
+	pub.publish(&mgmtEndpoint{addr: testMgmtAddr, certPath: testCertFile})
 	st, ok, err = runlock.ReadState(lockPath)
 	if err != nil || !ok {
 		t.Fatalf("ReadState = %+v, %v, %v; want a published state", st, ok, err)
@@ -55,3 +59,90 @@ func TestPublishRunLock(t *testing.T) {
 		t.Errorf("got certificate path %q, want it made absolute", st.CertPath)
 	}
 }
+
+// recordLock is a runLockPublisher write seam that records every state it is
+// asked to write and fails while fail is positive, counting it down.
+type recordLock struct {
+	states []runlock.State
+	fail   int
+}
+
+func (r *recordLock) write(st runlock.State) error {
+	r.states = append(r.states, st)
+	if r.fail > 0 {
+		r.fail--
+		return errors.New("disk full")
+	}
+	return nil
+}
+
+// TestRunLockPublisherRetriesFailedWrite pins the recovery from a failed
+// write, which can leave the lock empty (read as "starting up"): the publisher
+// rewrites the latest state it was asked for on a bounded retry until a write
+// succeeds, a newer state replaces the one being retried, and stop cancels a
+// pending retry.
+func TestRunLockPublisherRetriesFailedWrite(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		rec := &recordLock{fail: 2}
+		pub := &runLockPublisher{cfgPath: testCfgFile, write: rec.write, retryDelay: time.Second}
+		pub.starting()
+		ep := &mgmtEndpoint{addr: testMgmtAddr, certPath: testCertFile}
+		pub.publish(ep) // replaces "starting" while the first write is being retried
+		if len(rec.states) != 2 {
+			t.Fatalf("got %d writes, want one per request", len(rec.states))
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		want := runLockState(ep)
+		if len(rec.states) != 3 || rec.states[2] != want {
+			t.Fatalf("writes = %+v, want the endpoint rewritten by one retry", rec.states)
+		}
+		// The retry succeeded: nothing more is written.
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if len(rec.states) != 3 {
+			t.Errorf("got %d writes, want none after a successful retry", len(rec.states))
+		}
+
+		// stop cancels a retry that is pending.
+		rec.fail = 1
+		pub.publish(nil)
+		pub.stop()
+		pub.publish(ep)
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if len(rec.states) != 4 {
+			t.Errorf("got %d writes, want none after stop", len(rec.states))
+		}
+	})
+}
+
+// TestRunLockPublisherNil pins that a nil publisher (tests that drive the
+// retry without a lock) writes nothing and does not panic.
+func TestRunLockPublisherNil(t *testing.T) {
+	t.Parallel()
+	var pub *runLockPublisher
+	pub.starting()
+	pub.publish(nil)
+	pub.stop()
+}
+
+// lockStates returns what rec recorded, as the token commands would read each
+// state: "starting" (no PID), "no API", or the API address.
+func lockStates(rec *recordLock) []string {
+	out := make([]string, 0, len(rec.states))
+	for _, st := range rec.states {
+		switch {
+		case st.PID == 0:
+			out = append(out, "starting")
+		case st.MgmtAddr == "":
+			out = append(out, "no API")
+		default:
+			out = append(out, st.MgmtAddr)
+		}
+	}
+	return out
+}
+
+func equalStates(got []string, want ...string) bool { return slices.Equal(got, want) }

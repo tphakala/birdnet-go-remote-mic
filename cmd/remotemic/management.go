@@ -111,6 +111,9 @@ type provider struct {
 	// certPath) before swapping the live certificate.
 	certPath string
 	keyPath  string
+	// describe replaces mgmtcert.Describe when non-nil, so a test can drive a
+	// certificate whose metadata cannot be described.
+	describe func(*tls.Certificate) (mgmtcert.Info, error)
 }
 
 // certState is one immutable certificate snapshot the provider publishes through
@@ -157,7 +160,11 @@ func (p *provider) System() mgmtserver.SystemInfo {
 // Its callers in the appliance hold certMu around it so the persisted pair and
 // the published snapshot stay in step.
 func (p *provider) setCertificate(cert *tls.Certificate) error {
-	info, err := mgmtcert.Describe(cert)
+	describe := p.describe
+	if describe == nil {
+		describe = mgmtcert.Describe
+	}
+	info, err := describe(cert)
 	if err != nil {
 		return err
 	}
@@ -582,6 +589,33 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 type mgmt struct {
 	cur  atomic.Pointer[mgmtServer]
 	done chan struct{}
+	// lost is signalled, coalescing, when an API stops on its own or the retry
+	// gives up, the two moments serving() can turn nil while run() waits for
+	// something else; run() retakes its exit decision on it.
+	lost chan struct{}
+}
+
+// newMgmt returns a handle with no API serving yet.
+func newMgmt() *mgmt {
+	return &mgmt{done: make(chan struct{}), lost: make(chan struct{}, 1)}
+}
+
+// signalLost wakes run() without blocking; a wake already pending covers
+// this one, since run() reads the current state when it wakes.
+func (m *mgmt) signalLost() {
+	select {
+	case m.lost <- struct{}{}:
+	default:
+	}
+}
+
+// lostC is the channel run() selects on to retake its exit decision. A nil
+// handle (management disabled) returns nil, which never fires.
+func (m *mgmt) lostC() <-chan struct{} {
+	if m == nil {
+		return nil
+	}
+	return m.lost
 }
 
 // mgmtServer is one serving management API.
@@ -592,9 +626,13 @@ type mgmtServer struct {
 	store *mgmtserver.FileConfigStore
 	// ln is the bound listener. Closing it stops the API as a runtime listener
 	// fault would, which tests use to drive the recovery.
-	ln      net.Listener
+	ln net.Listener
+	// halted closes as soon as the API stops serving, before it drains, so the
+	// supervisor can stop advertising it at once; stopped closes once the
+	// drain has finished.
+	halted  chan struct{}
 	stopped chan struct{}
-	// err is why the API stopped, set before stopped closes: nil after a
+	// err is why the API stopped, set before halted closes: nil after a
 	// shutdown on ctx, the serve error when the listener failed on its own.
 	err error
 }
@@ -606,6 +644,58 @@ type mgmtServer struct {
 func (s *mgmtServer) wait() error {
 	<-s.stopped
 	return s.err
+}
+
+// halt blocks until the API has stopped serving, without waiting for the
+// drain wait includes, and reports why it stopped, as wait does.
+func (s *mgmtServer) halt() error {
+	<-s.halted
+	return s.err
+}
+
+// inflight counts the handlers of one API that are running, so its drain can
+// wait for the last one to return after a forced Close. The zero value is
+// ready to use.
+type inflight struct {
+	mu     sync.Mutex
+	n      int
+	waiter chan struct{} // closed when n drops to zero; nil when nobody waits
+}
+
+// wrap counts every request h serves.
+func (f *inflight) wrap(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.n++
+		f.mu.Unlock()
+		defer f.leave()
+		h.ServeHTTP(w, r)
+	})
+}
+
+func (f *inflight) leave() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n--
+	if f.n == 0 && f.waiter != nil {
+		close(f.waiter)
+		f.waiter = nil
+	}
+}
+
+// idle returns a channel that is closed once no handler is running.
+func (f *inflight) idle() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n == 0 {
+		c := make(chan struct{})
+		close(c)
+		return c
+	}
+	if f.waiter == nil {
+		f.waiter = make(chan struct{})
+	}
+	return f.waiter
 }
 
 // mgmtEndpoint is where a serving management API listens, as published in the
@@ -667,15 +757,25 @@ type mgmtParams struct {
 	runLock  *runLockPublisher
 	certPath string
 	keyPath  string
+	// drainTimeout bounds how long a stopping API waits for its connections
+	// to go idle before it closes them; zero means mgmtDrainTimeout. Tests
+	// shorten it.
+	drainTimeout time.Duration
 }
+
+// mgmtDrainTimeout is how long a stopping API waits for its connections to go
+// idle. An open /events stream never does, so it always takes this long while
+// a browser is open.
+const mgmtDrainTimeout = 5 * time.Second
 
 // useConfig makes running (a config with the serve overrides applied) the one
 // the next serveManagement binds and reads the certificate from, and publishes
 // the certificate paths to the provider. setCertificate reads certPath to
 // decide the Managed flag (a pin marker sits beside it), and Regenerate/Install
 // write there, so the paths are published before the certificate is prepared.
-// No API serves while this runs, but a handler of the previous one can outlive
-// its forced Close (see serveManagement), so the paths are written under
+// No API serves while this runs, but a handler of the previous one that ignores
+// its cancelled request can outlive the drain's bounded wait (see
+// serveManagement), so the paths are written under
 // certMu, which Regenerate and Install hold while they read them.
 func (p *mgmtParams) useConfig(running *config.Config) {
 	p.cfg = running
@@ -709,25 +809,39 @@ func startManagement(ctx context.Context, p *mgmtParams) (handle *mgmt, ok bool)
 // startManagementWith is startManagement with the retry delays as a parameter,
 // so tests can retry without waiting out the real backoff. A failed start also
 // raises the management-unavailable notification, which a successful attempt
-// clears. A serving API publishes its endpoint in the run lock.
+// clears. A serving API publishes its endpoint in the run lock, and a failed
+// start publishes the lock with none, so the token commands edit the file
+// until an attempt brings the API up. Until one of the two, the lock reads as
+// starting (run() publishes nothing before management starts), so a token
+// command run during the certificate check and the listen asks the operator
+// to retry rather than editing a file the API is about to be seeded from.
 func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Duration) (handle *mgmt, ok bool) {
 	p.useConfig(p.cfg)
-	m := &mgmt{done: make(chan struct{})}
+	m := newMgmt()
 	srv, err := serveManagement(ctx, p)
 	if err == nil {
 		m.cur.Store(srv)
 		p.runLock.publish(&srv.mgmtEndpoint)
 	} else {
 		log.Printf("management API unavailable: %v (retrying in the background)", err)
+		p.runLock.publish(nil)
 		p.onsetDown(fmt.Sprintf("The web UI and API could not start: %v; retrying in the background", err))
 	}
-	go superviseManagement(ctx, m, srv, err, mgmtRetry{
+	go superviseManagement(ctx, m, srv, err, p.retry(ctx, delays))
+	return m, err == nil
+}
+
+// retry wires superviseManagement to p. An API must serve for the longest
+// delay before its death restarts the backoff, so one that keeps dying soon
+// after it comes back settles at the slowest delay.
+func (p *mgmtParams) retry(ctx context.Context, delays []time.Duration) mgmtRetry {
+	return mgmtRetry{
 		attempt: func() (*mgmtServer, error) { return recoverManagement(ctx, p) },
+		halted:  p.halted,
 		died:    p.died,
 		delays:  delays,
 		stable:  delays[len(delays)-1],
-	})
-	return m, err == nil
+	}
 }
 
 // onsetDown raises the management-unavailable condition with msg. It is raised
@@ -744,24 +858,34 @@ func (p *mgmtParams) onsetDown(msg string) {
 	})
 }
 
-// died handles an API that stopped on its own (its listener failed), once the
-// server has drained: the next attempt seeds its store from this API's config,
-// which carries every PATCH since it came up; the run lock stops advertising
-// the dead address, so the token commands edit the file again; and the outage
-// is raised.
-func (p *mgmtParams) died(s *mgmtServer, err error) {
+// halted handles an API that stopped on its own (its listener failed) the
+// moment it stops, before its drain (which an open /events stream holds for the
+// full drain timeout): the run lock stops advertising the dead address at once
+// and reads as starting, so a token command asks the operator to retry rather
+// than editing the file while a handler of the dead API may still save it; and
+// the outage is raised.
+func (p *mgmtParams) halted(_ *mgmtServer, err error) {
 	log.Printf("management API stopped: %v (restarting it in the background; RTSP serving continues)", err)
+	p.runLock.starting()
+	p.onsetDown(fmt.Sprintf("The web UI and API stopped: %v; restarting in the background", err))
+}
+
+// died handles an API that stopped on its own once it has drained, so no
+// handler of it can save any more: the next attempt seeds its store from this
+// API's config, which carries every PATCH since it came up, and the run lock
+// shows no API, so the token commands edit the file again until an attempt
+// brings the API back.
+func (p *mgmtParams) died(s *mgmtServer, _ error) {
 	cfg := s.store.Config()
 	p.storeCfg = &cfg
 	p.runLock.publish(nil)
-	p.onsetDown(fmt.Sprintf("The web UI and API stopped: %v; restarting in the background", err))
 }
 
 // prepareCertificate loads or creates the certificate pair at the configured
 // paths and publishes it as the snapshot the TLS GetCertificate callback
 // serves and the certificate endpoints read. It holds certMu, as Regenerate
-// and Install do, because a handler of a previous API can outlive its forced
-// Close and write the same files. setCertificate publishes only on success; if
+// and Install do, because a handler of a previous API can outlive the drain's
+// bounded wait and write the same files. setCertificate publishes only on success; if
 // the metadata cannot be described, a raw-certificate fallback still gives the
 // listener a certificate to present (the API stays up) while the certificate
 // endpoints stay unmounted and return 501, which mounted reports. A metadata
@@ -834,8 +958,9 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		opts = append(opts, mgmtserver.WithNotifications(p.center), mgmtserver.WithNotifier(p.center))
 	}
 
+	var handlers inflight
 	srv := &http.Server{
-		Handler:           mgmtserver.New(p.prov, opts...).Handler(),
+		Handler:           handlers.wrap(mgmtserver.New(p.prov, opts...).Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -865,7 +990,12 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		mgmtEndpoint: mgmtEndpoint{addr: ln.Addr().String(), certPath: p.certPath},
 		store:        store,
 		ln:           ln,
+		halted:       make(chan struct{}),
 		stopped:      make(chan struct{}),
+	}
+	drain := p.drainTimeout
+	if drain == 0 {
+		drain = mgmtDrainTimeout
 	}
 	died := make(chan error, 1)
 	go func() {
@@ -874,14 +1004,27 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		case <-ctx.Done():
 		case s.err = <-died:
 		}
+		close(s.halted)
 		// Drain on either path, after a runtime fault too, before the
 		// supervisor brings up the next API. Shutdown waits for connections to
-		// go idle; an open /events stream never does, so after 5 s Close cuts
-		// the rest without waiting for their handlers to return.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// go idle; an open /events stream never does, so after the drain
+		// timeout Close cuts the rest without waiting for their handlers to
+		// return.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), drain)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			_ = srv.Close()
+		}
+		// Close does not wait for handlers, and one still running could save
+		// the config after the supervisor re-seeded the next API's store from
+		// this one. Their request contexts are cancelled now, so they return
+		// promptly; the wait is bounded all the same.
+		t := time.NewTimer(drain)
+		defer t.Stop()
+		select {
+		case <-handlers.idle():
+		case <-t.C:
+			log.Print("management API: a handler is still running after the drain; not waiting for it")
 		}
 	}()
 

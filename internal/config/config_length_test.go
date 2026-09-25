@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// fieldDevice0Name is the ValidationError field of the first device's name.
+const fieldDevice0Name = "devices[0].name"
+
 // lengthTestDevice is a valid single-stream device the length tests stretch.
 func lengthTestDevice() Device {
 	return Device{
@@ -30,7 +33,7 @@ func TestValidateLengthCaps(t *testing.T) {
 	}{
 		{"name at cap", func(d *Device) { d.Name = strings.Repeat("n", MaxNameLen) }, ""},
 		{"multi-byte name at cap", func(d *Device) { d.Name = strings.Repeat("ä", MaxNameLen) }, ""},
-		{"name over cap", func(d *Device) { d.Name = strings.Repeat("n", MaxNameLen+1) }, "devices[0].name"},
+		{"name over cap", func(d *Device) { d.Name = strings.Repeat("n", MaxNameLen+1) }, fieldDevice0Name},
 		{"device at cap", func(d *Device) { d.Device = strings.Repeat("d", MaxDeviceIDLen) }, ""},
 		{"device over cap", func(d *Device) { d.Device = strings.Repeat("d", MaxDeviceIDLen+1) }, "devices[0].device"},
 		{"multi-byte device at cap", func(d *Device) { d.Device = strings.Repeat("ä", MaxDeviceIDLen) }, ""},
@@ -80,9 +83,12 @@ func TestValidateLengthsSkipsStoredStrings(t *testing.T) {
 		mutate    func(d *Device)
 		wantField string
 	}{
-		{"new name", func(d *Device) { d.Name += "x" }, "devices[0].name"},
+		{"new name", func(d *Device) { d.Name += "x" }, fieldDevice0Name},
 		{"new device", func(d *Device) { d.Device += "x" }, "devices[0].device"},
 		{"new path", func(d *Device) { d.Streams[0].Path += "x" }, "devices[0].streams[0].path"},
+		// The skip is per kind: an over-cap name that equals a stored over-cap
+		// device id is still new as a name.
+		{"name equal to a stored id", func(d *Device) { d.Name = d.Device }, fieldDevice0Name},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

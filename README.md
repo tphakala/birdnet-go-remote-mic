@@ -411,13 +411,9 @@ For a local end-to-end check without hardware, use the ALSA loopback
   waits for a config save, which also restarts a down device of either kind.
   While the management API is serving the process stays up after the
   last device dies, so the failure stays inspectable over the API; otherwise
-  it exits once every device has stopped. The appliance makes that decision
-  when a device's capture ends, so an API that stops (or stops being retried)
-  after the last device already ended leaves the process up, still running
-  the retries described here. If the config file then disables the
-  management API while no device can come back on its own (for example
-  every down device is pinned to a card index), it stays up doing nothing
-  until restarted.
+  it exits once every device has stopped. The appliance retakes that decision
+  whenever a device's capture ends and whenever the API stops or stops being
+  retried, so it never stays up with nothing serving and nothing to inspect.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
   automatic retry once it counts as recovered, or process exit), because
