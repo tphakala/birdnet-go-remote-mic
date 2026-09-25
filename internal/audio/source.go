@@ -18,9 +18,10 @@ type Period struct {
 	// for an earlier client rather than encode it for the next one. Zero means
 	// untagged: a period straight from a capture, or a consumer with no gate.
 	Session uint64
-	// Captured is when the fan-out read the period from the capture, so a stage
-	// that has fallen behind still stamps its frames with their capture time.
-	// Zero means untagged, and the stage stamps its own read time.
+	// Captured is when the period was read from the capture, so a stage that
+	// has fallen behind still stamps its frames with their capture time. The
+	// fan-out sets it unless its upstream already did. Zero means untagged, and
+	// the stage stamps its own read time.
 	Captured time.Time
 }
 
@@ -57,3 +58,29 @@ func (f *fakeSource) Read() (Period, error) {
 }
 
 func (f *fakeSource) Close() error { return nil }
+
+// NewPeriodSource returns a Source that replays whole periods in order, then
+// returns io.EOF. Unlike NewFakeSource it keeps every Period field as given,
+// so a test can hand a consumer what a fan-out queues: periods carrying a play
+// session and a capture time.
+func NewPeriodSource(rate, channels int, periods []Period) Source {
+	return &periodSource{rate: rate, channels: channels, periods: periods}
+}
+
+type periodSource struct {
+	rate, channels int
+	periods        []Period
+}
+
+func (s *periodSource) Negotiated() (rate, channels int) { return s.rate, s.channels }
+
+func (s *periodSource) Read() (Period, error) {
+	if len(s.periods) == 0 {
+		return Period{}, io.EOF
+	}
+	p := s.periods[0]
+	s.periods = s.periods[1:]
+	return p, nil
+}
+
+func (s *periodSource) Close() error { return nil }

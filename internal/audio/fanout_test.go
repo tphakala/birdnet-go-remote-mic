@@ -292,6 +292,32 @@ func TestFanoutTagsSessionAndCaptureTime(t *testing.T) {
 	}
 }
 
+func TestFanoutKeepsUpstreamCaptureTime(t *testing.T) {
+	t.Parallel()
+	// An upstream that stamped its period knows the capture time better than
+	// the fan-out's read, so the stamp survives; an unstamped period is
+	// stamped by the fan-out.
+	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev", always(new(atomic.Uint64)))
+	stamped := time.Unix(1700000000, 0)
+	f.distribute(Period{Buf: []byte{1, 0}, Frames: 1, Captured: stamped})
+	before := time.Now()
+	f.distribute(Period{Buf: []byte{2, 0}, Frames: 1})
+	p, err := cons[0].Read()
+	if err != nil {
+		t.Fatalf("read 0: %v", err)
+	}
+	if !p.Captured.Equal(stamped) {
+		t.Errorf("stamped period: got Captured %v, want %v", p.Captured, stamped)
+	}
+	p, err = cons[0].Read()
+	if err != nil {
+		t.Fatalf("read 1: %v", err)
+	}
+	if p.Captured.Before(before) {
+		t.Errorf("unstamped period: got Captured %v, want at or after %v", p.Captured, before)
+	}
+}
+
 func TestFanoutIdleConsumerGetsNothing(t *testing.T) {
 	t.Parallel()
 	// One active and one idle consumer: the active one sees every period's audio,

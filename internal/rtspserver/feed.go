@@ -87,12 +87,10 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 	if !active || (f.Session != 0 && f.Session != session) {
 		return true
 	}
-	cp := pipeline.Frame{
-		Payload:  append([]byte(nil), f.Payload...),
-		Duration: f.Duration,
-		Captured: f.Captured,
-		Session:  f.Session,
-	}
+	// Copy the whole frame, then detach only the payload, so a field added to
+	// pipeline.Frame later is carried without touching this.
+	cp := f
+	cp.Payload = append([]byte(nil), f.Payload...)
 	select {
 	case c.ch <- cp:
 		return true
@@ -101,10 +99,11 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 	}
 }
 
-// Active reports whether a client is playing, so frames of its session pushed
-// now are queued for it (buffer space permitting) rather than discarded. It is
-// one atomic load. The appliance reads Session instead (the fan-out, the stages
-// and Push), which also carries the play session; Active serves tests.
+// Active reports whether a client is playing, so a frame pushed now that is
+// untagged or tagged with its session is queued for it (buffer space
+// permitting) rather than discarded. It is one atomic load. The appliance's
+// readers (the fan-out gate and the stages) read Session instead, which also
+// carries the play session, as Push and Next do; Active serves tests.
 func (c *ChanSource) Active() bool { return c.state.Load()&sessionActive != 0 }
 
 // Session reports whether a client is playing and which play session it is.

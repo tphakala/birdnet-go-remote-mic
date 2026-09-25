@@ -30,7 +30,8 @@ type Frame struct {
 	Captured time.Time
 	// Session is the play session the stage produced this frame for (see
 	// Gate), so the feed can drop a frame that a teardown and the next PLAY
-	// overtook while it was being encoded. Zero means untagged (a nil gate).
+	// overtook while it was being encoded. Zero means untagged (a nil gate fed
+	// untagged periods).
 	Session uint64
 }
 
@@ -51,8 +52,8 @@ type Frame struct {
 // overtook while it was being encoded (rtspserver.ChanSource checks it on Push
 // and again on Next). A frame is stamped with its period's capture
 // time (audio.Period.Captured) when the period carries one.
-// A nil gate means always active, in session 0, so it admits only untagged
-// periods: a stage fed by a gated fan-out consumer must be given the same gate.
+// A nil gate means always active: every period is encoded, in the session it
+// carries (zero for an untagged one), so an ungated stage drops no period.
 type Stage interface {
 	Run(src audio.Source, gate Gate, emit func(Frame) error) error
 }
@@ -63,24 +64,22 @@ type Stage interface {
 // for sees each new client.
 type Gate func() (active bool, session uint64)
 
-// open consults gate for the period just read; a nil gate is always open, in
-// session 0.
-func (g Gate) open() (active bool, session uint64) {
-	if g == nil {
-		return true, 0
-	}
-	return g()
-}
-
 // admit reports whether a period read now is to be encoded, and the play
 // session it is encoded for. A period is dropped while the gate is closed, and
 // when it was queued for another session than the gate reports (an untagged
-// period, Session zero, belongs to any). captured is the period's capture time,
+// period, Session zero, belongs to any). A nil gate is always open and admits
+// every period in the session it carries, so a stage given no gate encodes
+// whatever it is fed, tagged or not. captured is the period's capture time,
 // or now when the period carries none.
 func (g Gate) admit(p *audio.Period) (ok bool, session uint64, captured time.Time) {
-	on, session := g.open()
-	if !on || (p.Session != 0 && p.Session != session) {
-		return false, 0, time.Time{}
+	if g == nil {
+		session = p.Session
+	} else {
+		var on bool
+		on, session = g()
+		if !on || (p.Session != 0 && p.Session != session) {
+			return false, 0, time.Time{}
+		}
 	}
 	captured = p.Captured
 	if captured.IsZero() {
@@ -198,8 +197,8 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 	// frame (a period queued for another session never gets here), so a
 	// new client's stream starts exactly as a freshly built encoder's would. It
 	// starts at 0, which a feed never reports while active, so the first client
-	// resets the fresh encoder too; that is harmless. (A nil gate stays in
-	// session 0 and never resets.)
+	// resets the fresh encoder too; that is harmless. (A nil gate follows the
+	// periods' own tags, so untagged periods stay in session 0 and never reset.)
 	var session uint64
 
 	for {
