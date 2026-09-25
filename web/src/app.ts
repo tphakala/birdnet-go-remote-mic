@@ -46,14 +46,20 @@ class App {
     } catch {
       /* storage unavailable: keep the default theme */
     }
-    document.documentElement.setAttribute("data-theme", savedTheme);
-
     const themeToggleBtn = document.getElementById("theme-toggle-btn");
+    // applyTheme is the one place the theme changes, so the toggle's pressed
+    // state (labelled "Dark theme": pressed means dark) never drifts from it.
+    const applyTheme = (theme: string): void => {
+      document.documentElement.setAttribute("data-theme", theme);
+      themeToggleBtn?.setAttribute("aria-pressed", String(theme !== "light"));
+    };
+    applyTheme(savedTheme);
+
     if (themeToggleBtn) {
       themeToggleBtn.addEventListener("click", () => {
         const currentTheme = document.documentElement.getAttribute("data-theme");
         const nextTheme = currentTheme === "light" ? "dark" : "light";
-        document.documentElement.setAttribute("data-theme", nextTheme);
+        applyTheme(nextTheme);
         try {
           localStorage.setItem(THEME_KEY, nextTheme);
         } catch {

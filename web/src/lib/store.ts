@@ -2,6 +2,7 @@ import { api, ApiError } from "./api.js";
 import { sse } from "./sse.js";
 import { getToken, setToken } from "./auth.js";
 import { LatestGate } from "./latest-core.js";
+import { ChangeTracker, gatedRefresh } from "./store-core.js";
 import type {
   ApplianceStatus,
   AvailableDevice,
@@ -50,6 +51,11 @@ export class AppStore extends EventTarget {
   // applyConfig invalidates this one, so a GET /config already in flight cannot
   // overwrite the authoritative PATCH result when it resolves later.
   private configGate = new LatestGate();
+  // Change detection for the resources announced only on change (see the
+  // refresh methods below).
+  private statusChange = new ChangeTracker();
+  private devicesChange = new ChangeTracker();
+  private systemChange = new ChangeTracker();
   // loginPending is set from the first 401 until a token is accepted, so a
   // burst of rejected requests (the initial load fires five) opens one prompt
   // and the generic load-error state is suppressed in favor of it.
@@ -271,95 +277,113 @@ export class AppStore extends EventTarget {
     sse.stop();
   }
 
-  // Each refresh below follows the same shape: take a gate token, fetch, and
-  // apply only if the gate accepts it. A refresh whose body is dropped, or that
-  // fails after a newer body was applied, still reports success: fresher data is
-  // in place, so loadInitial must not raise a load error for it.
+  // Each refresh below is one gatedRefresh (lib/store-core.ts): take a gate
+  // token, fetch, and apply only if the gate accepts it. A refresh whose body is
+  // dropped, or that fails after a newer body was applied, still reports
+  // success: fresher data is in place, so loadInitial must not raise a load
+  // error for it.
+  //
+  // status, devices and system announce only when the applied data changed (a
+  // ChangeTracker each). In practice this saves work on devices: status carries
+  // uptimeSeconds and system carries live CPU, memory and network counters, so
+  // both still announce nearly every tick (which the System view's certificate
+  // refresh and the uptime displays rely on). config and available announce
+  // every poll, because mutation flows repaint from the config event. The first
+  // applied value always announces, and a failed read resets its tracker, so the
+  // next successful read announces even when it returns data a view showed
+  // before swapping in a load error; that is what repairs the view.
 
-  public async refreshStatus(): Promise<boolean> {
-    const token = this.statusGate.begin();
-    try {
-      const status = await api.getStatus();
-      if (!this.statusGate.accept(token)) return true;
-      this.state.status = status;
-      this.dispatchEvent(new CustomEvent("status", { detail: this.state.status }));
-      return true;
-    } catch (err) {
-      console.warn("Failed to refresh status:", err);
-      return this.statusGate.superseded(token);
-    }
+  public refreshStatus(): Promise<boolean> {
+    return gatedRefresh(
+      this.statusGate,
+      () => api.getStatus(),
+      (status) => {
+        this.state.status = status;
+        if (this.statusChange.changed(status)) {
+          this.dispatchEvent(new CustomEvent("status", { detail: this.state.status }));
+        }
+      },
+      (err) => {
+        console.warn("Failed to refresh status:", err);
+        this.statusChange.reset();
+      },
+    );
   }
 
-  public async refreshAvailable(): Promise<boolean> {
-    const token = this.availableGate.begin();
-    try {
-      const available = await api.getAvailableDevices();
-      if (!this.availableGate.accept(token)) return true;
-      this.state.available = available;
-      this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
-      return true;
-    } catch (err) {
-      console.warn("Failed to refresh available devices:", err);
-      return this.availableGate.superseded(token);
-    }
+  public refreshAvailable(): Promise<boolean> {
+    return gatedRefresh(
+      this.availableGate,
+      () => api.getAvailableDevices(),
+      (available) => {
+        this.state.available = available;
+        this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
+      },
+      (err) => console.warn("Failed to refresh available devices:", err),
+    );
   }
 
-  public async refreshDevices(): Promise<boolean> {
-    const token = this.devicesGate.begin();
-    try {
-      const devices = await api.getDevices();
-      // Defensive normalization at the store boundary: the contract guarantees
-      // channels is an array, but every consumer indexes it, so a malformed
-      // payload becomes an empty selection rather than a runtime error. It runs
-      // before accept so a payload that throws here (not an array at all) never
-      // marks this token applied and so never drops an older valid response.
-      for (const d of devices) {
-        if (!Array.isArray(d.channels)) d.channels = [];
-      }
-      if (!this.devicesGate.accept(token)) return true;
-      this.state.devices = devices;
-      // Drop level entries for devices that are no longer present so the map
-      // does not grow without bound as devices are added or removed.
-      const present = new Set(this.state.devices.map((d) => d.name));
-      for (const name of this.state.levels.keys()) {
-        if (!present.has(name)) this.state.levels.delete(name);
-      }
-      this.dispatchEvent(new CustomEvent("devices", { detail: this.state.devices }));
-      return true;
-    } catch (err) {
-      console.warn("Failed to refresh devices:", err);
-      return this.devicesGate.superseded(token);
-    }
+  public refreshDevices(): Promise<boolean> {
+    return gatedRefresh(
+      this.devicesGate,
+      async () => {
+        const devices = await api.getDevices();
+        // Defensive normalization at the store boundary: the contract guarantees
+        // channels is an array, but every consumer indexes it, so a malformed
+        // payload becomes an empty selection rather than a runtime error. It runs
+        // inside the fetch, before accept, so a payload that throws here (not an
+        // array at all) never marks this token applied and so never drops an
+        // older valid response.
+        for (const d of devices) {
+          if (!Array.isArray(d.channels)) d.channels = [];
+        }
+        return devices;
+      },
+      (devices) => {
+        this.state.devices = devices;
+        // Drop level entries for devices that are no longer present so the map
+        // does not grow without bound as devices are added or removed.
+        const present = new Set(this.state.devices.map((d) => d.name));
+        for (const name of this.state.levels.keys()) {
+          if (!present.has(name)) this.state.levels.delete(name);
+        }
+        if (this.devicesChange.changed(devices)) {
+          this.dispatchEvent(new CustomEvent("devices", { detail: this.state.devices }));
+        }
+      },
+      (err) => {
+        console.warn("Failed to refresh devices:", err);
+        this.devicesChange.reset();
+      },
+    );
   }
 
-  public async refreshSystem(): Promise<boolean> {
-    const token = this.systemGate.begin();
-    try {
-      const system = await api.getSystem();
-      if (!this.systemGate.accept(token)) return true;
-      this.state.system = system;
-      this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
-      return true;
-    } catch {
-      // System info is optional, non-fatal.
-      return this.systemGate.superseded(token);
-    }
+  public refreshSystem(): Promise<boolean> {
+    return gatedRefresh(
+      this.systemGate,
+      () => api.getSystem(),
+      (system) => {
+        this.state.system = system;
+        if (this.systemChange.changed(system)) {
+          this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
+        }
+      },
+      // System info is optional, non-fatal: no warning, just re-arm the tracker.
+      () => this.systemChange.reset(),
+    );
   }
 
-  public async refreshConfig(): Promise<boolean> {
-    const token = this.configGate.begin();
-    try {
-      const config = await api.getConfig();
-      // A newer applyConfig or applied refreshConfig landed while this GET was in
-      // flight; its result is fresher, so drop this stale body.
-      if (!this.configGate.accept(token)) return true;
-      this.state.config = config;
-      this.dispatchEvent(new CustomEvent("config", { detail: this.state.config }));
-      return true;
-    } catch (err) {
-      console.warn("Failed to refresh config:", err);
-      return this.configGate.superseded(token);
-    }
+  public refreshConfig(): Promise<boolean> {
+    // A newer applyConfig or applied refreshConfig that landed while this GET was
+    // in flight is fresher, so the gate drops this stale body.
+    return gatedRefresh(
+      this.configGate,
+      () => api.getConfig(),
+      (config) => {
+        this.state.config = config;
+        this.dispatchEvent(new CustomEvent("config", { detail: this.state.config }));
+      },
+      (err) => console.warn("Failed to refresh config:", err),
+    );
   }
 
   // applyConfig records the authoritative config the server returned from a

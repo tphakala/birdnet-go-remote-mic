@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,6 +119,25 @@ type streamRuntime struct {
 	frames  *rtspserver.ChanSource
 	track   *rtspserver.Track
 	dropped atomic.Uint64
+	// encoded records that this stream's stage has emitted an encoded frame,
+	// which happens only while a client plays it (see pipeline.Stage). An
+	// unattended retry after this stream's encode fault waits for it before its
+	// settle (see retryState.encodePaths). Set once by the stage goroutine, read
+	// by the run loop.
+	encoded atomic.Bool
+}
+
+// noteEncoded records the stream's first encoded frame and wakes the run loop
+// when a retry is waiting for one (await is the device's awaitEncode). It costs
+// one atomic load per frame after the first.
+func (sr *streamRuntime) noteEncoded(await *atomic.Bool, wake func()) {
+	if sr.encoded.Load() {
+		return
+	}
+	sr.encoded.Store(true)
+	if await.Load() {
+		wake()
+	}
 }
 
 // deviceRuntime bundles one configured device's moving parts: one exclusive
@@ -163,6 +183,24 @@ type deviceRuntime struct {
 	// restarted on the same RTSP path is not torn down by the old pump's exit.
 	// Set and read only on the run-loop goroutine.
 	superseded bool
+
+	// awaitEncode asks the stage goroutines to wake the run loop (through
+	// retryDue) when a stream encodes its first frame. Set by the run loop before
+	// it checks any stream's encoded flag, and read by a stage after it sets its
+	// flag, so one side always sees the other.
+	awaitEncode atomic.Bool
+}
+
+// encodedAll reports whether every stream of this runtime whose path is listed
+// has encoded a frame. A listed path the runtime no longer serves counts as
+// proven: nothing on it can fault again.
+func (rt *deviceRuntime) encodedAll(paths []string) bool {
+	for _, sr := range rt.streams {
+		if slices.Contains(paths, sr.stream.Path) && !sr.encoded.Load() {
+			return false
+		}
+	}
+	return true
 }
 
 // droppedTotal sums every stream's dropped-audio counter, the device-level figure
@@ -318,6 +356,19 @@ func lockState(pid int, mgmtAddr, certPath string) runlock.State {
 	return runlock.State{PID: pid, MgmtAddr: mgmtAddr, CertPath: certPath}
 }
 
+// publishRunLock records this process in the run lock, with the management
+// API's endpoint when ep is non-nil (nil means no API is serving, so no API
+// handler can rewrite the config file). A write failure is logged, not fatal.
+func publishRunLock(lock *runlock.Lock, cfgPath string, ep *mgmtEndpoint) {
+	st := runlock.State{PID: os.Getpid()}
+	if ep != nil {
+		st = lockState(st.PID, ep.addr, ep.certPath)
+	}
+	if err := lock.Publish(st); err != nil {
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), err)
+	}
+}
+
 // acquireRunLock takes the process-lifetime run lock beside cfgPath. Holding it
 // keeps a second appliance off the same config and tells the token commands this
 // config is being served (and, once Publish runs, where the management API
@@ -465,8 +516,9 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// Start the management API before the device-open phase so status and
 	// diagnostics are reachable even if every device fails to open. It reports
 	// zero devices until setDevices publishes the records below. mgmtServing
-	// tracks whether the API actually came up (a cert or listener failure leaves
-	// it false), so a configured-but-dead API is not mistaken for a live
+	// tracks whether the API is serving (a cert or listener failure leaves it
+	// false until the background retry brings the API up, see the Up case in the
+	// run loop), so a configured-but-dead API is not mistaken for a live
 	// diagnostic surface. The combined shutdown defer cancels ctx first (so the
 	// API's shutdown goroutine fires even when run() returns on an error, not a
 	// signal) and then drains in-flight API connections before the process exits.
@@ -487,13 +539,12 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	}()
 
 	// Publish where the management API listens (nothing when it is not serving,
-	// which also means no API handler can rewrite the config file).
-	st := runlock.State{PID: os.Getpid()}
+	// which also means no API handler can rewrite the config file). An API that
+	// comes up later through its background retry republishes from the run loop.
 	if mgmtServing {
-		st = lockState(os.Getpid(), management.addr, management.certPath)
-	}
-	if perr := lock.Publish(st); perr != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), perr)
+		publishRunLock(lock, cfgPath, &mgmtEndpoint{addr: management.addr, certPath: management.certPath})
+	} else {
+		publishRunLock(lock, cfgPath, nil)
 	}
 
 	// Drive the level sampler for the lifetime of the process.
@@ -542,6 +593,19 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// start) there is nothing to keep alive, so a total open failure is fatal and
 	// lets a supervisor restart the process. A deliberate all-disabled config is
 	// reported distinctly, since a restart cannot clear it.
+	//
+	// adoptRecovered takes an API a background retry brought up but the run loop
+	// has not yet handled (its endpoint sits buffered in Up). The two exit
+	// decisions below first adopt any pending endpoint (adoptPending), so a
+	// select that picks a pump ending over the pending Up cannot shut down an API
+	// that is already serving.
+	adoptRecovered := func(ep mgmtEndpoint) {
+		// The API is now the diagnostic surface that keeps a zero-serving
+		// appliance up, and the token commands switch from editing the file to it.
+		mgmtServing = true
+		publishRunLock(lock, cfgPath, &ep)
+	}
+	adoptPending(management, adoptRecovered)
 	if app.serving() == 0 && !mgmtServing {
 		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
@@ -584,12 +648,15 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 		case req := <-reconcileCh:
 			app.reconcile(&req.cfg)
 			req.reply <- nil
+		case ep := <-management.Up():
+			adoptRecovered(ep)
 		case <-prov.hwChanged:
 			app.retryDown()
 		case <-app.retryDue:
 			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
+			adoptPending(management, adoptRecovered)
 			if app.alive == 0 && !mgmtServing {
 				if app.lastPumpErr != nil {
 					return fmt.Errorf("all capture devices stopped, last error: %w", app.lastPumpErr)

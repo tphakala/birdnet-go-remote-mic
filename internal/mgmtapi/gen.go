@@ -521,7 +521,7 @@ type Device struct {
 // DeviceFormat Sample format (only S16LE is supported).
 type DeviceFormat string
 
-// DeviceConfig The configuration of one device, without runtime state. A device opens one capture and fans it out into one or more streams. The flat path, mode, channels and opus fields describe the device's FIRST stream, so a client that predates fan-out still configures a single-stream device; the full set is in streams. On a PATCH, a body carrying streams is authoritative and the flat fields are ignored; a body omitting streams defines a single stream from the flat fields, and is rejected when it would collapse an existing multi-stream device.
+// DeviceConfig The configuration of one device, without runtime state. A device opens one capture and fans it out into one or more streams. The flat path, mode, channels and opus fields describe the device's FIRST stream, so a client that predates fan-out still configures a single-stream device; the full set is in streams. On a PATCH, a body carrying streams is authoritative and the flat fields are ignored; a body omitting streams defines a single stream from the flat fields, and is rejected when it would collapse an existing multi-stream device. The maxLength limits on name, device and path apply to values a write introduces; a value already in the config file (which loads without them) may exceed them in a response.
 type DeviceConfig struct {
 	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]).
 	Channels []int  `json:"channels"`
@@ -820,7 +820,7 @@ type StreamConfig struct {
 	// Opus Opus encoder settings, used only when mode is opus.
 	Opus *OpusSettings `json:"opus,omitempty"`
 
-	// Path RTSP path serving this stream; unique across every device's streams.
+	// Path RTSP path serving this stream; unique across every device's streams. The maxLength applies to a path a write introduces (see DeviceConfig).
 	//
 	// Examples: /garden
 	Path string `json:"path"`

@@ -54,14 +54,39 @@ func TestLoadWarnsOnReadableTokenFile(t *testing.T) {
 	}
 }
 
-func TestLoadQuietOnOwnerOnlyTokenFile(t *testing.T) {
+func TestLoadSilentOnOwnerOnlyTokenFile(t *testing.T) {
 	path := savedTokenConfig(t, "k7Qm3vX9pL2wR8nT") // stays 0600
 	if out := loadCapturingLog(t, path); out != "" {
 		t.Errorf("Load warned on a 0600 token file; log = %q", out)
 	}
 }
 
-func TestLoadQuietWhenNoTokenEvenIfReadable(t *testing.T) {
+// TestLoadQuietNeverWarns pins that LoadQuiet loads the same file Load warns
+// about without the warning, so a periodic re-read (the management API retry)
+// does not repeat it every attempt.
+func TestLoadQuietNeverWarns(t *testing.T) {
+	path := savedTokenConfig(t, "k7Qm3vX9pL2wR8nT")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	var buf bytes.Buffer
+	oldOut, oldFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
+	c, err := LoadQuiet(path)
+	if err != nil {
+		t.Fatalf("LoadQuiet: %v", err)
+	}
+	if c.Auth.Token != "k7Qm3vX9pL2wR8nT" {
+		t.Errorf("got token %q, want the file's", c.Auth.Token)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("LoadQuiet warned; log = %q", buf.String())
+	}
+}
+
+func TestLoadSilentWhenNoTokenEvenIfReadable(t *testing.T) {
 	path := savedTokenConfig(t, "") // open access, no secret to leak
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("chmod: %v", err)

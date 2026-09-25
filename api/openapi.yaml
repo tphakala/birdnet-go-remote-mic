@@ -1013,10 +1013,12 @@ components:
       properties:
         device:
           type: string
+          maxLength: 2048
           description: Capture device id to enable, as reported by GET /devices/available.
           examples: ["usb:1235:8218:s=S1A2B3:if=0,0"]
         name:
           type: string
+          maxLength: 128
           description: Optional unique device name; derived from the hardware label when omitted.
         mode:
           $ref: "#/components/schemas/StreamMode"
@@ -1287,15 +1289,21 @@ components:
         the full set is in streams. On a PATCH, a body carrying streams is
         authoritative and the flat fields are ignored; a body omitting streams
         defines a single stream from the flat fields, and is rejected when it
-        would collapse an existing multi-stream device.
+        would collapse an existing multi-stream device. The maxLength limits on
+        name, device and path apply to values a write introduces; a value
+        already in the config file (which loads without them) may exceed them
+        in a response.
       required: [name, device, path, mode, rate, channels, format]
       properties:
         name:
           type: string
+          maxLength: 128
         device:
           type: string
+          maxLength: 2048
         path:
           type: string
+          maxLength: 128
         mode:
           $ref: "#/components/schemas/StreamMode"
         rate:
@@ -1353,7 +1361,8 @@ components:
       properties:
         path:
           type: string
-          description: RTSP path serving this stream; unique across every device's streams.
+          maxLength: 128
+          description: RTSP path serving this stream; unique across every device's streams. The maxLength applies to a path a write introduces (see DeviceConfig).
           examples: [/garden]
         mode:
           $ref: "#/components/schemas/StreamMode"

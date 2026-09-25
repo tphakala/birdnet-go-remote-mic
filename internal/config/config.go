@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,6 +27,20 @@ const maxDevices = 32
 // ProvisionDeviceRequest.channels maxItems and covers common multi-channel USB
 // interfaces (2/4/6/8 channels).
 const MaxChannels = 8
+
+// Length caps, in characters, for the free-form device strings, matching the
+// API contract's maxLength. ValidateLengths enforces them on writes through the
+// management API, never at Load: a config that already runs must keep loading
+// after an upgrade, or the whole appliance (and its UI, the tool to fix it)
+// would stay down. The device id cap sits above the longest id go-audio-capture
+// can build (a USB serial of up to 126 UTF-16 units, each byte percent-escaped
+// to three characters, plus the fixed fields), so provisioning a detected
+// device never trips it.
+const (
+	MaxNameLen     = 128
+	MaxDeviceIDLen = 2048
+	MaxPathLen     = 128
+)
 
 // NormalizeChannels returns a sorted, de-duplicated copy of a channel selection.
 // ApplyDefaults and the device-provisioning path share it so the canonical
@@ -381,8 +396,24 @@ func Default() Config {
 	return c
 }
 
-// Load reads, defaults, and validates a YAML config file.
+// Load reads, defaults, and validates a YAML config file, and warns when a file
+// holding a token is readable beyond its owner.
 func Load(path string) (Config, error) {
+	c, err := LoadQuiet(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if c.Auth.Token != "" {
+		warnIfTokenFileReadable(path)
+	}
+	return c, nil
+}
+
+// LoadQuiet is Load without the permission warning, for a caller that re-reads
+// a file the process already loaded (and warned about) once, so a periodic
+// re-read does not repeat the warning. A missing file returns an error wrapping
+// fs.ErrNotExist, as Load does.
+func LoadQuiet(path string) (Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is an operator-supplied CLI flag
 	if err != nil {
 		return Config{}, err
@@ -405,9 +436,6 @@ func Load(path string) (Config, error) {
 	c.ApplyDefaults()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
-	}
-	if c.Auth.Token != "" {
-		warnIfTokenFileReadable(path)
 	}
 	return c, nil
 }
@@ -538,7 +566,8 @@ func (c *Config) Validate() error {
 }
 
 // validateDevices checks the device list: the count cap, each device's fields,
-// and the uniqueness of names, paths and device ids.
+// and the uniqueness of names, paths and device ids. The length caps are not
+// here (see ValidateLengths).
 func (c *Config) validateDevices() error {
 	// An empty device list is valid: on first run the appliance boots with no
 	// configured devices so the web UI can enumerate the host's capture hardware
@@ -730,6 +759,41 @@ func validatePath(p string) string {
 	default:
 		return ""
 	}
+}
+
+// ValidateLengths checks the length caps on each device's name and id and on
+// every stream path, counted in characters as JSON Schema maxLength counts
+// them. A string that already occurs in prev (same kind: name, id or path) is
+// not checked, so only what a write introduces is capped; a nil prev checks
+// every string. The management API calls it after Validate on every config it
+// writes, with the stored config as prev; Load does not (see MaxNameLen).
+func (c *Config) ValidateLengths(prev *Config) error {
+	var names, ids, paths map[string]bool
+	if prev != nil {
+		names, ids, paths = map[string]bool{}, map[string]bool{}, map[string]bool{}
+		for i := range prev.Devices {
+			names[prev.Devices[i].Name] = true
+			ids[prev.Devices[i].Device] = true
+			for j := range prev.Devices[i].Streams {
+				paths[prev.Devices[i].Streams[j].Path] = true
+			}
+		}
+	}
+	for i := range c.Devices {
+		d := &c.Devices[i]
+		if !names[d.Name] && utf8.RuneCountInString(d.Name) > MaxNameLen {
+			return &ValidationError{fmt.Sprintf("devices[%d].name", i), fmt.Sprintf("must be at most %d characters", MaxNameLen)}
+		}
+		if !ids[d.Device] && utf8.RuneCountInString(d.Device) > MaxDeviceIDLen {
+			return &ValidationError{fmt.Sprintf("devices[%d].device", i), fmt.Sprintf("must be at most %d characters", MaxDeviceIDLen)}
+		}
+		for j := range d.Streams {
+			if p := d.Streams[j].Path; !paths[p] && utf8.RuneCountInString(p) > MaxPathLen {
+				return &ValidationError{fmt.Sprintf("devices[%d].streams[%d].path", i, j), fmt.Sprintf("must be at most %d characters", MaxPathLen)}
+			}
+		}
+	}
+	return nil
 }
 
 // Clone returns a deep copy of c. The Devices slice and every pointer field (the

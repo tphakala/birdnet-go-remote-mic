@@ -219,6 +219,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 
 	var created config.Device
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
+		prev := cur.Clone() // the stored config, for validateWrite's length caps
 		for i := range cur.Devices {
 			if cur.Devices[i].Device == req.Device {
 				return config.Config{}, errDeviceExists
@@ -227,7 +228,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 		dev := buildProvisionedDevice(&cur, detected, req, preferred)
 		cur.Devices = append(cur.Devices, dev)
 		cur.ApplyDefaults()
-		if verr := cur.Validate(); verr != nil {
+		if verr := validateWrite(&cur, &prev); verr != nil {
 			return config.Config{}, verr
 		}
 		created = dev
@@ -293,6 +294,8 @@ func (s *Server) DeleteDevice(ctx context.Context, request mgmtapi.DeleteDeviceR
 		}
 		cur.Devices = kept
 		cur.ApplyDefaults()
+		// Plain Validate, not validateWrite: a removal adds no string, so an
+		// over-cap value elsewhere (kept loadable on disk) must not block it.
 		if verr := cur.Validate(); verr != nil {
 			return config.Config{}, verr
 		}
@@ -361,10 +364,15 @@ func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi
 	}
 }
 
+// nameSuffixReserve is the room deriveName keeps for a "-N" collision suffix
+// when it shortens a base name to fit config.MaxNameLen.
+const nameSuffixReserve = 8
+
 // deriveName turns a hardware label into a unique, config-safe device name. It
 // slugifies the friendly name (falling back to the device id, then "device"),
-// then appends a numeric suffix on collision. It deliberately never encodes the
-// channel count or mode: one device is one entry, named for the hardware.
+// shortens it to fit config.MaxNameLen with room for a suffix, then appends a
+// numeric suffix on collision. It deliberately never encodes the channel count
+// or mode: one device is one entry, named for the hardware.
 func deriveName(friendly, id string, taken map[string]bool) string {
 	base := slug(friendly)
 	if base == "" {
@@ -372,6 +380,13 @@ func deriveName(friendly, id string, taken map[string]bool) string {
 	}
 	if base == "" {
 		base = "device"
+	}
+	// A slug is ASCII, so a byte cut is a character cut. The room kept for a
+	// "-N" suffix means no derived name exceeds config.MaxNameLen, which
+	// provisioning enforces: a slug of a long device id would otherwise make the
+	// device unprovisionable.
+	if limit := config.MaxNameLen - nameSuffixReserve; len(base) > limit {
+		base = strings.TrimRight(base[:limit], "-")
 	}
 	name := base
 	for i := 2; taken[name]; i++ {

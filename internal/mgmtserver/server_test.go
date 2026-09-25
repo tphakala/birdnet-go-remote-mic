@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -453,6 +454,14 @@ func TestOversizedBodyYieldsProblem413(t *testing.T) {
 				t.Errorf("problem status missing, want %d", tc.want)
 			} else if *p.Status != tc.want {
 				t.Errorf("problem status = %d, want %d", *p.Status, tc.want)
+			}
+			// The 413 detail names the limit, so a client can tell the operator
+			// what to cut rather than only that the body was refused.
+			if tc.want == http.StatusRequestEntityTooLarge {
+				limit := fmt.Sprintf("%d KiB", maxRequestBody>>10)
+				if p.Detail == nil || !strings.Contains(*p.Detail, limit) {
+					t.Errorf("problem detail = %v, want it to name the %s limit", p.Detail, limit)
+				}
 			}
 		})
 	}

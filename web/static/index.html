@@ -64,8 +64,14 @@
 
     <!-- Header Quick Actions -->
     <div class="header-actions">
-      <button type="button" class="icon-btn" id="theme-toggle-btn" title="Toggle Light/Dark Theme" aria-label="Toggle Theme">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <!-- A toggle: pressed means the dark theme is on. app.ts keeps aria-pressed
+           in step with data-theme; the icon shows the current theme (moon for
+           dark, sun for light) through CSS on data-theme. -->
+      <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" title="Dark theme" aria-label="Dark theme" aria-pressed="true">
+        <svg class="theme-icon-dark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+        </svg>
+        <svg class="theme-icon-light" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="4"></circle>
           <path d="M12 2v2"></path>
           <path d="M12 20v2"></path>
@@ -329,7 +335,7 @@
             <label class="field-label" for="sys-cert-pem">Certificate (PEM)</label>
             <textarea class="field-input mono cert-pem" id="sys-cert-pem" rows="6" autocomplete="off" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="sys-cert-pem-hint sys-cert-pem-error"></textarea>
             <span class="field-error" id="sys-cert-pem-error"></span>
-            <span class="field-hint" id="sys-cert-pem-hint">The certificate the management listener will present.</span>
+            <span class="field-hint" id="sys-cert-pem-hint">The certificate the management listener will present, followed by any intermediates. Up to 64 KiB of certificates and 16 KiB of key; leave out a full CA bundle.</span>
           </div>
           <div class="form-field">
             <label class="field-label" for="sys-cert-key">Private key (PEM)</label>

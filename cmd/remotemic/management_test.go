@@ -174,12 +174,14 @@ func TestProviderDeviceLookup(t *testing.T) {
 	}
 }
 
-func TestClosedMgmtWaitReturns(t *testing.T) {
-	// A nil handle (management disabled) and a closed handle (cert failure) must
-	// both make Wait return immediately so shutdown never blocks on them.
+func TestNilMgmtWaitReturns(t *testing.T) {
+	// A nil handle (management disabled) must make Wait return immediately so
+	// shutdown never blocks on it, and report no retry.
 	var nilHandle *mgmt
 	nilHandle.Wait()
-	closedMgmt().Wait()
+	if nilHandle.Up() != nil {
+		t.Error("a nil handle must report no retry")
+	}
 }
 
 func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
@@ -191,36 +193,56 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: badDir}}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, filepath.Join(t.TempDir(), "config.yaml"), cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
-	h.Wait() // the returned handle must not block shutdown
+	if h.Up() == nil {
+		t.Error("a certificate failure must leave a background retry running")
+	}
+	cancel()
+	h.Wait() // cancelling ctx must stop the retry, so the handle does not block shutdown
 }
 
 func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	// Occupy a port, then point the management listener at it so the bind fails.
+	// A bind failure is retried like a certificate failure: once the port is
+	// free, the background retry brings the API up on it.
 	occupied, err := net.Listen("tcp", testListenAny)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if cerr := occupied.Close(); cerr != nil {
-			t.Errorf("closing occupied listener: %v", cerr)
-		}
-	}()
+	addr := occupied.Addr().String()
 
-	cfg := &config.Config{Management: config.Management{Listen: occupied.Addr().String(), CertDir: t.TempDir()}}
-	ctx, cancel := context.WithCancel(context.Background())
+	cfg := &config.Config{Management: config.Management{Listen: addr, CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
+	// A temp config path, so a stray config.yaml in the package directory cannot
+	// change what the recovery attempt reloads.
+	p := &mgmtParams{cfgPath: filepath.Join(t.TempDir(), "config.yaml"), cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
+	if h.Up() == nil {
+		t.Fatal("a bind failure must leave a background retry running")
+	}
+	if cerr := occupied.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	select {
+	case ep := <-h.Up():
+		if ep.addr != addr {
+			t.Errorf("recovered on %s, want the configured %s", ep.addr, addr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background retry did not bind once the port was free")
+	}
+	cancel()
 	h.Wait()
 }
 

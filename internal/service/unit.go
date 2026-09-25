@@ -10,7 +10,11 @@ import (
 // unitTemplate is the systemd unit rendered for an install. Choices worth
 // noting: Restart=always (not on-failure) is required because a UI-initiated or
 // self-update restart exits the process cleanly (code 0) and relies on the
-// supervisor to bring it back, which on-failure would not do; ExecStartPre is
+// supervisor to bring it back, which on-failure would not do; ordering after
+// remote-fs.target makes a certificate or config on a network mount less likely
+// to be missing at start (local mounts already precede every default-dependency
+// service, and a management API that still cannot read its certificate retries
+// in the background); ExecStartPre is
 // "-"prefixed so a broken hand-edited config logs but does not block the web UI
 // from coming up to fix it; SupplementaryGroups=audio grants /dev/snd without
 // running as root; ProtectSystem=strict makes the filesystem read-only except
@@ -21,7 +25,7 @@ import (
 const unitTemplate = `[Unit]
 Description=BirdNET-Go remote microphone appliance
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic
-After=network-online.target sound.target
+After=network-online.target sound.target remote-fs.target
 Wants=network-online.target
 
 [Service]

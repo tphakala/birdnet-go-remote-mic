@@ -243,7 +243,8 @@ export class SystemView {
       // any, is settled by now) and each later one refreshes the metadata so
       // the panel does not go stale after a regenerate, an install, or a
       // change made outside this page; a 501 sets certUnavailable to stop
-      // polling the endpoint.
+      // polling the endpoint. The store announces status only on change, but
+      // uptimeSeconds advances between polls, so this still runs every tick.
       if (!this.certUnavailable) void this.loadCertificate();
     });
     store.addEventListener("devices", (e: Event) => {
@@ -552,6 +553,13 @@ export class SystemView {
         // cleared in finally.
         showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
         void this.loadCertificate();
+        return;
+      }
+      // The API caps request bodies at 256 KiB; a full CA bundle pasted with the
+      // certificate is the usual way past it, so say what to trim rather than
+      // echoing the bare "payload too large".
+      if (err.status === 413) {
+        showToast("Install failed: the request is larger than the 256 KiB limit. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.", "error");
         return;
       }
       let pemBad = false;
