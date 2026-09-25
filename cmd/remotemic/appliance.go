@@ -559,6 +559,9 @@ func (a *appliance) openRefused(dev *config.Device) bool {
 	return a.resolveRefused(dev) || a.hardwareOwner(a.hw[dev.Device].hw.HWAddr, dev.Name) != ""
 }
 
+// openAndStart opens dev and starts serving it, or records why it could not.
+// Its refusals before any open are the ones openRefused checks; a new refusal
+// belongs in both, or restartFaulted would restart a device this refuses.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	res := a.hw[dev.Device]
 	hw := res.hw

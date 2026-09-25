@@ -410,7 +410,7 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 // fault through the real server: the dead API raises the outage, a new API
 // serves the config (with its PATCHes) of the one that died and is advertised
 // in the run lock, and nothing is applied live. What the lock holds between
-// the death and the restart is pinned by TestMgmtParamsDied.
+// the death and the restart is pinned by TestMgmtParamsHaltedThenDied.
 func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -494,7 +494,7 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	h.Wait()
 }
 
-// TestMgmtParamsDied pins what an API that stopped on its own leaves behind,
+// TestMgmtParamsHaltedThenDied pins what an API that stopped on its own leaves behind,
 // in two steps. The moment it stops (halted), before its drain: the run lock
 // stops advertising the dead address and reads as starting, so a token command
 // asks the operator to retry rather than editing the file while a handler of
@@ -502,7 +502,7 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 // (died), before any attempt can overwrite it: the lock advertises no address,
 // so the token commands edit the file again, and the store seed is the dead
 // API's config (with its PATCHes).
-func TestMgmtParamsDied(t *testing.T) {
+func TestMgmtParamsHaltedThenDied(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, testCfgFile)

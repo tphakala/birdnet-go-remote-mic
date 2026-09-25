@@ -158,9 +158,10 @@ var randRead = rand.Read
 // for the SSE fan-out. An ID is assigned and the entry broadcast while c.mu is
 // held, so every subscriber sees new IDs in increasing order; a slow
 // subscriber sees gaps, never reordering. The one entry streamed again under
-// an ID already sent is an active onset whose text Update rewrote. On the publish path the broadcaster's lock is
-// taken while c.mu is held (c.mu -> broadcaster mutex), so publishing stays
-// ID-ordered; Subscribe takes only the broadcaster's own lock, not c.mu.
+// an ID already sent is an active onset whose text Update rewrote. On the
+// publish path the broadcaster's lock is taken while c.mu is held (c.mu ->
+// broadcaster mutex), so publishing stays ID-ordered; Subscribe takes only the
+// broadcaster's own lock, not c.mu.
 type Center struct {
 	clock    func() time.Time
 	capacity int

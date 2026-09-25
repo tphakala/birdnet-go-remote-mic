@@ -648,7 +648,7 @@ func (s *mgmtServer) wait() error {
 }
 
 // halt blocks until the API has stopped serving, without waiting for the
-// drain wait includes, and reports why it stopped, as wait does.
+// drain that wait also covers, and reports why it stopped, as wait does.
 func (s *mgmtServer) halt() error {
 	<-s.halted
 	return s.err
@@ -758,15 +758,17 @@ type mgmtParams struct {
 	runLock  *runLockPublisher
 	certPath string
 	keyPath  string
-	// drainTimeout bounds how long a stopping API waits for its connections
-	// to go idle before it closes them; zero means mgmtDrainTimeout. Tests
+	// drainTimeout bounds each of a stopping API's two waits: for its
+	// connections to go idle before it closes them, and then for handlers
+	// still running after the close. Zero means mgmtDrainTimeout. Tests
 	// shorten it.
 	drainTimeout time.Duration
 }
 
-// mgmtDrainTimeout is how long a stopping API waits for its connections to go
-// idle. An open /events stream never does, so it always takes this long while
-// a browser is open.
+// mgmtDrainTimeout bounds each of a stopping API's two drain waits (see
+// mgmtParams.drainTimeout), so a stop takes at most twice this. An open
+// /events stream never goes idle, so the first wait always runs its full
+// length while a browser is open.
 const mgmtDrainTimeout = 5 * time.Second
 
 // useConfig makes running (a config with the serve overrides applied) the one

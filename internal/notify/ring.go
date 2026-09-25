@@ -48,7 +48,7 @@ func (r *ring) replace(n *Notification) bool {
 // all returns the entries in ascending ID order (oldest first) as a fresh slice.
 func (r *ring) all() []Notification {
 	out := make([]Notification, r.size)
-	for i := 0; i < r.size; i++ {
+	for i := range r.size {
 		out[i] = r.buf[(r.head+i)%len(r.buf)]
 	}
 	return out

@@ -375,6 +375,56 @@ func TestUpdateRewritesActiveTextInPlace(t *testing.T) {
 	}
 }
 
+// TestUpdateAfterRingWraps pins Update on a ring that has wrapped, the normal
+// state of an appliance up for months: an onset still held at a wrapped
+// position is rewritten where it sits, and an onset the ring already trimmed
+// is served with the new text from the active conditions.
+func TestUpdateAfterRingWraps(t *testing.T) {
+	t.Parallel()
+	const capacity = 4
+	c := NewCenter(WithCapacity(capacity))
+	events := func(n int) {
+		for range n {
+			c.Publish(Notification{Severity: SeverityInfo, Category: CategorySystem, Kind: KindEvent, Title: "tick"})
+		}
+	}
+	// A trimmed onset: raised first, then pushed out of the ring.
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: "device:old:down", Title: "old", Message: "old"})
+	events(capacity)
+	// A held onset at a wrapped position.
+	events(2)
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Title: "held", Message: "held"})
+	if !c.Update(testDeviceKey, "held", "rewritten") {
+		t.Fatal("Update of the held onset returned false")
+	}
+	if !c.Update("device:old:down", "old", "rewritten") {
+		t.Fatal("Update of the trimmed onset returned false")
+	}
+	byKey := map[string]Notification{}
+	for _, n := range c.Snapshot().Notifications {
+		if n.Key != "" {
+			byKey[n.Key] = n
+		}
+	}
+	for _, key := range []string{testDeviceKey, "device:old:down"} {
+		if got := byKey[key].Message; got != "rewritten" {
+			t.Errorf("%s: snapshot message %q, want the rewritten text", key, got)
+		}
+	}
+	held := 0
+	for _, n := range c.ring.all() {
+		if n.Key == testDeviceKey {
+			held++
+			if n.Message != "rewritten" {
+				t.Errorf("ring copy of the held onset: message %q, want the rewritten text", n.Message)
+			}
+		}
+	}
+	if held != 1 {
+		t.Errorf("ring holds %d copies of the held onset, want 1", held)
+	}
+}
+
 func TestBroadcastDropsOnFullWithoutBlocking(t *testing.T) {
 	c := NewCenter()
 	ch, cancel := c.Subscribe()

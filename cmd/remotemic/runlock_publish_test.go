@@ -179,4 +179,6 @@ func lockStates(rec *recordLock) []string {
 	return out
 }
 
+// equalStates reports whether a recorded sequence (lock states, supervisor
+// steps) is exactly want.
 func equalStates(got []string, want ...string) bool { return slices.Equal(got, want) }

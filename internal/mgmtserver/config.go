@@ -200,8 +200,10 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	//
 	// The auth-changed notification is derived here, not in the reconcile: Set
 	// advances the generation only on an actual token change, and this handler's
-	// Set runs before the reconcile's idempotent one, so comparing the generation
-	// around this Set is the only place that can observe the transition.
+	// Set runs before the reconcile's idempotent one, so within a PATCH,
+	// comparing the generation around this Set is the only place that can
+	// observe the transition. (cmd's applyEdited, which applies a file edited
+	// while the API was down, observes it around its reconcile instead.)
 	if s.guard != nil {
 		// Snapshot reads (enabled, generation) as one consistent atomic pair, so the
 		// before/after comparison cannot tear across a concurrent token change. The
