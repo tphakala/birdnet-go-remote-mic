@@ -152,7 +152,7 @@ func (p *provider) System() mgmtserver.SystemInfo {
 // returns the error and leaves the previous snapshot in place, so a runtime
 // rotation error never swaps the live certificate to one with blank metadata.
 // The startup caller installs a raw-certificate fallback separately (see
-// startManagement) so a describe failure at boot still leaves TLS serving.
+// serveManagement) so a describe failure at boot still leaves TLS serving.
 // Rotation callers hold certMu around setCertificate so the persisted pair and
 // the published snapshot stay in step.
 func (p *provider) setCertificate(cert *tls.Certificate) error {
@@ -671,7 +671,9 @@ type mgmtParams struct {
 // the certificate paths to the provider. setCertificate reads certPath to
 // decide the Managed flag (a pin marker sits beside it), and Regenerate/Install
 // write there, so the paths are published before the certificate is prepared.
-// No API serves while this runs, so no handler reads the provider's paths.
+// No API serves while this runs, but a handler of the previous one can outlive
+// its forced Close (see serveManagement), so the paths are written under
+// certMu, which Regenerate and Install hold while they read them.
 func (p *mgmtParams) useConfig(running *config.Config) {
 	p.cfg = running
 	certDir := running.Management.CertDir
@@ -680,8 +682,10 @@ func (p *mgmtParams) useConfig(running *config.Config) {
 	}
 	p.certPath = filepath.Join(certDir, "mgmt-cert.pem")
 	p.keyPath = filepath.Join(certDir, "mgmt-key.pem")
+	p.prov.certMu.Lock()
 	p.prov.certPath = p.certPath
 	p.prov.keyPath = p.keyPath
+	p.prov.certMu.Unlock()
 }
 
 // startManagement generates or loads the self-signed certificate and serves the
@@ -856,9 +860,10 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		case <-ctx.Done():
 		case s.err = <-died:
 		}
-		// Drain in-flight requests on either path: after a runtime fault too, so
-		// no handler of this API still writes the config or the certificate
-		// while the supervisor brings up the next one.
+		// Drain on either path, after a runtime fault too, before the
+		// supervisor brings up the next API. Shutdown waits for connections to
+		// go idle; an open /events stream never does, so after 5 s Close cuts
+		// the rest without waiting for their handlers to return.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
