@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
 
@@ -459,7 +458,7 @@ func TestRetryDownStartsReconnectedDevice(t *testing.T) {
 // absent the condition is re-raised as not connected rather than kept at the
 // first cause by the idempotent onset.
 func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
-	app, _, cancel := newTestAppliance(t)
+	app, log, cancel := newTestAppliance(t)
 	defer cancel()
 	defer app.closeAll()
 	host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
@@ -467,16 +466,7 @@ func TestDisconnectThenAbsentReraisesWithNewCause(t *testing.T) {
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 	center := applianceCenter(t, app)
 
-	rt := app.devices["moth"]
-	app.stop(rt) // retire the fake source so the pump goroutine ends
-	rt.superseded = false
-	var drain pumpResult
-	select {
-	case drain = <-app.pumpDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the retired pump to report done")
-	}
-	app.onPumpDone(pumpResult{rt: drain.rt, err: capture.ErrDeviceGone})
+	killDevice(t, app, log, "moth", capture.ErrDeviceGone)
 	if !app.prov.retryArmed.Load() {
 		t.Error("a lost-device pump failure did not arm a retry")
 	}
@@ -531,7 +521,7 @@ func TestRetryDownSkipsCardIndexEntry(t *testing.T) {
 // restart and re-notify the device every enumeration tick, flapping the down
 // condition forever; it is retried on a backoff instead (see retry_test.go).
 func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
-	app, _, cancel := newTestAppliance(t)
+	app, log, cancel := newTestAppliance(t)
 	defer cancel()
 	defer app.closeAll()
 	host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
@@ -539,18 +529,9 @@ func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 	center := applianceCenter(t, app)
 
-	rt := app.devices["moth"]
-	app.stop(rt) // retire the fake source so the pump goroutine ends
-	rt.superseded = false
-	var drain pumpResult
-	select {
-	case drain = <-app.pumpDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the retired pump to report done")
-	}
 	// The device is still present in the host listing, so this is a fault in a
 	// present device, not a loss.
-	app.onPumpDone(pumpResult{rt: drain.rt, err: errors.New("encoder fault")})
+	killDevice(t, app, log, "moth", errors.New("encoder fault"))
 
 	if app.prov.retryArmed.Load() {
 		t.Error("a persistent non-hardware failure armed the enumeration retry; it would flap the condition forever")
@@ -569,7 +550,7 @@ func TestPersistentNonHardwareFailureDoesNotArmEnumerationRetry(t *testing.T) {
 // the id and, finding it absent, reports a disconnect and arms a retry (a
 // same-index replug within one enumeration tick must still be retried).
 func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
-	app, _, cancel := newTestAppliance(t)
+	app, log, cancel := newTestAppliance(t)
 	defer cancel()
 	defer app.closeAll()
 	host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
@@ -577,19 +558,10 @@ func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
 	app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 	center := applianceCenter(t, app)
 
-	rt := app.devices["moth"]
-	app.stop(rt) // retire the fake source so the pump goroutine ends
-	rt.superseded = false
-	var drain pumpResult
-	select {
-	case drain = <-app.pumpDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the retired pump to report done")
-	}
 	// The unplug removed the device from the host listing, and the pump reported
 	// a raw errno rather than ErrDeviceGone.
 	host.devs = nil
-	app.onPumpDone(pumpResult{rt: drain.rt, err: errors.New("file descriptor in bad state")})
+	killDevice(t, app, log, "moth", errors.New("file descriptor in bad state"))
 
 	if !app.prov.retryArmed.Load() {
 		t.Error("a lost device (absent on re-resolve) did not arm a retry")
@@ -604,7 +576,7 @@ func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
 // save, not "when reconnected": retryDown never restarts a card-index entry
 // unattended, since its index may name different hardware after a reconnect.
 func TestCardIndexDeviceLostRestartsOnConfigSave(t *testing.T) {
-	app, _, cancel := newTestAppliance(t)
+	app, log, cancel := newTestAppliance(t)
 	defer cancel()
 	defer app.closeAll()
 	// byindex binds the bare card index hw:3,0, which matches the present card's
@@ -617,16 +589,7 @@ func TestCardIndexDeviceLostRestartsOnConfigSave(t *testing.T) {
 	}
 	center := applianceCenter(t, app)
 
-	rt := app.devices["byindex"]
-	app.stop(rt) // retire the fake source so the pump goroutine ends
-	rt.superseded = false
-	var drain pumpResult
-	select {
-	case drain = <-app.pumpDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the retired pump to report done")
-	}
-	app.onPumpDone(pumpResult{rt: drain.rt, err: capture.ErrDeviceGone})
+	killDevice(t, app, log, "byindex", capture.ErrDeviceGone)
 
 	act := center.Active()
 	if len(act) != 1 || act[0].Title != titleDisconnected {

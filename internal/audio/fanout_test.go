@@ -248,11 +248,11 @@ func TestFanoutMetersEachPeriodOnce(t *testing.T) {
 	}
 }
 
-func TestFanoutIdleConsumerGetsEmptyPeriods(t *testing.T) {
+func TestFanoutIdleConsumerGetsNothing(t *testing.T) {
 	t.Parallel()
 	// One active and one idle consumer: the active one sees every period's audio,
-	// the idle one the same number of periods, each empty, so its stage keeps its
-	// cadence without paying for a copy or a channel extraction.
+	// the idle one nothing until the feed ends, so its stage goroutine is never
+	// woken.
 	periods := [][]byte{{1, 0}, {2, 0}, {3, 0}}
 	src := NewFakeSource(48000, 1, periods)
 	streams := []FanoutStream{
@@ -266,26 +266,36 @@ func TestFanoutIdleConsumerGetsEmptyPeriods(t *testing.T) {
 	if got := drainAll(cons[0]); !bytes.Equal(got, []byte{1, 2, 3}) {
 		t.Errorf("active consumer got %v, want [1 2 3]", got)
 	}
-	n := 0
-	for {
-		p, err := cons[1].Read()
-		if err != nil {
-			break
-		}
-		n++
-		if len(p.Buf) != 0 || p.Frames != 0 {
-			t.Errorf("idle consumer period %d: got %d bytes, %d frames, want an empty period", n, len(p.Buf), p.Frames)
-		}
+	if p, err := cons[1].Read(); err == nil {
+		t.Errorf("idle consumer got a period (%d bytes, %d frames), want none before EOF", len(p.Buf), p.Frames)
 	}
-	if n != len(periods) {
-		t.Errorf("idle consumer got %d periods, want %d", n, len(periods))
+}
+
+func TestFanoutIdleConsumerNeverDrops(t *testing.T) {
+	t.Parallel()
+	// An idle stream's stage reads nothing while it waits, so were the fan-out
+	// to queue anything for it, the queue would fill and count drops that feed
+	// the host monitor's drop alert for a stream nobody plays.
+	dropped := new(atomic.Uint64)
+	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev",
+		[]FanoutStream{{Dropped: dropped, Active: func() bool { return false }}})
+	p := Period{Buf: []byte{7, 0}, Frames: 1}
+	for range 3 * fanoutBuffer {
+		f.distribute(p)
+	}
+	if got := len(cons[0].(*fanoutConsumer).ch); got != 0 {
+		t.Errorf("idle consumer has %d queued periods, want 0", got)
+	}
+	if got := dropped.Load(); got != 0 {
+		t.Errorf("idle consumer dropped %d periods, want 0", got)
 	}
 }
 
 func TestFanoutFollowsActiveFlag(t *testing.T) {
 	t.Parallel()
 	// The active flag is consulted per period, so a client that starts playing
-	// gets audio from the next period on.
+	// gets audio from the next period on, and a stream nobody plays is sent
+	// nothing.
 	var active atomic.Bool
 	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev",
 		[]FanoutStream{{Dropped: new(atomic.Uint64), Active: active.Load}})
@@ -295,11 +305,8 @@ func TestFanoutFollowsActiveFlag(t *testing.T) {
 	f.distribute(p)
 	// Check the queue first, so a missing period fails here instead of blocking
 	// the Read on a feed that is never closed.
-	if got := len(cons[0].(*fanoutConsumer).ch); got != 2 {
-		t.Fatalf("got %d queued periods, want 2 (one per distribute)", got)
-	}
-	if got, err := cons[0].Read(); err != nil || got.Frames != 0 || len(got.Buf) != 0 {
-		t.Errorf("period before activation: got %d frames, %d bytes, err %v; want an empty period", got.Frames, len(got.Buf), err)
+	if got := len(cons[0].(*fanoutConsumer).ch); got != 1 {
+		t.Fatalf("got %d queued periods, want 1 (the period after activation)", got)
 	}
 	if got, _ := cons[0].Read(); got.Frames != 1 || !bytes.Equal(got.Buf, []byte{7, 0}) {
 		t.Errorf("period after activation: got %v (%d frames), want [7 0] (1 frame)", got.Buf, got.Frames)
@@ -328,8 +335,12 @@ func TestFanoutDistributeAllocs(t *testing.T) {
 			p := Period{Buf: make([]byte, 4096), Frames: 1024}
 			got := testing.AllocsPerRun(100, func() {
 				f.distribute(p)
-				for _, c := range cons {
-					_, _ = c.Read()
+				// Only an active consumer is sent a period; reading an idle one
+				// would block.
+				for i, c := range cons {
+					if tt.active[i] {
+						_, _ = c.Read()
+					}
 				}
 			})
 			if got != tt.want {
@@ -357,6 +368,9 @@ func BenchmarkFanoutDistribute(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				f.distribute(p)
+				if !active {
+					continue // an idle consumer is sent nothing to read
+				}
 				for _, c := range cons {
 					_, _ = c.Read()
 				}

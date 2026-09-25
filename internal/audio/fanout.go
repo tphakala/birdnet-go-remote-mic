@@ -27,11 +27,11 @@ const fanoutBuffer = 8
 // per-period work off the capture read loop, so a slow encoder cannot blow the
 // capture period budget.
 //
-// A consumer whose stream has no client playing is handed an empty period in
-// place of the copy, and when no consumer has one the copy is skipped
-// altogether, so an unattended appliance allocates nothing per period here. The
-// empty period still flows through the consumer's pipeline, so its stage keeps
-// its per-period cadence and sees the idle stretch.
+// A consumer whose stream has no client playing is sent nothing, and when no
+// consumer has one the copy is skipped altogether, so an unattended appliance
+// allocates nothing per period here and never wakes an idle stream's stage.
+// The stage does not need the idle stretch to be visible: it resets its
+// encoder on the play session its gate reports (see pipeline.Gate).
 type Fanout struct {
 	src       Source
 	name      string
@@ -44,7 +44,7 @@ type Fanout struct {
 // with the owning stream runtime so a fan-out drop and a downstream frame drop
 // accumulate into the one "audio lost for this stream" counter the host monitor
 // reads. active is the stream's play gate (nil means always active); while it
-// reports false the consumer gets empty periods and costs no copy.
+// reports false the consumer is sent nothing and costs no copy.
 type fanoutConsumer struct {
 	rate, channels int
 	ch             chan Period
@@ -56,8 +56,8 @@ type fanoutConsumer struct {
 // counts the periods the consumer lost to a full queue; the caller shares it
 // with the stream's downstream frame-drop counter. Active reports whether the
 // stream has a client playing (rtspserver.ChanSource.Active): while it reports
-// false the consumer receives empty periods instead of audio its stage would
-// discard unencoded anyway. A nil Active means always active.
+// false the consumer is sent no periods, since its stage would discard them
+// unencoded anyway. A nil Active means always active.
 type FanoutStream struct {
 	Dropped *atomic.Uint64
 	Active  func() bool
@@ -88,7 +88,7 @@ func NewFanout(src Source, name string, streams []FanoutStream) (*Fanout, []Sour
 
 // Run reads the upstream source until it ends, copying each period and handing
 // the copy to every active consumer that can accept it without blocking (an idle
-// consumer gets an empty period instead). It returns when the source ends: nil
+// consumer is sent nothing). It returns when the source ends: nil
 // on EOF, else the source's error (a real capture closed on purpose returns
 // capture.ErrClosed, not EOF). On return it closes
 // every consumer feed so each consumer's Read reports EOF and its pipeline
@@ -114,28 +114,25 @@ func (f *Fanout) Run() error {
 // period until their pipeline reads it, so the period is copied once into fresh
 // storage the consumers share (never mutated after this point). The copy is
 // made for the first active consumer, so a period no client plays costs no
-// allocation. An idle consumer gets an empty period: zero frames make any
-// channel extraction downstream a no-op. A client that starts playing between
-// this check and its stage's own gate loses this period, plus any empty
-// periods still queued for a stage that had fallen behind, as it would had it
-// connected that much later; it gets no audio captured while the stream sat
-// idle.
+// allocation. An idle consumer is sent nothing, so it can neither wake its
+// stage nor fill its queue and count a drop. A client that starts playing
+// after this check loses this period, as it would had it connected that much
+// later; it gets no audio captured while the stream sat idle.
 func (f *Fanout) distribute(p Period) {
 	var cp Period
 	copied := false
 	for _, c := range f.consumers {
-		var send Period
-		if c.active == nil || c.active() {
-			if !copied {
-				buf := make([]byte, len(p.Buf))
-				copy(buf, p.Buf)
-				cp = Period{Buf: buf, Frames: p.Frames}
-				copied = true
-			}
-			send = cp
+		if c.active != nil && !c.active() {
+			continue
+		}
+		if !copied {
+			buf := make([]byte, len(p.Buf))
+			copy(buf, p.Buf)
+			cp = Period{Buf: buf, Frames: p.Frames}
+			copied = true
 		}
 		select {
-		case c.ch <- send:
+		case c.ch <- cp:
 		default:
 			// The consumer's queue is full: its encoder or client is not keeping up.
 			// Drop this period for that stream only; the shared reader must not block

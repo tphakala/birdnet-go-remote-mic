@@ -21,8 +21,15 @@ type ChanSource struct {
 	ch        chan pipeline.Frame
 	done      chan struct{}
 	closeOnce sync.Once
-	active    atomic.Bool
+	// state packs the active flag (bit 0) with the play session number (the
+	// remaining bits), so Session reads the pair in one atomic load: a stage
+	// could otherwise see a new session's flag with the old session's number.
+	state atomic.Uint64
 }
+
+// sessionActive is the active flag in ChanSource.state; the play session
+// number is the value shifted right by one.
+const sessionActive = 1
 
 // NewChanSource returns a ChanSource buffering up to capacity frames.
 func NewChanSource(capacity int) *ChanSource {
@@ -55,7 +62,7 @@ func (c *ChanSource) Next(ctx context.Context) (pipeline.Frame, error) {
 // returns false only when the buffer is full (a slow client); the caller
 // should keep capturing and let the writer fall behind.
 func (c *ChanSource) Push(f pipeline.Frame) bool {
-	if !c.active.Load() {
+	if !c.Active() {
 		return true
 	}
 	cp := pipeline.Frame{
@@ -72,23 +79,45 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 }
 
 // Active reports whether a client is playing, so frames pushed now are queued
-// for it (buffer space permitting) rather than discarded. The pipeline stage
-// polls it once per period and skips encoding while it is false (see
-// pipeline.Stage); it is one atomic load.
-func (c *ChanSource) Active() bool { return c.active.Load() }
+// for it (buffer space permitting) rather than discarded. The fan-out polls it
+// once per period and hands an idle stream nothing; it is one atomic load.
+func (c *ChanSource) Active() bool { return c.state.Load()&sessionActive != 0 }
+
+// Session reports whether a client is playing and which play session it is.
+// The session number advances on every activation and is kept across a
+// deactivation, so a pipeline stage that compares it with the session it last
+// encoded for sees every new client, even one whose PLAY landed within a
+// period of the previous client's teardown (see pipeline.Gate). It is one
+// atomic load.
+func (c *ChanSource) Session() (active bool, session uint64) {
+	s := c.state.Load()
+	return s&sessionActive != 0, s >> 1
+}
 
 // SetActive toggles delivery. Activation first drains any frames left over
-// from a previous session.
+// from a previous session, then starts a new play session.
 func (c *ChanSource) SetActive(active bool) {
 	if !active {
-		c.active.Store(false)
+		c.update(func(s uint64) uint64 { return s &^ sessionActive })
 		return
 	}
 	for {
 		select {
 		case <-c.ch:
 		default:
-			c.active.Store(true)
+			c.update(func(s uint64) uint64 { return ((s>>1)+1)<<1 | sessionActive })
+			return
+		}
+	}
+}
+
+// update applies f to state atomically. The play and teardown of one path's
+// successive clients run on different connection goroutines, so a plain
+// load-then-store could lose a session bump.
+func (c *ChanSource) update(f func(uint64) uint64) {
+	for {
+		old := c.state.Load()
+		if c.state.CompareAndSwap(old, f(old)) {
 			return
 		}
 	}

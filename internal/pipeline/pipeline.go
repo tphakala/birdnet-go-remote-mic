@@ -33,20 +33,32 @@ type Frame struct {
 // Stage consumes capture periods from src and emits Frames until src ends
 // (io.EOF, returned as nil) or emit returns an error.
 //
-// active gates the work: it is consulted once per period, right after the
-// period is read, and a period read while it reports false is drained but not
-// packetized or encoded. That is how a stream with no playing client costs
-// only the read: its frames would be discarded downstream anyway. A stateful
-// stage (Opus) that has seen at least one inactive period starts from a clean
-// state on the next active one, so a client connecting to an idle stream gets
-// no encoder history from before it connected. (A teardown and a new PLAY that
-// both land within one period are not seen as idle; that client continues the
-// running stream, as it did before the gate existed. If the fan-out saw the
-// gap and handed the stage an empty period, the continued stream also skips
-// that period's samples: a PCM stream has a one-period gap, an Opus frame
-// joins the samples either side of it.) A nil active means always active.
+// gate gates the work: it is consulted once per period, right after the period
+// is read, and a period read while it reports inactive is drained but not
+// packetized or encoded, since its frames would be discarded downstream anyway.
+// A stateful stage (Opus) starts from a clean state whenever the session
+// changes, so every client gets the stream a freshly built encoder would
+// produce from its first period on, with no encoder history or partial frame
+// from an earlier client. That holds even when a teardown and the next PLAY
+// both land between two period reads, so the stage never sees the stream idle.
+// A nil gate means always active, in one session.
 type Stage interface {
-	Run(src audio.Source, active func() bool, emit func(Frame) error) error
+	Run(src audio.Source, gate Gate, emit func(Frame) error) error
+}
+
+// Gate reports whether a client is playing the stream a stage feeds, and which
+// play session it is (rtspserver.ChanSource.Session). The session changes on
+// every activation, so a stage comparing it with the session it last encoded
+// for sees each new client.
+type Gate func() (active bool, session uint64)
+
+// open consults gate for the period just read; a nil gate is always open, in
+// session 0.
+func (g Gate) open() (active bool, session uint64) {
+	if g == nil {
+		return true, 0
+	}
+	return g()
 }
 
 // maxL16Payload caps an L16 RTP payload at 15360 bytes (20 ms of mono 384 kHz).
@@ -58,15 +70,14 @@ const maxL16Payload = 15360
 // opusFrameSamples is one 20 ms Opus frame at 48 kHz.
 const opusFrameSamples = 960
 
-type pcmStage struct {
-	channels int
-}
+type pcmStage struct{}
 
 // NewPCM returns an L16 passthrough stage that byte-swaps little-endian capture
-// PCM into big-endian L16 RTP payloads.
-func NewPCM(channels int) Stage { return &pcmStage{channels: channels} }
+// PCM into big-endian L16 RTP payloads. It takes the channel count from its
+// source (Negotiated), so one stage serves any channel selection.
+func NewPCM() Stage { return pcmStage{} }
 
-func (p *pcmStage) Run(src audio.Source, active func() bool, emit func(Frame) error) error {
+func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 	rate, ch := src.Negotiated()
 	frameBytes := 2 * ch
 	maxBytes := (rate / 50) * frameBytes // 20 ms
@@ -86,9 +97,9 @@ func (p *pcmStage) Run(src audio.Source, active func() bool, emit func(Frame) er
 			}
 			return err
 		}
-		// The packetizer keeps no stream state between periods, so an idle stretch
-		// needs no resume step.
-		if active != nil && !active() {
+		// The packetizer keeps no stream state between periods, so a new session
+		// needs no reset.
+		if on, _ := gate.open(); !on {
 			continue
 		}
 		captured := time.Now()
@@ -104,8 +115,22 @@ func (p *pcmStage) Run(src audio.Source, active func() bool, emit func(Frame) er
 	}
 }
 
+// opusEncoder is the part of *opus.Encoder a stage uses, so a test can count
+// the encoder's work rather than infer it from the emitted frames.
+type opusEncoder interface {
+	Encode(pcm []int16, buf []byte) (int, error)
+	Reset()
+}
+
 type opusStage struct {
 	bitrate int
+	// newEncoder builds the stage's encoder; nil means newOpusEncoder.
+	newEncoder func(opus.EncoderConfig) (opusEncoder, error)
+}
+
+// newOpusEncoder builds the go-opus encoder a production stage runs.
+func newOpusEncoder(cfg opus.EncoderConfig) (opusEncoder, error) {
+	return opus.NewEncoder(cfg)
 }
 
 // NewOpus returns an Opus encode stage. It requires 48 kHz capture with one or
@@ -113,16 +138,20 @@ type opusStage struct {
 // samples per channel); a trailing partial frame at teardown is dropped.
 func NewOpus(cfg config.Opus) Stage { return &opusStage{bitrate: cfg.Bitrate} }
 
-func (o *opusStage) Run(src audio.Source, active func() bool, emit func(Frame) error) error {
+func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 	rate, ch := src.Negotiated()
 	if rate != 48000 || ch < 1 || ch > 2 {
 		return fmt.Errorf("pipeline: opus requires 48000 Hz with 1 or 2 channels, got %d Hz %d ch", rate, ch)
 	}
 	bitrate := config.Opus{Bitrate: o.bitrate}.EffectiveBitrate(ch)
+	newEncoder := o.newEncoder
+	if newEncoder == nil {
+		newEncoder = newOpusEncoder
+	}
 	// The encoder is built up front even though a stream usually starts with no
 	// client, so a configuration the encoder rejects fails the stream at open
 	// rather than later, at some client's PLAY.
-	enc, err := opus.NewEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: bitrate})
+	enc, err := newEncoder(opus.EncoderConfig{SampleRate: 48000, Channels: ch, Bitrate: bitrate})
 	if err != nil {
 		return err
 	}
@@ -135,10 +164,13 @@ func (o *opusStage) Run(src audio.Source, active func() bool, emit func(Frame) e
 	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
 	acc := make([]int16, 0, frameSamples) // reused accumulator
 	encBuf := make([]byte, 4000)          // one Opus packet fits easily
-	// idle records that a period was skipped since the last active one, so the
-	// next active period resets the encoder and drops the stale partial frame: a
-	// new client's stream then starts exactly as a freshly built encoder's would.
-	idle := false
+	// session is the play session the encoder state belongs to. A period of any
+	// other session resets the encoder and drops the stale partial frame, so a
+	// new client's stream starts exactly as a freshly built encoder's would. It
+	// starts at 0, which a feed never reports while active, so the first client
+	// resets the fresh encoder too; that is harmless. (A nil gate stays in
+	// session 0 and never resets.)
+	var session uint64
 
 	for {
 		period, err := src.Read()
@@ -148,14 +180,14 @@ func (o *opusStage) Run(src audio.Source, active func() bool, emit func(Frame) e
 			}
 			return err
 		}
-		if active != nil && !active() {
-			idle = true
+		on, s := gate.open()
+		if !on {
 			continue
 		}
-		if idle {
+		if s != session {
 			enc.Reset()
 			acc = acc[:0]
-			idle = false
+			session = s
 		}
 		captured := time.Now()
 		// Fill the accumulator up to the rest of the current frame per pass, so the

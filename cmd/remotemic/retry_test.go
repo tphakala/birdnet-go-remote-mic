@@ -612,6 +612,45 @@ func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
 	})
 }
 
+// TestRetryQuietPumpDeathStaysQuiet pins the pump-death half of the retry log
+// gate: a device that opens on every attempt and dies right after logs its
+// death only on the failures logAttempt picks (the first retryLogFirst, then
+// every retryLogEvery-th), like a failed open does. Without the gate in
+// onPumpDone, a device that keeps dying would log every attempt, forever.
+func TestRetryQuietPumpDeathStaysQuiet(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		out := captureLog(t)
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		app.open = fakeOpenerWith(log, func(rate, channels int) audio.Source {
+			return failingSource{rate, channels}
+		})
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
+
+		// Long enough for failure retryLogEvery+1 (the capped backoff repeats),
+		// short of the one after it.
+		var elapsed time.Duration
+		for n := 1; n <= retryLogEvery; n++ {
+			elapsed += backoffDelay(n)
+		}
+		runFor(t, app, elapsed+backoffDelay(retryLogEvery+1)/2)
+
+		st := app.retries["moth"]
+		if st == nil || st.failures != retryLogEvery+1 {
+			t.Fatalf("retry state = %+v, want %d failures", st, retryLogEvery+1)
+		}
+		want := 0
+		for n := 1; n <= st.failures; n++ {
+			if logAttempt(n) {
+				want++
+			}
+		}
+		if got := strings.Count(out.String(), `device "moth" failed:`); got != want {
+			t.Errorf("logged deaths = %d over %d failures, want %d (only the failures logAttempt picks)\n%s", got, st.failures, want, out.String())
+		}
+	})
+}
+
 // TestRetryConfigSaveRecoversRetryingDevice pins that a config save that brings
 // back a device with a retry in flight, whether it is backing off or waiting
 // out its settle, clears its condition exactly once and ends the retry: the

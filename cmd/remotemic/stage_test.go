@@ -45,7 +45,7 @@ func TestFanoutStreamsWiresFeedAndDrops(t *testing.T) {
 // and the DESCRIBE response cannot drift apart per mode.
 func TestBuildStagePayloadType(t *testing.T) {
 	for _, mode := range []config.Mode{config.ModePCM, config.ModeOpus} {
-		_, payloadType := buildStage(&config.Stream{Mode: mode, Opus: config.Opus{Bitrate: 64000}}, 1)
+		_, payloadType := buildStage(&config.Stream{Mode: mode, Opus: config.Opus{Bitrate: 64000}})
 		if want := pipeline.PayloadType(mode); payloadType != want {
 			t.Errorf("buildStage(%q) payloadType = %d, want %d", mode, payloadType, want)
 		}

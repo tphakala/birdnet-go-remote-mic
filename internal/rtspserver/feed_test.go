@@ -79,3 +79,33 @@ func TestCloseWinsOverBufferedFrame(t *testing.T) {
 		t.Fatalf("Next after Close = %v, want ErrSourceClosed even with a frame queued", err)
 	}
 }
+
+// TestSessionAdvancesOnEveryActivation pins the play session the pipeline stage
+// keys its encoder reset on: each SetActive(true) starts a new session, even
+// one that follows a teardown so closely that no stage saw the stream idle,
+// and a deactivation keeps the session number, so a stage reading a period
+// after a teardown still sees the session it last encoded for.
+func TestSessionAdvancesOnEveryActivation(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	if on, s := c.Session(); on || s != 0 {
+		t.Fatalf("new source: Session() = (%v, %d), want (false, 0)", on, s)
+	}
+	c.SetActive(true)
+	on, first := c.Session()
+	if !on || first == 0 {
+		t.Fatalf("after the first PLAY: Session() = (%v, %d), want (true, nonzero)", on, first)
+	}
+	c.SetActive(false)
+	if on, s := c.Session(); on || s != first {
+		t.Fatalf("after teardown: Session() = (%v, %d), want (false, %d)", on, s, first)
+	}
+	c.SetActive(true)
+	on, second := c.Session()
+	if !on || second == first {
+		t.Fatalf("after the second PLAY: Session() = (%v, %d), want (true, not %d)", on, second, first)
+	}
+	if c.Active() != on {
+		t.Errorf("Active() = %v, want it to match Session()'s %v", c.Active(), on)
+	}
+}

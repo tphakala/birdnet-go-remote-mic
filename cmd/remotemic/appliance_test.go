@@ -163,7 +163,7 @@ func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Sour
 			frames := rtspserver.NewChanSource(64)
 			streams = append(streams, &streamRuntime{
 				stream: s,
-				stage:  pipeline.NewPCM(len(s.Channels)),
+				stage:  pipeline.NewPCM(),
 				frames: frames,
 				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Frames: frames},
 			})
@@ -269,8 +269,8 @@ func TestApplianceReconcileStartsDevice(t *testing.T) {
 
 // recordedGate is the active gate the pump handed one stream's stage.
 type recordedGate struct {
-	path   string
-	active func() bool
+	path string
+	gate pipeline.Gate
 }
 
 // gateRecorder is a pipeline.Stage that hands the active gate it was given to
@@ -281,8 +281,8 @@ type gateRecorder struct {
 	gates chan<- recordedGate
 }
 
-func (g gateRecorder) Run(src audio.Source, active func() bool, _ func(pipeline.Frame) error) error {
-	g.gates <- recordedGate{path: g.path, active: active}
+func (g gateRecorder) Run(src audio.Source, gate pipeline.Gate, _ func(pipeline.Frame) error) error {
+	g.gates <- recordedGate{path: g.path, gate: gate}
 	for {
 		if _, err := src.Read(); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -322,14 +322,14 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 
 	app.reconcile(&config.Config{Devices: []config.Device{dev}})
 
-	got := make(map[string]func() bool)
+	got := make(map[string]pipeline.Gate)
 	for range dev.Streams {
 		select {
 		case r := <-gates:
-			if r.active == nil {
+			if r.gate == nil {
 				t.Fatalf("the pump passed stream %s a nil gate: its stage would encode with no client playing", r.path)
 			}
-			got[r.path] = r.active
+			got[r.path] = r.gate
 		case <-time.After(2 * time.Second):
 			t.Fatalf("the pump ran %d of %d stream stages", len(got), len(dev.Streams))
 		}
@@ -342,9 +342,9 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 	// ("" for none).
 	check := func(when, open string) {
 		t.Helper()
-		for path, active := range got {
-			if want := path == open; active() != want {
-				t.Errorf("%s: gate of %s = %v, want %v", when, path, active(), want)
+		for path, gate := range got {
+			if on, _ := gate(); on != (path == open) {
+				t.Errorf("%s: gate of %s = %v, want %v", when, path, on, path == open)
 			}
 		}
 	}
@@ -352,8 +352,16 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 	for _, path := range []string{"/a", "/a2"} {
 		feeds[path].SetActive(true)
 		check("while only "+path+" plays", path)
+		_, first := got[path]()
 		feeds[path].SetActive(false)
 		check("after "+path+" stops", "")
+		// The gate carries the feed's play session, so the stage sees the next
+		// client as a new session (its encoder reset) even across a quick replay.
+		feeds[path].SetActive(true)
+		if _, next := got[path](); next == first {
+			t.Errorf("gate of %s kept session %d across a new PLAY, want a new session", path, first)
+		}
+		feeds[path].SetActive(false)
 	}
 }
 
