@@ -75,9 +75,14 @@ type Lock struct {
 // the working directory is known, as every result is).
 func PathFor(cfgPath string) string {
 	// Anchor a relative spelling first, so it yields the same lock path string as
-	// the absolute one (EvalSymlinks keeps a relative input relative).
-	if abs, err := filepath.Abs(cfgPath); err == nil {
-		cfgPath = abs
+	// the absolute one (EvalSymlinks keeps a relative input relative). Join by
+	// hand rather than with filepath.Abs, which cleans ".." as text: after a
+	// symlink, the kernel and EvalSymlinks resolve ".." against the link's
+	// target, so cleaning first could name a different file than the one opened.
+	if !filepath.IsAbs(cfgPath) {
+		if wd, err := os.Getwd(); err == nil {
+			cfgPath = wd + string(filepath.Separator) + cfgPath
+		}
 	}
 	if resolved, err := filepath.EvalSymlinks(cfgPath); err == nil {
 		return resolved + ".lock"

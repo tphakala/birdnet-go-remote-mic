@@ -263,8 +263,9 @@ func TestTryAcquireOpenError(t *testing.T) {
 }
 
 // TestLockEditsSerializes asserts two edit-lock holders serialize: while one
-// holds the lock a no-wait attempt gets ErrHeld and a waiting attempt stays
-// blocked, and the waiter gets the lock once the first holder releases.
+// holds the lock a no-wait attempt gets ErrHeld, and a waiter gets the lock once
+// the first holder releases. That the waiter actually blocks meanwhile is
+// pinned by TestLockEditsWaitsForRelease.
 func TestLockEditsSerializes(t *testing.T) {
 	t.Parallel()
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -285,14 +286,6 @@ func TestLockEditsSerializes(t *testing.T) {
 		r, err := LockEdits(cfgPath, time.Minute)
 		got <- result{r, err}
 	}()
-	select {
-	case r := <-got:
-		if r.release != nil {
-			_ = r.release()
-		}
-		t.Fatalf("second LockEdits returned while the first held the lock: err = %v", r.err)
-	default:
-	}
 
 	if err := release(); err != nil {
 		t.Fatalf("first release: %v", err)
@@ -394,6 +387,23 @@ func TestEditPathForConverges(t *testing.T) {
 		if got := EditPathFor(filepath.Join(linkDir, base)); got != want {
 			t.Errorf("%s via symlinked dir: EditPathFor = %q, want %q", base, got, want)
 		}
+	}
+
+	// A ".." after a symlink resolves against the link's target, as the kernel
+	// does when opening it: lk points at real/sub, so lk/../config.yaml is
+	// real/config.yaml. Cleaning the text first would give dir/config.yaml.
+	sub := filepath.Join(realDir, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sub, filepath.Join(dir, "lk")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	want := EditPathFor(existing)
+	// Built as a string: filepath.Join would clean it to "config.yaml".
+	if got := EditPathFor("lk/../config.yaml"); got != want {
+		t.Errorf("lk/../config.yaml: EditPathFor = %q, want %q (the file the kernel opens)", got, want)
 	}
 }
 
