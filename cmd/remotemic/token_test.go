@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -668,7 +669,7 @@ func TestTokenRunningStartingUp(t *testing.T) {
 	stubStdin(t, tokenNew+"\n", false)
 
 	code, _, errOut := runCLI("token", "set", flagConfig, path)
-	if code != 1 || !strings.Contains(errOut, "starting up") {
+	if code != 1 || !strings.Contains(errOut, "starting up, or another token command is using this config") {
 		t.Fatalf("exit %d stderr %q, want a starting-up error", code, errOut)
 	}
 	if got := loadToken(t, path); got != tokenOld {
@@ -891,7 +892,7 @@ func TestTokenWriteRefusesOtherOwner(t *testing.T) {
 				t.Fatalf("exit %d stderr %q, want 1", code, errOut)
 			}
 			wantCmd := "remote-mic token " + tc[0] + " --config " + path
-			if !strings.Contains(errOut, "is owned by") || !strings.Contains(errOut, "sudo -u ") || !strings.Contains(errOut, wantCmd) {
+			if !strings.Contains(errOut, "is owned by") || !strings.Contains(errOut, "with the same flags: sudo -u ") || !strings.Contains(errOut, wantCmd) {
 				t.Fatalf("stderr %q, want an owner refusal suggesting %q", errOut, wantCmd)
 			}
 			if stdout != "" {
@@ -928,6 +929,11 @@ func TestTokenWriteOwnerMatchProceeds(t *testing.T) {
 // ahead and creates it.
 func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
 	path := tempConfig(t)
+	// A private directory: t.TempDir honors the umask, and a group-writable one
+	// counts as shared, which the owner check deliberately does not refuse.
+	if err := os.Chmod(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stubEUID(t, os.Geteuid()+1)
 	code, _, errOut := runCLI("token", "generate", flagConfig, path)
 	if code != 1 || !strings.Contains(errOut, "the directory "+filepath.Dir(path)) {
@@ -948,6 +954,31 @@ func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
 	}
 }
 
+// TestTokenWriteMissingConfigSharedDirProceeds asserts that with no config yet
+// in a shared directory (sticky or group/world-writable, such as /tmp), the
+// directory's owner is not taken as the appliance account, so another account's
+// command goes ahead and creates the config.
+func TestTokenWriteMissingConfigSharedDirProceeds(t *testing.T) {
+	for _, mode := range []os.FileMode{0o777 | os.ModeSticky, 0o700 | os.ModeSticky, 0o770, 0o707} {
+		t.Run(mode.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Chmod(dir, mode); err != nil {
+				t.Fatalf("chmod %v: %v", mode, err)
+			}
+			path := filepath.Join(dir, "config.yaml")
+			stubEUID(t, os.Geteuid()+1)
+
+			code, stdout, errOut := runCLI("token", "generate", flagConfig, path)
+			if code != 0 {
+				t.Fatalf("exit %d stderr %q, want 0 in a shared directory", code, errOut)
+			}
+			if got := loadToken(t, path); got == "" || got != strings.TrimSpace(stdout) {
+				t.Fatalf("saved token %q, printed %q, want the printed token saved", got, stdout)
+			}
+		})
+	}
+}
+
 // TestTokenGetIgnoresOwner asserts the read-only token get is not refused for
 // an account other than the owner (one that can read the file, such as root).
 func TestTokenGetIgnoresOwner(t *testing.T) {
@@ -961,52 +992,105 @@ func TestTokenGetIgnoresOwner(t *testing.T) {
 	}
 }
 
-// TestTokenFileEditWaitsForEditLock asserts two token commands editing the file
-// under an appliance without a management API serialize on the edit lock: a
-// command started while another holds it waits, then applies its change once
-// the holder releases, rather than racing it (last writer wins).
-func TestTokenFileEditWaitsForEditLock(t *testing.T) {
+// stubEditLockWait sets how long saveToken waits for the edit lock. Tests that
+// call it (or that depend on the default) are not parallel: the wait is global.
+func stubEditLockWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := editLockWait
+	editLockWait = d
+	t.Cleanup(func() { editLockWait = prev })
+}
+
+// TestSaveTokenRefusesWhileEditLockHeld asserts a file edit takes the edit lock:
+// with another holder and no wait, it fails with the retry message and leaves
+// the config untouched.
+func TestSaveTokenRefusesWhileEditLockHeld(t *testing.T) {
 	path := tempConfig(t)
 	seedConfigWithToken(t, path, tokenOld)
-	holdLock(t, path, &runlock.State{PID: 4242})
-	stubStdin(t, tokenNew+"\n", false)
-
+	stubEditLockWait(t, 0)
 	release, err := runlock.LockEdits(path, 0)
 	if err != nil {
 		t.Fatalf("LockEdits: %v", err)
 	}
-	type result struct {
-		code   int
-		stderr string
-	}
-	done := make(chan result, 1)
-	go func() {
-		code, _, errOut := runCLI("token", "set", flagConfig, path)
-		done <- result{code, errOut}
-	}()
-	select {
-	case r := <-done:
-		_ = release()
-		t.Fatalf("token set finished (exit %d stderr %q) while another edit held the lock", r.code, r.stderr)
-	default:
+	t.Cleanup(func() {
+		if err := release(); err != nil {
+			t.Errorf("release: %v", err)
+		}
+	})
+
+	err = saveToken(path, tokenNew, nil)
+	if err == nil || !strings.Contains(err.Error(), "another token command is still editing") {
+		t.Fatalf("saveToken while the edit lock is held: err = %v, want the still-editing error", err)
 	}
 	if got := loadToken(t, path); got != tokenOld {
-		_ = release()
-		t.Fatalf("token = %q while the edit lock was held, want %q", got, tokenOld)
+		t.Fatalf("token = %q, want %q unchanged", got, tokenOld)
 	}
+}
 
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
+// TestSaveTokenSerializesEdits asserts two concurrent file edits of one config
+// run one after the other: the second's load and check start only after the
+// first has saved, so it sees the first's token instead of both reading the old
+// one and the last writer silently discarding the other's change.
+func TestSaveTokenSerializesEdits(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubEditLockWait(t, time.Minute)
+
+	const firstToken = "first-writer-token-1"
+	inside := make(chan struct{})
+	unblock := make(chan struct{})
+	var unblocked atomic.Bool
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- saveToken(path, firstToken, func(string) error {
+			close(inside)
+			<-unblock
+			return nil
+		})
+	}()
+	<-inside
+
+	type seen struct {
+		cur        string
+		afterFirst bool
 	}
+	secondSaw := make(chan seen, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- saveToken(path, tokenNew, func(cur string) error {
+			secondSaw <- seen{cur, unblocked.Load()}
+			return nil
+		})
+	}()
+
+	// Give an unserialized second edit room to run its check while the first is
+	// still inside. This window can only let a broken lock pass by luck; it
+	// never delays or fails a correct one.
 	select {
-	case r := <-done:
-		if r.code != 0 {
-			t.Fatalf("exit %d stderr %q after release, want 0", r.code, r.stderr)
-		}
-	case <-time.After(editLockWait + 5*time.Second):
-		t.Fatal("token set did not finish after the edit lock was released")
+	case s := <-secondSaw:
+		close(unblock)
+		<-firstDone
+		<-secondDone
+		t.Fatalf("second edit ran its check (saw %q) while the first was still inside", s.cur)
+	case <-time.After(250 * time.Millisecond):
+	}
+	unblocked.Store(true)
+	close(unblock)
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first saveToken: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second saveToken: %v", err)
+	}
+	s := <-secondSaw
+	if !s.afterFirst {
+		t.Fatal("second edit ran its check before the first was unblocked")
+	}
+	if s.cur != firstToken {
+		t.Fatalf("second edit saw token %q, want the first edit's %q", s.cur, firstToken)
 	}
 	if got := loadToken(t, path); got != tokenNew {
-		t.Fatalf("token = %q, want %q", got, tokenNew)
+		t.Fatalf("final token = %q, want the second edit's %q", got, tokenNew)
 	}
 }

@@ -35,8 +35,9 @@ var (
 
 // editLockWait bounds how long a file edit waits for another token command's
 // edit of the same config to finish. An edit takes milliseconds, so a few
-// seconds covers a queue of them without hanging on a stuck holder.
-const editLockWait = 5 * time.Second
+// seconds covers a queue of them without hanging on a stuck holder. A variable
+// only so tests can shorten it.
+var editLockWait = 5 * time.Second
 
 // liveTimeout bounds a token change sent to a running appliance. The API
 // persists and enforces the token before it answers, then waits for the live
@@ -392,7 +393,9 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 		return res, withPermHint(err)
 	}
 	if !ok {
-		return res, errors.New("the appliance is starting up; try again in a few seconds")
+		// Held with nothing published: an appliance mid-startup, or another token
+		// command holding the lock across its own file edit.
+		return res, errors.New("the appliance is starting up, or another token command is using this config; try again in a few seconds")
 	}
 	res.pid = st.PID
 	if st.MgmtAddr == "" {
@@ -498,12 +501,19 @@ func absPath(cfgPath string) string {
 // that the appliance's own account then cannot open. It runs before any lock
 // file is created or touched. A path that cannot be examined is left to the
 // command itself to report.
+//
+// A parent directory that is sticky or group- or world-writable (such as /tmp)
+// is shared between accounts, so its owner is no proxy for the appliance
+// account and the fallback does not refuse there.
 func checkOwner(cfgPath, command string) error {
 	what := absPath(cfgPath)
 	fi, err := os.Stat(cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
 		dir := filepath.Dir(what)
 		fi, err = os.Stat(dir) // follows symlinks, so this is the resolved directory
+		if err == nil && (fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o022 != 0) {
+			return nil
+		}
 		what = "the directory " + dir + " (where " + filepath.Base(what) + " will be created)"
 	}
 	if err != nil {
@@ -522,7 +532,7 @@ func checkOwner(cfgPath, command string) error {
 	if u, err := user.LookupId(uid); err == nil && u.Username != "" {
 		who, sudoUser = fmt.Sprintf("%q (uid %s)", u.Username, uid), u.Username
 	}
-	return fmt.Errorf("%s is owned by %s; run this command as that account: sudo -u %s remote-mic %s --config %s",
+	return fmt.Errorf("%s is owned by %s; run this command as that account, with the same flags: sudo -u %s remote-mic %s --config %s",
 		what, who, sudoUser, command, absPath(cfgPath))
 }
 

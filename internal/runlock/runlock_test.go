@@ -310,6 +310,93 @@ func TestLockEditsSerializes(t *testing.T) {
 	}
 }
 
+// TestLockEditsWaitsForRelease asserts a waiting LockEdits keeps retrying while
+// the lock is held and gets it once the holder releases, rather than giving up
+// on its first attempt.
+func TestLockEditsWaitsForRelease(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	release, err := LockEdits(cfgPath, 0)
+	if err != nil {
+		t.Fatalf("first LockEdits: %v", err)
+	}
+	const delay = 3 * retryInterval
+	released := make(chan error, 1)
+	start := time.Now()
+	time.AfterFunc(delay, func() { released <- release() })
+
+	release2, err := LockEdits(cfgPath, time.Minute)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("waiting LockEdits: %v, want the lock after the holder released", err)
+	}
+	t.Cleanup(func() {
+		if err := release2(); err != nil {
+			t.Errorf("second release: %v", err)
+		}
+	})
+	if err := <-released; err != nil {
+		t.Errorf("first release: %v", err)
+	}
+	if elapsed < delay {
+		t.Fatalf("waiting LockEdits returned after %v, want at least %v (the holder's release)", elapsed, delay)
+	}
+}
+
+// TestLockEditsGivesUpWhileHeld asserts a positive wait that expires while the
+// lock is still held returns ErrHeld, after waiting it out.
+func TestLockEditsGivesUpWhileHeld(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	release, err := LockEdits(cfgPath, 0)
+	if err != nil {
+		t.Fatalf("first LockEdits: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := release(); err != nil {
+			t.Errorf("release: %v", err)
+		}
+	})
+	const wait = 3 * retryInterval
+	start := time.Now()
+	if _, err := LockEdits(cfgPath, wait); !errors.Is(err, ErrHeld) {
+		t.Fatalf("LockEdits while held: err = %v, want ErrHeld", err)
+	}
+	if elapsed := time.Since(start); elapsed < wait {
+		t.Fatalf("LockEdits gave up after %v, want it to wait at least %v", elapsed, wait)
+	}
+}
+
+// TestEditPathForConverges asserts a relative spelling and a spelling through a
+// symlinked directory map to the same edit lock as the absolute path, both for
+// an existing config and for one not created yet. Not parallel: it changes the
+// working directory.
+func TestEditPathForConverges(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(realDir, "config.yaml")
+	if err := os.WriteFile(existing, []byte("listen: :8554\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(realDir)
+	for _, base := range []string{"config.yaml", "not-yet.yaml"} {
+		want := EditPathFor(filepath.Join(realDir, base))
+		if got := EditPathFor(base); got != want {
+			t.Errorf("%s relative: EditPathFor = %q, want %q", base, got, want)
+		}
+		if got := EditPathFor(filepath.Join(linkDir, base)); got != want {
+			t.Errorf("%s via symlinked dir: EditPathFor = %q, want %q", base, got, want)
+		}
+	}
+}
+
 // TestLockEditsIndependentOfRunLock asserts the edit lock never contends with
 // the run lock an appliance holds for its whole life, lives at EditPathFor with
 // mode 0600, and survives release (it is never unlinked).
