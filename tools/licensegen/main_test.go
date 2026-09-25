@@ -38,18 +38,22 @@ func TestClassify(t *testing.T) {
 // name fails generation, while an unrecognized notice or patent file does not.
 func TestUnrecognizedLicenseFails(t *testing.T) {
 	t.Parallel()
-	const license = "LICENSE"
+	const license, notice = "LICENSE", "NOTICE"
 	odd := component{name: "example.com/odd", files: []licenseFile{{name: license, text: "All rights reserved."}}}
 	if err := checkRecognized(odd); !errors.Is(err, ErrUnrecognized) {
 		t.Errorf("unrecognized LICENSE: err = %v, want ErrUnrecognized", err)
 	}
 	withNotice := component{name: "example.com/ok", files: []licenseFile{
 		{name: license, text: "Permission is hereby granted, free of charge"},
-		{name: "NOTICE", text: "This product includes software developed by someone."},
+		{name: notice, text: "This product includes software developed by someone."},
 		{name: "PATENTS", text: "Additional IP Rights Grant (Patents)"},
 	}}
 	if err := checkRecognized(withNotice); err != nil {
 		t.Errorf("recognized LICENSE with NOTICE and PATENTS: err = %v, want nil", err)
+	}
+	noticeOnly := component{name: "example.com/bare", files: []licenseFile{{name: notice, text: "Copyright someone."}}}
+	if err := checkRecognized(noticeOnly); !errors.Is(err, ErrNoLicense) {
+		t.Errorf("NOTICE only: err = %v, want ErrNoLicense", err)
 	}
 	if got := componentLicense(withNotice); got != "MIT" {
 		t.Errorf("componentLicense = %q, want MIT (notice and patent files name no license)", got)

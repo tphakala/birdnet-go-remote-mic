@@ -27,11 +27,14 @@ env:
 permissions:
   contents: read
 
-# A newer push to the same branch (a Dependabot rebase, say) supersedes a run
-# still in flight, so a regenerate job never pushes onto a branch that moved.
+# On a pull request, a newer push supersedes a run still in flight, so a
+# regenerate job rarely races a branch that moved (and if it does, git rejects
+# the non-fast-forward push). Keyed on the PR number, since branch names repeat
+# across forks. Runs on main are never cancelled, so every main commit keeps a
+# result.
 concurrency:
-  group: licenses-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  group: licenses-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:

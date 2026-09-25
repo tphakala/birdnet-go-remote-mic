@@ -191,7 +191,7 @@ func listModules(t target, mods map[string]module) error {
 	}
 }
 
-// licenseFiles returns the license and notice files at the top of a module
+// licenseFiles returns the license, notice and patent files at the top of a module
 // directory, sorted by name. None is an error.
 func licenseFiles(dir string) ([]licenseFile, error) {
 	entries, err := os.ReadDir(dir)
@@ -210,7 +210,7 @@ func licenseFiles(dir string) ([]licenseFile, error) {
 		files = append(files, f)
 	}
 	if len(files) == 0 {
-		return nil, errors.New("no LICENSE, COPYING or NOTICE file found")
+		return nil, errors.New("no LICENSE, COPYING, NOTICE or PATENTS file found")
 	}
 	return files, nil
 }
@@ -315,12 +315,25 @@ func isNoticeName(name string) bool {
 // rather than a quiet "see license text" row.
 var ErrUnrecognized = errors.New("unrecognized license; review it and teach classify to name it")
 
-// checkRecognized fails when any license file of c is unrecognized.
+// ErrNoLicense reports a component whose only files are notices or patent
+// grants: listed, but carrying no license to name.
+var ErrNoLicense = errors.New("only notice or patent files, no license")
+
+// checkRecognized fails when any license file of c is unrecognized, or when c
+// has no license file at all besides notices and patent grants.
 func checkRecognized(c component) error {
+	licensed := false
 	for _, f := range c.files {
-		if !isNoticeName(f.name) && classify(f.text) == unknownLicense {
+		if isNoticeName(f.name) {
+			continue
+		}
+		licensed = true
+		if classify(f.text) == unknownLicense {
 			return fmt.Errorf("%s: %s: %w", c.name, f.name, ErrUnrecognized)
 		}
+	}
+	if !licensed {
+		return fmt.Errorf("%s: %w", c.name, ErrNoLicense)
 	}
 	return nil
 }

@@ -96,7 +96,7 @@ tasks:
       - go run ./tools/licensegen
 
   licenses:verify:
-    desc: Fail if THIRD_PARTY_LICENSES.md is stale, or a linked module has no license file
+    desc: Fail if THIRD_PARTY_LICENSES.md is stale, or a linked module has no license file or an unrecognized one
     cmds:
       - go run ./tools/licensegen -check
 
