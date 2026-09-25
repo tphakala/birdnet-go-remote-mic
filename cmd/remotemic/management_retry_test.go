@@ -56,6 +56,9 @@ func fakeDrainingServer(addr string) (s *mgmtServer, halt func(error), drained f
 func supervise(ctx context.Context, srv *mgmtServer, startErr error, r mgmtRetry) *mgmt {
 	m := newMgmt()
 	m.cur.Store(srv)
+	if r.halted == nil {
+		r.halted = func(*mgmtServer, error) {}
+	}
 	if r.died == nil {
 		r.died = func(*mgmtServer, error) {}
 	}

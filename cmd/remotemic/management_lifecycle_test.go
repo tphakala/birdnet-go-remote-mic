@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -30,9 +31,10 @@ func lostSignalled(h *mgmt) bool {
 	}
 }
 
-// TestSuperviseManagementSignalsLost pins the run-loop wake: an API that stops
-// on its own and a retry that gives up (the file disabled management) each
-// wake run() to retake its exit decision, while a shutdown on ctx does not.
+// TestSuperviseManagementSignalsLost pins the run-loop wake: only a retry that
+// gives up (the file disabled management) wakes run() to retake its exit
+// decision. An API that stops on its own is being retried in process and does
+// not, nor does a failed attempt or a shutdown on ctx.
 func TestSuperviseManagementSignalsLost(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -41,10 +43,14 @@ func TestSuperviseManagementSignalsLost(t *testing.T) {
 		attempts := 0
 		attempt := func() (*mgmtServer, error) {
 			attempts++
-			if attempts == 1 {
+			switch attempts {
+			case 1:
 				return second, nil
+			case 2:
+				return nil, errors.New("still broken")
+			default:
+				return nil, errMgmtDisabled
 			}
-			return nil, errMgmtDisabled
 		}
 		h := supervise(t.Context(), first, nil, mgmtRetry{attempt: attempt, delays: []time.Duration{time.Second}, stable: time.Hour})
 		synctest.Wait()
@@ -53,8 +59,8 @@ func TestSuperviseManagementSignalsLost(t *testing.T) {
 		}
 		kill(errors.New("accept: broken"))
 		synctest.Wait()
-		if !lostSignalled(h) {
-			t.Error("an API that stopped on its own did not wake the run loop")
+		if lostSignalled(h) {
+			t.Error("an API that stopped on its own woke the run loop, although the retry is still working on it")
 		}
 		time.Sleep(time.Second)
 		synctest.Wait()
@@ -62,9 +68,13 @@ func TestSuperviseManagementSignalsLost(t *testing.T) {
 			t.Fatal("the retry did not bring the second API up")
 		}
 		stop(errors.New("accept: broken again"))
-		time.Sleep(time.Second)
+		time.Sleep(time.Second) // the failed attempt
 		synctest.Wait()
-		// Two wakes coalesce into one: the death and the give-up.
+		if lostSignalled(h) {
+			t.Error("a failed attempt woke the run loop")
+		}
+		time.Sleep(time.Second) // the attempt that gives up
+		synctest.Wait()
 		if !lostSignalled(h) {
 			t.Error("a retry that gave up did not wake the run loop")
 		}
@@ -134,13 +144,25 @@ func TestSuperviseManagementHaltsBeforeDrain(t *testing.T) {
 // death restarts the backoff.
 func TestMgmtParamsRetryWiring(t *testing.T) {
 	t.Parallel()
-	p := &mgmtParams{}
+	rec := &recordLock{}
+	startup := config.Default()
+	store := mgmtserver.NewFileConfigStore(filepath.Join(t.TempDir(), testCfgFile), &startup)
+	p := &mgmtParams{storeCfg: &startup, runLock: &runLockPublisher{write: rec.write}}
 	r := p.retry(t.Context(), mgmtRetryBackoff[:])
 	if r.stable != mgmtRetryBackoff[len(mgmtRetryBackoff)-1] {
 		t.Errorf("stable = %s, want the longest delay %s", r.stable, mgmtRetryBackoff[len(mgmtRetryBackoff)-1])
 	}
-	if r.attempt == nil || r.halted == nil || r.died == nil {
-		t.Error("the retry is missing a hook")
+	if r.attempt == nil {
+		t.Fatal("the retry has no attempt")
+	}
+	// The hooks run in the supervisor's order: halted at the stop, died after
+	// the drain. Swapped, the no-API state would be published while a handler
+	// of the dead API may still save.
+	dead := &mgmtServer{store: store}
+	r.halted(dead, errors.New("accept: broken"))
+	r.died(dead, errors.New("accept: broken"))
+	if got := lockStates(rec); !equalStates(got, "starting", "no API") {
+		t.Errorf("run lock writes = %v, want starting at the stop, then no API after the drain", got)
 	}
 }
 
@@ -376,21 +398,29 @@ func TestPrepareCertificateMetadataFallback(t *testing.T) {
 func TestStartupExit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name                                string
-		serving                             int
-		api, allDisabled, mgmtEnabled, exit bool
+		name                          string
+		serving                       int
+		api, allDisabled, mgmtEnabled bool
+		want                          string // a fragment of the exit error; empty stays up
 	}{
 		{name: "a device serves", serving: 1, mgmtEnabled: true},
 		{name: "only the API serves", api: true, mgmtEnabled: true},
-		{name: "all disabled", allDisabled: true, exit: true},
-		{name: "API failed to start", mgmtEnabled: true, exit: true},
-		{name: "management disabled", exit: true},
+		{name: "all disabled", allDisabled: true, want: "are disabled"},
+		{name: "API failed to start", mgmtEnabled: true, want: "management API that would keep the appliance up could not start"},
+		{name: "management disabled", want: "no configured capture device could be opened"},
 	}
 	for _, tt := range tests {
 		err := startupExit(tt.serving, tt.api, tt.allDisabled, tt.mgmtEnabled)
-		if (err != nil) != tt.exit {
-			t.Errorf("%s: got %v, want exit %v", tt.name, err, tt.exit)
+		switch {
+		case tt.want == "" && err != nil:
+			t.Errorf("%s: got %v, want to stay up", tt.name, err)
+		case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+			t.Errorf("%s: got %v, want an error naming %q", tt.name, err, tt.want)
 		}
+	}
+	// The management-disabled message must not blame the API.
+	if err := startupExit(0, false, false, false); err != nil && strings.Contains(err.Error(), "management API") {
+		t.Errorf("management disabled: %v names the management API", err)
 	}
 }
 
@@ -420,5 +450,89 @@ func TestRunExit(t *testing.T) {
 		if tt.lastPumpErr != nil && err != nil && !errors.Is(err, tt.lastPumpErr) {
 			t.Errorf("%s: %v does not wrap the last pump error", tt.name, err)
 		}
+	}
+}
+
+// TestLostWakeDuringShutdown pins the give-up wake racing a shutdown: select
+// may pick the wake while ctx is already cancelled, and that is a clean
+// shutdown, not a lost-API exit.
+func TestLostWakeDuringShutdown(t *testing.T) {
+	t.Parallel()
+	exit, stopping, err := lostExit(true, 0, false, errors.New("device gone"))
+	if !exit || !stopping || err != nil {
+		t.Errorf("cancelled: got exit %v, stopping %v, err %v; want a clean shutdown", exit, stopping, err)
+	}
+	exit, stopping, err = lostExit(false, 0, false, nil)
+	if !exit || stopping || err == nil {
+		t.Errorf("live: got exit %v, stopping %v, err %v; want the lost-API exit", exit, stopping, err)
+	}
+	if exit, _, _ := lostExit(false, 1, false, nil); exit {
+		t.Error("live with a pump alive: exited")
+	}
+}
+
+// TestServeManagementDrainWaitsForHandlers pins the post-Close wait: a handler
+// still running when Close cuts its connection (it ignores the cancellation
+// for a moment, as a PATCH saving the config would) holds the API's stop until
+// it returns, so the next API is not seeded before its last save.
+func TestServeManagementDrainWaitsForHandlers(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var returnedAt time.Time
+	returned := make(chan struct{})
+	events := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(entered)
+		<-r.Context().Done()
+		<-release
+		returnedAt = time.Now()
+		close(returned)
+	})
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// Shutdown gives up at one drain and Close runs; the post-Close wait then
+	// holds the stop for up to another drain. The handler returns a quarter
+	// drain after Close, so only that wait keeps the API from stopping before
+	// it, with three quarters of a drain of slack before the wait's own bound.
+	const drain = 2 * time.Second
+	p := &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider(), events: events, drainTimeout: drain}
+	p.useConfig(cfg)
+	s, err := serveManagement(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stoppedAt time.Time
+	stopped := make(chan struct{})
+	go func() {
+		<-s.stopped
+		stoppedAt = time.Now()
+		close(stopped)
+	}()
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
+	go func() {
+		req, rerr := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+s.addr+mgmtserver.BasePath+"/events", http.NoBody)
+		if rerr != nil {
+			return
+		}
+		if resp, derr := client.Do(req); derr == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-entered
+	stopAt := time.Now()
+	cancel()
+	<-time.After(time.Until(stopAt.Add(drain * 5 / 4)))
+	close(release)
+	<-returned
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the API did not stop once the handler returned")
+	}
+	if stoppedAt.Before(returnedAt) {
+		t.Errorf("the API reported stopped %s before its last handler returned", returnedAt.Sub(stoppedAt))
 	}
 }

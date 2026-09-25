@@ -49,7 +49,7 @@ type mgmtRetry struct {
 	// attempt makes one background attempt to bring the API up.
 	attempt func() (*mgmtServer, error)
 	// halted handles an API that stopped on its own, as soon as it stops and
-	// before it drains; nil does nothing.
+	// before it drains.
 	halted func(*mgmtServer, error)
 	// died handles an API that stopped on its own, after it drained.
 	died func(*mgmtServer, error)
@@ -72,9 +72,13 @@ type mgmtRetry struct {
 // logs a failure only when its message differs from the previous one, so a
 // permanent fault logs once rather than every attempt. An attempt that finds
 // management disabled in the config file ends the supervisor. m's serving
-// method follows the API that serves, m's lost channel is signalled whenever
-// an API stops on its own or the retry gives up (so run() can retake its exit
-// decision), and m.done closes on return.
+// method follows the API that serves, and m.done closes on return.
+//
+// m's lost channel is signalled only when the retry gives up, the one moment
+// nothing in process can bring the API back, so run() retakes its exit
+// decision then. A runtime death does not signal it: the retry is the
+// in-process recovery, and exiting for it would throw away the RAM-only event
+// history and every device's retry state for what a restart would do anyway.
 func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr error, r mgmtRetry) {
 	defer close(m.done)
 	var last string
@@ -96,10 +100,7 @@ func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr
 			if time.Since(since) >= r.stable {
 				n = 0
 			}
-			if r.halted != nil {
-				r.halted(srv, err)
-			}
-			m.signalLost()
+			r.halted(srv, err)
 			_ = srv.wait()
 			r.died(srv, err)
 			last = err.Error()

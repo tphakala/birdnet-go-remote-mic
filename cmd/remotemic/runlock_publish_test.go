@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
 )
 
@@ -115,6 +116,39 @@ func TestRunLockPublisherRetriesFailedWrite(t *testing.T) {
 		if len(rec.states) != 4 {
 			t.Errorf("got %d writes, want none after stop", len(rec.states))
 		}
+	})
+}
+
+// TestRunLockPublisherRaisesCondition pins that a failing run lock is visible:
+// the first failure of a streak raises one condition, further failures do not
+// raise it again, and the write that succeeds clears it.
+func TestRunLockPublisherRaisesCondition(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		rec := &recordLock{fail: 3}
+		center := notify.NewCenter()
+		pub := &runLockPublisher{cfgPath: testCfgFile, write: rec.write, retryDelay: time.Second, center: center}
+		pub.publish(nil)
+		if act := center.Active(); len(act) != 1 || act[0].Key != runLockKey {
+			t.Fatalf("active = %+v, want the unwritable-lock condition", act)
+		}
+		time.Sleep(2 * time.Second) // two more failed retries
+		synctest.Wait()
+		onsets := 0
+		for _, n := range center.Snapshot().Notifications {
+			if n.Key == runLockKey && n.Kind == notify.KindOnset {
+				onsets++
+			}
+		}
+		if onsets != 1 {
+			t.Errorf("got %d onsets over a failing streak, want 1", onsets)
+		}
+		time.Sleep(time.Second) // the retry that succeeds
+		synctest.Wait()
+		if act := center.Active(); len(act) != 0 {
+			t.Errorf("active = %+v, want the condition cleared once the lock is written", act)
+		}
+		pub.stop()
 	})
 }
 

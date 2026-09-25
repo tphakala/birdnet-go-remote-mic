@@ -84,7 +84,8 @@ API, or with no appliance running, they edit the config file and it applies when
 the appliance next starts (or, for an appliance whose API failed to start or
 stopped, at its next background attempt to bring it up, unless the file now
 disables the API). A command run while
-the appliance is still starting up asks you to retry. Run a command with -h to
+the appliance is still starting up, or in the seconds after its API stops
+while the API drains, asks you to retry. Run a command with -h to
 see its flags.
 `)
 }

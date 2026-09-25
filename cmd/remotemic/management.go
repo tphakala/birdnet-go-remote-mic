@@ -589,9 +589,10 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 type mgmt struct {
 	cur  atomic.Pointer[mgmtServer]
 	done chan struct{}
-	// lost is signalled, coalescing, when an API stops on its own or the retry
-	// gives up, the two moments serving() can turn nil while run() waits for
-	// something else; run() retakes its exit decision on it.
+	// lost is signalled, coalescing, when the retry gives up (the config file
+	// disabled management), after which nothing in process brings the API
+	// back; run() retakes its exit decision on it. A runtime death does not
+	// signal it, since the retry keeps working on it (see superviseManagement).
 	lost chan struct{}
 }
 

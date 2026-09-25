@@ -373,6 +373,9 @@ func runLockState(ep *mgmtEndpoint) runlock.State {
 // lock whose last write failed.
 const runLockRetryDelay = 30 * time.Second
 
+// runLockKey keys the unwritable-run-lock condition in the notification center.
+const runLockKey = "run-lock-unwritable"
+
 // runLockPublisher writes the run lock for run() and for the management
 // supervisor, which publishes from its own goroutine so the lock tracks each
 // API transition (up, stopped, a background attempt) as it happens. The mutex
@@ -393,6 +396,9 @@ type runLockPublisher struct {
 	write func(runlock.State) error
 	// retryDelay replaces runLockRetryDelay when non-zero, for tests.
 	retryDelay time.Duration
+	// center, when non-nil, carries the unwritable-lock condition: raised on
+	// the first failure of a streak and cleared once a write succeeds.
+	center notify.Publisher
 
 	want    runlock.State // the latest state asked for
 	failing bool          // the last write failed; a retry is pending
@@ -444,6 +450,13 @@ func (p *runLockPublisher) flush() {
 		if p.failing {
 			log.Printf("run lock %s written again", runlock.PathFor(p.cfgPath))
 			p.failing = false
+			if p.center != nil {
+				p.center.Clear(runLockKey, notify.Notification{
+					Severity: notify.SeverityInfo,
+					Title:    "Run lock writable again",
+					Message:  "The token commands read this appliance's state correctly again",
+				})
+			}
 		}
 		return
 	}
@@ -451,6 +464,16 @@ func (p *runLockPublisher) flush() {
 	if !p.failing {
 		log.Printf("WARNING: cannot write run lock %s: %v (token commands may misread this appliance's state; retrying every %s)", runlock.PathFor(p.cfgPath), err, delay)
 		p.failing = true
+		if p.center != nil {
+			p.center.Onset(notify.Notification{
+				Severity: notify.SeverityWarning,
+				Category: notify.CategorySystem,
+				Key:      runLockKey,
+				Source:   "runlock",
+				Title:    "Run lock unwritable",
+				Message:  fmt.Sprintf("Cannot write %s: %v. remote-mic token commands may misread this appliance's state until it can be written again (retrying every %s)", runlock.PathFor(p.cfgPath), err, delay),
+			})
+		}
 	}
 	p.retry = time.AfterFunc(delay, func() {
 		p.mu.Lock()
@@ -628,7 +651,7 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// API's shutdown goroutine fires even when run() returns on an error, not a
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
-	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath}
+	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath, center: center}
 	defer runLock.stop()
 	// With management disabled, publish this process with no API: the token
 	// commands edit the file directly, and no API handler can rewrite it. With
@@ -714,8 +737,10 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// restart the process (see startupExit). Every exit decision reads the
 	// supervisor's state when it is made, so an API it brought back a moment ago
 	// counts, and the run loop retakes it whenever that state can turn against
-	// staying up: when a pump ends, and when the API stops on its own or its
-	// retry gives up (see runExit).
+	// staying up: when a pump ends, and when the API retry gives up (see
+	// runExit). An API that dies at runtime does not by itself end the process:
+	// the retry keeps working on it in process, and only its giving up, or a
+	// pump ending while no API serves, retakes the decision.
 	if err := startupExit(app.serving(), management.serving() != nil, app.allDisabled(), mgmtEnabled); err != nil {
 		return err
 	}
@@ -765,7 +790,11 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 				return err
 			}
 		case <-management.lostC():
-			if exit, err := runExit(app.alive, management.serving() != nil, app.lastPumpErr, true); exit {
+			switch exit, stopping, err := lostExit(ctx.Err() != nil, app.alive, management.serving() != nil, app.lastPumpErr); {
+			case stopping:
+				shutdown()
+				return nil
+			case exit:
 				return err
 			}
 		case serr := <-srvErr:
@@ -803,7 +832,7 @@ func startupExit(serving int, apiServing, allDisabled, mgmtEnabled bool) error {
 }
 
 // runExit is the run loop's exit decision, taken when a pump ends and, with
-// apiLost, when the management API stopped on its own or its retry gave up.
+// apiLost, when the management API retry gave up.
 // The appliance stays up while a capture pump is alive or an API serves;
 // otherwise nothing keeps it up, and exiting lets systemd restart it, as a
 // fresh start would decide. An appliance whose last pump ended exits cleanly
@@ -814,14 +843,26 @@ func runExit(alive int, apiServing bool, lastPumpErr error, apiLost bool) (exit 
 	case alive > 0 || apiServing:
 		return false, nil
 	case apiLost && lastPumpErr != nil:
-		return true, fmt.Errorf("no capture device is serving and the management API that kept the appliance up is gone, last device error: %w", lastPumpErr)
+		return true, fmt.Errorf("no capture device is serving and the management API that kept the appliance up is no longer retried, last device error: %w", lastPumpErr)
 	case apiLost:
-		return true, errors.New("no capture device is serving and the management API that kept the appliance up is gone")
+		return true, errors.New("no capture device is serving and the management API that kept the appliance up is no longer retried")
 	case lastPumpErr != nil:
 		return true, fmt.Errorf("all capture devices stopped, last error: %w", lastPumpErr)
 	default:
 		return true, nil
 	}
+}
+
+// lostExit is the run loop's decision when the management API retry gave up.
+// A shutdown can make that wake and ctx.Done ready together, and select may
+// pick the wake; with cancelled set it is a shutdown (stopping), not a lost
+// API, so the process ends cleanly. Otherwise it is runExit's decision.
+func lostExit(cancelled bool, alive int, apiServing bool, lastPumpErr error) (exit, stopping bool, err error) {
+	if cancelled {
+		return true, true, nil
+	}
+	exit, err = runExit(alive, apiServing, lastPumpErr, true)
+	return exit, false, err
 }
 
 // splitServeConfig derives the two configs a serve run needs from the loaded

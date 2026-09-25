@@ -312,8 +312,9 @@ or a certificate path in the file needs no restart. A file that sets
 `management.enabled: false` ends the retry. Serve flags (`--mgmt-listen`,
 `--cert-dir`, `--management`) still override the file. A command run while
 the appliance is still starting up, before it has published where its API
-listens, or while one of those background attempts runs, asks you to retry in
-a few seconds. The config is written 0600, so run
+listens, while one of those background attempts runs, or in the seconds
+after its API stops while that API drains (up to about 10 seconds with a
+browser open), asks you to retry in a few seconds. The config is written 0600, so run
 the commands as the account the appliance runs as.
 
 You can also set it by hand:
@@ -417,8 +418,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
   While the management API is serving the process stays up after the
   last device dies, so the failure stays inspectable over the API; otherwise
   it exits once every device has stopped. The appliance retakes that decision
-  whenever a device's capture ends and whenever the API stops or stops being
-  retried, so it never stays up with nothing serving and nothing to inspect.
+  whenever a device's capture ends and whenever the API stops being retried
+  (the config file disabled it), so it never stays up with nothing serving and
+  nothing to inspect. An API that stops at runtime does not end the process by
+  itself: it is retried in process, which keeps the event history.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
   automatic retry once it counts as recovered, or process exit), because
