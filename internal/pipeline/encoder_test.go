@@ -39,7 +39,7 @@ func countingStage(t *testing.T) (*opusStage, *countingEncoder) {
 func silence(n int) [][]byte {
 	periods := make([][]byte, n)
 	for i := range periods {
-		periods[i] = make([]byte, 960*2)
+		periods[i] = make([]byte, opusFrameSamples*2)
 	}
 	return periods
 }
@@ -68,6 +68,10 @@ func TestOpusStageResetsOncePerSession(t *testing.T) {
 	sessions := []uint64{1, 1, 1, 2, 2, 2}
 	n := 0
 	gate := func() (bool, uint64) {
+		if n >= len(sessions) {
+			t.Errorf("gate called %d times, want one call per period (%d)", n+1, len(sessions))
+			return false, 0
+		}
 		s := sessions[n]
 		n++
 		return true, s

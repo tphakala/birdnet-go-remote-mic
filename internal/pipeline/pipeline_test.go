@@ -347,11 +347,11 @@ func TestOpusStageStartsIdleThenPlays(t *testing.T) {
 	const ch, frames = 2, 1024
 	cfg := config.Opus{Bitrate: 96000}
 	periods := splitPeriods(tonePCM(8*frames, ch), frames, ch)
-	active, calls := gateSeq(t, false, false, true, true, true, true, true, true)
+	gate, calls := gateSeq(t, false, false, true, true, true, true, true, true)
 
-	got := runOpus(t, cfg, periods, ch, active)
+	got := runOpus(t, cfg, periods, ch, gate)
 	if *calls != len(periods) {
-		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+		t.Errorf("gate called %d times, want %d (once per period)", *calls, len(periods))
 	}
 	var played []byte
 	for _, p := range periods[2:] {
@@ -382,10 +382,10 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 		}
 		periods[k] = b
 	}
-	active, calls := gateSeq(t, false, true, false, true)
+	gate, calls := gateSeq(t, false, true, false, true)
 
 	var got []byte
-	err := pipeline.NewPCM().Run(audio.NewFakeSource(rate, ch, periods), active, func(f pipeline.Frame) error {
+	err := pipeline.NewPCM().Run(audio.NewFakeSource(rate, ch, periods), gate, func(f pipeline.Frame) error {
 		for i := 0; i+1 < len(f.Payload); i += 2 {
 			got = binary.LittleEndian.AppendUint16(got, binary.BigEndian.Uint16(f.Payload[i:i+2]))
 		}
@@ -395,7 +395,7 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if *calls != len(periods) {
-		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+		t.Errorf("gate called %d times, want %d (once per period)", *calls, len(periods))
 	}
 	want := append(append([]byte{}, periods[1]...), periods[3]...)
 	if !bytes.Equal(got, want) {
@@ -409,9 +409,9 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 func TestOpusStageIdleEmitsNothing(t *testing.T) {
 	t.Parallel()
 	periods := splitPeriods(tonePCM(8*480, 1), 480, 1)
-	active, calls := gateSeq(t, false, false, false, false, false, false, false, false)
+	gate, calls := gateSeq(t, false, false, false, false, false, false, false, false)
 	frames := 0
-	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewFakeSource(48000, 1, periods), active, func(pipeline.Frame) error {
+	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewFakeSource(48000, 1, periods), gate, func(pipeline.Frame) error {
 		frames++
 		return nil
 	})
@@ -422,7 +422,7 @@ func TestOpusStageIdleEmitsNothing(t *testing.T) {
 		t.Errorf("emitted %d frames with the gate closed, want 0", frames)
 	}
 	if *calls != len(periods) {
-		t.Errorf("active gate called %d times, want %d (every period drained)", *calls, len(periods))
+		t.Errorf("gate called %d times, want %d (every period drained)", *calls, len(periods))
 	}
 }
 
@@ -499,8 +499,8 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 	pattern := []bool{true, true, true, false, false, true, true, true, true, true, true}
 	cfg := config.Opus{Bitrate: 64000}
 
-	active, _ := gateSeq(t, pattern...)
-	got := runOpus(t, cfg, periods, 1, active)
+	gate, _ := gateSeq(t, pattern...)
+	got := runOpus(t, cfg, periods, 1, gate)
 	if len(got) != 4 {
 		t.Fatalf("emitted %d frames, want 4 (1 before the gap, 3 after)", len(got))
 	}
@@ -553,6 +553,9 @@ func TestOpusStageNewSessionWithoutIdleGetsFreshEncoder(t *testing.T) {
 		second = append(second, p...)
 	}
 	want := referenceOpus(t, cfg, second, 1)
+	if len(want) != 3 {
+		t.Fatalf("reference run emitted %d frames, want 3", len(want))
+	}
 	for i, w := range want {
 		if !bytes.Equal(got[1+i], w) {
 			t.Errorf("frame %d of the second session differs from a fresh encoder's frame %d", i+1, i+1)
