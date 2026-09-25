@@ -354,6 +354,16 @@ test("startPolling again ends a hidden-page pause", () => {
   h.store.stopPolling();
 });
 
+test("stopping polling reports the stream down", () => {
+  const h = harness(new FakeTimers());
+  h.store.startPolling(60_000);
+  h.emit("connected");
+  assert.equal(h.store.getState().connected, true);
+  h.store.stopPolling();
+  assert.equal(h.store.getState().connected, false);
+  assert.deepEqual(h.connection, [true, false]);
+});
+
 test("a login fetches /status once and applies the verifying read", async () => {
   const h = harness(new FakeTimers());
   try {

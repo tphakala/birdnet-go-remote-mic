@@ -321,6 +321,14 @@ export class AppStore extends EventTarget {
     this.clearStreamStop();
     this.streamPaused = false;
     this.sse.stop();
+    // stop() is silent, so say the stream is down, as the hidden-page stop
+    // does: otherwise connected stays true through a login prompt, and the
+    // notifications fallback after the login would take a stream that never
+    // came back for a live one.
+    if (this.state.connected) {
+      this.state.connected = false;
+      this.dispatchEvent(new CustomEvent("connection", { detail: false }));
+    }
   }
 
   // setPageHidden pauses the poll while the page is hidden (a background tab or
