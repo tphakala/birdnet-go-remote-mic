@@ -99,6 +99,50 @@ func TestRetryManagementLogsChangesOnly(t *testing.T) {
 	}
 }
 
+// TestPendingRecovery pins the non-blocking take run() uses before deciding it
+// has no diagnostic surface: an endpoint a retry delivered but the run loop has
+// not received is returned once, and a nil or idle handle reports nothing.
+func TestPendingRecovery(t *testing.T) {
+	t.Parallel()
+	if _, ok := pendingRecovery(nil); ok {
+		t.Error("a nil handle reported a pending recovery")
+	}
+	up := make(chan mgmtEndpoint, 1)
+	h := &mgmt{up: up}
+	if _, ok := pendingRecovery(h); ok {
+		t.Error("an idle retry handle reported a pending recovery")
+	}
+	up <- mgmtEndpoint{addr: testMgmtAddr, certPath: testCertFile}
+	ep, ok := pendingRecovery(h)
+	if !ok || ep.addr != testMgmtAddr {
+		t.Fatalf("got %+v, %v; want the buffered endpoint", ep, ok)
+	}
+	if _, ok := pendingRecovery(h); ok {
+		t.Error("the endpoint was reported twice")
+	}
+}
+
+// TestAdoptPending pins that a pending endpoint reaches adopt exactly once and
+// that nothing pending calls nothing.
+func TestAdoptPending(t *testing.T) {
+	t.Parallel()
+	up := make(chan mgmtEndpoint, 1)
+	h := &mgmt{up: up}
+	var got []mgmtEndpoint
+	adopt := func(ep mgmtEndpoint) { got = append(got, ep) }
+	adoptPending(h, adopt)
+	adoptPending(nil, adopt)
+	if len(got) != 0 {
+		t.Fatalf("adopted %v with nothing pending", got)
+	}
+	up <- mgmtEndpoint{addr: testMgmtAddr}
+	adoptPending(h, adopt)
+	adoptPending(h, adopt)
+	if len(got) != 1 || got[0].addr != testMgmtAddr {
+		t.Errorf("adopted %v, want the one pending endpoint once", got)
+	}
+}
+
 func TestRetryManagementStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

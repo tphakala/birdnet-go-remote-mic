@@ -76,6 +76,27 @@ func retryManagement(ctx context.Context, attempt func() (*mgmt, error), delays 
 	return &mgmt{done: done, up: up}
 }
 
+// pendingRecovery reports, without blocking, an endpoint a background retry has
+// delivered on m's Up channel but nobody has received yet. It returns false for
+// a nil handle, a handle that never retried, and one with nothing pending.
+func pendingRecovery(m *mgmt) (mgmtEndpoint, bool) {
+	select {
+	case ep := <-m.Up():
+		return ep, true
+	default:
+		return mgmtEndpoint{}, false
+	}
+}
+
+// adoptPending hands a pending recovered endpoint (see pendingRecovery) to
+// adopt, and does nothing when none is pending. Adopting early is always
+// correct: it is exactly what receiving from Up would do.
+func adoptPending(m *mgmt, adopt func(mgmtEndpoint)) {
+	if ep, ok := pendingRecovery(m); ok {
+		adopt(ep)
+	}
+}
+
 // recoverManagement is one background attempt to bring up a management API that
 // failed to start. While no API address is published in the run lock, the token
 // CLI edits the config file directly (the appliance has no config writer), so

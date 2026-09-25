@@ -593,6 +593,19 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// start) there is nothing to keep alive, so a total open failure is fatal and
 	// lets a supervisor restart the process. A deliberate all-disabled config is
 	// reported distinctly, since a restart cannot clear it.
+	//
+	// adoptRecovered takes an API a background retry brought up but the run loop
+	// has not yet handled (its endpoint sits buffered in Up). The two exit
+	// decisions below first adopt any pending endpoint (adoptPending), so a
+	// select that picks a pump ending over the pending Up cannot shut down an API
+	// that is already serving.
+	adoptRecovered := func(ep mgmtEndpoint) {
+		// The API is now the diagnostic surface that keeps a zero-serving
+		// appliance up, and the token commands switch from editing the file to it.
+		mgmtServing = true
+		publishRunLock(lock, cfgPath, &ep)
+	}
+	adoptPending(management, adoptRecovered)
 	if app.serving() == 0 && !mgmtServing {
 		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
@@ -636,17 +649,14 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			app.reconcile(&req.cfg)
 			req.reply <- nil
 		case ep := <-management.Up():
-			// The management API came up through its background retry: from now on
-			// it is the diagnostic surface that keeps a zero-serving appliance up,
-			// and the token commands switch from editing the file to the live API.
-			mgmtServing = true
-			publishRunLock(lock, cfgPath, &ep)
+			adoptRecovered(ep)
 		case <-prov.hwChanged:
 			app.retryDown()
 		case <-app.retryDue:
 			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
+			adoptPending(management, adoptRecovered)
 			if app.alive == 0 && !mgmtServing {
 				if app.lastPumpErr != nil {
 					return fmt.Errorf("all capture devices stopped, last error: %w", app.lastPumpErr)
