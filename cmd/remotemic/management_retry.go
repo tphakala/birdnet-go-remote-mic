@@ -109,11 +109,27 @@ func adoptPending(m *mgmt, adopt func(mgmtEndpoint)) {
 // startup snapshot. Applying an edited file publishes a config event, and a
 // successful attempt clears the management-unavailable condition.
 //
-// A token command that reads the lock before the run loop republishes it can
-// still edit the file after this reload and have the edit reverted by a later
-// web UI save. The window runs from the reload through the certificate check,
-// the listen and the run loop reaching its Up case, once per outage.
+// The attempt marks the appliance as starting up in the run lock before it
+// reloads the file, so a token command that reads the lock during the attempt
+// asks the operator to try again rather than editing a file the attempt may
+// already have read. It publishes the new API's endpoint itself once the API
+// serves, and the lock without one when the attempt fails. What remains is a
+// token command that read the lock just before the attempt began and writes
+// the file just after the reload: the window between its own read and write.
 func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
+	p.runLock.starting()
+	h, err := reloadAndServe(ctx, p)
+	if err != nil {
+		p.runLock.publish(nil)
+		return nil, err
+	}
+	p.runLock.publish(&mgmtEndpoint{addr: h.addr, certPath: h.certPath})
+	return h, nil
+}
+
+// reloadAndServe is recoverManagement's attempt: reload the config file,
+// apply it when it changed, and bring the API up.
+func reloadAndServe(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 	// LoadQuiet, not LoadOrDefault: a file missing now (a volume that went away,
 	// the very kind of fault this retry waits out) must not read as Default()
 	// and be applied live, tearing down every stream. It keeps the startup

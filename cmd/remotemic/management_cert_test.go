@@ -93,7 +93,7 @@ func TestStartManagementServesRegeneratedCertToNewHandshake(t *testing.T) {
 	defer cancel()
 	prov := newProvider()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started")
 	}
@@ -143,7 +143,7 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		prov := newProvider()
-		h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil)
+		h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil, nil)
 		if !ok {
 			t.Fatal("first run: management should have started")
 		}
@@ -159,7 +159,7 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: certDir}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("second run: management should have started")
 	}
@@ -281,7 +281,7 @@ func TestStartManagementNoKeyMaterialInCertEndpoints(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prov := newProvider()
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started")
 	}
@@ -307,7 +307,7 @@ func TestStartManagementNoKeyMaterialInCertEndpoints(t *testing.T) {
 func TestStartManagementEnforcesBearerOnCertWrites(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken))
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken), nil)
 	if !ok {
 		t.Fatal("management should have started")
 	}
