@@ -451,7 +451,9 @@ func TestRetryEncodeFaultConfigSave(t *testing.T) {
 		change    func(*config.Device)
 		wantClear int
 	}{
-		{name: "unrelated save", change: func(*config.Device) {}, wantClear: 0},
+		// A device field that is not a capture or stream parameter changes, so the
+		// save is not merely identical to the running config.
+		{name: "unrelated save", change: func(d *config.Device) { d.QuietAlert = new(false) }, wantClear: 0},
 		{name: "parameter change", change: func(d *config.Device) { d.Rate = 96000 }, wantClear: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -566,6 +568,45 @@ func TestRetryEncodeFaultCardIndexSaveClears(t *testing.T) {
 	})
 }
 
+// TestRetryEncodeFaultDroppedOnDisableAndRemove pins that disabling or
+// removing a device ends its encode proof: the operator ended that outage, so
+// enabling or adding the device again with the same parameters is a fresh
+// start that clears nothing later and carries no retry, not a restart still
+// waiting for the old stream to encode.
+func TestRetryEncodeFaultDroppedOnDisableAndRemove(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave func(config.Device) *config.Config
+	}{
+		{name: "disable", leave: func(d config.Device) *config.Config {
+			d.Enabled = new(false)
+			return &config.Config{Devices: []config.Device{d}}
+		}},
+		{name: "remove", leave: func(config.Device) *config.Config { return &config.Config{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				app, log, cancel := newTestAppliance(t)
+				defer shutdownApp(app, cancel)
+				play := scriptedStages(t, app, log)
+				dev := testDevice("moth", idMoth, pathMoth, 48000)
+				app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+				play(pathMoth) <- true
+				runFor(t, app, backoffDelay(1)/2)
+				app.reconcile(tc.leave(dev))
+				app.reconcile(&config.Config{Devices: []config.Device{dev}})
+				if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+					t.Fatalf("moth state = %s, want serving once it is back", s)
+				}
+				if app.retrying("moth") || len(app.faultedPaths("moth")) != 0 {
+					t.Errorf("moth back after %s: retrying %v, faulted %v; want a fresh start with neither", tc.name, app.retrying("moth"), app.faultedPaths("moth"))
+				}
+			})
+		})
+	}
+}
+
 // TestRetryEncodeFaultHotplugAttemptFails pins a hardware-change restart of an
 // encode-faulted device whose open fails: the failure schedules the next
 // backoff attempt (the hotplug consumed the pending one, so without a re-arm
@@ -600,6 +641,10 @@ func TestRetryEncodeFaultHotplugAttemptFails(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), `skipping device "moth"`) {
 			t.Errorf("log = %q, want the failed open's reason logged", out.String())
+		}
+		// The event names itself, so the timer's "retry N" line is not logged.
+		if strings.Contains(out.String(), `device "moth": retry `) {
+			t.Errorf("log = %q, want no timer retry line for a hotplug attempt", out.String())
 		}
 		if app.retryAt.IsZero() {
 			t.Fatal("no retry armed after the failed hotplug attempt")

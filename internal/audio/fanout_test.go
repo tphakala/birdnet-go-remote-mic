@@ -271,6 +271,11 @@ func TestFanoutTagsSessionAndCaptureTime(t *testing.T) {
 	session.Store(4)
 	f.distribute(Period{Buf: []byte{2, 0}, Frames: 1})
 	for i, want := range [][]uint64{{3, 4}, {9, 9}, {0, 0}} {
+		// Check the queue first, so a starved consumer fails here instead of
+		// blocking the Read on a feed that is never closed.
+		if got := len(cons[i].(*fanoutConsumer).ch); got != len(want) {
+			t.Fatalf("consumer %d: got %d queued periods, want %d", i, got, len(want))
+		}
 		for j, w := range want {
 			p, err := cons[i].Read()
 			if err != nil {

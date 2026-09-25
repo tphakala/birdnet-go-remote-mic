@@ -163,16 +163,23 @@ func TestPushDropsFrameOfAnotherSession(t *testing.T) {
 		if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: tt.session}) {
 			t.Fatalf("%s: Push reported a drop, want success", tt.name)
 		}
-		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-		f, err := c.Next(ctx)
-		cancel()
+		// Push is synchronous, so the queue already shows whether it kept the
+		// frame; no wait is needed to prove a discard.
+		if !tt.deliver {
+			if got := len(c.ch); got != 0 {
+				t.Errorf("%s: got %d queued frames, want the frame discarded", tt.name, got)
+			}
+			continue
+		}
+		if got := len(c.ch); got != 1 {
+			t.Fatalf("%s: got %d queued frames, want 1", tt.name, got)
+		}
+		f, err := c.Next(t.Context())
 		switch {
-		case tt.deliver && err != nil:
+		case err != nil:
 			t.Errorf("%s: Next err = %v, want the frame", tt.name, err)
-		case tt.deliver && f.Session != tt.session:
+		case f.Session != tt.session:
 			t.Errorf("%s: got session %d, want %d", tt.name, f.Session, tt.session)
-		case !tt.deliver && !errors.Is(err, context.DeadlineExceeded):
-			t.Errorf("%s: Next err = %v, want the frame discarded", tt.name, err)
 		}
 	}
 }
