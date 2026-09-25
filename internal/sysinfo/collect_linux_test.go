@@ -39,9 +39,11 @@ func scriptedCPUStat(t *testing.T, steps ...cpuStat) (read func() (uint64, uint6
 // the first call samples a short window inside the request instead of reporting
 // nothing, a call inside the minimum window reuses the last figure without
 // reading, a call inside the stale limit diffs against the previous reading, a
-// failed read keeps both that reading and its time, and a stale reading is
-// replaced by a fresh sample rather than averaged over the gap. synctest's fake
-// clock drives both the sample and the gaps.
+// failed read keeps both that reading and its time and is not retried inside
+// the minimum window, a stale reading is replaced by a fresh sample rather than
+// averaged over the gap, and so is one a counter going backwards leaves with
+// no basis for a ratio. synctest's fake clock drives both the sample and the
+// gaps.
 func TestCPUGaugePercent(t *testing.T) {
 	t.Parallel()
 	var nilGauge *CPUGauge
@@ -62,10 +64,13 @@ func TestCPUGaugePercent(t *testing.T) {
 			cpuStat{1500, 2600, true},   // 9: exactly cpuGaugeStale later, still fresh: dTotal 200, dIdle 100 -> 50%
 			cpuStat{9000, 9100, true},   // 10: past the stale limit: sample start
 			cpuStat{9150, 9300, true},   // 11: sample end: dTotal 200, dIdle 150 -> 25%
-			cpuStat{9100, 9500, true},   // 12: idle counter went backwards: no basis
-			cpuStat{9200, 9900, true},   // 13: diffs against read 12: dTotal 400, dIdle 100 -> 75%
-			cpuStat{20000, 21000, true}, // 14: past the stale limit: sample start
-			cpuStat{0, 0, false},        // 15: the sample's second read fails
+			cpuStat{9100, 9500, true},   // 12: idle counter went backwards: sample start
+			cpuStat{9200, 9900, true},   // 13: sample end: dTotal 400, dIdle 100 -> 75%
+			cpuStat{9300, 10100, true},  // 14: diffs against read 13: dTotal 200, dIdle 100 -> 50%
+			cpuStat{20000, 21000, true}, // 15: past the stale limit: sample start
+			cpuStat{0, 0, false},        // 16: the sample's second read fails
+			cpuStat{30000, 31000, true}, // 17: past the stale limit: sample start
+			cpuStat{30000, 31000, true}, // 18: sample end with no ticks: no basis
 		)
 		g := newCPUGauge(read)
 		want := func(step string, wantPct float64, wantOK bool, wantReads int) {
@@ -86,6 +91,8 @@ func TestCPUGaugePercent(t *testing.T) {
 		want("a poll inside the stale limit diffs against the last reading", 50, true, 3)
 		time.Sleep(2 * cpuGaugeMinWindow)
 		want("a failed read reports nothing", 0, false, 4)
+		time.Sleep(cpuGaugeMinWindow / 10)
+		want("a call inside the minimum window of a failure does not read again", 0, false, 4)
 		time.Sleep(2 * cpuGaugeMinWindow)
 		want("the next success still diffs against the reading before the failure", 75, true, 5)
 
@@ -102,18 +109,21 @@ func TestCPUGaugePercent(t *testing.T) {
 		time.Sleep(cpuGaugeStale + cpuGaugeMinWindow)
 		want("a stale reading is replaced by a fresh sample, not averaged over the gap", 25, true, 11)
 		time.Sleep(3 * cpuGaugeMinWindow)
-		want("counters with no basis for a ratio report nothing", 0, false, 12)
-		time.Sleep(cpuGaugeMinWindow / 10)
-		want("inside the minimum window the no-basis result is reused, not re-read", 0, false, 12)
+		want("a counter going backwards starts a fresh sample in the request", 75, true, 13)
 		time.Sleep(3 * cpuGaugeMinWindow)
-		want("the reading after a no-basis one diffs against it", 75, true, 13)
+		want("the reading after that sample diffs against it", 50, true, 14)
 
 		// A stale sample whose second read fails must not leave the old figure to
 		// be reused: a caller waiting on the lock would take it as a fresh one.
 		time.Sleep(cpuGaugeStale + cpuGaugeMinWindow)
-		want("a sample whose second read fails reports nothing", 0, false, 15)
+		want("a sample whose second read fails reports nothing", 0, false, 16)
 		time.Sleep(cpuGaugeMinWindow / 10)
-		want("a caller right after the failed sample reuses absent, not the stale 75%", 0, false, 15)
+		want("a caller right after the failed sample reuses absent, not the stale 50%", 0, false, 16)
+
+		time.Sleep(cpuGaugeStale + cpuGaugeMinWindow)
+		want("a sample with no basis for a ratio reports nothing", 0, false, 18)
+		time.Sleep(cpuGaugeMinWindow / 10)
+		want("inside the minimum window the no-basis result is reused, not re-read", 0, false, 18)
 	})
 }
 

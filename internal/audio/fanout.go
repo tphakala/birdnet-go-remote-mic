@@ -140,8 +140,13 @@ func (f *Fanout) distribute(p Period) {
 		}
 		if !copied {
 			// Stamped before the copy, so a large ultrasonic period's copy does
-			// not delay its capture time.
-			captured := time.Now()
+			// not delay its capture time. An upstream that already stamped the
+			// period knows its capture time better than this read does, so its
+			// stamp is kept (as pipeline.Gate keeps it).
+			captured := p.Captured
+			if captured.IsZero() {
+				captured = time.Now()
+			}
 			buf := make([]byte, len(p.Buf))
 			copy(buf, p.Buf)
 			cp = Period{Buf: buf, Frames: p.Frames, Captured: captured}

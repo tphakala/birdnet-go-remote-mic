@@ -51,6 +51,11 @@ type CPUGauge struct {
 	prevIdle, prevTotal uint64
 	last                float64 // the last reported figure, reused inside cpuGaugeMinWindow
 	lastOK              bool
+	// failAt is when the last read failed; zero once a read succeeds. A
+	// failure is not a reading (prev and at keep the last good one), so it is
+	// rate limited on its own: a request inside cpuGaugeMinWindow of it reports
+	// nothing without reading, as a success is reused.
+	failAt time.Time
 }
 
 // NewCPUGauge returns a CPUGauge reading the real /proc/stat. It reads nothing
@@ -67,10 +72,13 @@ func newCPUGauge(read func() (idle, total uint64, ok bool)) *CPUGauge {
 // previous reading, which all callers share. A call less than cpuGaugeMinWindow
 // after that reading returns the last figure without reading; a call with no
 // reading from the last cpuGaugeStale samples cpuGaugeSample first, holding the
-// lock meanwhile so concurrent callers wait and then reuse its figure. ok is
-// false on a nil gauge, when /proc/stat cannot be read, and when the counters
-// give no basis for a ratio (no ticks elapsed, or a counter that went
-// backwards).
+// lock meanwhile so concurrent callers wait and then reuse its figure. A
+// reading that gives no basis for a ratio against the previous one (a counter
+// went backwards, as iowait can, or no ticks elapsed) is taken as the start of
+// a fresh sample the same way, so the request still gets a figure. ok is false
+// on a nil gauge, when /proc/stat cannot be read (and, without a read, for a
+// call inside cpuGaugeMinWindow of that failure), and when even the fresh
+// sample gives no basis for a ratio.
 func (g *CPUGauge) Percent() (pct float64, ok bool) {
 	if g == nil {
 		return 0, false
@@ -85,28 +93,51 @@ func (g *CPUGauge) Percent() (pct float64, ok bool) {
 	if !g.at.IsZero() && now.Sub(g.at) < cpuGaugeMinWindow {
 		return g.last, g.lastOK
 	}
+	if !g.failAt.IsZero() && now.Sub(g.failAt) < cpuGaugeMinWindow {
+		return 0, false
+	}
 	idle, total, ok := read()
 	if !ok {
 		// Keep prev and its time: the next successful read still diffs over a real
 		// window (or samples afresh, if the failure outlasted the stale limit).
-		g.last, g.lastOK = 0, false
-		return 0, false
+		return g.fail(now)
 	}
-	if g.at.IsZero() || now.Sub(g.at) > cpuGaugeStale {
-		// No recent reading to diff against: take this one as the start of a short
-		// window measured now, rather than report nothing or average over the gap.
-		g.prevIdle, g.prevTotal, g.at = idle, total, now
-		time.Sleep(cpuGaugeSample)
-		if idle, total, ok = read(); !ok {
-			g.last, g.lastOK = 0, false
-			return 0, false
+	if !g.at.IsZero() && now.Sub(g.at) <= cpuGaugeStale {
+		if pct, valid := cpuBusyPercent(g.prevIdle, g.prevTotal, idle, total); valid {
+			return g.report(idle, total, now, pct, true)
 		}
-		now = time.Now()
+		// No basis against the previous reading: it cannot anchor a window, so
+		// this reading starts a fresh one below, as if there were none.
+	}
+	// No usable reading to diff against: take this one as the start of a short
+	// window measured now, rather than report nothing or average over the gap.
+	g.prevIdle, g.prevTotal, g.at = idle, total, now
+	g.failAt = time.Time{}
+	time.Sleep(cpuGaugeSample)
+	now = time.Now()
+	if idle, total, ok = read(); !ok {
+		return g.fail(now)
 	}
 	pct, valid := cpuBusyPercent(g.prevIdle, g.prevTotal, idle, total)
+	return g.report(idle, total, now, pct, valid)
+}
+
+// report records a successful reading taken at now as the next window's
+// start, and pct (valid or not) as the figure calls inside
+// cpuGaugeMinWindow reuse, and returns it.
+func (g *CPUGauge) report(idle, total uint64, now time.Time, pct float64, valid bool) (float64, bool) {
 	g.prevIdle, g.prevTotal, g.at = idle, total, now
 	g.last, g.lastOK = pct, valid
+	g.failAt = time.Time{}
 	return pct, valid
+}
+
+// fail records a failed read at now: no figure to reuse, and no read again
+// until cpuGaugeMinWindow has passed. The previous reading and its time stay.
+func (g *CPUGauge) fail(now time.Time) (float64, bool) {
+	g.last, g.lastOK = 0, false
+	g.failAt = now
+	return 0, false
 }
 
 // readCPUStat reads and parses the aggregate line of /proc/stat.

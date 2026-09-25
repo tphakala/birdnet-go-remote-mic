@@ -149,8 +149,7 @@ them; new code MUST use them and existing code migrates when touched:
 
 - `any`, never `interface{}`; `for i := range n`; `min`/`max` builtins.
 - `slices` and `maps` instead of hand-written loops or `sort.Slice`
-  (`slices.SortFunc` with `cmp.Compare`). `internal/reload/plan.go` still uses
-  `sort`.
+  (`slices.SortFunc` with `cmp.Compare`).
 - `strings.Cut`, and `strings.SplitSeq`/`FieldsSeq` when iterating parts.
   Indexing `strings.Fields` is fine for fixed-column formats like `/proc/stat`.
 - (new) Range-over-func iterators (`iter.Seq`, `iter.Seq2`) instead of a

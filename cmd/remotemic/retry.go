@@ -184,19 +184,21 @@ func (a *appliance) retrying(name string) bool {
 // card-index entry is never restarted unattended: its index names a card by
 // kernel probe order, so it may name different hardware by the time the retry
 // runs (the #62 swap).
-func (a *appliance) scheduleRetry(dev *config.Device) {
+//
+// The line naming the next attempt is gated by logAttempt like the rest of
+// the retry logging, except after an attempt an event forced (forced, see
+// restartFaulted): that attempt's failure is always logged, so the line saying
+// when the next one is due is too, or the log would show a failure late in an
+// outage with no word of what follows.
+func (a *appliance) scheduleRetry(dev *config.Device, forced bool) {
 	name := dev.Name
 	if config.IsCardIndexID(dev.Device) || !retryableCause(a.downReason[name]) {
 		a.dropRetry(name)
 		return
 	}
-	loud := a.nextFailureLogged(name)
+	loud := forced || a.nextFailureLogged(name)
 	now := time.Now()
-	st := a.retries[name]
-	if st == nil {
-		st = &retryState{}
-		a.retries[name] = st
-	}
+	st := a.retryFor(name)
 	if !st.recoveredAt.IsZero() {
 		// A failure after a completed settle starts a new outage.
 		st.failures = 0
@@ -216,6 +218,26 @@ func (a *appliance) scheduleRetry(dev *config.Device) {
 		log.Printf("device %q: retrying in %s (failure %d)", name, delay, st.failures)
 	}
 	a.armRetryTimer()
+}
+
+// retryFor returns the device's retry state, creating an empty one when it
+// has none.
+func (a *appliance) retryFor(name string) *retryState {
+	st := a.retries[name]
+	if st == nil {
+		st = &retryState{}
+		a.retries[name] = st
+	}
+	return st
+}
+
+// settleFromEncode records that every faulted stream of the restart has
+// encoded (see appliance.encodeFaults), so its settle window starts now: only
+// serving on from here proves the device recovered.
+func (st *retryState) settleFromEncode(now time.Time) {
+	st.awaitEncode = false
+	st.encodeSeen = true
+	st.settleAt = now.Add(retrySettle)
 }
 
 // dropRetry ends any unattended restart of the device: for a card-index id,
@@ -276,9 +298,11 @@ func (a *appliance) signalRetryDue() {
 // the settle of every restarted device that has served for retrySettle (after
 // an encode fault, counted from when the run loop first sees every faulted
 // stream encoded), and makes one restart attempt for every down device whose
-// backoff has elapsed. It rebuilds the mDNS advertisement once per pass when a
-// device recovered, or when a restart that must prove an encoder is missing
-// from it. A stale or early signal completes and attempts nothing,
+// backoff has elapsed. It rebuilds the mDNS advertisement at most once per
+// pass, when a device recovered or a restart that must prove an encoder is
+// missing from it, and then only if the rebuild would change what is
+// advertised (see announceStale). A stale or early signal completes and
+// attempts nothing,
 // since each deadline is checked against the clock and each encode wait
 // against the runtime.
 //
@@ -320,9 +344,7 @@ func (a *appliance) onRetryDue() {
 			if rt == nil || rt.currentState() != mgmtserver.StateServing || !rt.encodedAll(a.faultedPaths(d.Name)) {
 				continue
 			}
-			st.awaitEncode = false
-			st.encodeSeen = true
-			st.settleAt = now.Add(retrySettle)
+			st.settleFromEncode(now)
 		case !st.settleAt.IsZero() && !now.Before(st.settleAt):
 			st.settleAt = time.Time{}
 			if rt == nil || rt.currentState() != mgmtserver.StateServing {
@@ -334,8 +356,7 @@ func (a *appliance) onRetryDue() {
 				// set when the attempt succeeded, so a frame encoded from here on
 				// wakes the loop.
 				if rt.encodedAll(paths) {
-					st.encodeSeen = true
-					st.settleAt = now.Add(retrySettle)
+					st.settleFromEncode(now)
 				} else {
 					st.awaitEncode = true
 					if !logAttempt(st.failures) {
@@ -374,7 +395,10 @@ func (a *appliance) onRetryDue() {
 		a.publish(&a.cfg)
 	}
 	if recovered || reannounce {
-		a.restartAnnounce()
+		// A device that recovered after re-announcing itself while it waited
+		// for an encode is already advertised as it serves now, so its
+		// recovery alone rebuilds nothing.
+		a.refreshAnnounce()
 	}
 	a.armRetryTimer()
 }
@@ -383,8 +407,10 @@ func (a *appliance) onRetryDue() {
 // serves at once but its down condition stays active until it has served for
 // retrySettle, and after an encode fault until each faulted stream has also
 // encoded (see onRetryDue), with the condition raised again as that failure if
-// it read as another cause; on a failure scheduleRetry either schedules the
-// next attempt or, for a cause a retry cannot fix, ends the retry. The open's own
+// it read as another cause, or its text rewritten in place to say it waits for
+// the encode if it already read as failed; on a failure scheduleRetry either
+// schedules the next attempt (always logging when it is due after a forced
+// attempt) or, for a cause a retry cannot fix, ends the retry. The open's own
 // log lines, failure and success alike, are silenced on attempts logAttempt
 // skips, except the line for a cause that ends the retry (see skipDevice), and
 // except on an attempt an event forced (restartFaulted), which logs its own
@@ -409,7 +435,7 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) 
 	a.quietDown = false
 	a.devices[d.Name] = rt
 	if rt.currentState() != mgmtserver.StateServing {
-		a.scheduleRetry(d)
+		a.scheduleRetry(d, forced)
 		return false
 	}
 	st.settleAt = time.Now().Add(retrySettle)
@@ -417,17 +443,18 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) 
 	if len(paths) == 0 {
 		return false
 	}
-	if a.downReason[d.Name] != downFailed {
-		// The condition stays active while the restart waits for an encode, so
-		// its text must say why. After a disconnect, a skip, or an open failure
-		// that re-raised it, it still reads as the device being gone or
-		// unopenable; raise it again as the failure it now waits out, even over
-		// markDown's keep-the-first-cause exception (an open failure then this
-		// restart would otherwise leave "Device unavailable" on a serving
-		// device). A device already down as failed keeps its condition.
-		n := deviceDownOnset(d.Name, "Device failed", fmt.Sprintf("Encoding failed earlier on %s; the device serves again, and this clears once a client plays it and encoding succeeds", strings.Join(paths, ", ")))
-		a.replaceDown(d.Name, downFailed, &n)
-	}
+	// The condition stays active while the restart waits for an encode, so
+	// its text must say why. After a disconnect, a skip, or an open failure
+	// that re-raised it, it still reads as the device being gone or
+	// unopenable; raise it again as the failure it now waits out, even over
+	// markDown's keep-the-first-cause exception (an open failure then this
+	// restart would otherwise leave "Device unavailable" on a serving
+	// device). A device already down as failed, as after a timer retry,
+	// still reads "Capture stopped ... return 404": its condition is kept
+	// and only its text rewritten in place (see replaceDown), so the wait is
+	// not a fresh notification on every attempt.
+	n := deviceDownOnset(d.Name, "Device failed", fmt.Sprintf("Encoding failed earlier on %s; the device serves again, and this clears once a client plays it and encoding succeeds", strings.Join(paths, ", ")))
+	a.replaceDown(d.Name, downFailed, &n)
 	// Ask the stages to wake the run loop at a stream's first encoded frame,
 	// before any check of the streams' flags (see deviceRuntime.awaitEncode).
 	rt.awaitEncode.Store(true)
@@ -446,12 +473,24 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) 
 // a config save does for any device; a hardware change passes false, so a
 // hotplug advances the backoff instead. The attempt is always logged: it is
 // the event's doing, not the backoff's, so logAttempt does not gate it.
+//
+// A device openAndStart would refuse before any open (its id does not resolve
+// to present hardware, as with the faulted device itself still unplugged
+// while another is hotplugged, or another device holds its hardware) is not
+// restarted, logged as restarting, or given a retry state only to drop it:
+// its record is refreshed the way startDevice refreshes any other down
+// device's, with the refusal's own log line, and scheduleRetry retries or
+// ends it by that cause. Its encode fault stays on record either way.
 func (a *appliance) restartFaulted(d *config.Device, why string, resetBackoff bool) (reannounce bool) {
-	st := a.retries[d.Name]
-	if st == nil {
-		st = &retryState{}
-		a.retries[d.Name] = st
+	if a.openRefused(d) {
+		if resetBackoff {
+			delete(a.retries, d.Name)
+		}
+		a.devices[d.Name] = a.openAndStart(d)
+		a.scheduleRetry(d, true)
+		return false
 	}
+	st := a.retryFor(d.Name)
 	st.next = time.Time{}
 	if resetBackoff {
 		// recoveredAt is already zero here (a faulted device's settle has not
