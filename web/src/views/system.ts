@@ -2,7 +2,7 @@ import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
 import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, formatUptime, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
-import { describeManaged, parseExtraSans } from "../lib/certificate-core.js";
+import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { triggerApplianceRestart } from "../components/restart-modal.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
@@ -244,7 +244,8 @@ export class SystemView {
       // the panel does not go stale after a regenerate, an install, or a
       // change made outside this page; a 501 sets certUnavailable to stop
       // polling the endpoint. The store announces status only on change, but
-      // uptimeSeconds advances between polls, so this still runs every tick.
+      // uptimeSeconds advances between polls, so this still runs every tick
+      // while the page is visible (the store pauses polling while it is hidden).
       if (!this.certUnavailable) void this.loadCertificate();
     });
     store.addEventListener("devices", (e: Event) => {
@@ -555,11 +556,12 @@ export class SystemView {
         void this.loadCertificate();
         return;
       }
-      // The API caps request bodies at 256 KiB; a full CA bundle pasted with the
-      // certificate is the usual way past it, so say what to trim rather than
-      // echoing the bare "payload too large".
+      // The API caps request bodies, and a full CA bundle pasted with the
+      // certificate is the usual way past the cap, so say what to trim rather
+      // than echoing the bare "payload too large". The limit itself comes from
+      // the problem detail, so this text cannot drift from the server's value.
       if (err.status === 413) {
-        showToast("Install failed: the request is larger than the 256 KiB limit. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.", "error");
+        showToast(`Install failed: ${certTooLargeReason(err.detail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
         return;
       }
       let pemBad = false;

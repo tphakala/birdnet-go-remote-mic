@@ -1,6 +1,13 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { button, copyText, elem, hideInactiveKey, ICON_COPY, readBoolPref, writeBoolPref } from "../lib/ui.js";
-import { bitrateFollowsDefault, defaultOpusBitrate } from "../lib/device-settings-core.js";
+import { button, copyText, elem, hideInactiveKey, ICON_COPY, readBoolPref, switchControl, writeBoolPref } from "../lib/ui.js";
+import {
+  MAX_NAME_LEN,
+  MAX_PATH_LEN,
+  bitrateFollowsDefault,
+  defaultOpusBitrate,
+  inputMaxLength,
+  lengthError,
+} from "../lib/device-settings-core.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
 const CHEVRON =
@@ -185,11 +192,13 @@ export class DeviceSettingsForm {
       "DNS-SD instance name and log label. Must be unique.");
     this.nameEl = name.input;
     this.nameErr = name.error;
+    this.nameEl.maxLength = inputMaxLength(MAX_NAME_LEN);
 
     const path = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
       "Unique endpoint path on the RTSP server, e.g. /stream.");
     this.pathEl = path.input;
     this.pathErr = path.error;
+    this.pathEl.maxLength = inputMaxLength(MAX_PATH_LEN);
 
     // Mode: Opus is offered only when the device can do 48 kHz (Opus is a 48 kHz
     // codec, mono or stereo). On a device that cannot, only PCM L16 is offered and
@@ -258,24 +267,18 @@ export class DeviceSettingsForm {
     const quietLabel = this.label("Very Quiet Alert");
     quietLabel.setAttribute("for", quietId);
     quietField.appendChild(quietLabel);
-    const quietSwitch = elem("label", "switch-control");
-    this.quietAlertEl = document.createElement("input");
-    this.quietAlertEl.type = "checkbox";
-    this.quietAlertEl.id = quietId;
-    this.quietAlertEl.className = "visually-hidden";
-    this.quietAlertEl.checked = d.quietAlert ?? true;
     const quietHintId = `${quietId}-hint`;
-    this.quietAlertEl.setAttribute("aria-describedby", quietHintId);
+    const quietSwitch = switchControl({
+      id: quietId,
+      label: "Warn when this device stays very quiet",
+      checked: d.quietAlert ?? true,
+      describedBy: quietHintId,
+    });
+    this.quietAlertEl = quietSwitch.input;
     this.quietAlertEl.addEventListener("change", () => {
       if (this.ready) this.onDirty();
     });
-    const track = elem("span", "switch-track");
-    track.appendChild(elem("span", "switch-thumb"));
-    const quietText = elem("span", "switch-label", "Warn when this device stays very quiet");
-    quietSwitch.appendChild(this.quietAlertEl);
-    quietSwitch.appendChild(track);
-    quietSwitch.appendChild(quietText);
-    quietField.appendChild(quietSwitch);
+    quietField.appendChild(quietSwitch.el);
     quietField.appendChild(this.hint(
       "On by default. Turn off for a device expected to be silent for long stretches; the no-signal and clipping alerts still apply.",
       quietHintId,
@@ -292,24 +295,17 @@ export class DeviceSettingsForm {
       const hideLabel = this.label("Hide Inactive Channels");
       hideLabel.setAttribute("for", hideId);
       hideField.appendChild(hideLabel);
-      const hideSwitch = elem("label", "switch-control");
-      const hideInput = document.createElement("input");
-      hideInput.type = "checkbox";
-      hideInput.id = hideId;
-      hideInput.className = "visually-hidden";
-      hideInput.checked = readBoolPref(hideInactiveKey(this.device.device), true);
       const hideHintId = `${hideId}-hint`;
-      hideInput.setAttribute("aria-describedby", hideHintId);
+      const { el: hideSwitch, input: hideInput } = switchControl({
+        id: hideId,
+        label: "Hide channels no stream carries",
+        checked: readBoolPref(hideInactiveKey(this.device.device), true),
+        describedBy: hideHintId,
+      });
       hideInput.addEventListener("change", () => {
         writeBoolPref(hideInactiveKey(this.device.device), hideInput.checked);
         this.onDisplayChange();
       });
-      const hideTrack = elem("span", "switch-track");
-      hideTrack.appendChild(elem("span", "switch-thumb"));
-      const hideText = elem("span", "switch-label", "Hide channels no stream carries");
-      hideSwitch.appendChild(hideInput);
-      hideSwitch.appendChild(hideTrack);
-      hideSwitch.appendChild(hideText);
       hideField.appendChild(hideSwitch);
       hideField.appendChild(this.hint(
         "On by default. Shows only the channels the current selection streams; turn off to see every captured channel, dimmed when inactive.",
@@ -440,11 +436,16 @@ export class DeviceSettingsForm {
     const rate = Number(this.rateHidden.value);
     const channels = this.selectedChannels();
     let ok = true;
-    ok = this.mark(this.nameEl, this.nameErr, this.nameEl.value.trim().length > 0,
-      "Name is required.") && ok;
+    const name = this.nameEl.value.trim();
+    // The length limits are checked here, in characters, so an over-long value
+    // shows beside its field instead of failing the save with a 422.
+    const nameLenErr = lengthError(name, this.device.name, MAX_NAME_LEN, "Name");
+    ok = this.mark(this.nameEl, this.nameErr, name.length > 0 && !nameLenErr,
+      nameLenErr || "Name is required.") && ok;
     const path = this.pathEl.value.trim();
-    ok = this.mark(this.pathEl, this.pathErr, path.startsWith("/") && path.length >= 2,
-      "Path must start with / and be at least 2 characters.") && ok;
+    const pathLenErr = lengthError(path, this.device.path, MAX_PATH_LEN, "Path");
+    ok = this.mark(this.pathEl, this.pathErr, path.startsWith("/") && path.length >= 2 && !pathLenErr,
+      pathLenErr || "Path must start with / and be at least 2 characters.") && ok;
     let rateOk = rate >= 8000 && rate <= 384000;
     let chOk = channels.length >= 1;
     let chMsg = "Select at least one channel.";

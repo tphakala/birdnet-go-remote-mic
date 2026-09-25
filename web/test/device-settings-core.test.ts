@@ -6,8 +6,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  MAX_NAME_LEN,
   OPUS_BITRATE_PER_CHANNEL,
   OPUS_MAX_BITRATE,
+  inputMaxLength,
+  lengthError,
+  runeLength,
   bitrateFollowsDefault,
   defaultOpusBitrate,
 } from "../src/lib/device-settings-core.js";
@@ -32,4 +36,32 @@ test("bitrateFollowsDefault treats unset/zero and the exact per-channel default 
   // A hand-picked value that differs from the default does not follow.
   assert.equal(bitrateFollowsDefault(192000, 2), false);
   assert.equal(bitrateFollowsDefault(128000, 2), false);
+});
+
+test("runeLength counts code points, not UTF-16 units", () => {
+  assert.equal(runeLength("garden"), 6);
+  assert.equal(runeLength("pöllö"), 5);
+  // Each bird emoji is one code point but two UTF-16 units.
+  const birds = "\u{1F426}\u{1F426}";
+  assert.equal(birds.length, 4);
+  assert.equal(runeLength(birds), 2);
+});
+
+test("lengthError accepts up to the limit in code points and names the overflow", () => {
+  const atLimit = "\u{1F426}".repeat(MAX_NAME_LEN);
+  // Twice the limit in UTF-16 units, but exactly the limit in characters, and
+  // within the maxlength attribute the input carries.
+  assert.equal(lengthError(atLimit, "", MAX_NAME_LEN, "Name"), "");
+  assert.ok(atLimit.length <= inputMaxLength(MAX_NAME_LEN));
+  const over = "a".repeat(MAX_NAME_LEN + 1);
+  assert.equal(
+    lengthError(over, "", MAX_NAME_LEN, "Name"),
+    `Name must be at most ${MAX_NAME_LEN} characters (now ${MAX_NAME_LEN + 1}).`,
+  );
+});
+
+test("lengthError accepts an unchanged stored value over the limit, as the server does", () => {
+  const stored = "b".repeat(MAX_NAME_LEN + 10);
+  assert.equal(lengthError(stored, stored, MAX_NAME_LEN, "Name"), "");
+  assert.ok(lengthError(`${stored}x`, stored, MAX_NAME_LEN, "Name") !== "");
 });
