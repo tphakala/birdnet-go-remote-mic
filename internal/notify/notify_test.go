@@ -389,7 +389,7 @@ func TestUpdateAfterRingWraps(t *testing.T) {
 		}
 	}
 	// A trimmed onset: raised first, then pushed out of the ring.
-	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: "device:old:down", Title: "old", Message: "old"})
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: "device:old:down", Title: "first", Message: "first"})
 	events(capacity)
 	// A held onset at a wrapped position.
 	events(2)
@@ -397,7 +397,7 @@ func TestUpdateAfterRingWraps(t *testing.T) {
 	if !c.Update(testDeviceKey, "held", "rewritten") {
 		t.Fatal("Update of the held onset returned false")
 	}
-	if !c.Update("device:old:down", "old", "rewritten") {
+	if !c.Update("device:old:down", "first", "rewritten") {
 		t.Fatal("Update of the trimmed onset returned false")
 	}
 	byKey := map[string]Notification{}
