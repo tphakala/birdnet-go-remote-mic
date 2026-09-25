@@ -226,6 +226,9 @@ const PAIRS: Pair[] = [
   // both an icon and a link on it.
   { what: "open-access banner icon", fg: "--signal-warn-text", bg: ["--bg-app", "--signal-warn-bg"], min: AA_NON_TEXT },
   { what: "open-access banner link", fg: "--accent-cyan-text", bg: ["--bg-app", "--signal-warn-bg"], min: AA },
+  // The Events page's load-failure notice: body text on the warn tint over a
+  // card.
+  { what: "events load notice text", fg: "--text-primary", bg: ["--bg-surface", "--signal-warn-bg"], min: AA },
 
   // BODY TEXT ON A NOTIFICATION ROW. Every row, whatever its severity, is the
   // neutral composited row surface (severity is carried by the icon badge, not

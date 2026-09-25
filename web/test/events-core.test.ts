@@ -8,30 +8,20 @@ import assert from "node:assert/strict";
 import {
   CATEGORIES,
   conditionLifecycles,
+  dayKey,
+  dayLabel,
   emptyFilter,
   exportJSON,
   facetCounts,
   filterEvents,
   formatDuration,
   isFilterActive,
+  oldestCaption,
+  resultCountLabel,
 } from "../src/lib/events-core.js";
 import type { Notification } from "../src/lib/types.js";
+import { notif } from "./fixtures.js";
 
-function notif(over: Partial<Notification> & { id: number }): Notification {
-  return {
-    id: over.id,
-    bootId: over.bootId ?? "boot-a",
-    time: over.time ?? "2026-09-22T10:00:00Z",
-    uptimeMs: over.uptimeMs ?? 0,
-    severity: over.severity ?? "info",
-    category: over.category ?? "system",
-    kind: over.kind ?? "event",
-    key: over.key,
-    source: over.source,
-    title: over.title ?? "Title",
-    message: over.message ?? "Message",
-  };
-}
 
 const sample: Notification[] = [
   notif({ id: 1, severity: "info", category: "system", title: "Appliance started" }),
@@ -126,15 +116,110 @@ test("formatDuration picks a compact unit", () => {
   assert.equal(formatDuration(Number.NaN), "");
 });
 
+interface ExportedLog {
+  bootId: string;
+  exportedAt: string;
+  clockAnchor: { browserTime: string | null; uptimeMs: number } | null;
+  events: Array<Notification & { anchoredTime: string | null }>;
+}
+
 test("exportJSON writes a chronological log", () => {
-  const out = JSON.parse(exportJSON([sample[2], sample[0]], "boot-a", "2026-09-22T11:00:00Z")) as {
-    bootId: string;
-    exportedAt: string;
-    events: Notification[];
-  };
+  const out = JSON.parse(exportJSON([sample[2], sample[0]], "boot-a", "2026-09-22T11:00:00Z")) as ExportedLog;
   assert.equal(out.bootId, "boot-a");
   assert.equal(out.exportedAt, "2026-09-22T11:00:00Z");
   assert.deepEqual(out.events.map((n) => n.id), [1, 3]);
+  // No anchor yet: the export says so rather than inventing a time.
+  assert.equal(out.clockAnchor, null);
+  assert.equal(out.events[0].anchoredTime, null);
+});
+
+test("exportJSON carries the clock anchor and a corrected time per entry", () => {
+  // The browser read 12:00:00Z when the appliance had been up 100 s. An entry
+  // raised at uptime 40 s therefore happened at 11:59:00Z on the browser clock,
+  // whatever wall time the appliance stamped it with (here a pre-NTP 1970 one).
+  const anchor = { browserMs: Date.parse("2026-09-22T12:00:00Z"), uptimeMs: 100_000 };
+  const early = notif({ id: 1, uptimeMs: 40_000, time: "1970-01-01T00:00:40Z" });
+  const out = JSON.parse(exportJSON([early], "boot-a", "2026-09-22T12:01:00Z", anchor)) as ExportedLog;
+  assert.deepEqual(out.clockAnchor, { browserTime: "2026-09-22T12:00:00.000Z", uptimeMs: 100_000 });
+  assert.equal(out.events[0].anchoredTime, "2026-09-22T11:59:00.000Z");
+  // The raw wall-clock time is kept as the appliance sent it.
+  assert.equal(out.events[0].time, "1970-01-01T00:00:40Z");
+});
+
+// withTZ runs fn with the process time zone set to tz, restoring it after.
+function withTZ(tz: string, fn: () => void): void {
+  const prev = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.TZ;
+    else process.env.TZ = prev;
+  }
+}
+
+test("dayKey buckets by the local calendar day", () => {
+  withTZ("Europe/Helsinki", () => {
+    // 21:30Z is 00:30 the next day in Helsinki (UTC+3 in summer).
+    assert.equal(dayKey(Date.parse("2026-09-21T21:30:00Z")), "2026-09-22");
+    assert.equal(dayKey(Date.parse("2026-09-21T20:59:59Z")), "2026-09-21");
+  });
+});
+
+test("dayLabel rolls over at local midnight", () => {
+  withTZ("Europe/Helsinki", () => {
+    const midnight = Date.parse("2026-09-21T21:00:00Z"); // 2026-09-22 00:00 local
+    assert.equal(dayLabel(midnight, midnight), "Today");
+    assert.equal(dayLabel(midnight - 1000, midnight), "Yesterday");
+    assert.equal(dayLabel(midnight - 1000, midnight - 2000), "Today");
+    // Two days back falls through to the weekday and date.
+    const twoBack = dayLabel(midnight - 25 * 3_600_000, midnight);
+    assert.ok(twoBack !== "Today" && twoBack !== "Yesterday", twoBack);
+  });
+});
+
+test("dayLabel finds yesterday across a 23-hour spring-forward day", () => {
+  withTZ("Europe/Helsinki", () => {
+    // Clocks go from 03:00 to 04:00 on 2026-03-29, so that day is 23 hours.
+    // Now is 00:30 on 03-30; now minus 24 h lands on 03-28, two days back, so
+    // subtracting a fixed day would miss yesterday.
+    const now = Date.parse("2026-03-29T21:30:00Z");
+    const noonOn29 = Date.parse("2026-03-29T09:00:00Z");
+    assert.equal(dayLabel(noonOn29, now), "Yesterday");
+  });
+});
+
+test("dayLabel finds yesterday across a 25-hour fall-back day", () => {
+  withTZ("Europe/Helsinki", () => {
+    // Clocks go from 04:00 back to 03:00 on 2026-10-25, so that day is 25 hours.
+    // Now is 23:30 on 10-25; now minus 24 h is still 10-25, so subtracting a
+    // fixed day would label late 10-24 as neither today nor yesterday.
+    const now = Date.parse("2026-10-25T21:30:00Z");
+    const lateOn24 = Date.parse("2026-10-24T20:45:00Z"); // 23:45 local
+    assert.equal(dayLabel(lateOn24, now), "Yesterday");
+    assert.equal(dayLabel(Date.parse("2026-10-24T21:15:00Z"), now), "Today"); // 00:15 on 10-25
+  });
+});
+
+test("oldestCaption shows the time alone for today and prefixes an older day", () => {
+  withTZ("UTC", () => {
+    const now = Date.parse("2026-09-22T12:00:00Z");
+    // Today: "Oldest" and the clock time, no day label. The time's exact form
+    // is locale-dependent, but it starts with a digit either way.
+    const today = oldestCaption(Date.parse("2026-09-22T08:05:00Z"), now);
+    assert.ok(/^Oldest \d/.test(today), today);
+    const yesterday = oldestCaption(Date.parse("2026-09-21T08:05:00Z"), now);
+    assert.ok(/^Oldest Yesterday \d/.test(yesterday), yesterday);
+    assert.equal(oldestCaption(Number.NaN, now), "");
+  });
+});
+
+test("resultCountLabel pluralizes and shows N of M only while filtering", () => {
+  assert.equal(resultCountLabel(0, 0, false, true), "");
+  assert.equal(resultCountLabel(1, 1, false, false), "1 event");
+  assert.equal(resultCountLabel(3, 3, false, false), "3 events");
+  assert.equal(resultCountLabel(2, 5, true, false), "Showing 2 of 5 events");
+  assert.equal(resultCountLabel(0, 1, true, false), "Showing 0 of 1 event");
 });
 
 test("facetCounts honours a category selection when counting severities", () => {
@@ -255,9 +340,9 @@ test("exportJSON leaves its input untouched and carries whole events", () => {
   // exportJSON sorts a copy, so the caller's array order is unchanged.
   assert.deepEqual(input.map((n) => n.id), [2, 1]);
   // Oldest first, and each entry is the whole event object (sample[1] has every
-  // field populated, so it round-trips exactly).
+  // field populated, so it round-trips exactly) plus its anchored time.
   assert.deepEqual(out.events.map((n) => n.id), [1, 2]);
-  assert.deepEqual(out.events[1], sample[1]);
+  assert.deepEqual(out.events[1], { ...sample[1], anchoredTime: null });
 });
 
 test("facetCounts appends an unknown category after the fixed order", () => {

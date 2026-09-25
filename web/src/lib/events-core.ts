@@ -5,6 +5,7 @@
 // entries in the per-browser dismissed set; they only count as read, so clearing
 // the bell tidies the popover without removing an entry from the full event log.
 
+import { anchorToMs, type ClockAnchor } from "./notifications-core.js";
 import type { Notification, NotificationSeverity } from "./types.js";
 
 // SEVERITIES and CATEGORIES fix the facet order the page renders, most severe
@@ -138,7 +139,72 @@ export function formatDuration(ms: number): string {
 // exportJSON serializes the entries for download, oldest first so the file reads
 // as a chronological log. The caller passes the export instant so this stays
 // clock-free.
-export function exportJSON(items: readonly Notification[], bootId: string | null, exportedAt: string): string {
-  const events = [...items].sort((a, b) => a.id - b.id);
-  return JSON.stringify({ bootId, exportedAt, events }, null, 2);
+//
+// Each entry's own time is the appliance wall clock when it was raised, which
+// on a Pi without an RTC can be the pre-NTP clock. The export therefore also
+// carries the clock anchor the page places entries with (the browser time at
+// which the appliance's uptime was anchor.uptimeMs), and each event an
+// anchoredTime derived from it and the entry's uptimeMs, the same corrected
+// time the page shows. Both are null before any anchor exists.
+export function exportJSON(
+  items: readonly Notification[],
+  bootId: string | null,
+  exportedAt: string,
+  anchor: ClockAnchor | null = null,
+): string {
+  const toIso = (ms: number): string | null => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
+  const clockAnchor = anchor ? { browserTime: toIso(anchor.browserMs), uptimeMs: anchor.uptimeMs } : null;
+  const events = [...items]
+    .sort((a, b) => a.id - b.id)
+    .map((n) => ({
+      ...n,
+      anchoredTime: toIso(anchorToMs(anchor, n.uptimeMs)),
+    }));
+  return JSON.stringify({ bootId, exportedAt, clockAnchor, events }, null, 2);
+}
+
+// dayKey buckets an instant by the viewer's local calendar day, as a local
+// YYYY-MM-DD string (getMonth is zero-based, hence the +1).
+export function dayKey(ms: number): string {
+  const d = new Date(ms);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+// Constructing an Intl formatter costs far more than formatting with one, and
+// the Events page formats day labels and the oldest-entry caption on every
+// render, so the formatters are built once (as notification-row.ts does).
+const DAY_LABEL_FMT = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric" });
+const CAPTION_TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+
+// dayLabel names the local day an instant falls on, relative to nowMs: "Today",
+// "Yesterday", or the weekday and date.
+export function dayLabel(ms: number, nowMs: number): string {
+  const key = dayKey(ms);
+  if (key === dayKey(nowMs)) return "Today";
+  // Compute yesterday by decrementing the calendar date, not by subtracting 24h:
+  // around a DST transition a day is 23 or 25 hours, so now minus 86_400_000 can
+  // land on today or two days back.
+  const y = new Date(nowMs);
+  y.setDate(y.getDate() - 1);
+  if (key === dayKey(y.getTime())) return "Yesterday";
+  return DAY_LABEL_FMT.format(ms);
+}
+
+// oldestCaption is the Retained tile's caption for the oldest entry's instant:
+// the clock time alone when it is from today, else prefixed with its day label.
+// An unknown instant yields "".
+export function oldestCaption(ms: number, nowMs: number): string {
+  if (!Number.isFinite(ms)) return "";
+  const time = CAPTION_TIME_FMT.format(ms);
+  return dayKey(ms) === dayKey(nowMs) ? `Oldest ${time}` : `Oldest ${dayLabel(ms, nowMs)} ${time}`;
+}
+
+// resultCountLabel is the filter status line: nothing while loading, "N of M"
+// while a filter narrows the list, else the plain count, pluralized.
+export function resultCountLabel(shown: number, total: number, filterActive: boolean, loading: boolean): string {
+  if (loading) return "";
+  const noun = total === 1 ? "event" : "events";
+  return filterActive ? `Showing ${shown} of ${total} ${noun}` : `${total} ${noun}`;
 }

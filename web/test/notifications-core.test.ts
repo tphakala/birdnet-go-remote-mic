@@ -6,41 +6,34 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  CLOCK_STEP_TOLERANCE_MS,
   DEFAULT_CAPACITY,
+  LoadTracker,
+  RESYNC_BASE_MS,
+  RESYNC_MAX_MS,
   applyLive,
   applySnapshot,
   activeConditions,
   clearAll,
+  clockStepped,
   deserialize,
   eventTimeMs,
   initialState,
   isNotification,
+  isSnapshot,
   markAllRead,
   pruneToRing,
+  requestMidpoint,
+  resyncDelay,
   serialize,
   unreadCount,
   uptimeToMs,
 } from "../src/lib/notifications-core.js";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.js";
+import { notif } from "./fixtures.js";
 
 // A fixed browser clock reading, so anchor arithmetic is exact.
 const NOW = Date.parse("2026-09-12T14:00:05Z");
-
-function notif(over: Partial<Notification> & { id: number }): Notification {
-  return {
-    id: over.id,
-    bootId: over.bootId ?? "boot-a",
-    time: over.time ?? "2026-09-12T14:00:00Z",
-    uptimeMs: over.uptimeMs ?? 0,
-    severity: over.severity ?? "info",
-    category: over.category ?? "system",
-    kind: over.kind ?? "event",
-    key: over.key,
-    source: over.source,
-    title: over.title ?? "Title",
-    message: over.message ?? "Message",
-  };
-}
 
 function snap(
   over: Partial<NotificationSnapshot> & { notifications: Notification[] },
@@ -504,4 +497,119 @@ test("isNotification accepts a well-formed notification and rejects malformed on
   assert.equal(isNotification({ ...base, uptimeMs: -1 }), false); // negative uptime
   assert.equal(isNotification({ ...base, uptimeMs: Number.NaN }), false); // non-finite uptime
   assert.equal(isNotification({ ...base, uptimeMs: "5" }), false); // non-numeric uptime
+});
+
+test("activeConditions keeps the highest id per key whatever the map order", () => {
+  const s = initialState();
+  // Inserted newest first, so a first-seen or last-seen rule would pick wrong.
+  s.items.set(4, notif({ id: 4, kind: "onset", key: "k" }));
+  s.items.set(3, notif({ id: 3, kind: "clear", key: "k" }));
+  s.items.set(2, notif({ id: 2, kind: "onset", key: "k" }));
+  s.items.set(6, notif({ id: 6, kind: "clear", key: "j" }));
+  s.items.set(5, notif({ id: 5, kind: "onset", key: "j" }));
+  assert.deepEqual(activeConditions(s).map((n) => n.id), [4]);
+});
+
+test("isSnapshot accepts a well-formed snapshot and rejects anything else", () => {
+  const good = snap({ notifications: [notif({ id: 1 })] });
+  assert.equal(isSnapshot(good), true);
+  assert.equal(isSnapshot("<html>captive portal</html>"), false);
+  assert.equal(isSnapshot(null), false);
+  assert.equal(isSnapshot({ ...good, bootId: 7 }), false);
+  assert.equal(isSnapshot({ ...good, serverTime: undefined }), false);
+  assert.equal(isSnapshot({ ...good, uptimeMs: Number.NaN }), false);
+  assert.equal(isSnapshot({ ...good, nextId: "2" }), false);
+  assert.equal(isSnapshot({ ...good, notifications: "none" }), false);
+  // A malformed entry, or one from another boot, poisons the whole snapshot.
+  assert.equal(isSnapshot({ ...good, notifications: [{ id: 1 }] }), false);
+  assert.equal(isSnapshot({ ...good, notifications: [notif({ id: 1, bootId: "boot-b" })] }), false);
+});
+
+test("requestMidpoint anchors halfway through the request", () => {
+  assert.equal(requestMidpoint(1_000, 1_400), 1_200);
+  assert.equal(requestMidpoint(1_000, 1_000), 1_000);
+});
+
+test("a snapshot anchored at the request midpoint maps entries by half the round trip less", () => {
+  // The server read uptime 5 s during a request sent at NOW and answered 2 s
+  // later; the midpoint places uptime 5 s at NOW + 1 s rather than NOW + 2 s.
+  const s = initialState();
+  applySnapshot(s, snap({ uptimeMs: 5_000, notifications: [] }), requestMidpoint(NOW, NOW + 2_000));
+  assert.equal(uptimeToMs(s, 5_000), NOW + 1_000);
+});
+
+test("clockStepped ignores drift within the tolerance and flags a step either way", () => {
+  const ref = { wallMs: NOW, monoMs: 50_000 };
+  // Both clocks advanced a minute together.
+  assert.equal(clockStepped(ref, NOW + 60_000, 110_000), false);
+  // Jitter up to the tolerance is not a step.
+  assert.equal(clockStepped(ref, NOW + 60_000 + CLOCK_STEP_TOLERANCE_MS, 110_000), false);
+  // The wall clock jumped forward an hour (or a suspend that paused the
+  // monotonic clock), or stepped back a minute.
+  assert.equal(clockStepped(ref, NOW + 3_660_000, 110_000), true);
+  assert.equal(clockStepped(ref, NOW, 110_000), true);
+});
+
+test("resyncDelay backs off exponentially up to the cap", () => {
+  assert.equal(resyncDelay(1), RESYNC_BASE_MS);
+  assert.equal(resyncDelay(2), RESYNC_BASE_MS * 2);
+  assert.equal(resyncDelay(3), RESYNC_BASE_MS * 4);
+  assert.equal(resyncDelay(0), RESYNC_BASE_MS);
+  assert.equal(resyncDelay(50), RESYNC_MAX_MS);
+  assert.equal(resyncDelay(1_000_000), RESYNC_MAX_MS);
+});
+
+test("LoadTracker starts neither loaded nor failed", () => {
+  const t = new LoadTracker();
+  assert.equal(t.hasLoaded(), false);
+  assert.equal(t.hasFailed(), false);
+});
+
+test("LoadTracker: a failure is reported, and a later success clears it", () => {
+  const t = new LoadTracker();
+  const a = t.begin();
+  assert.equal(t.fail(a), true);
+  assert.equal(t.hasFailed(), true);
+  assert.equal(t.hasLoaded(), false);
+  const b = t.begin();
+  assert.equal(t.canApply(b), true);
+  t.applied(b);
+  assert.equal(t.hasLoaded(), true);
+  assert.equal(t.hasFailed(), false);
+  // A repeat failure after the success reports again (the page learns of it).
+  const c = t.begin();
+  assert.equal(t.fail(c), true);
+  assert.equal(t.fail(c), true);
+  assert.equal(t.hasFailed(), true);
+  assert.equal(t.hasLoaded(), true);
+});
+
+test("LoadTracker: a newer load that fails does not discard an older valid one", () => {
+  const t = new LoadTracker();
+  const older = t.begin();
+  const newer = t.begin();
+  assert.equal(t.fail(newer), true);
+  // The older load's snapshot arrives after the newer failed: still applied.
+  assert.equal(t.canApply(older), true);
+  t.applied(older);
+  assert.equal(t.hasFailed(), false);
+  assert.equal(t.hasLoaded(), true);
+});
+
+test("LoadTracker: an older load cannot overwrite or fail a newer applied one", () => {
+  const t = new LoadTracker();
+  const older = t.begin();
+  const newer = t.begin();
+  t.applied(newer);
+  assert.equal(t.canApply(older), false);
+  // Its failure is stale too: the newer success is the fresher truth.
+  assert.equal(t.fail(older), false);
+  assert.equal(t.hasFailed(), false);
+});
+
+test("LoadTracker: a load merely started later does not block an earlier one", () => {
+  const t = new LoadTracker();
+  const first = t.begin();
+  t.begin(); // still in flight
+  assert.equal(t.canApply(first), true);
 });
