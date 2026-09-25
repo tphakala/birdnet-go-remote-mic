@@ -954,6 +954,34 @@ func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
 	}
 }
 
+// TestTokenWriteMissingConfigDotDotAfterSymlink pins that the owner check looks
+// at the directory the file actually lands in: lk points at real/sub, so
+// lk/../config.yaml lands in real (private), not in the shared top directory a
+// lexical clean of ".." would name.
+func TestTokenWriteMissingConfigDotDotAfterSymlink(t *testing.T) {
+	top := t.TempDir()
+	if err := os.Chmod(top, 0o777); err != nil { // shared: would be exempt
+		t.Fatal(err)
+	}
+	realDir := filepath.Join(top, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(realDir, "sub"), filepath.Join(top, "lk")); err != nil {
+		t.Fatal(err)
+	}
+	stubEUID(t, os.Geteuid()+1)
+	// Relative, as typed at a shell, and a string: filepath.Join would clean it.
+	t.Chdir(top)
+	code, _, errOut := runCLI("token", "generate", flagConfig, "lk/../config.yaml")
+	if code != 1 || !strings.Contains(errOut, "the directory "+realDir+" ") {
+		t.Fatalf("exit %d stderr %q, want a refusal naming %s", code, errOut, realDir)
+	}
+}
+
 // TestTokenWriteMissingConfigSharedDirProceeds asserts that with no config yet
 // in a shared directory (sticky or world-writable, such as /tmp), the
 // directory's owner is not taken as the appliance account, so another account's

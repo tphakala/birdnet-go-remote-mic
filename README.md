@@ -330,7 +330,10 @@ error names the owning account and the command to run instead. When the config
 does not exist yet, the check uses the owner of the directory that will hold
 it, except in a shared directory (sticky or world-writable, such as `/tmp`),
 where that owner says nothing about the appliance's account and the command is
-not refused.
+not refused. A group-writable directory owned by another account (say
+root-owned, mode 0770, group `remote-mic`) is not treated as shared; create the
+config there as the appliance's account first, or keep the installer's layout,
+where the directory belongs to the appliance's account.
 
 You can also set it by hand:
 

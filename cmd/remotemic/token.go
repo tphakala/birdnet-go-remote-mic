@@ -485,10 +485,17 @@ func reportChange(w io.Writer, res changeResult, headline string) {
 
 // absPath renders cfgPath as an absolute path for a headline, falling back to
 // cfgPath itself if the working directory cannot be resolved, so an operator run
-// from another directory can see exactly which file the command edited.
+// from another directory can see exactly which file the command edited. It
+// joins the working directory by hand rather than with filepath.Abs, whose
+// lexical cleaning of ".." can name a different file than the one opened when
+// the ".." follows a symlink (the kernel resolves it against the link's target);
+// runlock.PathFor anchors the same way.
 func absPath(cfgPath string) string {
-	if abs, err := filepath.Abs(cfgPath); err == nil {
-		return abs
+	if filepath.IsAbs(cfgPath) {
+		return cfgPath
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd + string(filepath.Separator) + cfgPath
 	}
 	return cfgPath
 }
@@ -505,17 +512,32 @@ func absPath(cfgPath string) string {
 // A parent directory that is sticky or world-writable (such as /tmp) is shared
 // between accounts, so its owner is no proxy for the appliance account and the
 // fallback does not refuse there. A group-writable one is not exempt: under a
-// umask of 002 an ordinary private directory is group-writable.
+// umask of 002 an ordinary private directory is group-writable. The trade-off
+// is a hand-made group-shared directory (root-owned, 0770, the appliance's
+// group): with no config in it yet, the owner check points at root; create
+// the config there first, as the appliance's account, or use the installer's
+// layout (a directory owned by the appliance's account).
 func checkOwner(cfgPath, command string) error {
 	what := absPath(cfgPath)
 	fi, err := os.Stat(cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
-		dir := filepath.Dir(what)
+		// filepath.Split, not Dir: Dir cleans ".." lexically, which after a
+		// symlink names a different directory than the one the file lands in.
+		dir, base := filepath.Split(what)
+		dir = strings.TrimSuffix(dir, string(filepath.Separator))
+		if dir == "" {
+			dir = string(filepath.Separator)
+		}
+		// Name the directory as resolved, so the message shows where the file
+		// actually lands rather than a spelling with "..".
+		if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+			dir = resolved
+		}
 		fi, err = os.Stat(dir) // follows symlinks, so this is the resolved directory
 		if err == nil && (fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o002 != 0) {
 			return nil
 		}
-		what = "the directory " + dir + " (where " + filepath.Base(what) + " will be created)"
+		what = "the directory " + dir + " (where " + base + " will be created)"
 	}
 	if err != nil {
 		return nil //nolint:nilerr // the command's own open reports the error, with a permission hint

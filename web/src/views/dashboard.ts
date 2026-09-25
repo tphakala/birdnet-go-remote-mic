@@ -529,8 +529,9 @@ export class DashboardView {
       clearBusy(btn, "Enable");
       // A poll that changed the list meanwhile rebuilt the card with a fresh
       // busy button, which btn no longer is; re-render so it is not left stuck
-      // on "Enabling..." while an unchanged list skips the rebuild.
-      if (!btn.isConnected) {
+      // on "Enabling..." while an unchanged list skips the rebuild. A device
+      // no longer listed (the usual success) has no card left to fix.
+      if (!btn.isConnected && store.getState().available.some((a) => a.device === d.device)) {
         this.availableKey = "";
         this.renderAvailable(store.getState().available);
       }
