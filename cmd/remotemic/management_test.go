@@ -174,7 +174,7 @@ func TestProviderDeviceLookup(t *testing.T) {
 	}
 }
 
-func TestClosedMgmtWaitReturns(t *testing.T) {
+func TestNilMgmtWaitReturns(t *testing.T) {
 	// A nil handle (management disabled) must make Wait return immediately so
 	// shutdown never blocks on it, and report no retry.
 	var nilHandle *mgmt
@@ -209,23 +209,36 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 
 func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	// Occupy a port, then point the management listener at it so the bind fails.
+	// A bind failure is retried like a certificate failure: once the port is
+	// free, the background retry brings the API up on it.
 	occupied, err := net.Listen("tcp", testListenAny)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if cerr := occupied.Close(); cerr != nil {
-			t.Errorf("closing occupied listener: %v", cerr)
-		}
-	}()
+	addr := occupied.Addr().String()
 
-	cfg := &config.Config{Management: config.Management{Listen: occupied.Addr().String(), CertDir: t.TempDir()}}
-	ctx, cancel := context.WithCancel(context.Background())
+	cfg := &config.Config{Management: config.Management{Listen: addr, CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
+	p := &mgmtParams{cfgPath: "config.yaml", cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
+	}
+	if h.Up() == nil {
+		t.Fatal("a bind failure must leave a background retry running")
+	}
+	if cerr := occupied.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	select {
+	case ep := <-h.Up():
+		if ep.addr != addr {
+			t.Errorf("recovered on %s, want the configured %s", ep.addr, addr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background retry did not bind once the port was free")
 	}
 	cancel()
 	h.Wait()

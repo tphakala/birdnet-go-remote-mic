@@ -56,10 +56,15 @@ func (s scriptedStage) Run(src audio.Source, _ func() bool, emit func(pipeline.F
 
 // scriptedStages wraps the fake opener so every opened stream runs its own
 // scriptedStage, and returns a function yielding the play channel of the stream
-// at path in the most recently opened runtime.
-func scriptedStages(app *appliance, log *fakeOpenLog) func(path string) chan bool {
+// at path in the most recently opened runtime. That function fails the test
+// when the runtime is not the device's current, serving one: a send to the
+// stage of a runtime that already stopped would block the test forever instead
+// of failing it.
+func scriptedStages(t *testing.T, app *appliance, log *fakeOpenLog) func(path string) chan bool {
+	t.Helper()
 	next := fakeOpenerWith(log, func(rate, channels int) audio.Source { return newBlockingSource(rate, channels) })
 	var latest map[string]chan bool
+	var latestRT *deviceRuntime
 	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 		rt, err := next(dev, hub)
 		if err != nil {
@@ -71,9 +76,17 @@ func scriptedStages(app *appliance, log *fakeOpenLog) func(path string) chan boo
 			latest[sr.stream.Path] = ch
 			sr.stage = scriptedStage{play: ch}
 		}
+		latestRT = rt
 		return rt, nil
 	}
-	return func(path string) chan bool { return latest[path] }
+	return func(path string) chan bool {
+		t.Helper()
+		rt := app.devices[latestRT.dev.Name]
+		if rt != latestRT || rt.currentState() != mgmtserver.StateServing {
+			t.Fatalf("play %s: the latest runtime is not the device's serving one (state %s)", path, rt.currentState())
+		}
+		return latest[path]
+	}
 }
 
 // TestRetryAfterEncodeFaultSettlesOnlyAfterEncoding is the #97 case: an encode
@@ -86,7 +99,7 @@ func TestRetryAfterEncodeFaultSettlesOnlyAfterEncoding(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)
 		defer shutdownApp(app, cancel)
-		play := scriptedStages(app, log)
+		play := scriptedStages(t, app, log)
 		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
 		genBefore := app.announceGen
 
@@ -127,6 +140,16 @@ func TestRetryAfterEncodeFaultSettlesOnlyAfterEncoding(t *testing.T) {
 		if got := app.announceGen - genBefore; got != 1 {
 			t.Errorf("announcement rebuilds = %d, want 1 (on recovery only)", got)
 		}
+
+		// A later capture failure is a new outage with no encode fault: its
+		// restart settles on time alone, with no client playing. (The backoff
+		// carries on from the earlier outage, since the device recovered less than
+		// retryResetAfter ago.)
+		killDevice(t, app, log, "moth", errTestEIO)
+		runFor(t, app, 2*time.Minute)
+		if got := countDown(t, app, "moth", notify.KindClear); got != 2 {
+			t.Errorf("down clears = %d, want 2: the capture-fault outage settles without an encode", got)
+		}
 	})
 }
 
@@ -137,12 +160,12 @@ func TestRetryAfterEncodeFaultCountsEncodeInsideWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)
 		defer shutdownApp(app, cancel)
-		play := scriptedStages(app, log)
+		play := scriptedStages(t, app, log)
 		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
 
 		play(pathMoth) <- true
-		// The first retry is due 5 s after the fault; let it open.
-		runFor(t, app, 6*time.Second)
+		// The first retry is due backoffDelay(1) after the fault; let it open.
+		runFor(t, app, backoffDelay(1)+time.Second)
 		play(pathMoth) <- false
 		// Past the first settle deadline (retrySettle after the restart) but not
 		// past retrySettle after it: the encode is seen at that deadline and the
@@ -167,8 +190,8 @@ func TestRetryCaptureFaultSettlesOnTime(t *testing.T) {
 		defer shutdownApp(app, cancel)
 		failOpenTimes(app, log, 1)
 		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
-		// The first retry is due 5 s after the failed open and succeeds.
-		runFor(t, app, 5*time.Second+retrySettle-time.Second)
+		// The first retry is due backoffDelay(1) after the failed open and succeeds.
+		runFor(t, app, backoffDelay(1)+retrySettle-time.Second)
 		if got := countDown(t, app, "moth", notify.KindClear); got != 0 {
 			t.Fatalf("down clears = %d, want 0 before the restart has served retrySettle", got)
 		}
@@ -188,7 +211,7 @@ func TestRetryEncodeFaultNeedsFaultedStreamToEncode(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)
 		defer shutdownApp(app, cancel)
-		play := scriptedStages(app, log)
+		play := scriptedStages(t, app, log)
 		dev := testDevice("moth", idMoth, pathMoth, 48000)
 		dev.Streams = append(dev.Streams, config.Stream{Path: pathBat, Mode: config.ModePCM, Channels: []int{1}})
 		app.reconcile(&config.Config{Devices: []config.Device{dev}})
@@ -196,7 +219,7 @@ func TestRetryEncodeFaultNeedsFaultedStreamToEncode(t *testing.T) {
 
 		// The bat stream faults on PLAY; the device fails and is retried.
 		play(pathBat) <- true
-		runFor(t, app, 6*time.Second)
+		runFor(t, app, backoffDelay(1)+time.Second)
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
 			t.Fatalf("moth state = %s, want serving after the retry", s)
 		}

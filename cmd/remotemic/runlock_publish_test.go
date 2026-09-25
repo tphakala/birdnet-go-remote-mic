@@ -28,7 +28,11 @@ func TestPublishRunLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = lock.Release() })
+	t.Cleanup(func() {
+		if rerr := lock.Release(); rerr != nil {
+			t.Errorf("releasing the run lock: %v", rerr)
+		}
+	})
 
 	publishRunLock(lock, cfgPath, nil)
 	st, ok, err := runlock.ReadState(lockPath)

@@ -4,10 +4,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -65,6 +68,35 @@ func TestRetryManagementBacksOffThenDelivers(t *testing.T) {
 		close(stop)
 		<-waited
 	})
+}
+
+// TestRetryManagementLogsChangesOnly pins the log bound: a failure repeating the
+// previous message is not logged again, a different one is, and the recovery
+// is. Not parallel: it captures the process logger.
+func TestRetryManagementLogsChangesOnly(t *testing.T) {
+	out := captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		errs := []error{errors.New("broken"), errors.New("broken"), errors.New("other")}
+		stop := make(chan struct{})
+		close(stop)
+		n := 0
+		attempt := func() (*mgmt, error) {
+			if n < len(errs) {
+				n++
+				return nil, errs[n-1]
+			}
+			return fakeMgmt(testMgmtAddr, stop), nil
+		}
+		h := retryManagement(t.Context(), attempt, []time.Duration{time.Second}, errors.New("broken"))
+		<-h.Up()
+		h.Wait()
+	})
+	if got := strings.Count(out.String(), "management API still disabled"); got != 1 {
+		t.Errorf("logged %d failure lines, want 1 (only the changed message); log:\n%s", got, out)
+	}
+	if !strings.Contains(out.String(), "management API recovered after 4 background attempt(s)") {
+		t.Errorf("log lacks the recovery line; log:\n%s", out)
+	}
 }
 
 func TestRetryManagementStopsOnCancel(t *testing.T) {
@@ -129,7 +161,7 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the background retry did not bring the API up after the fault cleared")
 	}
-	if ep.certPath != filepath.Join(certDir, "mgmt-cert.pem") {
+	if ep.certPath != filepath.Join(certDir, testCertFile) {
 		t.Errorf("got certificate path %q, want the one under cert_dir", ep.certPath)
 	}
 	if leaf := dialLeaf(t, ep.addr); leaf == nil {
@@ -167,7 +199,7 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	defer cancel()
 	center := notify.NewCenter()
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader, center: center}
-	p.certPath = filepath.Join(dir, "mgmt-cert.pem")
+	p.certPath = filepath.Join(dir, testCertFile)
 	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 
 	h, err := recoverManagement(ctx, p)
@@ -193,11 +225,20 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	if startup.Auth.Token != "" {
 		t.Error("the startup snapshot run() holds must not be written through")
 	}
+	// The API that came up serves the edited file, not the startup snapshot: a
+	// later web UI save would otherwise write the stale token back.
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
+	if body := getBody(t, ctx, client, h.addr, "/api/v1/config"); !strings.Contains(body, edited.Auth.Token) {
+		t.Errorf("GET /config = %s, want the edited token", body)
+	}
 	cancel()
 	h.Wait()
 
-	// A second attempt with the file unchanged since the last one applies nothing.
-	p.storeCfg = &onDisk
+	// A second attempt with the file unchanged applies nothing. The store holds a
+	// Clone of what was loaded, as run() seeds it (splitServeConfig), so this
+	// compares the way production does.
+	seeded := onDisk.Clone()
+	p.storeCfg = &seeded
 	ctx2, cancel2 := context.WithCancel(t.Context())
 	defer cancel2()
 	h2, err := recoverManagement(ctx2, p)
@@ -280,6 +321,36 @@ func TestRecoverManagementFailedServeKeepsCondition(t *testing.T) {
 	}
 }
 
+// TestRecoverManagementReloadErrorFailsAttempt pins the reloader-error branch: a
+// file the running appliance rejects fails the attempt, so the API does not
+// come up seeded with a config that does not match what is running.
+func TestRecoverManagementReloadErrorFailsAttempt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
+	edited := startup.Clone()
+	edited.Auth.Token = "rejected-by-reload-token"
+	if err := config.Save(cfgPath, &edited); err != nil {
+		t.Fatal(err)
+	}
+	reloader := func(context.Context, config.Config) error { return errors.New("reconcile refused") }
+	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader}
+	p.certPath = filepath.Join(dir, testCertFile)
+	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h, err := recoverManagement(ctx, p)
+	if err == nil {
+		cancel()
+		h.Wait()
+		t.Fatal("recoverManagement succeeded although the reload failed")
+	}
+	if p.storeCfg != &startup {
+		t.Error("a failed reload must leave the store seed at the startup snapshot")
+	}
+}
+
 func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -290,11 +361,14 @@ func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider()}
 	// Valid certificate paths, so the attempt fails only for the config.
-	p.certPath = filepath.Join(dir, "mgmt-cert.pem")
+	p.certPath = filepath.Join(dir, testCertFile)
 	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	h, err := recoverManagement(ctx, p)
+	if err != nil && !strings.Contains(err.Error(), "cannot reload config") {
+		t.Errorf("got error %v, want the config reload failure", err)
+	}
 	if err == nil {
 		cancel()
 		h.Wait()

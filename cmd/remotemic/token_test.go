@@ -560,7 +560,7 @@ func fakeApplianceBody(t *testing.T, bearer string, got *string, respBody string
 
 func writeCertPEM(t *testing.T, der []byte) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "mgmt-cert.pem")
+	p := filepath.Join(t.TempDir(), testCertFile)
 	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
 		t.Fatalf("write cert: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestTokenLiveRejectsUnpinnedCertificate(t *testing.T) {
 	// Every httptest TLS server shares one built-in certificate, so pin a
 	// freshly generated one instead.
 	dir := t.TempDir()
-	st.CertPath = filepath.Join(dir, "mgmt-cert.pem")
+	st.CertPath = filepath.Join(dir, testCertFile)
 	if _, err := mgmtcert.Ensure(st.CertPath, filepath.Join(dir, "mgmt-key.pem"), certHostsFor("", nil)); err != nil {
 		t.Fatalf("generate certificate: %v", err)
 	}

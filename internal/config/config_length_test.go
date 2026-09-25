@@ -33,7 +33,9 @@ func TestValidateLengthCaps(t *testing.T) {
 		{"name over cap", func(d *Device) { d.Name = strings.Repeat("n", MaxNameLen+1) }, "devices[0].name"},
 		{"device at cap", func(d *Device) { d.Device = strings.Repeat("d", MaxDeviceIDLen) }, ""},
 		{"device over cap", func(d *Device) { d.Device = strings.Repeat("d", MaxDeviceIDLen+1) }, "devices[0].device"},
+		{"multi-byte device at cap", func(d *Device) { d.Device = strings.Repeat("ä", MaxDeviceIDLen) }, ""},
 		{"path at cap", func(d *Device) { d.Streams[0].Path = "/" + strings.Repeat("p", MaxPathLen-1) }, ""},
+		{"multi-byte path at cap", func(d *Device) { d.Streams[0].Path = "/" + strings.Repeat("ä", MaxPathLen-1) }, ""},
 		{"path over cap", func(d *Device) { d.Streams[0].Path = "/" + strings.Repeat("p", MaxPathLen) }, "devices[0].streams[0].path"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
