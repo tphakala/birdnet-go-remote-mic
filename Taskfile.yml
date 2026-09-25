@@ -90,6 +90,16 @@ tasks:
     cmds:
       - go run github.com/daveshanley/vacuum@v0.30.1 lint -d -e api/openapi.yaml
 
+  licenses:generate:
+    desc: Regenerate THIRD_PARTY_LICENSES.md from the modules linked into the binary and the bundled fonts
+    cmds:
+      - go run ./tools/licensegen
+
+  licenses:verify:
+    desc: Fail if THIRD_PARTY_LICENSES.md is stale, or a linked module has no license file
+    cmds:
+      - go run ./tools/licensegen -check
+
   api:verify:
     desc: Fail if the generated API code is stale relative to the spec
     cmds:
@@ -189,7 +199,7 @@ tasks:
         exit $fail
 
   check:
-    desc: Full local gate (agents size, build, arm64 + arm builds, vet, lint, api checks, web verify, fmt, race tests)
+    desc: Full local gate (agents size, build, arm64 + arm builds, vet, lint, api checks, third-party licenses, web verify, fmt, race tests)
     cmds:
       - task: agents:size
       - task: web:verify
@@ -200,5 +210,6 @@ tasks:
       - task: lint
       - task: api:lint
       - task: api:verify
+      - task: licenses:verify
       - task: fmt
       - task: test:race
