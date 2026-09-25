@@ -84,7 +84,7 @@ func distinctNames(infos []Info) []string {
 		name := infos[i].Name
 		for n := 2; taken[strings.ToLower(name)]; n++ {
 			suffix := " #" + strconv.Itoa(n)
-			name = cutName(infos[i].Name, NameBudget-len(suffix)) + suffix
+			name = CutName(infos[i].Name, NameBudget-len(suffix)) + suffix
 		}
 		taken[strings.ToLower(name)] = true
 		names[i] = name
@@ -92,9 +92,9 @@ func distinctNames(infos []Info) []string {
 	return names
 }
 
-// cutName returns s cut to at most n bytes at a rune boundary (nothing when n
+// CutName returns s cut to at most n bytes at a rune boundary (nothing when n
 // is not positive), without a trailing space.
-func cutName(s string, n int) string {
+func CutName(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}

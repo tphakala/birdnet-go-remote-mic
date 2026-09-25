@@ -121,7 +121,7 @@ func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr
 // the backoff position and the last logged failure across outages.
 func retryManagement(ctx context.Context, r mgmtRetry, n *int, last *string) *mgmtServer {
 	for tries := 1; ; tries++ {
-		t := time.NewTimer(r.delays[min(*n, len(r.delays)-1)])
+		t := time.NewTimer(backoffAt(r.delays, *n))
 		select {
 		case <-ctx.Done():
 			t.Stop()

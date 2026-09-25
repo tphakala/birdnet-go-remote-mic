@@ -115,8 +115,14 @@ func (a *appliance) faultedPaths(name string) []string { return a.encodeFaults[n
 // backoffDelay returns the delay before the next attempt, given the backoff's
 // attempt count (retryState.attempts, at least 1).
 func backoffDelay(attempts int) time.Duration {
-	i := min(max(attempts, 1), len(retryBackoff)) - 1
-	return retryBackoff[i]
+	return backoffAt(retryBackoff[:], attempts-1)
+}
+
+// backoffAt returns delays[i] from a backoff table whose last entry repeats:
+// an index past the end reads the last entry, and one below zero the first.
+// The device retry and the management API retry share it.
+func backoffAt(delays []time.Duration, i int) time.Duration {
+	return delays[min(max(i, 0), len(delays)-1)]
 }
 
 // logAttempt reports whether failure number n of the current outage

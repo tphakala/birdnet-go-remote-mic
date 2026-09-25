@@ -23,7 +23,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	capture "github.com/tphakala/go-audio-capture"
 	"github.com/tphakala/go-audio-stream/rtsp/sdp"
@@ -924,13 +923,11 @@ var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRu
 // BirdNET-Go's adopt flow knows whether to ask for the token. A multi-stream
 // device advertises one service per stream, each at its own path; the DNS-SD
 // instance name stays the device name for a lone stream (unchanged) and is
-// qualified with the stream path when a device fans out. The qualified name is
-// not guaranteed unique against a different device literally named "<name>
-// <path>". The responder renames only on a conflict with another host (it
-// registers this appliance's services one by one before it answers probes),
-// so such a local duplicate is advertised twice under one name and a
-// discoverer may see either. Each name is fitted to one DNS label with room
-// for that rename (see instanceLabel).
+// qualified with the stream path when a device fans out. Each name is fitted
+// to one DNS label with room for the responder's rename on a conflict with
+// another host (see instanceLabel). Names here can still collide (a different
+// device literally named "<name> <path>", or two names that agree up to the
+// cut); announce.Run keeps local duplicates apart with a " #N" suffix.
 func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
 	_, portStr, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -963,23 +960,9 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 	return infos, port, nil
 }
 
-const (
-	// dnsLabelMax is the longest DNS label in bytes (RFC 1035 section 2.3.4).
-	// A DNS-SD service instance name is one label, so it bounds the advertised
-	// name.
-	dnsLabelMax = 63
-	// renameRoom is the longest suffix the dnssd responder appends when it
-	// renames an instance on a conflict with another host: " (N)", where N
-	// stays at most 101 because it probes at most 100 times.
-	renameRoom = len(" (101)")
-	// labelBudget is what an advertised name may use, so that a renamed one
-	// still fits in a label.
-	labelBudget = dnsLabelMax - renameRoom
-)
-
 // instanceLabel builds an advertised instance name from a device name and a
 // suffix (empty for a lone stream, " <path>" for a fanned-out device) that
-// fits labelBudget. The config accepts device names longer than a label
+// fits announce.NameBudget. The config accepts device names longer than a label
 // holds, so it cuts the device name, not the suffix: the suffix is what keeps
 // a device's streams apart. A suffix that fills the budget leaves no room for
 // the device name, and one that exceeds it is cut too; a device name cut to
@@ -987,24 +970,11 @@ const (
 // suffix's leading space. Cuts fall on a rune boundary, and a space left at a
 // cut is trimmed. A name that fits is returned unchanged.
 func instanceLabel(name, suffix string) string {
-	head := cutLabel(name, labelBudget-len(suffix))
+	head := announce.CutName(name, announce.NameBudget-len(suffix))
 	if head == "" {
 		suffix = strings.TrimLeft(suffix, " ")
 	}
-	return cutLabel(head+suffix, labelBudget)
-}
-
-// cutLabel returns s cut to at most n bytes at a rune boundary (nothing when
-// n is not positive), without a trailing space.
-func cutLabel(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := max(n, 0)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return strings.TrimRight(s[:cut], " ")
+	return announce.CutName(head+suffix, announce.NameBudget)
 }
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,
