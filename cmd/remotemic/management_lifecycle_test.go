@@ -62,6 +62,9 @@ func TestSuperviseManagementSignalsLost(t *testing.T) {
 		if lostSignalled(h) {
 			t.Error("an API that stopped on its own woke the run loop, although the retry is still working on it")
 		}
+		if !h.keepsUp() {
+			t.Error("a dead API being retried does not keep the appliance up")
+		}
 		time.Sleep(time.Second)
 		synctest.Wait()
 		if h.serving() != second {
@@ -77,6 +80,9 @@ func TestSuperviseManagementSignalsLost(t *testing.T) {
 		synctest.Wait()
 		if !lostSignalled(h) {
 			t.Error("a retry that gave up did not wake the run loop")
+		}
+		if h.keepsUp() {
+			t.Error("a retry that gave up still keeps the appliance up")
 		}
 		h.Wait()
 	})
@@ -435,7 +441,7 @@ func TestRunExit(t *testing.T) {
 		exit, wantErr bool
 	}{
 		{name: "a pump is alive", alive: 1},
-		{name: "the API serves", api: true},
+		{name: "the API serves or is retried", api: true},
 		{name: "last pump ended cleanly", exit: true},
 		{name: "last pump failed", lastPumpErr: pumpErr, exit: true, wantErr: true},
 		{name: "API lost, a pump alive", alive: 1, lost: true},

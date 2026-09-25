@@ -734,13 +734,13 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// up later. When the API is not serving (management disabled, or it failed to
 	// start or stopped and its supervisor has not brought it back) there is
 	// nothing to keep alive, so a total open failure is fatal and lets systemd
-	// restart the process (see startupExit). Every exit decision reads the
-	// supervisor's state when it is made, so an API it brought back a moment ago
-	// counts, and the run loop retakes it whenever that state can turn against
-	// staying up: when a pump ends, and when the API retry gives up (see
-	// runExit). An API that dies at runtime does not by itself end the process:
-	// the retry keeps working on it in process, and only its giving up, or a
-	// pump ending while no API serves, retakes the decision.
+	// restart the process (see startupExit). At runtime an API that dies is
+	// retried in process, and while that retry runs it keeps the appliance up
+	// as a serving API does (mgmt.keepsUp): exiting would throw away the
+	// RAM-only event history and every device's retry state for what the retry
+	// recovers. The run loop retakes its exit decision whenever it can turn
+	// against staying up: when a pump ends, and when the API retry gives up
+	// (see runExit); only then, with no pump alive, does it exit.
 	if err := startupExit(app.serving(), management.serving() != nil, app.allDisabled(), mgmtEnabled); err != nil {
 		return err
 	}
@@ -786,11 +786,11 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
-			if exit, err := runExit(app.alive, management.serving() != nil, app.lastPumpErr, false); exit {
+			if exit, err := runExit(app.alive, management.keepsUp(), app.lastPumpErr, false); exit {
 				return err
 			}
 		case <-management.lostC():
-			switch exit, stopping, err := lostExit(ctx.Err() != nil, app.alive, management.serving() != nil, app.lastPumpErr); {
+			switch exit, stopping, err := lostExit(ctx.Err() != nil, app.alive, management.keepsUp(), app.lastPumpErr); {
 			case stopping:
 				shutdown()
 				return nil
@@ -832,15 +832,15 @@ func startupExit(serving int, apiServing, allDisabled, mgmtEnabled bool) error {
 }
 
 // runExit is the run loop's exit decision, taken when a pump ends and, with
-// apiLost, when the management API retry gave up.
-// The appliance stays up while a capture pump is alive or an API serves;
-// otherwise nothing keeps it up, and exiting lets systemd restart it, as a
-// fresh start would decide. An appliance whose last pump ended exits cleanly
-// unless a pump failed; one that lost its API names that, since the API was
-// what kept it up.
-func runExit(alive int, apiServing bool, lastPumpErr error, apiLost bool) (exit bool, err error) {
+// apiLost, when the management API retry gave up. The appliance stays up
+// while a capture pump is alive or the API keeps it up (it serves or is being
+// retried, see mgmt.keepsUp); otherwise nothing keeps it up, and exiting lets
+// systemd restart it. An appliance whose last pump ended exits cleanly unless
+// a pump failed; one that lost its API names that, since the API was what
+// kept it up.
+func runExit(alive int, apiUp bool, lastPumpErr error, apiLost bool) (exit bool, err error) {
 	switch {
-	case alive > 0 || apiServing:
+	case alive > 0 || apiUp:
 		return false, nil
 	case apiLost && lastPumpErr != nil:
 		return true, fmt.Errorf("no capture device is serving and the management API that kept the appliance up is no longer retried, last device error: %w", lastPumpErr)
@@ -857,11 +857,11 @@ func runExit(alive int, apiServing bool, lastPumpErr error, apiLost bool) (exit 
 // A shutdown can make that wake and ctx.Done ready together, and select may
 // pick the wake; with cancelled set it is a shutdown (stopping), not a lost
 // API, so the process ends cleanly. Otherwise it is runExit's decision.
-func lostExit(cancelled bool, alive int, apiServing bool, lastPumpErr error) (exit, stopping bool, err error) {
+func lostExit(cancelled bool, alive int, apiUp bool, lastPumpErr error) (exit, stopping bool, err error) {
 	if cancelled {
 		return true, true, nil
 	}
-	exit, err = runExit(alive, apiServing, lastPumpErr, true)
+	exit, err = runExit(alive, apiUp, lastPumpErr, true)
 	return exit, false, err
 }
 

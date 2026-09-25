@@ -351,6 +351,14 @@ func TestRunBackoffRestartsAfterStableRun(t *testing.T) {
 		if _, responds := r.counts(); responds != 3 {
 			t.Errorf("got %d Respond calls one shortest delay after a stable run failed, want 3", responds)
 		}
+		// A responder that ran past registration is rebuilt, not reused: its
+		// services left the pending list, so a reused one would advertise
+		// nothing.
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if got := r.registered(); !slices.Equal(got, []string{testMic}) {
+			t.Errorf("after the retry the responder advertises %q, want %q", got, []string{testMic})
+		}
 	})
 }
 

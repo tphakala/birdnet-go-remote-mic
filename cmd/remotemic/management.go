@@ -594,6 +594,16 @@ type mgmt struct {
 	// back; run() retakes its exit decision on it. A runtime death does not
 	// signal it, since the retry keeps working on it (see superviseManagement).
 	lost chan struct{}
+	// gaveUp is set, before lost is signalled, once the retry gave up.
+	gaveUp atomic.Bool
+}
+
+// keepsUp reports whether the management API keeps the appliance up at
+// runtime: it serves, or it died and the supervisor is still bringing it
+// back. Only a retry that gave up (the config file disabled management), or a
+// nil handle (management disabled), leaves nothing to keep the process up for.
+func (m *mgmt) keepsUp() bool {
+	return m != nil && !m.gaveUp.Load()
 }
 
 // newMgmt returns a handle with no API serving yet.

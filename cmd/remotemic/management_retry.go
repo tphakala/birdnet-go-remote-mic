@@ -75,10 +75,10 @@ type mgmtRetry struct {
 // method follows the API that serves, and m.done closes on return.
 //
 // m's lost channel is signalled only when the retry gives up, the one moment
-// nothing in process can bring the API back, so run() retakes its exit
-// decision then. A runtime death does not signal it: the retry is the
-// in-process recovery, and exiting for it would throw away the RAM-only event
-// history and every device's retry state for what a restart would do anyway.
+// nothing in process can bring the API back, after marking the handle as
+// given up (m.keepsUp turns false), so run() retakes its exit decision then.
+// A runtime death does not signal it: the retry is the in-process recovery,
+// and it keeps the appliance up while it runs.
 func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr error, r mgmtRetry) {
 	defer close(m.done)
 	var last string
@@ -108,6 +108,8 @@ func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr
 		srv = retryManagement(ctx, r, &n, &last)
 		if srv == nil {
 			if ctx.Err() == nil {
+				// Set before the wake, so run() reads it when it wakes.
+				m.gaveUp.Store(true)
 				m.signalLost()
 			}
 			return

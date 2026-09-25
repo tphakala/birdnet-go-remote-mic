@@ -158,9 +158,13 @@ const (
 // the caller can warn and keep serving without discovery. A responder that
 // fails to start (see responderBackoff) is retried on a backoff until ctx is
 // cancelled, its failures logged without flooding the log and its recovery
-// logged once. The retry reuses the responder once it exists: dnssd has no
-// Close, and only a responder that ran to ctx's end releases its socket, so
-// building one per attempt would leak a socket each time.
+// logged once. A retry after a failed registration reuses the responder:
+// dnssd has no Close, and only a responder that ran to ctx's end releases its
+// socket, so building one per attempt would leak a socket each time. A reused
+// responder keeps the multicast memberships it joined when it was built, so
+// an interface that gains its address later is not joined until the next
+// rebuild of the advertisement; on Linux another mDNS daemon joined on that
+// interface masks this.
 //
 // Known limitation: a device that dies mid-run keeps its advertisement until
 // the caller rebuilds it; clients that discover it get a 404 from the RTSP
@@ -207,6 +211,14 @@ func Run(ctx context.Context, infos []Info) error {
 		}
 		if errors.Is(err, errAdd) {
 			return err
+		}
+		if time.Since(started) >= responderUp {
+			// It ran past registration, so its services left the pending
+			// list, and removing their handles would leave a reused
+			// responder nothing to register. dnssd v1.2.14 returns from a
+			// running responder only when ctx ends, so this is defensive:
+			// build a fresh one.
+			resp = nil
 		}
 		if time.Since(started) >= responderStable {
 			failures = 0
