@@ -55,8 +55,8 @@ const (
 )
 
 // retryState tracks the unattended restart of one down device. It exists from
-// the device's first retryable failure, or from a restart restartFaulted makes
-// for a device with an encode fault on record, until the device is removed,
+// the device's first retryable failure, or from a restartFaulted restart of a
+// device with an encode fault on record, until the device is removed,
 // disabled, restarted by a config save or by a hardware change (except a device
 // with an encode fault on record, which a hardware change, or a save that left
 // its parameters unchanged, restarts as a retry attempt that keeps the state,

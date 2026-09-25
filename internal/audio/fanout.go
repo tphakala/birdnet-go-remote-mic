@@ -139,9 +139,12 @@ func (f *Fanout) distribute(p Period) {
 			}
 		}
 		if !copied {
+			// Stamped before the copy, so a large ultrasonic period's copy does
+			// not delay its capture time.
+			captured := time.Now()
 			buf := make([]byte, len(p.Buf))
 			copy(buf, p.Buf)
-			cp = Period{Buf: buf, Frames: p.Frames, Captured: time.Now()}
+			cp = Period{Buf: buf, Frames: p.Frames, Captured: captured}
 			copied = true
 		}
 		// The storage is shared; only the session tag differs per consumer.

@@ -202,3 +202,29 @@ func TestActivateDrainsBeforeNewSession(t *testing.T) {
 		t.Fatalf("drained hook ran %d times, want 1", calls)
 	}
 }
+
+// TestNextSkipsFrameOfAnotherSession pins the second half of the stale-frame
+// guard: a frame of an earlier session that Push queued after the next PLAY's
+// drain (its session check ran before the teardown) never reaches the new
+// client's writer; Next skips it and returns the current session's frame.
+func TestNextSkipsFrameOfAnotherSession(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	c.SetActive(true)
+	_, old := c.Session()
+	c.SetActive(false)
+	c.SetActive(true)
+	_, cur := c.Session()
+	// The late send of a Push that checked the session before the teardown.
+	c.ch <- pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: old}
+	if !c.Push(pipeline.Frame{Payload: []byte{2}, Duration: 1, Session: cur}) {
+		t.Fatal("current-session push reported a drop")
+	}
+	f, err := c.Next(t.Context())
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if f.Session != cur {
+		t.Errorf("got a frame of session %d, want the current session %d", f.Session, cur)
+	}
+}

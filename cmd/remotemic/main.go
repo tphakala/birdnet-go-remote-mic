@@ -563,6 +563,11 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	var management *mgmt
 	mgmtServing := false
 	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath}
+	// Publish this process with no API before management starts: a failed start
+	// hands the lock to a background retry, and a startup write made after it
+	// could erase the endpoint the retry published. The mutex orders the writes
+	// only once both exist; publishing first orders the lifecycle.
+	runLock.publish(nil)
 	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
 	// only when a request asks, so an appliance with no browser open does no
 	// sampling work at all. It exists only while the management API is enabled (its
@@ -577,14 +582,13 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 		management.Wait()
 	}()
 
-	// Publish where the management API listens (nothing when it is not serving,
-	// which also means no API handler can rewrite the config file). An API that
-	// comes up later through its background retry republishes from the retry
-	// itself (see recoverManagement).
+	// Publish where the management API listens. When it is not serving, the
+	// no-API state published above stays, which also means no API handler can
+	// rewrite the config file. An API that comes up later through its
+	// background retry republishes from the retry itself (see
+	// recoverManagement).
 	if mgmtServing {
 		runLock.publish(&mgmtEndpoint{addr: management.addr, certPath: management.certPath})
-	} else {
-		runLock.publish(nil)
 	}
 
 	// Drive the level sampler for the lifetime of the process.

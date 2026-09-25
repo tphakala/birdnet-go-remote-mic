@@ -48,8 +48,8 @@ type Frame struct {
 // Session, set by the fan-out) was queued for an earlier client and is dropped
 // unencoded, and every frame carries the session it was produced for
 // (Frame.Session), so the feed can drop one that a teardown and the next PLAY
-// overtook while it was being encoded (all but a one-copy window inside
-// rtspserver.ChanSource.Push). A frame is stamped with its period's capture
+// overtook while it was being encoded (rtspserver.ChanSource checks it on Push
+// and again on Next). A frame is stamped with its period's capture
 // time (audio.Period.Captured) when the period carries one.
 // A nil gate means always active, in session 0, so it admits only untagged
 // periods: a stage fed by a gated fan-out consumer must be given the same gate.

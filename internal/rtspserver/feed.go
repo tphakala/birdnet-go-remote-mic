@@ -15,8 +15,8 @@ var ErrSourceClosed = errors.New("rtspserver: frame source closed")
 // ChanSource is a bounded FrameSource: the pipeline Pushes frames and the
 // playing session's writer Nexts them. Delivery is gated on an active flag so
 // no audio is buffered (or copied) while no client is playing; activation
-// drains the frames left queued for the previous client, and Push drops a
-// frame produced for an earlier play session (see pipeline.Stage). Push copies
+// drains the frames left queued for the previous client, and Push and Next drop
+// a frame produced for an earlier play session (see pipeline.Stage). Push copies
 // the payload so the pipeline's buffer reuse is safe.
 type ChanSource struct {
 	ch        chan pipeline.Frame
@@ -44,20 +44,30 @@ func NewChanSource(capacity int) *ChanSource {
 // or the source is closed (dead device). Closure wins over a buffered frame: a
 // closed source returns ErrSourceClosed even when the channel still holds a
 // frame, so a dead device's writer tears down at once rather than emitting one
-// last packet (select would otherwise pick a ready case at random).
+// last packet (select would otherwise pick a ready case at random). A frame
+// tagged with another play session than the current one is skipped: Push
+// checks the session before its copy, so a teardown and the next PLAY that
+// both complete during that copy can still queue an earlier client's frame
+// after the drain. The new client's writer starts only after the session
+// changed, so this one atomic load per frame closes that window.
 func (c *ChanSource) Next(ctx context.Context) (pipeline.Frame, error) {
-	select {
-	case <-c.done:
-		return pipeline.Frame{}, ErrSourceClosed
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return pipeline.Frame{}, ctx.Err()
-	case <-c.done:
-		return pipeline.Frame{}, ErrSourceClosed
-	case f := <-c.ch:
-		return f, nil
+	for {
+		select {
+		case <-c.done:
+			return pipeline.Frame{}, ErrSourceClosed
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return pipeline.Frame{}, ctx.Err()
+		case <-c.done:
+			return pipeline.Frame{}, ErrSourceClosed
+		case f := <-c.ch:
+			if _, session := c.Session(); f.Session != 0 && f.Session != session {
+				continue
+			}
+			return f, nil
+		}
 	}
 }
 
@@ -68,8 +78,8 @@ func (c *ChanSource) Next(ctx context.Context) (pipeline.Frame, error) {
 // next PLAY while it was being encoded, and is discarded the same way; an
 // untagged frame (session zero) is delivered to whichever client plays. The
 // session is read once, before the copy, so a teardown and the next PLAY that
-// both complete between that read and the send still queue the frame for the
-// new client; that window is one payload copy wide. It
+// both complete between that read and the send still queue the frame; Next
+// skips it. It
 // returns false only when the buffer is full (a slow client); the caller
 // should keep capturing and let the writer fall behind.
 func (c *ChanSource) Push(f pipeline.Frame) bool {
