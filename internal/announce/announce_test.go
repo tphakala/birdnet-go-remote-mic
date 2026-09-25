@@ -243,6 +243,21 @@ func TestRunReturnsRefusedService(t *testing.T) {
 	})
 }
 
+// TestRegisteredAfterScalesWithServices pins that the registration window
+// grows with the number of services, since dnssd probes them one after
+// another, each with its own timeout.
+func TestRegisteredAfterScalesWithServices(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		n    int
+		want time.Duration
+	}{{0, responderUp}, {1, responderUp}, {3, 3 * responderUp}} {
+		if got := registeredAfter(tc.n); got != tc.want {
+			t.Errorf("registeredAfter(%d) = %s, want %s", tc.n, got, tc.want)
+		}
+	}
+}
+
 // registered returns the names the last built responder advertises, in order.
 // The caller holds r.mu.
 func (r *fakeResponders) registered() []string {

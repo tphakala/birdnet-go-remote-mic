@@ -1,6 +1,7 @@
 package mgmtserver
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"io"
@@ -300,11 +301,21 @@ func TestGzipBodylessStatusStaysPlain(t *testing.T) {
 func TestGzipFlushBeforeWrite(t *testing.T) {
 	t.Parallel()
 	body := strings.Repeat(`{"k":"v"}`, 100)
+	// Flush before any write, then after half the body: the second flush must
+	// push what the compressor holds, so the client can already decode the
+	// first half.
+	var flushedPrefix []byte
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if err := http.NewResponseController(w).Flush(); err != nil {
+		rc := http.NewResponseController(w)
+		if err := rc.Flush(); err != nil {
 			t.Errorf("flush: %v", err)
 		}
-		_, _ = io.WriteString(w, body)
+		_, _ = io.WriteString(w, body[:len(body)/2])
+		if err := rc.Flush(); err != nil {
+			t.Errorf("flush: %v", err)
+		}
+		flushedPrefix = decodePrefix(t, w.(*gzipResponseWriter).ResponseWriter.(*httptest.ResponseRecorder).Body.Bytes())
+		_, _ = io.WriteString(w, body[len(body)/2:])
 	})
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
 	req.Header.Set("Accept-Encoding", encGzip)
@@ -324,4 +335,19 @@ func TestGzipFlushBeforeWrite(t *testing.T) {
 	if raw, err := io.ReadAll(zr); err != nil || string(raw) != body {
 		t.Errorf("decompressed body = %q (err %v), want the handler's body", raw, err)
 	}
+	if string(flushedPrefix) != body[:len(body)/2] {
+		t.Errorf("after the mid-body flush the client could decode %d bytes, want the %d written", len(flushedPrefix), len(body)/2)
+	}
+}
+
+// decodePrefix decompresses as much of an unfinished gzip stream as it holds:
+// what a client can read after a flush, before the trailer.
+func decodePrefix(t *testing.T, b []byte) []byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil
+	}
+	out, _ := io.ReadAll(zr) // an unfinished stream ends in io.ErrUnexpectedEOF
+	return out
 }

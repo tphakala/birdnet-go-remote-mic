@@ -145,11 +145,19 @@ const (
 	// about once an hour at the capped delay.
 	responderLogFirst = 3
 	responderLogEvery = 12
-	// responderUp is how long a retried responder must run before Run logs it
-	// as running again. Registering a service gives up within dnssd's 60 s
-	// probe timeout, so one still running after this has registered.
+	// responderUp is, per advertised service, how long a responder must run
+	// before Run takes it to have registered: it logs a retried one as running
+	// again, and rebuilds rather than reuses one that stopped after that.
+	// dnssd registers services one after another, each giving up within its
+	// own 60 s probe timeout, so the wait scales with the number of services.
 	responderUp = 2 * time.Minute
 )
+
+// registeredAfter is how long a responder advertising n services must run
+// before Run takes it to have registered them all (see responderUp).
+func registeredAfter(n int) time.Duration {
+	return time.Duration(max(n, 1)) * responderUp
+}
 
 // Run advertises every service until ctx is cancelled, at which point dnssd
 // sends goodbye packets to flush peer caches, and returns nil. Names that
@@ -158,7 +166,7 @@ const (
 // the caller can warn and keep serving without discovery. A responder that
 // fails to start (see responderBackoff) is retried on a backoff until ctx is
 // cancelled, its failures logged without flooding the log and its recovery
-// logged once. A retry after a failed registration reuses the responder:
+// logged once it has run through the registration window (registeredAfter). A retry after a failed registration reuses the responder:
 // dnssd has no Close, and only a responder that ran to ctx's end releases its
 // socket, so building one per attempt would leak a socket each time. A reused
 // responder keeps the multicast memberships it joined when it was built, so
@@ -194,7 +202,7 @@ func Run(ctx context.Context, infos []Info) error {
 		var up *time.Timer
 		if failures > 0 {
 			n := failures
-			up = time.AfterFunc(responderUp, func() {
+			up = time.AfterFunc(registeredAfter(len(srvs)), func() {
 				log.Printf("mDNS responder running again after %d failure(s)", n)
 			})
 		}
@@ -212,7 +220,7 @@ func Run(ctx context.Context, infos []Info) error {
 		if errors.Is(err, errAdd) {
 			return err
 		}
-		if time.Since(started) >= responderUp {
+		if time.Since(started) >= registeredAfter(len(srvs)) {
 			// It ran past registration, so its services left the pending
 			// list, and removing their handles would leave a reused
 			// responder nothing to register. dnssd v1.2.14 returns from a

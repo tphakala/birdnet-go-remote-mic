@@ -126,7 +126,7 @@ func TestRunLockPublisherRaisesCondition(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		rec := &recordLock{fail: 3}
-		center := notify.NewCenter()
+		center := &countingCenter{Center: notify.NewCenter()}
 		pub := &runLockPublisher{cfgPath: testCfgFile, write: rec.write, retryDelay: time.Second, center: center}
 		pub.publish(nil)
 		if act := center.Active(); len(act) != 1 || act[0].Key != runLockKey {
@@ -134,14 +134,10 @@ func TestRunLockPublisherRaisesCondition(t *testing.T) {
 		}
 		time.Sleep(2 * time.Second) // two more failed retries
 		synctest.Wait()
-		onsets := 0
-		for _, n := range center.Snapshot().Notifications {
-			if n.Key == runLockKey && n.Kind == notify.KindOnset {
-				onsets++
-			}
-		}
-		if onsets != 1 {
-			t.Errorf("got %d onsets over a failing streak, want 1", onsets)
+		// Counted at the call, since the center itself ignores a repeated
+		// onset for an active key and would hide one raised per failure.
+		if center.onsets != 1 {
+			t.Errorf("got %d Onset calls over a failing streak, want 1", center.onsets)
 		}
 		time.Sleep(time.Second) // the retry that succeeds
 		synctest.Wait()
@@ -150,6 +146,19 @@ func TestRunLockPublisherRaisesCondition(t *testing.T) {
 		}
 		pub.stop()
 	})
+}
+
+// countingCenter is a notification center that counts the Onset calls made
+// to it. Only the publisher's own goroutines call it, one at a time under its
+// mutex, so the count needs no lock.
+type countingCenter struct {
+	*notify.Center
+	onsets int
+}
+
+func (c *countingCenter) Onset(n notify.Notification) bool { //nolint:gocritic // notify.Publisher fixes the by-value signature.
+	c.onsets++
+	return c.Center.Onset(n)
 }
 
 // TestRunLockPublisherNil pins that a nil publisher (tests that drive the

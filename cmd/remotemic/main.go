@@ -453,8 +453,8 @@ func (p *runLockPublisher) flush() {
 			if p.center != nil {
 				p.center.Clear(runLockKey, notify.Notification{
 					Severity: notify.SeverityInfo,
-					Title:    "Run lock writable again",
-					Message:  "The token commands read this appliance's state correctly again",
+					Title:    "Token commands read this appliance again",
+					Message:  "The run lock the token commands read is written again.",
 				})
 			}
 		}
@@ -469,9 +469,9 @@ func (p *runLockPublisher) flush() {
 				Severity: notify.SeverityWarning,
 				Category: notify.CategorySystem,
 				Key:      runLockKey,
-				Source:   "runlock",
-				Title:    "Run lock unwritable",
-				Message:  fmt.Sprintf("Cannot write %s: %v. remote-mic token commands may misread this appliance's state until it can be written again (retrying every %s)", runlock.PathFor(p.cfgPath), err, delay),
+				Source:   "appliance",
+				Title:    "Token commands may misread this appliance",
+				Message:  fmt.Sprintf("The run lock the token commands read cannot be written (%v); retrying every %s.", err, delay),
 			})
 		}
 	}
@@ -585,6 +585,19 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// emitters and the signal and host condition monitors publish to it.
 	center := notify.NewCenter()
 	center.Publish(notify.Started(version))
+	// A run lock that could not be created (acquireRunLock logged why) leaves
+	// the token commands unable to see this appliance, so they edit the config
+	// file behind its back; that lasts for the whole run, so it is shown.
+	if lock == nil {
+		center.Onset(notify.Notification{
+			Severity: notify.SeverityWarning,
+			Category: notify.CategorySystem,
+			Key:      runLockKey,
+			Source:   "appliance",
+			Title:    "Token commands cannot see this appliance",
+			Message:  fmt.Sprintf("The run lock %s could not be created, so remote-mic token commands edit the config file directly; restart the appliance once the directory is writable.", runlock.PathFor(cfgPath)),
+		})
+	}
 
 	prov := &provider{
 		version:     version,
