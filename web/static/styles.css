@@ -2776,7 +2776,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .ev-retention-note {
-  flex: 1 1 280px;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -2787,8 +2786,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
    pixel, so toggling a state never shifts the layout. A focused control keeps
    its focus ring (the shared focus-visible outline) instead. */
 @media (forced-colors: active) {
+  /* .stat-tile.is-on:hover outranks the .stat-tile.is-action:hover tint, which
+     would otherwise paint the site's colours on a pressed tile under the
+     pointer, since forced-color-adjust: none below keeps them unforced. */
   .filter-chip.is-on,
-  .stat-tile.is-on {
+  .stat-tile.is-on,
+  .stat-tile.is-on:hover {
     border-color: Highlight;
   }
   .filter-chip.is-on:not(:focus-visible),
@@ -2802,7 +2805,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
      out of forcing so it is not flattened again; every colour inside is a
      system keyword, so it still follows the user's theme. */
   .filter-chip.is-on,
-  .stat-tile.is-on {
+  .stat-tile.is-on,
+  .stat-tile.is-on:hover {
     forced-color-adjust: none;
     background: Highlight;
     color: HighlightText;
@@ -2839,7 +2843,10 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
     align-items: flex-start;
     gap: 2px;
   }
-  .ev-search-kbd {
+  /* A narrow screen is usually a touch device with no hardware keyboard, so
+     the "/" hint and the switch that turns the shortcut off go together. */
+  .ev-search-kbd,
+  .ev-shortcut-toggle {
     display: none;
   }
 }

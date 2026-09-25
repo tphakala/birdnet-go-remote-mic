@@ -189,13 +189,13 @@ export class DeviceSettingsForm {
     // Name, defaulting from the sound card's friendly label when blank.
     const initialName = d.name || this.hardware.friendlyName || "";
     const name = this.field(grid, `set-${uid}-name`, "Device Name", initialName, "text",
-      "DNS-SD instance name and log label. Must be unique.");
+      `DNS-SD instance name and log label. Must be unique. Up to ${MAX_NAME_LEN} characters.`);
     this.nameEl = name.input;
     this.nameErr = name.error;
     this.nameEl.maxLength = inputMaxLength(MAX_NAME_LEN);
 
     const path = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
-      "Unique endpoint path on the RTSP server, e.g. /stream.");
+      `Unique endpoint path on the RTSP server, e.g. /stream. Up to ${MAX_PATH_LEN} characters.`);
     this.pathEl = path.input;
     this.pathErr = path.error;
     this.pathEl.maxLength = inputMaxLength(MAX_PATH_LEN);

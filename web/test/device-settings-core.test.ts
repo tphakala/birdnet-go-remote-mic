@@ -4,9 +4,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   MAX_NAME_LEN,
+  MAX_PATH_LEN,
   OPUS_BITRATE_PER_CHANNEL,
   OPUS_MAX_BITRATE,
   inputMaxLength,
@@ -64,4 +67,32 @@ test("lengthError accepts an unchanged stored value over the limit, as the serve
   const stored = "b".repeat(MAX_NAME_LEN + 10);
   assert.equal(lengthError(stored, stored, MAX_NAME_LEN, "Name"), "");
   assert.ok(lengthError(`${stored}x`, stored, MAX_NAME_LEN, "Name") !== "");
+});
+
+test("lengthError enforces the stream path limit", () => {
+  const atLimit = `/${"p".repeat(MAX_PATH_LEN - 1)}`;
+  assert.equal(lengthError(atLimit, "", MAX_PATH_LEN, "Path"), "");
+  assert.ok(atLimit.length <= inputMaxLength(MAX_PATH_LEN));
+  assert.equal(
+    lengthError(`${atLimit}x`, "", MAX_PATH_LEN, "Path"),
+    `Path must be at most ${MAX_PATH_LEN} characters (now ${MAX_PATH_LEN + 1}).`,
+  );
+});
+
+// The compiled test runs from web/.test-out/test/, three levels below the
+// repository root; resolve from import.meta.url rather than process.cwd().
+const CONFIG_GO = fileURLToPath(new URL("../../../internal/config/config.go", import.meta.url).href);
+
+// goConst reads an integer constant from the Go config source, so the UI limits
+// cannot drift from the ones the appliance enforces.
+function goConst(src: string, name: string): number {
+  const m = new RegExp(`^\\s*${name}\\s*=\\s*(\\d+)\\s*$`, "m").exec(src);
+  assert.ok(m, `${name} not found in internal/config/config.go`);
+  return Number(m[1]);
+}
+
+test("the name and path limits match internal/config MaxNameLen and MaxPathLen", () => {
+  const src = readFileSync(CONFIG_GO, "utf8");
+  assert.equal(MAX_NAME_LEN, goConst(src, "MaxNameLen"));
+  assert.equal(MAX_PATH_LEN, goConst(src, "MaxPathLen"));
 });

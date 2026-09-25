@@ -8,8 +8,9 @@ export const OPUS_BITRATE_PER_CHANNEL = 128000;
 export const OPUS_MAX_BITRATE = 510000;
 
 // Length limits the appliance enforces on a device's name and stream path, in
-// characters (Unicode code points). Keep in sync with config.MaxNameLen and
-// config.MaxPathLen.
+// characters (Unicode code points). They mirror MaxNameLen and MaxPathLen in
+// internal/config/config.go; test/device-settings-core.test.ts reads that file
+// and fails if they drift.
 export const MAX_NAME_LEN = 128;
 export const MAX_PATH_LEN = 128;
 

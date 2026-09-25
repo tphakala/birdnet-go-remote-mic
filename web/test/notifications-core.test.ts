@@ -91,6 +91,23 @@ test("a live event already in the snapshot does not double count", () => {
   assert.equal(isNewError, false);
 });
 
+test("a live frame repeating a held id with new text replaces it in place, with no toast and no gap", () => {
+  // The server re-sends an active condition under its original id when it
+  // updates the text in place (Center.Update).
+  const s = initialState();
+  const onset = notif({ id: 2, severity: "error", kind: "onset", key: "dev:mic", title: "Device failed", message: "retrying" });
+  applySnapshot(s, snap({ notifications: [notif({ id: 1 }), onset, notif({ id: 3 })] }), Date.now());
+  const updated = { ...onset, title: "Device still failing", message: "retry 3 failed" };
+  const { gap, isNewError, resync } = applyLive(s, updated, NOW);
+  assert.equal(gap, false);
+  assert.equal(isNewError, false);
+  assert.equal(resync, false);
+  assert.equal(s.items.size, 3);
+  assert.equal(s.items.get(2)?.title, "Device still failing");
+  assert.equal(s.items.get(2)?.message, "retry 3 failed");
+  assert.equal(s.nextId, 4);
+});
+
 test("a live id gap is reported, and the expected next id is not", () => {
   const s = initialState();
   applySnapshot(s, snap({ notifications: [notif({ id: 1 })] }), Date.now()); // nextId 2

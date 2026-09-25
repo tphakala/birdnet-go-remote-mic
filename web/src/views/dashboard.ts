@@ -682,10 +682,12 @@ export class DashboardView {
     // not opened; toggling persists the flag and a config reload applies it at
     // once, starting or stopping the device. Reuses the shared switch style.
     // The visible "Stream" caption keeps the bare track from reading as an
-    // unlabeled control; it is hidden from assistive tech because syncCard names
-    // the input with an aria-label, and it would otherwise be announced twice.
-    // syncCard also keeps aria-checked in sync with checked.
+    // unlabeled control; it is hidden from assistive tech because the input is
+    // named by an aria-label (syncCard keeps it current across a rename), and it
+    // would otherwise be announced twice. The native checkbox exposes its own
+    // checked state, so no aria-checked is written.
     const { el: toggleLabel, input: toggleInput } = switchControl({
+      ariaLabel: `Stream ${d.name}`,
       caption: "Stream",
       extraClass: "device-toggle",
       title: "Stream this device (applies immediately)",
@@ -947,9 +949,6 @@ export class DashboardView {
     // is in flight); otherwise keep it in sync with the persisted flag.
     if (!entry.toggleInput.disabled && entry.toggleInput.checked !== configEnabled) {
       entry.toggleInput.checked = configEnabled;
-      entry.toggleInput.setAttribute("aria-checked", String(configEnabled));
-    } else if (entry.toggleInput.getAttribute("aria-checked") !== String(entry.toggleInput.checked)) {
-      entry.toggleInput.setAttribute("aria-checked", String(entry.toggleInput.checked));
     }
 
     const showPending = pendingStop(configEnabled, d.state);
@@ -1093,7 +1092,6 @@ export class DashboardView {
     // here is equivalent to checking inside the queued task.
     if (!store.getState().config) {
       input.checked = !want;
-      input.setAttribute("aria-checked", String(!want));
       showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
       return;
     }
@@ -1102,7 +1100,6 @@ export class DashboardView {
     const hadFocus = document.activeElement === input;
     input.disabled = true;
     input.setAttribute("aria-busy", "true");
-    input.setAttribute("aria-checked", String(want));
     await this.enqueue(async () => {
       // Build merged from a FRESH base inside the queued task, after any prior
       // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
@@ -1126,7 +1123,6 @@ export class DashboardView {
       } catch (err: unknown) {
         // Only a failed PATCH reverts the toggle: the mutation did not persist.
         input.checked = !want;
-        input.setAttribute("aria-checked", String(!want));
         this.apiErrorToast(err, "Toggle failed");
       } finally {
         // Re-read the current toggle: a poll may have rebuilt the card during the

@@ -136,6 +136,25 @@ export function formatDuration(ms: number): string {
   return `${d}d ${h % 24}h`;
 }
 
+// isoOrNull renders an instant as an ISO 8601 UTC string, or null when it is
+// unknown (NaN), which JSON keeps as an explicit null.
+export function isoOrNull(ms: number): string | null {
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+// rowSignature is the part of an Events-page row's rendered state that can
+// change after the row is first drawn: the text (the server re-sends an entry
+// under the same id with new text when it updates it in place), the unread
+// marker, and the lifecycle badge. The page rebuilds a cached row when this
+// changes. Relative and absolute times, the tooltip, and ongoing durations are
+// restamped in place, so they are deliberately left out.
+export function rowSignature(n: Pick<Notification, "title" | "message">, unread: boolean, lc: Lifecycle | undefined): string {
+  const life = !lc ? "" : lc.state === "ongoing" ? "on" : `res:${lc.durationMs ?? "?"}`;
+  // JSON quoting keeps a separator inside the text from making two different
+  // title and message pairs collide.
+  return JSON.stringify([n.title, n.message, unread, life]);
+}
+
 // exportJSON serializes the entries for download, oldest first so the file reads
 // as a chronological log. The caller passes the export instant so this stays
 // clock-free.
@@ -152,13 +171,12 @@ export function exportJSON(
   exportedAt: string,
   anchor: ClockAnchor | null = null,
 ): string {
-  const toIso = (ms: number): string | null => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
-  const clockAnchor = anchor ? { browserTime: toIso(anchor.browserMs), uptimeMs: anchor.uptimeMs } : null;
+  const clockAnchor = anchor ? { browserTime: isoOrNull(anchor.browserMs), uptimeMs: anchor.uptimeMs } : null;
   const events = [...items]
     .sort((a, b) => a.id - b.id)
     .map((n) => ({
       ...n,
-      anchoredTime: toIso(anchorToMs(anchor, n.uptimeMs)),
+      anchoredTime: isoOrNull(anchorToMs(anchor, n.uptimeMs)),
     }));
   return JSON.stringify({ bootId, exportedAt, clockAnchor, events }, null, 2);
 }
@@ -175,6 +193,13 @@ export function dayKey(ms: number): string {
 // Constructing an Intl formatter costs far more than formatting with one, and
 // the Events page formats day labels and the oldest-entry caption on every
 // render, so the formatters are built once (as notification-row.ts does).
+//
+// A formatter fixes its time zone when it is built, at module load, while
+// dayKey reads the zone live through the Date getters. If the browser's zone
+// changes while the page is open (a laptop that travels, a changed system
+// setting), the day buckets follow at once but the weekday labels and caption
+// times keep the old zone until a reload. That edge is accepted: it is rare,
+// and a reload fixes it.
 const DAY_LABEL_FMT = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric" });
 const CAPTION_TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 

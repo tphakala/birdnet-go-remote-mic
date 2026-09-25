@@ -16,8 +16,10 @@ import {
   filterEvents,
   formatDuration,
   isFilterActive,
+  isoOrNull,
   oldestCaption,
   resultCountLabel,
+  rowSignature,
 } from "../src/lib/events-core.js";
 import type { Notification } from "../src/lib/types.js";
 import { notif } from "./fixtures.js";
@@ -204,14 +206,45 @@ test("dayLabel finds yesterday across a 25-hour fall-back day", () => {
 test("oldestCaption shows the time alone for today and prefixes an older day", () => {
   withTZ("UTC", () => {
     const now = Date.parse("2026-09-22T12:00:00Z");
-    // Today: "Oldest" and the clock time, no day label. The time's exact form
-    // is locale-dependent, but it starts with a digit either way.
+    // The pin controls only dayKey, which picks the day prefix. The time comes
+    // from a formatter built at module load in the zone the process started
+    // in, and its form is locale-dependent, so only its leading digit is
+    // asserted. Today: "Oldest" and the clock time, no day label.
     const today = oldestCaption(Date.parse("2026-09-22T08:05:00Z"), now);
     assert.ok(/^Oldest \d/.test(today), today);
     const yesterday = oldestCaption(Date.parse("2026-09-21T08:05:00Z"), now);
     assert.ok(/^Oldest Yesterday \d/.test(yesterday), yesterday);
     assert.equal(oldestCaption(Number.NaN, now), "");
   });
+});
+
+test("rowSignature changes with the text, so an entry updated in place is redrawn", () => {
+  const n = notif({ id: 7, kind: "onset", key: "dev:mic", title: "Device failed", message: "retrying" });
+  const lc = { state: "ongoing", sinceUptimeMs: 1_000 } as const;
+  const base = rowSignature(n, true, lc);
+  assert.notEqual(rowSignature({ ...n, title: "Device still failing" }, true, lc), base);
+  assert.notEqual(rowSignature({ ...n, message: "retry 3 failed" }, true, lc), base);
+  // A separator inside the text cannot make two different pairs collide.
+  assert.notEqual(rowSignature({ title: "a|b", message: "c" }, false, undefined), rowSignature({ title: "a", message: "b|c" }, false, undefined));
+});
+
+test("rowSignature is stable for unchanged text and state, and follows unread and lifecycle", () => {
+  const n = notif({ id: 7, title: "Device failed", message: "retrying" });
+  const ongoing = { state: "ongoing", sinceUptimeMs: 1_000 } as const;
+  // A later re-send of the same text (a copy, not the same object) keeps the row.
+  assert.equal(rowSignature({ ...n }, true, ongoing), rowSignature(n, true, { ...ongoing }));
+  assert.equal(rowSignature(n, false, undefined), rowSignature({ ...n }, false, undefined));
+  // The ongoing badge's start is restamped in place, not part of the signature.
+  assert.equal(rowSignature(n, true, { state: "ongoing", sinceUptimeMs: 5_000 }), rowSignature(n, true, ongoing));
+  assert.notEqual(rowSignature(n, false, ongoing), rowSignature(n, true, ongoing));
+  assert.notEqual(rowSignature(n, true, { state: "resolved", durationMs: 60_000 }), rowSignature(n, true, ongoing));
+  assert.notEqual(rowSignature(n, true, { state: "resolved", durationMs: null }), rowSignature(n, true, { state: "resolved", durationMs: 60_000 }));
+  assert.notEqual(rowSignature(n, true, undefined), rowSignature(n, true, ongoing));
+});
+
+test("isoOrNull renders an ISO instant and null for an unknown one", () => {
+  assert.equal(isoOrNull(Date.parse("2026-09-22T12:00:00Z")), "2026-09-22T12:00:00.000Z");
+  assert.equal(isoOrNull(Number.NaN), null);
 });
 
 test("resultCountLabel pluralizes and shows N of M only while filtering", () => {
