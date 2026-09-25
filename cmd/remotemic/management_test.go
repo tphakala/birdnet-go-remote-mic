@@ -196,7 +196,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, filepath.Join(t.TempDir(), "config.yaml"), cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, filepath.Join(t.TempDir(), "config.yaml"), cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -253,7 +253,7 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -271,7 +271,7 @@ func TestStartManagementServesNotifications(t *testing.T) {
 	center := notify.NewCenter()
 	center.Publish(notify.Started("v-test"))
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, center, nil, nil, nil)
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, center, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -341,7 +341,7 @@ func TestStartManagementEnforcesBearer(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken))
+	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken), nil)
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}

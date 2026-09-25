@@ -28,6 +28,10 @@ type Frame struct {
 	// RTCP sender report maps this (not send time) to the RTP timestamp, so TCP
 	// backpressure never skews the receiver's clock recovery.
 	Captured time.Time
+	// Session is the play session the stage produced this frame for (see
+	// Gate), so the feed can drop a frame that a teardown and the next PLAY
+	// overtook while it was being encoded. Zero means untagged (a nil gate).
+	Session uint64
 }
 
 // Stage consumes capture periods from src and emits Frames until src ends
@@ -40,11 +44,15 @@ type Frame struct {
 // changes, so each client's frames come from an encoder with no history or
 // partial frame from an earlier client, even when a teardown and the next PLAY
 // both land between two period reads and the stage never sees the stream idle.
-// The reset is per period read, so two edges remain: a frame the stage is
-// encoding while a teardown and the next PLAY both complete is still delivered
-// to the new client, and periods already queued for a stage that had fallen
-// behind are encoded for whichever session is active when it reads them.
-// A nil gate means always active, in one session.
+// A period tagged with another session than the gate reports (audio.Period.
+// Session, set by the fan-out) was queued for an earlier client and is dropped
+// unencoded, and every frame carries the session it was produced for
+// (Frame.Session), so the feed can drop one that a teardown and the next PLAY
+// overtook while it was being encoded (rtspserver.ChanSource checks it on Push
+// and again on Next). A frame is stamped with its period's capture
+// time (audio.Period.Captured) when the period carries one.
+// A nil gate means always active, in session 0, so it admits only untagged
+// periods: a stage fed by a gated fan-out consumer must be given the same gate.
 type Stage interface {
 	Run(src audio.Source, gate Gate, emit func(Frame) error) error
 }
@@ -62,6 +70,23 @@ func (g Gate) open() (active bool, session uint64) {
 		return true, 0
 	}
 	return g()
+}
+
+// admit reports whether a period read now is to be encoded, and the play
+// session it is encoded for. A period is dropped while the gate is closed, and
+// when it was queued for another session than the gate reports (an untagged
+// period, Session zero, belongs to any). captured is the period's capture time,
+// or now when the period carries none.
+func (g Gate) admit(p *audio.Period) (ok bool, session uint64, captured time.Time) {
+	on, session := g.open()
+	if !on || (p.Session != 0 && p.Session != session) {
+		return false, 0, time.Time{}
+	}
+	captured = p.Captured
+	if captured.IsZero() {
+		captured = time.Now()
+	}
+	return true, session, captured
 }
 
 // maxL16Payload caps an L16 RTP payload at 15360 bytes (20 ms of mono 384 kHz).
@@ -102,15 +127,16 @@ func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 		}
 		// The packetizer keeps no stream state between periods, so a new session
 		// needs no reset.
-		if on, _ := gate.open(); !on {
+		ok, session, captured := gate.admit(&period)
+		if !ok {
 			continue
 		}
-		captured := time.Now()
 		if _, err := pk.Split(period.Buf, func(payload []byte) error {
 			return emit(Frame{
 				Payload:  payload,
 				Duration: uint32(len(payload) / frameBytes),
 				Captured: captured,
+				Session:  session,
 			})
 		}); err != nil {
 			return err
@@ -167,8 +193,9 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
 	acc := make([]int16, 0, frameSamples) // reused accumulator
 	encBuf := make([]byte, 4000)          // one Opus packet fits easily
-	// session is the play session the encoder state belongs to. A period of any
-	// other session resets the encoder and drops the stale partial frame, so a
+	// session is the play session the encoder state belongs to. When the gate
+	// reports another session, the encoder resets and drops the stale partial
+	// frame (a period queued for another session never gets here), so a
 	// new client's stream starts exactly as a freshly built encoder's would. It
 	// starts at 0, which a feed never reports while active, so the first client
 	// resets the fresh encoder too; that is harmless. (A nil gate stays in
@@ -183,8 +210,8 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			}
 			return err
 		}
-		on, s := gate.open()
-		if !on {
+		ok, s, captured := gate.admit(&period)
+		if !ok {
 			continue
 		}
 		if s != session {
@@ -192,7 +219,6 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			acc = acc[:0]
 			session = s
 		}
-		captured := time.Now()
 		// Fill the accumulator up to the rest of the current frame per pass, so the
 		// per-sample loop carries no frame-boundary branch.
 		pcm := period.Buf
@@ -212,7 +238,7 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			if eerr != nil {
 				return eerr
 			}
-			if err := emit(Frame{Payload: encBuf[:n], Duration: opusFrameSamples, Captured: captured}); err != nil {
+			if err := emit(Frame{Payload: encBuf[:n], Duration: opusFrameSamples, Captured: captured, Session: session}); err != nil {
 				return err
 			}
 			acc = acc[:0]

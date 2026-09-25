@@ -122,7 +122,7 @@ type streamRuntime struct {
 	// encoded records that this stream's stage has emitted an encoded frame,
 	// which happens only while a client plays it (see pipeline.Stage). An
 	// unattended retry after this stream's encode fault waits for it before its
-	// settle (see retryState.encodePaths). Set once by the stage goroutine, read
+	// settle (see encodeFault). Set once by the stage goroutine, read
 	// by the run loop.
 	encoded atomic.Bool
 }
@@ -258,8 +258,9 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 	// Meter every captured channel once on the shared reader, then fan the metered
 	// capture out to each stream's selecting source. Registering the meter after the
 	// fallible build above keeps a device that fails there out of the levels hub.
-	// Each consumer is gated on its stream feed's active flag, so a stream with no
-	// client playing costs no per-period copy or channel extraction.
+	// Each consumer is gated on its stream feed's play session, so a stream with
+	// no client playing costs no per-period copy or channel extraction, and each
+	// period it gets is tagged with that session.
 	metered := audio.NewMeteredSource(base, hub.Meter(dev.Name, channels))
 	fanout, consumers := audio.NewFanout(metered, dev.Name, fanoutStreams(streams))
 	for i := range streams {
@@ -366,6 +367,43 @@ func publishRunLock(lock *runlock.Lock, cfgPath string, ep *mgmtEndpoint) {
 	}
 	if err := lock.Publish(st); err != nil {
 		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), err)
+	}
+}
+
+// runLockPublisher serializes run-lock writes between the run loop and a
+// background management retry, which publishes from its own goroutine so the
+// lock tracks the attempt itself rather than waiting for the run loop. A nil
+// *runLockPublisher is a no-op, for tests that drive the retry without a lock.
+type runLockPublisher struct {
+	mu      sync.Mutex
+	lock    *runlock.Lock
+	cfgPath string
+}
+
+// publish records this process in the run lock, with the management API's
+// endpoint when ep is non-nil (see publishRunLock).
+func (p *runLockPublisher) publish(ep *mgmtEndpoint) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	publishRunLock(p.lock, p.cfgPath, ep)
+}
+
+// starting marks the appliance as starting up in the run lock, while a
+// background attempt reloads the config file and brings the API up. A token
+// command reading the lock then asks the operator to try again rather than
+// editing a file the attempt may already have read, which the API it brings up
+// would later overwrite. A write failure is logged, not fatal.
+func (p *runLockPublisher) starting() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.lock.Publish(runlock.State{}); err != nil {
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands may edit the config file during this management API attempt)", runlock.PathFor(p.cfgPath), err)
 	}
 }
 
@@ -524,6 +562,12 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
 	mgmtServing := false
+	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath}
+	// Publish this process with no API before management starts: a failed start
+	// hands the lock to a background retry, and a startup write made after it
+	// could erase the endpoint the retry published. The mutex orders the writes
+	// only once both exist; publishing first orders the lifecycle.
+	runLock.publish(nil)
 	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
 	// only when a request asks, so an appliance with no browser open does no
 	// sampling work at all. It exists only while the management API is enabled (its
@@ -531,20 +575,20 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// hostReader.cpu). Collect tolerates a nil gauge and omits CPUPercent.
 	if mgmtEnabled {
 		prov.cpu = sysinfo.NewCPUGauge()
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard)
+		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard, runLock)
 	}
 	defer func() {
 		stop()
 		management.Wait()
 	}()
 
-	// Publish where the management API listens (nothing when it is not serving,
-	// which also means no API handler can rewrite the config file). An API that
-	// comes up later through its background retry republishes from the run loop.
+	// Publish where the management API listens. When it is not serving, the
+	// no-API state published above stays, which also means no API handler can
+	// rewrite the config file. An API that comes up later through its
+	// background retry republishes from the retry itself (see
+	// recoverManagement).
 	if mgmtServing {
-		publishRunLock(lock, cfgPath, &mgmtEndpoint{addr: management.addr, certPath: management.certPath})
-	} else {
-		publishRunLock(lock, cfgPath, nil)
+		runLock.publish(&mgmtEndpoint{addr: management.addr, certPath: management.certPath})
 	}
 
 	// Drive the level sampler for the lifetime of the process.
@@ -599,16 +643,22 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// decisions below first adopt any pending endpoint (adoptPending), so a
 	// select that picks a pump ending over the pending Up cannot shut down an API
 	// that is already serving.
-	adoptRecovered := func(ep mgmtEndpoint) {
+	adoptRecovered := func(mgmtEndpoint) {
 		// The API is now the diagnostic surface that keeps a zero-serving
-		// appliance up, and the token commands switch from editing the file to it.
+		// appliance up. The retry already published its endpoint in the run
+		// lock, so the token commands have switched from editing the file to it.
 		mgmtServing = true
-		publishRunLock(lock, cfgPath, &ep)
 	}
 	adoptPending(management, adoptRecovered)
 	if app.serving() == 0 && !mgmtServing {
 		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
+		}
+		if mgmtEnabled {
+			// The API's own retry was just logged as running in the background, but
+			// exiting ends it; name both failures, so the log does not read as if
+			// only the devices were at fault.
+			return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above)")
 		}
 		return errors.New("no configured capture device could be opened")
 	}
@@ -812,12 +862,13 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 }
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,
-// shared with the stream's downstream frame drops, and its feed's active flag,
-// so the fan-out sends an idle stream nothing instead of copied audio.
+// shared with the stream's downstream frame drops, and its feed's play session,
+// so the fan-out sends an idle stream nothing instead of copied audio and tags
+// each period it sends with the session it was sent for.
 func fanoutStreams(streams []*streamRuntime) []audio.FanoutStream {
 	out := make([]audio.FanoutStream, len(streams))
 	for i, sr := range streams {
-		out[i] = audio.FanoutStream{Dropped: &sr.dropped, Active: sr.frames.Active}
+		out[i] = audio.FanoutStream{Dropped: &sr.dropped, Gate: sr.frames.Session}
 	}
 	return out
 }

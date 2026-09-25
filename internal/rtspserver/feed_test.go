@@ -138,3 +138,93 @@ func TestSetActiveConcurrentKeepsEverySession(t *testing.T) {
 		t.Errorf("after %d activations: Session() = (%v, %d), want (false, %d)", workers*rounds, on, s, workers*rounds)
 	}
 }
+
+// TestPushDropsFrameOfAnotherSession pins the fix for a frame that a teardown
+// and the next PLAY overtook while the stage was encoding it: a frame tagged
+// with an earlier session is discarded (reported as success, not a drop),
+// while a frame of the current session and an untagged one are delivered.
+func TestPushDropsFrameOfAnotherSession(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	c.SetActive(true)
+	_, old := c.Session()
+	c.SetActive(false)
+	c.SetActive(true)
+	_, cur := c.Session()
+	for _, tt := range []struct {
+		name    string
+		session uint64
+		deliver bool
+	}{
+		{"earlier session", old, false},
+		{"current session", cur, true},
+		{"untagged", 0, true},
+	} {
+		if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: tt.session}) {
+			t.Fatalf("%s: Push reported a drop, want success", tt.name)
+		}
+		// Push is synchronous, so the queue already shows whether it kept the
+		// frame; no wait is needed to prove a discard.
+		if !tt.deliver {
+			if got := len(c.ch); got != 0 {
+				t.Errorf("%s: got %d queued frames, want the frame discarded", tt.name, got)
+			}
+			continue
+		}
+		if got := len(c.ch); got != 1 {
+			t.Fatalf("%s: got %d queued frames, want 1", tt.name, got)
+		}
+		f, err := c.Next(t.Context())
+		switch {
+		case err != nil:
+			t.Errorf("%s: Next err = %v, want the frame", tt.name, err)
+		case f.Session != tt.session:
+			t.Errorf("%s: got session %d, want %d", tt.name, f.Session, tt.session)
+		}
+	}
+}
+
+// TestActivateDrainsBeforeNewSession pins the order inside SetActive(true):
+// the drain runs while the source still reports the old state, so a frame the
+// new client's stage pushes once it sees the new session is never drained.
+func TestActivateDrainsBeforeNewSession(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	calls := 0
+	c.drained = func() {
+		calls++
+		if on, s := c.Session(); on || s != 0 {
+			t.Errorf("at the drain: Session() = (%v, %d), want (false, 0): the new session started first", on, s)
+		}
+	}
+	c.SetActive(true)
+	if calls != 1 {
+		t.Fatalf("drained hook ran %d times, want 1", calls)
+	}
+}
+
+// TestNextSkipsFrameOfAnotherSession pins the second half of the stale-frame
+// guard: a frame of an earlier session that Push queued after the next PLAY's
+// drain (its session check ran before the teardown) never reaches the new
+// client's writer; Next skips it and returns the current session's frame.
+func TestNextSkipsFrameOfAnotherSession(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	c.SetActive(true)
+	_, old := c.Session()
+	c.SetActive(false)
+	c.SetActive(true)
+	_, cur := c.Session()
+	// The late send of a Push that checked the session before the teardown.
+	c.ch <- pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: old}
+	if !c.Push(pipeline.Frame{Payload: []byte{2}, Duration: 1, Session: cur}) {
+		t.Fatal("current-session push reported a drop")
+	}
+	f, err := c.Next(t.Context())
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if f.Session != cur {
+		t.Errorf("got a frame of session %d, want the current session %d", f.Session, cur)
+	}
+}

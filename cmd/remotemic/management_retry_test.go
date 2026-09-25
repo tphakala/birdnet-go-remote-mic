@@ -17,6 +17,7 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
 )
 
 // fakeMgmt returns a handle that looks like a running API at addr, whose Wait
@@ -417,5 +418,73 @@ func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
 		cancel()
 		h.Wait()
 		t.Fatal("a config file that no longer loads must fail the attempt")
+	}
+}
+
+// TestRecoverManagementPublishesRunLock pins the token CLI race fix: while a
+// background attempt reloads the config file and brings the API up, the run
+// lock reads as starting, so a token command asks the operator to retry
+// instead of editing a file the attempt may already have read. A successful
+// attempt publishes its endpoint itself, and a failed one leaves the lock
+// with no endpoint, so the token commands edit the file again.
+func TestRecoverManagementPublishesRunLock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	lockPath := runlock.PathFor(cfgPath)
+	lock, err := runlock.Acquire(lockPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+	pub := &runLockPublisher{lock: lock, cfgPath: cfgPath}
+	pub.publish(nil)
+
+	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
+	edited := startup.Clone()
+	edited.Auth.Token = "edited-while-down-token"
+	if err := config.Save(cfgPath, &edited); err != nil {
+		t.Fatal(err)
+	}
+	// The reloader runs mid-attempt, after the reload: the lock must read as
+	// starting there.
+	var midAttempt []bool
+	reloader := func(context.Context, config.Config) error {
+		_, ok, rerr := runlock.ReadState(lockPath)
+		if rerr != nil {
+			t.Errorf("ReadState mid-attempt: %v", rerr)
+		}
+		midAttempt = append(midAttempt, ok)
+		return nil
+	}
+	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader, center: notify.NewCenter(), runLock: pub}
+	p.certPath = filepath.Join(dir, testCertFile)
+	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h, err := recoverManagement(ctx, p)
+	if err != nil {
+		t.Fatalf("recoverManagement: %v", err)
+	}
+	if len(midAttempt) != 1 || midAttempt[0] {
+		t.Errorf("lock published mid-attempt = %v, want [false] (starting)", midAttempt)
+	}
+	st, ok, err := runlock.ReadState(lockPath)
+	if err != nil || !ok || st.MgmtAddr != h.addr {
+		t.Errorf("after the attempt: ReadState = %+v, %v, %v; want the API's address %q", st, ok, err, h.addr)
+	}
+	cancel()
+	h.Wait()
+
+	// A failed attempt (the file no longer loads) leaves no endpoint.
+	if err := os.WriteFile(cfgPath, []byte("listen: [not, a, string\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recoverManagement(t.Context(), p); err == nil {
+		t.Fatal("a config file that no longer loads must fail the attempt")
+	}
+	st, ok, err = runlock.ReadState(lockPath)
+	if err != nil || !ok || st.MgmtAddr != "" {
+		t.Errorf("after a failed attempt: ReadState = %+v, %v, %v; want a published state with no endpoint", st, ok, err)
 	}
 }

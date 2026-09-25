@@ -3,9 +3,11 @@ package pipeline_test
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tphakala/go-opus/opus"
 
@@ -561,6 +563,110 @@ func TestOpusStageNewSessionWithoutIdleGetsFreshEncoder(t *testing.T) {
 			t.Errorf("frame %d of the second session differs from a fresh encoder's frame %d", i+1, i+1)
 		}
 	}
+}
+
+// periodSource replays tagged periods, then io.EOF, so a test can hand a
+// stage what a fan-out queues: periods carrying a play session and a capture
+// time.
+type periodSource struct {
+	rate, ch int
+	periods  []audio.Period
+}
+
+func (s *periodSource) Negotiated() (rate, channels int) { return s.rate, s.ch }
+
+func (s *periodSource) Read() (audio.Period, error) {
+	if len(s.periods) == 0 {
+		return audio.Period{}, io.EOF
+	}
+	p := s.periods[0]
+	s.periods = s.periods[1:]
+	return p, nil
+}
+
+func (s *periodSource) Close() error { return nil }
+
+// TestStagesDropPeriodsQueuedForEarlierSession pins the fix for a stage that
+// fell behind across a teardown and the next PLAY: periods the fan-out queued
+// for the earlier session are dropped unencoded, so the new client's stream
+// starts with its own audio (for Opus, exactly as a fresh encoder would), and
+// every frame emitted carries the gate's session and its period's capture
+// time rather than the stage's read time.
+func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
+	t.Parallel()
+	// 480-sample mono periods, two per Opus frame: periods 0-2 were queued for
+	// session 1 and periods 3-8 for session 2, and the gate reports session 2
+	// for every read (the stage caught up only after the second PLAY).
+	raw := splitPeriods(tonePCM(9*480, 1), 480, 1)
+	base := time.Unix(1700000000, 0)
+	tagged := func() []audio.Period {
+		out := make([]audio.Period, len(raw))
+		for i, b := range raw {
+			out[i] = audio.Period{Buf: b, Frames: 480, Session: 1, Captured: base.Add(time.Duration(i) * 10 * time.Millisecond)}
+			if i >= 3 {
+				out[i].Session = 2
+			}
+		}
+		return out
+	}
+	allOn := func() pipeline.Gate { return func() (bool, uint64) { return true, 2 } }
+	type got struct {
+		payloads [][]byte
+		frames   []pipeline.Frame
+	}
+	run := func(stage pipeline.Stage) got {
+		var g got
+		err := stage.Run(&periodSource{rate: 48000, ch: 1, periods: tagged()}, allOn(), func(f pipeline.Frame) error {
+			g.payloads = append(g.payloads, append([]byte(nil), f.Payload...))
+			g.frames = append(g.frames, f)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return g
+	}
+	checkTags := func(name string, frames []pipeline.Frame) {
+		t.Helper()
+		first := base.Add(3 * 10 * time.Millisecond)
+		for i, f := range frames {
+			if f.Session != 2 {
+				t.Errorf("%s frame %d: got session %d, want 2", name, i, f.Session)
+			}
+			if f.Captured.Before(first) || f.Captured.After(base.Add(time.Second)) {
+				t.Errorf("%s frame %d: got Captured %v, want a queued period's capture time (from %v)", name, i, f.Captured, first)
+			}
+		}
+	}
+
+	var second []byte
+	for _, p := range raw[3:] {
+		second = append(second, p...)
+	}
+	cfg := config.Opus{Bitrate: 64000}
+	opusGot := run(pipeline.NewOpus(cfg))
+	want := referenceOpus(t, cfg, second, 1)
+	if len(opusGot.payloads) != len(want) {
+		t.Fatalf("opus: emitted %d frames, want %d (only the second session's audio)", len(opusGot.payloads), len(want))
+	}
+	for i, w := range want {
+		if !bytes.Equal(opusGot.payloads[i], w) {
+			t.Errorf("opus frame %d differs from a fresh encoder's frame over the second session's audio", i)
+		}
+	}
+	checkTags("opus", opusGot.frames)
+
+	pcmGot := run(pipeline.NewPCM())
+	var pcm []byte
+	for _, p := range pcmGot.payloads {
+		for i := 0; i+1 < len(p); i += 2 {
+			pcm = binary.LittleEndian.AppendUint16(pcm, binary.BigEndian.Uint16(p[i:i+2]))
+		}
+	}
+	if !bytes.Equal(pcm, second) {
+		t.Errorf("pcm: emitted %d bytes, want exactly the second session's %d bytes", len(pcm), len(second))
+	}
+	checkTags("pcm", pcmGot.frames)
 }
 
 func TestSDPSpec(t *testing.T) {

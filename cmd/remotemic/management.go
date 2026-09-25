@@ -584,13 +584,15 @@ type mgmt struct {
 	certPath string
 	done     chan struct{}
 	// up delivers the endpoint once when a background retry brings up an API
-	// that failed to start (see retryManagement); nil when the API came up at
-	// once.
+	// that failed to start (see retryManagement), telling the run loop the API
+	// now serves; the retry has already published the endpoint in the run lock.
+	// nil when the API came up at once.
 	up chan mgmtEndpoint
 }
 
 // mgmtEndpoint is where a serving management API listens, as published in the
-// run lock; a background retry hands it to the run loop to republish the lock.
+// run lock (by run() at startup, or by the background retry that brought the
+// API up, see recoverManagement).
 type mgmtEndpoint struct {
 	addr     string
 	certPath string
@@ -632,8 +634,11 @@ type mgmtParams struct {
 	restartFn func()
 	reloader  mgmtserver.Reloader
 	guard     *auth.Guard
-	certPath  string
-	keyPath   string
+	// runLock publishes the run lock from a background retry (see
+	// recoverManagement); nil publishes nothing.
+	runLock  *runLockPublisher
+	certPath string
+	keyPath  string
 }
 
 // startManagement generates or loads the self-signed certificate and serves the
@@ -646,7 +651,7 @@ type mgmtParams struct {
 // diagnostic surface when deciding whether to stay alive with no serving device.
 // The attempt is then retried in the background with backoff (see
 // retryManagement), and the handle's Up channel reports when one succeeds.
-func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, center *notify.Center, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard) (handle *mgmt, ok bool) {
+func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, center *notify.Center, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard, runLock *runLockPublisher) (handle *mgmt, ok bool) {
 	return startManagementWith(ctx, &mgmtParams{
 		cfgPath:   cfgPath,
 		cfg:       cfg,
@@ -657,6 +662,7 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 		restartFn: restartFn,
 		reloader:  reloader,
 		guard:     guard,
+		runLock:   runLock,
 	}, mgmtRetryBackoff[:])
 }
 

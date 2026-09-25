@@ -376,6 +376,7 @@ func TestRetryDropsStateForUnknownDevice(t *testing.T) {
 		defer shutdownApp(app, cancel)
 		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 		app.retries["ghost"] = &retryState{attempts: 1, next: time.Now()}
+		app.encodeFaults["ghost"] = encodeFault{paths: []string{"/ghost"}}
 		app.armRetryTimer()
 
 		// Drive the run loop by hand so a busy loop fails on a bound instead of
@@ -400,6 +401,11 @@ func TestRetryDropsStateForUnknownDevice(t *testing.T) {
 
 		if _, ok := app.retries["ghost"]; ok {
 			t.Error("retry state for an unconfigured device was not dropped")
+		}
+		// A device configured again under that name would otherwise inherit the
+		// stale encode proof.
+		if _, ok := app.encodeFaults["ghost"]; ok {
+			t.Error("encode fault for an unconfigured device was not dropped")
 		}
 	})
 }
