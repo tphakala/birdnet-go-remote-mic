@@ -840,8 +840,8 @@ func TestDialAddr(t *testing.T) {
 // TestLockStateAbsoluteCertPath asserts the published certificate path is
 // absolute, so a token command run from another directory can read it.
 func TestLockStateAbsoluteCertPath(t *testing.T) {
-	st := lockState(7, "[::]:8443", "mgmt-cert.pem")
-	if !filepath.IsAbs(st.CertPath) || filepath.Base(st.CertPath) != "mgmt-cert.pem" {
+	st := lockState(7, "[::]:8443", testCertFile)
+	if !filepath.IsAbs(st.CertPath) || filepath.Base(st.CertPath) != testCertFile {
 		t.Fatalf("CertPath = %q, want an absolute path to mgmt-cert.pem", st.CertPath)
 	}
 	if st.PID != 7 || st.MgmtAddr != "[::]:8443" {

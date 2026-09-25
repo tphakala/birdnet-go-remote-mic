@@ -32,12 +32,12 @@ func TestRetryManagementBacksOffThenDelivers(t *testing.T) {
 			if len(at) < 3 {
 				return nil, errors.New("still broken")
 			}
-			return fakeMgmt("127.0.0.1:8443", stop), nil
+			return fakeMgmt(testMgmtAddr, stop), nil
 		}
 		h := retryManagement(t.Context(), attempt, delays, errors.New("broken"))
 
 		ep := <-h.Up()
-		if ep.addr != "127.0.0.1:8443" || ep.certPath != "cert.pem" {
+		if ep.addr != testMgmtAddr || ep.certPath != "cert.pem" {
 			t.Errorf("got endpoint %+v, want the recovered API's address and certificate", ep)
 		}
 		// The first delay, then the second, then the last delay repeating.
