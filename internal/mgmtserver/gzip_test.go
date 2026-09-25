@@ -293,3 +293,35 @@ func TestGzipBodylessStatusStaysPlain(t *testing.T) {
 		t.Errorf("silent handler body = %q (err %v), want empty", raw, err)
 	}
 }
+
+// TestGzipFlushBeforeWrite pins that a flush before the first write still
+// sends a gzip-encoded response: the status goes out with Content-Encoding,
+// and the body that follows decodes.
+func TestGzipFlushBeforeWrite(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat(`{"k":"v"}`, 100)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("flush: %v", err)
+		}
+		_, _ = io.WriteString(w, body)
+	})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
+	req.Header.Set("Accept-Encoding", encGzip)
+	rec := httptest.NewRecorder()
+	gzipGET("/x", inner).ServeHTTP(rec, req)
+	// Result holds the headers as they were sent; rec.Header is the live map
+	// a late WriteHeader could still change.
+	res := rec.Result()
+	defer func() { _ = res.Body.Close() }()
+	if got := res.Header.Get("Content-Encoding"); got != encGzip {
+		t.Fatalf("Content-Encoding sent = %q after an early flush, want gzip", got)
+	}
+	zr, err := gzip.NewReader(res.Body)
+	if err != nil {
+		t.Fatalf("body is not gzip: %v", err)
+	}
+	if raw, err := io.ReadAll(zr); err != nil || string(raw) != body {
+		t.Errorf("decompressed body = %q (err %v), want the handler's body", raw, err)
+	}
+}

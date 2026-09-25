@@ -1,8 +1,3 @@
-//go:build !race
-
-// The race detector makes sync.Pool drop a Put at random, so writer reuse is
-// only observable without it.
-
 package mgmtserver
 
 import (
@@ -14,20 +9,23 @@ import (
 )
 
 // TestGzipReusesPooledWriter pins the pooling: a flate compressor costs about
-// 800 KB of tables, so sequential requests must share one writer rather than
-// build one each.
+// 800 KB of tables, so sequential requests must share writers rather than
+// build one each. The race detector makes sync.Pool drop a Put at random
+// (about one in four), so the bound leaves room for that and still fails a
+// handler that builds a writer per request.
 func TestGzipReusesPooledWriter(t *testing.T) {
 	t.Parallel()
+	const requests = 100
 	body := strings.Repeat(`{"k":"v"}`, 100)
 	h := newGzipHandler("/x", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, body)
 	}))
-	for range 3 {
+	for range requests {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", http.NoBody)
 		req.Header.Set("Accept-Encoding", encGzip)
 		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
-	if n := h.news.Load(); n != 1 {
-		t.Errorf("built %d gzip writers for 3 sequential requests, want 1", n)
+	if n := h.news.Load(); n > requests/2 {
+		t.Errorf("built %d gzip writers for %d sequential requests, want at most %d", n, requests, requests/2)
 	}
 }

@@ -124,10 +124,28 @@ func (g *gzipResponseWriter) Write(p []byte) (int, error) {
 	return g.gz.Write(p)
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer. A Flush
-// through it is not gzip-aware (bytes still inside the compressor stay there),
-// which is fine for the one wrapped route, a single buffered JSON body; a
-// streaming route must not be wrapped.
+// FlushError is what http.ResponseController's Flush calls (it looks for it
+// before Unwrap). The encoding is decided when the status is written, so a
+// flush before the first write writes the status first; otherwise the
+// underlying writer would commit a 200 with no Content-Encoding and the body
+// that follows would be gzip bytes in a response declared plain. It then
+// flushes what the compressor holds before flushing the connection.
+func (g *gzipResponseWriter) FlushError() error {
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
+	if !g.plain {
+		if err := g.gz.Flush(); err != nil {
+			return err
+		}
+	}
+	return http.NewResponseController(g.ResponseWriter).Flush()
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer for what
+// the wrapper does not implement itself (deadlines, hijacking). The one
+// wrapped route is a single buffered JSON body; a streaming route must not be
+// wrapped.
 func (g *gzipResponseWriter) Unwrap() http.ResponseWriter { return g.ResponseWriter }
 
 // acceptsGzip reports whether an Accept-Encoding header allows gzip: a gzip or
