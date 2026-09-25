@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -397,13 +398,34 @@ func TestRetryEncodeFaultSurvivesReplug(t *testing.T) {
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateFailed {
 			t.Fatalf("moth state = %s, want failed after the disconnect", s)
 		}
-		// The disconnect replaces the failed condition with a disconnected one
-		// (a resolve, counted as a clear), so count clears from here.
-		base := countDown(t, app, "moth", notify.KindClear)
+		// A replug whose open fails keeps the open failure as the condition: the
+		// encode-wait text is only for a device that serves again.
+		failOpenTimes(app, log, 1)
+		app.retryDown()
+		for _, n := range applianceCenter(t, app).Active() {
+			if n.Key == deviceDownKey("moth") && n.Title == "Device failed" {
+				t.Errorf("active moth condition after a failed replug = %+v, want the open failure", n)
+			}
+		}
+		runFor(t, app, backoffDelay(1)+time.Second)
 		app.retryDown()
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
 			t.Fatalf("moth state = %s, want serving after the replug", s)
 		}
+		// The active condition no longer says the device is disconnected: it
+		// serves again and waits for the faulted stream to prove its encoder.
+		var active []notify.Notification
+		for _, n := range applianceCenter(t, app).Active() {
+			if n.Key == deviceDownKey("moth") {
+				active = append(active, n)
+			}
+		}
+		if len(active) != 1 || active[0].Title != "Device failed" || !strings.Contains(active[0].Message, pathMoth) {
+			t.Errorf("active moth condition after the replug = %+v, want one \"Device failed\" naming %s", active, pathMoth)
+		}
+		// Each change of cause resolves the previous condition (counted as a
+		// clear), so count clears from the replug on.
+		base := countDown(t, app, "moth", notify.KindClear)
 		runFor(t, app, 5*time.Minute)
 		if got := countDown(t, app, "moth", notify.KindClear) - base; got != 0 {
 			t.Fatalf("down clears since the disconnect = %d, want 0: a replug proves nothing about the encoder", got)
@@ -474,6 +496,76 @@ func TestRetryEncodeFaultConfigSave(t *testing.T) {
 	}
 }
 
+// TestRetryEncodeFaultConfigSaveRestartsBackoff pins that a config save starts
+// the delays over even for an encode-faulted device it restarts as a retry
+// attempt: an operator who saves while another process still holds the device
+// gets the next attempt 5 s later, not after the long delay the earlier faults
+// had built up.
+func TestRetryEncodeFaultConfigSaveRestartsBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		dev := testDevice("moth", idMoth, pathMoth, 48000)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+		// Build up the backoff: each retry opens and faults again at the next PLAY.
+		for n := 1; n <= 3; n++ {
+			play(pathMoth) <- true
+			runFor(t, app, backoffDelay(n)+time.Second)
+		}
+		play(pathMoth) <- true
+		runFor(t, app, time.Second)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateFailed {
+			t.Fatalf("moth state = %s, want failed after the last fault", s)
+		}
+		// The save's attempt finds the device busy.
+		out := captureLog(t)
+		failOpenTimes(app, log, 1)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateSkipped {
+			t.Fatalf("moth state = %s, want skipped after the busy save", s)
+		}
+		// The failure count starts over too, so the failure is logged as the
+		// first of a new outage.
+		if want := fmt.Sprintf(`device "moth": retrying in %s (failure 1)`, backoffDelay(1)); !strings.Contains(out.String(), want) {
+			t.Errorf("log = %q, want %q", out.String(), want)
+		}
+		runFor(t, app, backoffDelay(1)+time.Second)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Errorf("moth state = %s %s after the save, want serving: the save must start the delays over", s, backoffDelay(1)+time.Second)
+		}
+	})
+}
+
+// TestRetryEncodeFaultCardIndexSaveClears pins that a card-index device keeps
+// the behaviour it had before the encode proof outlived the retry state: it is
+// never retried unattended, so it records no encode fault, and the config save
+// its condition points the operator at restarts it and clears the condition as
+// soon as it opens.
+func TestRetryEncodeFaultCardIndexSaveClears(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		dev := testDevice("moth", "hw:1", pathMoth, 48000)
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+		play(pathMoth) <- true
+		runFor(t, app, time.Minute)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateFailed {
+			t.Fatalf("moth state = %s, want failed: a card-index device is not retried unattended", s)
+		}
+		app.reconcile(&config.Config{Devices: []config.Device{dev}})
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the save", s)
+		}
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Errorf("down clears = %d, want 1 as soon as the save opens the device", got)
+		}
+	})
+}
+
 // TestRetryEncodeFaultHotplugAttemptFails pins a hardware-change restart of an
 // encode-faulted device whose open fails: the failure schedules the next
 // backoff attempt (the hotplug consumed the pending one, so without a re-arm
@@ -511,6 +603,10 @@ func TestRetryEncodeFaultHotplugAttemptFails(t *testing.T) {
 		}
 		if app.retryAt.IsZero() {
 			t.Fatal("no retry armed after the failed hotplug attempt")
+		}
+		// A hotplug advances the backoff rather than starting it over.
+		if got := time.Until(app.retryAt); got <= backoffDelay(retryLogFirst+1) {
+			t.Errorf("next attempt in %s, want the advanced delay (more than %s)", got, backoffDelay(retryLogFirst+1))
 		}
 		runFor(t, app, backoffDelay(len(retryBackoff))+time.Second)
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {

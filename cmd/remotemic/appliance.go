@@ -216,10 +216,16 @@ const (
 // active notification keeps the first cause's text; the device record's error
 // always carries the latest one.
 func (a *appliance) markDown(name, cause string, n *notify.Notification) {
+	if prev, ok := a.downReason[name]; ok && prev != cause && a.retrying(name) && retryableCause(prev) && retryableCause(cause) {
+		return
+	}
+	a.replaceDown(name, cause, n)
+}
+
+// replaceDown raises the device's down condition for cause, resolving an active
+// condition of another cause first, with none of markDown's exceptions.
+func (a *appliance) replaceDown(name, cause string, n *notify.Notification) {
 	if prev, ok := a.downReason[name]; ok && prev != cause {
-		if a.retrying(name) && retryableCause(prev) && retryableCause(cause) {
-			return
-		}
 		a.notifier.Resolve(deviceDownKey(name), "the cause changed")
 	}
 	a.downReason[name] = cause
@@ -765,7 +771,7 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 		// the reannounce result is not needed, as a non-empty plan rebuilds
 		// below.
 		if f, ok := a.encodeFaults[d.Name]; ok && reload.CaptureParamsEqual(&f.dev, d) {
-			a.restartFaulted(d, "config saved with its parameters unchanged")
+			a.restartFaulted(d, "config saved with its parameters unchanged", true)
 			continue
 		}
 		a.startDevice(d)
@@ -952,7 +958,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
 			a.markDown(name, downFailed, &n)
 			a.scheduleRetry(&res.rt.dev)
-			if res.faultPath != "" {
+			// Only a device scheduleRetry keeps retrying records its fault: a
+			// card-index id is never retried unattended, so the config save its
+			// condition points the operator at restarts and clears it at once.
+			if res.faultPath != "" && a.retries[name] != nil {
 				// An encode fault surfaces only while a client plays that stream, so
 				// the restart must prove that stream's encoder before it counts as
 				// recovered; another stream encoding proves nothing about it.
@@ -1008,7 +1017,7 @@ func (a *appliance) retryDown() {
 			// clearing it at once and faulting again at the next PLAY. Its
 			// reannounce result is not needed: any device that serves after this
 			// loop triggers the rebuild below.
-			a.restartFaulted(&d, "hardware changed")
+			a.restartFaulted(&d, "hardware changed", false)
 		} else {
 			a.startDevice(&d)
 		}

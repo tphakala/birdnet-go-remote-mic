@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
@@ -377,7 +378,8 @@ func (a *appliance) onRetryDue() {
 // attemptRetry makes one unattended restart attempt. On success the device
 // serves at once but its down condition stays active until it has served for
 // retrySettle, and after an encode fault until each faulted stream has also
-// encoded (see onRetryDue); on a failure scheduleRetry either schedules the
+// encoded (see onRetryDue), with the condition raised again as that failure if
+// it read as another cause; on a failure scheduleRetry either schedules the
 // next attempt or, for a cause a retry cannot fix, ends the retry. The open's own
 // log lines, failure and success alike, are silenced on attempts logAttempt
 // skips, except the line for a cause that ends the retry (see skipDevice), and
@@ -407,8 +409,20 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) 
 		return false
 	}
 	st.settleAt = time.Now().Add(retrySettle)
-	if len(a.faultedPaths(d.Name)) == 0 {
+	paths := a.faultedPaths(d.Name)
+	if len(paths) == 0 {
 		return false
+	}
+	if a.downReason[d.Name] != downFailed {
+		// The condition stays active while the restart waits for an encode, so
+		// its text must say why. After a disconnect, a skip, or an open failure
+		// that re-raised it, it still reads as the device being gone or
+		// unopenable; raise it again as the failure it now waits out, even over
+		// markDown's keep-the-first-cause exception (an open failure then this
+		// restart would otherwise leave "Device unavailable" on a serving
+		// device). A device already down as failed keeps its condition.
+		n := deviceDownOnset(d.Name, "Device failed", fmt.Sprintf("Encoding failed earlier on %s; the device serves again, and this clears once a client plays it and encoding succeeds", strings.Join(paths, ", ")))
+		a.replaceDown(d.Name, downFailed, &n)
 	}
 	// Ask the stages to wake the run loop at a stream's first encoded frame,
 	// before any check of the streams' flags (see deviceRuntime.awaitEncode).
@@ -424,15 +438,20 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) 
 // has encoded (see encodeFault) rather than clearing it only for the next PLAY
 // to fault again. A device whose retry state was dropped (a disconnect) gets a
 // fresh one; any pending backoff attempt is consumed by this one, and a
-// failure schedules the next as usual. The attempt is always logged: it is
+// failure schedules the next as usual. resetBackoff starts the delays over, as
+// a config save does for any device; a hardware change passes false, so a
+// hotplug advances the backoff instead. The attempt is always logged: it is
 // the event's doing, not the backoff's, so logAttempt does not gate it.
-func (a *appliance) restartFaulted(d *config.Device, why string) (reannounce bool) {
+func (a *appliance) restartFaulted(d *config.Device, why string, resetBackoff bool) (reannounce bool) {
 	st := a.retries[d.Name]
 	if st == nil {
 		st = &retryState{}
 		a.retries[d.Name] = st
 	}
 	st.next = time.Time{}
+	if resetBackoff {
+		st.attempts, st.failures, st.recoveredAt = 0, 0, time.Time{}
+	}
 	log.Printf("device %q: %s; restarting it, and its failure clears once a client plays the faulted stream and encoding succeeds", d.Name, why)
 	return a.attemptRetry(d, st, true)
 }
