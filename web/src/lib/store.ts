@@ -15,6 +15,19 @@ import type {
 
 // How often the REST resources are polled while the page is visible.
 const POLL_INTERVAL_MS = 3000;
+// How long the page may stay hidden before the event stream is stopped. A
+// quick tab switch keeps the stream (and its toasts); a tab left in the
+// background stops holding the appliance's levels feed.
+export const HIDDEN_STREAM_GRACE_MS = 60_000;
+
+// Timers is the timer API the stores schedule with: the globals in the app, a
+// fake a test fires by hand.
+export interface Timers {
+  setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+  setInterval(fn: () => void, ms: number): ReturnType<typeof setInterval>;
+  clearInterval(handle: ReturnType<typeof setInterval>): void;
+}
 
 export interface AppState {
   status: ApplianceStatus | null;
@@ -35,11 +48,13 @@ export interface StoreDeps {
     "onUnauthorized" | "getHealth" | "getStatus" | "getDevices" | "getSystem" | "getConfig" | "getAvailableDevices"
   >;
   sse: Pick<SSEClient, "subscribe" | "start" | "stop">;
+  timers?: Timers;
 }
 
 export class AppStore extends EventTarget {
   private readonly api: StoreDeps["api"];
   private readonly sse: StoreDeps["sse"];
+  private readonly timers: Timers;
   private state: AppState = {
     status: null,
     devices: [],
@@ -56,6 +71,11 @@ export class AppStore extends EventTarget {
   private polling = false;
   private pollIntervalMs = POLL_INTERVAL_MS;
   private pageHidden = false;
+  // streamStopTimer is armed while the page is hidden and polling; when it
+  // fires the event stream is stopped and streamPaused set, until the page
+  // shows again (see setPageHidden).
+  private streamStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamPaused = false;
   // One ordering gate per polled resource (see LatestGate). The poll timer does
   // not wait for a tick to finish, and a provision, removal, or save triggers an
   // extra refresh, so reads of one resource overlap and can resolve out of
@@ -93,6 +113,7 @@ export class AppStore extends EventTarget {
     super();
     this.api = deps.api;
     this.sse = deps.sse;
+    this.timers = deps.timers ?? globalThis;
     this.api.onUnauthorized = () => this.onUnauthorized();
     this.initSSE();
   }
@@ -111,11 +132,12 @@ export class AppStore extends EventTarget {
     // bring it back until the next startPolling. Restart it under the token now
     // in force; start() is a no-op while the stream is already running.
     // polling is the invariant for "polling is active" (the timer itself is
-    // paused while the page is hidden), and the SSE stream runs exactly while
-    // polling does (startPolling starts both, stopPolling stops both), so it
-    // means the stream is meant to be up and safe to (re)start here; false means
-    // we are not polling and must not resurrect the stream.
-    if (this.swapDepth === 0 && this.polling) this.sse.start();
+    // paused while the page is hidden), and the SSE stream runs while polling
+    // does (startPolling starts both, stopPolling stops both), except while
+    // streamPaused, when a page hidden past the grace stopped it and showing
+    // the page restarts it under the token then in force. So polling and not
+    // paused means the stream is meant to be up and safe to (re)start here.
+    if (this.swapDepth === 0 && this.polling && !this.streamPaused) this.sse.start();
   }
 
   // onUnauthorized reacts to the appliance rejecting the UI's credentials:
@@ -273,48 +295,90 @@ export class AppStore extends EventTarget {
   public startPolling(intervalMs: number = POLL_INTERVAL_MS): void {
     // Start the event stream before the early return: if polling is already on
     // while a prior stop()/start() left SSE stopped, returning early here would
-    // leave the stream down. sse.start() is idempotent.
+    // leave the stream down. sse.start() is idempotent. Starting it ends any
+    // hidden-page pause; a page still hidden gets a fresh grace period.
     this.sse.start();
-    if (this.polling) return;
+    this.streamPaused = false;
+    if (this.polling) {
+      if (this.pageHidden) this.armStreamStop();
+      return;
+    }
     this.polling = true;
     this.pollIntervalMs = intervalMs;
-    if (!this.pageHidden) this.armPollTimer();
+    if (this.pageHidden) this.armStreamStop();
+    else this.armPollTimer();
   }
 
   public stopPolling(): void {
     this.polling = false;
     this.clearPollTimer();
+    this.clearStreamStop();
+    this.streamPaused = false;
     this.sse.stop();
   }
 
   // setPageHidden pauses the poll while the page is hidden (a background tab or
   // a minimized window): nobody is looking, and every tick costs the appliance
-  // five requests. On showing again it refreshes at once, so the views are
-  // current without waiting an interval, and resumes the timer. The event
-  // stream stays up either way, so notifications and their toasts keep
-  // arriving.
+  // five requests. The event stream stays up for HIDDEN_STREAM_GRACE_MS, so a
+  // quick tab switch keeps notifications and their toasts arriving, and is then
+  // stopped, so a forgotten tab does not keep the appliance metering and
+  // sending levels for it. On showing again the page refreshes at once, so the
+  // views are current without waiting an interval, and resumes the timer; a
+  // stopped stream restarts, and its connect re-sync recovers any notification
+  // raised meanwhile (toasts for those are not replayed).
   public setPageHidden(hidden: boolean): void {
     if (hidden === this.pageHidden) return;
     this.pageHidden = hidden;
     if (!this.polling) return;
     if (hidden) {
       this.clearPollTimer();
+      this.armStreamStop();
       return;
+    }
+    this.clearStreamStop();
+    if (this.streamPaused) {
+      this.streamPaused = false;
+      this.sse.start();
     }
     void this.pollOnce();
     this.armPollTimer();
   }
 
+  // armStreamStop starts the hidden-page grace, keeping a deadline already set.
+  private armStreamStop(): void {
+    if (this.streamStopTimer !== null) return;
+    this.streamStopTimer = this.timers.setTimeout(() => {
+      this.streamStopTimer = null;
+      // Every path that makes this moot also clears the timer; the check keeps
+      // a stray fire from stopping a stream that is meant to be up.
+      if (!this.polling || !this.pageHidden) return;
+      this.streamPaused = true;
+      this.sse.stop();
+      // stop() is silent, so say the stream is down: the notification store
+      // drops a pending re-sync retry (the restart's connect re-syncs), and the
+      // indicator reads "Reconnecting" until the restarted stream connects.
+      if (this.state.connected) {
+        this.state.connected = false;
+        this.dispatchEvent(new CustomEvent("connection", { detail: false }));
+      }
+    }, HIDDEN_STREAM_GRACE_MS);
+  }
+
+  private clearStreamStop(): void {
+    if (this.streamStopTimer !== null) {
+      this.timers.clearTimeout(this.streamStopTimer);
+      this.streamStopTimer = null;
+    }
+  }
+
   private armPollTimer(): void {
     if (this.pollIntervalTimer !== null) return;
-    // The global setInterval (not window's) so the store also runs under the
-    // node:test harness.
-    this.pollIntervalTimer = setInterval(() => void this.pollOnce(), this.pollIntervalMs);
+    this.pollIntervalTimer = this.timers.setInterval(() => void this.pollOnce(), this.pollIntervalMs);
   }
 
   private clearPollTimer(): void {
     if (this.pollIntervalTimer !== null) {
-      clearInterval(this.pollIntervalTimer);
+      this.timers.clearInterval(this.pollIntervalTimer);
       this.pollIntervalTimer = null;
     }
   }

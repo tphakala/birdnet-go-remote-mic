@@ -1,5 +1,6 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
+import { router } from "../lib/router.js";
 import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, formatUptime, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
@@ -239,14 +240,22 @@ export class SystemView {
       this.renderTiles();
       this.renderInfo();
       this.renderOverrides();
-      // The first status event is the certificate load trigger (the token, if
-      // any, is settled by now) and each later one refreshes the metadata so
-      // the panel does not go stale after a regenerate, an install, or a
-      // change made outside this page; a 501 sets certUnavailable to stop
-      // polling the endpoint. The store announces status only on change, but
-      // uptimeSeconds advances between polls, so this still runs every tick
-      // while the page is visible (the store pauses polling while it is hidden).
-      if (!this.certUnavailable) void this.loadCertificate();
+      // While the System view is showing, each status event refreshes the
+      // certificate metadata so the panel does not go stale after a
+      // regenerate, an install, or a change made outside this page; a 501 sets
+      // certUnavailable to stop polling the endpoint. The store announces
+      // status only on change, but uptimeSeconds advances between polls, so
+      // this runs every tick while the view is showing (the store pauses
+      // polling while the page is hidden). Off the view nobody reads the panel;
+      // the route listener below loads it on arrival.
+      if (router.getCurrentView() === "system") this.maybeLoadCertificate();
+    });
+    // Arriving on the System view loads the certificate at once rather than on
+    // the next status tick. Only once a status event has arrived: that is when
+    // access (the token, if any) is settled, so an early route event at boot
+    // does not send a request the login prompt would have to absorb.
+    router.addEventListener("route", (e: Event) => {
+      if ((e as CustomEvent<string>).detail === "system" && this.status !== null) this.maybeLoadCertificate();
     });
     store.addEventListener("devices", (e: Event) => {
       this.renderDeviceRows((e as CustomEvent<Device[]>).detail);
@@ -362,8 +371,15 @@ export class SystemView {
     if (this.certInfoEl) this.certInfoEl.hidden = false;
   }
 
+  // maybeLoadCertificate reloads the certificate unless the endpoints are known
+  // to be unmounted (a 501).
+  private maybeLoadCertificate(): void {
+    if (!this.certUnavailable) void this.loadCertificate();
+  }
+
   // loadCertificate fetches the management certificate metadata. It is
-  // re-callable: every status poll, the Retry button, and a regenerate or
+  // re-callable: every status poll while the System view shows, arriving on
+  // that view, the Retry button, and a regenerate or
   // install (to reconcile the panel with what the appliance now serves) all
   // route through here. A 501 means the endpoints are not mounted (the
   // appliance could not read its certificate), so it stops retrying. Any other

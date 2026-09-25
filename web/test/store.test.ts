@@ -2,13 +2,15 @@
 // store wires its refresh helpers (store-core.ts, tested on their own):
 // status, devices and system announce only on change and re-announce after a
 // failed read; config and available announce on every read; an older response
-// never overwrites a newer one; and polling pauses while the page is hidden.
+// never overwrites a newer one; polling pauses while the page is hidden; and
+// the event stream stops after the hidden-page grace and restarts on showing.
 // Run with node:test over the compiled output (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { AppStore, type StoreDeps } from "../src/lib/store.js";
+import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps } from "../src/lib/store.js";
+import { FakeTimers } from "./fixtures.js";
 import type { ApplianceStatus, Config, Device, SystemInfo } from "../src/lib/types.js";
 
 // Outcome is one queued result for an endpoint: a value to resolve with, an
@@ -24,11 +26,19 @@ interface Harness {
   // calls counts the requests made per endpoint.
   calls: Map<string, number>;
   sseStarts: () => number;
+  sseStops: () => number;
+  // emit delivers a synthesized event-stream event ("connected", ...) to the
+  // store's subscription, as the SSE client would.
+  emit: (name: string) => void;
+  // connection records the detail of every "connection" event, in order.
+  connection: boolean[];
 }
 
 const ANNOUNCED = ["status", "devices", "system", "config", "available", "loaderror", "connection"];
 
-function harness(): Harness {
+// harness builds a store over fakes. With timers given, the store schedules
+// through them (see FakeTimers); without, it uses the real globals.
+function harness(timers?: FakeTimers): Harness {
   const queues = new Map<string, Outcome[]>();
   const calls = new Map<string, number>();
   const next = (name: string) => (): Promise<never> => {
@@ -39,6 +49,8 @@ function harness(): Harness {
     return o instanceof Error ? Promise.reject(o) : Promise.resolve(o as never);
   };
   let starts = 0;
+  let stops = 0;
+  let handler: ((name: string, data: unknown) => void) | null = null;
   const deps: StoreDeps = {
     api: {
       onUnauthorized: null,
@@ -50,19 +62,30 @@ function harness(): Harness {
       getAvailableDevices: next("getAvailableDevices"),
     },
     sse: {
-      subscribe: () => () => true,
+      subscribe: (h) => {
+        handler = h;
+        return () => true;
+      },
       start: () => {
         starts++;
       },
-      stop: () => {},
+      stop: () => {
+        stops++;
+      },
     },
+    timers,
   };
   const store = new AppStore(deps);
   const events = new Map<string, number>();
   for (const name of ANNOUNCED) {
     store.addEventListener(name, () => events.set(name, (events.get(name) ?? 0) + 1));
   }
+  const connection: boolean[] = [];
+  store.addEventListener("connection", (e: Event) => connection.push((e as CustomEvent<boolean>).detail));
   return {
+    sseStops: () => stops,
+    emit: (name) => handler?.(name, null),
+    connection,
     store,
     push(endpoint, outcome) {
       const q = queues.get(endpoint) ?? [];
@@ -211,4 +234,78 @@ test("polling waits while the page is hidden and refreshes at once on showing", 
   h.store.setPageHidden(true);
   h.store.setPageHidden(false);
   assert.equal(h.calls.get("getStatus"), 1);
+});
+
+// pollable queues one successful read for every polled endpoint.
+function pollable(h: Harness): void {
+  for (const ep of ["getStatus", "getDevices", "getSystem", "getConfig", "getAvailableDevices"] as const) {
+    h.push(ep, ep === "getStatus" ? status(1) : ep === "getSystem" ? {} : ep === "getConfig" ? { devices: [] } : []);
+  }
+}
+
+test("hiding the page while polling stops the poll timer, and showing it re-arms one", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  pollable(h);
+  h.store.startPolling(3000);
+  assert.equal(timers.intervals().length, 1);
+  h.store.setPageHidden(true);
+  assert.equal(timers.intervals().length, 0);
+  h.store.setPageHidden(false);
+  assert.equal(timers.intervals().length, 1);
+  h.store.stopPolling();
+  assert.equal(timers.intervals().length, 0);
+});
+
+test("a hidden page stops the stream after the grace, and showing it restarts the stream", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  pollable(h);
+  h.store.startPolling(3000);
+  h.emit("connected");
+  h.store.setPageHidden(true);
+  // The stream stays up through the grace.
+  assert.equal(h.sseStops(), 0);
+  const [stop] = timers.pending(HIDDEN_STREAM_GRACE_MS);
+  assert.ok(stop, "no stop timer armed on hiding");
+  timers.fire(stop);
+  assert.equal(h.sseStops(), 1);
+  // The stop is reported as the stream going down, once.
+  assert.deepEqual(h.connection, [true, false]);
+  assert.equal(h.store.getState().connected, false);
+  // A token swap ending while the page is still hidden must not restart it.
+  h.store.beginTokenSwap();
+  h.store.endTokenSwap();
+  assert.equal(h.sseStarts(), 1);
+  h.store.setPageHidden(false);
+  assert.equal(h.sseStarts(), 2);
+  h.store.stopPolling();
+});
+
+test("a quick hide and show keeps the stream and leaves no stop timer behind", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  pollable(h);
+  h.store.startPolling(3000);
+  h.store.setPageHidden(true);
+  assert.equal(timers.pending(HIDDEN_STREAM_GRACE_MS).length, 1);
+  h.store.setPageHidden(false);
+  // The grace was cancelled, so a later hide starts a fresh one rather than
+  // inheriting the first hide's deadline.
+  assert.equal(timers.pending(HIDDEN_STREAM_GRACE_MS).length, 0);
+  assert.equal(h.sseStops(), 0);
+  assert.equal(h.sseStarts(), 1);
+  h.store.stopPolling();
+});
+
+test("stopping polling while hidden cancels the stream stop timer", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  h.store.setPageHidden(true);
+  h.store.startPolling(3000);
+  assert.equal(timers.pending(HIDDEN_STREAM_GRACE_MS).length, 1);
+  // A 401 or a logout stops polling (and the stream) on its own terms.
+  h.store.stopPolling();
+  assert.equal(timers.pending(HIDDEN_STREAM_GRACE_MS).length, 0);
+  assert.equal(h.sseStops(), 1);
 });

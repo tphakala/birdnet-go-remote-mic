@@ -372,9 +372,12 @@ export function requestMidpoint(beforeMs: number, afterMs: number): number {
 }
 
 // CLOCK_STEP_TOLERANCE_MS is how far the browser wall clock may drift from its
-// monotonic clock since the anchor before it counts as a step. Timer jitter and
-// NTP slewing stay far below it; a manual change, an NTP step, or a suspend
-// (performance.now does not advance during sleep in most browsers) exceed it.
+// monotonic clock since the anchor before it counts as a step. Timer jitter
+// stays far below it; a manual change or an NTP step exceeds it. Two harmless
+// cases can exceed it too and cost one extra re-sync: waking from a suspend
+// (which does not move the anchor, but performance.now can stall during sleep,
+// depending on browser and platform) and NTP slewing accumulated on a tab left
+// open for days.
 export const CLOCK_STEP_TOLERANCE_MS = 2_000;
 
 // ClockReference pairs the wall clock (Date.now) with the monotonic clock

@@ -73,8 +73,12 @@ reconcile:
   patches just the section each event affects.
 - Poll only for a viewer: `AppStore` pauses the REST poll while the page is
   hidden (`setPageHidden`, fed by `visibilitychange` in `app.ts`) and
-  refreshes at once when it shows again. Anything that runs per status tick
-  (the System view's certificate reload) inherits that.
+  refreshes at once when it shows again. The SSE stream stays up for
+  `HIDDEN_STREAM_GRACE_MS` (60 s) of hiding, then stops; showing the page
+  restarts it, and the connect re-sync recovers the notifications raised
+  meanwhile (without toasts). Anything that runs per status tick inherits the
+  pause, and work for one view also checks the route (the System view reloads
+  the certificate only while it is the active view).
 - Never clobber user input: a form being edited is not repopulated from a
   store event (`SystemView` tracks `netDirty`, `authDirty`, `notifyDirty`).
 - Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries,

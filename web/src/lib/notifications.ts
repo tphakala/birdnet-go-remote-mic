@@ -4,9 +4,9 @@
 // detected gap, the error toast, and localStorage persistence. The component
 // renders from the "change" event this dispatches.
 
-import { api, ApiError } from "./api.js";
-import { sse } from "./sse.js";
-import { store } from "./store.js";
+import { api, ApiError, type ApiClient } from "./api.js";
+import { sse, type SSEClient } from "./sse.js";
+import { store, type Timers } from "./store.js";
 import { showToast } from "../components/toast.js";
 import {
   LoadTracker,
@@ -32,9 +32,24 @@ const STORAGE_KEY = "remote-mic-notifications";
 // Coalesce the burst of refetches a gap can trigger into one snapshot request.
 const GAP_RELOAD_DELAY_MS = 400;
 
+// NotificationDeps is what the notification store drives: the snapshot
+// endpoint, the event stream, the source of "connection" events (the app
+// store), and the timers. The app uses the shared singletons; a test passes
+// fakes, so the re-sync wiring runs without a network or a browser.
+export interface NotificationDeps {
+  api: Pick<ApiClient, "getNotifications">;
+  sse: Pick<SSEClient, "subscribe">;
+  connection: EventTarget;
+  timers: Pick<Timers, "setTimeout" | "clearTimeout">;
+}
+
 export class NotificationStore extends EventTarget {
+  private readonly api: NotificationDeps["api"];
+  private readonly timers: NotificationDeps["timers"];
   private state: CoreState;
-  private reloadTimer: number | null = null;
+  private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  // Whether the pending reloadTimer is only a backoff retry (see scheduleReload).
+  private reloadIsBackoff = false;
   // Load ordering and outcome (see LoadTracker): the Events page reads
   // hasLoaded to tell an empty log from an unfetched one, and hasFailed to
   // offer Retry instead of waiting on "Loading" forever.
@@ -52,18 +67,25 @@ export class NotificationStore extends EventTarget {
   // did not change it does not rewrite localStorage.
   private persisted: string;
 
-  constructor() {
+  constructor(deps: NotificationDeps = { api, sse, connection: store, timers: globalThis }) {
     super();
+    this.api = deps.api;
+    this.timers = deps.timers;
     this.state = this.readPersisted();
     this.persisted = serialize(this.state);
 
-    sse.subscribe((name: string, data: unknown) => this.onSSE(name, data));
+    deps.sse.subscribe((name: string, data: unknown) => this.onSSE(name, data));
 
     // Re-sync on every (re)connect: the stream is best effort and may have
     // dropped events while down, so the snapshot is the source of truth. This
     // also performs the first load, since startPolling fires a "connected" event.
-    store.addEventListener("connection", (e: Event) => {
-      if ((e as CustomEvent<boolean>).detail) void this.load();
+    // It goes through resync, so a failed connect-time load retries with the
+    // same backoff as any other (a 401 still defers to the login flow). While
+    // the stream is down a pending retry is dropped: the next connect re-syncs
+    // anyway, and a stream stopped for a hidden page must not keep loading.
+    deps.connection.addEventListener("connection", (e: Event) => {
+      if ((e as CustomEvent<boolean>).detail) void this.resync();
+      else this.clearReload();
     });
   }
 
@@ -97,7 +119,7 @@ export class NotificationStore extends EventTarget {
     const beforeMono = performance.now();
     let snap: unknown;
     try {
-      snap = await api.getNotifications();
+      snap = await this.api.getNotifications();
     } catch (err) {
       console.warn("Failed to load notifications:", err);
       this.lastFailureUnauthorized = err instanceof ApiError && err.status === 401;
@@ -122,6 +144,11 @@ export class NotificationStore extends EventTarget {
     // folding in never marks this token applied. Nothing awaits between the
     // canApply check above and here, so the gate cannot refuse it.
     this.loads.applied(token);
+    // Fresh data is in place, so a backoff retry still pending from an earlier
+    // failure is moot. Clear it and the attempt count: left pending, it would
+    // absorb (and so delay by up to a minute) the next gap's re-sync. A pending
+    // plain re-sync is kept (see scheduleReload).
+    if (this.reloadIsBackoff) this.clearReload();
     this.resyncAttempt = 0;
     this.persist();
     this.emitChange();
@@ -180,10 +207,14 @@ export class NotificationStore extends EventTarget {
   }
 
   // checkClock re-syncs when the browser wall clock stepped (a manual change,
-  // an NTP step, a suspend) since the anchor was taken: every mapped time rests
-  // on the wall clock at the anchor, so they would all be shifted until the next
-  // re-sync. The reference is dropped so one step costs one re-sync; the
-  // re-sync's snapshot sets a fresh one.
+  // an NTP step) since the anchor was taken: every mapped time rests on the
+  // wall clock at the anchor, so they would all be shifted until the next
+  // re-sync. A suspend does not move the anchor (the wall clock and the
+  // appliance's uptime both run on through it), but performance.now can stall
+  // during sleep, depending on browser and platform, so waking reads as a step
+  // and costs one extra, harmless re-sync; so can slow drift between the two clocks on a tab
+  // left open for days. The reference is dropped so one step costs one
+  // re-sync; the re-sync's snapshot sets a fresh one.
   private checkClock(): void {
     if (this.clockRef === null) return;
     if (!clockStepped(this.clockRef, Date.now(), performance.now())) return;
@@ -194,12 +225,27 @@ export class NotificationStore extends EventTarget {
   // scheduleReload debounces a re-sync (a detected gap, a boot change, a clock
   // step) so a burst of out-of-order or dropped events costs one snapshot
   // fetch, not one per event. A pending re-sync absorbs any later request.
-  private scheduleReload(delayMs = GAP_RELOAD_DELAY_MS): void {
-    if (this.reloadTimer !== null) return;
-    this.reloadTimer = window.setTimeout(() => {
+  // backoff marks resync's retry of a failed load, which an applied load makes
+  // moot; a re-sync request absorbed into a pending retry turns it into a
+  // plain re-sync, which must still run even if some other load applies first
+  // (that load may predate the events the request is about).
+  private scheduleReload(delayMs = GAP_RELOAD_DELAY_MS, backoff = false): void {
+    if (this.reloadTimer !== null) {
+      if (!backoff) this.reloadIsBackoff = false;
+      return;
+    }
+    this.reloadIsBackoff = backoff;
+    this.reloadTimer = this.timers.setTimeout(() => {
       this.reloadTimer = null;
       void this.resync();
     }, delayMs);
+  }
+
+  // clearReload cancels a pending re-sync, if any.
+  private clearReload(): void {
+    if (this.reloadTimer === null) return;
+    this.timers.clearTimeout(this.reloadTimer);
+    this.reloadTimer = null;
   }
 
   // resync loads the snapshot and, when that fails with no newer success in
@@ -214,7 +260,7 @@ export class NotificationStore extends EventTarget {
     }
     if (this.lastFailureUnauthorized) return;
     this.resyncAttempt++;
-    this.scheduleReload(resyncDelay(this.resyncAttempt));
+    this.scheduleReload(resyncDelay(this.resyncAttempt), true);
   }
 
   private readPersisted(): CoreState {
