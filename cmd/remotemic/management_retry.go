@@ -3,13 +3,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
-	"reflect"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
@@ -178,7 +180,7 @@ func reloadAndServe(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
 		return nil, fmt.Errorf("cannot reload config: %w", err)
-	case !reflect.DeepEqual(&fresh, p.storeCfg):
+	case !sameOnDisk(&fresh, p.storeCfg):
 		if err := p.applyEdited(ctx, &fresh); err != nil {
 			return nil, err
 		}
@@ -209,6 +211,17 @@ func reloadAndServe(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		Message:  "The web UI and API are now serving",
 	})
 	return s, nil
+}
+
+// sameOnDisk reports whether a and b are written as the same config file.
+// config.Save writes yaml.Marshal's output, so two configs that differ only in
+// memory compare equal: a saved nil device list reloads as an empty one, which
+// reflect.DeepEqual would read as an edit. A marshal failure reads as a
+// difference, so the reloaded file is applied rather than skipped.
+func sameOnDisk(a, b *config.Config) bool {
+	ab, aerr := yaml.Marshal(a)
+	bb, berr := yaml.Marshal(b)
+	return aerr == nil && berr == nil && bytes.Equal(ab, bb)
 }
 
 // applyEdited applies a config file edited while the API was down live

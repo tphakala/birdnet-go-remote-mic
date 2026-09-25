@@ -17,9 +17,13 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
 )
+
+// patchedToken is a token saved through an API before its listener fails.
+const patchedToken = "patched-before-the-fault-token"
 
 // fakeServer returns a server that looks like an API serving at addr until
 // stop is called with why it stopped (nil for a shutdown on ctx).
@@ -327,7 +331,13 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
-	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
+	// A first-run config, as LoadOrDefault returns with no file: defaults
+	// applied and a nil device list, which a save writes as "devices: []" and
+	// a reload reads back as an empty, non-nil list.
+	defaults := config.Default()
+	defaults.Management.Listen = testListenAny
+	defaults.Management.CertDir = dir
+	cfg := &defaults
 	lock, err := runlock.Acquire(runlock.PathFor(cfgPath), time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +347,14 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	p := &mgmtParams{cfgPath: cfgPath, cfg: cfg, storeCfg: cfg, prov: newProvider(), center: center, runLock: &runLockPublisher{lock: lock, cfgPath: cfgPath}}
+	// The file the retry reloads is the one the dead API saved, so nothing
+	// was edited while it was down and nothing may be applied live.
+	var reloads atomic.Int32
+	reloader := func(context.Context, config.Config) error {
+		reloads.Add(1)
+		return nil
+	}
+	p := &mgmtParams{cfgPath: cfgPath, cfg: cfg, storeCfg: cfg, prov: newProvider(), center: center, reloader: reloader, runLock: &runLockPublisher{lock: lock, cfgPath: cfgPath}}
 	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
@@ -348,7 +365,7 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	}
 	// A PATCH saved through the first API must survive into the next one.
 	if err := first.store.Update(func(c config.Config) (config.Config, error) {
-		c.Auth.Token = "patched-before-the-fault-token"
+		c.Auth.Token = patchedToken
 		return c, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -364,23 +381,76 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	if st, _, _ := runlock.ReadState(runlock.PathFor(cfgPath)); st.MgmtAddr != second.addr {
 		t.Errorf("run lock advertises %q, want the restarted API's %q", st.MgmtAddr, second.addr)
 	}
-	if got := second.store.Config().Auth.Token; got != "patched-before-the-fault-token" {
+	if got := second.store.Config().Auth.Token; got != patchedToken {
 		t.Errorf("restarted API serves token %q, want the one patched through the dead API", got)
 	}
-	var onsets int
+	var onsets, configEvents int
 	for _, n := range center.Snapshot().Notifications {
 		if n.Key == mgmtDownKey && strings.Contains(n.Message, "stopped") {
 			onsets++
 		}
+		if n.Category == notify.CategoryConfig {
+			configEvents++
+		}
 	}
 	if onsets != 1 {
 		t.Errorf("got %d outage onsets naming the stop, want 1", onsets)
+	}
+	if n := reloads.Load(); n != 0 || configEvents != 0 {
+		t.Errorf("got %d live reloads and %d config events, want none for the file the dead API saved itself", n, configEvents)
 	}
 	if act := center.Active(); len(act) != 0 {
 		t.Errorf("active = %+v, want the outage cleared once the API serves again", act)
 	}
 	cancel()
 	h.Wait()
+}
+
+// TestMgmtParamsDied pins what an API that stopped on its own leaves behind
+// while the backoff runs, before any attempt can overwrite it: the run lock
+// advertises no address, the store seed is the dead API's config (with its
+// PATCHes), and the outage is raised.
+func TestMgmtParamsDied(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, testCfgFile)
+	lockPath := runlock.PathFor(cfgPath)
+	lock, err := runlock.Acquire(lockPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Release(); err != nil {
+			t.Errorf("release run lock: %v", err)
+		}
+	})
+	pub := &runLockPublisher{lock: lock, cfgPath: cfgPath}
+	pub.publish(&mgmtEndpoint{addr: testMgmtAddr, certPath: testCertFile})
+
+	startup := config.Default()
+	store := mgmtserver.NewFileConfigStore(cfgPath, &startup)
+	if err := store.Update(func(c config.Config) (config.Config, error) {
+		c.Auth.Token = patchedToken
+		return c, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	center := notify.NewCenter()
+	p := &mgmtParams{cfgPath: cfgPath, storeCfg: &startup, center: center, runLock: pub}
+	p.died(&mgmtServer{store: store}, errors.New("accept: broken"))
+
+	if st, ok, err := runlock.ReadState(lockPath); err != nil || !ok || st.MgmtAddr != "" {
+		t.Errorf("run lock = %+v, %v, %v; want a published state with no address", st, ok, err)
+	}
+	if p.storeCfg.Auth.Token != patchedToken {
+		t.Errorf("store seed has token %q, want the dead API's patched one", p.storeCfg.Auth.Token)
+	}
+	if startup.Auth.Token != "" {
+		t.Error("the re-seed wrote through the startup snapshot run() holds")
+	}
+	if act := center.Active(); len(act) != 1 || act[0].Key != mgmtDownKey || !strings.Contains(act[0].Message, "accept: broken") {
+		t.Errorf("active = %+v, want the outage naming the serve error", act)
+	}
 }
 
 // TestRecoverManagementFollowsEditedFile pins that an attempt binds and reads
