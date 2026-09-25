@@ -891,8 +891,10 @@ func TestTokenWriteRefusesOtherOwner(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d stderr %q, want 1", code, errOut)
 			}
-			wantCmd := "remote-mic token " + tc[0] + " --config " + path
-			if !strings.Contains(errOut, "is owned by") || !strings.Contains(errOut, "with the same flags: sudo -u ") || !strings.Contains(errOut, wantCmd) {
+			// The suggested command keeps the operator's own flags (--force and
+			// --yes change behavior) and ends with the absolute --config.
+			wantCmd := "remote-mic token " + strings.Join(tc, " ") + " --config " + path
+			if !strings.Contains(errOut, "is owned by") || !strings.Contains(errOut, ": sudo -u ") || !strings.Contains(errOut, wantCmd) {
 				t.Fatalf("stderr %q, want an owner refusal suggesting %q", errOut, wantCmd)
 			}
 			if stdout != "" {
@@ -982,6 +984,29 @@ func TestTokenWriteMissingConfigDotDotAfterSymlink(t *testing.T) {
 	}
 }
 
+// TestRerunCommand pins the owner-check hint's suggested command: the
+// operator's flags survive in order, every --config spelling is replaced by
+// the absolute path, and a word a shell would split or expand is quoted.
+func TestRerunCommand(t *testing.T) {
+	t.Parallel()
+	const cfg = "/etc/rm/config.yaml"
+	for _, tc := range []struct {
+		name string
+		args []string
+		cfg  string
+		want string
+	}{
+		{"flags kept", []string{"--force", "--config", cfg}, cfg, "remote-mic token generate --force --config " + cfg},
+		{"equals form dropped", []string{"-config=/x.yaml", "-quiet"}, "/x.yaml", "remote-mic token generate -quiet --config /x.yaml"},
+		{"no config flag", nil, cfg, "remote-mic token generate --config " + cfg},
+		{"quoted path", nil, "/tmp/my dir/it's.yaml", `remote-mic token generate --config '/tmp/my dir/it'\''s.yaml'`},
+	} {
+		if got := rerunCommand("token generate", tc.args, tc.cfg); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestCheckOwnerParentEdgeCases pins the parent directory the owner check
 // examines for a config not created yet at the edges of a path: a config at the
 // root examines the root, and a bare name whose working directory is gone
@@ -994,7 +1019,7 @@ func TestCheckOwnerParentEdgeCases(t *testing.T) {
 	if os.Geteuid()+1 == 0 {
 		t.Skip("the stubbed uid would be root's")
 	}
-	err := checkOwner("/remote-mic-no-such-config.yaml", "token generate")
+	err := checkOwner("/remote-mic-no-such-config.yaml", "token generate", nil)
 	if err == nil || !strings.Contains(err.Error(), "the directory / (") {
 		t.Errorf("root-level config: err = %v, want a refusal naming /", err)
 	}
@@ -1009,7 +1034,7 @@ func TestCheckOwnerParentEdgeCases(t *testing.T) {
 	}
 	// The removed directory can still be examined through ".", so a refusal
 	// naming its real owner is fine; naming the root is the defect.
-	if err := checkOwner("config.yaml", "token generate"); err != nil && strings.Contains(err.Error(), "the directory / (") {
+	if err := checkOwner("config.yaml", "token generate", nil); err != nil && strings.Contains(err.Error(), "the directory / (") {
 		t.Errorf("bare name with the working directory gone: err = %v, want no fallback to /", err)
 	}
 }

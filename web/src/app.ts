@@ -40,10 +40,12 @@ class App {
     // between the snapshot and the stream is missed; a direct load here would
     // fetch it a second time. Load directly only as a fallback, when no snapshot
     // has arrived shortly after the app starts (a stream that cannot connect, or
-    // a proxy that buffers it), after boot or after a login alike.
+    // a proxy that buffers it), after boot or after a login alike. The stream
+    // being down is the trigger too, not only a snapshot never loaded: after a
+    // re-login the previous session's snapshot would otherwise count as fresh.
     const armNotificationsFallback = (): void => {
       window.setTimeout(() => {
-        if (!notifications.hasLoaded()) void notifications.load();
+        if (!notifications.hasLoaded() || !store.getState().connected) void notifications.load();
       }, NOTIFICATIONS_FALLBACK_MS);
     };
     store.addEventListener("authok", armNotificationsFallback);

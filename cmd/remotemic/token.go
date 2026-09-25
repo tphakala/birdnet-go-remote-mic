@@ -161,7 +161,7 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	if err := checkOwner(*cfgPath, "token generate"); err != nil {
+	if err := checkOwner(*cfgPath, "token generate", args); err != nil {
 		return err
 	}
 	token, err := auth.GenerateToken()
@@ -201,7 +201,7 @@ func runTokenSet(args []string, stderr io.Writer) error {
 	if fs.NArg() > 0 {
 		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
 	}
-	if err := checkOwner(*cfgPath, "token set"); err != nil {
+	if err := checkOwner(*cfgPath, "token set", args); err != nil {
 		return err
 	}
 	token, err := readNewToken(stderr)
@@ -273,7 +273,7 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	if err := checkOwner(*cfgPath, "token clear"); err != nil {
+	if err := checkOwner(*cfgPath, "token clear", args); err != nil {
 		return err
 	}
 	// Load and confirm before touching the run lock. The y/N prompt must not run
@@ -517,7 +517,9 @@ func absPath(cfgPath string) string {
 // group): with no config in it yet, the owner check points at root; create
 // the config there first, as the appliance's account, or use the installer's
 // layout (a directory owned by the appliance's account).
-func checkOwner(cfgPath, command string) error {
+//
+// args are the subcommand's own arguments, repeated in the suggested command.
+func checkOwner(cfgPath, command string, args []string) error {
 	what := absPath(cfgPath)
 	fi, err := os.Stat(cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -561,8 +563,40 @@ func checkOwner(cfgPath, command string) error {
 	if u, err := user.LookupId(uid); err == nil && u.Username != "" {
 		who, sudoUser = fmt.Sprintf("%q (uid %s)", u.Username, uid), u.Username
 	}
-	return fmt.Errorf("%s is owned by %s; run this command as that account, with the same flags: sudo -u %s remote-mic %s --config %s",
-		what, who, sudoUser, command, absPath(cfgPath))
+	return fmt.Errorf("%s is owned by %s; run this command as that account: sudo -u %s %s",
+		what, who, sudoUser, rerunCommand(command, args, cfgPath))
+}
+
+// rerunCommand renders the refused command for the owner-check hint: the same
+// subcommand and flags the operator typed (so --force or --yes survive), with
+// any --config replaced by the absolute config path, which sudo needs because
+// it drops REMOTEMIC_CONFIG and may run from another directory.
+func rerunCommand(command string, args []string, cfgPath string) string {
+	parts := []string{"remote-mic", command}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--config" || a == "-config":
+			i++ // drop the value too
+		case strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "-config="):
+		default:
+			parts = append(parts, shellQuote(a))
+		}
+	}
+	parts = append(parts, "--config", shellQuote(absPath(cfgPath)))
+	return strings.Join(parts, " ")
+}
+
+// shellQuote returns s unchanged when a POSIX shell would read it as one plain
+// word, and single-quoted otherwise.
+func shellQuote(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./=:,+@%", r)
+	}
+	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !plain(r) }) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // withPermHint adds a pointer to the likely fix when err is a permission
