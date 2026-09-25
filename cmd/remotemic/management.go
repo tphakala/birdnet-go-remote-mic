@@ -105,9 +105,10 @@ type provider struct {
 	// serializes the persist-then-swap so two writers cannot interleave.
 	cert   atomic.Pointer[certState]
 	certMu sync.Mutex
-	// certPath and keyPath are where the certificate pair is persisted, set in
-	// startManagement. Regenerate and Install write here (and the pin marker
-	// derived from certPath) before swapping the live certificate.
+	// certPath and keyPath are where the certificate pair is persisted, set
+	// under certMu by useConfig before each attempt to bring the API up.
+	// Regenerate and Install write here (and the pin marker derived from
+	// certPath) before swapping the live certificate.
 	certPath string
 	keyPath  string
 }
@@ -152,8 +153,8 @@ func (p *provider) System() mgmtserver.SystemInfo {
 // returns the error and leaves the previous snapshot in place, so a runtime
 // rotation error never swaps the live certificate to one with blank metadata.
 // The startup caller installs a raw-certificate fallback separately (see
-// serveManagement) so a describe failure at boot still leaves TLS serving.
-// Rotation callers hold certMu around setCertificate so the persisted pair and
+// prepareCertificate) so a describe failure at boot still leaves TLS serving.
+// Its callers in the appliance hold certMu around it so the persisted pair and
 // the published snapshot stay in step.
 func (p *provider) setCertificate(cert *tls.Certificate) error {
 	info, err := mgmtcert.Describe(cert)
@@ -754,6 +755,30 @@ func (p *mgmtParams) died(s *mgmtServer, err error) {
 	p.onsetDown(fmt.Sprintf("The web UI and API stopped: %v; restarting in the background", err))
 }
 
+// prepareCertificate loads or creates the certificate pair at the configured
+// paths and publishes it as the snapshot the TLS GetCertificate callback
+// serves and the certificate endpoints read. It holds certMu, as Regenerate
+// and Install do, because a handler of a previous API can outlive its forced
+// Close and write the same files. setCertificate publishes only on success; if
+// the metadata cannot be described, a raw-certificate fallback still gives the
+// listener a certificate to present (the API stays up) while the certificate
+// endpoints stay unmounted and return 501, which mounted reports. A metadata
+// fault never takes the appliance down.
+func (p *mgmtParams) prepareCertificate() (mounted bool, err error) {
+	p.prov.certMu.Lock()
+	defer p.prov.certMu.Unlock()
+	cert, err := mgmtcert.Ensure(p.certPath, p.keyPath, certHosts())
+	if err != nil {
+		return false, fmt.Errorf("cannot prepare TLS certificate: %w", err)
+	}
+	if serr := p.prov.setCertificate(&cert); serr != nil {
+		log.Printf("management certificate metadata unavailable: %v (certificate endpoints disabled)", serr)
+		p.prov.cert.Store(&certState{tls: &cert})
+		return false, nil
+	}
+	return true, nil
+}
+
 // serveManagement makes one attempt to bring the API up: prepare the
 // certificate, bind the listener, and serve until ctx is cancelled or the
 // listener fails, which the returned server's wait reports.
@@ -765,22 +790,9 @@ func (p *mgmtParams) died(s *mgmtServer, err error) {
 // throwaway certificate instead would leave the token CLI pinning a file the
 // listener does not present.
 func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
-	cert, err := mgmtcert.Ensure(p.certPath, p.keyPath, certHosts())
+	certMounted, err := p.prepareCertificate()
 	if err != nil {
-		return nil, fmt.Errorf("cannot prepare TLS certificate: %w", err)
-	}
-
-	// Publish the certificate as the snapshot the TLS GetCertificate callback
-	// serves and the certificate endpoints read. setCertificate publishes only on
-	// success; if its metadata cannot be described, install a raw-certificate
-	// fallback here so the listener still has a certificate to present via
-	// GetCertificate (the API stays up) while the certificate endpoints stay
-	// unmounted and return 501. A metadata fault never takes the appliance down.
-	certMounted := true
-	if serr := p.prov.setCertificate(&cert); serr != nil {
-		log.Printf("management certificate metadata unavailable: %v (certificate endpoints disabled)", serr)
-		certMounted = false
-		p.prov.cert.Store(&certState{tls: &cert})
+		return nil, err
 	}
 
 	// Bind synchronously so a listen failure (for example the port already in
