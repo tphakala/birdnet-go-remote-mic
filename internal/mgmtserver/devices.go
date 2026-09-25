@@ -219,6 +219,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 
 	var created config.Device
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
+		prev := cur.Clone() // the stored config, for validateWrite's length caps
 		for i := range cur.Devices {
 			if cur.Devices[i].Device == req.Device {
 				return config.Config{}, errDeviceExists
@@ -227,7 +228,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 		dev := buildProvisionedDevice(&cur, detected, req, preferred)
 		cur.Devices = append(cur.Devices, dev)
 		cur.ApplyDefaults()
-		if verr := validateWrite(&cur); verr != nil {
+		if verr := validateWrite(&cur, &prev); verr != nil {
 			return config.Config{}, verr
 		}
 		created = dev

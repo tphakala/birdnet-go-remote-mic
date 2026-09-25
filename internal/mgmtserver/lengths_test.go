@@ -1,6 +1,7 @@
 package mgmtserver
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,6 +38,34 @@ func TestPatchConfigRejectsOverCapName(t *testing.T) {
 	}
 	if got := store.Config().Devices[0].Name; got != nameIface {
 		t.Errorf("persisted name %q, want the old name kept", got)
+	}
+}
+
+// TestPatchConfigAllowsUnrelatedWriteWithStoredOverCapName pins that an over-cap
+// name already stored (loadable, since Load does not cap) does not block a write
+// that adds no device string, such as a token rotation through the API.
+func TestPatchConfigAllowsUnrelatedWriteWithStoredOverCapName(t *testing.T) {
+	t.Parallel()
+	c := config.Config{
+		Listen: rtspAddr,
+		Devices: []config.Device{{
+			Name: strings.Repeat("n", config.MaxNameLen+1), Device: devIface, Rate: 48000, Format: fmtS16,
+			Streams: []config.Stream{{Path: pathNorth, Mode: config.ModePCM, Channels: []int{1}}},
+		}},
+	}
+	c.ApplyDefaults()
+	store := NewFileConfigStore(filepath.Join(t.TempDir(), "config.yaml"), &c)
+	s := New(&fakeProvider{}, WithConfigStore(store))
+	token := "rotated-token-1234"
+	resp, err := s.PatchConfig(t.Context(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Auth: &mgmtapi.AuthSettings{Token: &token}}})
+	if err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.PatchConfig200JSONResponse); !ok {
+		t.Fatalf("PatchConfig returned %T, want 200 for a token-only patch", resp)
+	}
+	if got := store.Config().Auth.Token; got != token {
+		t.Errorf("persisted token %q, want %q", got, token)
 	}
 }
 

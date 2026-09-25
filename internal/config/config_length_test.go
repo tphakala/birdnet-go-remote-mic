@@ -44,7 +44,7 @@ func TestValidateLengthCaps(t *testing.T) {
 			d := lengthTestDevice()
 			tc.mutate(&d)
 			c.Devices = []Device{d}
-			err := c.ValidateLengths()
+			err := c.ValidateLengths(nil)
 			if tc.wantField == "" {
 				if err != nil {
 					t.Fatalf("got %v, want nil", err)
@@ -54,6 +54,43 @@ func TestValidateLengthCaps(t *testing.T) {
 			verr, ok := errors.AsType[*ValidationError](err)
 			if !ok || verr.Field != tc.wantField {
 				t.Fatalf("got %v, want a %s ValidationError", err, tc.wantField)
+			}
+		})
+	}
+}
+
+// TestValidateLengthsSkipsStoredStrings pins that only strings a write
+// introduces are capped: an over-cap name, id and path already in the stored
+// config pass, while a new over-cap value of each kind is refused.
+func TestValidateLengthsSkipsStoredStrings(t *testing.T) {
+	t.Parallel()
+	stored := validBase()
+	d := lengthTestDevice()
+	d.Name = strings.Repeat("n", MaxNameLen+1)
+	d.Device = strings.Repeat("d", MaxDeviceIDLen+1)
+	d.Streams[0].Path = "/" + strings.Repeat("p", MaxPathLen)
+	stored.Devices = []Device{d}
+
+	unchanged := stored.Clone()
+	if err := unchanged.ValidateLengths(&stored); err != nil {
+		t.Errorf("stored over-cap strings: got %v, want nil", err)
+	}
+	for _, tc := range []struct {
+		name      string
+		mutate    func(d *Device)
+		wantField string
+	}{
+		{"new name", func(d *Device) { d.Name += "x" }, "devices[0].name"},
+		{"new device", func(d *Device) { d.Device += "x" }, "devices[0].device"},
+		{"new path", func(d *Device) { d.Streams[0].Path += "x" }, "devices[0].streams[0].path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			next := stored.Clone()
+			tc.mutate(&next.Devices[0])
+			verr, ok := errors.AsType[*ValidationError](next.ValidateLengths(&stored))
+			if !ok || verr.Field != tc.wantField {
+				t.Fatalf("got %v, want a %s ValidationError", verr, tc.wantField)
 			}
 		})
 	}

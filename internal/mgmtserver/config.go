@@ -141,6 +141,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	defer s.patchMu.Unlock()
 
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
+		prev := cur.Clone() // the stored config, for validateWrite's length caps
 		// A discovery block with no enabled field is a no-op: copying the patch's
 		// nil pointer straight in would reset the flag, and a nil discovery flag
 		// defaults ON, so discovery:{} would silently re-enable advertisement an
@@ -172,7 +173,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 			cur.Devices = devs
 		}
 		cur.ApplyDefaults()
-		if verr := validateWrite(&cur); verr != nil {
+		if verr := validateWrite(&cur, &prev); verr != nil {
 			return config.Config{}, verr
 		}
 		return cur, nil
@@ -316,13 +317,15 @@ func validationProblem(verr *config.ValidationError) mgmtapi.ValidationProblem {
 }
 
 // validateWrite validates a config the API is about to persist that may carry
-// strings from the request: the full Validate plus the length caps, which Load
-// deliberately does not apply (see config.MaxNameLen).
-func validateWrite(c *config.Config) error {
+// strings from the request: the full Validate plus the length caps on the
+// strings the write introduces relative to prev, the stored config. Load does
+// not apply the caps (see config.MaxNameLen), so an over-cap string already
+// stored must not block an unrelated write such as a token rotation.
+func validateWrite(c, prev *config.Config) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	return c.ValidateLengths()
+	return c.ValidateLengths(prev)
 }
 
 // configToWire maps the appliance configuration to the generated wire type. The

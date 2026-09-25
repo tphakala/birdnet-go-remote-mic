@@ -763,19 +763,32 @@ func validatePath(p string) string {
 
 // ValidateLengths checks the length caps on each device's name and id and on
 // every stream path, counted in characters as JSON Schema maxLength counts
-// them. The management API calls it after Validate on every config it writes;
-// Load does not (see MaxNameLen).
-func (c *Config) ValidateLengths() error {
+// them. A string that already occurs in prev (same kind: name, id or path) is
+// not checked, so only what a write introduces is capped; a nil prev checks
+// every string. The management API calls it after Validate on every config it
+// writes, with the stored config as prev; Load does not (see MaxNameLen).
+func (c *Config) ValidateLengths(prev *Config) error {
+	var names, ids, paths map[string]bool
+	if prev != nil {
+		names, ids, paths = map[string]bool{}, map[string]bool{}, map[string]bool{}
+		for i := range prev.Devices {
+			names[prev.Devices[i].Name] = true
+			ids[prev.Devices[i].Device] = true
+			for j := range prev.Devices[i].Streams {
+				paths[prev.Devices[i].Streams[j].Path] = true
+			}
+		}
+	}
 	for i := range c.Devices {
 		d := &c.Devices[i]
-		if utf8.RuneCountInString(d.Name) > MaxNameLen {
+		if !names[d.Name] && utf8.RuneCountInString(d.Name) > MaxNameLen {
 			return &ValidationError{fmt.Sprintf("devices[%d].name", i), fmt.Sprintf("must be at most %d characters", MaxNameLen)}
 		}
-		if utf8.RuneCountInString(d.Device) > MaxDeviceIDLen {
+		if !ids[d.Device] && utf8.RuneCountInString(d.Device) > MaxDeviceIDLen {
 			return &ValidationError{fmt.Sprintf("devices[%d].device", i), fmt.Sprintf("must be at most %d characters", MaxDeviceIDLen)}
 		}
 		for j := range d.Streams {
-			if utf8.RuneCountInString(d.Streams[j].Path) > MaxPathLen {
+			if p := d.Streams[j].Path; !paths[p] && utf8.RuneCountInString(p) > MaxPathLen {
 				return &ValidationError{fmt.Sprintf("devices[%d].streams[%d].path", i, j), fmt.Sprintf("must be at most %d characters", MaxPathLen)}
 			}
 		}
