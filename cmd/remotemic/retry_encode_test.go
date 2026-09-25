@@ -403,7 +403,7 @@ func TestRetryEncodeFaultSurvivesReplug(t *testing.T) {
 		failOpenTimes(app, log, 1)
 		app.retryDown()
 		for _, n := range applianceCenter(t, app).Active() {
-			if n.Key == deviceDownKey("moth") && n.Title == "Device failed" {
+			if n.Key == deviceDownKey("moth") && n.Title == titleFailed {
 				t.Errorf("active moth condition after a failed replug = %+v, want the open failure", n)
 			}
 		}
@@ -420,7 +420,7 @@ func TestRetryEncodeFaultSurvivesReplug(t *testing.T) {
 				active = append(active, n)
 			}
 		}
-		if len(active) != 1 || active[0].Title != "Device failed" || !strings.Contains(active[0].Message, pathMoth) {
+		if len(active) != 1 || active[0].Title != titleFailed || !strings.Contains(active[0].Message, pathMoth) {
 			t.Errorf("active moth condition after the replug = %+v, want one \"Device failed\" naming %s", active, pathMoth)
 		}
 		// Each change of cause resolves the previous condition (counted as a
@@ -439,9 +439,53 @@ func TestRetryEncodeFaultSurvivesReplug(t *testing.T) {
 	})
 }
 
+// TestRetryEncodeFaultEventRestartRaisesEncodeWait pins the condition text of
+// an event-driven restart after a disconnect of the faulted device: a replug or
+// an unchanged config save whose open succeeds at once serves the device while
+// it waits for the faulted stream to encode, so the active condition must say
+// that, not that the device is disconnected.
+func TestRetryEncodeFaultEventRestartRaisesEncodeWait(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		restart func(*appliance, config.Device)
+	}{
+		{name: "replug", restart: func(app *appliance, _ config.Device) { app.retryDown() }},
+		{name: "unchanged save", restart: func(app *appliance, d config.Device) {
+			app.reconcile(&config.Config{Devices: []config.Device{d}})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				app, log, cancel := newTestAppliance(t)
+				defer shutdownApp(app, cancel)
+				play := scriptedStages(t, app, log)
+				dev := testDevice("moth", idMoth, pathMoth, 48000)
+				app.reconcile(&config.Config{Devices: []config.Device{dev}})
+
+				play(pathMoth) <- true
+				runFor(t, app, backoffDelay(1)+time.Second)
+				killDevice(t, app, log, "moth", capture.ErrDeviceGone)
+				tc.restart(app, dev)
+				if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+					t.Fatalf("moth state = %s, want serving after the %s", s, tc.name)
+				}
+				var active []notify.Notification
+				for _, n := range applianceCenter(t, app).Active() {
+					if n.Key == deviceDownKey("moth") {
+						active = append(active, n)
+					}
+				}
+				if len(active) != 1 || active[0].Title != titleFailed || !strings.Contains(active[0].Message, pathMoth) {
+					t.Errorf("active moth condition after the %s = %+v, want one \"Device failed\" naming %s", tc.name, active, pathMoth)
+				}
+			})
+		})
+	}
+}
+
 // TestRetryEncodeFaultConfigSave pins how a config save treats a device down
 // after an encode fault. A save that leaves the device's capture and stream
-// parameters alone (a threshold, the token, discovery) cannot have fixed the
+// parameters alone (here a device's quiet-alert opt-out) cannot have fixed the
 // encoder, so it restarts the device at once but keeps its condition until the
 // faulted stream encodes. A save that changes them builds a different stream,
 // so the old fault proves nothing and the device clears as soon as it serves.
@@ -594,6 +638,9 @@ func TestRetryEncodeFaultDroppedOnDisableAndRemove(t *testing.T) {
 
 				play(pathMoth) <- true
 				runFor(t, app, backoffDelay(1)/2)
+				if len(app.faultedPaths("moth")) != 1 {
+					t.Fatalf("precondition: faulted %v, want the encode fault on record", app.faultedPaths("moth"))
+				}
 				app.reconcile(tc.leave(dev))
 				app.reconcile(&config.Config{Devices: []config.Device{dev}})
 				if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
@@ -650,8 +697,10 @@ func TestRetryEncodeFaultHotplugAttemptFails(t *testing.T) {
 			t.Fatal("no retry armed after the failed hotplug attempt")
 		}
 		// A hotplug advances the backoff rather than starting it over.
-		if got := time.Until(app.retryAt); got <= backoffDelay(retryLogFirst+1) {
-			t.Errorf("next attempt in %s, want the advanced delay (more than %s)", got, backoffDelay(retryLogFirst+1))
+		// Five encode faults and the failed hotplug attempt make six failures, the
+		// capped delay (synctest time does not move within this pass).
+		if got, want := time.Until(app.retryAt), backoffDelay(len(retryBackoff)); got != want {
+			t.Errorf("next attempt in %s, want the advanced delay %s", got, want)
 		}
 		runFor(t, app, backoffDelay(len(retryBackoff))+time.Second)
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
