@@ -6,8 +6,11 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
@@ -65,6 +68,25 @@ func TestReconcileOpenFailureEmitsDownOnset(t *testing.T) {
 	if n.Title != "Device unavailable" {
 		t.Errorf("onset title = %q, want Device unavailable", n.Title)
 	}
+	if got := app.devices["a"].status().DownCause; got != downOpenFailed {
+		t.Errorf("DownCause after the failed open = %q, want %q", got, downOpenFailed)
+	}
+}
+
+// TestDownCausesAreWireEnumMembers pins every down-condition class the
+// appliance can record to the API's downCause enum, so a class added here
+// without a spec change fails instead of putting an undeclared value on the
+// wire.
+func TestDownCausesAreWireEnumMembers(t *testing.T) {
+	t.Parallel()
+	for _, c := range []string{
+		downNotConnected, downAmbiguous, downMalformed, downResolve,
+		downSameHardware, downOpenFailed, downDisconnected, downFailed,
+	} {
+		if !mgmtapi.DeviceDownCause(c).Valid() {
+			t.Errorf("down cause %q is not a member of the API downCause enum", c)
+		}
+	}
 }
 
 func TestReconcileRecoveryEmitsClear(t *testing.T) {
@@ -107,9 +129,23 @@ func TestOnPumpDoneDeathEmitsDownOnset(t *testing.T) {
 		t.Fatalf("a healthy start left %d active conditions, want 0", got)
 	}
 
+	// The re-resolve that decides lost versus failed is a host enumeration;
+	// record what the API would report while it runs, so the record is proven
+	// failed before it, not only afterwards.
+	rt := app.devices["a"]
+	var duringResolve mgmtserver.DeviceState
+	resolve := app.resolve
+	app.resolve = func(id string) (audio.Hardware, error) {
+		duringResolve = rt.currentState()
+		return resolve(id)
+	}
+
 	// Simulate the device dying after startup: its pump reports a non-nil error
 	// while the appliance is not shutting down.
-	app.onPumpDone(pumpResult{rt: app.devices["a"], err: errors.New("device died")})
+	app.onPumpDone(pumpResult{rt: rt, err: errors.New("device died")})
+	if duringResolve != mgmtserver.StateFailed {
+		t.Errorf("state during the re-resolve = %q, want %q", duringResolve, mgmtserver.StateFailed)
+	}
 
 	act := center.Active()
 	if len(act) != 1 {
@@ -121,6 +157,9 @@ func TestOnPumpDoneDeathEmitsDownOnset(t *testing.T) {
 	}
 	if n.Title != titleFailed {
 		t.Errorf("death onset title = %q, want Device failed", n.Title)
+	}
+	if got := app.devices["a"].status().DownCause; got != downFailed {
+		t.Errorf("DownCause after the death = %q, want %q", got, downFailed)
 	}
 }
 

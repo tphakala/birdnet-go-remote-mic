@@ -297,6 +297,13 @@ func TestReconcileSkipsMalformedID(t *testing.T) {
 	if len(act) != 1 || act[0].Title != "Invalid device id" {
 		t.Errorf("active = %+v, want one Invalid device id condition for typo", act)
 	}
+	// The record carries the same class to the API, so the card can title the
+	// failure as the notification does.
+	for _, rt := range app.devices {
+		if st := rt.status(); st.DownCause != downMalformed {
+			t.Errorf("device %q DownCause = %q, want %q", rt.dev.Name, st.DownCause, downMalformed)
+		}
+	}
 }
 
 // TestFailedDeviceStatusOmitsStaleAddress pins that a device whose pump dies does
@@ -307,13 +314,16 @@ func TestReconcileSkipsMalformedID(t *testing.T) {
 // and does not race the API readers.
 func TestFailedDeviceStatusOmitsStaleAddress(t *testing.T) {
 	rt := &deviceRuntime{hwAddr: addrHW3}
-	rt.markFailed(errors.New("EIO"))
+	rt.markFailed(errors.New("EIO"), downFailed)
 	st := rt.status()
 	if st.State != mgmtserver.StateFailed {
 		t.Errorf("state = %s, want failed", st.State)
 	}
 	if st.HWAddr != "" {
 		t.Errorf("status HWAddr = %q, want empty for a failed device (a stale address may name other hardware)", st.HWAddr)
+	}
+	if st.DownCause != downFailed {
+		t.Errorf("status DownCause = %q, want %q", st.DownCause, downFailed)
 	}
 }
 
@@ -568,6 +578,9 @@ func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
 	}
 	if act := center.Active(); len(act) != 1 || act[0].Title != titleDisconnected {
 		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
+	}
+	if got := app.devices["moth"].status().DownCause; got != downDisconnected {
+		t.Errorf("DownCause after the loss = %q, want %q", got, downDisconnected)
 	}
 }
 

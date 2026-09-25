@@ -35,6 +35,39 @@ func countingStage(t *testing.T) (*opusStage, *countingEncoder) {
 	}}, enc
 }
 
+// TestOpusStageEncoderBitrate pins the bitrate the encoder itself is built with,
+// not only the SDP's maxaveragebitrate: an unset bitrate follows the default of
+// 128 kbps per channel carried, and an explicit one is passed through.
+func TestOpusStageEncoderBitrate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name              string
+		bitrate, channels int
+		want              int
+	}{
+		{"mono default", 0, 1, 128000},
+		{"stereo default", 0, 2, 256000},
+		{"explicit", 64000, 2, 64000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got opus.EncoderConfig
+			st := &opusStage{bitrate: tc.bitrate, newEncoder: func(cfg opus.EncoderConfig) (opusEncoder, error) {
+				got = cfg
+				return newOpusEncoder(cfg)
+			}}
+			src := audio.NewFakeSource(48000, tc.channels, nil)
+			if err := st.Run(src, func() (bool, uint64) { return false, 0 }, func(Frame) error { return nil }); err != nil {
+				t.Fatalf("Run: got error %v, want none", err)
+			}
+			if got.Bitrate != tc.want || got.Channels != tc.channels {
+				t.Errorf("encoder config: got %d bps %d ch, want %d bps %d ch", got.Bitrate, got.Channels, tc.want, tc.channels)
+			}
+		})
+	}
+}
+
 // silence returns n periods of 960 mono frames, one Opus frame each.
 func silence(n int) [][]byte {
 	periods := make([][]byte, n)

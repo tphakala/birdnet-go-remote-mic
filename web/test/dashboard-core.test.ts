@@ -4,8 +4,56 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import { captureFormatLabel, channelLabel, tallyStates } from "../src/lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, needsNotificationsFallback, tallyStates } from "../src/lib/dashboard-core.js";
+
+test("needsNotificationsFallback loads when nothing loaded or the stream is down", () => {
+  assert.equal(needsNotificationsFallback(true, true), false); // healthy: the connect re-sync loaded it
+  assert.equal(needsNotificationsFallback(false, true), true); // connected but the re-sync has not landed
+  assert.equal(needsNotificationsFallback(true, false), true); // a previous session's snapshot, stream down
+  assert.equal(needsNotificationsFallback(false, false), true);
+});
+
+test("bannerIsError: a failed device is an error unless it was unplugged", () => {
+  assert.equal(bannerIsError("failed", "failed"), true);
+  assert.equal(bannerIsError("failed", undefined), true);
+  assert.equal(bannerIsError("failed", "disconnected"), false);
+  assert.equal(bannerIsError("skipped", "not-connected"), false);
+  assert.equal(bannerIsError("skipped", "open-failed"), false);
+});
+
+test("downCauseTitle names each cause as its notification does and falls back", () => {
+  assert.equal(downCauseTitle("not-connected"), "Device not connected");
+  assert.equal(downCauseTitle("ambiguous"), "Device ambiguous");
+  assert.equal(downCauseTitle("malformed"), "Invalid device id");
+  assert.equal(downCauseTitle("same-hardware"), "Device conflict");
+  assert.equal(downCauseTitle("resolve-failed"), "Device unavailable");
+  assert.equal(downCauseTitle("open-failed"), "Device unavailable");
+  assert.equal(downCauseTitle("disconnected"), "Device disconnected");
+  assert.equal(downCauseTitle("failed"), "Device failed");
+  // An older appliance sends no cause, and a newer one may add a class.
+  assert.equal(downCauseTitle(undefined), "Device excluded from streaming");
+  assert.equal(downCauseTitle("some-future-cause"), "Device excluded from streaming");
+});
+
+// The banner titles promise to match the notification titles the appliance
+// raises for the same cause; this reads the Go source so a title renamed on
+// one side only fails here instead of silently drifting.
+const APPLIANCE_GO = fileURLToPath(new URL("../../../cmd/remotemic/appliance.go", import.meta.url).href);
+
+test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go", () => {
+  const src = readFileSync(APPLIANCE_GO, "utf8");
+  const causes = [
+    "not-connected", "ambiguous", "malformed", "resolve-failed",
+    "same-hardware", "open-failed", "disconnected", "failed",
+  ];
+  for (const cause of causes) {
+    const title = downCauseTitle(cause);
+    assert.ok(src.includes(`"${title}"`), `${cause}: title "${title}" not found in appliance.go`);
+  }
+});
 
 test("channelLabel renders mono, contiguous, and non-contiguous selections", () => {
   assert.equal(channelLabel([]), "");

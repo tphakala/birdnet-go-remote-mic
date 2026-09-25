@@ -7,8 +7,13 @@ import { NotificationStore } from "./lib/notifications.js";
 import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
+import { needsNotificationsFallback } from "./lib/dashboard-core.js";
 
 const THEME_KEY = "remote-mic-theme";
+
+// How long the boot waits for the stream's connect re-sync to deliver the
+// notifications snapshot before loading it directly (see init).
+const NOTIFICATIONS_FALLBACK_MS = 3000;
 
 class App {
   public init(): void {
@@ -31,11 +36,22 @@ class App {
     // Push a stored token into the clients before the first request so a
     // token-gated appliance loads without a prompt on a returning browser.
     applyStoredToken();
+    // The stream's connect re-syncs the notifications snapshot, and that load
+    // is the one that must run: it follows the subscription, so nothing raised
+    // between the snapshot and the stream is missed; a direct load here would
+    // fetch it a second time. Load directly only as a fallback, when no snapshot
+    // has arrived shortly after the app starts (a stream that cannot connect, or
+    // a proxy that buffers it), after boot or after a login alike. The stream
+    // being down is the trigger too, not only a snapshot never loaded: after a
+    // re-login the previous session's snapshot would otherwise count as fresh.
+    const armNotificationsFallback = (): void => {
+      window.setTimeout(() => {
+        if (needsNotificationsFallback(notifications.hasLoaded(), store.getState().connected)) void notifications.load();
+      }, NOTIFICATIONS_FALLBACK_MS);
+    };
+    store.addEventListener("authok", armNotificationsFallback);
     void store.start().then((running) => {
-      // Load the snapshot immediately too, independent of SSE connect timing.
-      // When the login prompt is up instead, the stream's connect after login
-      // re-syncs the snapshot.
-      if (running) void notifications.load();
+      if (running) armNotificationsFallback();
     });
   }
 

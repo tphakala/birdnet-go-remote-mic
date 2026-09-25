@@ -205,7 +205,10 @@ type hwResult struct {
 
 // Cause classes for a device's down condition. A change of class while the
 // device stays down re-raises the condition, except between two retryable
-// classes during an unattended retry (see markDown).
+// classes during an unattended retry (see markDown). They are also the API's
+// downCause values, so a new class needs the enum in api/openapi.yaml, an entry
+// in TestDownCausesAreWireEnumMembers's list (which checks it against that
+// enum), and a banner title in the web UI's downCauseTitle.
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
@@ -638,6 +641,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			dev:               *dev,
 			state:             mgmtserver.StateSkipped,
 			err:               err.Error(),
+			downCause:         downOpenFailed,
 			friendlyName:      hw.Label,
 			hwAddr:            hw.HWAddr,
 			supportedRates:    rates,
@@ -694,6 +698,7 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 		dev:               *dev,
 		state:             mgmtserver.StateSkipped,
 		err:               msg,
+		downCause:         cause,
 		friendlyName:      hw.Label,
 		hwAddr:            hw.HWAddr,
 		supportedRates:    rates,
@@ -947,7 +952,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	a.hub.RemoveMeter(res.rt.dev.Name)
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
-		res.rt.markFailed(res.err)
+		// Mark it failed before the re-resolve below (a host enumeration), so the
+		// API does not keep reporting a dead pump as serving for its duration; a
+		// confirmed loss then reclassifies the cause as disconnected.
+		res.rt.markFailed(res.err, downFailed)
 		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Decide whether the device was LOST (unplugged or
@@ -966,6 +974,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			}
 		}
 		if lost {
+			res.rt.markFailed(res.err, downDisconnected)
 			// A lost device comes back on its own once reconnected, so arm a retry:
 			// the next enumeration restarts it even when the host's hardware
 			// signature is unchanged (an unplug and replug at the same card index

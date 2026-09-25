@@ -867,6 +867,30 @@ components:
         error:
           type: string
           description: Why the device is skipped or failed. Absent when serving.
+        downCause:
+          type: string
+          enum:
+            - not-connected
+            - ambiguous
+            - malformed
+            - resolve-failed
+            - same-hardware
+            - open-failed
+            - disconnected
+            - failed
+          description: >
+            Machine-readable class of why a skipped or failed device is not
+            serving, so a client can title the failure without parsing
+            `error`: its id names no connected hardware (not-connected),
+            several identical units (ambiguous), or is malformed; resolving it
+            failed (resolve-failed); another device already captures from the
+            same hardware (same-hardware); the capture open failed
+            (open-failed); or a serving device stopped because it was
+            unplugged (disconnected) or for a reason not confirmed as an
+            unplug (failed). Absent
+            while serving, when disabled, from an older appliance, and in the
+            provisional record POST /devices returns when the new device has
+            not been applied yet. Clients must tolerate values added later.
         friendlyName:
           type: string
           description: >

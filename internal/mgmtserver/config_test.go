@@ -827,6 +827,44 @@ func TestPatchedDevicesMatchesByNameFirst(t *testing.T) {
 	}
 }
 
+// Names and stream paths shared by the collapse-guard id tests below.
+const (
+	nameSolo = "solo"
+	nameDuo  = "duo"
+	idSolo   = "usb:solo"
+	idDuo    = "usb:duo"
+	pathSolo = "/solo"
+	pathDuo1 = "/duo1"
+	pathDuo2 = "/duo2"
+)
+
+// TestPatchedDevicesAcceptsIDSwapKeepingStreams pins that a legitimate id swap
+// between a single-stream and a multi-stream device passes the guard: the
+// multi-stream device is still listed under its own name with its streams, so
+// the flat single-stream entry now carrying its old id drops nothing.
+func TestPatchedDevicesAcceptsIDSwapKeepingStreams(t *testing.T) {
+	t.Parallel()
+	cur := []config.Device{
+		{Name: nameSolo, Device: idSolo, Streams: []config.Stream{{Path: pathSolo}}},
+		{Name: nameDuo, Device: idDuo, Streams: []config.Stream{{Path: pathDuo1}, {Path: pathDuo2}}},
+	}
+	duoStreams := []mgmtapi.StreamConfig{
+		{Path: pathDuo1, Mode: mgmtapi.Pcm, Channels: []int{1}},
+		{Path: pathDuo2, Mode: mgmtapi.Pcm, Channels: []int{2}},
+	}
+	wire := []mgmtapi.DeviceConfig{
+		{Name: nameSolo, Device: idDuo, Path: pathSolo, Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+		{Name: nameDuo, Device: idSolo, Rate: 48000, Streams: &duoStreams},
+	}
+	devs, err := patchedDevices(cur, wire)
+	if err != nil {
+		t.Fatalf("patchedDevices error = %v, want the id swap accepted", err)
+	}
+	if len(devs) != 2 || devs[0].Device != idDuo || devs[1].Device != idSolo || len(devs[1].Streams) != 2 {
+		t.Errorf("devices = %+v, want solo on usb:duo and duo on usb:solo with both streams", devs)
+	}
+}
+
 // TestPatchedDevicesRejectsNameRotationCollapse pins M5: a flat entry that takes
 // a single-stream device's NAME and a multi-stream device's ID must still be
 // rejected. Matching only by name would find the single-stream device and let
@@ -834,12 +872,12 @@ func TestPatchedDevicesMatchesByNameFirst(t *testing.T) {
 // through, so the guard also checks the id.
 func TestPatchedDevicesRejectsNameRotationCollapse(t *testing.T) {
 	cur := []config.Device{
-		{Name: "solo", Device: "usb:solo", Streams: []config.Stream{{Path: "/solo"}}},
-		{Name: "duo", Device: "usb:duo", Streams: []config.Stream{{Path: "/duo1"}, {Path: "/duo2"}}},
+		{Name: nameSolo, Device: idSolo, Streams: []config.Stream{{Path: pathSolo}}},
+		{Name: nameDuo, Device: idDuo, Streams: []config.Stream{{Path: pathDuo1}, {Path: pathDuo2}}},
 	}
 	wire := []mgmtapi.DeviceConfig{
-		{Name: "solo", Device: "usb:duo", Path: "/solo", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
-		{Name: "extra", Device: "usb:solo", Path: "/extra", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+		{Name: nameSolo, Device: idDuo, Path: pathSolo, Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
+		{Name: "extra", Device: idSolo, Path: "/extra", Mode: mgmtapi.Pcm, Rate: 48000, Channels: []int{1}},
 	}
 	_, err := patchedDevices(cur, wire)
 	var verr *config.ValidationError

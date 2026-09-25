@@ -11,8 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -29,6 +32,16 @@ var (
 	stdinIsTerminal           = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }              //nolint:gosec // an fd fits in int
 	readSecret                = func() ([]byte, error) { return term.ReadPassword(int(os.Stdin.Fd())) } //nolint:gosec // an fd fits in int
 )
+
+// editLockWait bounds how long a file edit waits for another token command's
+// edit of the same config to finish. An edit takes milliseconds, so a few
+// seconds covers a queue of them without hanging on a stuck holder. A variable
+// only so tests can shorten it.
+var editLockWait = 5 * time.Second
+
+// lockEdits takes the config's edit lock (runlock.LockEdits). A variable only
+// so a test can observe that an edit is waiting on it.
+var lockEdits = runlock.LockEdits
 
 // liveTimeout bounds a token change sent to a running appliance. The API
 // persists and enforces the token before it answers, then waits for the live
@@ -85,7 +98,9 @@ the appliance next starts (or, for an appliance whose API failed to start or
 stopped, at its next background attempt to bring it up, unless the file now
 disables the API). A command run while
 the appliance is still starting up, or in the seconds after its API stops
-while the API drains, asks you to retry. Run a command with -h to
+while the API drains, asks you to retry. Run generate, set, and clear as the
+account that owns the config (the account the appliance runs as, for example
+sudo -u remote-mic); they refuse to run as any other. Run a command with -h to
 see its flags.
 `)
 }
@@ -150,6 +165,9 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
+	if err := checkOwner(*cfgPath, "token generate", args); err != nil {
+		return err
+	}
 	token, err := auth.GenerateToken()
 	if err != nil {
 		return fmt.Errorf("generate token: %w", err)
@@ -186,6 +204,9 @@ func runTokenSet(args []string, stderr io.Writer) error {
 	}
 	if fs.NArg() > 0 {
 		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
+	}
+	if err := checkOwner(*cfgPath, "token set", args); err != nil {
+		return err
 	}
 	token, err := readNewToken(stderr)
 	if err != nil {
@@ -254,6 +275,9 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
 	quiet := fs.Bool("quiet", false, "print nothing on success")
 	if err := parseNoArgs(fs, args); err != nil {
+		return err
+	}
+	if err := checkOwner(*cfgPath, "token clear", args); err != nil {
 		return err
 	}
 	// Load and confirm before touching the run lock. The y/N prompt must not run
@@ -373,7 +397,9 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 		return res, withPermHint(err)
 	}
 	if !ok {
-		return res, errors.New("the appliance is starting up; try again in a few seconds")
+		// Held with nothing published: an appliance mid-startup, or another token
+		// command holding the lock across its own file edit.
+		return res, errors.New("the appliance is starting up, or another token command is using this config; try again in a few seconds")
 	}
 	res.pid = st.PID
 	if st.MgmtAddr == "" {
@@ -421,8 +447,19 @@ func loadConfigForChange(cfgPath string, check func(cur string) error) (config.C
 }
 
 // saveToken edits the config file directly: load (or default, for a first run
-// with no file yet), check, set, and save atomically at 0600.
+// with no file yet), check, set, and save atomically at 0600. The edit lock is
+// held across all of it, so two token commands editing one config (possible
+// while an appliance holds the run lock without a management API) serialize
+// instead of the last writer silently discarding the other's change.
 func saveToken(cfgPath, token string, check func(cur string) error) error {
+	release, err := lockEdits(cfgPath, editLockWait)
+	if errors.Is(err, runlock.ErrHeld) {
+		return fmt.Errorf("another token command is still editing %s; try again in a few seconds", absPath(cfgPath))
+	}
+	if err != nil {
+		return withPermHint(err)
+	}
+	defer func() { _ = release() }()
 	cfg, err := loadConfigForChange(cfgPath, check)
 	if err != nil {
 		return err
@@ -452,12 +489,119 @@ func reportChange(w io.Writer, res changeResult, headline string) {
 
 // absPath renders cfgPath as an absolute path for a headline, falling back to
 // cfgPath itself if the working directory cannot be resolved, so an operator run
-// from another directory can see exactly which file the command edited.
+// from another directory can see exactly which file the command edited. It
+// joins the working directory by hand rather than with filepath.Abs, whose
+// lexical cleaning of ".." can name a different file than the one opened when
+// the ".." follows a symlink (the kernel resolves it against the link's target);
+// runlock.PathFor anchors the same way.
 func absPath(cfgPath string) string {
-	if abs, err := filepath.Abs(cfgPath); err == nil {
-		return abs
+	if filepath.IsAbs(cfgPath) {
+		return cfgPath
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd + string(filepath.Separator) + cfgPath
 	}
 	return cfgPath
+}
+
+// checkOwner refuses a write token command (named by command, such as
+// "token set") run as an account other than the one owning the config at
+// cfgPath, or, when the config does not exist yet, its resolved parent
+// directory. The appliance runs as that owner: a command run as another account
+// (typically root via sudo) would create a lock file, or rewrite the config,
+// that the appliance's own account then cannot open. It runs before any lock
+// file is created or touched. A path that cannot be examined is left to the
+// command itself to report.
+//
+// A parent directory that is sticky or world-writable (such as /tmp) is shared
+// between accounts, so its owner is no proxy for the appliance account and the
+// fallback does not refuse there. A group-writable one is not exempt: under a
+// umask of 002 an ordinary private directory is group-writable. The trade-off
+// is a hand-made group-shared directory (root-owned, 0770, the appliance's
+// group): with no config in it yet, the owner check points at root; create
+// the config there first, as the appliance's account, or use the installer's
+// layout (a directory owned by the appliance's account).
+//
+// args are the subcommand's own arguments, repeated in the suggested command.
+func checkOwner(cfgPath, command string, args []string) error {
+	what := absPath(cfgPath)
+	fi, err := os.Stat(cfgPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// filepath.Split, not Dir: Dir cleans ".." lexically, which after a
+		// symlink names a different directory than the one the file lands in.
+		dir, base := filepath.Split(what)
+		dir = strings.TrimSuffix(dir, string(filepath.Separator))
+		// An empty parent is the root for an absolute path ("/config.yaml"), but
+		// the working directory for a bare relative name (absPath returns one
+		// when the working directory cannot be resolved).
+		if dir == "" {
+			dir = "."
+			if filepath.IsAbs(what) {
+				dir = string(filepath.Separator)
+			}
+		}
+		// Name the directory as resolved, so the message shows where the file
+		// actually lands rather than a spelling with "..".
+		if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+			dir = resolved
+		}
+		fi, err = os.Stat(dir) // follows symlinks, so this is the resolved directory
+		if err == nil && (fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o002 != 0) {
+			return nil
+		}
+		what = "the directory " + dir + " (where " + base + " will be created)"
+	}
+	if err != nil {
+		return nil //nolint:nilerr // the command's own open reports the error, with a permission hint
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+	if int64(st.Uid) == int64(geteuid()) {
+		return nil
+	}
+	uid := strconv.FormatUint(uint64(st.Uid), 10)
+	// sudo takes a numeric uid as '#uid' when the account has no name here.
+	who, sudoUser := "uid "+uid, "'#"+uid+"'"
+	if u, err := user.LookupId(uid); err == nil && u.Username != "" {
+		who, sudoUser = fmt.Sprintf("%q (uid %s)", u.Username, uid), shellQuote(u.Username)
+	}
+	return fmt.Errorf("%s is owned by %s; run this command as that account: sudo -u %s %s",
+		what, who, sudoUser, rerunCommand(command, args, cfgPath))
+}
+
+// rerunCommand renders the refused command for the owner-check hint: the same
+// subcommand and flags the operator typed (so --force or --yes survive), with
+// any --config replaced by the absolute config path, which sudo needs because
+// it drops REMOTEMIC_CONFIG and may run from another directory.
+func rerunCommand(command string, args []string, cfgPath string) string {
+	parts := []string{"remote-mic", command}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--config" || a == "-config":
+			i++ // drop the value too
+		case strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "-config="):
+		case a == "--": // nothing may follow it, and --config is appended below
+		default:
+			parts = append(parts, shellQuote(a))
+		}
+	}
+	parts = append(parts, "--config", shellQuote(absPath(cfgPath)))
+	return strings.Join(parts, " ")
+}
+
+// shellQuote returns s unchanged when a POSIX shell would read it as one plain
+// word, and single-quoted otherwise.
+func shellQuote(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./=:,+@%", r)
+	}
+	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !plain(r) }) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // withPermHint adds a pointer to the likely fix when err is a permission

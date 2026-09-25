@@ -1,6 +1,7 @@
 package mgmtserver
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -75,13 +76,15 @@ func loudestChannel(levels []float64) int {
 // is mounted, the rate provisioning would pick falls outside the probe's band,
 // or the measurement fails (the device is busy, say). It captures at the rate
 // provisioning will pick (chooseParams), so the probe exercises the real open,
-// and considers at most width channels.
+// and considers at most channelProbeWidth channels.
+//
+// The supported channel counts are device-wide, and some interfaces offer
+// fewer channels at their higher rates, so the widest count can fail to open
+// at the chosen rate. The probe then steps down through the narrower supported
+// counts (still two or more) within the same budget before giving up.
 func (s *Server) preferredChannel(ctx context.Context, d *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) int {
-	width := channelProbeWidth
-	if len(d.SupportedChannels) > 0 {
-		width = min(slices.Max(d.SupportedChannels), channelProbeWidth)
-	}
-	if s.channelProbe == nil || width < 2 {
+	widths := probeWidths(d.SupportedChannels)
+	if s.channelProbe == nil || len(widths) == 0 {
 		return 1
 	}
 	// Probe at the rate provisioning will actually pick so the open matches the
@@ -94,12 +97,38 @@ func (s *Server) preferredChannel(ctx context.Context, d *AvailableDevice, req *
 	}
 	pctx, cancel := context.WithTimeout(ctx, channelProbeBudget)
 	defer cancel()
-	levels, err := s.channelProbe(pctx, d.ID, rate, width)
-	if err != nil {
-		log.Printf("mgmtserver: channel level probe on %s failed: %v (defaulting to channel 1)", d.ID, err)
-		return 1
+	// Keep every width's error: the widest attempt's is usually the telling one.
+	var errs []error
+	for _, width := range widths {
+		levels, err := s.channelProbe(pctx, d.ID, rate, width)
+		if err == nil {
+			return loudestChannel(levels[:min(len(levels), width)])
+		}
+		errs = append(errs, fmt.Errorf("%d channels: %w", width, err))
+		if pctx.Err() != nil {
+			break
+		}
 	}
-	return loudestChannel(levels[:min(len(levels), width)])
+	log.Printf("mgmtserver: channel level probe on %s failed: %v (defaulting to channel 1)", d.ID, errors.Join(errs...))
+	return 1
+}
+
+// probeWidths returns the channel counts to probe, widest first: every
+// supported count of two or more, capped at channelProbeWidth. With no probed
+// counts it returns the cap alone, and with nothing to choose between (a
+// single-channel device) it returns none.
+func probeWidths(supported []int) []int {
+	if len(supported) == 0 {
+		return []int{channelProbeWidth}
+	}
+	var widths []int
+	for _, c := range supported {
+		if w := min(c, channelProbeWidth); w >= 2 && !slices.Contains(widths, w) {
+			widths = append(widths, w)
+		}
+	}
+	slices.SortFunc(widths, func(a, b int) int { return cmp.Compare(b, a) })
+	return widths
 }
 
 // errDeviceExists and errDeviceNotFound distinguish a provisioning conflict and
@@ -160,9 +189,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// misreported as a 404. A miss here means the host genuinely has no such id.
 	dd, ok := s.provider.DetectedDevice(req.Device)
 	if !ok {
-		return mgmtapi.ProvisionDevice404ApplicationProblemPlusJSONResponse(
-			problem(http.StatusNotFound, "device not found", "no capture device with id "+req.Device+" is present on the host"),
-		), nil
+		return deviceGone(req.Device), nil
 	}
 	detected := &dd
 
@@ -184,13 +211,9 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// Second, the host lists the device but the available view hides it, which
 	// means the config already owns it under ANOTHER id (for example a card-index
 	// id that resolves to it); provisioning it again would open one device from
-	// two entries.
-	if !slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool {
-		return ad.ID == req.Device
-	}) {
-		return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
-			problem(http.StatusConflict, "already configured", "device "+req.Device+" is already configured under another id"),
-		), nil
+	// two entries. This is re-checked under patchMu below.
+	if resp := s.unavailable(req.Device); resp != nil {
+		return resp, nil
 	}
 
 	// With no channel selection in the request, default to the loudest channel.
@@ -215,6 +238,17 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 			StatusCode: http.StatusServiceUnavailable,
 			Body:       problem(http.StatusServiceUnavailable, "request cancelled", "the provisioning request was cancelled before the device was saved"),
 		}, nil
+	}
+	// Repeat the alias check now that patchMu is held. A PATCH or another
+	// provision that ran during the probe has finished its persist AND its hot
+	// reload by the time this lock is ours (the reloader blocks until the
+	// reconcile replies, unless that request's own client gave up first), and a
+	// reconcile republishes the ids the config owns, resolved aliases included,
+	// before it opens anything. So a device claimed meanwhile under another id is
+	// hidden from the available view here; with only the pre-lock check, a
+	// concurrent alias could persist two entries for one device.
+	if resp := s.unavailable(req.Device); resp != nil {
+		return resp, nil
 	}
 
 	var created config.Device
@@ -265,6 +299,42 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 		return mgmtapi.ProvisionDevice201JSONResponse(mapDevice(&st)), nil
 	}
 	return mgmtapi.ProvisionDevice201JSONResponse(configDeviceToWireDevice(&created)), nil
+}
+
+// unavailable returns the response for a host device id missing from the
+// available view, or nil when it is available (detected and not owned by the
+// config under any id). The view hides both a device the config owns under
+// another id and one that has left the host, so the detected view tells them
+// apart: gone (404), not owned under another id (409). Both views come from
+// the last background enumeration, so a device unplugged moments ago may still
+// read as available and be provisioned; it then shows as not connected, like
+// any configured device that is unplugged (and, bound by a stable id, starts
+// when plugged back in).
+func (s *Server) unavailable(id string) mgmtapi.ProvisionDeviceResponseObject {
+	if slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool { return ad.ID == id }) {
+		return nil
+	}
+	if _, detected := s.provider.DetectedDevice(id); !detected {
+		return deviceGone(id)
+	}
+	return aliasConflict(id)
+}
+
+// aliasConflict is the 409 for a detected device the config already owns under
+// another id.
+func aliasConflict(id string) mgmtapi.ProvisionDeviceResponseObject {
+	return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
+		problem(http.StatusConflict, "already configured", "device "+id+" is already set up as another entry"),
+	)
+}
+
+// deviceGone is the 404 for an id the host does not (or no longer) offer: it
+// was unplugged, or its offered id changed when an identical unit appeared.
+func deviceGone(id string) mgmtapi.ProvisionDeviceResponseObject {
+	return mgmtapi.ProvisionDevice404ApplicationProblemPlusJSONResponse(
+		problem(http.StatusNotFound, "device not found", "no capture device with id "+id+
+			" is present; it may have been unplugged or re-detected under a new id"),
+	)
 }
 
 // DeleteDevice handles DELETE /devices/{name}. It removes the named device from
@@ -569,7 +639,7 @@ func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 		Device:   d.Device,
 		Format:   mgmtapi.DeviceFormat(d.Format),
 		Rate:     d.Rate,
-		State:    mgmtapi.Skipped,
+		State:    mgmtapi.DeviceStateSkipped,
 		IdStable: ptr(!config.IsCardIndexID(d.Device)),
 	}
 	// A freshly provisioned device is single-stream, so the flat projection of its

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -668,7 +669,7 @@ func TestTokenRunningStartingUp(t *testing.T) {
 	stubStdin(t, tokenNew+"\n", false)
 
 	code, _, errOut := runCLI("token", "set", flagConfig, path)
-	if code != 1 || !strings.Contains(errOut, "starting up") {
+	if code != 1 || !strings.Contains(errOut, "starting up, or another token command is using this config") {
 		t.Fatalf("exit %d stderr %q, want a starting-up error", code, errOut)
 	}
 	if got := loadToken(t, path); got != tokenOld {
@@ -846,5 +847,353 @@ func TestLockStateAbsoluteCertPath(t *testing.T) {
 	}
 	if st.PID != 7 || st.MgmtAddr != "[::]:8443" {
 		t.Fatalf("state = %+v, want pid and address carried through", st)
+	}
+}
+
+// stubEUID makes the write token commands see euid as their effective uid.
+func stubEUID(t *testing.T, euid int) {
+	t.Helper()
+	prev := geteuid
+	geteuid = func() int { return euid }
+	t.Cleanup(func() { geteuid = prev })
+}
+
+// assertNoLockFiles fails if the run lock or the edit lock for cfgPath exists.
+func assertNoLockFiles(t *testing.T, cfgPath string) {
+	t.Helper()
+	for _, p := range []string{runlock.PathFor(cfgPath), runlock.EditPathFor(cfgPath)} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("lock file %s: stat err = %v, want it never created", p, err)
+		}
+	}
+}
+
+// TestTokenWriteRefusesOtherOwner asserts generate, set, and clear refuse,
+// before creating any lock file or touching the config, when run as an account
+// other than the config's owner (the root-owned lock case), naming the owner and
+// the command to run instead.
+func TestTokenWriteRefusesOtherOwner(t *testing.T) {
+	// Each case is the token subcommand and its flags; the subcommand names it.
+	cases := [][]string{
+		{"generate", "--force"},
+		{"set"},
+		{"clear", "--yes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc[0], func(t *testing.T) {
+			path := tempConfig(t)
+			seedConfigWithToken(t, path, tokenOld)
+			stubStdin(t, tokenNew+"\n", false)
+			stubEUID(t, os.Geteuid()+1)
+
+			args := append(append([]string{cmdToken}, tc...), flagConfig, path)
+			code, stdout, errOut := runCLI(args...)
+			if code != 1 {
+				t.Fatalf("exit %d stderr %q, want 1", code, errOut)
+			}
+			// The suggested command keeps the operator's own flags (--force and
+			// --yes change behavior) and ends with the absolute --config.
+			wantCmd := "remote-mic token " + strings.Join(tc, " ") + " --config " + path
+			if !strings.Contains(errOut, "is owned by") || !strings.Contains(errOut, ": sudo -u ") || !strings.Contains(errOut, wantCmd) {
+				t.Fatalf("stderr %q, want an owner refusal suggesting %q", errOut, wantCmd)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout %q, want nothing", stdout)
+			}
+			if got := loadToken(t, path); got != tokenOld {
+				t.Fatalf("token = %q, want %q unchanged", got, tokenOld)
+			}
+			assertNoLockFiles(t, path)
+		})
+	}
+}
+
+// TestTokenWriteOwnerMatchProceeds asserts a write command run as the config's
+// owner is not refused.
+func TestTokenWriteOwnerMatchProceeds(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubStdin(t, tokenNew+"\n", false)
+	stubEUID(t, os.Geteuid())
+
+	code, _, errOut := runCLI("token", "set", flagConfig, path)
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q, want 0", code, errOut)
+	}
+	if got := loadToken(t, path); got != tokenNew {
+		t.Fatalf("token = %q, want %q", got, tokenNew)
+	}
+}
+
+// TestTokenWriteMissingConfigChecksDirOwner asserts that with no config yet, the
+// owner check falls back to the directory that will hold it: another account is
+// refused without creating the config or a lock, and the directory's owner goes
+// ahead and creates it.
+func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
+	path := tempConfig(t)
+	// A group-writable directory, as a umask of 002 makes an ordinary private
+	// one: it is still refused (only sticky or world-writable ones are shared).
+	if err := os.Chmod(filepath.Dir(path), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	stubEUID(t, os.Geteuid()+1)
+	code, _, errOut := runCLI("token", "generate", flagConfig, path)
+	if code != 1 || !strings.Contains(errOut, "the directory "+filepath.Dir(path)) {
+		t.Fatalf("exit %d stderr %q, want a refusal naming the directory", code, errOut)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config stat err = %v, want it not created", err)
+	}
+	assertNoLockFiles(t, path)
+
+	stubEUID(t, os.Geteuid())
+	code, stdout, errOut := runCLI("token", "generate", flagConfig, path)
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q, want 0 as the directory owner", code, errOut)
+	}
+	if got := loadToken(t, path); got == "" || got != strings.TrimSpace(stdout) {
+		t.Fatalf("saved token %q, printed %q, want the printed token saved", got, stdout)
+	}
+}
+
+// TestTokenWriteMissingConfigDotDotAfterSymlink pins that the owner check looks
+// at the directory the file actually lands in: lk points at real/sub, so
+// lk/../config.yaml lands in real (private), not in the shared top directory a
+// lexical clean of ".." would name.
+func TestTokenWriteMissingConfigDotDotAfterSymlink(t *testing.T) {
+	top := t.TempDir()
+	if err := os.Chmod(top, 0o777); err != nil { // shared: would be exempt
+		t.Fatal(err)
+	}
+	realDir := filepath.Join(top, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(realDir, "sub"), filepath.Join(top, "lk")); err != nil {
+		t.Fatal(err)
+	}
+	stubEUID(t, os.Geteuid()+1)
+	// Relative, as typed at a shell, and a string: filepath.Join would clean it.
+	t.Chdir(top)
+	code, _, errOut := runCLI("token", "generate", flagConfig, "lk/../config.yaml")
+	if code != 1 || !strings.Contains(errOut, "the directory "+realDir+" ") {
+		t.Fatalf("exit %d stderr %q, want a refusal naming %s", code, errOut, realDir)
+	}
+}
+
+// TestRerunCommand pins the owner-check hint's suggested command: the
+// operator's flags survive in order, every --config spelling is replaced by
+// the absolute path, and a word a shell would split or expand is quoted.
+func TestRerunCommand(t *testing.T) {
+	t.Parallel()
+	const cfg = "/etc/rm/config.yaml"
+	for _, tc := range []struct {
+		name string
+		args []string
+		cfg  string
+		want string
+	}{
+		{"flags kept", []string{"--force", "--config", cfg}, cfg, "remote-mic token generate --force --config " + cfg},
+		{"equals form dropped", []string{"-config=/x.yaml", "-quiet"}, "/x.yaml", "remote-mic token generate -quiet --config /x.yaml"},
+		{"double-dash equals form dropped", []string{"--config=/x.yaml", "-force"}, "/x.yaml", "remote-mic token generate -force --config /x.yaml"},
+		{"terminator dropped", []string{"-force", "--"}, cfg, "remote-mic token generate -force --config " + cfg},
+		{"no config flag", nil, cfg, "remote-mic token generate --config " + cfg},
+		{"quoted path", nil, "/tmp/my dir/it's.yaml", `remote-mic token generate --config '/tmp/my dir/it'\''s.yaml'`},
+	} {
+		if got := rerunCommand("token generate", tc.args, tc.cfg); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCheckOwnerParentEdgeCases pins the parent directory the owner check
+// examines for a config not created yet at the edges of a path: a config at the
+// root examines the root, and a bare name whose working directory is gone
+// examines ".", never the root (which would tell the operator to run as root).
+func TestCheckOwnerParentEdgeCases(t *testing.T) {
+	if _, err := os.Stat("/remote-mic-no-such-config.yaml"); err == nil {
+		t.Skip("a file of the test's chosen name exists at /")
+	}
+	stubEUID(t, os.Geteuid()+1)
+	if os.Geteuid()+1 == 0 {
+		t.Skip("the stubbed uid would be root's")
+	}
+	err := checkOwner("/remote-mic-no-such-config.yaml", "token generate", nil)
+	if err == nil || !strings.Contains(err.Error(), "the directory / (") {
+		t.Errorf("root-level config: err = %v, want a refusal naming /", err)
+	}
+
+	gone := t.TempDir()
+	t.Chdir(gone)
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Getwd(); err == nil {
+		t.Skip("this platform still resolves a removed working directory")
+	}
+	// The removed directory can still be examined through ".", so a refusal
+	// naming its real owner is fine; naming the root is the defect.
+	if err := checkOwner("config.yaml", "token generate", nil); err != nil && strings.Contains(err.Error(), "the directory / (") {
+		t.Errorf("bare name with the working directory gone: err = %v, want no fallback to /", err)
+	}
+}
+
+// TestTokenWriteMissingConfigSharedDirProceeds asserts that with no config yet
+// in a shared directory (sticky or world-writable, such as /tmp), the
+// directory's owner is not taken as the appliance account, so another account's
+// command goes ahead and creates the config.
+func TestTokenWriteMissingConfigSharedDirProceeds(t *testing.T) {
+	for _, mode := range []os.FileMode{0o777 | os.ModeSticky, 0o700 | os.ModeSticky, 0o707} {
+		t.Run(mode.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Chmod(dir, mode); err != nil {
+				t.Fatalf("chmod %v: %v", mode, err)
+			}
+			path := filepath.Join(dir, "config.yaml")
+			stubEUID(t, os.Geteuid()+1)
+
+			code, stdout, errOut := runCLI("token", "generate", flagConfig, path)
+			if code != 0 {
+				t.Fatalf("exit %d stderr %q, want 0 in a shared directory", code, errOut)
+			}
+			if got := loadToken(t, path); got == "" || got != strings.TrimSpace(stdout) {
+				t.Fatalf("saved token %q, printed %q, want the printed token saved", got, stdout)
+			}
+		})
+	}
+}
+
+// TestTokenGetIgnoresOwner asserts the read-only token get is not refused for
+// an account other than the owner (one that can read the file, such as root).
+func TestTokenGetIgnoresOwner(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubEUID(t, os.Geteuid()+1)
+
+	code, stdout, errOut := runCLI("token", "get", flagConfig, path)
+	if code != 0 || strings.TrimSpace(stdout) != tokenOld {
+		t.Fatalf("exit %d stdout %q stderr %q, want the token", code, stdout, errOut)
+	}
+}
+
+// stubEditLockWait sets how long saveToken waits for the edit lock. Tests that
+// call it (or that depend on the default) are not parallel: the wait is global.
+func stubEditLockWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := editLockWait
+	editLockWait = d
+	t.Cleanup(func() { editLockWait = prev })
+}
+
+// TestSaveTokenRefusesWhileEditLockHeld asserts a file edit takes the edit lock:
+// with another holder and no wait, it fails with the retry message and leaves
+// the config untouched.
+func TestSaveTokenRefusesWhileEditLockHeld(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubEditLockWait(t, 0)
+	release, err := runlock.LockEdits(path, 0)
+	if err != nil {
+		t.Fatalf("LockEdits: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := release(); err != nil {
+			t.Errorf("release: %v", err)
+		}
+	})
+
+	err = saveToken(path, tokenNew, nil)
+	if err == nil || !strings.Contains(err.Error(), "another token command is still editing") {
+		t.Fatalf("saveToken while the edit lock is held: err = %v, want the still-editing error", err)
+	}
+	if got := loadToken(t, path); got != tokenOld {
+		t.Fatalf("token = %q, want %q unchanged", got, tokenOld)
+	}
+}
+
+// TestSaveTokenSerializesEdits asserts two concurrent file edits of one config
+// run one after the other: the second's load and check start only after the
+// first has saved, so it sees the first's token instead of both reading the old
+// one and the last writer silently discarding the other's change.
+func TestSaveTokenSerializesEdits(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubEditLockWait(t, time.Minute)
+
+	const firstToken = "first-writer-token-1"
+	inside := make(chan struct{})
+	unblock := make(chan struct{})
+	var unblocked atomic.Bool
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- saveToken(path, firstToken, func(string) error {
+			close(inside)
+			<-unblock
+			return nil
+		})
+	}()
+	select {
+	case <-inside:
+	case err := <-firstDone:
+		t.Fatalf("first saveToken returned %v before running its check", err)
+	}
+
+	type seen struct {
+		cur        string
+		afterFirst bool
+	}
+	// Observe the second edit reaching the edit lock. The first already holds
+	// it (its check runs inside), so once the second is attempting it, its own
+	// check cannot run until the first releases: no timing window is needed. An
+	// edit that skipped the lock would never signal and fails below.
+	attempting := make(chan struct{})
+	realLock := lockEdits
+	lockEdits = func(p string, wait time.Duration) (func() error, error) {
+		close(attempting)
+		return realLock(p, wait)
+	}
+	t.Cleanup(func() { lockEdits = realLock })
+
+	secondSaw := make(chan seen, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- saveToken(path, tokenNew, func(cur string) error {
+			secondSaw <- seen{cur, unblocked.Load()}
+			return nil
+		})
+	}()
+
+	select {
+	case <-attempting:
+	case s := <-secondSaw:
+		close(unblock)
+		<-firstDone
+		<-secondDone
+		t.Fatalf("second edit ran its check (saw %q) without taking the edit lock", s.cur)
+	case <-time.After(10 * time.Second): // a failure bound, not synchronization
+		close(unblock)
+		t.Fatal("second edit never attempted the edit lock")
+	}
+	unblocked.Store(true)
+	close(unblock)
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first saveToken: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second saveToken: %v", err)
+	}
+	s := <-secondSaw
+	if !s.afterFirst {
+		t.Fatal("second edit ran its check before the first was unblocked")
+	}
+	if s.cur != firstToken {
+		t.Fatalf("second edit saw token %q, want the first edit's %q", s.cur, firstToken)
+	}
+	if got := loadToken(t, path); got != tokenNew {
+		t.Fatalf("final token = %q, want the second edit's %q", got, tokenNew)
 	}
 }

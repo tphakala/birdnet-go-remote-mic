@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
-import { captureFormatLabel, channelLabel, tallyStates } from "../lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -65,6 +65,7 @@ interface LiveBody {
 interface IdleBody {
   banner: HTMLElement;
   bannerIcon: HTMLElement;
+  bannerTitle: HTMLElement;
   bannerDesc: HTMLElement;
   footerNote: HTMLElement;
 }
@@ -270,6 +271,9 @@ export class DashboardView {
   // Device ids with a provisioning request in flight, so the Enable button shows
   // progress and a second click cannot double-provision.
   private provisioning: Set<string> = new Set();
+  // The last available-device list rendered, serialized, so an unchanged poll
+  // skips the rebuild.
+  private availableKey = "";
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
   // built from a fresh base only after the previous mutation settled. Prevents a
@@ -454,6 +458,12 @@ export class DashboardView {
   private renderAvailable(available: AvailableDevice[]): void {
     if (!this.availableRack || !this.availableSection) return;
     this.availableSection.hidden = available.length === 0;
+    // The store announces this list on every poll. Rebuild only when it
+    // changed, so an unchanged list keeps the operator's text selection (the
+    // device id is there to be copied) and keyboard focus on an Enable button.
+    const key = JSON.stringify(available);
+    if (key === this.availableKey) return;
+    this.availableKey = key;
     this.availableRack.textContent = "";
     for (const d of available) {
       this.availableRack.appendChild(this.buildAvailableCard(d));
@@ -467,18 +477,25 @@ export class DashboardView {
     // has no friendly name: the address is what the rest of the card shows.
     info.appendChild(elem("div", "device-title", d.friendlyName || d.hwAddr || d.device));
     const sub = elem("div", "available-sub");
-    const addr = elem("span", "mono", d.hwAddr ?? d.device);
-    addr.title = `Device id: ${d.device}`;
-    sub.appendChild(addr);
+    sub.appendChild(elem("span", "mono", d.hwAddr ?? d.device));
     if (d.idStable === false) sub.appendChild(elem("span", "available-caps", "no stable id"));
     const caps = capsSummary(d);
     if (caps) sub.appendChild(elem("span", "available-caps", caps));
     info.appendChild(sub);
+    // The id provisioning persists, shown as selectable text rather than a
+    // tooltip (unreachable by keyboard, touch and screen readers), so an operator
+    // can tell which of two identical units (serial or port) this card binds.
+    if (d.hwAddr && d.device !== d.hwAddr) {
+      info.appendChild(elem("div", "available-id mono", `Device id: ${d.device}`));
+    }
 
     const enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
     // Name the device in the accessible label: there is one Enable button per
     // available device, so a bare "Enable" is ambiguous to a screen-reader user.
-    enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.hwAddr || d.device}`);
+    // Two identical units share a friendly name, so add the address to tell
+    // their buttons apart.
+    const which = d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+    enableBtn.setAttribute("aria-label", `Enable ${which}`);
     if (this.provisioning.has(d.device)) setBusy(enableBtn, "Enabling...");
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
@@ -504,9 +521,20 @@ export class DashboardView {
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Enable failed");
+      // A 404 (the device left or was re-detected) or 409 (already set up)
+      // means this card is stale; refresh now rather than at the next poll.
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
     } finally {
       this.provisioning.delete(d.device);
       clearBusy(btn, "Enable");
+      // A poll that changed the list meanwhile rebuilt the card with a fresh
+      // busy button, which btn no longer is; re-render so it is not left stuck
+      // on "Enabling..." while an unchanged list skips the rebuild. A device
+      // no longer listed (the usual success) has no card left to fix.
+      if (!btn.isConnected && store.getState().available.some((a) => a.device === d.device)) {
+        this.availableKey = "";
+        this.renderAvailable(store.getState().available);
+      }
     }
   }
 
@@ -782,7 +810,9 @@ export class DashboardView {
       const banner = elem("div", "error-banner");
       const bannerIcon = iconSpan(ICON_WARN, "error-banner-icon");
       const body = elem("div", "error-banner-body");
-      body.appendChild(elem("span", "error-banner-title", "Device excluded from streaming"));
+      // syncCard titles the banner by the device's down cause.
+      const bannerTitle = elem("span", "error-banner-title", downCauseTitle(undefined));
+      body.appendChild(bannerTitle);
       const bannerDesc = elem("span", "error-banner-desc");
       body.appendChild(bannerDesc);
       banner.appendChild(bannerIcon);
@@ -796,7 +826,7 @@ export class DashboardView {
       footer.appendChild(settingsBtn);
       article.appendChild(footer);
 
-      idle = { banner, bannerIcon, bannerDesc, footerNote };
+      idle = { banner, bannerIcon, bannerTitle, bannerDesc, footerNote };
     }
 
     return {
@@ -1002,11 +1032,13 @@ export class DashboardView {
     }
     if (entry.idle) {
       setHidden(entry.idle.banner, !d.error);
-      const bannerKey = d.state === "failed" ? "error" : "warn";
+      const isError = bannerIsError(d.state, d.downCause);
+      const bannerKey = isError ? "error" : "warn";
       if (entry.idle.bannerIcon.dataset.icon !== bannerKey) {
         entry.idle.bannerIcon.dataset.icon = bannerKey;
-        entry.idle.bannerIcon.innerHTML = d.state === "failed" ? ICON_ERROR : ICON_WARN;
+        entry.idle.bannerIcon.innerHTML = isError ? ICON_ERROR : ICON_WARN;
       }
+      setText(entry.idle.bannerTitle, downCauseTitle(d.downCause));
       setText(entry.idle.bannerDesc, d.error ?? "");
       setText(entry.idle.footerNote, nonServingFooterText(d.state, configEnabled));
     }

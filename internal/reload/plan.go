@@ -88,8 +88,9 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 // config save could have changed a faulted stream. It compares only the
 // capture and stream parameters, never Name, Enabled or QuietAlert: every
 // field that feeds the capture open (Device/Rate/Format) and the full ordered
-// stream set (each stream's path, mode, channels and Opus bitrate feed a
-// pipeline stage, an SDP and an RTSP mount). Any stream add, remove or edit
+// stream set (each stream's path, mode, channels and, for an Opus stream, its
+// effective bitrate feed a pipeline stage, an SDP and an RTSP mount; see
+// streamEqual). Any stream add, remove or edit
 // restarts the whole device, because one ALSA open is shared by every stream
 // and the handle cannot change per stream.
 // The name is the identity key and is equal by construction here; the enabled
@@ -102,10 +103,14 @@ func CaptureParamsEqual(a, b *config.Device) bool {
 }
 
 // streamEqual reports whether two streams build an identical pipeline stage, SDP
-// and RTSP mount.
+// and RTSP mount. The Opus bitrate is compared as the encoder and SDP see it
+// (EffectiveBitrate), so a saved explicit value that equals the default and an
+// unset one (0, "follow the default") do not restart a stream that would come
+// back identical; a PCM stream has no encoder, so its bitrate is ignored.
 func streamEqual(a, b config.Stream) bool {
-	return a.Path == b.Path &&
-		a.Mode == b.Mode &&
-		a.Opus.Bitrate == b.Opus.Bitrate &&
-		slices.Equal(a.Channels, b.Channels)
+	if a.Path != b.Path || a.Mode != b.Mode || !slices.Equal(a.Channels, b.Channels) {
+		return false
+	}
+	return a.Mode != config.ModeOpus ||
+		a.Opus.EffectiveBitrate(len(a.Channels)) == b.Opus.EffectiveBitrate(len(b.Channels))
 }

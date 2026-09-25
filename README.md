@@ -314,8 +314,26 @@ or a certificate path in the file needs no restart. A file that sets
 the appliance is still starting up, before it has published where its API
 listens, while one of those background attempts runs, or in the seconds
 after its API stops while that API drains (up to about 10 seconds with a
-browser open), asks you to retry in a few seconds. The config is written 0600, so run
-the commands as the account the appliance runs as.
+browser open), asks you to retry in a few seconds; so does a command run
+while another token command is changing the same config with no appliance
+running. While an appliance runs without its management API, two commands
+editing the file at once take turns on a second lock file
+(`config.yaml.lock.edit`), so neither change is lost.
+
+The config is written 0600, so run the commands as the account the appliance
+runs as, the one that owns the config file (`remote-mic` for the installed
+service), for example `sudo -u remote-mic remote-mic token generate --config
+/etc/remote-mic/config.yaml`. `generate`, `set`, and `clear` refuse to run as
+any other account, root included, because a lock file or config written by
+another account is one the appliance's own account can no longer open; the
+error names the owning account and the command to run instead. When the config
+does not exist yet, the check uses the owner of the directory that will hold
+it, except in a shared directory (sticky or world-writable, such as `/tmp`),
+where that owner says nothing about the appliance's account and the command is
+not refused. A group-writable directory owned by another account (say
+root-owned, mode 0770, group `remote-mic`) is not treated as shared; create the
+config there as the appliance's account first, or keep the installer's layout,
+where the directory belongs to the appliance's account.
 
 You can also set it by hand:
 

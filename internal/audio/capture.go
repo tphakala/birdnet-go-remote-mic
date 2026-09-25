@@ -280,8 +280,12 @@ func (s *selectingSource) Read() (Period, error) {
 		s.out = make([]byte, need)
 	}
 	out := s.out[:need]
+	// Plain indexed copies on purpose: slicing a per-frame or per-sample window
+	// to drop the bounds checks measured slower for the one- and two-channel
+	// selections that dominate here (the per-frame window setup costs more than
+	// the checks it removes), on amd64, arm64 and arm alike.
 	srcFrameBytes := s.srcCh * 2
-	for f := 0; f < p.Frames; f++ {
+	for f := range p.Frames {
 		base := f * srcFrameBytes
 		o := f * outCh * 2
 		for j, ci := range s.idx {

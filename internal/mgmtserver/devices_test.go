@@ -727,15 +727,58 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 	})
 
 	t.Run("empty channels array still probes", func(t *testing.T) {
+		// Through ProvisionDevice, not preferredChannel directly: the decision to
+		// probe for an explicit empty array is made by ProvisionDevice's check.
+		called := false
+		store, _ := tempStore(t)
+		prov := &fakeProvider{available: []AvailableDevice{
+			{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}},
+		}}
+		s := New(prov, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }),
+			WithChannelProbe(func(context.Context, string, int, int) ([]float64, error) {
+				called = true
+				return []float64{-90, -10}, nil
+			}))
+		resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+			Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr()},
+		})
+		if err != nil {
+			t.Fatalf("ProvisionDevice: %v", err)
+		}
+		created, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse)
+		if !ok {
+			t.Fatalf("returned %T, want 201", resp)
+		}
+		if !called || !slices.Equal(created.Channels, []int{2}) {
+			t.Errorf("probe called=%v, channels=%v; want the probe run and the loudest channel [2]", called, created.Channels)
+		}
+	})
+
+	t.Run("steps down when the widest count fails at the rate", func(t *testing.T) {
+		var tried []int
+		s := newServer(func(_ context.Context, _ string, _, channels int) ([]float64, error) {
+			tried = append(tried, channels)
+			if channels > 2 {
+				return nil, errors.New("invalid channel count at this rate")
+			}
+			return []float64{-90, -10}, nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{192000}, SupportedChannels: []int{1, 2, 4, 8}}
+		got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)})
+		if got != 2 || !slices.Equal(tried, []int{8, 4, 2}) {
+			t.Errorf("channel %d after widths %v; want channel 2 after trying [8 4 2]", got, tried)
+		}
+	})
+
+	t.Run("single-channel device skips the probe", func(t *testing.T) {
 		called := false
 		s := newServer(func(context.Context, string, int, int) ([]float64, error) {
 			called = true
-			return []float64{-90, -10}, nil
+			return nil, nil
 		})
-		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{2}}
-		s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr()})
-		if !called {
-			t.Error("probe did not run for an explicit empty channels array")
+		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{1}}
+		if got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{}); called || got != 1 {
+			t.Errorf("probe called=%v, channel=%d; want no probe and channel 1", called, got)
 		}
 	})
 
@@ -796,11 +839,117 @@ func TestProvisionDeviceConfiguredUnderAnotherIDYields409(t *testing.T) {
 	if !ok {
 		t.Fatalf("returned %T, want 409", resp)
 	}
-	if got.Detail == nil || !strings.Contains(*got.Detail, "under another id") {
-		t.Errorf("409 detail = %v, want it to say the device is configured under another id", got.Detail)
+	if got.Detail == nil || !strings.Contains(*got.Detail, "another entry") {
+		detail := "<nil>"
+		if got.Detail != nil {
+			detail = *got.Detail
+		}
+		t.Errorf("409 detail = %q, want it to say the device is set up as another entry", detail)
 	}
 	if called {
 		t.Error("channel probe ran for a device the config already owns")
+	}
+}
+
+// TestProvisionDeviceRechecksAliasUnderLock pins the alias check repeated under
+// patchMu: a device the config comes to own under another id while this
+// request probes (a concurrent PATCH adding an alias, simulated from the probe)
+// is refused with a 409 instead of being persisted as a second entry.
+func TestProvisionDeviceRechecksAliasUnderLock(t *testing.T) {
+	store, _ := tempStore(t)
+	dev := AvailableDevice{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}}
+	prov := &fakeProvider{available: []AvailableDevice{dev}}
+	probe := func(context.Context, string, int, int) ([]float64, error) {
+		// The concurrent alias lands: the device is still detected but no longer
+		// available.
+		prov.available, prov.detected = nil, []AvailableDevice{dev}
+		return []float64{-90, -10}, nil
+	}
+	before := len(store.Config().Devices)
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe),
+		WithReloader(func(context.Context, config.Config) error { return nil }))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse); !ok {
+		t.Fatalf("returned %T, want 409", resp)
+	}
+	if got := len(store.Config().Devices); got != before {
+		t.Errorf("persisted %d devices, want %d (the aliased device must not be added)", got, before)
+	}
+}
+
+// TestProvisionDeviceUnpluggedDuringProbeYields404 pins that a device that
+// leaves the host while provisioning probes it is reported as gone (404), not
+// as configured under another id (409): the available view hides both, and
+// only the detected view tells them apart.
+func TestProvisionDeviceUnpluggedDuringProbeYields404(t *testing.T) {
+	store, _ := tempStore(t)
+	dev := AvailableDevice{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}}
+	prov := &fakeProvider{available: []AvailableDevice{dev}}
+	probe := func(context.Context, string, int, int) ([]float64, error) {
+		prov.available, prov.detected = nil, nil // unplugged mid-probe
+		return []float64{-90, -10}, nil
+	}
+	before := len(store.Config().Devices)
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe),
+		WithReloader(func(context.Context, config.Config) error { return nil }))
+	resp, err := s.ProvisionDevice(t.Context(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice404ApplicationProblemPlusJSONResponse); !ok {
+		t.Fatalf("returned %T, want 404", resp)
+	}
+	if got := len(store.Config().Devices); got != before {
+		t.Errorf("persisted %d devices, want %d", got, before)
+	}
+}
+
+// TestProbeWidths pins the probe's width ladder: widest first, only counts of
+// two or more, capped at the config maximum and deduplicated, and the cap alone
+// when the device reported no counts.
+func TestProbeWidths(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		supported []int
+		want      []int
+	}{
+		{"unknown counts probe at the cap", nil, []int{config.MaxChannels}},
+		{"single channel probes nothing", []int{1}, nil},
+		{"widest first, mono dropped", []int{1, 2, 4, 8}, []int{8, 4, 2}},
+		{"over-cap counts collapse to one cap", []int{2, 16, 32}, []int{config.MaxChannels, 2}},
+		{"duplicates removed", []int{4, 2, 4}, []int{4, 2}},
+	} {
+		if got := probeWidths(tc.supported); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: probeWidths(%v) = %v, want %v", tc.name, tc.supported, got, tc.want)
+		}
+	}
+}
+
+// TestPreferredChannelStopsWhenBudgetSpent pins that the step-down stops once
+// the probe budget (or the request) is gone, instead of trying every narrower
+// width against a dead context.
+func TestPreferredChannelStopsWhenBudgetSpent(t *testing.T) {
+	t.Parallel()
+	var tried []int
+	probe := func(ctx context.Context, _ string, _, channels int) ([]float64, error) {
+		tried = append(tried, channels)
+		return nil, ctx.Err()
+	}
+	store, _ := tempStore(t)
+	s := New(&fakeProvider{}, WithConfigStore(store), WithChannelProbe(probe))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{2, 4, 8}}
+	if got := s.preferredChannel(ctx, d, &mgmtapi.ProvisionDeviceRequest{}); got != 1 || !slices.Equal(tried, []int{8}) {
+		t.Errorf("channel %d after widths %v; want channel 1 after trying only [8]", got, tried)
 	}
 }
 

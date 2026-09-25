@@ -82,6 +82,11 @@ type DeviceStatus struct {
 	ClientConnected  bool
 	DroppedFrames    int64
 	Error            string
+	// DownCause classifies why a skipped or failed device is not serving (the
+	// wire downCause enum: not-connected, ambiguous, malformed, resolve-failed,
+	// same-hardware, open-failed, disconnected, failed); empty when there is no
+	// specific class.
+	DownCause string
 	// FriendlyName is a human-facing label derived from the sound card name,
 	// empty when the device id resolved to no present hardware.
 	FriendlyName string
@@ -389,6 +394,12 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	}
 	if d.Error != "" {
 		out.Error = ptr(d.Error)
+	}
+	// Only a device that is not serving carries a cause. The appliance builds a
+	// fresh record when a device starts serving, so this guard is defensive: a
+	// provider that kept a cause on a serving record still reports none.
+	if d.DownCause != "" && d.State != StateServing {
+		out.DownCause = new(mgmtapi.DeviceDownCause(d.DownCause))
 	}
 	if d.FriendlyName != "" {
 		out.FriendlyName = ptr(d.FriendlyName)

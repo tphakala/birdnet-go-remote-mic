@@ -42,3 +42,44 @@ export function captureFormatLabel(token: string): string {
       return token.toUpperCase();
   }
 }
+
+// needsNotificationsFallback reports whether the app should load the
+// notifications snapshot directly once the post-boot or post-login grace has
+// passed: when none has loaded, or when the stream is still down (a previous
+// session's snapshot is not fresh, and only a connected stream re-syncs it).
+export function needsNotificationsFallback(hasLoaded: boolean, connected: boolean): boolean {
+  return !hasLoaded || !connected;
+}
+
+// bannerIsError reports whether a non-serving device's banner shows the error
+// icon rather than the warning one. A failed device does, except one that was
+// unplugged: it is waiting to be reconnected, not broken.
+export function bannerIsError(state: string, cause: string | undefined): boolean {
+  return state === "failed" && cause !== "disconnected";
+}
+
+// downCauseTitle is the banner title for a device that is not serving, matching
+// the title of the notification the appliance raises for the same cause. An
+// absent or unknown cause (an older appliance, or a class added later) keeps the
+// generic title.
+export function downCauseTitle(cause: string | undefined): string {
+  switch (cause) {
+    case "not-connected":
+      return "Device not connected";
+    case "ambiguous":
+      return "Device ambiguous";
+    case "malformed":
+      return "Invalid device id";
+    case "same-hardware":
+      return "Device conflict";
+    case "resolve-failed":
+    case "open-failed":
+      return "Device unavailable";
+    case "disconnected":
+      return "Device disconnected";
+    case "failed":
+      return "Device failed";
+    default:
+      return "Device excluded from streaming";
+  }
+}

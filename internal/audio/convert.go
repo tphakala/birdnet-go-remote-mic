@@ -11,10 +11,11 @@ package audio
 func downconvertS32ToS16(dst, src []byte) int {
 	samples := len(src) / 4
 	d := dst[:samples*2] // output is exactly samples*2 bytes
-	for i := 0; i < samples; i++ {
-		s := src[i*4 : i*4+4] // one slice-bind proves s[2] and s[3] in bounds
-		d[i*2] = s[2]
-		d[i*2+1] = s[3]
+	for i := range samples {
+		s := src[i*4 : i*4+4] // slice-bind proves s[2] and s[3] in bounds
+		o := d[i*2 : i*2+2 : i*2+2]
+		o[0] = s[2]
+		o[1] = s[3]
 	}
 	return samples * 2
 }
@@ -34,10 +35,11 @@ func downconvertS32ToS16(dst, src []byte) int {
 func downconvertS24ToS16(dst, src []byte, srcBytes int) int {
 	samples := len(src) / srcBytes
 	d := dst[:samples*2] // output is exactly samples*2 bytes
-	for i := 0; i < samples; i++ {
+	for i := range samples {
 		s := src[i*srcBytes : i*srcBytes+3] // slice-bind proves s[1] and s[2] in bounds
-		d[i*2] = s[1]
-		d[i*2+1] = s[2]
+		o := d[i*2 : i*2+2 : i*2+2]
+		o[0] = s[1]
+		o[1] = s[2]
 	}
 	return samples * 2
 }

@@ -189,6 +189,42 @@ func TestDownconvertS24LEToS16IgnoresPaddingByte(t *testing.T) {
 	}
 }
 
+func TestDownconvertS24LEToS16Interleaved(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		src  []byte
+		want []int16
+	}{
+		{
+			name: "stereo_two_frames",
+			// Two stereo frames (4 samples, 4 bytes each) with varying padding bytes.
+			src: []byte{
+				0x11, 0x22, 0x33, 0x00, // ch0 frame0 -> 0x3322
+				0x44, 0x55, 0x66, 0xFF, // ch1 frame0 -> 0x6655
+				0xAA, 0xBB, 0xCC, 0x5A, // ch0 frame1 -> 0xCCBB
+				0x00, 0x00, 0x7F, 0xA5, // ch1 frame1 -> 0x7F00
+			},
+			want: []int16{0x3322, 0x6655, -0x3345 /* 0xCCBB */, 0x7F00},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dst := make([]byte, len(tc.want)*2)
+			n := downconvertS24LEToS16(dst, tc.src)
+			if n != len(tc.want)*2 {
+				t.Fatalf("wrote %d bytes, want %d", n, len(tc.want)*2)
+			}
+			for i, w := range tc.want {
+				if got := int16(binary.LittleEndian.Uint16(dst[i*2:])); got != w {
+					t.Errorf("sample %d = %#04x, want %#04x", i, uint16(got), uint16(w))
+				}
+			}
+		})
+	}
+}
+
 func TestDownconvertS24ToS16Interleaved(t *testing.T) {
 	t.Parallel()
 	// Two stereo S24_3LE frames (4 samples) verify the strided copy keeps channel

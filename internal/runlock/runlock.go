@@ -14,6 +14,16 @@
 // holder's leftover state, and on release. Unlinking a flock'd path lets a late
 // opener lock the orphaned inode while a new file is locked under the same name,
 // so two holders could both believe they are alone.
+//
+// A second lock, the edit lock (EditPathFor, taken with LockEdits), serializes
+// direct edits of the config file between token commands. The run lock cannot
+// do that while an appliance runs without its management API: the appliance
+// holds the run lock for its whole life, so two token commands that both fall
+// back to editing the file would race their load, check, and save, and the last
+// writer would silently win. The edit lock lives in its own file, so taking it
+// never contends with the appliance's run lock, and the appliance never takes
+// it. It carries no content and, for the same reason as the run lock, is never
+// unlinked.
 package runlock
 
 import (
@@ -29,7 +39,8 @@ import (
 // ErrHeld reports that another process holds the lock.
 var ErrHeld = errors.New("runlock: held by another process")
 
-// retryInterval is how often Acquire retries a held lock while it waits.
+// retryInterval is how often Acquire (and so LockEdits) retries a held lock
+// while it waits.
 const retryInterval = 50 * time.Millisecond
 
 // State is what a running appliance publishes in its lock file. MgmtAddr and
@@ -60,8 +71,19 @@ type Lock struct {
 // that share a resolved directory still take one lock. If the base is itself a
 // dangling symlink (its target not created yet), the link is followed one hop so
 // the link and its future target still converge on one lock. Only when the
-// directory cannot be resolved is the literal path used.
+// directory cannot be resolved is the unresolved path used (made absolute when
+// the working directory is known, as every result is).
 func PathFor(cfgPath string) string {
+	// Anchor a relative spelling first, so it yields the same lock path string as
+	// the absolute one (EvalSymlinks keeps a relative input relative). Join by
+	// hand rather than with filepath.Abs, which cleans ".." as text: after a
+	// symlink, the kernel and EvalSymlinks resolve ".." against the link's
+	// target, so cleaning first could name a different file than the one opened.
+	if !filepath.IsAbs(cfgPath) {
+		if wd, err := os.Getwd(); err == nil {
+			cfgPath = wd + string(filepath.Separator) + cfgPath
+		}
+	}
 	if resolved, err := filepath.EvalSymlinks(cfgPath); err == nil {
 		return resolved + ".lock"
 	}
@@ -91,6 +113,31 @@ func PathFor(cfgPath string) string {
 		return filepath.Clean(target) + ".lock"
 	}
 	return full + ".lock"
+}
+
+// editSuffix names the edit lock file beside the run lock file.
+const editSuffix = ".edit"
+
+// EditPathFor returns the edit lock file path for the config file at cfgPath:
+// the run lock path from PathFor plus ".edit", so every spelling of one config
+// converges on one edit lock exactly as it does on one run lock.
+func EditPathFor(cfgPath string) string {
+	return PathFor(cfgPath) + editSuffix
+}
+
+// LockEdits takes the exclusive edit lock for the config file at cfgPath,
+// creating the lock file (0600) if needed. It retries for up to wait while
+// another process holds the lock, so a concurrent token command waits its turn
+// for the few milliseconds of an edit rather than failing; a lock still held
+// after wait returns ErrHeld. The caller holds it across the whole load, check,
+// and save of the config, then calls release, which empties the (contentless)
+// file and closes the descriptor, dropping the flock.
+func LockEdits(cfgPath string, wait time.Duration) (release func() error, err error) {
+	l, err := Acquire(EditPathFor(cfgPath), wait)
+	if err != nil {
+		return nil, err
+	}
+	return l.Release, nil
 }
 
 // TryAcquire takes the lock at path without waiting, creating the file (0600)

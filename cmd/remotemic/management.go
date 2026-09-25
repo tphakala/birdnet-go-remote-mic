@@ -506,9 +506,11 @@ func (p *provider) Device(name string) (mgmtserver.DeviceStatus, bool) {
 // published, then read lock-free), so the stale-address suppression for a failed
 // device is done at read time in status() instead, which keeps the field
 // immutable-after-publish and free of a data race with the API readers.
-func (rt *deviceRuntime) markFailed(err error) {
+// cause is the down class (downDisconnected or downFailed) the API reports.
+func (rt *deviceRuntime) markFailed(err error, cause string) {
 	rt.mu.Lock()
 	rt.state = mgmtserver.StateFailed
+	rt.downCause = cause
 	if err != nil {
 		rt.err = err.Error()
 	}
@@ -525,7 +527,7 @@ func (rt *deviceRuntime) currentState() mgmtserver.DeviceState {
 // are reported only for a device that actually opened (src is non-nil).
 func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	rt.mu.Lock()
-	state, errMsg := rt.state, rt.err
+	state, errMsg, downCause := rt.state, rt.err, rt.downCause
 	rt.mu.Unlock()
 
 	// A device that died after startup is no longer capturing at its last-known
@@ -543,6 +545,7 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		Config:            rt.dev,
 		State:             state,
 		Error:             errMsg,
+		DownCause:         downCause,
 		DroppedFrames:     int64(rt.droppedTotal()),
 		FriendlyName:      rt.friendlyName,
 		HWAddr:            hwAddr,
@@ -765,9 +768,7 @@ type mgmtParams struct {
 	guard     *auth.Guard
 	// runLock publishes where the API listens, or that none serves; nil
 	// publishes nothing.
-	runLock  *runLockPublisher
-	certPath string
-	keyPath  string
+	runLock *runLockPublisher
 	// drainTimeout bounds each of a stopping API's two waits: for its
 	// connections to go idle before it closes them, and then for handlers
 	// still running after the close. Zero means mgmtDrainTimeout. Tests
@@ -783,25 +784,31 @@ const mgmtDrainTimeout = 5 * time.Second
 
 // useConfig makes running (a config with the serve overrides applied) the one
 // the next serveManagement binds and reads the certificate from, and publishes
-// the certificate paths to the provider. setCertificate reads certPath to
-// decide the Managed flag (a pin marker sits beside it), and Regenerate/Install
-// write there, so the paths are published before the certificate is prepared.
-// No API serves while this runs, but a handler of the previous one that ignores
-// its cancelled request can outlive the drain's bounded wait (see
-// serveManagement), so the paths are written under
-// certMu, which Regenerate and Install hold while they read them.
+// the certificate paths to the provider, their single home. setCertificate reads
+// certPath to decide the Managed flag (a pin marker sits beside it), and
+// Regenerate/Install write there, so the paths are published before the
+// certificate is prepared. No API serves while this runs, but a handler of the
+// previous one that ignores its cancelled request can outlive the drain's
+// bounded wait (see serveManagement), so the paths are written under certMu,
+// which Regenerate and Install hold while they read them.
 func (p *mgmtParams) useConfig(running *config.Config) {
 	p.cfg = running
 	certDir := running.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(p.cfgPath)
 	}
-	p.certPath = filepath.Join(certDir, "mgmt-cert.pem")
-	p.keyPath = filepath.Join(certDir, "mgmt-key.pem")
 	p.prov.certMu.Lock()
-	p.prov.certPath = p.certPath
-	p.prov.keyPath = p.keyPath
+	p.prov.certPath = filepath.Join(certDir, "mgmt-cert.pem")
+	p.prov.keyPath = filepath.Join(certDir, "mgmt-key.pem")
 	p.prov.certMu.Unlock()
+}
+
+// certFile returns the certificate path useConfig last published, read under
+// certMu like every other reader of the provider's paths.
+func (p *mgmtParams) certFile() string {
+	p.prov.certMu.Lock()
+	defer p.prov.certMu.Unlock()
+	return p.prov.certPath
 }
 
 // startManagement generates or loads the self-signed certificate and serves the
@@ -906,7 +913,7 @@ func (p *mgmtParams) died(s *mgmtServer, _ error) {
 func (p *mgmtParams) prepareCertificate() (mounted bool, err error) {
 	p.prov.certMu.Lock()
 	defer p.prov.certMu.Unlock()
-	cert, err := mgmtcert.Ensure(p.certPath, p.keyPath, certHosts())
+	cert, err := mgmtcert.Ensure(p.prov.certPath, p.prov.keyPath, certHosts())
 	if err != nil {
 		return false, fmt.Errorf("cannot prepare TLS certificate: %w", err)
 	}
@@ -999,8 +1006,9 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		},
 	}
 
+	certPath := p.certFile()
 	s := &mgmtServer{
-		mgmtEndpoint: mgmtEndpoint{addr: ln.Addr().String(), certPath: p.certPath},
+		mgmtEndpoint: mgmtEndpoint{addr: ln.Addr().String(), certPath: certPath},
 		store:        store,
 		ln:           ln,
 		halted:       make(chan struct{}),
@@ -1051,7 +1059,7 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		}
 	}()
 
-	log.Printf("management API on https://%s%s (certificate at %s)", p.cfg.Management.Listen, mgmtserver.BasePath, p.certPath)
+	log.Printf("management API on https://%s%s (certificate at %s)", p.cfg.Management.Listen, mgmtserver.BasePath, certPath)
 	return s, nil
 }
 
