@@ -6,9 +6,11 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
@@ -127,9 +129,23 @@ func TestOnPumpDoneDeathEmitsDownOnset(t *testing.T) {
 		t.Fatalf("a healthy start left %d active conditions, want 0", got)
 	}
 
+	// The re-resolve that decides lost versus failed is a host enumeration;
+	// record what the API would report while it runs, so the record is proven
+	// failed before it, not only afterwards.
+	rt := app.devices["a"]
+	var duringResolve mgmtserver.DeviceState
+	resolve := app.resolve
+	app.resolve = func(id string) (audio.Hardware, error) {
+		duringResolve = rt.currentState()
+		return resolve(id)
+	}
+
 	// Simulate the device dying after startup: its pump reports a non-nil error
 	// while the appliance is not shutting down.
-	app.onPumpDone(pumpResult{rt: app.devices["a"], err: errors.New("device died")})
+	app.onPumpDone(pumpResult{rt: rt, err: errors.New("device died")})
+	if duringResolve != mgmtserver.StateFailed {
+		t.Errorf("state during the re-resolve = %q, want %q", duringResolve, mgmtserver.StateFailed)
+	}
 
 	act := center.Active()
 	if len(act) != 1 {

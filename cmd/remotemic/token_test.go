@@ -1048,7 +1048,11 @@ func TestSaveTokenSerializesEdits(t *testing.T) {
 			return nil
 		})
 	}()
-	<-inside
+	select {
+	case <-inside:
+	case err := <-firstDone:
+		t.Fatalf("first saveToken returned %v before running its check", err)
+	}
 
 	type seen struct {
 		cur        string

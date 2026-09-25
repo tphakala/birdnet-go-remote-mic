@@ -897,7 +897,7 @@ func TestProvisionDeviceUnpluggedDuringProbeYields404(t *testing.T) {
 	before := len(store.Config().Devices)
 	s := New(prov, WithConfigStore(store), WithChannelProbe(probe),
 		WithReloader(func(context.Context, config.Config) error { return nil }))
-	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+	resp, err := s.ProvisionDevice(t.Context(), mgmtapi.ProvisionDeviceRequestObject{
 		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
 	})
 	if err != nil {

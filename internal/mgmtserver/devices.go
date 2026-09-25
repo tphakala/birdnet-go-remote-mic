@@ -212,8 +212,8 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// means the config already owns it under ANOTHER id (for example a card-index
 	// id that resolves to it); provisioning it again would open one device from
 	// two entries. This is re-checked under patchMu below.
-	if !s.isAvailable(req.Device) {
-		return aliasConflict(req.Device), nil
+	if resp := s.unavailable(req.Device); resp != nil {
+		return resp, nil
 	}
 
 	// With no channel selection in the request, default to the loudest channel.
@@ -246,14 +246,9 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// reconcile republishes the ids the config owns, resolved aliases included,
 	// before it opens anything. So a device claimed meanwhile under another id is
 	// hidden from the available view here; with only the pre-lock check, a
-	// concurrent alias could persist two entries for one device. A device that
-	// left the host during the probe is hidden too, so tell the two apart: it is
-	// gone (404), not owned under another id (409).
-	if !s.isAvailable(req.Device) {
-		if _, still := s.provider.DetectedDevice(req.Device); !still {
-			return deviceGone(req.Device), nil
-		}
-		return aliasConflict(req.Device), nil
+	// concurrent alias could persist two entries for one device.
+	if resp := s.unavailable(req.Device); resp != nil {
+		return resp, nil
 	}
 
 	var created config.Device
@@ -306,12 +301,19 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	return mgmtapi.ProvisionDevice201JSONResponse(configDeviceToWireDevice(&created)), nil
 }
 
-// isAvailable reports whether the host device id is in the available view, that
-// is, detected and not owned by the config under any id.
-func (s *Server) isAvailable(id string) bool {
-	return slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool {
-		return ad.ID == id
-	})
+// unavailable returns the response for a host device id missing from the
+// available view, or nil when it is available (detected and not owned by the
+// config under any id). The view hides both a device the config owns under
+// another id and one that has left the host, so the detected view tells them
+// apart: gone (404), not owned under another id (409).
+func (s *Server) unavailable(id string) mgmtapi.ProvisionDeviceResponseObject {
+	if slices.ContainsFunc(s.provider.AvailableDevices(), func(ad AvailableDevice) bool { return ad.ID == id }) {
+		return nil
+	}
+	if _, detected := s.provider.DetectedDevice(id); !detected {
+		return deviceGone(id)
+	}
+	return aliasConflict(id)
 }
 
 // aliasConflict is the 409 for a detected device the config already owns under

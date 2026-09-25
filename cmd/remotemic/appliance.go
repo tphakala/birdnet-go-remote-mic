@@ -206,9 +206,9 @@ type hwResult struct {
 // Cause classes for a device's down condition. A change of class while the
 // device stays down re-raises the condition, except between two retryable
 // classes during an unattended retry (see markDown). They are also the API's
-// downCause values, so a new class needs the enum in api/openapi.yaml
-// (TestDownCausesAreWireEnumMembers) and a banner title in the web UI's
-// downCauseTitle.
+// downCause values, so a new class needs the enum in api/openapi.yaml, an entry
+// in TestDownCausesAreWireEnumMembers's list (which checks it against that
+// enum), and a banner title in the web UI's downCauseTitle.
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
