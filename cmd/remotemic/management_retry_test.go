@@ -25,21 +25,40 @@ import (
 // patchedToken is a token saved through an API before its listener fails.
 const patchedToken = "patched-before-the-fault-token"
 
+// editedToken is a token the token CLI wrote to the file while no API served.
+const editedToken = "edited-while-down-token"
+
 // fakeServer returns a server that looks like an API serving at addr until
-// stop is called with why it stopped (nil for a shutdown on ctx).
+// stop is called with why it stopped (nil for a shutdown on ctx); it drains at
+// once.
 func fakeServer(addr string) (s *mgmtServer, stop func(error)) {
-	s = &mgmtServer{mgmtEndpoint: mgmtEndpoint{addr: addr, certPath: "cert.pem"}, stopped: make(chan struct{})}
+	s, halt, drained := fakeDrainingServer(addr)
 	return s, func(err error) {
-		s.err = err
-		close(s.stopped)
+		halt(err)
+		drained()
 	}
+}
+
+// fakeDrainingServer is fakeServer with the stop split in two, as a real API
+// stops: halt stops it serving with why, and drained ends its drain.
+func fakeDrainingServer(addr string) (s *mgmtServer, halt func(error), drained func()) {
+	s = &mgmtServer{mgmtEndpoint: mgmtEndpoint{addr: addr, certPath: "cert.pem"}, halted: make(chan struct{}), stopped: make(chan struct{})}
+	return s, func(err error) {
+			s.err = err
+			close(s.halted)
+		}, func() {
+			close(s.stopped)
+		}
 }
 
 // supervise runs superviseManagement on a fresh handle, as startManagementWith
 // does, and returns the handle.
 func supervise(ctx context.Context, srv *mgmtServer, startErr error, r mgmtRetry) *mgmt {
-	m := &mgmt{done: make(chan struct{})}
+	m := newMgmt()
 	m.cur.Store(srv)
+	if r.halted == nil {
+		r.halted = func(*mgmtServer, error) {}
+	}
 	if r.died == nil {
 		r.died = func(*mgmtServer, error) {}
 	}
@@ -391,7 +410,7 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 // fault through the real server: the dead API raises the outage, a new API
 // serves the config (with its PATCHes) of the one that died and is advertised
 // in the run lock, and nothing is applied live. What the lock holds between
-// the death and the restart is pinned by TestMgmtParamsDied.
+// the death and the restart is pinned by TestMgmtParamsHaltedThenDied.
 func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -475,11 +494,15 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	h.Wait()
 }
 
-// TestMgmtParamsDied pins what an API that stopped on its own leaves behind
-// while the backoff runs, before any attempt can overwrite it: the run lock
-// advertises no address, the store seed is the dead API's config (with its
-// PATCHes), and the outage is raised.
-func TestMgmtParamsDied(t *testing.T) {
+// TestMgmtParamsHaltedThenDied pins what an API that stopped on its own leaves behind,
+// in two steps. The moment it stops (halted), before its drain: the run lock
+// stops advertising the dead address and reads as starting, so a token command
+// asks the operator to retry rather than editing the file while a handler of
+// the dead API may still save it; and the outage is raised. Once it drained
+// (died), before any attempt can overwrite it: the lock advertises no address,
+// so the token commands edit the file again, and the store seed is the dead
+// API's config (with its PATCHes).
+func TestMgmtParamsHaltedThenDied(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, testCfgFile)
@@ -506,19 +529,28 @@ func TestMgmtParamsDied(t *testing.T) {
 	}
 	center := notify.NewCenter()
 	p := &mgmtParams{cfgPath: cfgPath, storeCfg: &startup, center: center, runLock: pub}
-	p.died(&mgmtServer{store: store}, errors.New("accept: broken"))
+	dead := &mgmtServer{store: store}
+	p.halted(dead, errors.New("accept: broken"))
 
+	if st, ok, err := runlock.ReadState(lockPath); err != nil || ok {
+		t.Errorf("run lock after the stop = %+v, %v, %v; want starting (no state) until the drain ends", st, ok, err)
+	}
+	if act := center.Active(); len(act) != 1 || act[0].Key != mgmtDownKey || !strings.Contains(act[0].Message, "accept: broken") {
+		t.Errorf("active = %+v, want the outage naming the serve error", act)
+	}
+	if p.storeCfg.Auth.Token != "" {
+		t.Error("the store seed changed before the drain, while a handler may still save")
+	}
+
+	p.died(dead, errors.New("accept: broken"))
 	if st, ok, err := runlock.ReadState(lockPath); err != nil || !ok || st.MgmtAddr != "" {
-		t.Errorf("run lock = %+v, %v, %v; want a published state with no address", st, ok, err)
+		t.Errorf("run lock after the drain = %+v, %v, %v; want a published state with no address", st, ok, err)
 	}
 	if p.storeCfg.Auth.Token != patchedToken {
 		t.Errorf("store seed has token %q, want the dead API's patched one", p.storeCfg.Auth.Token)
 	}
 	if startup.Auth.Token != "" {
 		t.Error("the re-seed wrote through the startup snapshot run() holds")
-	}
-	if act := center.Active(); len(act) != 1 || act[0].Key != mgmtDownKey || !strings.Contains(act[0].Message, "accept: broken") {
-		t.Errorf("active = %+v, want the outage naming the serve error", act)
 	}
 }
 
@@ -612,7 +644,7 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	// The token CLI edited the file while no API was published.
 	edited := startup.Clone()
-	edited.Auth.Token = "edited-while-down-token"
+	edited.Auth.Token = editedToken
 	if err := config.Save(cfgPath, &edited); err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +859,7 @@ func TestRecoverManagementPublishesRunLock(t *testing.T) {
 
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	edited := startup.Clone()
-	edited.Auth.Token = "edited-while-down-token"
+	edited.Auth.Token = editedToken
 	if err := config.Save(cfgPath, &edited); err != nil {
 		t.Fatal(err)
 	}

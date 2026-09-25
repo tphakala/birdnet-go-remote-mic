@@ -92,9 +92,10 @@ export class NotificationCenter {
     all.addEventListener("click", () => {
       this.close();
       // Closing the panel would drop focus to the body. The router moves focus to
-      // the main content on a view change, but already on #/events the hash does
-      // not change, so do it here too (a harmless repeat otherwise).
-      requestAnimationFrame(() => document.getElementById("main-content")?.focus());
+      // the Events view section on a view change, but already on #/events the
+      // hash does not change, so focus that same section here too (a harmless
+      // repeat otherwise).
+      requestAnimationFrame(() => document.getElementById("view-events")?.focus());
     });
     this.countEl = elem("span", "notif-panel-count");
     this.countEl.hidden = true;

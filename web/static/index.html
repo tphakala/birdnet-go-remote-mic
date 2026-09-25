@@ -67,7 +67,7 @@
       <!-- A toggle: pressed means the dark theme is on. app.ts keeps aria-pressed
            in step with data-theme; the icon shows the current theme (moon for
            dark, sun for light) through CSS on data-theme. -->
-      <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" title="Dark theme" aria-label="Dark theme" aria-pressed="true">
+      <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" title="Dark theme (on)" aria-label="Dark theme" aria-pressed="true">
         <svg class="theme-icon-dark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
         </svg>
@@ -149,7 +149,7 @@
   <main class="app-main" id="main-content" aria-label="Appliance Workspace" tabindex="-1">
 
     <!-- ================= VIEW 1: DASHBOARD ================= -->
-    <section id="view-dashboard" class="view-panel view-container active" aria-label="Live Audio Dashboard">
+    <section id="view-dashboard" class="view-panel view-container active" aria-label="Dashboard" tabindex="-1">
 
       <h2 class="visually-hidden">Streaming Devices</h2>
       <div class="channel-rack" id="channel-rack">
@@ -166,10 +166,10 @@
     </section>
 
     <!-- ================= VIEW 2: EVENTS (rendered by views/events.ts) ================= -->
-    <section id="view-events" class="view-panel view-container" aria-label="Events"></section>
+    <section id="view-events" class="view-panel view-container" aria-label="Events" tabindex="-1"></section>
 
     <!-- ================= VIEW 3: SYSTEM TELEMETRY & LIFECYCLE ================= -->
-    <section id="view-system" class="view-panel view-container" aria-label="Host System Telemetry">
+    <section id="view-system" class="view-panel view-container" aria-label="System" tabindex="-1">
       <div style="display: flex; flex-direction: column; gap: 18px;">
 
         <!-- System Telemetry Matrix (rendered from live /system) -->
@@ -252,7 +252,7 @@
             <div class="form-field">
               <label class="field-label" for="sys-discovery-enabled">mDNS Advertisement</label>
               <label class="switch-control">
-                <input type="checkbox" id="sys-discovery-enabled" class="visually-hidden">
+                <input type="checkbox" id="sys-discovery-enabled" class="visually-hidden" role="switch">
                 <span class="switch-track"><span class="switch-thumb"></span></span>
                 <span class="switch-label">Advertise _rtsp._tcp on the local network</span>
               </label>
@@ -360,7 +360,7 @@
           <div class="form-field">
             <label class="field-label" for="sys-notify-enabled">Condition monitors</label>
             <label class="switch-control">
-              <input type="checkbox" id="sys-notify-enabled" class="visually-hidden">
+              <input type="checkbox" id="sys-notify-enabled" class="visually-hidden" role="switch">
               <span class="switch-track"><span class="switch-thumb"></span></span>
               <span class="switch-label">Run the audio-signal and host-health monitors</span>
             </label>

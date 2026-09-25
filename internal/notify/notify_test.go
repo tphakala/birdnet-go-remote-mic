@@ -319,6 +319,112 @@ func TestSubscribeReceivesPublishedInOrder(t *testing.T) {
 	}
 }
 
+// TestUpdateRewritesActiveTextInPlace pins that Update changes an active
+// condition's text without raising a new entry: the snapshot and Active carry
+// the new text under the onset's own ID, no ID is consumed, the entry is
+// streamed again under that ID, and an inactive key or unchanged text is a
+// no-op that streams nothing.
+func TestUpdateRewritesActiveTextInPlace(t *testing.T) {
+	t.Parallel()
+	c := NewCenter()
+	if !c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Source: testDeviceSource, Title: testDownTitle, Message: "old"}) {
+		t.Fatal("Onset returned false")
+	}
+	ch, cancel := c.Subscribe()
+	defer cancel()
+	if c.Update("device:other:down", "t", "m") {
+		t.Error("Update of an inactive key returned true")
+	}
+	if c.Update(testDeviceKey, testDownTitle, "old") {
+		t.Error("Update with unchanged text returned true")
+	}
+	if got := len(ch); got != 0 {
+		t.Fatalf("no-op updates streamed %d events, want 0", got)
+	}
+	if !c.Update(testDeviceKey, "waiting", "new") {
+		t.Fatal("Update of an active key returned false")
+	}
+	check := func(where string, n Notification) {
+		t.Helper()
+		if n.ID != 1 || n.Kind != KindOnset || n.Severity != SeverityError || n.Title != "waiting" || n.Message != "new" {
+			t.Errorf("%s: got id %d kind %s severity %s %q/%q, want id 1 onset error \"waiting\"/\"new\"", where, n.ID, n.Kind, n.Severity, n.Title, n.Message)
+		}
+	}
+	snap := c.Snapshot()
+	if len(snap.Notifications) != 1 {
+		t.Fatalf("snapshot holds %d entries, want 1", len(snap.Notifications))
+	}
+	check("snapshot", snap.Notifications[0])
+	if snap.NextID != 2 {
+		t.Errorf("got nextId %d, want 2 (an update consumes no id)", snap.NextID)
+	}
+	check("active", c.Active()[0])
+	select {
+	case ev := <-ch:
+		var n Notification
+		if err := json.Unmarshal(ev.Data, &n); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		check("stream", n)
+	default:
+		t.Fatal("Update streamed nothing")
+	}
+	// The condition still clears as the same condition.
+	if !c.Clear(testDeviceKey, Notification{Severity: SeverityInfo, Title: "ok"}) {
+		t.Error("Clear after Update returned false")
+	}
+}
+
+// TestUpdateAfterRingWraps pins Update on a ring that has wrapped, the normal
+// state of an appliance up for months: an onset still held at a wrapped
+// position is rewritten where it sits, and an onset the ring already trimmed
+// is served with the new text from the active conditions.
+func TestUpdateAfterRingWraps(t *testing.T) {
+	t.Parallel()
+	const capacity = 4
+	c := NewCenter(WithCapacity(capacity))
+	events := func(n int) {
+		for range n {
+			c.Publish(Notification{Severity: SeverityInfo, Category: CategorySystem, Kind: KindEvent, Title: "tick"})
+		}
+	}
+	// A trimmed onset: raised first, then pushed out of the ring.
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: "device:old:down", Title: "first", Message: "first"})
+	events(capacity)
+	// A held onset at a wrapped position.
+	events(2)
+	c.Onset(Notification{Severity: SeverityError, Category: CategoryDevice, Key: testDeviceKey, Title: "held", Message: "held"})
+	if !c.Update(testDeviceKey, "held", "rewritten") {
+		t.Fatal("Update of the held onset returned false")
+	}
+	if !c.Update("device:old:down", "first", "rewritten") {
+		t.Fatal("Update of the trimmed onset returned false")
+	}
+	byKey := map[string]Notification{}
+	for _, n := range c.Snapshot().Notifications {
+		if n.Key != "" {
+			byKey[n.Key] = n
+		}
+	}
+	for _, key := range []string{testDeviceKey, "device:old:down"} {
+		if got := byKey[key].Message; got != "rewritten" {
+			t.Errorf("%s: snapshot message %q, want the rewritten text", key, got)
+		}
+	}
+	held := 0
+	for _, n := range c.ring.all() {
+		if n.Key == testDeviceKey {
+			held++
+			if n.Message != "rewritten" {
+				t.Errorf("ring copy of the held onset: message %q, want the rewritten text", n.Message)
+			}
+		}
+	}
+	if held != 1 {
+		t.Errorf("ring holds %d copies of the held onset, want 1", held)
+	}
+}
+
 func TestBroadcastDropsOnFullWithoutBlocking(t *testing.T) {
 	c := NewCenter()
 	ch, cancel := c.Subscribe()
@@ -380,6 +486,9 @@ func TestNilCenterIsNoOp(t *testing.T) {
 	}
 	if c.Resolve("k", "r") {
 		t.Error("nil Resolve returned true")
+	}
+	if c.Update("k", "t", "m") {
+		t.Error("nil Update returned true")
 	}
 	if c.Active() != nil {
 		t.Error("nil Active() not nil")

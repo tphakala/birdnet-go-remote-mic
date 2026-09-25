@@ -33,10 +33,22 @@ func (r *ring) push(n *Notification) {
 	r.head = (r.head + 1) % len(r.buf)
 }
 
+// replace overwrites the held entry whose ID is n.ID with *n, reporting whether
+// one was held; an entry the ring has already trimmed is left trimmed.
+func (r *ring) replace(n *Notification) bool {
+	for i := range r.size {
+		if j := (r.head + i) % len(r.buf); r.buf[j].ID == n.ID {
+			r.buf[j] = *n
+			return true
+		}
+	}
+	return false
+}
+
 // all returns the entries in ascending ID order (oldest first) as a fresh slice.
 func (r *ring) all() []Notification {
 	out := make([]Notification, r.size)
-	for i := 0; i < r.size; i++ {
+	for i := range r.size {
 		out[i] = r.buf[(r.head+i)%len(r.buf)]
 	}
 	return out

@@ -161,11 +161,13 @@ func parseCPUStat(data []byte) (idle, total uint64, ok bool) {
 }
 
 // cpuBusyPercent derives busy utilization across two /proc/stat readings. It
-// returns false when no time elapsed (no basis for a ratio).
+// returns false when no time elapsed or a counter went backwards (no basis
+// for a ratio).
 func cpuBusyPercent(prevIdle, prevTotal, idle, total uint64) (float64, bool) {
-	// Both counters are monotonic; a decrease means a reboot, wraparound, or a
-	// suspend/resume gap. Drop such a sample rather than derive a bogus ratio
-	// (an idle-only rollback would otherwise underflow dIdle and report 0%).
+	// A decrease means a reboot, a wraparound, or iowait going backwards: idle
+	// is idle+iowait, and the kernel documents iowait as able to decrease.
+	// Drop such a sample rather than derive a bogus ratio (an idle-only
+	// rollback would otherwise underflow dIdle and report 0%).
 	if total <= prevTotal || idle < prevIdle {
 		return 0, false
 	}

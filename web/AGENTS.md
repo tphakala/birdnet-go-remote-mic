@@ -68,9 +68,17 @@ reconcile:
   on their own; mutations go through store or `api` methods, then the view
   re-renders from the next event.
 - Coalesce bursts: `DashboardView` schedules one `reconcile()` per microtask
-  (`queueMicrotask` behind `renderScheduled`). `EventsView` renders only while
-  visible and marks itself dirty otherwise. `SystemView` patches just the
-  section each event affects.
+  (`queueMicrotask` behind `renderScheduled`), and so does `EventsView`, which
+  renders only while visible and marks itself dirty otherwise. `SystemView`
+  patches just the section each event affects.
+- Poll only for a viewer: `AppStore` pauses the REST poll while the page is
+  hidden (`setPageHidden`, fed by `visibilitychange` in `app.ts`) and
+  refreshes at once when it shows again. The SSE stream stays up for
+  `HIDDEN_STREAM_GRACE_MS` (60 s) of hiding, then stops; showing the page
+  restarts it, and the connect re-sync recovers the notifications raised
+  meanwhile (without toasts). Anything that runs per status tick inherits the
+  pause, and work for one view also checks the route (the System view reloads
+  the certificate only while it is the active view).
 - Never clobber user input: a form being edited is not repopulated from a
   store event (`SystemView` tracks `netDirty`, `authDirty`, `notifyDirty`).
 - Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries,
@@ -103,8 +111,9 @@ reconcile:
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
   failure with Retry), `apiErrorMessage`/`setFieldError`, `copyText`,
-  `formatUptime`/`formatRelative`, and icon constants such as `ICON_COPY` and
-  `TOAST_ICONS`.
+  `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
+  switch; the static ones in `index.html` copy its markup, `role="switch"`
+  included), and icon constants such as `ICON_COPY` and `TOAST_ICONS`.
 
 ## DOM safety
 

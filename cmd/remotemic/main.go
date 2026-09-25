@@ -5,6 +5,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	capture "github.com/tphakala/go-audio-capture"
 	"github.com/tphakala/go-audio-stream/rtsp/sdp"
@@ -358,54 +358,142 @@ func lockState(pid int, mgmtAddr, certPath string) runlock.State {
 	return runlock.State{PID: pid, MgmtAddr: mgmtAddr, CertPath: certPath}
 }
 
-// publishRunLock records this process in the run lock, with the management
-// API's endpoint when ep is non-nil (nil means no API is serving, so no API
-// handler can rewrite the config file). A write failure is logged, not fatal.
-func publishRunLock(lock *runlock.Lock, cfgPath string, ep *mgmtEndpoint) {
-	st := runlock.State{PID: os.Getpid()}
+// runLockState is the run-lock state recording this process, with the
+// management API's endpoint when ep is non-nil (nil means no API is serving,
+// so no API handler can rewrite the config file).
+func runLockState(ep *mgmtEndpoint) runlock.State {
+	pid := os.Getpid()
 	if ep != nil {
-		st = lockState(st.PID, ep.addr, ep.certPath)
+		return lockState(pid, ep.addr, ep.certPath)
 	}
-	if err := lock.Publish(st); err != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v (token commands will report the appliance as starting)", runlock.PathFor(cfgPath), err)
-	}
+	return runlock.State{PID: pid}
 }
 
-// runLockPublisher writes the run lock for run() at startup and for the
-// management supervisor, which publishes from its own goroutine so the lock
-// tracks each API transition (up, stopped, a background attempt) as it
-// happens. The mutex keeps a write from interleaving with another. A nil
-// *runLockPublisher is a no-op, for tests that drive the retry without a lock.
+// runLockRetryDelay is how long runLockPublisher waits before rewriting a run
+// lock whose last write failed.
+const runLockRetryDelay = 30 * time.Second
+
+// runLockKey keys the unwritable-run-lock condition in the notification center.
+const runLockKey = "run-lock-unwritable"
+
+// runLockPublisher writes the run lock for run() and for the management
+// supervisor, which publishes from its own goroutine so the lock tracks each
+// API transition (up, stopped, a background attempt) as it happens. The mutex
+// keeps a write from interleaving with another.
+//
+// A failed write can leave the lock empty (Publish truncates before it
+// writes), which the token commands read as "starting up" for as long as it
+// stays that way. So the publisher remembers the state it wants published and,
+// after a failure, rewrites the latest one every runLockRetryDelay until a
+// write succeeds, logging the first failure and the recovery rather than every
+// attempt. A nil *runLockPublisher is a no-op, for tests that drive the retry
+// without a lock.
 type runLockPublisher struct {
 	mu      sync.Mutex
 	lock    *runlock.Lock
 	cfgPath string
+	// write replaces lock.Publish when non-nil, for tests.
+	write func(runlock.State) error
+	// retryDelay replaces runLockRetryDelay when non-zero, for tests.
+	retryDelay time.Duration
+	// center, when non-nil, carries the unwritable-lock condition: raised on
+	// the first failure of a streak and cleared once a write succeeds.
+	center notify.Publisher
+
+	want    runlock.State // the latest state asked for
+	failing bool          // the last write failed; a retry is pending
+	retry   *time.Timer
+	stopped bool
 }
 
 // publish records this process in the run lock, with the management API's
-// endpoint when ep is non-nil (see publishRunLock).
+// endpoint when ep is non-nil (see runLockState).
 func (p *runLockPublisher) publish(ep *mgmtEndpoint) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	publishRunLock(p.lock, p.cfgPath, ep)
+	p.set(runLockState(ep))
 }
 
 // starting marks the appliance as starting up in the run lock, while a
 // background attempt reloads the config file and brings the API up. A token
 // command reading the lock then asks the operator to try again rather than
 // editing a file the attempt may already have read, which the API it brings up
-// would later overwrite. A write failure is logged, not fatal.
+// would later overwrite.
 func (p *runLockPublisher) starting() {
+	p.set(runlock.State{})
+}
+
+// set makes st the state the lock should hold and writes it.
+func (p *runLockPublisher) set(st runlock.State) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err := p.lock.Publish(runlock.State{}); err != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v (token commands may edit the config file during this management API attempt)", runlock.PathFor(p.cfgPath), err)
+	p.want = st
+	p.flush()
+}
+
+// flush writes p.want, arming a retry when the write fails. p.mu is held.
+func (p *runLockPublisher) flush() {
+	if p.stopped {
+		return
+	}
+	if p.retry != nil {
+		p.retry.Stop()
+		p.retry = nil
+	}
+	write := p.write
+	if write == nil {
+		write = p.lock.Publish
+	}
+	err := write(p.want)
+	if err == nil {
+		if p.failing {
+			log.Printf("run lock %s written again", runlock.PathFor(p.cfgPath))
+			p.failing = false
+			if p.center != nil {
+				p.center.Clear(runLockKey, notify.Notification{
+					Severity: notify.SeverityInfo,
+					Title:    "Token commands read this appliance again",
+					Message:  "The run lock the token commands read is written again.",
+				})
+			}
+		}
+		return
+	}
+	delay := cmp.Or(p.retryDelay, runLockRetryDelay)
+	if !p.failing {
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands may misread this appliance's state; retrying every %s)", runlock.PathFor(p.cfgPath), err, delay)
+		p.failing = true
+		if p.center != nil {
+			p.center.Onset(notify.Notification{
+				Severity: notify.SeverityWarning,
+				Category: notify.CategorySystem,
+				Key:      runLockKey,
+				Source:   "appliance",
+				Title:    "Token commands may misread this appliance",
+				Message:  fmt.Sprintf("The run lock the token commands read cannot be written (%v); retrying every %s.", err, delay),
+			})
+		}
+	}
+	p.retry = time.AfterFunc(delay, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.flush()
+	})
+}
+
+// stop ends the publisher before run() releases the lock: no further write,
+// and no pending retry.
+func (p *runLockPublisher) stop() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
+	if p.retry != nil {
+		p.retry.Stop()
+		p.retry = nil
 	}
 }
 
@@ -497,6 +585,19 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// emitters and the signal and host condition monitors publish to it.
 	center := notify.NewCenter()
 	center.Publish(notify.Started(version))
+	// A run lock that could not be created (acquireRunLock logged why) leaves
+	// the token commands unable to see this appliance, so they edit the config
+	// file behind its back; that lasts for the whole run, so it is shown.
+	if lock == nil {
+		center.Onset(notify.Notification{
+			Severity: notify.SeverityWarning,
+			Category: notify.CategorySystem,
+			Key:      runLockKey,
+			Source:   "appliance",
+			Title:    "Token commands cannot see this appliance",
+			Message:  fmt.Sprintf("The run lock %s could not be created, so remote-mic token commands edit the config file directly; restart the appliance once the directory is writable.", runlock.PathFor(cfgPath)),
+		})
+	}
 
 	prov := &provider{
 		version:     version,
@@ -563,13 +664,18 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// API's shutdown goroutine fires even when run() returns on an error, not a
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
-	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath}
-	// Publish this process with no API before management starts: from then on
-	// the management supervisor publishes where its API listens, or that none
-	// serves, so a write here after it started could erase its endpoint. When
-	// management is disabled, this no-API state stays, which also means no API
-	// handler can rewrite the config file.
-	runLock.publish(nil)
+	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath, center: center}
+	defer runLock.stop()
+	// With management disabled, publish this process with no API: the token
+	// commands edit the file directly, and no API handler can rewrite it. With
+	// management enabled, startManagement publishes the first state itself
+	// (where its API listens, or that none serves) before its supervisor can
+	// publish, so the order is structural; until then the lock reads as
+	// starting, so a token command asks the operator to retry instead of
+	// editing a file the API is about to be seeded from.
+	if !mgmtEnabled {
+		runLock.publish(nil)
+	}
 	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
 	// only when a request asks, so an appliance with no browser open does no
 	// sampling work at all. It exists only while the management API is enabled (its
@@ -641,28 +747,15 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// up later. When the API is not serving (management disabled, or it failed to
 	// start or stopped and its supervisor has not brought it back) there is
 	// nothing to keep alive, so a total open failure is fatal and lets systemd
-	// restart the process. A deliberate all-disabled config is reported
-	// distinctly, since a restart cannot clear it. Both exit decisions read the
-	// supervisor's state when they are made, so an API it brought back a moment
-	// ago counts. They are made only here and when a pump ends: an API that
-	// stops, or whose retry ends, after the last pump already ended leaves the
-	// process up, not what a fresh start would decide. It recovers in process
-	// while a retry can still bring something back (the API retry, a down
-	// device that is still present, a hotplug of one bound by stable id), but
-	// once the config file disabled management and no device can come back
-	// unattended (a card-index device waits for a config save), it idles until
-	// restarted.
-	if app.serving() == 0 && management.serving() == nil {
-		if app.allDisabled() {
-			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
-		}
-		if mgmtEnabled {
-			// The API's own retry was just logged as running in the background, but
-			// exiting ends it; name both failures, so the log does not read as if
-			// only the devices were at fault.
-			return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above)")
-		}
-		return errors.New("no configured capture device could be opened")
+	// restart the process (see startupExit). At runtime an API that dies is
+	// retried in process, and while that retry runs it keeps the appliance up
+	// as a serving API does (mgmt.keepsUp): exiting would throw away the
+	// RAM-only event history and every device's retry state for what the retry
+	// recovers. The run loop retakes its exit decision whenever it can turn
+	// against staying up: when a pump ends, and when the API retry gives up
+	// (see runExit); only then, with no pump alive, does it exit.
+	if err := startupExit(app.serving(), management.serving() != nil, app.allDisabled(), mgmtEnabled); err != nil {
+		return err
 	}
 
 	srvErr := make(chan error, 1)
@@ -706,11 +799,16 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
-			if app.alive == 0 && management.serving() == nil {
-				if app.lastPumpErr != nil {
-					return fmt.Errorf("all capture devices stopped, last error: %w", app.lastPumpErr)
-				}
+			if exit, err := runExit(app.alive, management.keepsUp(), app.lastPumpErr, false); exit {
+				return err
+			}
+		case <-management.lostC():
+			switch exit, stopping, err := lostExit(ctx.Err() != nil, app.alive, management.keepsUp(), app.lastPumpErr); {
+			case stopping:
+				shutdown()
 				return nil
+			case exit:
+				return err
 			}
 		case serr := <-srvErr:
 			if serr != nil {
@@ -723,6 +821,61 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			return nil
 		}
 	}
+}
+
+// startupExit is run()'s exit decision after the initial reconcile: nil keeps
+// the appliance up, an error ends it. With a device serving, or with an API
+// serving as a diagnostic surface, it stays up. Otherwise a deliberate
+// all-disabled config is reported distinctly, since a restart cannot clear it,
+// and a total open failure names the management failure too when management is
+// enabled: the API's retry was just logged as running in the background, but
+// exiting ends it, so the log must not read as if only the devices were at
+// fault.
+func startupExit(serving int, apiServing, allDisabled, mgmtEnabled bool) error {
+	switch {
+	case serving > 0 || apiServing:
+		return nil
+	case allDisabled:
+		return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
+	case mgmtEnabled:
+		return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above)")
+	default:
+		return errors.New("no configured capture device could be opened")
+	}
+}
+
+// runExit is the run loop's exit decision, taken when a pump ends and, with
+// apiLost, when the management API retry gave up. The appliance stays up
+// while a capture pump is alive or the API keeps it up (it serves or is being
+// retried, see mgmt.keepsUp); otherwise nothing keeps it up, and exiting lets
+// systemd restart it. An appliance whose last pump ended exits cleanly unless
+// a pump failed; one that lost its API names that, since the API was what
+// kept it up.
+func runExit(alive int, apiUp bool, lastPumpErr error, apiLost bool) (exit bool, err error) {
+	switch {
+	case alive > 0 || apiUp:
+		return false, nil
+	case apiLost && lastPumpErr != nil:
+		return true, fmt.Errorf("no capture device is serving and the management API that kept the appliance up is no longer retried, last device error: %w", lastPumpErr)
+	case apiLost:
+		return true, errors.New("no capture device is serving and the management API that kept the appliance up is no longer retried")
+	case lastPumpErr != nil:
+		return true, fmt.Errorf("all capture devices stopped, last error: %w", lastPumpErr)
+	default:
+		return true, nil
+	}
+}
+
+// lostExit is the run loop's decision when the management API retry gave up.
+// A shutdown can make that wake and ctx.Done ready together, and select may
+// pick the wake; with cancelled set it is a shutdown (stopping), not a lost
+// API, so the process ends cleanly. Otherwise it is runExit's decision.
+func lostExit(cancelled bool, alive int, apiUp bool, lastPumpErr error) (exit, stopping bool, err error) {
+	if cancelled {
+		return true, true, nil
+	}
+	exit, err = runExit(alive, apiUp, lastPumpErr, true)
+	return exit, false, err
 }
 
 // splitServeConfig derives the two configs a serve run needs from the loaded
@@ -801,8 +954,9 @@ func newServeReloader(ctx context.Context, reconcileCh chan<- reconcileReq, ov s
 // startAnnounce advertises every serving device over mDNS in the background.
 // Failure is logged, not fatal: the appliance still serves on a
 // multicast-blocked network, where the manual host:port entry is the fallback.
-// A device that dies later keeps its advertisement until the process exits
-// (dnssd cannot retire a single service); clients get 404. It is a package var
+// A device that dies later keeps its advertisement until the advertisement is
+// next rebuilt (see appliance.restartAnnounce; dnssd cannot retire a single
+// service); clients get 404 meanwhile. It is a package var
 // so reconcile tests can swap in a stub and assert announceGen without a real
 // responder multicasting on the test host's LAN.
 var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRuntime, authRequired bool) {
@@ -824,13 +978,11 @@ var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRu
 // BirdNET-Go's adopt flow knows whether to ask for the token. A multi-stream
 // device advertises one service per stream, each at its own path; the DNS-SD
 // instance name stays the device name for a lone stream (unchanged) and is
-// qualified with the stream path when a device fans out. The qualified name is
-// not guaranteed unique against a different device literally named "<name>
-// <path>". The responder renames only on a conflict with another host (it
-// registers this appliance's services one by one before it answers probes),
-// so such a local duplicate is advertised twice under one name and a
-// discoverer may see either. Each name is fitted to one DNS label with room
-// for that rename (see instanceLabel).
+// qualified with the stream path when a device fans out. Each name is fitted
+// to one DNS label with room for the responder's rename on a conflict with
+// another host (see instanceLabel). Names here can still collide (a different
+// device literally named "<name> <path>", or two names that agree up to the
+// cut); announce.Run keeps local duplicates apart with a " #N" suffix.
 func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
 	_, portStr, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -863,23 +1015,9 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 	return infos, port, nil
 }
 
-const (
-	// dnsLabelMax is the longest DNS label in bytes (RFC 1035 section 2.3.4).
-	// A DNS-SD service instance name is one label, so it bounds the advertised
-	// name.
-	dnsLabelMax = 63
-	// renameRoom is the longest suffix the dnssd responder appends when it
-	// renames an instance on a conflict with another host: " (N)", where N
-	// stays at most 101 because it probes at most 100 times.
-	renameRoom = len(" (101)")
-	// labelBudget is what an advertised name may use, so that a renamed one
-	// still fits in a label.
-	labelBudget = dnsLabelMax - renameRoom
-)
-
 // instanceLabel builds an advertised instance name from a device name and a
 // suffix (empty for a lone stream, " <path>" for a fanned-out device) that
-// fits labelBudget. The config accepts device names longer than a label
+// fits announce.NameBudget. The config accepts device names longer than a label
 // holds, so it cuts the device name, not the suffix: the suffix is what keeps
 // a device's streams apart. A suffix that fills the budget leaves no room for
 // the device name, and one that exceeds it is cut too; a device name cut to
@@ -887,24 +1025,11 @@ const (
 // suffix's leading space. Cuts fall on a rune boundary, and a space left at a
 // cut is trimmed. A name that fits is returned unchanged.
 func instanceLabel(name, suffix string) string {
-	head := cutLabel(name, labelBudget-len(suffix))
+	head := announce.CutName(name, announce.NameBudget-len(suffix))
 	if head == "" {
 		suffix = strings.TrimLeft(suffix, " ")
 	}
-	return cutLabel(head+suffix, labelBudget)
-}
-
-// cutLabel returns s cut to at most n bytes at a rune boundary (nothing when
-// n is not positive), without a trailing space.
-func cutLabel(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := max(n, 0)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return strings.TrimRight(s[:cut], " ")
+	return announce.CutName(head+suffix, announce.NameBudget)
 }
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,

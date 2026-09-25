@@ -1,5 +1,14 @@
 export type ViewName = "dashboard" | "events" | "system";
 
+// The document title per route, so a browser tab, history entry and a screen
+// reader's page announcement all name the page being shown.
+const APP_TITLE = "BirdNET-Go Remote Mic";
+const VIEW_TITLES: Record<ViewName, string> = {
+  dashboard: "Dashboard",
+  events: "Events",
+  system: "System",
+};
+
 export class Router extends EventTarget {
   private currentView: ViewName = "dashboard";
 
@@ -36,12 +45,15 @@ export class Router extends EventTarget {
     this.dispatchEvent(new CustomEvent("route", { detail: view }));
     // A hash route swaps the content without a page load, so a keyboard or screen
     // reader user would otherwise be left on the nav link with no cue that the
-    // page changed. Move focus to the main landmark (tabindex=-1), as a page load
-    // would, but only on an actual view change.
-    if (moveFocus && changed) document.getElementById("main-content")?.focus();
+    // page changed. Move focus to the active view's section (tabindex=-1), whose
+    // own label says where they landed (the main landmark reads the same on
+    // every page), but only on an actual view change.
+    if (moveFocus && changed) document.getElementById(`view-${view}`)?.focus();
   }
 
   private updateDOM(activeView: ViewName): void {
+    const title = `${VIEW_TITLES[activeView]} - ${APP_TITLE}`;
+    if (document.title !== title) document.title = title;
     // Hide all view containers and show the active one
     document.querySelectorAll<HTMLElement>(".view-container").forEach((el) => {
       const viewAttr = el.id.replace("view-", "");

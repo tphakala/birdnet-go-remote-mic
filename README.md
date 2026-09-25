@@ -122,8 +122,12 @@ clear promptly. When a config save starts, stops, or restarts a device, a
 hardware-change retry starts one, or a device restarted by the automatic retry
 counts as recovered (it has kept serving for 30 seconds, see Multi-device
 behaviour), the whole advertisement is rebuilt, because
-the responder cannot retire a single service. A device that dies mid-run stays
-advertised until the next rebuild (see Multi-device behaviour). Automatic
+the responder cannot retire a single service; a retry or hardware change that
+would advertise exactly what is already advertised skips the rebuild. A
+device that dies mid-run stays advertised until the next rebuild (see
+Multi-device behaviour). If the responder cannot start (its socket cannot be
+opened, or registering a name fails), it is retried with a growing delay
+(5 s, 30 s, 2 min, then every 5 minutes) until it runs. Automatic
 discovery on the BirdNET-Go side is not available yet, so for now you add each
 mic in BirdNET-Go by its `host:port` plus path; the advertisement is already in
 place for when that support lands. Set `discovery.enabled: false` to turn the
@@ -249,9 +253,10 @@ DNS label (63 bytes), and the appliance keeps 6 of those free for the
 ` (N)` suffix the responder adds when another host already uses the name, so
 it advertises at most 57 bytes: a longer device name is cut, keeping the
 stream path it gets for a device with several streams (a path that alone is
-longer is cut too). Two devices whose names agree in their first 57 bytes
-then advertise the same name, and a discoverer may see only one of them, so
-keep device names distinct within that length.
+longer is cut too). Names that would then be the same (compared without
+ASCII case, as DNS compares them) are kept apart: the later one in config order
+advertises with a ` #2` suffix (` #3` and so on for more), its name cut
+further to make room.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
@@ -307,8 +312,9 @@ or a certificate path in the file needs no restart. A file that sets
 `management.enabled: false` ends the retry. Serve flags (`--mgmt-listen`,
 `--cert-dir`, `--management`) still override the file. A command run while
 the appliance is still starting up, before it has published where its API
-listens, or while one of those background attempts runs, asks you to retry in
-a few seconds. The config is written 0600, so run
+listens, while one of those background attempts runs, or in the seconds
+after its API stops while that API drains (up to about 10 seconds with a
+browser open), asks you to retry in a few seconds. The config is written 0600, so run
 the commands as the account the appliance runs as.
 
 You can also set it by hand:
@@ -411,13 +417,12 @@ For a local end-to-end check without hardware, use the ALSA loopback
   waits for a config save, which also restarts a down device of either kind.
   While the management API is serving the process stays up after the
   last device dies, so the failure stays inspectable over the API; otherwise
-  it exits once every device has stopped. The appliance makes that decision
-  when a device's capture ends, so an API that stops (or stops being retried)
-  after the last device already ended leaves the process up, still running
-  the retries described here. If the config file then disables the
-  management API while no device can come back on its own (for example
-  every down device is pinned to a card index), it stays up doing nothing
-  until restarted.
+  it exits once every device has stopped. An API that stops at runtime is
+  retried in process, and while it is retried it keeps the process up as a
+  serving API does, which keeps the event history. The appliance retakes the
+  decision whenever a device's capture ends and whenever the API stops being
+  retried (the config file disabled it); it exits once no device serves and
+  the API is neither serving nor being retried.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
   automatic retry once it counts as recovered, or process exit), because

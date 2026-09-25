@@ -24,6 +24,10 @@ class App {
     this.initViews(notifications);
 
     router.init();
+    // A hidden page (a background tab, a minimized window) pauses the poll, and
+    // showing it again refreshes at once; see AppStore.setPageHidden.
+    store.setPageHidden(document.hidden);
+    document.addEventListener("visibilitychange", () => store.setPageHidden(document.hidden));
     // Push a stored token into the clients before the first request so a
     // token-gated appliance loads without a prompt on a returning browser.
     applyStoredToken();
@@ -49,9 +53,13 @@ class App {
     const themeToggleBtn = document.getElementById("theme-toggle-btn");
     // applyTheme is the one place the theme changes, so the toggle's pressed
     // state (labelled "Dark theme": pressed means dark) never drifts from it.
+    // The tooltip spells the state out, since the icon alone reads as either
+    // the current theme or the one a click switches to.
     const applyTheme = (theme: string): void => {
+      const dark = theme !== "light";
       document.documentElement.setAttribute("data-theme", theme);
-      themeToggleBtn?.setAttribute("aria-pressed", String(theme !== "light"));
+      themeToggleBtn?.setAttribute("aria-pressed", String(dark));
+      if (themeToggleBtn) themeToggleBtn.title = dark ? "Dark theme (on)" : "Dark theme (off)";
     };
     applyTheme(savedTheme);
 

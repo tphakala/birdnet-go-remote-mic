@@ -3,7 +3,6 @@ package pipeline_test
 import (
 	"bytes"
 	"encoding/binary"
-	"io"
 	"math"
 	"strings"
 	"testing"
@@ -565,26 +564,51 @@ func TestOpusStageNewSessionWithoutIdleGetsFreshEncoder(t *testing.T) {
 	}
 }
 
-// periodSource replays tagged periods, then io.EOF, so a test can hand a
-// stage what a fan-out queues: periods carrying a play session and a capture
-// time.
-type periodSource struct {
-	rate, ch int
-	periods  []audio.Period
-}
-
-func (s *periodSource) Negotiated() (rate, channels int) { return s.rate, s.ch }
-
-func (s *periodSource) Read() (audio.Period, error) {
-	if len(s.periods) == 0 {
-		return audio.Period{}, io.EOF
+// TestNilGateAdmitsTaggedPeriods pins that a stage given no gate encodes
+// every period it is fed, tagged with a play session or not, carrying each
+// period's session and capture time onto its frames: a nil gate is no trap
+// that silently drops a gated fan-out's audio.
+func TestNilGateAdmitsTaggedPeriods(t *testing.T) {
+	t.Parallel()
+	base := time.Unix(1700000000, 0)
+	raw := splitPeriods(tonePCM(3*960, 1), 960, 1)
+	periods := func() []audio.Period {
+		out := make([]audio.Period, len(raw))
+		for i, b := range raw {
+			out[i] = audio.Period{Buf: b, Frames: 960, Session: uint64(i), Captured: base.Add(time.Duration(i) * time.Second)}
+		}
+		return out
 	}
-	p := s.periods[0]
-	s.periods = s.periods[1:]
-	return p, nil
+	for _, tc := range []struct {
+		name  string
+		stage pipeline.Stage
+	}{
+		{pipeline.CodecName(config.ModePCM), pipeline.NewPCM()},
+		{pipeline.CodecName(config.ModeOpus), pipeline.NewOpus(config.Opus{Bitrate: 64000})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			seen := map[uint64]time.Time{}
+			err := tc.stage.Run(audio.NewPeriodSource(48000, 1, periods()), nil, func(f pipeline.Frame) error {
+				seen[f.Session] = f.Captured
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			for i := range raw {
+				got, ok := seen[uint64(i)]
+				if !ok {
+					t.Errorf("period %d (session %d): no frame emitted, want it admitted", i, i)
+					continue
+				}
+				if want := base.Add(time.Duration(i) * time.Second); !got.Equal(want) {
+					t.Errorf("period %d: got Captured %v, want %v", i, got, want)
+				}
+			}
+		})
+	}
 }
-
-func (s *periodSource) Close() error { return nil }
 
 // TestStagesDropPeriodsQueuedForEarlierSession pins the fix for a stage that
 // fell behind across a teardown and the next PLAY: periods the fan-out queued
@@ -616,7 +640,7 @@ func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 	}
 	run := func(stage pipeline.Stage) got {
 		var g got
-		err := stage.Run(&periodSource{rate: 48000, ch: 1, periods: tagged()}, allOn(), func(f pipeline.Frame) error {
+		err := stage.Run(audio.NewPeriodSource(48000, 1, tagged()), allOn(), func(f pipeline.Frame) error {
 			g.payloads = append(g.payloads, append([]byte(nil), f.Payload...))
 			g.frames = append(g.frames, f)
 			return nil

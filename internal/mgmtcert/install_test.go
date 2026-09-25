@@ -656,3 +656,25 @@ func makeLongName() string {
 	}
 	return string(b)
 }
+
+// TestUnpinReportsRemoveError pins that a pin marker that cannot be removed
+// fails unpin, so Regenerate does not report a certificate as managed while
+// the marker still pins it. A non-empty directory in the marker's place makes
+// the remove fail as a real permission or I/O error would.
+func TestUnpinReportsRemoveError(t *testing.T) {
+	t.Parallel()
+	certPath := filepath.Join(t.TempDir(), "mgmt-cert.pem")
+	marker := PinPath(certPath)
+	if err := os.MkdirAll(filepath.Join(marker, "held"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := unpin(certPath); err == nil {
+		t.Fatal("unpin succeeded although the marker could not be removed")
+	}
+	if err := os.RemoveAll(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := unpin(certPath); err != nil {
+		t.Errorf("unpin with no marker: got %v, want nil", err)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
@@ -47,6 +48,9 @@ var mgmtRetryBackoff = [...]time.Duration{
 type mgmtRetry struct {
 	// attempt makes one background attempt to bring the API up.
 	attempt func() (*mgmtServer, error)
+	// halted handles an API that stopped on its own, as soon as it stops and
+	// before it drains.
+	halted func(*mgmtServer, error)
 	// died handles an API that stopped on its own, after it drained.
 	died func(*mgmtServer, error)
 	// delays[n] is the wait before attempt n+1; the last delay repeats.
@@ -61,13 +65,20 @@ type mgmtRetry struct {
 // superviseManagement keeps the management API up until ctx is cancelled,
 // starting from srv (the API startManagement brought up) or, when that start
 // failed with startErr, from a retry. While an API serves it waits for it to
-// stop: a shutdown on ctx ends the supervisor (as does a listener failure
-// once ctx is cancelled, since the two can race), and a runtime failure hands
-// the dead API to r.died and retries. A retry waits out r.delays before each
-// attempt and logs a failure only when its message differs from the previous
-// one, so a permanent fault logs once rather than every attempt. An attempt
-// that finds management disabled in the config file ends the supervisor. m's
-// serving method follows the API that serves, and m.done closes on return.
+// stop: a shutdown on ctx ends the supervisor once the API drained (as does a
+// listener failure once ctx is cancelled, since the two can race), and a
+// runtime failure hands the dead API to r.halted at once and to r.died once it
+// drained, then retries. A retry waits out r.delays before each attempt and
+// logs a failure only when its message differs from the previous one, so a
+// permanent fault logs once rather than every attempt. An attempt that finds
+// management disabled in the config file ends the supervisor. m's serving
+// method follows the API that serves, and m.done closes on return.
+//
+// m's lost channel is signalled only when the retry gives up, the one moment
+// nothing in process can bring the API back, after marking the handle as
+// given up (m.keepsUp turns false), so run() retakes its exit decision then.
+// A runtime death does not signal it: the retry is the in-process recovery,
+// and it keeps the appliance up while it runs.
 func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr error, r mgmtRetry) {
 	defer close(m.done)
 	var last string
@@ -78,21 +89,29 @@ func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr
 	for {
 		if srv != nil {
 			since := time.Now()
-			err := srv.wait()
+			err := srv.halt()
 			m.cur.Store(nil)
 			// A listener failure racing shutdown can reach the server before
 			// the cancellation does; it is not a runtime death.
 			if err == nil || ctx.Err() != nil {
+				_ = srv.wait()
 				return
 			}
 			if time.Since(since) >= r.stable {
 				n = 0
 			}
+			r.halted(srv, err)
+			_ = srv.wait()
 			r.died(srv, err)
 			last = err.Error()
 		}
 		srv = retryManagement(ctx, r, &n, &last)
 		if srv == nil {
+			if ctx.Err() == nil {
+				// Set before the wake, so run() reads it when it wakes.
+				m.gaveUp.Store(true)
+				m.signalLost()
+			}
 			return
 		}
 		m.cur.Store(srv)
@@ -105,7 +124,7 @@ func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr
 // the backoff position and the last logged failure across outages.
 func retryManagement(ctx context.Context, r mgmtRetry, n *int, last *string) *mgmtServer {
 	for tries := 1; ; tries++ {
-		t := time.NewTimer(r.delays[min(*n, len(r.delays)-1)])
+		t := time.NewTimer(backoffAt(r.delays, *n))
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -230,17 +249,20 @@ func sameOnDisk(a, b *config.Config) bool {
 }
 
 // applyEdited applies a config file edited while the API was down live
-// through the reloader, and records it in the history.
+// through the reloader, and records it in the history as a PATCH would: a
+// config event, the access-control event when the apply changed the token
+// (its main case is a remote-mic token edit), and the end of any pending
+// restart-required condition, since the running pipeline now matches the
+// file.
 func (p *mgmtParams) applyEdited(ctx context.Context, fresh *config.Config) error {
 	if p.reloader == nil {
 		return nil
 	}
+	wasEnabled, genBefore := p.guard.Snapshot()
 	if err := p.reloader(ctx, fresh.Clone()); err != nil {
 		return fmt.Errorf("cannot apply the config file edited while the API was down: %w", err)
 	}
 	log.Print("management API: applied the config file edited while the API was down")
-	// A PATCH leaves a config event in the history; so does this apply, since
-	// it can change the access token and end RTSP sessions.
 	p.center.Publish(notify.Notification{
 		Severity: notify.SeverityInfo,
 		Category: notify.CategoryConfig,
@@ -248,5 +270,11 @@ func (p *mgmtParams) applyEdited(ctx context.Context, fresh *config.Config) erro
 		Title:    "Config file applied",
 		Message:  "Applied the config file edited while the management API was down (for example by remote-mic token)",
 	})
+	// The reload set the guard from the file; a moved generation means the
+	// token changed and live RTSP sessions were evicted.
+	if nowEnabled, genAfter := p.guard.Snapshot(); genAfter != genBefore {
+		p.center.Publish(mgmtserver.AuthChangedNotification(wasEnabled, nowEnabled))
+	}
+	mgmtserver.ClearRestartRequired(p.center)
 	return nil
 }

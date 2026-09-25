@@ -77,6 +77,65 @@ export function button(opts: ButtonOptions = {}): HTMLButtonElement {
   return b;
 }
 
+// SwitchBase holds the switchControl options that do not name the switch.
+interface SwitchBase {
+  // caption is a short visible caption placed before the input and hidden from
+  // assistive tech, for a switch named by ariaLabel whose bare track would
+  // otherwise read as an unlabeled control.
+  caption?: string;
+  extraClass?: string;
+  id?: string;
+  checked?: boolean;
+  describedBy?: string;
+  title?: string;
+}
+
+// SwitchOptions configures switchControl. A switch must have an accessible
+// name, so the type requires label, ariaLabel, or both.
+export type SwitchOptions = SwitchBase &
+  (
+    | {
+        // label is a visible caption after the track that also names the input.
+        label: string;
+        ariaLabel?: string;
+      }
+    | {
+        label?: undefined;
+        // ariaLabel names the input when it has no visible label. A caller may
+        // rewrite the attribute later, as the dashboard does on a rename.
+        ariaLabel: string;
+      }
+  );
+
+// switchControl builds the shared on/off switch: a <label class="switch-control">
+// wrapping a visually hidden checkbox with role="switch" (announced as "switch,
+// on/off" rather than "checkbox, checked") followed by the drawn track. The
+// input must stay directly before the track for the `input + .switch-track`
+// state selectors. The caller wires any change listener on the returned input.
+export function switchControl(opts: SwitchOptions): { el: HTMLLabelElement; input: HTMLInputElement } {
+  const el = document.createElement("label");
+  el.className = opts.extraClass ? `switch-control ${opts.extraClass}` : "switch-control";
+  if (opts.title) el.title = opts.title;
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.className = "visually-hidden";
+  input.setAttribute("role", "switch");
+  if (opts.id) input.id = opts.id;
+  input.checked = opts.checked ?? false;
+  if (opts.describedBy) input.setAttribute("aria-describedby", opts.describedBy);
+  if (opts.ariaLabel !== undefined) input.setAttribute("aria-label", opts.ariaLabel);
+  if (opts.caption !== undefined) {
+    const caption = elem("span", "switch-caption", opts.caption);
+    caption.setAttribute("aria-hidden", "true");
+    el.append(caption);
+  }
+  const track = elem("span", "switch-track");
+  track.append(elem("span", "switch-thumb"));
+  el.append(input, track);
+  if (opts.label !== undefined) el.append(elem("span", "switch-label", opts.label));
+  return { el, input };
+}
+
 // setButtonLabel updates a button's visible text without disturbing a leading
 // icon: it writes into the .btn-label span the factory adds, and falls back to
 // the element's own text for a plain button that has no such span.

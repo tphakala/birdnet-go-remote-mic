@@ -83,6 +83,27 @@ export function parseExtraSans(raw: string): ParsedSans {
   return { sans, error: null };
 }
 
+// CERT_TOO_LARGE_FALLBACK is the 413 reason when the response carries no usable
+// detail (an older appliance, or a proxy's own error page).
+export const CERT_TOO_LARGE_FALLBACK = "the request is larger than the appliance accepts";
+
+// MAX_ECHOED_DETAIL_LEN is the longest problem detail certTooLargeReason
+// echoes into the toast. The appliance's own 413 detail is one short sentence;
+// anything longer is treated as a proxy's error text and replaced.
+export const MAX_ECHOED_DETAIL_LEN = 200;
+
+// certTooLargeReason is the reason clause of the certificate-install 413 toast:
+// the problem detail the appliance sent (which names its body limit), or a
+// generic clause when there is none. A detail that looks like markup or runs
+// long is a proxy's error page rather than an appliance problem, and is not
+// echoed. A trailing period is dropped because the toast continues the
+// sentence.
+export function certTooLargeReason(detail: string | undefined): string {
+  const d = (detail ?? "").trim().replace(/\.+$/, "");
+  if (d === "" || d.length > MAX_ECHOED_DETAIL_LEN || /[<>\n]/.test(d)) return CERT_TOO_LARGE_FALLBACK;
+  return d;
+}
+
 // describeManaged renders the CertificateInfo.managed flag as the operator-facing
 // "Management" row of the certificate panel.
 export function describeManaged(managed: boolean): string {

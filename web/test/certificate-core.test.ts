@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { describeManaged, parseExtraSans } from "../src/lib/certificate-core.js";
+import { CERT_TOO_LARGE_FALLBACK, MAX_ECHOED_DETAIL_LEN, certTooLargeReason, describeManaged, parseExtraSans } from "../src/lib/certificate-core.js";
 
 test("parseExtraSans splits on commas and whitespace, trims, and drops empties", () => {
   const r = parseExtraSans("  mic.lan,  192.168.1.20 \n\tsensor.local ,, ");
@@ -74,4 +74,20 @@ test("parseExtraSans names the first invalid token and stops there", () => {
 test("describeManaged distinguishes appliance-managed from operator-installed", () => {
   assert.equal(describeManaged(true), "Appliance-managed (self-signed)");
   assert.equal(describeManaged(false), "Operator-installed (custom)");
+});
+
+test("certTooLargeReason echoes the appliance's problem detail", () => {
+  assert.equal(certTooLargeReason("the request body exceeds the 256 KiB limit"), "the request body exceeds the 256 KiB limit");
+  // A trailing period is dropped, since the toast continues the sentence.
+  assert.equal(certTooLargeReason("the request body exceeds the 512 KiB limit."), "the request body exceeds the 512 KiB limit");
+});
+
+test("certTooLargeReason falls back without a usable detail", () => {
+  assert.equal(certTooLargeReason(undefined), CERT_TOO_LARGE_FALLBACK);
+  assert.equal(certTooLargeReason("  "), CERT_TOO_LARGE_FALLBACK);
+  // A proxy's HTML error page, or anything long or multi-line, is not echoed.
+  assert.equal(certTooLargeReason("<html><body>413</body></html>"), CERT_TOO_LARGE_FALLBACK);
+  assert.equal(certTooLargeReason("x".repeat(MAX_ECHOED_DETAIL_LEN)), "x".repeat(MAX_ECHOED_DETAIL_LEN));
+  assert.equal(certTooLargeReason("x".repeat(MAX_ECHOED_DETAIL_LEN + 1)), CERT_TOO_LARGE_FALLBACK);
+  assert.equal(certTooLargeReason("line one\nline two"), CERT_TOO_LARGE_FALLBACK);
 });

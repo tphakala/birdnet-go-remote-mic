@@ -1,18 +1,18 @@
 // The Events page: the full in-memory event log of the current boot. It renders
 // from the same NotificationStore as the bell, but does not hide entries in the
 // per-browser dismissed set (they only count as read), so entries cleared from
-// the bell stay listed here. The page is reactive: it re-renders on every store
-// "change" while visible, and only marks itself dirty while hidden, so a burst of
-// events costs nothing off-screen. Rows are cached by id and reused across
-// renders; a row is rebuilt only when its rendered state (unread, lifecycle)
-// changes.
+// the bell stay listed here. The page is reactive: while visible, a burst of
+// store "change" events coalesces into one render on the next microtask, and
+// while hidden it only marks itself dirty, so a burst of events costs nothing
+// off-screen. Rows are cached by id and reused across renders; a row is rebuilt
+// only when its rendered state (text, unread, lifecycle) changes.
 //
 // Every time on the page (row times, day groups, the oldest-entry caption,
 // ongoing durations) comes from the entries' server uptime mapped onto the
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.js";
-import { button, downloadBlob, elem, iconSpan, readBoolPref, setHidden, setText, writeBoolPref } from "../lib/ui.js";
+import { button, clearBusy, downloadBlob, elem, iconSpan, readBoolPref, setBusy, setHidden, setText, switchControl, writeBoolPref } from "../lib/ui.js";
 import { showToast } from "../components/toast.js";
 import { FilterChips } from "../components/filter-chips.js";
 import { StatTile } from "../components/stat-tile.js";
@@ -22,11 +22,16 @@ import {
   CATEGORIES,
   SEVERITIES,
   conditionLifecycles,
+  dayKey,
+  dayLabel,
   emptyFilter,
   exportJSON,
   facetCounts,
   filterEvents,
   isFilterActive,
+  oldestCaption,
+  resultCountLabel,
+  rowSignature,
   type EventFilter,
   type Lifecycle,
 } from "../lib/events-core.js";
@@ -51,6 +56,16 @@ const ICON_X =
 // stray keypress.
 const SLASH_PREF_KEY = "remote-mic-events-slash-shortcut";
 
+// Load-failure copy. The notice covers a failure with entries listed, the empty
+// state one with nothing listed; each is spoken exactly as it reads.
+// NotificationStore retries a failed load with a backoff on its own, so Retry
+// only brings the next attempt forward.
+const RETRY_HINT = "The page keeps retrying on its own; Retry tries again now.";
+const NOTICE_TEXT = `The event log could not be loaded from the appliance, so events may be missing. ${RETRY_HINT}`;
+const FAILED_TITLE = "Could not load the event log";
+const FAILED_BODY = `The event log could not be loaded from the appliance. ${RETRY_HINT}`;
+const RELOADED_TEXT = "Event log reloaded.";
+
 const SEVERITY_CHIP_LABEL: Record<NotificationSeverity, string> = {
   error: "Errors",
   warning: "Warnings",
@@ -69,35 +84,6 @@ interface FocusMark {
   list: HTMLElement;
   id: string;
   index: number;
-}
-
-// rowSig is the part of a row's rendered state that can change after it is
-// first drawn. Relative and absolute times, the tooltip, and ongoing durations
-// are restamped in place, so they are deliberately left out.
-function rowSig(unread: boolean, lc: Lifecycle | undefined): string {
-  if (!lc) return unread ? "u" : "r";
-  const life = lc.state === "ongoing" ? "on" : `res:${lc.durationMs ?? "?"}`;
-  return `${unread ? "u" : "r"}|${life}`;
-}
-
-// dayKey buckets an instant by the viewer's local calendar day, as a local
-// YYYY-MM-DD string (getMonth is zero-based, hence the +1).
-function dayKey(ms: number): string {
-  const d = new Date(ms);
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
-
-function dayLabel(ms: number, nowMs: number): string {
-  if (dayKey(ms) === dayKey(nowMs)) return "Today";
-  // Compute yesterday by decrementing the calendar date, not by subtracting 24h:
-  // around a DST transition a day is 23 or 25 hours, so now minus 86_400_000 can
-  // land on today or two days back.
-  const y = new Date(nowMs);
-  y.setDate(y.getDate() - 1);
-  if (dayKey(ms) === dayKey(y.getTime())) return "Yesterday";
-  return new Date(ms).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
 }
 
 // syncChildren reconciles parent's children with nodes in place. Nodes that stay
@@ -146,8 +132,13 @@ export class EventsView {
   // midnight on a page left open with no new events.
   private renderedDay = "";
   // Set while a Retry of a failed load is in flight, so the page shows "Loading"
-  // until the store reports the outcome.
+  // until that retry settles. It is cleared by the retry's own promise, not by
+  // the next store change: an older load failing meanwhile would otherwise flip
+  // the page back to the failure state while the retry may still succeed.
   private retrying = false;
+  // Set while a store-driven render is queued for the next microtask, so a burst
+  // of store changes (a re-sync plus live events) renders once.
+  private renderScheduled = false;
   // Whether the failure notice was last announced, so it is spoken once per
   // failure rather than on every render.
   private failAnnounced = false;
@@ -191,6 +182,12 @@ export class EventsView {
   private emptyBody!: HTMLElement;
   private emptyReset!: HTMLButtonElement;
   private emptyRetry!: HTMLButtonElement;
+  private loadNotice!: HTMLElement;
+  private noticeRetry!: HTMLButtonElement;
+  // Set while the notice's Retry is in flight. Its busy state is aria-disabled,
+  // which does not stop a click, so this keeps a second press from stacking
+  // another load.
+  private noticeRetrying = false;
   private retentionNote!: HTMLElement;
 
   constructor(store: NotificationStore) {
@@ -203,13 +200,7 @@ export class EventsView {
     this.root = root;
     this.build();
 
-    this.store.addEventListener("change", () => {
-      // Any store change settles a pending Retry: either a snapshot applied or the
-      // store reported the load failed again.
-      this.retrying = false;
-      if (this.visible) this.render();
-      else this.dirty = true;
-    });
+    this.store.addEventListener("change", () => this.scheduleRender());
     router.addEventListener("route", (e: Event) => {
       this.setVisible((e as CustomEvent<string>).detail === "events");
     });
@@ -222,7 +213,7 @@ export class EventsView {
   private build(): void {
     const tilesEl = elem("div", "ev-tiles");
     this.tiles = {
-      active: new StatTile({ label: "Active Issues", tone: "info" }),
+      active: new StatTile({ label: "Active Issues", tone: "ok" }),
       error: new StatTile({ label: "Errors", tone: "error", onClick: () => this.soloSeverity("error") }),
       warning: new StatTile({ label: "Warnings", tone: "warn", onClick: () => this.soloSeverity("warning") }),
       info: new StatTile({ label: "Info", tone: "info", onClick: () => this.soloSeverity("info") }),
@@ -332,7 +323,11 @@ export class EventsView {
     });
     const facets = elem("div", "ev-facets");
     facets.append(this.sevChips.el, this.catChips.el);
-    toolbar.append(searchWrap, facets);
+    // The "/" shortcut switch sits beside the search box it jumps to, where an
+    // operator looking for it will look.
+    const searchRow = elem("div", "ev-search-row");
+    searchRow.append(searchWrap, this.buildSlashToggle());
+    toolbar.append(searchRow, facets);
 
     // Filter status line: an optional source pill, the result count, Reset.
     this.filterBar = elem("div", "ev-filterbar");
@@ -357,6 +352,14 @@ export class EventsView {
     this.resetBtn.addEventListener("click", () => this.resetFilters());
     this.filterBar.append(this.sourcePill, this.resultText, this.announceEl, this.resetBtn);
 
+    // A failed snapshot while entries are listed (live events, or an earlier
+    // snapshot): the log may be missing events, so say so and offer Retry. With
+    // nothing listed the empty state below carries the failure instead.
+    this.loadNotice = elem("div", "ev-load-notice");
+    this.noticeRetry = button({ variant: "secondary", label: "Retry", onClick: () => this.retryFromNotice() });
+    this.loadNotice.append(elem("p", "ev-load-notice-text", NOTICE_TEXT), this.noticeRetry);
+    this.loadNotice.hidden = true;
+
     this.listEl = elem("div", "ev-list ev-log-list");
 
     this.emptyEl = elem("div", "ev-empty");
@@ -369,29 +372,25 @@ export class EventsView {
 
     const foot = elem("div", "ev-log-foot");
     this.retentionNote = elem("p", "ev-retention-note");
-    foot.append(this.retentionNote, this.buildSlashToggle());
+    foot.append(this.retentionNote);
 
-    card.append(head, toolbar, this.filterBar, this.listEl, this.emptyEl, foot);
+    card.append(head, toolbar, this.filterBar, this.loadNotice, this.listEl, this.emptyEl, foot);
     return card;
   }
 
-  // buildSlashToggle is the per-browser switch for the "/" shortcut, in the
-  // shared switch-control style.
+  // buildSlashToggle is the per-browser switch for the "/" shortcut.
   private buildSlashToggle(): HTMLElement {
-    const wrap = elem("label", "switch-control ev-shortcut-toggle");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.className = "visually-hidden";
-    input.checked = this.slashShortcut;
+    const { el, input } = switchControl({
+      label: "Use / to jump to search",
+      extraClass: "ev-shortcut-toggle",
+      checked: this.slashShortcut,
+    });
     input.addEventListener("change", () => {
       this.slashShortcut = input.checked;
       writeBoolPref(SLASH_PREF_KEY, input.checked);
       this.applySlashShortcut();
     });
-    const track = elem("span", "switch-track");
-    track.append(elem("span", "switch-thumb"));
-    wrap.append(input, track, elem("span", "switch-label", "Use / to jump to search"));
-    return wrap;
+    return el;
   }
 
   // applySlashShortcut shows the key hint and advertises the shortcut only while
@@ -478,15 +477,58 @@ export class EventsView {
     this.search.focus();
   }
 
+  // retryLoad is the empty state's Retry: with nothing listed the page switches
+  // to "Loading" until this retry settles.
   private retryLoad(): void {
     this.retrying = true;
     // Empty the status region first: setText writes only on change, so a repeat
     // failure would otherwise leave the same text in place and say nothing.
     setText(this.announceEl, "");
     this.render();
-    // The Retry button is hidden by that render; keep keyboard focus on the page.
-    this.logTitle.focus();
-    void this.store.load();
+    // The Retry button is hidden by that render; keep keyboard focus on the page
+    // without scrolling it.
+    this.logTitle.focus({ preventScroll: true });
+    // Settle from this retry's own outcome (see retrying). Its change event may
+    // already have rendered with retrying still set, so render once more.
+    void this.store
+      .load()
+      .then((ok) => {
+        if (ok) setText(this.announceEl, RELOADED_TEXT);
+      })
+      .finally(() => {
+        this.retrying = false;
+        this.scheduleRender();
+      });
+  }
+
+  // retryFromNotice is the failure notice's Retry. The listed entries stay, so
+  // the notice stays up with its button busy (and focused) until the retry
+  // settles, rather than flashing a loading state over a usable list.
+  private retryFromNotice(): void {
+    if (this.noticeRetrying) return;
+    this.noticeRetrying = true;
+    const btn = this.noticeRetry;
+    setBusy(btn, "Retrying");
+    setText(this.announceEl, "");
+    void this.store
+      .load()
+      .then((ok) => {
+        if (ok) {
+          setText(this.announceEl, RELOADED_TEXT);
+          // Success hides the notice (on the change render, which may already
+          // have run), so a focused Retry would drop focus to the body. Move it
+          // to the log heading without scrolling.
+          const a = document.activeElement;
+          if (a === btn || a === null || a === document.body) this.logTitle.focus({ preventScroll: true });
+        } else if (this.store.hasFailed()) {
+          // Still failing: the notice stayed up, so say it again.
+          setText(this.announceEl, NOTICE_TEXT);
+        }
+      })
+      .finally(() => {
+        this.noticeRetrying = false;
+        clearBusy(btn, "Retry");
+      });
   }
 
   private exportShown(): void {
@@ -496,7 +538,7 @@ export class EventsView {
       showToast("Nothing to export", "warn");
       return;
     }
-    const json = exportJSON(shown, state.bootId, new Date().toISOString());
+    const json = exportJSON(shown, state.bootId, new Date().toISOString(), state.anchor);
     downloadBlob(
       new Blob([json], { type: "application/json" }),
       `remote-mic-events-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
@@ -526,10 +568,29 @@ export class EventsView {
     const row = mark.list.querySelector<HTMLElement>(`.notif-row[data-id="${mark.id}"]`);
     const controls = row ? Array.from(row.querySelectorAll<HTMLElement>("button")) : [];
     const target = controls[mark.index] ?? controls[0] ?? this.logTitle;
-    target.focus();
+    // The fallback can sit far from the vanished row; keep the viewport where
+    // the operator left it rather than jumping to the heading.
+    target.focus({ preventScroll: true });
   }
 
   // ---------- render ----------
+
+  // scheduleRender coalesces store-driven renders: a burst of changes in one
+  // task renders once, on the next microtask. While hidden the page only marks
+  // itself dirty and renders on showing.
+  private scheduleRender(): void {
+    if (!this.visible) {
+      this.dirty = true;
+      return;
+    }
+    if (this.renderScheduled) return;
+    this.renderScheduled = true;
+    queueMicrotask(() => {
+      this.renderScheduled = false;
+      if (this.visible) this.render();
+      else this.dirty = true;
+    });
+  }
 
   private render(): void {
     const focus = this.captureFocus();
@@ -558,10 +619,11 @@ export class EventsView {
     };
 
     // Before the first snapshot an empty items list is "not fetched yet", not
-    // "no events"; show a loading state instead of asserting, or the failure
-    // with Retry once a load has failed.
+    // "no events"; show a loading state instead of asserting. A failed load is
+    // shown whether or not entries are listed: live events (or an earlier
+    // snapshot) do not make the log complete, so it stays visible with Retry.
     const loading = !this.store.hasLoaded() && items.length === 0;
-    const failed = loading && this.store.hasFailed() && !this.retrying;
+    const failed = this.store.hasFailed() && !this.retrying;
 
     setText(
       this.retentionNote,
@@ -591,11 +653,7 @@ export class EventsView {
     setHidden(this.sourcePill, this.filter.source === null);
     setText(this.sourcePillText, this.filter.source ?? "");
     this.sourcePill.setAttribute("aria-label", `Source ${this.filter.source ?? ""}, remove filter`);
-    const resultLabel = loading
-      ? ""
-      : filterActive
-        ? `Showing ${shown.length} of ${items.length} ${items.length === 1 ? "event" : "events"}`
-        : `${items.length} ${items.length === 1 ? "event" : "events"}`;
+    const resultLabel = resultCountLabel(shown.length, items.length, filterActive, loading);
     setText(this.resultText, resultLabel);
     // Mirror the count into the status region only for a user filter change; a
     // store-driven (live-event) render leaves announce false so it stays silent.
@@ -605,7 +663,11 @@ export class EventsView {
     }
     // Speak a load failure once when it appears; it is not a user filter change,
     // but the page would otherwise sit silently on an error.
-    if (failed && !this.failAnnounced) setText(this.announceEl, "Could not load the event log.");
+    // It is spoken as it reads: the notice's text with entries listed, else the
+    // empty state's title and body.
+    if (failed && !this.failAnnounced) {
+      setText(this.announceEl, items.length > 0 ? NOTICE_TEXT : `${FAILED_TITLE}. ${FAILED_BODY}`);
+    }
     this.failAnnounced = failed;
     setHidden(this.resetBtn, !filterActive);
 
@@ -618,14 +680,17 @@ export class EventsView {
     // Empty states: the load failed, nothing fetched yet, nothing at all, or
     // nothing matching the filter.
     const empty = shown.length === 0;
+    // The notice covers a failure with entries listed; the empty state below
+    // covers one with nothing listed, so the two never show together.
+    setHidden(this.loadNotice, !(failed && items.length > 0));
     setHidden(this.emptyEl, !empty);
     setHidden(this.listEl, empty);
-    setHidden(this.emptyRetry, !(empty && failed));
+    setHidden(this.emptyRetry, !(empty && failed && items.length === 0));
     if (empty) {
       if (items.length === 0) {
         if (failed) {
-          setText(this.emptyTitle, "Could not load the event log");
-          setText(this.emptyBody, "The event log could not be loaded from the appliance. Check the connection, then retry.");
+          setText(this.emptyTitle, FAILED_TITLE);
+          setText(this.emptyBody, FAILED_BODY);
         } else if (loading) {
           setText(this.emptyTitle, "Loading events");
           setText(this.emptyBody, "Waiting for the event log from the appliance.");
@@ -655,10 +720,18 @@ export class EventsView {
       this.tiles.retained.set("-", "");
       return;
     }
-    this.tiles.active.set(String(active.length), active.length === 0 ? "All clear" : "Still in effect");
-    // Red only when something is wrong: a clear board reads in the OK tone.
-    this.tiles.active.setTone(active.length > 0 ? "error" : "info");
-    this.tiles.active.setAlert(active.length > 0);
+    if (failed && active.length === 0) {
+      // The last load failed, so a condition raised since the last good snapshot
+      // may be missing: zero is not a confirmed "All clear".
+      this.tiles.active.set("0", "Possibly incomplete");
+      this.tiles.active.setTone("neutral");
+      this.tiles.active.setAlert(false);
+    } else {
+      this.tiles.active.set(String(active.length), active.length === 0 ? "All clear" : "Still in effect");
+      // Red only when something is wrong: a clear board reads in the OK tone.
+      this.tiles.active.setTone(active.length > 0 ? "error" : "ok");
+      this.tiles.active.setAlert(active.length > 0);
+    }
 
     const bySev: Record<NotificationSeverity, number> = { error: 0, warning: 0, info: 0 };
     let oldest: Notification | null = null;
@@ -670,23 +743,17 @@ export class EventsView {
     this.tiles.warning.set(String(bySev.warning), "In log");
     this.tiles.info.set(String(bySev.info), "In log");
 
-    let caption = "";
-    if (oldest) {
-      const ms = eventTimeMs(state, oldest);
-      if (Number.isFinite(ms)) {
-        const time = new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        caption = dayKey(ms) === dayKey(nowMs) ? `Oldest ${time}` : `Oldest ${dayLabel(ms, nowMs)} ${time}`;
-      }
-    }
+    const caption = oldest ? oldestCaption(eventTimeMs(state, oldest), nowMs) : "";
     this.tiles.retained.set(`${items.length}`, caption || "In memory");
   }
 
   // cachedRow returns n's row from cache, rebuilding it only when its rendered
-  // state (unread, lifecycle) changed since it was drawn.
+  // state (text, unread, lifecycle; see rowSignature) changed since it was
+  // drawn.
   private cachedRow(cache: Map<number, CachedRow>, n: Notification, ctx: RowContext, headingLevel: "h3" | "h4"): HTMLElement {
     const unread = ctx.isUnread(n);
     const lifecycle = ctx.lifecycles.get(n.id);
-    const sig = rowSig(unread, lifecycle);
+    const sig = rowSignature(n, unread, lifecycle);
     let cached = cache.get(n.id);
     if (!cached || cached.sig !== sig) {
       const el = renderNotificationRow(n, { nowMs: ctx.nowMs, toMs: ctx.toMs, full: true, headingLevel, unread, lifecycle, onChip: this.onChip });

@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -335,8 +336,8 @@ func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
 	// The README promises 57 bytes: 63 less the 6 of dnssd's longest rename
 	// suffix, " (101)". Pinned as a literal, since the cases below derive
 	// from the constant.
-	if labelBudget != 57 {
-		t.Fatalf("labelBudget = %d, want 57", labelBudget)
+	if announce.NameBudget != 57 {
+		t.Fatalf("announce.NameBudget = %d, want 57", announce.NameBudget)
 	}
 	long := strings.Repeat("a", 70)
 	const north = " north"
@@ -344,26 +345,26 @@ func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
 		name, in, suffix, want string
 	}{
 		{"short name unchanged", nameAudioMoth, "", nameAudioMoth},
-		{"name at the budget unchanged", long[:labelBudget], "", long[:labelBudget]},
-		{"ascii cut to the budget", long, "", long[:labelBudget]},
+		{"name at the budget unchanged", long[:announce.NameBudget], "", long[:announce.NameBudget]},
+		{"ascii cut to the budget", long, "", long[:announce.NameBudget]},
 		// A 2-byte rune straddling the budget is dropped whole.
-		{"2-byte rune never split", long[:labelBudget-1] + "ä" + "b", "", long[:labelBudget-1]},
+		{"2-byte rune never split", long[:announce.NameBudget-1] + "ä" + "b", "", long[:announce.NameBudget-1]},
 		// A 3-byte rune whose first byte sits two bytes before the budget
 		// needs two steps back to its start.
-		{"3-byte rune never split", long[:labelBudget-2] + "€" + "b", "", long[:labelBudget-2]},
-		{"trailing space trimmed", long[:labelBudget-1] + " rear", "", long[:labelBudget-1]},
+		{"3-byte rune never split", long[:announce.NameBudget-2] + "€" + "b", "", long[:announce.NameBudget-2]},
+		{"trailing space trimmed", long[:announce.NameBudget-1] + " rear", "", long[:announce.NameBudget-1]},
 		// The device name is cut, never the stream path that keeps a
 		// fanned-out device's streams apart.
-		{"suffix kept, name cut", long, north, long[:labelBudget-len(north)] + north},
+		{"suffix kept, name cut", long, north, long[:announce.NameBudget-len(north)] + north},
 		// A name cut just after a space loses it, so the suffix does not
 		// follow a double space.
-		{"space at the name cut trimmed", long[:labelBudget-len(north)-1] + " rear", north, long[:labelBudget-len(north)-1] + north},
+		{"space at the name cut trimmed", long[:announce.NameBudget-len(north)-1] + " rear", north, long[:announce.NameBudget-len(north)-1] + north},
 		{"short name with suffix unchanged", nameAudioMoth, north, nameAudioMoth + north},
 		// A path that alone exceeds the budget leaves no room for the name
 		// and is cut itself.
-		{"over-long suffix cut", nameAudioMoth, " " + long, long[:labelBudget]},
+		{"over-long suffix cut", nameAudioMoth, " " + long, long[:announce.NameBudget]},
 		// A suffix of exactly the budget also leaves no room for the name.
-		{"suffix at the budget drops the name", nameAudioMoth, " " + long[:labelBudget-1], long[:labelBudget-1]},
+		{"suffix at the budget drops the name", nameAudioMoth, " " + long[:announce.NameBudget-1], long[:announce.NameBudget-1]},
 		// A name that fits keeps its spaces.
 		{"fitting name unchanged", " " + nameAudioMoth + " ", "", " " + nameAudioMoth + " "},
 	}
@@ -374,9 +375,9 @@ func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("instanceLabel(%q, %q) = %q, want %q", tc.in, tc.suffix, got, tc.want)
 			}
-			// A responder rename appends up to renameRoom bytes, and the
-			// result must still fit one label.
-			if len(got)+renameRoom > dnsLabelMax || !utf8.ValidString(got) {
+			// A responder rename appends up to " (101)", and the result must
+			// still fit one 63-byte DNS label.
+			if len(got)+len(" (101)") > 63 || !utf8.ValidString(got) {
 				t.Errorf("instanceLabel(%q, %q) = %q: %d bytes leaves no room for a rename, or invalid UTF-8", tc.in, tc.suffix, got, len(got))
 			}
 		})
@@ -401,8 +402,8 @@ func TestAnnounceInfosLongFannedOutName(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, in := range infos {
-		if len(in.Name) > labelBudget {
-			t.Errorf("record %s advertises %d bytes, over the %d-byte budget", in.Path, len(in.Name), labelBudget)
+		if len(in.Name) > announce.NameBudget {
+			t.Errorf("record %s advertises %d bytes, over the %d-byte budget", in.Path, len(in.Name), announce.NameBudget)
 		}
 		seen[in.Name] = true
 	}

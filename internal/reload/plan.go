@@ -5,8 +5,8 @@
 package reload
 
 import (
+	"cmp"
 	"slices"
-	"sort"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
@@ -75,9 +75,10 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 		}
 	}
 
-	sort.Strings(p.Stop)
-	sort.Slice(p.Start, func(i, j int) bool { return p.Start[i].Name < p.Start[j].Name })
-	sort.Slice(p.Restart, func(i, j int) bool { return p.Restart[i].Name < p.Restart[j].Name })
+	slices.Sort(p.Stop)
+	byName := func(a, b config.Device) int { return cmp.Compare(a.Name, b.Name) }
+	slices.SortFunc(p.Start, byName)
+	slices.SortFunc(p.Restart, byName)
 	return p
 }
 
@@ -87,10 +88,10 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 // config save could have changed a faulted stream. It compares only the
 // capture and stream parameters, never Name, Enabled or QuietAlert: every
 // field that feeds the capture open (Device/Rate/Format) and the full ordered
-// stream set (each stream's path,
-// mode, channels and Opus bitrate feed a pipeline stage, an SDP and an RTSP
-// mount). Any stream add, remove or edit restarts the whole device, because one
-// ALSA open is shared by every stream and the handle cannot change per stream.
+// stream set (each stream's path, mode, channels and Opus bitrate feed a
+// pipeline stage, an SDP and an RTSP mount). Any stream add, remove or edit
+// restarts the whole device, because one ALSA open is shared by every stream
+// and the handle cannot change per stream.
 // The name is the identity key and is equal by construction here; the enabled
 // flag is handled by the caller.
 func CaptureParamsEqual(a, b *config.Device) bool {

@@ -15,6 +15,7 @@ declare module "node:assert/strict" {
   interface StrictAssert {
     (value: unknown, message?: string): asserts value;
     equal(actual: unknown, expected: unknown, message?: string): void;
+    notEqual(actual: unknown, expected: unknown, message?: string): void;
     deepEqual(actual: unknown, expected: unknown, message?: string): void;
     ok(value: unknown, message?: string): asserts value;
     fail(message?: string): never;
@@ -22,6 +23,11 @@ declare module "node:assert/strict" {
   const assert: StrictAssert;
   export default assert;
 }
+
+// process.env, for the tests that pin the time zone. Node re-reads TZ on
+// assignment, which the Date getters see at once; an Intl formatter built
+// before the assignment keeps the zone it was built in.
+declare const process: { env: Record<string, string | undefined> };
 
 declare module "node:fs" {
   export function readFileSync(path: string, encoding: "utf8"): string;
