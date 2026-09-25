@@ -248,7 +248,10 @@ changes; only a new over-long value is refused. An mDNS service name is one
 DNS label (63 bytes), and the appliance keeps 6 of those free for the
 ` (N)` suffix the responder adds when another host already uses the name, so
 it advertises at most 57 bytes: a longer device name is cut, keeping the
-stream path it gets for a device with several streams.
+stream path it gets for a device with several streams (a path that alone is
+longer is cut too). Two devices whose names agree in their first 57 bytes
+then advertise the same name, and a discoverer may see only one of them, so
+keep device names distinct within that length.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
@@ -411,7 +414,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
   it exits once every device has stopped. The appliance makes that decision
   when a device's capture ends, so an API that stops (or stops being retried)
   after the last device already ended leaves the process up, still running
-  the retries described here.
+  the retries described here. If the config file then disables the
+  management API while no device can come back on its own (for example
+  every down device is pinned to a card index), it stays up doing nothing
+  until restarted.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
   automatic retry once it counts as recovered, or process exit), because

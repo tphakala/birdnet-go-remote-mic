@@ -646,8 +646,12 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// supervisor's state when they are made, so an API it brought back a moment
 	// ago counts. They are made only here and when a pump ends: an API that
 	// stops, or whose retry ends, after the last pump already ended leaves the
-	// process up with the device and API retries still running, which is safe
-	// (it recovers in process) though not what a fresh start would decide.
+	// process up, not what a fresh start would decide. It recovers in process
+	// while a retry can still bring something back (the API retry, a down
+	// device that is still present, a hotplug of one bound by stable id), but
+	// once the config file disabled management and no device can come back
+	// unattended (a card-index device waits for a config save), it idles until
+	// restarted.
 	if app.serving() == 0 && management.serving() == nil {
 		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
@@ -877,10 +881,11 @@ const (
 // suffix (empty for a lone stream, " <path>" for a fanned-out device) that
 // fits labelBudget. The config accepts device names longer than a label
 // holds, so it cuts the device name, not the suffix: the suffix is what keeps
-// a device's streams apart. Only a suffix that alone exceeds the budget is cut
-// too, which leaves no room for the device name (and drops the suffix's
-// leading space). Cuts fall on a rune boundary, and a space left at a cut is
-// trimmed. A name that fits is returned unchanged.
+// a device's streams apart. A suffix that fills the budget leaves no room for
+// the device name, and one that exceeds it is cut too; a device name cut to
+// nothing (including one whose first rune does not fit) also drops the
+// suffix's leading space. Cuts fall on a rune boundary, and a space left at a
+// cut is trimmed. A name that fits is returned unchanged.
 func instanceLabel(name, suffix string) string {
 	head := cutLabel(name, labelBudget-len(suffix))
 	if head == "" {

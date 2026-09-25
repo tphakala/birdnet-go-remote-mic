@@ -599,8 +599,10 @@ type mgmtServer struct {
 	err error
 }
 
-// wait blocks until the API has shut down and reports why it stopped: nil when
-// ctx was cancelled, the serve error when the API died at runtime.
+// wait blocks until the API has shut down and reports why it stopped: nil
+// after a shutdown on ctx, the serve error when the listener failed on its own.
+// A listener failure that races the cancellation can win, so a caller that
+// needs to tell the two apart also checks ctx (see superviseManagement).
 func (s *mgmtServer) wait() error {
 	<-s.stopped
 	return s.err
@@ -695,11 +697,11 @@ func (p *mgmtParams) useConfig(running *config.Config) {
 // reports whether the API actually came up. A certificate or listener failure
 // (including an installed certificate it cannot read, which it never
 // overwrites) is logged, not fatal (the appliance keeps capturing and serving
-// RTSP), and ok is false so the caller does not mistake a configured-but-dead
-// API for an available diagnostic surface when deciding whether to stay alive
-// with no serving device. Either way the handle's supervisor keeps the API up
+// RTSP), and ok is false. Either way the handle's supervisor keeps the API up
 // from then on, retrying a failed start and restarting an API that stops at
-// runtime (see superviseManagement); the handle's serving method follows it.
+// runtime (see superviseManagement); the handle's serving method follows it,
+// and is what run() reads to decide whether a configured API is an available
+// diagnostic surface, since ok describes only the first attempt.
 func startManagement(ctx context.Context, p *mgmtParams) (handle *mgmt, ok bool) {
 	return startManagementWith(ctx, p, mgmtRetryBackoff[:])
 }

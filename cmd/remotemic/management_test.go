@@ -332,6 +332,12 @@ func TestAnnounceInfosCarryAuth(t *testing.T) {
 
 func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
 	t.Parallel()
+	// The README promises 57 bytes: 63 less the 6 of dnssd's longest rename
+	// suffix, " (101)". Pinned as a literal, since the cases below derive
+	// from the constant.
+	if labelBudget != 57 {
+		t.Fatalf("labelBudget = %d, want 57", labelBudget)
+	}
 	long := strings.Repeat("a", 70)
 	const north = " north"
 	tests := []struct {
@@ -356,6 +362,8 @@ func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
 		// A path that alone exceeds the budget leaves no room for the name
 		// and is cut itself.
 		{"over-long suffix cut", nameAudioMoth, " " + long, long[:labelBudget]},
+		// A suffix of exactly the budget also leaves no room for the name.
+		{"suffix at the budget drops the name", nameAudioMoth, " " + long[:labelBudget-1], long[:labelBudget-1]},
 		// A name that fits keeps its spaces.
 		{"fitting name unchanged", " " + nameAudioMoth + " ", "", " " + nameAudioMoth + " "},
 	}

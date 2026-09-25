@@ -118,12 +118,13 @@ func TestSuperviseManagementBacksOffThenServes(t *testing.T) {
 }
 
 // TestSuperviseManagementLogsChangesOnly pins the log bound: a failure
-// repeating the previous message is not logged again, a different one is, and
-// the recovery is. Not parallel: it captures the process logger.
+// repeating the previous message is not logged again, including a repeat of a
+// message that was itself a change, a different one is, and the recovery is.
+// Not parallel: it captures the process logger.
 func TestSuperviseManagementLogsChangesOnly(t *testing.T) {
 	out := captureLog(t)
 	synctest.Test(t, func(t *testing.T) {
-		errs := []error{errors.New("broken"), errors.New("broken"), errors.New("other")}
+		errs := []error{errors.New("broken"), errors.New("other"), errors.New("other")}
 		fake, stop := fakeServer(testMgmtAddr)
 		n := 0
 		attempt := func() (*mgmtServer, error) {
@@ -143,6 +144,35 @@ func TestSuperviseManagementLogsChangesOnly(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "management API recovered after 4 background attempt(s)") {
 		t.Errorf("log lacks the recovery line; log:\n%s", out)
+	}
+}
+
+// TestSuperviseManagementLogsDeathOnce pins the log bound across a runtime
+// death: retries failing with the death's own message add no failure lines,
+// since died already logged the stop. Not parallel: it captures the process
+// logger.
+func TestSuperviseManagementLogsDeathOnce(t *testing.T) {
+	out := captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		first, kill := fakeServer(testMgmtAddr)
+		second, stop := fakeServer(testMgmtAddr)
+		fault := errors.New("accept: broken")
+		n := 0
+		attempt := func() (*mgmtServer, error) {
+			if n < 3 {
+				n++
+				return nil, fault
+			}
+			return second, nil
+		}
+		h := supervise(t.Context(), first, nil, mgmtRetry{attempt: attempt, delays: []time.Duration{time.Second}, stable: time.Hour})
+		kill(fault)
+		time.Sleep(10 * time.Second)
+		stop(nil)
+		h.Wait()
+	})
+	if got := strings.Count(out.String(), "management API still unavailable"); got != 0 {
+		t.Errorf("logged %d failure lines repeating the death's message, want 0; log:\n%s", got, out)
 	}
 }
 
@@ -358,9 +388,10 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 }
 
 // TestStartManagementRestartsAfterListenerDies drives a runtime listener
-// fault through the real server: the dead API stops advertising its address
-// in the run lock, raises the outage, and a new API serves the config (with
-// its PATCHes) of the one that died.
+// fault through the real server: the dead API raises the outage, a new API
+// serves the config (with its PATCHes) of the one that died and is advertised
+// in the run lock, and nothing is applied live. What the lock holds between
+// the death and the restart is pinned by TestMgmtParamsDied.
 func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -376,7 +407,11 @@ func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = lock.Release() })
+	t.Cleanup(func() {
+		if err := lock.Release(); err != nil {
+			t.Errorf("release run lock: %v", err)
+		}
+	})
 	center := notify.NewCenter()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -528,7 +563,9 @@ func TestRecoverManagementFollowsEditedFile(t *testing.T) {
 		t.Errorf("store seeded with listen %q, want the file's %q (overrides stay out of the store)", p.storeCfg.Management.Listen, edited.Management.Listen)
 	}
 	cancel()
-	_ = s.wait()
+	if err := s.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil (a clean shutdown)", err)
+	}
 }
 
 // TestRecoverManagementStopsWhenFileDisablesManagement pins that a file now
@@ -563,7 +600,9 @@ func TestRecoverManagementStopsWhenFileDisablesManagement(t *testing.T) {
 		t.Fatalf("recoverManagement with --management: %v", err)
 	}
 	cancel()
-	_ = s.wait()
+	if err := s.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil (a clean shutdown)", err)
+	}
 }
 
 func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
@@ -622,7 +661,9 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 		t.Errorf("GET /config = %s, want the edited token", body)
 	}
 	cancel()
-	_ = h.wait()
+	if err := h.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil (a clean shutdown)", err)
+	}
 
 	// A second attempt with the file unchanged applies nothing. The store holds a
 	// Clone of what was loaded, as run() seeds it (splitServeConfig), so this
@@ -639,7 +680,9 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 		t.Errorf("got %d reloads, want none for an unchanged file", len(applied)-1)
 	}
 	cancel2()
-	_ = h2.wait()
+	if err := h2.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil (a clean shutdown)", err)
+	}
 }
 
 // TestRecoverManagementKeepsSnapshotWhenFileMissing pins the missing-file case: a
@@ -677,7 +720,9 @@ func TestRecoverManagementKeepsSnapshotWhenFileMissing(t *testing.T) {
 		t.Errorf("store seeded with %+v, want the startup snapshot", p.storeCfg)
 	}
 	cancel()
-	_ = h.wait()
+	if err := h.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil (a clean shutdown)", err)
+	}
 }
 
 // TestRecoverManagementFailedServeKeepsCondition pins that the unavailable
@@ -772,7 +817,11 @@ func TestRecoverManagementPublishesRunLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = lock.Release() })
+	t.Cleanup(func() {
+		if err := lock.Release(); err != nil {
+			t.Errorf("release run lock: %v", err)
+		}
+	})
 	pub := &runLockPublisher{lock: lock, cfgPath: cfgPath}
 	pub.publish(nil)
 
@@ -808,7 +857,9 @@ func TestRecoverManagementPublishesRunLock(t *testing.T) {
 		t.Errorf("after the attempt: ReadState = %+v, %v, %v; want the API's address %q", st, ok, err, h.addr)
 	}
 	cancel()
-	_ = h.wait()
+	if err := h.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil (a clean shutdown)", err)
+	}
 
 	// A failed attempt (the file no longer loads) leaves no endpoint.
 	if err := os.WriteFile(cfgPath, []byte("listen: [not, a, string\n"), 0o600); err != nil {
