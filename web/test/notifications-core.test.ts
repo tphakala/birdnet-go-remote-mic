@@ -536,6 +536,11 @@ test("isSnapshot accepts a well-formed snapshot and rejects anything else", () =
   assert.equal(isSnapshot({ ...good, serverTime: undefined }), false);
   assert.equal(isSnapshot({ ...good, uptimeMs: Number.NaN }), false);
   assert.equal(isSnapshot({ ...good, nextId: "2" }), false);
+  // nextId drives gap detection: it must be an integer of at least 1.
+  assert.equal(isSnapshot({ ...good, nextId: 1.5 }), false);
+  assert.equal(isSnapshot({ ...good, nextId: 0 }), false);
+  assert.equal(isSnapshot({ ...good, nextId: -3 }), false);
+  assert.equal(isSnapshot({ ...good, nextId: 1 }), true);
   assert.equal(isSnapshot({ ...good, notifications: "none" }), false);
   // A malformed entry, or one from another boot, poisons the whole snapshot.
   assert.equal(isSnapshot({ ...good, notifications: [{ id: 1 }] }), false);

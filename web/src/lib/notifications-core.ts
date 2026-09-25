@@ -353,7 +353,11 @@ export function isSnapshot(v: unknown): v is NotificationSnapshot {
     typeof s.serverTime === "string" &&
     typeof s.uptimeMs === "number" &&
     Number.isFinite(s.uptimeMs) &&
-    Number.isFinite(s.nextId) &&
+    // nextId drives the gap arithmetic, so it must be what the contract
+    // promises (an integer of at least 1); a fractional or zero value would
+    // make the next valid id look like a gap.
+    Number.isSafeInteger(s.nextId) &&
+    (s.nextId as number) >= 1 &&
     Array.isArray(s.notifications) &&
     // Every entry must be well-formed AND belong to the snapshot's own boot, so
     // a snapshot cannot label itself one boot while carrying another boot's

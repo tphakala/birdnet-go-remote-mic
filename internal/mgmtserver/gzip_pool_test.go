@@ -4,17 +4,20 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
 
 // TestGzipReusesPooledWriter pins the pooling: a flate compressor costs about
 // 800 KB of tables, so sequential requests must share writers rather than
-// build one each. The race detector makes sync.Pool drop a Put at random
-// (about one in four), so the bound leaves room for that and still fails a
+// build one each. sync.Pool promises no reuse, so the test takes away the two
+// things that empty it: a GC (turned off for the test, which is therefore not
+// parallel) and, under the race detector, a Put dropped at random about one
+// time in four, which the bound leaves room for while still failing a
 // handler that builds a writer per request.
 func TestGzipReusesPooledWriter(t *testing.T) {
-	t.Parallel()
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	const requests = 100
 	body := strings.Repeat(`{"k":"v"}`, 100)
 	h := newGzipHandler("/x", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
