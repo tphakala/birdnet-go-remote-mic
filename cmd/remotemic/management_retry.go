@@ -25,8 +25,8 @@ const mgmtDownKey = "management-api-down"
 // that mounts late, a permission fixed by hand, a full or read-only filesystem
 // freed up, a port held by another process), so it starts at 30 s and caps at
 // 10 minutes: a permanent fault then costs one attempt every 10 minutes (a
-// config file read, a certificate check that may try to write a new pair, and
-// a listen).
+// config file read, a certificate check that may try to write a new pair, a
+// listen, and two run-lock writes).
 var mgmtRetryBackoff = [...]time.Duration{
 	30 * time.Second,
 	time.Minute,

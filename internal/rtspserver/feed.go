@@ -91,10 +91,10 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 	}
 }
 
-// Active reports whether a client is playing, so frames pushed now are queued
-// for it (buffer space permitting) rather than discarded. It is one atomic
-// load; the fan-out and the stages read Session, which also carries the play
-// session.
+// Active reports whether a client is playing, so frames of its session pushed
+// now are queued for it (buffer space permitting) rather than discarded. It is
+// one atomic load. The appliance reads Session instead (the fan-out, the stages
+// and Push), which also carries the play session; Active serves tests.
 func (c *ChanSource) Active() bool { return c.state.Load()&sessionActive != 0 }
 
 // Session reports whether a client is playing and which play session it is.

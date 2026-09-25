@@ -58,9 +58,9 @@ const (
 // the device's first retryable failure, or from a restart restartFaulted makes
 // for a device with an encode fault on record, until the device is removed,
 // disabled, restarted by a config save or by a hardware change (except a device
-// with an encode fault on record whose parameters the save left unchanged, whose
-// restart is a retry attempt that keeps the state, see restartFaulted), or goes
-// down for a cause a retry cannot fix.
+// with an encode fault on record, which a hardware change, or a save that left
+// its parameters unchanged, restarts as a retry attempt that keeps the state,
+// see restartFaulted), or goes down for a cause a retry cannot fix.
 type retryState struct {
 	// attempts counts consecutive failures since the backoff last reset; it picks
 	// the delay before the next attempt.
@@ -454,6 +454,8 @@ func (a *appliance) restartFaulted(d *config.Device, why string, resetBackoff bo
 	}
 	st.next = time.Time{}
 	if resetBackoff {
+		// recoveredAt is already zero here (a faulted device's settle has not
+		// completed); zeroing it too keeps the reset whole if that changes.
 		st.attempts, st.failures, st.recoveredAt = 0, 0, time.Time{}
 	}
 	log.Printf("device %q: %s; restarting it, and its failure clears once a client plays the faulted stream and encoding succeeds", d.Name, why)

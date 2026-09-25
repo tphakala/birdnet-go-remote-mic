@@ -258,8 +258,9 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 	// Meter every captured channel once on the shared reader, then fan the metered
 	// capture out to each stream's selecting source. Registering the meter after the
 	// fallible build above keeps a device that fails there out of the levels hub.
-	// Each consumer is gated on its stream feed's active flag, so a stream with no
-	// client playing costs no per-period copy or channel extraction.
+	// Each consumer is gated on its stream feed's play session, so a stream with
+	// no client playing costs no per-period copy or channel extraction, and each
+	// period it gets is tagged with that session.
 	metered := audio.NewMeteredSource(base, hub.Meter(dev.Name, channels))
 	fanout, consumers := audio.NewFanout(metered, dev.Name, fanoutStreams(streams))
 	for i := range streams {
