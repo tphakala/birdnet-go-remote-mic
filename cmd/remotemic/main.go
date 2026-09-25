@@ -122,7 +122,7 @@ type streamRuntime struct {
 	// encoded records that this stream's stage has emitted an encoded frame,
 	// which happens only while a client plays it (see pipeline.Stage). An
 	// unattended retry after this stream's encode fault waits for it before its
-	// settle (see retryState.encodePaths). Set once by the stage goroutine, read
+	// settle (see encodeFault). Set once by the stage goroutine, read
 	// by the run loop.
 	encoded atomic.Bool
 }

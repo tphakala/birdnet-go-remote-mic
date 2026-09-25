@@ -145,11 +145,16 @@ type appliance struct {
 	// because the signal is pending.
 	// quietDown silences the open's log lines during a retry attempt that
 	// logAttempt skips.
-	retries    map[string]*retryState
-	retryTimer *time.Timer
-	retryAt    time.Time
-	retryDue   chan struct{}
-	quietDown  bool
+	retries map[string]*retryState
+	// encodeFaults holds, per device name, the streams whose encode faulted in
+	// the device's current outage (see encodeFault). It outlives the retry
+	// state, so a disconnect or a restart that cannot have fixed the encoder
+	// does not clear the device's condition before the stream proves itself.
+	encodeFaults map[string]encodeFault
+	retryTimer   *time.Timer
+	retryAt      time.Time
+	retryDue     chan struct{}
+	quietDown    bool
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard, notifier notify.Publisher) *appliance {
@@ -160,22 +165,23 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		notifier = (*notify.Center)(nil)
 	}
 	return &appliance{
-		ctx:        ctx,
-		hub:        hub,
-		srv:        srv,
-		prov:       prov,
-		guard:      guard,
-		notifier:   notifier,
-		hw:         map[string]hwResult{},
-		devices:    map[string]*deviceRuntime{},
-		downReason: map[string]string{},
-		capsCache:  map[string]deviceCaps{},
-		advertised: map[string]bool{},
-		retries:    map[string]*retryState{},
-		retryDue:   make(chan struct{}, 1),
-		pumpDone:   make(chan pumpResult, pumpBacklog),
-		open:       openDeviceRetry,
-		resolve:    audio.Resolve,
+		ctx:          ctx,
+		hub:          hub,
+		srv:          srv,
+		prov:         prov,
+		guard:        guard,
+		notifier:     notifier,
+		hw:           map[string]hwResult{},
+		devices:      map[string]*deviceRuntime{},
+		downReason:   map[string]string{},
+		capsCache:    map[string]deviceCaps{},
+		advertised:   map[string]bool{},
+		retries:      map[string]*retryState{},
+		encodeFaults: map[string]encodeFault{},
+		retryDue:     make(chan struct{}, 1),
+		pumpDone:     make(chan pumpResult, pumpBacklog),
+		open:         openDeviceRetry,
+		resolve:      audio.Resolve,
 	}
 }
 
@@ -643,9 +649,10 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 }
 
 // startDevice opens a device via openAndStart at startup, on a config save, or
-// on a hardware change (except a device waiting to prove an encoder after an
-// encode fault, see retryDown), stores its runtime, and clears the device's
-// down condition when a device that was down is now serving. The open-failure
+// on a hardware change (except a device down after an encode fault, which the
+// save or hardware change restarts through restartFaulted unless the save
+// changed its parameters), stores its runtime, and clears the device's down
+// condition when a device that was down is now serving. The open-failure
 // onset is emitted inside openAndStart. A healthy param-change restart has no
 // active down condition, so it clears nothing, and a first start with no prior
 // condition is silent too.
@@ -655,8 +662,11 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 // the cause (a stable id and a retryable cause), and a success ends any
 // retry in flight, including a device still waiting out its settle after an
 // unattended restart (its condition is still active, so it is cleared here).
+// It also drops any encode fault on record: a device started here either had
+// none or had its parameters changed, which builds a different stream.
 func (a *appliance) startDevice(dev *config.Device) {
 	delete(a.retries, dev.Name)
+	delete(a.encodeFaults, dev.Name)
 	rt := a.openAndStart(dev)
 	a.devices[dev.Name] = rt
 	if rt.currentState() != mgmtserver.StateServing {
@@ -746,7 +756,19 @@ func (a *appliance) reconcile(newCfg *config.Config) {
 		a.startDevice(&plan.Restart[i])
 	}
 	for i := range plan.Start {
-		a.startDevice(&plan.Start[i])
+		d := &plan.Start[i]
+		// Every enabled device not serving is in plan.Start on any save (the
+		// planner diffs against the serving set only). One down after an
+		// encode fault is restarted at once either way, but a save that left
+		// its capture and stream parameters alone cannot have fixed the
+		// encoder, so it keeps its condition until the faulted stream encodes;
+		// the reannounce result is not needed, as a non-empty plan rebuilds
+		// below.
+		if f, ok := a.encodeFaults[d.Name]; ok && reload.CaptureParamsEqual(&f.dev, d) {
+			a.restartFaulted(d, "config saved with its parameters unchanged")
+			continue
+		}
+		a.startDevice(d)
 	}
 
 	a.reconcileRecords(newCfg)
@@ -808,6 +830,7 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		a.notifier.Resolve(deviceDownKey(d.Name), "device disabled")
 		delete(a.downReason, d.Name)
 		delete(a.retries, d.Name)
+		delete(a.encodeFaults, d.Name)
 		hw := a.hw[d.Device].hw
 		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: hw.Label, hwAddr: hw.HWAddr}
 	}
@@ -828,6 +851,7 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		a.notifier.Resolve(deviceDownKey(name), "device removed from the configuration")
 		delete(a.downReason, name)
 		delete(a.retries, name)
+		delete(a.encodeFaults, name)
 		delete(a.devices, name)
 	}
 	a.armRetryTimer()
@@ -855,7 +879,8 @@ func (a *appliance) publish(cfg *config.Config) {
 // re-arming the enumeration retry for a device that keeps failing would restart
 // and re-notify it every enumeration tick; after an encode fault that retry
 // must also prove its encoder before it counts as recovered (see
-// retryState.encodePaths). Neither path restarts a card-index id, which waits
+// encodeFault), even across a later disconnect of the device. Neither path
+// restarts a card-index id, which waits
 // for a config save.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
@@ -916,8 +941,8 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// onset/clear condition and climbing announceGen forever. Retry it on a
 			// backoff instead (scheduleRetry), which keeps the condition active across
 			// attempts and clears it once a retried restart has stayed up for
-			// retrySettle. A config save clears it at once, and so does a hardware
-			// change unless the outage had an encode fault (see retryDown). A
+			// retrySettle. A config save or a hardware change clears it at once,
+			// unless the outage had an encode fault (see restartFaulted). A
 			// card-index entry is not retried unattended, so it waits for a config
 			// save.
 			restart := restartHint(&res.rt.dev)
@@ -927,11 +952,16 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
 			a.markDown(name, downFailed, &n)
 			a.scheduleRetry(&res.rt.dev)
-			if st := a.retries[name]; st != nil && res.faultPath != "" && !slices.Contains(st.encodePaths, res.faultPath) {
+			if res.faultPath != "" {
 				// An encode fault surfaces only while a client plays that stream, so
 				// the restart must prove that stream's encoder before it counts as
 				// recovered; another stream encoding proves nothing about it.
-				st.encodePaths = append(st.encodePaths, res.faultPath)
+				f := a.encodeFaults[name]
+				f.dev = res.rt.dev
+				if !slices.Contains(f.paths, res.faultPath) {
+					f.paths = append(f.paths, res.faultPath)
+				}
+				a.encodeFaults[name] = f
 			}
 		}
 	}
@@ -951,9 +981,9 @@ func (a *appliance) onPumpDone(res pumpResult) {
 // unattended restart could open the wrong microphone (the #62 swap). Such an
 // entry is restarted only by an explicit config save.
 //
-// A device down after an encode fault is restarted as an unattended retry
-// attempt (attemptRetry), not by startDevice: the hotplug is unrelated to its
-// fault, so it keeps its down condition until each faulted stream has encoded.
+// A device down after an encode fault is restarted by restartFaulted, not by
+// startDevice: the hardware change cannot have fixed its encoder, so it keeps
+// its down condition until each faulted stream has encoded.
 func (a *appliance) retryDown() {
 	a.refreshHardware(&a.cfg)
 	started := false
@@ -971,17 +1001,14 @@ func (a *appliance) retryDown() {
 		if !isDown(rt.currentState()) {
 			continue
 		}
-		if st := a.retries[d.Name]; st != nil && len(st.encodePaths) > 0 {
-			// A hardware change proves nothing about an encoder that faulted: restart
-			// it as an unattended attempt, which keeps its condition until each
-			// faulted stream has encoded, rather than clearing it at once and
-			// faulting again at the next PLAY. Its pending backoff is consumed by
-			// this attempt. Its reannounce result is not needed: any device that
-			// serves after this loop triggers the rebuild below. (The proof covers
-			// a hotplug of some other device; a disconnect of this device drops its
-			// retry state, so its own replug restarts it through startDevice.)
-			st.next = time.Time{}
-			a.attemptRetry(&d, st)
+		if len(a.faultedPaths(d.Name)) > 0 {
+			// A hardware change proves nothing about an encoder that faulted, be
+			// it a hotplug of some other device or the replug of this one: keep
+			// its condition until each faulted stream has encoded, rather than
+			// clearing it at once and faulting again at the next PLAY. Its
+			// reannounce result is not needed: any device that serves after this
+			// loop triggers the rebuild below.
+			a.restartFaulted(&d, "hardware changed")
 		} else {
 			a.startDevice(&d)
 		}

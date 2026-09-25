@@ -416,11 +416,12 @@ For a local end-to-end check without hardware, use the ALSA loopback
   stays raised while the device serves. Its RTSP path serves again as soon as
   the restart opens it. A config save restarts it at once, clears the
   notification as soon as it opens, and starts the delays over. Plugging or
-  unplugging another device restarts it at once too, but after an encoder
-  error that restart still has to prove the stream's encoder before the
-  notification clears, since the hotplug does not fix the encoder. Unplugging
-  and replugging the failed device itself ends that wait: it restarts on the
-  replug and the notification clears as soon as it opens. A card-index device
+  unplugging a device (another one, or the failed device itself) restarts it
+  at once too. After an encoder error, though, a hotplug or a config save that
+  leaves the device's settings unchanged cannot have fixed the encoder, so
+  that restart still has to prove the stream's encoder before the
+  notification clears; only a save that changes the device's capture or
+  stream settings clears it as soon as the device opens. A card-index device
   is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry

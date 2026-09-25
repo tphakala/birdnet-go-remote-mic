@@ -68,7 +68,7 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 		switch {
 		case !isRunning:
 			p.Start = append(p.Start, want)
-		case !captureParamsEqual(&cur, &want):
+		case !CaptureParamsEqual(&cur, &want):
 			p.Restart = append(p.Restart, want)
 		default:
 			// Running with identical parameters: leave it alone.
@@ -81,7 +81,7 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 	return p
 }
 
-// captureParamsEqual reports whether two device configurations open the same ALSA
+// CaptureParamsEqual reports whether two device configurations open the same ALSA
 // stream and build the same set of pipeline stages and RTSP tracks, so a running
 // device need not be restarted. It compares every field that feeds the capture
 // open (Device/Rate/Format) and the full ordered stream set (each stream's path,
@@ -90,7 +90,7 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 // ALSA open is shared by every stream and the handle cannot change per stream.
 // The name is the identity key and is equal by construction here; the enabled
 // flag is handled by the caller.
-func captureParamsEqual(a, b *config.Device) bool {
+func CaptureParamsEqual(a, b *config.Device) bool {
 	return a.Device == b.Device &&
 		a.Rate == b.Rate &&
 		a.Format == b.Format &&

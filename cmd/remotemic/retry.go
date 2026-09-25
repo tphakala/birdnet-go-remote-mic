@@ -39,7 +39,7 @@ const (
 	// plays (a stage encodes only then, see pipeline.Stage), so a restart after
 	// an encode fault must also prove that stream's encoder: its settle starts
 	// only once the faulted stream has encoded a frame (see
-	// retryState.encodePaths), and until a client plays it the device keeps its
+	// appliance.encodeFaults), and until a client plays it the device keeps its
 	// down condition while it serves.
 	retrySettle = 30 * time.Second
 	// retryResetAfter is how long a recovered device must serve before a later
@@ -56,8 +56,8 @@ const (
 // retryState tracks the unattended restart of one down device. It exists from
 // the device's first retryable failure until the device is removed, disabled,
 // restarted by a config save or by a hardware change (except after an encode
-// fault, when the hardware change makes a retry attempt and the state stays),
-// or goes down for a cause a retry cannot fix.
+// fault, when the restart is a retry attempt and the state stays, see
+// restartFaulted), or goes down for a cause a retry cannot fix.
 type retryState struct {
 	// attempts counts consecutive failures since the backoff last reset; it picks
 	// the delay before the next attempt.
@@ -75,23 +75,39 @@ type retryState struct {
 	// recoveredAt is when the device last completed a settle, used to reset the
 	// backoff once it has served for retryResetAfter.
 	recoveredAt time.Time
-	// encodePaths lists the streams whose stage faulted during this outage. A
-	// restart then counts as recovered only once each listed stream has encoded
-	// a frame and the device has served retrySettle after that: serving alone
-	// proves nothing, because with no client playing a stream nothing is encoded
-	// on it, and another stream encoding proves nothing about it. Settling on
-	// time alone would clear the condition and rebuild mDNS only for the next
-	// PLAY to fault again, once per client connect.
-	encodePaths []string
-	// encodeSeen records that the current restart's listed streams have all
-	// encoded, so its settle deadline is set from when the run loop saw that
-	// (encodePaths only).
+	// encodeSeen records that the current restart's faulted streams (see
+	// appliance.encodeFaults) have all encoded, so its settle deadline is set
+	// from when the run loop saw that.
 	encodeSeen bool
 	// awaitEncode marks a restart that served its settle window before every
-	// listed stream encoded (encodePaths only). It has no deadline: a stream's
-	// first encoded frame wakes the run loop (streamRuntime.noteEncoded).
+	// faulted stream encoded. It has no deadline: a stream's first encoded
+	// frame wakes the run loop (streamRuntime.noteEncoded).
 	awaitEncode bool
 }
+
+// encodeFault records the streams of one device whose stage faulted in its
+// current outage, and the device configuration they faulted under. A restart
+// then counts as recovered only once each listed stream has encoded a frame
+// and the device has served retrySettle after that: serving alone proves
+// nothing, because with no client playing a stream nothing is encoded on it,
+// and another stream encoding proves nothing about it. Settling on time alone
+// would clear the condition and rebuild mDNS only for the next PLAY to fault
+// again, once per client connect.
+//
+// It lives beside the retry state rather than in it, because it must outlive
+// it: a disconnect of the device ends its backoff retry, and a config save or
+// a hardware change restarts it, yet the same stream on the same encoder is
+// no better for either. It is dropped when the proof completes, when the
+// device is removed or disabled, and when a config save changes its capture or
+// stream parameters (which builds a different stream).
+type encodeFault struct {
+	dev   config.Device
+	paths []string
+}
+
+// faultedPaths returns the streams of the device whose encode faulted in its
+// current outage; none when it had no encode fault.
+func (a *appliance) faultedPaths(name string) []string { return a.encodeFaults[name].paths }
 
 // backoffDelay returns the delay before the next attempt, given the backoff's
 // attempt count (retryState.attempts, at least 1).
@@ -281,6 +297,7 @@ func (a *appliance) onRetryDue() {
 	// configuration itself rather than the device records, so it does not depend
 	// on reconcileRecords, the cleanup it backstops.
 	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool { return !a.enabledInConfig(name) })
+	maps.DeleteFunc(a.encodeFaults, func(name string, _ encodeFault) bool { return !a.enabledInConfig(name) })
 	recovered := false
 	attempted := false
 	reannounce := false
@@ -295,7 +312,7 @@ func (a *appliance) onRetryDue() {
 		case st.awaitEncode:
 			// Woken by a stream's first encoded frame (or by any other due work);
 			// only the listed streams all having encoded moves it on.
-			if rt == nil || rt.currentState() != mgmtserver.StateServing || !rt.encodedAll(st.encodePaths) {
+			if rt == nil || rt.currentState() != mgmtserver.StateServing || !rt.encodedAll(a.faultedPaths(d.Name)) {
 				continue
 			}
 			st.awaitEncode = false
@@ -306,12 +323,12 @@ func (a *appliance) onRetryDue() {
 			if rt == nil || rt.currentState() != mgmtserver.StateServing {
 				continue
 			}
-			if len(st.encodePaths) > 0 && !st.encodeSeen {
+			if paths := a.faultedPaths(d.Name); len(paths) > 0 && !st.encodeSeen {
 				// The restart has served its window, but only real encode work on
 				// each faulted stream proves its fault is gone. rt.awaitEncode was
 				// set when the attempt succeeded, so a frame encoded from here on
 				// wakes the loop.
-				if rt.encodedAll(st.encodePaths) {
+				if rt.encodedAll(paths) {
 					st.encodeSeen = true
 					st.settleAt = now.Add(retrySettle)
 				} else {
@@ -324,7 +341,7 @@ func (a *appliance) onRetryDue() {
 				continue
 			}
 			st.recoveredAt = now
-			st.encodePaths = nil
+			delete(a.encodeFaults, d.Name)
 			st.encodeSeen = false
 			a.finishRecovery(d.Name, rt)
 			recovered = true
@@ -332,9 +349,8 @@ func (a *appliance) onRetryDue() {
 			st.next = time.Time{}
 			// Defensive: every path that replaces or restarts a down device
 			// either deletes its retry state first (startDevice, reconcileRecords)
-			// or consumes its pending deadline (retryDown's encode-fault attempt
-			// zeroes next), so a due retry is expected to find a skipped or failed
-			// record here.
+			// or consumes its pending deadline (restartFaulted zeroes next), so
+			// a due retry is expected to find a skipped or failed record here.
 			if rt == nil || !isDown(rt.currentState()) {
 				continue
 			}
@@ -344,7 +360,7 @@ func (a *appliance) onRetryDue() {
 				a.refreshHardware(&a.cfg)
 				attempted = true
 			}
-			if a.attemptRetry(d, st) {
+			if a.attemptRetry(d, st, false) {
 				reannounce = true
 			}
 		}
@@ -364,8 +380,9 @@ func (a *appliance) onRetryDue() {
 // encoded (see onRetryDue); on a failure scheduleRetry either schedules the
 // next attempt or, for a cause a retry cannot fix, ends the retry. The open's own
 // log lines, failure and success alike, are silenced on attempts logAttempt
-// skips, except the line for a cause that ends the retry (see skipDevice);
-// finishRecovery logs a recovery either way.
+// skips, except the line for a cause that ends the retry (see skipDevice), and
+// except on an attempt an event forced (restartFaulted), which logs its own
+// line; finishRecovery logs a recovery either way.
 //
 // It reports whether the advertisement must be rebuilt: a restart that must
 // prove an encoder waits, with no deadline, for a client to play the faulted
@@ -373,12 +390,12 @@ func (a *appliance) onRetryDue() {
 // advertisement, a client that relies on discovery would never find it. A
 // device still advertised needs no rebuild, so this costs at most one rebuild
 // per rebuild that dropped it, never one per attempt.
-func (a *appliance) attemptRetry(d *config.Device, st *retryState) (reannounce bool) {
+func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) (reannounce bool) {
 	// Retry n follows failure n. Its open logs are gated on the failure it would
 	// become, failure n+1, so they appear exactly when scheduleRetry logs that
 	// failure.
-	loud := a.nextFailureLogged(d.Name)
-	if loud {
+	loud := forced || a.nextFailureLogged(d.Name)
+	if loud && !forced {
 		log.Printf("device %q: retry %d", d.Name, st.failures)
 	}
 	a.quietDown = !loud
@@ -390,7 +407,7 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) (reannounce b
 		return false
 	}
 	st.settleAt = time.Now().Add(retrySettle)
-	if len(st.encodePaths) == 0 {
+	if len(a.faultedPaths(d.Name)) == 0 {
 		return false
 	}
 	// Ask the stages to wake the run loop at a stream's first encoded frame,
@@ -399,10 +416,31 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) (reannounce b
 	return a.prov.discoveryEnabled() && !a.advertised[d.Name]
 }
 
+// restartFaulted restarts a down device whose outage had an encode fault, for
+// an event that cannot have fixed its encoder (why names it: a hardware change,
+// or a config save that left the device's parameters alone). It restarts the
+// device at once, as the event would restart any down device, but as a retry
+// attempt, so the device keeps its down condition until each faulted stream
+// has encoded (see encodeFault) rather than clearing it only for the next PLAY
+// to fault again. A device whose retry state was dropped (a disconnect) gets a
+// fresh one; any pending backoff attempt is consumed by this one, and a
+// failure schedules the next as usual. The attempt is always logged: it is
+// the event's doing, not the backoff's, so logAttempt does not gate it.
+func (a *appliance) restartFaulted(d *config.Device, why string) (reannounce bool) {
+	st := a.retries[d.Name]
+	if st == nil {
+		st = &retryState{}
+		a.retries[d.Name] = st
+	}
+	st.next = time.Time{}
+	log.Printf("device %q: %s; restarting it, and its failure clears once a client plays the faulted stream and encoding succeeds", d.Name, why)
+	return a.attemptRetry(d, st, true)
+}
+
 // finishRecovery clears the down condition of a device that is serving again. A
 // config-save or hardware-change restart calls it as soon as the open succeeds;
-// an unattended retry (including a hardware-change restart after an encode
-// fault, see retryDown) calls it once the restart has served for retrySettle
+// an unattended retry (including an event-driven restart after an encode
+// fault, see restartFaulted) calls it once the restart has served for retrySettle
 // (after an encode fault, once each faulted stream has also encoded).
 func (a *appliance) finishRecovery(name string, rt *deviceRuntime) {
 	// A device is "recovered" only when it comes up from a down state (it could
