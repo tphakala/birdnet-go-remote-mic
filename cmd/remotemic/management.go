@@ -660,7 +660,9 @@ func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.
 }
 
 // startManagementWith is startManagement with the retry delays as a parameter,
-// so tests can retry without waiting out the real backoff.
+// so tests can retry without waiting out the real backoff. A failed start also
+// raises the management-unavailable notification, which a successful retry
+// clears.
 func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Duration) (handle *mgmt, ok bool) {
 	certDir := p.cfg.Management.CertDir
 	if certDir == "" {
@@ -679,6 +681,16 @@ func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Durat
 		return h, true
 	}
 	log.Printf("management API disabled: %v (retrying in the background)", err)
+	// Raised now so the outage is in the history the UI shows once the API is
+	// back; recoverManagement clears it. A nil center is a no-op.
+	p.center.Onset(notify.Notification{
+		Severity: notify.SeverityError,
+		Category: notify.CategorySystem,
+		Key:      mgmtDownKey,
+		Source:   "management",
+		Title:    "Management API unavailable",
+		Message:  fmt.Sprintf("The web UI and API could not start: %v; retrying in the background", err),
+	})
 	return retryManagement(ctx, func() (*mgmt, error) { return recoverManagement(ctx, p) }, delays, err), false
 }
 

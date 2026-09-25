@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
 // fakeMgmt returns a handle that looks like a running API at addr, whose Wait
@@ -103,10 +105,16 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	p := &mgmtParams{cfgPath: cfgPath, cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	center := notify.NewCenter()
+	p := &mgmtParams{cfgPath: cfgPath, cfg: cfg, storeCfg: cfg, prov: newProvider(), center: center}
 	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
 	if ok {
 		t.Fatal("a certificate failure must report management unavailable")
+	}
+	// The outage is raised while the fault lasts (cert_dir is still a file, so
+	// no retry can have succeeded yet).
+	if act := center.Active(); len(act) != 1 || act[0].Key != mgmtDownKey {
+		t.Fatalf("active = %+v, want the management-unavailable condition", act)
 	}
 	if err := os.Remove(certDir); err != nil {
 		t.Fatal(err)
@@ -126,6 +134,9 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 	}
 	if leaf := dialLeaf(t, ep.addr); leaf == nil {
 		t.Fatal("the recovered API did not present a certificate")
+	}
+	if act := center.Active(); len(act) != 0 {
+		t.Errorf("active = %+v, want the condition cleared once the API serves", act)
 	}
 	cancel()
 	h.Wait()
@@ -154,7 +165,8 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader}
+	center := notify.NewCenter()
+	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader, center: center}
 	p.certPath = filepath.Join(dir, "mgmt-cert.pem")
 	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 
@@ -164,6 +176,16 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	}
 	if len(applied) != 1 || applied[0].Auth.Token != edited.Auth.Token {
 		t.Fatalf("got reloads %+v, want one applying the edited token", applied)
+	}
+	// Like a PATCH, the apply leaves a config event in the history.
+	var events int
+	for _, n := range center.Snapshot().Notifications {
+		if n.Category == notify.CategoryConfig && n.Kind == notify.KindEvent {
+			events++
+		}
+	}
+	if events != 1 {
+		t.Errorf("got %d config events, want 1 for the applied file", events)
 	}
 	if p.storeCfg.Auth.Token != edited.Auth.Token {
 		t.Errorf("store seeded with token %q, want the edited file's", p.storeCfg.Auth.Token)
@@ -227,6 +249,35 @@ func TestRecoverManagementKeepsSnapshotWhenFileMissing(t *testing.T) {
 	}
 	cancel()
 	h.Wait()
+}
+
+// TestRecoverManagementFailedServeKeepsCondition pins that the unavailable
+// condition clears only once the API actually serves: an attempt that loads the
+// config but cannot bind leaves it raised.
+func TestRecoverManagementFailedServeKeepsCondition(t *testing.T) {
+	t.Parallel()
+	occupied, err := net.Listen("tcp", testListenAny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cerr := occupied.Close(); cerr != nil {
+			t.Errorf("closing occupied listener: %v", cerr)
+		}
+	})
+	dir := t.TempDir()
+	startup := config.Config{Management: config.Management{Listen: occupied.Addr().String(), CertDir: dir}}
+	center := notify.NewCenter()
+	center.Onset(notify.Notification{Key: mgmtDownKey, Severity: notify.SeverityError, Category: notify.CategorySystem, Title: "down"})
+	p := &mgmtParams{cfgPath: filepath.Join(dir, "config.yaml"), cfg: &startup, storeCfg: &startup, prov: newProvider(), center: center}
+	p.certPath = filepath.Join(dir, testCertFile)
+	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+	if _, err := recoverManagement(t.Context(), p); err == nil {
+		t.Fatal("recoverManagement on a busy port succeeded, want a bind failure")
+	}
+	if act := center.Active(); len(act) != 1 || act[0].Key != mgmtDownKey {
+		t.Errorf("active = %+v, want the condition still raised after a failed attempt", act)
+	}
 }
 
 func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {

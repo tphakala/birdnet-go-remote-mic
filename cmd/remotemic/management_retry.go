@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
 // mgmtRetryBackoff is the delay before each background attempt to bring up a
@@ -20,6 +21,10 @@ import (
 // that mounts late, a permission fixed by hand, a full or read-only filesystem
 // freed up, a port held by another process), so it starts at 30 s and caps at
 // 10 minutes: a permanent fault costs one certificate check every 10 minutes.
+// mgmtDownKey keys the management-API-unavailable condition in the notification
+// center.
+const mgmtDownKey = "management-api-down"
+
 var mgmtRetryBackoff = [...]time.Duration{
 	30 * time.Second,
 	time.Minute,
@@ -78,7 +83,8 @@ func retryManagement(ctx context.Context, attempt func() (*mgmt, error), delays 
 // when it changed, applies it live through the reloader exactly as a PATCH
 // would, then seeds the store from it. A file that no longer loads fails the
 // attempt, as it would fail the next start; a file that is missing keeps the
-// startup snapshot.
+// startup snapshot. Applying an edited file publishes a config event, and a
+// successful attempt clears the management-unavailable condition.
 //
 // A token command that reads the lock before the run loop republishes it can
 // still edit the file after this reload; that window is the few milliseconds of
@@ -91,7 +97,7 @@ func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 	// because the startup load already warned about the file's permissions.
 	fresh, err := config.LoadQuiet(p.cfgPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		return serveManagement(ctx, p)
+		return serveRecovered(ctx, p)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot reload config: %w", err)
@@ -102,10 +108,34 @@ func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 				return nil, fmt.Errorf("cannot apply the config file edited while the API was down: %w", err)
 			}
 			log.Print("management API: applied the config file edited while the API was down")
+			// A PATCH leaves a config event in the history; so does this apply,
+			// since it can change the access token and end RTSP sessions.
+			p.center.Publish(notify.Notification{
+				Severity: notify.SeverityInfo,
+				Category: notify.CategoryConfig,
+				Kind:     notify.KindEvent,
+				Title:    "Config file applied",
+				Message:  "Applied the config file edited while the management API was down",
+			})
 		}
 		// A fresh pointer, not a write through p.storeCfg: run() still holds the
 		// startup snapshot it points at.
 		p.storeCfg = &fresh
 	}
-	return serveManagement(ctx, p)
+	return serveRecovered(ctx, p)
+}
+
+// serveRecovered brings the API up for recoverManagement and, once it serves,
+// clears the unavailable condition startManagementWith raised.
+func serveRecovered(ctx context.Context, p *mgmtParams) (*mgmt, error) {
+	h, err := serveManagement(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	p.center.Clear(mgmtDownKey, notify.Notification{
+		Severity: notify.SeverityInfo,
+		Title:    "Management API recovered",
+		Message:  "The web UI and API are serving again",
+	})
+	return h, nil
 }
