@@ -584,13 +584,15 @@ type mgmt struct {
 	certPath string
 	done     chan struct{}
 	// up delivers the endpoint once when a background retry brings up an API
-	// that failed to start (see retryManagement); nil when the API came up at
-	// once.
+	// that failed to start (see retryManagement), telling the run loop the API
+	// now serves; the retry has already published the endpoint in the run lock.
+	// nil when the API came up at once.
 	up chan mgmtEndpoint
 }
 
 // mgmtEndpoint is where a serving management API listens, as published in the
-// run lock; a background retry hands it to the run loop to republish the lock.
+// run lock (by run() at startup, or by the background retry that brought the
+// API up, see recoverManagement).
 type mgmtEndpoint struct {
 	addr     string
 	certPath string

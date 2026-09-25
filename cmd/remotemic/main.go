@@ -402,7 +402,7 @@ func (p *runLockPublisher) starting() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := p.lock.Publish(runlock.State{}); err != nil {
-		log.Printf("WARNING: cannot write run lock %s: %v", runlock.PathFor(p.cfgPath), err)
+		log.Printf("WARNING: cannot write run lock %s: %v (token commands may edit the config file during this management API attempt)", runlock.PathFor(p.cfgPath), err)
 	}
 }
 
@@ -653,7 +653,7 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			// The API's own retry was just logged as running in the background, but
 			// exiting ends it; name both failures, so the log does not read as if
 			// only the devices were at fault.
-			return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above); exiting so the service manager restarts it")
+			return errors.New("no configured capture device could be opened, and the management API that would keep the appliance up could not start (see its error above)")
 		}
 		return errors.New("no configured capture device could be opened")
 	}

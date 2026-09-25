@@ -63,7 +63,7 @@ type fanoutConsumer struct {
 // (rtspserver.ChanSource.Session): while it reports inactive the consumer is
 // sent no periods, since its stage would discard them unencoded anyway, and
 // each period sent carries the session in Period.Session. A nil Gate means
-// always active, with periods left untagged.
+// always active, with Period.Session left zero (Captured is still set).
 type FanoutStream struct {
 	Dropped *atomic.Uint64
 	Gate    func() (active bool, session uint64)

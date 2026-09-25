@@ -82,8 +82,11 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 }
 
 // CaptureParamsEqual reports whether two device configurations open the same ALSA
-// stream and build the same set of pipeline stages and RTSP tracks, so a running
-// device need not be restarted. It compares every field that feeds the capture
+// stream and build the same set of pipeline stages and RTSP tracks: the planner
+// uses it to leave a running device alone, and the appliance to tell whether a
+// config save could have changed a faulted stream. It compares only the
+// capture and stream parameters, never Name, Enabled or QuietAlert. It compares
+// every field that feeds the capture
 // open (Device/Rate/Format) and the full ordered stream set (each stream's path,
 // mode, channels and Opus bitrate feed a pipeline stage, an SDP and an RTSP
 // mount). Any stream add, remove or edit restarts the whole device, because one

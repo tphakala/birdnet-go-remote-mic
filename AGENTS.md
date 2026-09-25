@@ -231,7 +231,9 @@ thelper, and testifylint. `unused` is disabled.
   `Run` takes a `Gate` (`ChanSource.Session`, active flag plus play session):
   a period read with no client playing is discarded unencoded, and Opus resets
   its encoder on every new session. The fan-out sends an idle stream nothing
-  (gated on `ChanSource.Active`), so an idle stage blocks in its read.
+  (gated on `ChanSource.Session`), so an idle stage blocks in its read, and
+  tags each period with its session: a stage drops periods, and the feed
+  frames, of an earlier session.
 - `internal/rtspserver`: minimal RTSP server, one playing client per path.
   SETUP echoes client-chosen interleaved channels; PLAY returns RTP-Info.
   `writer.go` is the single writer per connection. `ChanSource` buffers only

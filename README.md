@@ -294,7 +294,8 @@ background, 30 seconds after the failure and then less often, up to every 10
 minutes; each attempt applies an edited config file, even one that still
 cannot bring the API up. A command run while
 the appliance is still starting up, before it has published where its API
-listens, asks you to retry in a few seconds. The config is written 0600, so run
+listens, or while one of those background attempts runs, asks you to retry in
+a few seconds. The config is written 0600, so run
 the commands as the account the appliance runs as.
 
 You can also set it by hand:
@@ -414,10 +415,11 @@ For a local end-to-end check without hardware, use the ALSA loopback
   once a client has played that stream on the restarted device and encoding
   worked, and the device has then kept serving for 30 seconds; until then it
   stays raised while the device serves. Its RTSP path serves again as soon as
-  the restart opens it. A config save restarts it at once, clears the
-  notification as soon as it opens, and starts the delays over. Plugging or
-  unplugging a device (another one, or the failed device itself) restarts it
-  at once too. After an encoder error, though, a hotplug or a config save that
+  the restart opens it. A config save restarts it at once, starts the delays
+  over, and clears the notification as soon as it opens (except after an
+  encoder error, below). Plugging or unplugging another device, or
+  replugging the failed device itself, restarts it at once too. After an
+  encoder error, though, a hotplug or a config save that
   leaves the device's settings unchanged cannot have fixed the encoder, so
   that restart still has to prove the stream's encoder before the
   notification clears; only a save that changes the device's capture or

@@ -66,7 +66,10 @@ func (c *ChanSource) Next(ctx context.Context) (pipeline.Frame, error) {
 // tagged with another play session than the current one (pipeline.Frame.
 // Session) was produced for an earlier client, overtaken by a teardown and the
 // next PLAY while it was being encoded, and is discarded the same way; an
-// untagged frame (session zero) is delivered to whichever client plays. It
+// untagged frame (session zero) is delivered to whichever client plays. The
+// session is read once, before the copy, so a teardown and the next PLAY that
+// both complete between that read and the send still queue the frame for the
+// new client; that window is one payload copy wide. It
 // returns false only when the buffer is full (a slow client); the caller
 // should keep capturing and let the writer fall behind.
 func (c *ChanSource) Push(f pipeline.Frame) bool {
@@ -89,8 +92,9 @@ func (c *ChanSource) Push(f pipeline.Frame) bool {
 }
 
 // Active reports whether a client is playing, so frames pushed now are queued
-// for it (buffer space permitting) rather than discarded. The fan-out polls it
-// once per period and hands an idle stream nothing; it is one atomic load.
+// for it (buffer space permitting) rather than discarded. It is one atomic
+// load; the fan-out and the stages read Session, which also carries the play
+// session.
 func (c *ChanSource) Active() bool { return c.state.Load()&sessionActive != 0 }
 
 // Session reports whether a client is playing and which play session it is.

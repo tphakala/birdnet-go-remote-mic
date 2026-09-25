@@ -248,7 +248,8 @@ func TestFanoutMetersEachPeriodOnce(t *testing.T) {
 	}
 }
 
-// gateOf returns a fan-out gate that always reports active and session.
+// gateOf returns a fan-out gate that always reports the given active flag and
+// session.
 func gateOf(active bool, session uint64) func() (bool, uint64) {
 	return func() (bool, uint64) { return active, session }
 }

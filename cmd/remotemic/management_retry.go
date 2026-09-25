@@ -98,8 +98,9 @@ func adoptPending(m *mgmt, adopt func(mgmtEndpoint)) {
 }
 
 // recoverManagement is one background attempt to bring up a management API that
-// failed to start. While no API address is published in the run lock, the token
-// CLI edits the config file directly (the appliance has no config writer), so
+// failed to start. While the run lock shows this appliance with no API address,
+// the token CLI edits the config file directly (the appliance has no config
+// writer), so
 // the file may no longer match the startup snapshot that seeds the API's config
 // store. Seeding the store from the stale snapshot would let the next web UI
 // save revert the operator's edit, so the attempt reloads the file first and,

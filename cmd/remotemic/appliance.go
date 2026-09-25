@@ -416,8 +416,10 @@ func (a *appliance) runningParams() map[string]config.Device {
 // stage is gated on its own stream feed's play session, so it encodes only
 // while a client plays that stream (an Opus stage starts each client from a
 // fresh encoder), and discards unencoded any period it reads with no client.
-// The fan-out is gated on the feed's active flag: it sends an idle stream
-// nothing, so an idle stage blocks in its read and the fan-out never backs up.
+// The fan-out is gated on the feed's play session too: it sends an idle stream
+// nothing, so an idle stage blocks in its read and the fan-out never backs up,
+// and it tags each period it sends with the session, so a stage drops what was
+// queued for an earlier client (see pipeline.Stage).
 // An idle appliance thus pays for the capture read but not for copying, channel
 // extraction, encoding, or waking the idle stages. When the capture ends
 // the fan-out closes the stream feeds, so every stage goroutine returns, and
@@ -886,8 +888,7 @@ func (a *appliance) publish(cfg *config.Config) {
 // and re-notify it every enumeration tick; after an encode fault that retry
 // must also prove its encoder before it counts as recovered (see
 // encodeFault), even across a later disconnect of the device. Neither path
-// restarts a card-index id, which waits
-// for a config save.
+// restarts a card-index id, which waits for a config save.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
 	if res.rt.superseded {
@@ -948,7 +949,8 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// backoff instead (scheduleRetry), which keeps the condition active across
 			// attempts and clears it once a retried restart has stayed up for
 			// retrySettle. A config save or a hardware change clears it at once,
-			// unless the outage had an encode fault (see restartFaulted). A
+			// unless the outage had an encode fault and a save left the device's
+			// parameters unchanged (see restartFaulted). A
 			// card-index entry is not retried unattended, so it waits for a config
 			// save.
 			restart := restartHint(&res.rt.dev)

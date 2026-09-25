@@ -48,9 +48,11 @@ type Frame struct {
 // Session, set by the fan-out) was queued for an earlier client and is dropped
 // unencoded, and every frame carries the session it was produced for
 // (Frame.Session), so the feed can drop one that a teardown and the next PLAY
-// overtook while it was being encoded. A frame is stamped with its period's
-// capture time (audio.Period.Captured) when the period carries one.
-// A nil gate means always active, in one session.
+// overtook while it was being encoded (all but a one-copy window inside
+// rtspserver.ChanSource.Push). A frame is stamped with its period's capture
+// time (audio.Period.Captured) when the period carries one.
+// A nil gate means always active, in session 0, so it admits only untagged
+// periods: a stage fed by a gated fan-out consumer must be given the same gate.
 type Stage interface {
 	Run(src audio.Source, gate Gate, emit func(Frame) error) error
 }
@@ -74,7 +76,7 @@ func (g Gate) open() (active bool, session uint64) {
 // session it is encoded for. A period is dropped while the gate is closed, and
 // when it was queued for another session than the gate reports (an untagged
 // period, Session zero, belongs to any). captured is the period's capture time,
-// or now for an untagged period.
+// or now when the period carries none.
 func (g Gate) admit(p *audio.Period) (ok bool, session uint64, captured time.Time) {
 	on, session := g.open()
 	if !on || (p.Session != 0 && p.Session != session) {
@@ -191,8 +193,9 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
 	acc := make([]int16, 0, frameSamples) // reused accumulator
 	encBuf := make([]byte, 4000)          // one Opus packet fits easily
-	// session is the play session the encoder state belongs to. A period of any
-	// other session resets the encoder and drops the stale partial frame, so a
+	// session is the play session the encoder state belongs to. When the gate
+	// reports another session, the encoder resets and drops the stale partial
+	// frame (a period queued for another session never gets here), so a
 	// new client's stream starts exactly as a freshly built encoder's would. It
 	// starts at 0, which a feed never reports while active, so the first client
 	// resets the fresh encoder too; that is harmless. (A nil gate stays in

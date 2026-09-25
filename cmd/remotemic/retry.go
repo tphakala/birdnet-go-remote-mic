@@ -55,10 +55,12 @@ const (
 )
 
 // retryState tracks the unattended restart of one down device. It exists from
-// the device's first retryable failure until the device is removed, disabled,
-// restarted by a config save or by a hardware change (except after an encode
-// fault, when the restart is a retry attempt and the state stays, see
-// restartFaulted), or goes down for a cause a retry cannot fix.
+// the device's first retryable failure, or from a restart restartFaulted makes
+// for a device with an encode fault on record, until the device is removed,
+// disabled, restarted by a config save or by a hardware change (except a device
+// with an encode fault on record whose parameters the save left unchanged, whose
+// restart is a retry attempt that keeps the state, see restartFaulted), or goes
+// down for a cause a retry cannot fix.
 type retryState struct {
 	// attempts counts consecutive failures since the backoff last reset; it picks
 	// the delay before the next attempt.
@@ -298,6 +300,8 @@ func (a *appliance) onRetryDue() {
 	// configuration itself rather than the device records, so it does not depend
 	// on reconcileRecords, the cleanup it backstops.
 	maps.DeleteFunc(a.retries, func(name string, _ *retryState) bool { return !a.enabledInConfig(name) })
+	// An encode fault has no deadline, so a stale one costs no busy loop, but a
+	// device configured again under that name would inherit its proof.
 	maps.DeleteFunc(a.encodeFaults, func(name string, _ encodeFault) bool { return !a.enabledInConfig(name) })
 	recovered := false
 	attempted := false
@@ -393,9 +397,9 @@ func (a *appliance) onRetryDue() {
 // device still advertised needs no rebuild, so this costs at most one rebuild
 // per rebuild that dropped it, never one per attempt.
 func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) (reannounce bool) {
-	// Retry n follows failure n. Its open logs are gated on the failure it would
-	// become, failure n+1, so they appear exactly when scheduleRetry logs that
-	// failure.
+	// Retry n follows failure n. A timer attempt's open logs are gated on the
+	// failure it would become, failure n+1, so they appear exactly when
+	// scheduleRetry logs that failure. A forced attempt always logs its open.
 	loud := forced || a.nextFailureLogged(d.Name)
 	if loud && !forced {
 		log.Printf("device %q: retry %d", d.Name, st.failures)
