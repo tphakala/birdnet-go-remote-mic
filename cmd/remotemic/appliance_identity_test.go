@@ -579,6 +579,9 @@ func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
 	if act := center.Active(); len(act) != 1 || act[0].Title != titleDisconnected {
 		t.Fatalf("active after the loss = %+v, want one Device disconnected", act)
 	}
+	if got := app.devices["moth"].status().DownCause; got != downDisconnected {
+		t.Errorf("DownCause after the loss = %q, want %q", got, downDisconnected)
+	}
 }
 
 // TestCardIndexDeviceLostRestartsOnConfigSave pins that when a card-index device is

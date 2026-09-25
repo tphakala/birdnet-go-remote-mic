@@ -179,7 +179,7 @@ type deviceRuntime struct {
 	err   string
 	// downCause is the down-condition class (downNotConnected and friends) of a
 	// skipped or failed record, reported as the wire downCause; empty while
-	// serving and for a skip with no specific class. Guarded by mu like state.
+	// serving or disabled. Guarded by mu like state.
 	downCause string
 
 	// superseded marks a device the reconcile loop deliberately stopped (a

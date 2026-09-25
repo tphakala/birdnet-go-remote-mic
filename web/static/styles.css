@@ -3126,9 +3126,8 @@ select.field-input {
    rather than widening the card. */
 .available-id {
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   overflow-wrap: anywhere;
-  user-select: text;
 }
 .available-enable {
   flex: 0 0 auto;

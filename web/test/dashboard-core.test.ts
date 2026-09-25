@@ -4,6 +4,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../src/lib/dashboard-core.js";
 
@@ -19,6 +21,23 @@ test("downCauseTitle names each cause as its notification does and falls back", 
   // An older appliance sends no cause, and a newer one may add a class.
   assert.equal(downCauseTitle(undefined), "Device excluded from streaming");
   assert.equal(downCauseTitle("some-future-cause"), "Device excluded from streaming");
+});
+
+// The banner titles promise to match the notification titles the appliance
+// raises for the same cause; this reads the Go source so a title renamed on
+// one side only fails here instead of silently drifting.
+const APPLIANCE_GO = fileURLToPath(new URL("../../../cmd/remotemic/appliance.go", import.meta.url).href);
+
+test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go", () => {
+  const src = readFileSync(APPLIANCE_GO, "utf8");
+  const causes = [
+    "not-connected", "ambiguous", "malformed", "resolve-failed",
+    "same-hardware", "open-failed", "disconnected", "failed",
+  ];
+  for (const cause of causes) {
+    const title = downCauseTitle(cause);
+    assert.ok(src.includes(`"${title}"`), `${cause}: title "${title}" not found in appliance.go`);
+  }
 });
 
 test("channelLabel renders mono, contiguous, and non-contiguous selections", () => {

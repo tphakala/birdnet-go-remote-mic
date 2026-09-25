@@ -395,8 +395,9 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	if d.Error != "" {
 		out.Error = ptr(d.Error)
 	}
-	// Only a device that is not serving carries a cause; a record that kept one
-	// from before a recovery must not report it once it serves again.
+	// Only a device that is not serving carries a cause. The appliance builds a
+	// fresh record when a device starts serving, so this guard is defensive: a
+	// provider that kept a cause on a serving record still reports none.
 	if d.DownCause != "" && d.State != StateServing {
 		out.DownCause = new(mgmtapi.DeviceDownCause(d.DownCause))
 	}

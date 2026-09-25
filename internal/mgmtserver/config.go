@@ -545,17 +545,16 @@ func wireDeviceToConfig(d *mgmtapi.DeviceConfig) config.Device {
 // flat fields; that is rejected when it would silently collapse an existing
 // multi-stream device, so a client that predates fan-out cannot drop streams it
 // cannot see. The existing device is looked up by BOTH its name and its device
-// id, and either match being multi-stream rejects the entry: a rename keeps the
-// id, a rebind keeps the name, and a name rotation (one device's name paired with
-// another's id) is caught because the id still resolves to the multi-stream
-// device. Checking only one identifier leaves the mirror bypass open. The id
-// match counts only while the multi-stream device it names is absent from the
-// patch: when that device is still listed under its own name, its own entry is
-// checked (a flat one is rejected, one with streams keeps them), so a legitimate
-// id swap between a single-stream and a multi-stream device drops no stream and
-// is accepted. When both
-// matches are multi-stream the name match is reported, since the name is the
-// device's identity everywhere else (the reload plan, the runtime records,
+// id. A name match that is multi-stream rejects the entry. An id match that is
+// multi-stream rejects it too, unless the patch still lists that device under
+// its own name: then its own entry is the one checked (a flat one is rejected,
+// one with streams keeps them), so a legitimate id swap between a single-stream
+// and a multi-stream device drops no stream and is accepted. Together these
+// catch a rename (it keeps the id), a rebind (it keeps the name), and a name
+// rotation (one device's name paired with another's id, the other left out),
+// where checking only one identifier would leave the mirror bypass open. When
+// both matches are multi-stream the name match is reported, since the name is
+// the device's identity everywhere else (the reload plan, the runtime records,
 // notifications). A wire entry that carries streams is authoritative and may
 // legitimately reduce the count.
 func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.Device, error) {

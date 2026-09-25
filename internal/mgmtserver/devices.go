@@ -97,17 +97,19 @@ func (s *Server) preferredChannel(ctx context.Context, d *AvailableDevice, req *
 	}
 	pctx, cancel := context.WithTimeout(ctx, channelProbeBudget)
 	defer cancel()
-	var err error
+	// Keep every width's error: the widest attempt's is usually the telling one.
+	var errs []error
 	for _, width := range widths {
-		var levels []float64
-		if levels, err = s.channelProbe(pctx, d.ID, rate, width); err == nil {
+		levels, err := s.channelProbe(pctx, d.ID, rate, width)
+		if err == nil {
 			return loudestChannel(levels[:min(len(levels), width)])
 		}
+		errs = append(errs, fmt.Errorf("%d channels: %w", width, err))
 		if pctx.Err() != nil {
 			break
 		}
 	}
-	log.Printf("mgmtserver: channel level probe on %s failed: %v (defaulting to channel 1)", d.ID, err)
+	log.Printf("mgmtserver: channel level probe on %s failed: %v (defaulting to channel 1)", d.ID, errors.Join(errs...))
 	return 1
 }
 
@@ -187,10 +189,7 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// misreported as a 404. A miss here means the host genuinely has no such id.
 	dd, ok := s.provider.DetectedDevice(req.Device)
 	if !ok {
-		return mgmtapi.ProvisionDevice404ApplicationProblemPlusJSONResponse(
-			problem(http.StatusNotFound, "device not found", "no capture device with id "+req.Device+
-				" is present on the host; it may have been unplugged, or its offered id changed because an identical unit was plugged in. Refresh the device list and try again"),
-		), nil
+		return deviceGone(req.Device), nil
 	}
 	detected := &dd
 
@@ -247,8 +246,13 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	// reconcile republishes the ids the config owns, resolved aliases included,
 	// before it opens anything. So a device claimed meanwhile under another id is
 	// hidden from the available view here; with only the pre-lock check, a
-	// concurrent alias could persist two entries for one device.
+	// concurrent alias could persist two entries for one device. A device that
+	// left the host during the probe is hidden too, so tell the two apart: it is
+	// gone (404), not owned under another id (409).
 	if !s.isAvailable(req.Device) {
+		if _, still := s.provider.DetectedDevice(req.Device); !still {
+			return deviceGone(req.Device), nil
+		}
 		return aliasConflict(req.Device), nil
 	}
 
@@ -314,8 +318,16 @@ func (s *Server) isAvailable(id string) bool {
 // another id.
 func aliasConflict(id string) mgmtapi.ProvisionDeviceResponseObject {
 	return mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse(
-		problem(http.StatusConflict, "already configured", "device "+id+
-			" is already configured under another id (for example its card index, or the id of an identical unit); refresh the device list"),
+		problem(http.StatusConflict, "already configured", "device "+id+" is already set up as another entry"),
+	)
+}
+
+// deviceGone is the 404 for an id the host does not (or no longer) offer: it
+// was unplugged, or its offered id changed when an identical unit appeared.
+func deviceGone(id string) mgmtapi.ProvisionDeviceResponseObject {
+	return mgmtapi.ProvisionDevice404ApplicationProblemPlusJSONResponse(
+		problem(http.StatusNotFound, "device not found", "no capture device with id "+id+
+			" is present; it may have been unplugged or re-detected under a new id"),
 	)
 }
 

@@ -474,7 +474,7 @@ type Device struct {
 	// Examples: usb:1235:8218:s=S1A2B3:if=0,0, hw:CARD=Loopback,DEV=1
 	Device string `json:"device"`
 
-	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or failed while present (failed). Absent while serving, when disabled, and for a skip with no specific class. Clients must tolerate values added later.
+	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, and for a skip with no specific class. Clients must tolerate values added later.
 	DownCause *DeviceDownCause `json:"downCause,omitempty"`
 
 	// DroppedFrames Frames dropped because the connected client was not keeping up. Zero for devices that never served.
@@ -557,7 +557,7 @@ type Device struct {
 	SupportedRates *[]int `json:"supportedRates,omitempty"`
 }
 
-// DeviceDownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or failed while present (failed). Absent while serving, when disabled, and for a skip with no specific class. Clients must tolerate values added later.
+// DeviceDownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, and for a skip with no specific class. Clients must tolerate values added later.
 type DeviceDownCause string
 
 // DeviceFormat Sample format (only S16LE is supported).

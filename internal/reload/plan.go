@@ -88,8 +88,9 @@ func Reconcile(running map[string]config.Device, desired *config.Config) Plan {
 // config save could have changed a faulted stream. It compares only the
 // capture and stream parameters, never Name, Enabled or QuietAlert: every
 // field that feeds the capture open (Device/Rate/Format) and the full ordered
-// stream set (each stream's path, mode, channels and Opus bitrate feed a
-// pipeline stage, an SDP and an RTSP mount). Any stream add, remove or edit
+// stream set (each stream's path, mode, channels and, for an Opus stream, its
+// effective bitrate feed a pipeline stage, an SDP and an RTSP mount; see
+// streamEqual). Any stream add, remove or edit
 // restarts the whole device, because one ALSA open is shared by every stream
 // and the handle cannot change per stream.
 // The name is the identity key and is equal by construction here; the enabled

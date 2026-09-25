@@ -205,7 +205,10 @@ type hwResult struct {
 
 // Cause classes for a device's down condition. A change of class while the
 // device stays down re-raises the condition, except between two retryable
-// classes during an unattended retry (see markDown).
+// classes during an unattended retry (see markDown). They are also the API's
+// downCause values, so a new class needs the enum in api/openapi.yaml
+// (TestDownCausesAreWireEnumMembers) and a banner title in the web UI's
+// downCauseTitle.
 const (
 	downNotConnected = "not-connected"
 	downAmbiguous    = "ambiguous"
@@ -949,6 +952,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	a.hub.RemoveMeter(res.rt.dev.Name)
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
+		// Mark it failed before the re-resolve below (a host enumeration), so the
+		// API does not keep reporting a dead pump as serving for its duration; a
+		// confirmed loss then reclassifies the cause as disconnected.
+		res.rt.markFailed(res.err, downFailed)
 		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Decide whether the device was LOST (unplugged or
@@ -987,7 +994,6 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// The hardware-change retry brings it back, not the backoff.
 			a.dropRetry(name)
 		} else {
-			res.rt.markFailed(res.err, downFailed)
 			// The pump died but the device did not read as lost: it still resolves to
 			// present hardware, or the failure could not be confirmed as a loss (a
 			// deterministic encoder fault, an EIO right after open, a pump that died a

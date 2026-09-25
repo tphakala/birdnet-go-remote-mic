@@ -354,6 +354,21 @@ test("startPolling again ends a hidden-page pause", () => {
   h.store.stopPolling();
 });
 
+test("a login fetches /status once and applies the verifying read", async () => {
+  const h = harness(new FakeTimers());
+  try {
+    // Only ONE status is queued, as in the boot test below.
+    pollable(h);
+    const res = await h.store.login("typed-token");
+    assert.equal(res.ok, true);
+    assert.equal(h.calls.get("getStatus"), 1);
+    assert.deepEqual(h.store.getState().status, status(1));
+  } finally {
+    h.store.stopPolling();
+    setToken(null);
+  }
+});
+
 test("a token-gated boot fetches /status once and applies the verifying read", async () => {
   const h = harness(new FakeTimers());
   setToken("stored-token");

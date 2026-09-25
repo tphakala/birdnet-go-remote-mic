@@ -271,6 +271,9 @@ export class DashboardView {
   // Device ids with a provisioning request in flight, so the Enable button shows
   // progress and a second click cannot double-provision.
   private provisioning: Set<string> = new Set();
+  // The last available-device list rendered, serialized, so an unchanged poll
+  // skips the rebuild.
+  private availableKey = "";
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
   // built from a fresh base only after the previous mutation settled. Prevents a
@@ -455,6 +458,12 @@ export class DashboardView {
   private renderAvailable(available: AvailableDevice[]): void {
     if (!this.availableRack || !this.availableSection) return;
     this.availableSection.hidden = available.length === 0;
+    // The store announces this list on every poll. Rebuild only when it
+    // changed, so an unchanged list keeps the operator's text selection (the
+    // device id is there to be copied) and keyboard focus on an Enable button.
+    const key = JSON.stringify(available);
+    if (key === this.availableKey) return;
+    this.availableKey = key;
     this.availableRack.textContent = "";
     for (const d of available) {
       this.availableRack.appendChild(this.buildAvailableCard(d));
@@ -483,7 +492,10 @@ export class DashboardView {
     const enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
     // Name the device in the accessible label: there is one Enable button per
     // available device, so a bare "Enable" is ambiguous to a screen-reader user.
-    enableBtn.setAttribute("aria-label", `Enable ${d.friendlyName || d.hwAddr || d.device}`);
+    // Two identical units share a friendly name, so add the address to tell
+    // their buttons apart.
+    const which = d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+    enableBtn.setAttribute("aria-label", `Enable ${which}`);
     if (this.provisioning.has(d.device)) setBusy(enableBtn, "Enabling...");
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
@@ -509,6 +521,9 @@ export class DashboardView {
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Enable failed");
+      // A 404 (the device left or was re-detected) or 409 (already set up)
+      // means this card is stale; refresh now rather than at the next poll.
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
     } finally {
       this.provisioning.delete(d.device);
       clearBusy(btn, "Enable");
@@ -1009,10 +1024,13 @@ export class DashboardView {
     }
     if (entry.idle) {
       setHidden(entry.idle.banner, !d.error);
-      const bannerKey = d.state === "failed" ? "error" : "warn";
+      // An unplugged device is waiting to be reconnected, not broken, so it
+      // gets the warning icon like a skip rather than the error one.
+      const isError = d.state === "failed" && d.downCause !== "disconnected";
+      const bannerKey = isError ? "error" : "warn";
       if (entry.idle.bannerIcon.dataset.icon !== bannerKey) {
         entry.idle.bannerIcon.dataset.icon = bannerKey;
-        entry.idle.bannerIcon.innerHTML = d.state === "failed" ? ICON_ERROR : ICON_WARN;
+        entry.idle.bannerIcon.innerHTML = isError ? ICON_ERROR : ICON_WARN;
       }
       setText(entry.idle.bannerTitle, downCauseTitle(d.downCause));
       setText(entry.idle.bannerDesc, d.error ?? "");

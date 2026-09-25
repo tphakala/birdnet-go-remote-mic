@@ -216,7 +216,7 @@ export class AppStore extends EventTarget {
   }
 
   // status, when given, is the /status body the caller already fetched to verify
-  // the token, so the boot does not request it twice.
+  // the token (start and login), so it is not requested twice.
   public async loadInitial(status?: ApplianceStatus): Promise<void> {
     // Name every result rather than destructuring a prefix positionally: the
     // Promise.all order and the assignment order must agree, and a silent

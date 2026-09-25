@@ -35,18 +35,20 @@ class App {
     // Push a stored token into the clients before the first request so a
     // token-gated appliance loads without a prompt on a returning browser.
     applyStoredToken();
-    void store.start().then((running) => {
-      // The stream's connect re-syncs the snapshot, and that load is the one
-      // that must run: it follows the subscription, so nothing raised between
-      // the snapshot and the stream is missed. Loading here as well fetched the
-      // snapshot twice on every boot. Load directly only as a fallback, when no
-      // snapshot has arrived shortly after boot (a stream that cannot connect,
-      // or a proxy that buffers it). When the login prompt is up instead, the
-      // stream's connect after login re-syncs the snapshot.
-      if (!running) return;
+    // The stream's connect re-syncs the notifications snapshot, and that load
+    // is the one that must run: it follows the subscription, so nothing raised
+    // between the snapshot and the stream is missed; a direct load here would
+    // fetch it a second time. Load directly only as a fallback, when no snapshot
+    // has arrived shortly after the app starts (a stream that cannot connect, or
+    // a proxy that buffers it), after boot or after a login alike.
+    const armNotificationsFallback = (): void => {
       window.setTimeout(() => {
         if (!notifications.hasLoaded()) void notifications.load();
       }, NOTIFICATIONS_FALLBACK_MS);
+    };
+    store.addEventListener("authok", armNotificationsFallback);
+    void store.start().then((running) => {
+      if (running) armNotificationsFallback();
     });
   }
 

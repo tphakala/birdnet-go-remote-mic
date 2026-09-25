@@ -8,6 +8,7 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
@@ -65,6 +66,25 @@ func TestReconcileOpenFailureEmitsDownOnset(t *testing.T) {
 	if n.Title != "Device unavailable" {
 		t.Errorf("onset title = %q, want Device unavailable", n.Title)
 	}
+	if got := app.devices["a"].status().DownCause; got != downOpenFailed {
+		t.Errorf("DownCause after the failed open = %q, want %q", got, downOpenFailed)
+	}
+}
+
+// TestDownCausesAreWireEnumMembers pins every down-condition class the
+// appliance can record to the API's downCause enum, so a class added here
+// without a spec change fails instead of putting an undeclared value on the
+// wire.
+func TestDownCausesAreWireEnumMembers(t *testing.T) {
+	t.Parallel()
+	for _, c := range []string{
+		downNotConnected, downAmbiguous, downMalformed, downResolve,
+		downSameHardware, downOpenFailed, downDisconnected, downFailed,
+	} {
+		if !mgmtapi.DeviceDownCause(c).Valid() {
+			t.Errorf("down cause %q is not a member of the API downCause enum", c)
+		}
+	}
 }
 
 func TestReconcileRecoveryEmitsClear(t *testing.T) {
@@ -121,6 +141,9 @@ func TestOnPumpDoneDeathEmitsDownOnset(t *testing.T) {
 	}
 	if n.Title != titleFailed {
 		t.Errorf("death onset title = %q, want Device failed", n.Title)
+	}
+	if got := app.devices["a"].status().DownCause; got != downFailed {
+		t.Errorf("DownCause after the death = %q, want %q", got, downFailed)
 	}
 }
 

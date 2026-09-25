@@ -5,6 +5,19 @@
 export type StreamMode = "pcm" | "opus";
 export type DeviceState = "serving" | "skipped" | "failed" | "disabled";
 
+// Device.downCause values the API documents. A later appliance may add values,
+// so any other string is accepted too (and titled generically).
+export type DownCause =
+  | "not-connected"
+  | "ambiguous"
+  | "malformed"
+  | "resolve-failed"
+  | "same-hardware"
+  | "open-failed"
+  | "disconnected"
+  | "failed"
+  | (string & {});
+
 export interface OpusSettings {
   bitrate?: number;
 }
@@ -194,11 +207,9 @@ export interface Device {
   droppedFrames: number;
   opus?: OpusSettings;
   error?: string;
-  // Class of why a skipped or failed device is not serving (not-connected,
-  // ambiguous, malformed, resolve-failed, same-hardware, open-failed,
-  // disconnected, failed). Absent while serving, from an older appliance, and
-  // for a skip with no specific class; a later appliance may add values.
-  downCause?: string;
+  // Class of why a skipped or failed device is not serving. Absent while
+  // serving, from an older appliance, and for a skip with no specific class.
+  downCause?: DownCause;
   friendlyName?: string;
   // Current-boot ALSA address ("hw:4,0") the configured id resolved to, for
   // display only; absent when the id resolved to no single present device (not
