@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -657,8 +658,9 @@ func TestRetryEncodeFaultDroppedOnDisableAndRemove(t *testing.T) {
 // TestRetryEncodeFaultHotplugAttemptFails pins a hardware-change restart of an
 // encode-faulted device whose open fails: the failure schedules the next
 // backoff attempt (the hotplug consumed the pending one, so without a re-arm
-// the device would stay down until the next hotplug), and the attempt is
-// logged even late in an outage, where a timer-driven attempt is quiet.
+// the device would stay down until the next hotplug), and the attempt, its
+// failure and when the next attempt is due are logged even late in an outage,
+// where a timer-driven attempt is quiet.
 func TestRetryEncodeFaultHotplugAttemptFails(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)
@@ -668,7 +670,7 @@ func TestRetryEncodeFaultHotplugAttemptFails(t *testing.T) {
 
 		// Fault past the failures logAttempt logs, each retry opening and
 		// faulting again at the next PLAY.
-		for n := 1; n <= retryLogFirst+1; n++ {
+		for n := 1; n <= retryLogFirst; n++ {
 			play(pathMoth) <- true
 			runFor(t, app, backoffDelay(n)+time.Second)
 		}
@@ -696,18 +698,184 @@ func TestRetryEncodeFaultHotplugAttemptFails(t *testing.T) {
 		if app.retryAt.IsZero() {
 			t.Fatal("no retry armed after the failed hotplug attempt")
 		}
-		// A hotplug advances the backoff rather than starting it over.
-		// Five encode faults and the failed hotplug attempt make six failures, the
-		// capped delay (synctest time does not move within this pass).
-		if got, want := time.Until(app.retryAt), backoffDelay(len(retryBackoff)); got != want {
+		// A hotplug advances the backoff rather than starting it over. Four
+		// encode faults and the failed hotplug attempt make five failures, one
+		// short of the cap, so a hotplug counted twice would show as the capped
+		// delay (synctest time does not move within this pass).
+		const failures = retryLogFirst + 2
+		if failures >= len(retryBackoff) || logAttempt(failures) {
+			t.Fatalf("failure %d must be quiet and below the cap for this test to pin anything", failures)
+		}
+		if got, want := time.Until(app.retryAt), backoffDelay(failures); got != want {
 			t.Errorf("next attempt in %s, want the advanced delay %s", got, want)
 		}
-		runFor(t, app, backoffDelay(len(retryBackoff))+time.Second)
+		if want := fmt.Sprintf(`device "moth": retrying in %s (failure %d)`, backoffDelay(failures), failures); !strings.Contains(out.String(), want) {
+			t.Errorf("log = %q, want %q: a forced attempt's failure says when the next attempt is due", out.String(), want)
+		}
+		runFor(t, app, backoffDelay(failures)+time.Second)
 		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
 			t.Fatalf("moth state = %s, want serving after the next backoff attempt", s)
 		}
 		if got := countDown(t, app, "moth", notify.KindClear); got != 0 {
 			t.Errorf("down clears = %d, want 0 until the faulted stream encodes", got)
+		}
+	})
+}
+
+// activeDown returns the device's active down condition, failing the test
+// when there is not exactly one.
+func activeDown(t *testing.T, app *appliance, name string) notify.Notification {
+	t.Helper()
+	all := applianceCenter(t, app).Active()
+	active := slices.DeleteFunc(all, func(n notify.Notification) bool { return n.Key != deviceDownKey(name) })
+	if len(active) != 1 {
+		t.Fatalf("active %s conditions = %+v, want exactly one", name, active)
+	}
+	return active[0]
+}
+
+// TestRetryEncodeWaitTimerRetryRewritesText pins the condition text of a
+// timer retry after an encode fault. The device went down as failed, so its
+// condition reads "Capture stopped ... return 404"; once the retry serves it
+// again and waits for a client to prove the encoder, the text must say so,
+// and a fresh fault must say the capture stopped again, all without a fresh
+// notification: the condition stays the one onset, its text rewritten in
+// place.
+func TestRetryEncodeWaitTimerRetryRewritesText(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
+
+		for round := 1; round <= 2; round++ {
+			play(pathMoth) <- true
+			runFor(t, app, time.Second)
+			if n := activeDown(t, app, "moth"); !strings.HasPrefix(n.Message, "Capture stopped") {
+				t.Errorf("round %d, after the fault: message %q, want the capture-stopped text", round, n.Message)
+			}
+			runFor(t, app, backoffDelay(round))
+			if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+				t.Fatalf("round %d: moth state = %s, want serving after the timer retry", round, s)
+			}
+			n := activeDown(t, app, "moth")
+			if n.Title != titleFailed || !strings.Contains(n.Message, "serves again") || !strings.Contains(n.Message, pathMoth) {
+				t.Errorf("round %d, serving again: condition %q/%q, want the encode-wait text naming %s", round, n.Title, n.Message, pathMoth)
+			}
+		}
+		if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+			t.Errorf("down onsets = %d, want 1: the text changes in place, not as new notifications", got)
+		}
+		if got := countDown(t, app, "moth", notify.KindClear); got != 0 {
+			t.Errorf("down clears = %d, want 0 while the encoder is unproven", got)
+		}
+	})
+}
+
+// TestRetryEncodeFaultHotplugWhileUnplugged pins a hardware change while the
+// encode-faulted device is itself unplugged: another device's hotplug must not
+// log that the faulted device is restarting, open it, or create a retry state
+// only to drop it at once; its encode fault stays on record for its replug.
+func TestRetryEncodeFaultHotplugWhileUnplugged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		host := &fakeHost{devs: []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}}
+		withHost(app, host)
+		play := scriptedStages(t, app, log)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
+
+		play(pathMoth) <- true
+		runFor(t, app, backoffDelay(1)+time.Second)
+		host.devs = nil
+		killDevice(t, app, log, "moth", capture.ErrDeviceGone)
+		if _, ok := app.retries["moth"]; ok {
+			t.Fatal("precondition: a disconnect ends the backoff retry")
+		}
+		openedBefore := opens(log, "moth")
+
+		out := captureLog(t)
+		app.retryDown()
+		if strings.Contains(out.String(), "restarting it") {
+			t.Errorf("log = %q, want no restart announced for a device that is not there", out.String())
+		}
+		if _, ok := app.retries["moth"]; ok {
+			t.Error("the hotplug created a retry state for the unplugged device")
+		}
+		if got := opens(log, "moth"); got != openedBefore {
+			t.Errorf("opens = %d, want %d: an absent device is not opened", got, openedBefore)
+		}
+		if len(app.faultedPaths("moth")) != 1 {
+			t.Errorf("faulted %v, want the encode fault kept for the replug", app.faultedPaths("moth"))
+		}
+
+		// The replug restarts it as a retry that still waits for the encode.
+		host.devs = []audio.Hardware{{ID: idMoth, HWAddr: addrHW3, IDStable: true}}
+		app.retryDown()
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the replug", s)
+		}
+		if !app.retrying("moth") {
+			t.Error("the replug restart is not a retry waiting for the encode")
+		}
+	})
+}
+
+// TestAnnounceRebuildSkippedWhenNothingChanges pins that a recovery or a
+// hardware change that brings back only what the advertisement already
+// carries rebuilds nothing. A restart that re-announced itself while it
+// waited for an encode is advertised as it serves, so its recovery costs no
+// second rebuild; a hotplug that restarts a faulted device still advertised
+// with the same records costs none either. One that starts a device missing
+// from the advertisement still rebuilds.
+func TestAnnounceRebuildSkippedWhenNothingChanges(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		app.reconcile(&config.Config{Listen: testListenAny, Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
+		if app.announced == nil {
+			t.Fatal("precondition: the advertisement's records were not kept")
+		}
+
+		// Recovery after a mid-wait re-announce.
+		play(pathMoth) <- true
+		runFor(t, app, backoffDelay(1)/2)
+		app.restartAnnounce() // another device's rebuild drops moth
+		gen := app.announceGen
+		runFor(t, app, backoffDelay(1))
+		if got := app.announceGen - gen; got != 1 {
+			t.Fatalf("got %d rebuilds when the waiting restart serves, want 1 (it re-announces)", got)
+		}
+		play(pathMoth) <- false
+		runFor(t, app, 2*retrySettle)
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Fatalf("got %d down clears, want 1 once the encode settles", got)
+		}
+		if got := app.announceGen - gen; got != 1 {
+			t.Errorf("got %d rebuilds after the recovery, want still 1: it advertises nothing new", got)
+		}
+
+		// A hotplug restart of a faulted device still advertised.
+		play(pathMoth) <- true
+		runFor(t, app, backoffDelay(1)/2)
+		gen = app.announceGen
+		app.retryDown()
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the hotplug", s)
+		}
+		if got := app.announceGen - gen; got != 0 {
+			t.Errorf("got %d rebuilds for a hotplug that restarts an advertised device, want 0", got)
+		}
+
+		// A hotplug restart of a device missing from the advertisement.
+		play(pathMoth) <- true
+		runFor(t, app, backoffDelay(1)/2)
+		app.restartAnnounce()
+		gen = app.announceGen
+		app.retryDown()
+		if got := app.announceGen - gen; got != 1 {
+			t.Errorf("got %d rebuilds for a hotplug that starts a dropped device, want 1", got)
 		}
 	})
 }

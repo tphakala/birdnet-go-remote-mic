@@ -122,8 +122,12 @@ clear promptly. When a config save starts, stops, or restarts a device, a
 hardware-change retry starts one, or a device restarted by the automatic retry
 counts as recovered (it has kept serving for 30 seconds, see Multi-device
 behaviour), the whole advertisement is rebuilt, because
-the responder cannot retire a single service. A device that dies mid-run stays
-advertised until the next rebuild (see Multi-device behaviour). Automatic
+the responder cannot retire a single service; a retry or hardware change that
+would advertise exactly what is already advertised skips the rebuild. A
+device that dies mid-run stays advertised until the next rebuild (see
+Multi-device behaviour). If the responder cannot start (no network yet at
+boot) or stops, it is restarted with a growing delay (5 s, 30 s, 2 min, then
+every 5 minutes) until it runs. Automatic
 discovery on the BirdNET-Go side is not available yet, so for now you add each
 mic in BirdNET-Go by its `host:port` plus path; the advertisement is already in
 place for when that support lands. Set `discovery.enabled: false` to turn the
@@ -249,9 +253,10 @@ DNS label (63 bytes), and the appliance keeps 6 of those free for the
 ` (N)` suffix the responder adds when another host already uses the name, so
 it advertises at most 57 bytes: a longer device name is cut, keeping the
 stream path it gets for a device with several streams (a path that alone is
-longer is cut too). Two devices whose names agree in their first 57 bytes
-then advertise the same name, and a discoverer may see only one of them, so
-keep device names distinct within that length.
+longer is cut too). Names that would then be the same (compared without
+case, as DNS compares them) are kept apart: the later one in config order
+advertises with a ` #2` suffix (` #3` and so on for more), its name cut
+further to make room.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the

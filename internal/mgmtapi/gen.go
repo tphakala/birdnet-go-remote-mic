@@ -1088,7 +1088,9 @@ type ClientInterface interface {
 	//   Notification as data. The stream is best effort: there is no replay,
 	//   `Last-Event-ID` is ignored, and a client re-syncs from GET
 	//   /notifications on connect, on reconnect, and whenever it detects an
-	//   id gap.
+	//   id gap. An active condition's onset whose title or message changed
+	//   while it stayed active is sent again under its own id; a client
+	//   replaces the entry it holds with that id (it is not a new entry).
 	// - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 	//   idle connections stay alive and clients can detect a dead
 	//   server. Sent as a named event (not an SSE comment) so simple
@@ -1371,7 +1373,9 @@ func (c *Client) GetDevice(ctx context.Context, name string, reqEditors ...Reque
 //     Notification as data. The stream is best effort: there is no replay,
 //     `Last-Event-ID` is ignored, and a client re-syncs from GET
 //     /notifications on connect, on reconnect, and whenever it detects an
-//     id gap.
+//     id gap. An active condition's onset whose title or message changed
+//     while it stayed active is sent again under its own id; a client
+//     replaces the entry it holds with that id (it is not a new entry).
 //   - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 //     idle connections stay alive and clients can detect a dead
 //     server. Sent as a named event (not an SSE comment) so simple
@@ -2289,7 +2293,9 @@ type ClientWithResponsesInterface interface {
 	//   Notification as data. The stream is best effort: there is no replay,
 	//   `Last-Event-ID` is ignored, and a client re-syncs from GET
 	//   /notifications on connect, on reconnect, and whenever it detects an
-	//   id gap.
+	//   id gap. An active condition's onset whose title or message changed
+	//   while it stayed active is sent again under its own id; a client
+	//   replaces the entry it holds with that id (it is not a new entry).
 	// - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 	//   idle connections stay alive and clients can detect a dead
 	//   server. Sent as a named event (not an SSE comment) so simple
@@ -3413,7 +3419,9 @@ func (c *ClientWithResponses) GetDeviceWithResponse(ctx context.Context, name st
 //     Notification as data. The stream is best effort: there is no replay,
 //     `Last-Event-ID` is ignored, and a client re-syncs from GET
 //     /notifications on connect, on reconnect, and whenever it detects an
-//     id gap.
+//     id gap. An active condition's onset whose title or message changed
+//     while it stayed active is sent again under its own id; a client
+//     replaces the entry it holds with that id (it is not a new entry).
 //   - `heartbeat`: emitted every 15 seconds with `{}` as data, so
 //     idle connections stay alive and clients can detect a dead
 //     server. Sent as a named event (not an SSE comment) so simple

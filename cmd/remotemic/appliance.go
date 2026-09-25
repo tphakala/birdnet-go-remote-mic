@@ -15,6 +15,7 @@ import (
 
 	capture "github.com/tphakala/go-audio-capture"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/announce"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -74,6 +75,10 @@ type appliance struct {
 	// center. Onset/Clear/Resolve are idempotent and a nil *Center is a no-op, so
 	// every emission site is safe to reach on every reconcile.
 	notifier notify.Publisher
+	// updater is notifier's in-place text update (notify.Updater), nil when the
+	// notifier has none (a recording fake): an active condition's text then
+	// keeps its first wording.
+	updater notify.Updater
 
 	// cfg is the configuration currently applied to the pipeline. devices holds
 	// one runtime per configured device keyed by name, in any state (serving,
@@ -109,6 +114,10 @@ type appliance struct {
 	// for a client to prove its encoder can tell whether a rebuild during its
 	// outage dropped it (see attemptRetry).
 	advertised map[string]bool
+	// announced holds the records of the current advertisement (nil while
+	// nothing is advertised), so a rebuild that would advertise exactly these
+	// again can be skipped (see announceStale).
+	announced []announce.Info
 
 	// open builds and starts one device's runtime, resolving the hardware open
 	// channel count per attempt (see openDeviceRetry). It is a field so tests can
@@ -164,7 +173,9 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 	if notifier == nil {
 		notifier = (*notify.Center)(nil)
 	}
+	updater, _ := notifier.(notify.Updater)
 	return &appliance{
+		updater:      updater,
 		ctx:          ctx,
 		hub:          hub,
 		srv:          srv,
@@ -223,9 +234,21 @@ func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 }
 
 // replaceDown raises the device's down condition for cause, resolving an active
-// condition of another cause first, with none of markDown's exceptions.
+// condition of another cause first, with none of markDown's exceptions. A
+// condition already active for the same cause is not raised again (Onset is
+// idempotent per key); its text is rewritten in place instead when it differs
+// (see notify.Updater), so it says what the device is doing now without a
+// fresh notification, however often the device moves between two states of
+// one cause (serving but waiting to prove its encoder, and failed again).
 func (a *appliance) replaceDown(name, cause string, n *notify.Notification) {
-	if prev, ok := a.downReason[name]; ok && prev != cause {
+	prev, ok := a.downReason[name]
+	if ok && prev == cause {
+		if a.updater != nil {
+			a.updater.Update(n.Key, n.Title, n.Message)
+		}
+		return
+	}
+	if ok {
 		a.notifier.Resolve(deviceDownKey(name), "the cause changed")
 	}
 	a.downReason[name] = cause
@@ -506,22 +529,41 @@ func restartHint(dev *config.Device) string {
 	return "it restarts automatically when capture works again"
 }
 
+// resolveRefused reports whether openAndStart refuses the device for how its
+// id resolved (a.hw), before any open: an id that names no present hardware,
+// more than one device, or nothing valid. A card-index id whose resolution
+// failed for another reason is not refused (see openAndStart).
+func (a *appliance) resolveRefused(dev *config.Device) bool {
+	err := a.hw[dev.Device].err
+	if err == nil {
+		return false
+	}
+	_, nf := errors.AsType[*capture.DeviceNotFoundError](err)
+	_, amb := errors.AsType[*capture.AmbiguousDeviceError](err)
+	_, bad := errors.AsType[*capture.BadDeviceError](err)
+	// A malformed id (*BadDeviceError) is refused rather than falling through
+	// to an open that can only fail. IsCardIndexID returns true for a malformed
+	// id (for example "plughw:1,0"), so the !IsCardIndexID term does NOT catch
+	// it; the explicit bad term is what refuses it, and reporting it as
+	// malformed is more useful than a generic open failure mislabelled as a
+	// card index. A card index whose enumeration merely failed resolves to a
+	// wrapped ErrDeviceGone, not *BadDeviceError, so it still falls through to
+	// the container-fallback open.
+	return !config.IsCardIndexID(dev.Device) || nf || amb || bad
+}
+
+// openRefused reports whether openAndStart would refuse the device before any
+// open, as things stand: for how its id resolved (resolveRefused), or because
+// another serving device already captures from its hardware (hardwareOwner).
+func (a *appliance) openRefused(dev *config.Device) bool {
+	return a.resolveRefused(dev) || a.hardwareOwner(a.hw[dev.Device].hw.HWAddr, dev.Name) != ""
+}
+
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	res := a.hw[dev.Device]
 	hw := res.hw
 	if res.err != nil {
-		_, nf := errors.AsType[*capture.DeviceNotFoundError](res.err)
-		_, amb := errors.AsType[*capture.AmbiguousDeviceError](res.err)
-		_, bad := errors.AsType[*capture.BadDeviceError](res.err)
-		// A malformed id (*BadDeviceError) is refused here rather than falling
-		// through to an open that can only fail. IsCardIndexID returns true for a
-		// malformed id (for example "plughw:1,0"), so the !IsCardIndexID term does
-		// NOT catch it; the explicit bad term is what refuses it, and reporting it
-		// as malformed is more useful than a generic open failure mislabelled as a
-		// card index a few lines down. A card index whose enumeration merely failed
-		// resolves to a wrapped ErrDeviceGone, not *BadDeviceError, so it still
-		// falls through to the container-fallback open.
-		if !config.IsCardIndexID(dev.Device) || nf || amb || bad {
+		if a.resolveRefused(dev) {
 			cause, msg := resolveError(dev, res.err)
 			title := "Device unavailable"
 			switch cause {
@@ -678,7 +720,7 @@ func (a *appliance) startDevice(dev *config.Device) {
 	rt := a.openAndStart(dev)
 	a.devices[dev.Name] = rt
 	if rt.currentState() != mgmtserver.StateServing {
-		a.scheduleRetry(dev)
+		a.scheduleRetry(dev, false)
 		return
 	}
 	a.armRetryTimer()
@@ -960,7 +1002,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			}
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
 			a.markDown(name, downFailed, &n)
-			a.scheduleRetry(&res.rt.dev)
+			a.scheduleRetry(&res.rt.dev, false)
 			// Only a device scheduleRetry keeps retrying records its fault: a
 			// card-index id is never retried unattended, so the config save its
 			// condition points the operator at restarts and clears it at once.
@@ -1031,8 +1073,11 @@ func (a *appliance) retryDown() {
 	// Rebuild the disabled records so their hardware address follows the change.
 	a.reconcileRecords(&a.cfg)
 	a.publish(&a.cfg)
+	// A started device is usually missing from the advertisement, or back
+	// with a new record; one that restarted as it was advertised (a faulted
+	// device that re-announced itself, then went down again) changes nothing.
 	if started {
-		a.restartAnnounce()
+		a.refreshAnnounce()
 	}
 	a.armRetryTimer()
 }
@@ -1042,30 +1087,71 @@ func (a *appliance) retryDown() {
 // advertisement is rebuilt whenever the serving set, the discovery flag, or the
 // auth hint (the TXT auth=token/auth=none record) changes, and when a restart
 // waiting to prove an encoder is missing from it (see attemptRetry). It records
-// the names it advertises in a.advertised.
+// the names it advertises in a.advertised and their records in a.announced.
+// An event that need not have changed the advertisement calls it through
+// refreshAnnounce, which skips a rebuild that would change nothing.
 func (a *appliance) restartAnnounce() {
 	if a.announceCancel != nil {
 		a.announceCancel()
 		a.announceCancel = nil
 	}
 	clear(a.advertised)
+	a.announced = nil
 	if !a.prov.discoveryEnabled() {
 		return
 	}
-	serving := make([]*deviceRuntime, 0, len(a.devices))
-	for i := range a.cfg.Devices {
-		if rt, ok := a.devices[a.cfg.Devices[i].Name]; ok && rt.currentState() == mgmtserver.StateServing {
-			serving = append(serving, rt)
-			a.advertised[rt.dev.Name] = true
-		}
-	}
+	serving := a.servingInOrder()
 	if len(serving) == 0 {
 		return
 	}
+	for _, rt := range serving {
+		a.advertised[rt.dev.Name] = true
+	}
+	// Keep the records for announceStale. A listen address they cannot be
+	// built from leaves none, so the next check rebuilds (and startAnnounce
+	// logs why discovery is off).
+	a.announced, _, _ = announceInfos(a.cfg.Listen, serving, a.prov.authRequired())
 	actx, cancel := context.WithCancel(a.ctx)
 	a.announceCancel = cancel
 	a.announceGen++
 	startAnnounce(actx, a.cfg.Listen, serving, a.prov.authRequired())
+}
+
+// servingInOrder returns the serving devices' runtimes in config order, the
+// order they are advertised in.
+func (a *appliance) servingInOrder() []*deviceRuntime {
+	serving := make([]*deviceRuntime, 0, len(a.devices))
+	for i := range a.cfg.Devices {
+		if rt, ok := a.devices[a.cfg.Devices[i].Name]; ok && rt.currentState() == mgmtserver.StateServing {
+			serving = append(serving, rt)
+		}
+	}
+	return serving
+}
+
+// announceStale reports whether a rebuild would change what is advertised:
+// the records the serving set, the listen port and the auth hint make now
+// differ from those of the last rebuild, or discovery is off while an
+// advertisement still runs. A device restarted with the parameters it was
+// advertised with makes the same records, so a recovery or a hardware change
+// that only brings back what the advertisement already carries (a restart
+// that re-announced itself while it waited for an encode, then settled) costs
+// no rebuild.
+func (a *appliance) announceStale() bool {
+	if !a.prov.discoveryEnabled() {
+		return a.announceCancel != nil || len(a.advertised) > 0
+	}
+	infos, _, err := announceInfos(a.cfg.Listen, a.servingInOrder(), a.prov.authRequired())
+	return err != nil || !slices.Equal(infos, a.announced)
+}
+
+// refreshAnnounce rebuilds the advertisement when it is stale (see
+// announceStale), for an event that may have changed the serving set but
+// need not have.
+func (a *appliance) refreshAnnounce() {
+	if a.announceStale() {
+		a.restartAnnounce()
+	}
 }
 
 // closeAll releases every serving device's capture source at shutdown so the

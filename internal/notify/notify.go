@@ -118,6 +118,16 @@ type Publisher interface {
 	Resolve(key, reason string) bool
 }
 
+// Updater is an optional capability beside Publisher, kept out of it so the
+// emitters' fakes need not implement it: an emitter that holds a Publisher
+// type-asserts it to Updater where it can use it. *Center implements it.
+type Updater interface {
+	// Update rewrites the title and message of the active condition keyed by
+	// key in place; it returns false (and publishes nothing) when that key is
+	// not active or its text is already that.
+	Update(key, title, message string) bool
+}
+
 const (
 	// notificationEvent is the SSE event name every notification streams under.
 	notificationEvent = "notification"
@@ -146,8 +156,9 @@ var randRead = rand.Read
 // Center is the notification center: a bounded ring of discrete history and a
 // pinned map of active conditions under one mutex, plus a shared sse.Broadcaster
 // for the SSE fan-out. An ID is assigned and the entry broadcast while c.mu is
-// held, so every subscriber sees strictly increasing IDs; a slow subscriber
-// sees gaps, never reordering. On the publish path the broadcaster's lock is
+// held, so every subscriber sees new IDs in increasing order; a slow
+// subscriber sees gaps, never reordering. The one entry streamed again under
+// an ID already sent is an active onset whose text Update rewrote. On the publish path the broadcaster's lock is
 // taken while c.mu is held (c.mu -> broadcaster mutex), so publishing stays
 // ID-ordered; Subscribe takes only the broadcaster's own lock, not c.mu.
 type Center struct {
@@ -219,6 +230,7 @@ func newBootID() string {
 var (
 	_ sse.Source = (*Center)(nil)
 	_ Publisher  = (*Center)(nil)
+	_ Updater    = (*Center)(nil)
 )
 
 // BootID returns the center's boot identity, stable for the process lifetime.
@@ -368,6 +380,36 @@ func (c *Center) Resolve(key, reason string) bool {
 		Message:  reason,
 	}
 	c.publishLocked(&n)
+	return true
+}
+
+// Update rewrites the title and message of the active condition keyed by key,
+// for a condition that stays active while what it should say changes (a
+// device that serves again but must still prove its encoder). Onset is
+// idempotent per key and a Resolve then Onset would raise a fresh entry, which
+// a client toasts as a new error, so the onset entry keeps its ID, kind,
+// severity, time and identity and only its text changes: the snapshot serves
+// the new text, and the entry is streamed again under its own ID, which a
+// client already holding it applies in place (no gap, since the ID is not
+// new, and no toast, since it is known). It returns false, and changes
+// nothing, when key is not active or already reads that way; a nil Center
+// returns false.
+func (c *Center) Update(key, title, message string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, active := c.active[key]
+	if !active || (n.Title == title && n.Message == message) {
+		return false
+	}
+	n.Title, n.Message = title, message
+	c.active[key] = n
+	c.ring.replace(&n)
+	if data, err := json.Marshal(&n); err == nil {
+		c.bc.Broadcast(sse.Event{Name: notificationEvent, Data: data})
+	}
 	return true
 }
 
