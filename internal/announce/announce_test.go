@@ -132,15 +132,27 @@ type fakeResponders struct {
 	responds     int
 	buildFails   int
 	respondFails int
+	failAt       int // the service whose registration fails in a failing Respond
 	runFor       time.Duration
 	addFails     bool
-	names        []string
+	last         *fakeResponder
 }
 
-// fakeResponder is one responder built by fakeResponders.
+// fakeHandle is a service added to a fakeResponder.
+type fakeHandle struct {
+	dnssd.ServiceHandle
+	name string
+}
+
+// fakeResponder is one responder built by fakeResponders. It keeps dnssd
+// v1.2.14's two lists: Add puts a service on pending, Respond registers each
+// pending service onto managed in turn and clears pending only once every one
+// registered, and Remove drops a handle from managed only.
 type fakeResponder struct {
 	dnssd.Responder
-	r *fakeResponders
+	r       *fakeResponders
+	pending []*fakeHandle
+	managed []*fakeHandle
 }
 
 //nolint:gocritic // dnssd.Responder fixes the by-value signature.
@@ -150,8 +162,15 @@ func (f *fakeResponder) Add(srv dnssd.Service) (dnssd.ServiceHandle, error) {
 	if f.r.addFails {
 		return nil, errTestAdd
 	}
-	f.r.names = append(f.r.names, srv.Name)
-	return nil, nil //nolint:nilnil // the caller ignores the handle
+	h := &fakeHandle{name: srv.Name}
+	f.pending = append(f.pending, h)
+	return h, nil
+}
+
+func (f *fakeResponder) Remove(h dnssd.ServiceHandle) {
+	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+	f.managed = slices.DeleteFunc(f.managed, func(m *fakeHandle) bool { return m == h })
 }
 
 func (f *fakeResponder) Respond(ctx context.Context) error {
@@ -160,6 +179,15 @@ func (f *fakeResponder) Respond(ctx context.Context) error {
 	fail := f.r.respondFails > 0
 	if fail {
 		f.r.respondFails--
+	}
+	for i, h := range f.pending {
+		if fail && i == min(f.r.failAt, len(f.pending)-1) {
+			break
+		}
+		f.managed = append(f.managed, h)
+	}
+	if !fail {
+		f.pending = nil
 	}
 	runFor := f.r.runFor
 	f.r.mu.Unlock()
@@ -215,6 +243,19 @@ func TestRunReturnsRefusedService(t *testing.T) {
 	})
 }
 
+// registered returns the names the last built responder advertises, in order.
+// The caller holds r.mu.
+func (r *fakeResponders) registered() []string {
+	if r.last == nil {
+		return nil
+	}
+	out := make([]string, len(r.last.managed))
+	for i, h := range r.last.managed {
+		out[i] = h.name
+	}
+	return out
+}
+
 // counts returns how many responders were built and how many Respond calls
 // were made.
 func (r *fakeResponders) counts() (made, responds int) {
@@ -236,7 +277,8 @@ func withResponders(t *testing.T, r *fakeResponders) *fakeResponders {
 			return nil, errTestSocket
 		}
 		r.made++
-		return &fakeResponder{r: r}, nil
+		r.last = &fakeResponder{r: r}
+		return r.last, nil
 	}
 	t.Cleanup(func() { newResponder = prev })
 	return r
@@ -248,7 +290,10 @@ func withResponders(t *testing.T, r *fakeResponders) *fakeResponders {
 // socket. The services it registers carry distinct names.
 func TestRunRetriesFailedResponder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r := withResponders(t, &fakeResponders{buildFails: 1, respondFails: 2})
+		// The failing registrations fail on the second service, after the
+		// first registered: a retry that did not clear that would advertise
+		// the first twice.
+		r := withResponders(t, &fakeResponders{buildFails: 1, respondFails: 2, failAt: 1})
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		info := Info{Name: testMic, Path: "/a", Port: 18999, Codec: testCodec, Rate: 48000, Channels: 1}
@@ -281,8 +326,8 @@ func TestRunRetriesFailedResponder(t *testing.T) {
 		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if want := []string{testMic, testMic + " #2"}; !slices.Equal(r.names, want) {
-			t.Errorf("got registered names %q, want %q once", r.names, want)
+		if got, want := r.registered(), []string{testMic, testMic + " #2"}; !slices.Equal(got, want) {
+			t.Errorf("got registered names %q, want %q, each once", got, want)
 		}
 	})
 }

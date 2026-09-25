@@ -183,7 +183,7 @@ func Run(ctx context.Context, infos []Info) error {
 		}
 		srvs[i] = srv
 	}
-	var resp dnssd.Responder
+	var resp *builtResponder
 	failures := 0
 	for ctx.Err() == nil {
 		started := time.Now()
@@ -226,24 +226,46 @@ func Run(ctx context.Context, infos []Info) error {
 	return nil
 }
 
+// builtResponder is a responder with the handles of the services added to it.
+type builtResponder struct {
+	dnssd.Responder
+	handles []dnssd.ServiceHandle
+}
+
 // respond runs resp over srvs until ctx is cancelled or it fails, building it
 // first when resp is nil, and returns the responder to retry with and why it
 // stopped. A responder that was built is kept for the retry, so its socket is
-// reused rather than leaked (a Respond called again registers what the failed
-// one did not). A responder that returns no error while ctx is still live
-// stopped all the same, so that is reported as a failure too.
-func respond(ctx context.Context, resp dnssd.Responder, srvs []dnssd.Service) (dnssd.Responder, error) {
+// reused rather than leaked. A registration that failed part way leaves the
+// services registered before it in dnssd's managed list while its pending
+// list still holds all of them (dnssd v1.2.14 clears that list only once
+// every registration succeeds), so a plain retry would register those again
+// and advertise them twice. Removing every handle first empties the managed
+// list and leaves the pending one whole, so the retry registers each service
+// once. A responder that returns no error while ctx is still live stopped all
+// the same, so that is reported as a failure too.
+//
+// What still leaks is the socket of a responder that never ran to ctx's end:
+// one per Run that is cancelled while its responder cannot start (a rebuild
+// or shutdown during an outage), not one per attempt.
+func respond(ctx context.Context, resp *builtResponder, srvs []dnssd.Service) (*builtResponder, error) {
 	if resp == nil {
 		r, err := newResponder()
 		if err != nil {
 			return nil, err
 		}
+		b := &builtResponder{Responder: r, handles: make([]dnssd.ServiceHandle, 0, len(srvs))}
 		for i := range srvs {
-			if _, err := r.Add(srvs[i]); err != nil {
+			h, err := r.Add(srvs[i])
+			if err != nil {
 				return nil, fmt.Errorf("%w: %w", errAdd, err)
 			}
+			b.handles = append(b.handles, h)
 		}
-		resp = r
+		resp = b
+	} else {
+		for _, h := range resp.handles {
+			resp.Remove(h)
+		}
 	}
 	if err := resp.Respond(ctx); err != nil {
 		return resp, err
