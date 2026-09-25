@@ -40,9 +40,9 @@ const pumpBacklog = 64
 type pumpResult struct {
 	rt  *deviceRuntime
 	err error
-	// encodeFault reports that err came from a stream's stage (an encode or
-	// packetize fault), not from the capture itself.
-	encodeFault bool
+	// faultPath is the path of the stream whose stage (an encode or packetize
+	// fault) ended the device; empty when err came from the capture itself.
+	faultPath string
 }
 
 // reconcileReq asks the run loop to apply cfg to the running pipeline. The loop
@@ -400,9 +400,9 @@ func (a *appliance) runningParams() map[string]config.Device {
 // but not for copying, channel extraction, or encoding. When the capture ends
 // the fan-out closes the stream feeds, so every stage goroutine returns, and
 // pump waits for them before reporting so no stage outlives the device's
-// teardown. The result says whether a failure came from a stage (an encode
-// fault) rather than the capture, and the first encoded frame is recorded on
-// the runtime (noteEncoded) for the unattended retry's settle.
+// teardown. The result names the stream whose stage (an encode fault) ended
+// the device, if the capture did not, and each stream's first encoded frame is
+// recorded on it (noteEncoded) for the unattended retry's settle.
 func (a *appliance) pump(rt *deviceRuntime) {
 	runtime.LockOSThread()
 	var wg sync.WaitGroup
@@ -410,11 +410,12 @@ func (a *appliance) pump(rt *deviceRuntime) {
 	// reported as the pump's result when the fan-out itself ended cleanly.
 	var stageOnce sync.Once
 	var stageErr error
+	var faultPath string
 	for i := range rt.streams {
 		sr := rt.streams[i]
 		wg.Go(func() {
 			err := sr.stage.Run(sr.src, sr.frames.Active, func(f pipeline.Frame) error {
-				rt.noteEncoded(a.signalRetryDue)
+				sr.noteEncoded(&rt.awaitEncode, a.signalRetryDue)
 				if !sr.frames.Push(f) {
 					drops := sr.dropped.Add(1)
 					if drops%50 == 1 {
@@ -437,7 +438,7 @@ func (a *appliance) pump(rt *deviceRuntime) {
 			// surfaces at a client's PLAY, not at open (see retrySettle).
 			if err != nil && a.ctx.Err() == nil {
 				log.Printf("%s (%s): capture pipeline stopped: %v", rt.dev.Name, sr.stream.Path, err)
-				stageOnce.Do(func() { stageErr = err })
+				stageOnce.Do(func() { stageErr, faultPath = err, sr.stream.Path })
 				_ = rt.fanout.Close()
 			}
 		})
@@ -446,12 +447,11 @@ func (a *appliance) pump(rt *deviceRuntime) {
 	wg.Wait()
 	// A stage fault that ended the device surfaces as the pump result when the
 	// fan-out's own read ended cleanly (a closed source reports EOF, i.e. nil here).
-	encodeFault := false
+	res := pumpResult{rt: rt, err: perr}
 	if perr == nil && stageErr != nil {
-		perr = stageErr
-		encodeFault = true
+		res.err, res.faultPath = stageErr, faultPath
 	}
-	a.pumpDone <- pumpResult{rt: rt, err: perr, encodeFault: encodeFault}
+	a.pumpDone <- res
 }
 
 // openAndStart opens a device, wires its RTSP track and level meter, and starts
@@ -837,7 +837,7 @@ func (a *appliance) publish(cfg *config.Config) {
 // re-arming the enumeration retry for a device that keeps failing would restart
 // and re-notify it every enumeration tick; after an encode fault that retry
 // must also prove its encoder before it counts as recovered (see
-// retryState.needEncode). Neither path restarts a card-index id, which waits
+// retryState.encodePaths). Neither path restarts a card-index id, which waits
 // for a config save.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
@@ -907,10 +907,11 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
 			a.markDown(name, downFailed, &n)
 			a.scheduleRetry(&res.rt.dev)
-			if st := a.retries[name]; st != nil && res.encodeFault {
-				// An encode fault surfaces only while a client plays, so the restart
-				// must prove its encoder before it counts as recovered.
-				st.needEncode = true
+			if st := a.retries[name]; st != nil && res.faultPath != "" && !slices.Contains(st.encodePaths, res.faultPath) {
+				// An encode fault surfaces only while a client plays that stream, so
+				// the restart must prove that stream's encoder before it counts as
+				// recovered; another stream encoding proves nothing about it.
+				st.encodePaths = append(st.encodePaths, res.faultPath)
 			}
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,6 +119,25 @@ type streamRuntime struct {
 	frames  *rtspserver.ChanSource
 	track   *rtspserver.Track
 	dropped atomic.Uint64
+	// encoded records that this stream's stage has emitted an encoded frame,
+	// which happens only while a client plays it (see pipeline.Stage). An
+	// unattended retry after this stream's encode fault waits for it before its
+	// settle (see retryState.encodePaths). Set once by the stage goroutine, read
+	// by the run loop.
+	encoded atomic.Bool
+}
+
+// noteEncoded records the stream's first encoded frame and wakes the run loop
+// when a retry is waiting for one (await is the device's awaitEncode). It costs
+// one atomic load per frame after the first.
+func (sr *streamRuntime) noteEncoded(await *atomic.Bool, wake func()) {
+	if sr.encoded.Load() {
+		return
+	}
+	sr.encoded.Store(true)
+	if await.Load() {
+		wake()
+	}
 }
 
 // deviceRuntime bundles one configured device's moving parts: one exclusive
@@ -164,29 +184,23 @@ type deviceRuntime struct {
 	// Set and read only on the run-loop goroutine.
 	superseded bool
 
-	// encoded records that a stage of this runtime has emitted an encoded frame,
-	// which happens only while a client plays (see pipeline.Stage). An unattended
-	// retry after an encode fault waits for it before its settle (see
-	// retryState.needEncode). Set once by the stage goroutines, read by the run
-	// loop.
-	encoded atomic.Bool
 	// awaitEncode asks the stage goroutines to wake the run loop (through
-	// retryDue) when the first frame is encoded. Set by the run loop before it
-	// checks encoded, and read by a stage after it sets encoded, so one side
-	// always sees the other.
+	// retryDue) when a stream encodes its first frame. Set by the run loop before
+	// it checks any stream's encoded flag, and read by a stage after it sets its
+	// flag, so one side always sees the other.
 	awaitEncode atomic.Bool
 }
 
-// noteEncoded records the first encoded frame, waking the run loop when a retry
-// is waiting for it. It costs one atomic load per frame after the first.
-func (rt *deviceRuntime) noteEncoded(wake func()) {
-	if rt.encoded.Load() {
-		return
+// encodedAll reports whether every stream of this runtime whose path is listed
+// has encoded a frame. A listed path the runtime no longer serves counts as
+// proven: nothing on it can fault again.
+func (rt *deviceRuntime) encodedAll(paths []string) bool {
+	for _, sr := range rt.streams {
+		if slices.Contains(paths, sr.stream.Path) && !sr.encoded.Load() {
+			return false
+		}
 	}
-	rt.encoded.Store(true)
-	if rt.awaitEncode.Load() {
-		wake()
-	}
+	return true
 }
 
 // droppedTotal sums every stream's dropped-audio counter, the device-level figure
