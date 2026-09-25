@@ -120,7 +120,8 @@ all), with TXT records that carry everything needed to adopt the stream:
 else `none`), and a `txtvers`. It sends goodbye packets on shutdown so stale entries
 clear promptly. When a config save starts, stops, or restarts a device, a
 hardware-change retry starts one, or a device restarted by the automatic retry
-has kept serving for 30 seconds, the whole advertisement is rebuilt, because
+counts as recovered (it has kept serving for 30 seconds, see Multi-device
+behaviour), the whole advertisement is rebuilt, because
 the responder cannot retire a single service. A device that dies mid-run stays
 advertised until the next rebuild (see Multi-device behaviour). Automatic
 discovery on the BirdNET-Go side is not available yet, so for now you add each
@@ -286,10 +287,11 @@ holds a lock file beside its config (`config.yaml.lock`) that records where the
 API listens. When the appliance is stopped, the commands edit the config file
 and the change applies at the next start. An appliance running without its
 management API has no config writer, so the commands edit the file too and the
-running process keeps its current token until it restarts, or until its API
-comes back (an API that failed to start, for example on a certificate it could
-not read, is retried in the background and applies the edited file when it
-comes up). A command run while
+running process keeps its current token until it restarts. An API that failed
+to start (for example on a certificate it could not read) is retried in the
+background, 30 seconds after the failure and then less often, up to every 10
+minutes; each attempt applies an edited config file, even one that still
+cannot bring the API up. A command run while
 the appliance is still starting up, before it has published where its API
 listens, asks you to retry in a few seconds. The config is written 0600, so run
 the commands as the account the appliance runs as.
@@ -377,11 +379,12 @@ For a local end-to-end check without hardware, use the ALSA loopback
 ### Multi-device behaviour
 
 - A device that fails to open, is not connected, or whose id is ambiguous is
-  logged and skipped. With the
-  management API enabled (the default) the process stays up so its status API
+  logged and skipped. While the
+  management API is serving (it is enabled by default) the process stays up so its status API
   keeps reporting every skipped device and its open error, even when no device
-  opens at all. With management disabled there is nothing to keep alive, so a
-  total open failure exits nonzero and lets a supervisor restart the process.
+  opens at all. With management disabled, or while its API has not come up yet,
+  there is nothing to keep alive, so a total open failure exits nonzero and lets
+  a supervisor restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
   while the other devices keep serving. The appliance rescans the host's
   capture hardware every 15 seconds, and when the set of devices changes it
@@ -390,12 +393,12 @@ For a local end-to-end check without hardware, use the ALSA loopback
   different card number. A device pinned to a card index (`hw:1,0`) is not
   restarted this way, because that index can now name a different microphone; it
   waits for a config save, which also restarts a down device of either kind.
-  With management enabled the process stays up after the
-  last device dies, so the failure stays inspectable over the API; with
-  management disabled it exits once every device has stopped.
+  While the management API is serving the process stays up after the
+  last device dies, so the failure stays inspectable over the API; otherwise
+  it exits once every device has stopped.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
-  automatic retry once it has kept serving for 30 seconds, or process exit), because
+  automatic retry once it counts as recovered, or process exit), because
   the dnssd responder cannot retire a single service, so a discoverer that picks
   it up meanwhile gets 404.
 - A device that is still plugged in but down (it could not be opened, for
@@ -406,9 +409,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
   error notification stays raised across attempts and clears once a retried
   restart has kept serving for 30 seconds, so a device that keeps failing is
   reported once, not on every attempt. A stream encodes only while a client
-  plays it, so after an encoder error the notification clears only once a
-  client has played the restarted device and it has kept encoding for 30
-  seconds; until then it stays raised while the device serves. Its RTSP path
+  plays it, so after an encoder error on a stream the notification clears only
+  once a client has played that stream on the restarted device and encoding
+  worked, and the device has then kept serving for 30 seconds; until then it
+  stays raised while the device serves. Its RTSP path
   serves again as soon as the restart opens it. A config save or a hardware change restarts it at once,
   clears the notification as soon as it opens, and starts the delays over. A
   card-index device is not retried this way either.

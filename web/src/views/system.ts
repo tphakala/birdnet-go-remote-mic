@@ -559,7 +559,7 @@ export class SystemView {
       // certificate is the usual way past it, so say what to trim rather than
       // echoing the bare "payload too large".
       if (err.status === 413) {
-        showToast("Install failed: the certificate and key are larger than the 256 KiB limit. Paste only the server certificate and its intermediates, not a full CA bundle.", "error");
+        showToast("Install failed: the request is larger than the 256 KiB limit. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.", "error");
         return;
       }
       let pemBad = false;

@@ -335,7 +335,7 @@
             <label class="field-label" for="sys-cert-pem">Certificate (PEM)</label>
             <textarea class="field-input mono cert-pem" id="sys-cert-pem" rows="6" autocomplete="off" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="sys-cert-pem-hint sys-cert-pem-error"></textarea>
             <span class="field-error" id="sys-cert-pem-error"></span>
-            <span class="field-hint" id="sys-cert-pem-hint">The certificate the management listener will present, followed by any intermediates. Certificate and key together must stay under 256 KiB, so leave out a full CA bundle.</span>
+            <span class="field-hint" id="sys-cert-pem-hint">The certificate the management listener will present, followed by any intermediates. The request carrying certificate and key must stay under 256 KiB, so leave out a full CA bundle.</span>
           </div>
           <div class="form-field">
             <label class="field-label" for="sys-cert-key">Private key (PEM)</label>

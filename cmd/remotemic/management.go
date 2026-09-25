@@ -589,15 +589,16 @@ type mgmt struct {
 	up chan mgmtEndpoint
 }
 
-// mgmtEndpoint is where a management API that came up late listens, handed to
-// the run loop so it can republish the run lock.
+// mgmtEndpoint is where a serving management API listens, as published in the
+// run lock; a background retry hands it to the run loop to republish the lock.
 type mgmtEndpoint struct {
 	addr     string
 	certPath string
 }
 
-// Wait blocks until the management API has finished shutting down. It is safe on
-// a nil handle (management disabled) and on a handle whose server never started.
+// Wait blocks until the management API has finished shutting down. It returns at
+// once on a nil handle (management disabled); on a retrying handle it returns
+// once ctx is cancelled and the retry, or the API it brought up, has stopped.
 func (m *mgmt) Wait() {
 	if m != nil {
 		<-m.done

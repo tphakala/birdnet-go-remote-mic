@@ -385,7 +385,8 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) {
 
 // finishRecovery clears the down condition of a device that is serving again. A
 // config-save or hardware-change restart calls it as soon as the open succeeds;
-// an unattended retry calls it once the restart has served for retrySettle.
+// an unattended retry calls it once the restart has served for retrySettle
+// (after an encode fault, once each faulted stream has also encoded).
 func (a *appliance) finishRecovery(name string, rt *deviceRuntime) {
 	// A device is "recovered" only when it comes up from a down state (it could
 	// not be opened, or it died after opening), which is exactly while its down

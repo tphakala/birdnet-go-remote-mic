@@ -35,8 +35,9 @@ export async function gatedRefresh<T>(
 }
 
 // ChangeTracker reports whether an applied value differs from the last one it
-// saw, so the store announces a resource only when its data changed rather than
-// on every poll tick. Values are compared by their JSON encoding: every tracked
+// saw, so the store can announce a resource only when its data changed rather
+// than on every poll tick (a resource carrying live counters still changes
+// nearly every tick). Values are compared by their JSON encoding: every tracked
 // value is a parsed API response, and Go's encoding/json writes struct fields in
 // declaration order and map keys sorted, so equal data encodes to the same
 // string. A spurious difference would only cost one extra announcement.

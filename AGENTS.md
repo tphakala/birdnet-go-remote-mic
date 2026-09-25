@@ -242,8 +242,8 @@ thelper, and testifylint. `unused` is disabled.
   generated contract.
 - `internal/mgmtcert`: self-signed TLS cert, regenerated when missing, expired,
   or wrong names; a custom installed cert is pinned, and a pinned file that
-  exists but cannot be read is never overwritten (the API stays off until a
-  restart instead; there is no in-process retry yet).
+  exists but cannot be read is never overwritten (the API stays off and
+  `cmd/remotemic` retries it in the background until the file reads again).
 - `internal/auth`: one shared token gates HTTP (Bearer) and RTSP (Digest).
   Empty token means open access.
 - `internal/sse`: platform-neutral SSE transport. Producers implement `Source`

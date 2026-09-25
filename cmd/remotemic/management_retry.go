@@ -15,16 +15,18 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
+// mgmtDownKey keys the management-API-unavailable condition in the notification
+// center.
+const mgmtDownKey = "management-api-down"
+
 // mgmtRetryBackoff is the delay before each background attempt to bring up a
 // management API that failed to start, indexed by the number of attempts made;
 // the last entry repeats. The causes it waits out are slow (a certificate volume
 // that mounts late, a permission fixed by hand, a full or read-only filesystem
 // freed up, a port held by another process), so it starts at 30 s and caps at
-// 10 minutes: a permanent fault costs one certificate check every 10 minutes.
-// mgmtDownKey keys the management-API-unavailable condition in the notification
-// center.
-const mgmtDownKey = "management-api-down"
-
+// 10 minutes: a permanent fault then costs one attempt every 10 minutes (a
+// config file read, a certificate check that may try to write a new pair, and
+// a listen).
 var mgmtRetryBackoff = [...]time.Duration{
 	30 * time.Second,
 	time.Minute,
@@ -87,8 +89,9 @@ func retryManagement(ctx context.Context, attempt func() (*mgmt, error), delays 
 // successful attempt clears the management-unavailable condition.
 //
 // A token command that reads the lock before the run loop republishes it can
-// still edit the file after this reload; that window is the few milliseconds of
-// one successful attempt, once per outage.
+// still edit the file after this reload and have the edit reverted by a later
+// web UI save. The window runs from the reload through the certificate check,
+// the listen and the run loop reaching its Up case, once per outage.
 func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 	// LoadQuiet, not LoadOrDefault: a file missing now (a volume that went away,
 	// the very kind of fault this retry waits out) must not read as Default()

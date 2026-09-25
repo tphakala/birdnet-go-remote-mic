@@ -38,7 +38,7 @@ func TestRenderDefaults(t *testing.T) {
 		"User=remote-mic",
 		"Group=remote-mic",
 		"SupplementaryGroups=audio",
-		"After=network-online.target sound.target local-fs.target remote-fs.target",
+		"After=network-online.target sound.target remote-fs.target",
 		"Wants=network-online.target",
 		"Environment=REMOTEMIC_CONFIG=/etc/remote-mic/config.yaml",
 		"ExecStartPre=-/usr/local/bin/remote-mic serve --check --cert-dir=/var/lib/remote-mic",

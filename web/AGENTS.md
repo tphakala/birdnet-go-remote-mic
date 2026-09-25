@@ -59,7 +59,10 @@ reconcile:
   consume SSE, and announce changes with named `CustomEvent`s (`devices`,
   `status`, `config`, `system`, `available`, `levels`, `connection`,
   `loaderror`, `authrequired`, `authok`, and `change` on the notification
-  store).
+  store). `devices`, `status` and `system` fire only when their data changed
+  (always after a failed read); `config` and `available` fire every poll. A
+  mutation flow must not wait for a `devices`, `status` or `system` event,
+  which a no-op change never sends: repaint from `config` or the awaited call.
 - Views and components subscribe with `addEventListener` and render from
   `store.getState()`. They never keep a second copy of server state or fetch
   on their own; mutations go through store or `api` methods, then the view

@@ -284,14 +284,14 @@ export class AppStore extends EventTarget {
   // error for it.
   //
   // status, devices and system announce only when the applied data changed (a
-  // ChangeTracker each), so an idle appliance does not make every view redo its
-  // work each poll tick. The first applied value always announces, and a failed
-  // read resets its tracker, so a view that swapped in a load error is repaired
-  // by the next success even when the data matches what it showed before. No
-  // listener needs a bare tick: status carries uptimeSeconds, which advances
-  // between polls, so it still announces every tick while the appliance is up,
-  // and the System view's certificate refresh and the uptime displays keep
-  // their cadence.
+  // ChangeTracker each). In practice this saves work on devices: status carries
+  // uptimeSeconds and system carries live CPU, memory and network counters, so
+  // both still announce nearly every tick (which the System view's certificate
+  // refresh and the uptime displays rely on). config and available announce
+  // every poll, because mutation flows repaint from the config event. The first
+  // applied value always announces, and a failed read resets its tracker; the
+  // per-tick status announcement is what repairs a view that swapped in a load
+  // error even when a later read returns data it showed before.
 
   public refreshStatus(): Promise<boolean> {
     return gatedRefresh(

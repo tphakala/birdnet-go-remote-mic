@@ -516,8 +516,9 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// Start the management API before the device-open phase so status and
 	// diagnostics are reachable even if every device fails to open. It reports
 	// zero devices until setDevices publishes the records below. mgmtServing
-	// tracks whether the API actually came up (a cert or listener failure leaves
-	// it false), so a configured-but-dead API is not mistaken for a live
+	// tracks whether the API is serving (a cert or listener failure leaves it
+	// false until the background retry brings the API up, see the Up case in the
+	// run loop), so a configured-but-dead API is not mistaken for a live
 	// diagnostic surface. The combined shutdown defer cancels ctx first (so the
 	// API's shutdown goroutine fires even when run() returns on an error, not a
 	// signal) and then drains in-flight API connections before the process exits.

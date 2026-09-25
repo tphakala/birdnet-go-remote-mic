@@ -122,7 +122,7 @@ export class NotificationStore extends EventTarget {
     applySnapshot(this.state, snap, Date.now());
     this.loadedOnce = true;
     this.loadFailed = false;
-    // Recorded only after a successful apply (as before), so a snapshot that
+    // Recorded only after a successful apply, so a snapshot that
     // throws while folding in never marks this token applied. Nothing awaits
     // between the superseded check above and here, so accept cannot refuse.
     this.loadGate.accept(token);

@@ -90,9 +90,8 @@ func Ensure(certPath, keyPath string, hosts []string) (tls.Certificate, error) {
 // file exists but could not be read. Ensure returns it instead of regenerating,
 // so the operator's pair survives a fault that may be transient or fixable (a
 // permission change, an I/O error, a certificate volume not mounted yet). The
-// appliance does not retry: the management API stays off until the process
-// restarts, and a run that still has devices serving does not restart on its
-// own.
+// management API stays off meanwhile; the appliance retries in the background
+// and brings it up once the file reads again.
 type PinnedReadError struct {
 	Path string
 	Err  error
