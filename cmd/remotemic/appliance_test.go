@@ -28,7 +28,9 @@ const (
 	keyListen     = "listen"
 	keyMgmtListen = "mgmt-listen"
 	keyDiscovery  = "discovery"
+	keyMgmt       = "management"
 	nameScarlett  = "Scarlett"
+	testCfgFile   = "config.yaml"
 )
 
 // blockingSource is a fake audio.Source whose Read blocks until Close, so a

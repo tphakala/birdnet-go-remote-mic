@@ -244,7 +244,14 @@ A name, id or path set through the web UI or the management API is limited to
 128 characters for a device name and a stream path, and 2048 for a device id. A
 config file that exceeds them still loads, so an upgrade never stops an
 appliance from starting, and a value already in the file does not block other
-changes; only a new over-long value is refused.
+changes; only a new over-long value is refused. An mDNS service name is one
+DNS label (63 bytes), and the appliance keeps 6 of those free for the
+` (N)` suffix the responder adds when another host already uses the name, so
+it advertises at most 57 bytes: a longer device name is cut, keeping the
+stream path it gets for a device with several streams (a path that alone is
+longer is cut too). Two devices whose names agree in their first 57 bytes
+then advertise the same name, and a discoverer may see only one of them, so
+keep device names distinct within that length.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
@@ -289,10 +296,16 @@ API listens. When the appliance is stopped, the commands edit the config file
 and the change applies at the next start. An appliance running without its
 management API has no config writer, so the commands edit the file too and the
 running process keeps its current token until it restarts. An API that failed
-to start (for example on a certificate it could not read) is retried in the
-background, 30 seconds after the failure and then less often, up to every 10
-minutes; each attempt applies an edited config file, even one that still
-cannot bring the API up. A command run while
+to start (for example on a certificate it could not read), or whose listener
+stopped while running, is retried in the background, 30 seconds after the
+failure and then less often, up to every 10 minutes (an API that stops again
+within 10 minutes of coming back resumes that backoff rather than starting
+it over); each attempt applies an edited config file, even one that still
+cannot bring the API up, and binds the `management.listen` address and reads
+the certificate from the `cert_dir` that file sets, so fixing a port in use
+or a certificate path in the file needs no restart. A file that sets
+`management.enabled: false` ends the retry. Serve flags (`--mgmt-listen`,
+`--cert-dir`, `--management`) still override the file. A command run while
 the appliance is still starting up, before it has published where its API
 listens, or while one of those background attempts runs, asks you to retry in
 a few seconds. The config is written 0600, so run
@@ -384,7 +397,8 @@ For a local end-to-end check without hardware, use the ALSA loopback
   logged and skipped. While the management API is serving (it is enabled by
   default) the process stays up so its status API keeps reporting every
   skipped device and its open error, even when no device opens at all. With
-  management disabled, or while its API has not come up yet, there is nothing
+  management disabled, or while its API is down (it has not come up yet, or
+  it stopped and is being retried), there is nothing
   to keep alive, so a total open failure exits nonzero and lets a supervisor
   restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404
@@ -397,7 +411,13 @@ For a local end-to-end check without hardware, use the ALSA loopback
   waits for a config save, which also restarts a down device of either kind.
   While the management API is serving the process stays up after the
   last device dies, so the failure stays inspectable over the API; otherwise
-  it exits once every device has stopped.
+  it exits once every device has stopped. The appliance makes that decision
+  when a device's capture ends, so an API that stops (or stops being retried)
+  after the last device already ended leaves the process up, still running
+  the retries described here. If the config file then disables the
+  management API while no device can come back on its own (for example
+  every down device is pinned to a card index), it stays up doing nothing
+  until restarted.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
   automatic retry once it counts as recovered, or process exit), because

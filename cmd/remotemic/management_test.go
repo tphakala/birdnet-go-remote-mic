@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
@@ -176,11 +177,11 @@ func TestProviderDeviceLookup(t *testing.T) {
 
 func TestNilMgmtWaitReturns(t *testing.T) {
 	// A nil handle (management disabled) must make Wait return immediately so
-	// shutdown never blocks on it, and report no retry.
+	// shutdown never blocks on it, and report no serving API.
 	var nilHandle *mgmt
 	nilHandle.Wait()
-	if nilHandle.Up() != nil {
-		t.Error("a nil handle must report no retry")
+	if nilHandle.serving() != nil {
+		t.Error("a nil handle must report no serving API")
 	}
 }
 
@@ -196,12 +197,12 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, filepath.Join(t.TempDir(), "config.yaml"), cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: filepath.Join(t.TempDir(), testCfgFile), cfg: cfg, storeCfg: cfg, prov: newProvider()})
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
-	if h.Up() == nil {
-		t.Error("a certificate failure must leave a background retry running")
+	if h.serving() != nil {
+		t.Error("a certificate failure must leave no serving API")
 	}
 	cancel()
 	h.Wait() // cancelling ctx must stop the retry, so the handle does not block shutdown
@@ -223,24 +224,16 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 
 	// A temp config path, so a stray config.yaml in the package directory cannot
 	// change what the recovery attempt reloads.
-	p := &mgmtParams{cfgPath: filepath.Join(t.TempDir(), "config.yaml"), cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	p := &mgmtParams{cfgPath: filepath.Join(t.TempDir(), testCfgFile), cfg: cfg, storeCfg: cfg, prov: newProvider()}
 	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
-	if h.Up() == nil {
-		t.Fatal("a bind failure must leave a background retry running")
-	}
 	if cerr := occupied.Close(); cerr != nil {
 		t.Fatal(cerr)
 	}
-	select {
-	case ep := <-h.Up():
-		if ep.addr != addr {
-			t.Errorf("recovered on %s, want the configured %s", ep.addr, addr)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background retry did not bind once the port was free")
+	if s := waitServing(t, h, nil); s.addr != addr {
+		t.Errorf("recovered on %s, want the configured %s", s.addr, addr)
 	}
 	cancel()
 	h.Wait()
@@ -253,7 +246,7 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider()})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -271,7 +264,7 @@ func TestStartManagementServesNotifications(t *testing.T) {
 	center := notify.NewCenter()
 	center.Publish(notify.Started("v-test"))
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, center, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider(), center: center})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -279,7 +272,7 @@ func TestStartManagementServesNotifications(t *testing.T) {
 	defer cancel()
 
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.addr+"/api/v1/notifications", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.serving().addr+"/api/v1/notifications", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,11 +330,95 @@ func TestAnnounceInfosCarryAuth(t *testing.T) {
 	}
 }
 
+func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
+	t.Parallel()
+	// The README promises 57 bytes: 63 less the 6 of dnssd's longest rename
+	// suffix, " (101)". Pinned as a literal, since the cases below derive
+	// from the constant.
+	if labelBudget != 57 {
+		t.Fatalf("labelBudget = %d, want 57", labelBudget)
+	}
+	long := strings.Repeat("a", 70)
+	const north = " north"
+	tests := []struct {
+		name, in, suffix, want string
+	}{
+		{"short name unchanged", nameAudioMoth, "", nameAudioMoth},
+		{"name at the budget unchanged", long[:labelBudget], "", long[:labelBudget]},
+		{"ascii cut to the budget", long, "", long[:labelBudget]},
+		// A 2-byte rune straddling the budget is dropped whole.
+		{"2-byte rune never split", long[:labelBudget-1] + "ä" + "b", "", long[:labelBudget-1]},
+		// A 3-byte rune whose first byte sits two bytes before the budget
+		// needs two steps back to its start.
+		{"3-byte rune never split", long[:labelBudget-2] + "€" + "b", "", long[:labelBudget-2]},
+		{"trailing space trimmed", long[:labelBudget-1] + " rear", "", long[:labelBudget-1]},
+		// The device name is cut, never the stream path that keeps a
+		// fanned-out device's streams apart.
+		{"suffix kept, name cut", long, north, long[:labelBudget-len(north)] + north},
+		// A name cut just after a space loses it, so the suffix does not
+		// follow a double space.
+		{"space at the name cut trimmed", long[:labelBudget-len(north)-1] + " rear", north, long[:labelBudget-len(north)-1] + north},
+		{"short name with suffix unchanged", nameAudioMoth, north, nameAudioMoth + north},
+		// A path that alone exceeds the budget leaves no room for the name
+		// and is cut itself.
+		{"over-long suffix cut", nameAudioMoth, " " + long, long[:labelBudget]},
+		// A suffix of exactly the budget also leaves no room for the name.
+		{"suffix at the budget drops the name", nameAudioMoth, " " + long[:labelBudget-1], long[:labelBudget-1]},
+		// A name that fits keeps its spaces.
+		{"fitting name unchanged", " " + nameAudioMoth + " ", "", " " + nameAudioMoth + " "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := instanceLabel(tc.in, tc.suffix)
+			if got != tc.want {
+				t.Errorf("instanceLabel(%q, %q) = %q, want %q", tc.in, tc.suffix, got, tc.want)
+			}
+			// A responder rename appends up to renameRoom bytes, and the
+			// result must still fit one label.
+			if len(got)+renameRoom > dnsLabelMax || !utf8.ValidString(got) {
+				t.Errorf("instanceLabel(%q, %q) = %q: %d bytes leaves no room for a rename, or invalid UTF-8", tc.in, tc.suffix, got, len(got))
+			}
+		})
+	}
+}
+
+// TestAnnounceInfosLongFannedOutName pins the wiring of instanceLabel into
+// announceInfos: a device whose name alone exceeds a label still advertises
+// each of its streams under its own name, within the label budget.
+func TestAnnounceInfosLongFannedOutName(t *testing.T) {
+	t.Parallel()
+	rt := servingRecord(strings.Repeat("n", 100), "/north")
+	south := config.Stream{Path: "/south", Mode: config.ModeOpus, Channels: []int{2}}
+	rt.dev.Streams = append(rt.dev.Streams, south)
+	rt.streams = append(rt.streams, &streamRuntime{stream: south})
+	infos, _, err := announceInfos(testRTSP8554, []*deviceRuntime{rt, servingRecord(strings.Repeat("s", 100), "/solo")}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 3 {
+		t.Fatalf("got %d records, want 3", len(infos))
+	}
+	seen := map[string]bool{}
+	for _, in := range infos {
+		if len(in.Name) > labelBudget {
+			t.Errorf("record %s advertises %d bytes, over the %d-byte budget", in.Path, len(in.Name), labelBudget)
+		}
+		seen[in.Name] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("names %v: want three distinct names", infos)
+	}
+	if !strings.HasSuffix(infos[0].Name, " north") || !strings.HasSuffix(infos[1].Name, " south") {
+		t.Errorf("fanned-out names %q, %q: want each to keep its stream path", infos[0].Name, infos[1].Name)
+	}
+}
+
 func TestStartManagementEnforcesBearer(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken), nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider(), guard: auth.NewGuard(testAuthToken)})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -351,7 +428,7 @@ func TestStartManagementEnforcesBearer(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
 	get := func(path, bearer string) int {
 		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.addr+path, http.NoBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.serving().addr+path, http.NoBody)
 		if err != nil {
 			t.Fatal(err)
 		}

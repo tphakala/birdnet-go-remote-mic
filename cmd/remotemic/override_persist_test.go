@@ -147,7 +147,7 @@ func TestStartManagementSeedsStoreFromPreOverrideConfig(t *testing.T) {
 	storeCfg := fileCfg.Clone()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h, ok := startManagement(ctx, path, &running, &storeCfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(""), nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: path, cfg: &running, storeCfg: &storeCfg, prov: newProvider(), guard: auth.NewGuard("")})
 	if !ok {
 		t.Fatal("management did not start")
 	}
@@ -156,7 +156,7 @@ func TestStartManagementSeedsStoreFromPreOverrideConfig(t *testing.T) {
 
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
 	body := `{"devices":[{"name":"garden","device":"hw:1,0","path":"/garden","mode":"pcm","rate":48000,"channels":[1],"format":"s16"}]}`
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "https://"+h.addr+mgmtserver.BasePath+"/config", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "https://"+h.serving().addr+mgmtserver.BasePath+"/config", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
