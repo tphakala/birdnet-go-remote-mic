@@ -2,7 +2,7 @@
 // connection source and timers, pinning its re-sync wiring: a failed load on
 // connect retries with backoff, a 401 defers to the login flow, an applied load
 // clears a pending backoff retry but not a pending gap re-sync, and the stream
-// going down drops a pending retry. Run with node:test over the compiled output
+// going down drops a pending retry and arms no new one until it is back. Run with node:test over the compiled output
 // (see web:test).
 
 import test from "node:test";
@@ -169,4 +169,26 @@ test("the stream going down drops a pending retry", async () => {
   assert.equal(h.timers.pending().length, 1);
   h.disconnect();
   assert.equal(h.timers.pending().length, 0);
+});
+
+test("a load failing after the stream went down arms no retry until it is back", async () => {
+  const h = harness();
+  h.push(new Error("offline"));
+  h.connect();
+  // The stream goes down (a hidden page past its grace) while the connect-time
+  // load is still in flight; that load then fails.
+  h.disconnect();
+  await settle();
+  assert.equal(h.calls(), 1);
+  assert.equal(h.ns.hasFailed(), true);
+  assert.equal(h.timers.pending().length, 0);
+  // Nothing else asks for the snapshot while the stream is down.
+  await settle();
+  assert.equal(h.calls(), 1);
+  // Connecting again re-syncs at once.
+  h.push(snap([notif({ id: 1 })]));
+  h.connect();
+  await settle();
+  assert.equal(h.calls(), 2);
+  assert.equal(h.ns.hasLoaded(), true);
 });

@@ -309,3 +309,46 @@ test("stopping polling while hidden cancels the stream stop timer", () => {
   assert.equal(timers.pending(HIDDEN_STREAM_GRACE_MS).length, 0);
   assert.equal(h.sseStops(), 1);
 });
+
+// pauseStream starts polling, hides the page, and lets the grace run out, so
+// the stream is stopped for the hidden page.
+function pauseStream(timers: FakeTimers, h: Harness): void {
+  pollable(h);
+  h.store.startPolling(3000);
+  h.emit("connected");
+  h.store.setPageHidden(true);
+  const [stop] = timers.pending(HIDDEN_STREAM_GRACE_MS);
+  assert.ok(stop, "no stop timer armed on hiding");
+  timers.fire(stop);
+  assert.equal(h.sseStops(), 1);
+}
+
+test("startPolling again while hidden restarts the stream with a fresh grace", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  pauseStream(timers, h);
+  // A login or restart calls startPolling while polling is already on.
+  h.store.startPolling(3000);
+  assert.equal(h.sseStarts(), 2);
+  // The page is still hidden, so the restarted stream must stop again after a
+  // grace rather than run for a tab nobody is looking at.
+  const [stop] = timers.pending(HIDDEN_STREAM_GRACE_MS);
+  assert.ok(stop, "no fresh grace armed for the restarted stream");
+  timers.fire(stop);
+  assert.equal(h.sseStops(), 2);
+  h.store.stopPolling();
+});
+
+test("startPolling again ends a hidden-page pause", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  pauseStream(timers, h);
+  h.store.startPolling(3000);
+  assert.equal(h.sseStarts(), 2);
+  // The stream is meant to be up again, so a token swap ending restarts it
+  // (its old-token connection may have been dropped during the swap).
+  h.store.beginTokenSwap();
+  h.store.endTokenSwap();
+  assert.equal(h.sseStarts(), 3);
+  h.store.stopPolling();
+});

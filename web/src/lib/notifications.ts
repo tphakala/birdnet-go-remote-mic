@@ -50,6 +50,10 @@ export class NotificationStore extends EventTarget {
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   // Whether the pending reloadTimer is only a backoff retry (see scheduleReload).
   private reloadIsBackoff = false;
+  // Whether the event stream is up, as the last "connection" event said. While
+  // it is down no re-sync timer is armed (see scheduleReload): the next
+  // connect re-syncs anyway.
+  private connected = false;
   // Load ordering and outcome (see LoadTracker): the Events page reads
   // hasLoaded to tell an empty log from an unfetched one, and hasFailed to
   // offer Retry instead of waiting on "Loading" forever.
@@ -81,10 +85,13 @@ export class NotificationStore extends EventTarget {
     // also performs the first load, since startPolling fires a "connected" event.
     // It goes through resync, so a failed connect-time load retries with the
     // same backoff as any other (a 401 still defers to the login flow). While
-    // the stream is down a pending retry is dropped: the next connect re-syncs
-    // anyway, and a stream stopped for a hidden page must not keep loading.
+    // the stream is down a pending retry is dropped and no new one is armed,
+    // not even by a load already in flight when it went down that then fails:
+    // the next connect re-syncs anyway, and a stream stopped for a hidden page
+    // must not keep loading.
     deps.connection.addEventListener("connection", (e: Event) => {
-      if ((e as CustomEvent<boolean>).detail) void this.resync();
+      this.connected = (e as CustomEvent<boolean>).detail;
+      if (this.connected) void this.resync();
       else this.clearReload();
     });
   }
@@ -228,8 +235,10 @@ export class NotificationStore extends EventTarget {
   // backoff marks resync's retry of a failed load, which an applied load makes
   // moot; a re-sync request absorbed into a pending retry turns it into a
   // plain re-sync, which must still run even if some other load applies first
-  // (that load may predate the events the request is about).
+  // (that load may predate the events the request is about). Nothing is armed
+  // while the stream is down: the connect-time re-sync covers what was missed.
   private scheduleReload(delayMs = GAP_RELOAD_DELAY_MS, backoff = false): void {
+    if (!this.connected) return;
     if (this.reloadTimer !== null) {
       if (!backoff) this.reloadIsBackoff = false;
       return;
