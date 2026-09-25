@@ -240,7 +240,7 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 	for i := range dev.Streams {
 		s := dev.Streams[i]
 		selCount := len(s.Channels)
-		stage, payloadType := buildStage(&s, selCount)
+		stage, payloadType := buildStage(&s)
 		sdpBytes, serr := sdp.WriteSession(pipeline.SDPSpec(&s, dev.Name, rate, selCount))
 		if serr != nil {
 			_ = base.Close()
@@ -813,7 +813,7 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,
 // shared with the stream's downstream frame drops, and its feed's active flag,
-// so the fan-out hands an idle stream empty periods instead of copied audio.
+// so the fan-out sends an idle stream nothing instead of copied audio.
 func fanoutStreams(streams []*streamRuntime) []audio.FanoutStream {
 	out := make([]audio.FanoutStream, len(streams))
 	for i, sr := range streams {
@@ -822,11 +822,11 @@ func fanoutStreams(streams []*streamRuntime) []audio.FanoutStream {
 	return out
 }
 
-// buildStage builds one stream's pipeline stage and its RTP payload type.
-// channels is the stream's selected channel count, used for the L16 frame math.
-func buildStage(s *config.Stream, channels int) (stage pipeline.Stage, payloadType int) {
+// buildStage builds one stream's pipeline stage and its RTP payload type. The
+// stage takes the stream's channel count from its selecting source.
+func buildStage(s *config.Stream) (stage pipeline.Stage, payloadType int) {
 	if s.Mode == config.ModeOpus {
 		return pipeline.NewOpus(s.Opus), pipeline.PayloadType(s.Mode)
 	}
-	return pipeline.NewPCM(channels), pipeline.PayloadType(s.Mode)
+	return pipeline.NewPCM(), pipeline.PayloadType(s.Mode)
 }

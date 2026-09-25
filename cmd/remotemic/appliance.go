@@ -104,6 +104,11 @@ type appliance struct {
 	// announceGen counts advertisement rebuilds, so a test can assert that a
 	// reconcile did (or did not) rebuild the mDNS set without touching dnssd.
 	announceGen int
+	// advertised holds the names of the devices in the current advertisement
+	// (empty while discovery is off or nothing serves), so a restart waiting
+	// for a client to prove its encoder can tell whether a rebuild during its
+	// outage dropped it (see attemptRetry).
+	advertised map[string]bool
 
 	// open builds and starts one device's runtime, resolving the hardware open
 	// channel count per attempt (see openDeviceRetry). It is a field so tests can
@@ -165,6 +170,7 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		devices:    map[string]*deviceRuntime{},
 		downReason: map[string]string{},
 		capsCache:  map[string]deviceCaps{},
+		advertised: map[string]bool{},
 		retries:    map[string]*retryState{},
 		retryDue:   make(chan struct{}, 1),
 		pumpDone:   make(chan pumpResult, pumpBacklog),
@@ -395,11 +401,13 @@ func (a *appliance) runningParams() map[string]config.Device {
 // goroutine, locked to its OS thread so the capture read is not descheduled
 // mid-period; each stream's pipeline runs on its own goroutine so N encodes fan
 // across cores and a slow encoder cannot blow the capture period budget. Each
-// stage is gated on its own stream feed's active flag, so it encodes only while
-// a client plays that stream and otherwise just drains its periods (the fan-out
-// never backs up). The fan-out is gated the same way: it hands an idle stream an
-// empty period instead of a copy, so an idle appliance pays for the capture read
-// but not for copying, channel extraction, or encoding. When the capture ends
+// stage is gated on its own stream feed's play session, so it encodes only
+// while a client plays that stream (an Opus stage starts each client from a
+// fresh encoder), and discards unencoded any period it reads with no client.
+// The fan-out is gated on the feed's active flag: it sends an idle stream
+// nothing, so an idle stage blocks in its read and the fan-out never backs up.
+// An idle appliance thus pays for the capture read but not for copying, channel
+// extraction, encoding, or waking the idle stages. When the capture ends
 // the fan-out closes the stream feeds, so every stage goroutine returns, and
 // pump waits for them before reporting so no stage outlives the device's
 // teardown. When a stage (an encode fault) ended the device, the result carries
@@ -416,7 +424,7 @@ func (a *appliance) pump(rt *deviceRuntime) {
 	for i := range rt.streams {
 		sr := rt.streams[i]
 		wg.Go(func() {
-			err := sr.stage.Run(sr.src, sr.frames.Active, func(f pipeline.Frame) error {
+			err := sr.stage.Run(sr.src, sr.frames.Session, func(f pipeline.Frame) error {
 				sr.noteEncoded(&rt.awaitEncode, a.signalRetryDue)
 				if !sr.frames.Push(f) {
 					drops := sr.dropped.Add(1)
@@ -635,10 +643,12 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 }
 
 // startDevice opens a device via openAndStart at startup, on a config save, or
-// on a hardware change, stores its runtime, and clears the device's down condition when a
-// device that was down is now serving. The open-failure onset is emitted inside
-// openAndStart. A healthy param-change restart has no active down condition, so
-// it clears nothing, and a first start with no prior condition is silent too.
+// on a hardware change (except a device waiting to prove an encoder after an
+// encode fault, see retryDown), stores its runtime, and clears the device's
+// down condition when a device that was down is now serving. The open-failure
+// onset is emitted inside openAndStart. A healthy param-change restart has no
+// active down condition, so it clears nothing, and a first start with no prior
+// condition is silent too.
 //
 // None of these is an unattended retry, so it starts the device's backoff over:
 // a failure here schedules the first, shortest retry when scheduleRetry accepts
@@ -906,8 +916,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// onset/clear condition and climbing announceGen forever. Retry it on a
 			// backoff instead (scheduleRetry), which keeps the condition active across
 			// attempts and clears it once a retried restart has stayed up for
-			// retrySettle (a config save or hardware change clears it at once). A card-index
-			// entry is not retried unattended, so it waits for a config save.
+			// retrySettle. A config save clears it at once, and so does a hardware
+			// change unless the outage had an encode fault (see retryDown). A
+			// card-index entry is not retried unattended, so it waits for a config
+			// save.
 			restart := restartHint(&res.rt.dev)
 			if a.nextFailureLogged(name) {
 				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
@@ -938,6 +950,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 // name a different device than it did when the entry went down, and an
 // unattended restart could open the wrong microphone (the #62 swap). Such an
 // entry is restarted only by an explicit config save.
+//
+// A device down after an encode fault is restarted as an unattended retry
+// attempt (attemptRetry), not by startDevice: the hotplug is unrelated to its
+// fault, so it keeps its down condition until each faulted stream has encoded.
 func (a *appliance) retryDown() {
 	a.refreshHardware(&a.cfg)
 	started := false
@@ -955,7 +971,20 @@ func (a *appliance) retryDown() {
 		if !isDown(rt.currentState()) {
 			continue
 		}
-		a.startDevice(&d)
+		if st := a.retries[d.Name]; st != nil && len(st.encodePaths) > 0 {
+			// A hardware change proves nothing about an encoder that faulted: restart
+			// it as an unattended attempt, which keeps its condition until each
+			// faulted stream has encoded, rather than clearing it at once and
+			// faulting again at the next PLAY. Its pending backoff is consumed by
+			// this attempt. Its reannounce result is not needed: any device that
+			// serves after this loop triggers the rebuild below. (The proof covers
+			// a hotplug of some other device; a disconnect of this device drops its
+			// retry state, so its own replug restarts it through startDevice.)
+			st.next = time.Time{}
+			a.attemptRetry(&d, st)
+		} else {
+			a.startDevice(&d)
+		}
 		if a.devices[d.Name].currentState() == mgmtserver.StateServing {
 			started = true
 		}
@@ -966,17 +995,21 @@ func (a *appliance) retryDown() {
 	if started {
 		a.restartAnnounce()
 	}
+	a.armRetryTimer()
 }
 
 // restartAnnounce cancels the current mDNS advertisement and starts a fresh one
 // for the serving set. dnssd cannot retire a single service, so the whole
 // advertisement is rebuilt whenever the serving set, the discovery flag, or the
-// auth hint (the TXT auth=token/auth=none record) changes.
+// auth hint (the TXT auth=token/auth=none record) changes, and when a restart
+// waiting to prove an encoder is missing from it (see attemptRetry). It records
+// the names it advertises in a.advertised.
 func (a *appliance) restartAnnounce() {
 	if a.announceCancel != nil {
 		a.announceCancel()
 		a.announceCancel = nil
 	}
+	clear(a.advertised)
 	if !a.prov.discoveryEnabled() {
 		return
 	}
@@ -984,6 +1017,7 @@ func (a *appliance) restartAnnounce() {
 	for i := range a.cfg.Devices {
 		if rt, ok := a.devices[a.cfg.Devices[i].Name]; ok && rt.currentState() == mgmtserver.StateServing {
 			serving = append(serving, rt)
+			a.advertised[rt.dev.Name] = true
 		}
 	}
 	if len(serving) == 0 {

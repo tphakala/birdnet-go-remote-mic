@@ -84,10 +84,9 @@ func TestSelectingSourceExtractsChannels(t *testing.T) {
 	}
 }
 
-// TestSelectingSourceEmptyPeriod pins the contract the fan-out's idle gate
-// relies on: an idle stream's empty period (nil buffer, zero frames) passes
-// through a channel subset as an empty period, not an error that would fail
-// the stream's stage.
+// TestSelectingSourceEmptyPeriod pins that an empty period (nil buffer, zero
+// frames) passes through a channel subset as an empty period, not an error
+// that would fail the stream's stage.
 func TestSelectingSourceEmptyPeriod(t *testing.T) {
 	t.Parallel()
 	src := NewSelectingSource(NewFakeSource(48000, 4, [][]byte{nil}), 4, []int{1, 3})

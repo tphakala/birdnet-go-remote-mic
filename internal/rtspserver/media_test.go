@@ -111,7 +111,7 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	// PLAY opens the encode gate.
 	stageErr := make(chan error, 1)
 	go func() {
-		stageErr <- pipeline.NewPCM(1).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
+		stageErr <- pipeline.NewPCM().Run(fakeSrc, frames.Session, func(f pipeline.Frame) error {
 			frames.Push(f)
 			return nil
 		})
@@ -208,7 +208,7 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	// is gated on the feed exactly as the appliance wires it.
 	stageErr := make(chan error, 1)
 	go func() {
-		stageErr <- pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, frames.Active, func(f pipeline.Frame) error {
+		stageErr <- pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(fakeSrc, frames.Session, func(f pipeline.Frame) error {
 			frames.Push(f)
 			return nil
 		})

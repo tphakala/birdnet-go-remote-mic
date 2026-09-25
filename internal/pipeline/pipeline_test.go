@@ -31,7 +31,7 @@ func TestPCMStageRoundTrip(t *testing.T) {
 
 	var got []byte
 	var totalDur uint32
-	err := pipeline.NewPCM(ch).Run(src, nil, func(f pipeline.Frame) error {
+	err := pipeline.NewPCM().Run(src, nil, func(f pipeline.Frame) error {
 		le := make([]byte, len(f.Payload))
 		for i := 0; i+1 < len(f.Payload); i += 2 {
 			binary.LittleEndian.PutUint16(le[i:i+2], binary.BigEndian.Uint16(f.Payload[i:i+2]))
@@ -60,7 +60,7 @@ func TestPCMStagePayloadCap(t *testing.T) {
 	src := audio.NewFakeSource(rate, ch, [][]byte{period})
 
 	count := 0
-	err := pipeline.NewPCM(ch).Run(src, nil, func(f pipeline.Frame) error {
+	err := pipeline.NewPCM().Run(src, nil, func(f pipeline.Frame) error {
 		count++
 		if len(f.Payload)%frameBytes != 0 {
 			t.Errorf("payload len %d not frame-aligned", len(f.Payload))
@@ -204,21 +204,42 @@ func TestOpusStageRejectsTooManyChannels(t *testing.T) {
 
 const opusFrameSamplesTest = 960
 
-// gateSeq returns an active gate that answers from pattern, one entry per call,
-// and a pointer to the call count. A call past the pattern fails the test: the
-// Stage contract is exactly one gate call per period read.
-func gateSeq(t *testing.T, pattern ...bool) (active func() bool, calls *int) {
+// gateStep is one gate answer: whether a client plays, and its session.
+type gateStep struct {
+	on      bool
+	session uint64
+}
+
+// gateSteps returns a gate that answers from steps, one entry per call, and a
+// pointer to the call count. A call past the steps fails the test: the Stage
+// contract is exactly one gate call per period read.
+func gateSteps(t *testing.T, steps ...gateStep) (gate pipeline.Gate, calls *int) {
 	t.Helper()
 	n := 0
-	return func() bool {
-		if n >= len(pattern) {
-			t.Errorf("active gate called %d times, want one call per period (%d)", n+1, len(pattern))
-			return false
+	return func() (bool, uint64) {
+		if n >= len(steps) {
+			t.Errorf("gate called %d times, want one call per period (%d)", n+1, len(steps))
+			return false, 0
 		}
-		v := pattern[n]
+		s := steps[n]
 		n++
-		return v
+		return s.on, s.session
 	}, &n
+}
+
+// gateSeq returns a gate that answers from pattern as a real feed would: each
+// run of true is one play session, numbered from 1 as ChanSource numbers them.
+func gateSeq(t *testing.T, pattern ...bool) (gate pipeline.Gate, calls *int) {
+	t.Helper()
+	steps := make([]gateStep, len(pattern))
+	var session uint64
+	for i, on := range pattern {
+		if on && (i == 0 || !pattern[i-1]) {
+			session++
+		}
+		steps[i] = gateStep{on: on, session: session}
+	}
+	return gateSteps(t, steps...)
 }
 
 // tonePCM returns the given number of frames of interleaved S16LE PCM at 48
@@ -276,10 +297,10 @@ func referenceOpus(t *testing.T, cfg config.Opus, pcm []byte, ch int) [][]byte {
 }
 
 // runOpus runs an Opus stage over periods and returns copies of the payloads.
-func runOpus(t *testing.T, cfg config.Opus, periods [][]byte, ch int, active func() bool) [][]byte {
+func runOpus(t *testing.T, cfg config.Opus, periods [][]byte, ch int, gate pipeline.Gate) [][]byte {
 	t.Helper()
 	var out [][]byte
-	err := pipeline.NewOpus(cfg).Run(audio.NewFakeSource(48000, ch, periods), active, func(f pipeline.Frame) error {
+	err := pipeline.NewOpus(cfg).Run(audio.NewFakeSource(48000, ch, periods), gate, func(f pipeline.Frame) error {
 		out = append(out, append([]byte(nil), f.Payload...))
 		return nil
 	})
@@ -326,11 +347,11 @@ func TestOpusStageStartsIdleThenPlays(t *testing.T) {
 	const ch, frames = 2, 1024
 	cfg := config.Opus{Bitrate: 96000}
 	periods := splitPeriods(tonePCM(8*frames, ch), frames, ch)
-	active, calls := gateSeq(t, false, false, true, true, true, true, true, true)
+	gate, calls := gateSeq(t, false, false, true, true, true, true, true, true)
 
-	got := runOpus(t, cfg, periods, ch, active)
+	got := runOpus(t, cfg, periods, ch, gate)
 	if *calls != len(periods) {
-		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+		t.Errorf("gate called %d times, want %d (once per period)", *calls, len(periods))
 	}
 	var played []byte
 	for _, p := range periods[2:] {
@@ -361,10 +382,10 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 		}
 		periods[k] = b
 	}
-	active, calls := gateSeq(t, false, true, false, true)
+	gate, calls := gateSeq(t, false, true, false, true)
 
 	var got []byte
-	err := pipeline.NewPCM(ch).Run(audio.NewFakeSource(rate, ch, periods), active, func(f pipeline.Frame) error {
+	err := pipeline.NewPCM().Run(audio.NewFakeSource(rate, ch, periods), gate, func(f pipeline.Frame) error {
 		for i := 0; i+1 < len(f.Payload); i += 2 {
 			got = binary.LittleEndian.AppendUint16(got, binary.BigEndian.Uint16(f.Payload[i:i+2]))
 		}
@@ -374,7 +395,7 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if *calls != len(periods) {
-		t.Errorf("active gate called %d times, want %d (once per period)", *calls, len(periods))
+		t.Errorf("gate called %d times, want %d (once per period)", *calls, len(periods))
 	}
 	want := append(append([]byte{}, periods[1]...), periods[3]...)
 	if !bytes.Equal(got, want) {
@@ -388,9 +409,9 @@ func TestPCMStageSkipsInactivePeriods(t *testing.T) {
 func TestOpusStageIdleEmitsNothing(t *testing.T) {
 	t.Parallel()
 	periods := splitPeriods(tonePCM(8*480, 1), 480, 1)
-	active, calls := gateSeq(t, false, false, false, false, false, false, false, false)
+	gate, calls := gateSeq(t, false, false, false, false, false, false, false, false)
 	frames := 0
-	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewFakeSource(48000, 1, periods), active, func(pipeline.Frame) error {
+	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewFakeSource(48000, 1, periods), gate, func(pipeline.Frame) error {
 		frames++
 		return nil
 	})
@@ -401,14 +422,15 @@ func TestOpusStageIdleEmitsNothing(t *testing.T) {
 		t.Errorf("emitted %d frames with the gate closed, want 0", frames)
 	}
 	if *calls != len(periods) {
-		t.Errorf("active gate called %d times, want %d (every period drained)", *calls, len(periods))
+		t.Errorf("gate called %d times, want %d (every period drained)", *calls, len(periods))
 	}
 }
 
 // TestStagesIgnoreEmptyPeriodWhileActive pins what an active stage does with
-// the empty period the fan-out hands an idle stream, which an active stage sees
-// when a client starts playing between the fan-out's gate and its own: nothing.
-// Each stage's output must equal its output for the real periods alone.
+// an empty period (a zero-frame read): nothing. The fan-out sends none, but a
+// Source may still return one, and a stage must not treat it as a frame
+// boundary. Each stage's output must equal its output for the real
+// periods alone.
 func TestStagesIgnoreEmptyPeriodWhileActive(t *testing.T) {
 	t.Parallel()
 	t.Run("pcm", func(t *testing.T) {
@@ -418,7 +440,7 @@ func TestStagesIgnoreEmptyPeriodWhileActive(t *testing.T) {
 		periods := [][]byte{audioPeriods[0], nil, audioPeriods[1]}
 		var got []byte
 		var dur uint32
-		err := pipeline.NewPCM(ch).Run(audio.NewFakeSource(rate, ch, periods), nil, func(f pipeline.Frame) error {
+		err := pipeline.NewPCM().Run(audio.NewFakeSource(rate, ch, periods), nil, func(f pipeline.Frame) error {
 			if len(f.Payload) == 0 || f.Duration == 0 {
 				t.Errorf("got an empty frame (%d bytes, duration %d), want none", len(f.Payload), f.Duration)
 			}
@@ -477,8 +499,8 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 	pattern := []bool{true, true, true, false, false, true, true, true, true, true, true}
 	cfg := config.Opus{Bitrate: 64000}
 
-	active, _ := gateSeq(t, pattern...)
-	got := runOpus(t, cfg, periods, 1, active)
+	gate, _ := gateSeq(t, pattern...)
+	got := runOpus(t, cfg, periods, 1, gate)
 	if len(got) != 4 {
 		t.Fatalf("emitted %d frames, want 4 (1 before the gap, 3 after)", len(got))
 	}
@@ -493,6 +515,50 @@ func TestOpusStageResumesWithFreshEncoder(t *testing.T) {
 	for i, w := range want {
 		if !bytes.Equal(got[1+i], w) {
 			t.Errorf("frame %d after resume differs from a fresh encoder's frame %d", i+1, i+1)
+		}
+	}
+}
+
+// TestOpusStageNewSessionWithoutIdleGetsFreshEncoder pins the splice case: a
+// teardown and the next client's PLAY can both land between two period reads,
+// so the stage never sees the stream idle, only the session change. The new
+// client must still get exactly what a freshly built encoder emits for the
+// audio from its first period, with neither the old client's encoder history
+// nor its half-filled frame.
+func TestOpusStageNewSessionWithoutIdleGetsFreshEncoder(t *testing.T) {
+	t.Parallel()
+	// 480-sample periods: two make one 960-sample frame. Periods 0-2 play in
+	// session 1 (one full frame plus a half frame left in the accumulator) and
+	// periods 3-8 in session 2 (three frames).
+	periods := splitPeriods(tonePCM(9*480, 1), 480, 1)
+	steps := make([]gateStep, len(periods))
+	for i := range steps {
+		steps[i] = gateStep{on: true, session: 1}
+		if i >= 3 {
+			steps[i].session = 2
+		}
+	}
+	cfg := config.Opus{Bitrate: 64000}
+
+	gate, calls := gateSteps(t, steps...)
+	got := runOpus(t, cfg, periods, 1, gate)
+	if *calls != len(periods) {
+		t.Errorf("gate called %d times, want %d (once per period)", *calls, len(periods))
+	}
+	if len(got) != 4 {
+		t.Fatalf("emitted %d frames, want 4 (1 in the first session, 3 in the second)", len(got))
+	}
+	var second []byte
+	for _, p := range periods[3:] {
+		second = append(second, p...)
+	}
+	want := referenceOpus(t, cfg, second, 1)
+	if len(want) != 3 {
+		t.Fatalf("reference run emitted %d frames, want 3", len(want))
+	}
+	for i, w := range want {
+		if !bytes.Equal(got[1+i], w) {
+			t.Errorf("frame %d of the second session differs from a fresh encoder's frame %d", i+1, i+1)
 		}
 	}
 }

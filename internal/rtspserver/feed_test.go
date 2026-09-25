@@ -3,6 +3,8 @@ package rtspserver
 import (
 	"context"
 	"errors"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,5 +79,62 @@ func TestCloseWinsOverBufferedFrame(t *testing.T) {
 	defer cancel()
 	if _, err := c.Next(ctx); !errors.Is(err, ErrSourceClosed) {
 		t.Fatalf("Next after Close = %v, want ErrSourceClosed even with a frame queued", err)
+	}
+}
+
+// TestSessionAdvancesOnEveryActivation pins the play session the pipeline stage
+// keys its encoder reset on: each SetActive(true) starts a new session, even
+// one that follows a teardown so closely that no stage saw the stream idle,
+// and a deactivation keeps the session number, so a stage reading a period
+// after a teardown still sees the session it last encoded for.
+func TestSessionAdvancesOnEveryActivation(t *testing.T) {
+	t.Parallel()
+	c := NewChanSource(4)
+	if on, s := c.Session(); on || s != 0 {
+		t.Fatalf("new source: Session() = (%v, %d), want (false, 0)", on, s)
+	}
+	c.SetActive(true)
+	on, first := c.Session()
+	if !on || first == 0 {
+		t.Fatalf("after the first PLAY: Session() = (%v, %d), want (true, nonzero)", on, first)
+	}
+	c.SetActive(false)
+	if on, s := c.Session(); on || s != first {
+		t.Fatalf("after teardown: Session() = (%v, %d), want (false, %d)", on, s, first)
+	}
+	c.SetActive(true)
+	on, second := c.Session()
+	if !on || second == first {
+		t.Fatalf("after the second PLAY: Session() = (%v, %d), want (true, not %d)", on, second, first)
+	}
+	if c.Active() != on {
+		t.Errorf("Active() = %v, want it to match Session()'s %v", c.Active(), on)
+	}
+}
+
+// TestSetActiveConcurrentKeepsEverySession pins that SetActive is safe to call
+// from several goroutines: every activation's session bump survives, and a
+// deactivation never writes back a stale session or flag. A load-then-store
+// update would lose bumps under this contention, so a later client could be
+// handed an old session and keep the previous client's encoder state.
+func TestSetActiveConcurrentKeepsEverySession(t *testing.T) {
+	t.Parallel()
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs two or more procs: on one, the workers almost never preempt each other mid-update, so a lost bump would not show")
+	}
+	const workers, rounds = 4, 20000
+	c := NewChanSource(1)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for range rounds {
+				c.SetActive(true)
+				c.SetActive(false)
+			}
+		})
+	}
+	wg.Wait()
+	if on, s := c.Session(); on || s != workers*rounds {
+		t.Errorf("after %d activations: Session() = (%v, %d), want (false, %d)", workers*rounds, on, s, workers*rounds)
 	}
 }

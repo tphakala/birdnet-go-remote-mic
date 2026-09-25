@@ -31,7 +31,7 @@ const (
 // false encodes one frame and keeps running, so a later play can fault it.
 type scriptedStage struct{ play chan bool }
 
-func (s scriptedStage) Run(src audio.Source, _ func() bool, emit func(pipeline.Frame) error) error {
+func (s scriptedStage) Run(src audio.Source, _ pipeline.Gate, emit func(pipeline.Frame) error) error {
 	ended := make(chan struct{})
 	go func() {
 		defer close(ended)
@@ -282,6 +282,90 @@ func TestRetryEncodeFaultNeedsFaultedStreamToEncode(t *testing.T) {
 		runFor(t, app, 2*time.Second)
 		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
 			t.Errorf("down clears = %d, want 1 once the faulted stream has encoded", got)
+		}
+	})
+}
+
+// TestRetryEncodeFaultSurvivesHardwareChange pins that a hotplug does not
+// bypass the encode proof. A hardware change restarts every down device (but a
+// card-index entry), and a config-save style restart clears the condition at
+// once; an encode-faulted device restarted that way would clear on an
+// unrelated hotplug and fault again at the next PLAY. It must instead be
+// restarted as a retry attempt, keeping its condition until the faulted stream
+// encodes.
+func TestRetryEncodeFaultSurvivesHardwareChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
+
+		play(pathMoth) <- true
+		// Let the fault land, but not the first retry.
+		runFor(t, app, backoffDelay(1)/2)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateFailed {
+			t.Fatalf("moth state = %s, want failed after the encode fault", s)
+		}
+
+		// Some other device is plugged in: the hardware change restarts moth.
+		app.retryDown()
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the hardware change", s)
+		}
+		runFor(t, app, 5*time.Minute)
+		if got := countDown(t, app, "moth", notify.KindClear); got != 0 {
+			t.Fatalf("down clears = %d, want 0: a hotplug proves nothing about the encoder", got)
+		}
+
+		play(pathMoth) <- false
+		runFor(t, app, retrySettle+time.Second)
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Errorf("down clears = %d, want 1 once the faulted stream has encoded", got)
+		}
+	})
+}
+
+// TestRetryEncodeWaitReannouncesDroppedDevice pins discovery for a restart that
+// waits for an encode. The wait has no deadline and needs a client to play the
+// stream, so a device that another device's rebuild dropped from the mDNS
+// advertisement during its outage must be advertised again when it serves, or
+// a client that relies on discovery never finds it and the wait never ends. A
+// device still in the advertisement costs no rebuild.
+func TestRetryEncodeWaitReannouncesDroppedDevice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
+
+		play(pathMoth) <- true
+		runFor(t, app, backoffDelay(1)/2)
+		// Another device's recovery rebuilds the advertisement while moth is down.
+		app.restartAnnounce()
+		if app.advertised["moth"] {
+			t.Fatal("a rebuild while moth is down still advertises it")
+		}
+		gen := app.announceGen
+
+		runFor(t, app, backoffDelay(1))
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the retry", s)
+		}
+		if got := app.announceGen - gen; got != 1 {
+			t.Errorf("announcement rebuilds = %d, want 1 when the restart serves", got)
+		}
+		if !app.advertised["moth"] {
+			t.Error("moth is not advertised while it waits for a client to encode")
+		}
+
+		// A fault while still advertised: the next restart needs no rebuild.
+		play(pathMoth) <- true
+		runFor(t, app, 2*time.Minute)
+		if s := app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("moth state = %s, want serving after the second retry", s)
+		}
+		if got := app.announceGen - gen; got != 1 {
+			t.Errorf("announcement rebuilds = %d, want still 1: moth never left the advertisement", got)
 		}
 	})
 }
