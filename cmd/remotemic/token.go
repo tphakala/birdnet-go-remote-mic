@@ -502,16 +502,17 @@ func absPath(cfgPath string) string {
 // file is created or touched. A path that cannot be examined is left to the
 // command itself to report.
 //
-// A parent directory that is sticky or group- or world-writable (such as /tmp)
-// is shared between accounts, so its owner is no proxy for the appliance
-// account and the fallback does not refuse there.
+// A parent directory that is sticky or world-writable (such as /tmp) is shared
+// between accounts, so its owner is no proxy for the appliance account and the
+// fallback does not refuse there. A group-writable one is not exempt: under a
+// umask of 002 an ordinary private directory is group-writable.
 func checkOwner(cfgPath, command string) error {
 	what := absPath(cfgPath)
 	fi, err := os.Stat(cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
 		dir := filepath.Dir(what)
 		fi, err = os.Stat(dir) // follows symlinks, so this is the resolved directory
-		if err == nil && (fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o022 != 0) {
+		if err == nil && (fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o002 != 0) {
 			return nil
 		}
 		what = "the directory " + dir + " (where " + filepath.Base(what) + " will be created)"

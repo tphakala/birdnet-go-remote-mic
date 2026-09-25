@@ -929,9 +929,9 @@ func TestTokenWriteOwnerMatchProceeds(t *testing.T) {
 // ahead and creates it.
 func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
 	path := tempConfig(t)
-	// A private directory: t.TempDir honors the umask, and a group-writable one
-	// counts as shared, which the owner check deliberately does not refuse.
-	if err := os.Chmod(filepath.Dir(path), 0o755); err != nil {
+	// A group-writable directory, as a umask of 002 makes an ordinary private
+	// one: it is still refused (only sticky or world-writable ones are shared).
+	if err := os.Chmod(filepath.Dir(path), 0o775); err != nil {
 		t.Fatal(err)
 	}
 	stubEUID(t, os.Geteuid()+1)
@@ -955,11 +955,11 @@ func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
 }
 
 // TestTokenWriteMissingConfigSharedDirProceeds asserts that with no config yet
-// in a shared directory (sticky or group/world-writable, such as /tmp), the
+// in a shared directory (sticky or world-writable, such as /tmp), the
 // directory's owner is not taken as the appliance account, so another account's
 // command goes ahead and creates the config.
 func TestTokenWriteMissingConfigSharedDirProceeds(t *testing.T) {
-	for _, mode := range []os.FileMode{0o777 | os.ModeSticky, 0o700 | os.ModeSticky, 0o770, 0o707} {
+	for _, mode := range []os.FileMode{0o777 | os.ModeSticky, 0o700 | os.ModeSticky, 0o707} {
 		t.Run(mode.String(), func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.Chmod(dir, mode); err != nil {

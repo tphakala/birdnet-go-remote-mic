@@ -328,9 +328,9 @@ any other account, root included, because a lock file or config written by
 another account is one the appliance's own account can no longer open; the
 error names the owning account and the command to run instead. When the config
 does not exist yet, the check uses the owner of the directory that will hold
-it, except in a shared directory (sticky, or group- or world-writable, such as
-`/tmp`), where that owner says nothing about the appliance's account and the
-command is not refused.
+it, except in a shared directory (sticky or world-writable, such as `/tmp`),
+where that owner says nothing about the appliance's account and the command is
+not refused.
 
 You can also set it by hand:
 
