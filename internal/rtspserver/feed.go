@@ -98,7 +98,7 @@ func (c *ChanSource) Session() (active bool, session uint64) {
 // from a previous session, then starts a new play session.
 func (c *ChanSource) SetActive(active bool) {
 	if !active {
-		c.update(func(s uint64) uint64 { return s &^ sessionActive })
+		c.state.And(^uint64(sessionActive))
 		return
 	}
 	for {
