@@ -3,6 +3,7 @@ package rtspserver
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -118,6 +119,9 @@ func TestSessionAdvancesOnEveryActivation(t *testing.T) {
 // handed an old session and keep the previous client's encoder state.
 func TestSetActiveConcurrentKeepsEverySession(t *testing.T) {
 	t.Parallel()
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs two or more procs: on one, the workers almost never preempt each other mid-update, so a lost bump would not show")
+	}
 	const workers, rounds = 4, 20000
 	c := NewChanSource(1)
 	var wg sync.WaitGroup

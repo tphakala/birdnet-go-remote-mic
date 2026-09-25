@@ -415,11 +415,13 @@ For a local end-to-end check without hardware, use the ALSA loopback
   worked, and the device has then kept serving for 30 seconds; until then it
   stays raised while the device serves. Its RTSP path serves again as soon as
   the restart opens it. A config save restarts it at once, clears the
-  notification as soon as it opens, and starts the delays over. A hardware
-  change (a device plugged or unplugged) restarts it at once too, but after an
-  encoder error the restart still has to prove that stream's encoder before
-  the notification clears, since the hotplug does not fix the encoder. A
-  card-index device is not retried this way either.
+  notification as soon as it opens, and starts the delays over. Plugging or
+  unplugging another device restarts it at once too, but after an encoder
+  error that restart still has to prove the stream's encoder before the
+  notification clears, since the hotplug does not fix the encoder. Unplugging
+  and replugging the failed device itself ends that wait: it restarts on the
+  replug and the notification clears as soon as it opens. A card-index device
+  is not retried this way either.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous

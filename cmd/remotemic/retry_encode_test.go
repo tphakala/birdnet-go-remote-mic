@@ -287,11 +287,12 @@ func TestRetryEncodeFaultNeedsFaultedStreamToEncode(t *testing.T) {
 }
 
 // TestRetryEncodeFaultSurvivesHardwareChange pins that a hotplug does not
-// bypass the encode proof. A hardware change restarts every down device, and a
-// config-save style restart clears the condition at once; an encode-faulted
-// device restarted that way would clear on an unrelated hotplug and fault again
-// at the next PLAY. It must instead be restarted as a retry attempt, keeping
-// its condition until the faulted stream encodes.
+// bypass the encode proof. A hardware change restarts every down device (but a
+// card-index entry), and a config-save style restart clears the condition at
+// once; an encode-faulted device restarted that way would clear on an
+// unrelated hotplug and fault again at the next PLAY. It must instead be
+// restarted as a retry attempt, keeping its condition until the faulted stream
+// encodes.
 func TestRetryEncodeFaultSurvivesHardwareChange(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app, log, cancel := newTestAppliance(t)

@@ -917,7 +917,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// backoff instead (scheduleRetry), which keeps the condition active across
 			// attempts and clears it once a retried restart has stayed up for
 			// retrySettle. A config save clears it at once, and so does a hardware
-			// change unless the fault was an encode fault (see retryDown). A
+			// change unless the outage had an encode fault (see retryDown). A
 			// card-index entry is not retried unattended, so it waits for a config
 			// save.
 			restart := restartHint(&res.rt.dev)

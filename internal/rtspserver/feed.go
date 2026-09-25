@@ -15,8 +15,9 @@ var ErrSourceClosed = errors.New("rtspserver: frame source closed")
 // ChanSource is a bounded FrameSource: the pipeline Pushes frames and the
 // playing session's writer Nexts them. Delivery is gated on an active flag so
 // no audio is buffered (or copied) while no client is playing; activation
-// drains leftovers so a new client never receives stale audio. Push copies the
-// payload so the pipeline's buffer reuse is safe.
+// drains the frames left queued for the previous client (pipeline.Stage names
+// the edges this does not cover). Push copies the payload so the pipeline's
+// buffer reuse is safe.
 type ChanSource struct {
 	ch        chan pipeline.Frame
 	done      chan struct{}
