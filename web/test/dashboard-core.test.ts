@@ -7,7 +7,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../src/lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../src/lib/dashboard-core.js";
+
+test("bannerIsError: a failed device is an error unless it was unplugged", () => {
+  assert.equal(bannerIsError("failed", "failed"), true);
+  assert.equal(bannerIsError("failed", undefined), true);
+  assert.equal(bannerIsError("failed", "disconnected"), false);
+  assert.equal(bannerIsError("skipped", "not-connected"), false);
+  assert.equal(bannerIsError("skipped", "open-failed"), false);
+});
 
 test("downCauseTitle names each cause as its notification does and falls back", () => {
   assert.equal(downCauseTitle("not-connected"), "Device not connected");

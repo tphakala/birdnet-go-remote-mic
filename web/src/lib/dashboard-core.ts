@@ -43,6 +43,13 @@ export function captureFormatLabel(token: string): string {
   }
 }
 
+// bannerIsError reports whether a non-serving device's banner shows the error
+// icon rather than the warning one. A failed device does, except one that was
+// unplugged: it is waiting to be reconnected, not broken.
+export function bannerIsError(state: string, cause: string | undefined): boolean {
+  return state === "failed" && cause !== "disconnected";
+}
+
 // downCauseTitle is the banner title for a device that is not serving, matching
 // the title of the notification the appliance raises for the same cause. An
 // absent or unknown cause (an older appliance, or a class added later) keeps the

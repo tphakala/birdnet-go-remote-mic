@@ -888,8 +888,9 @@ components:
             (open-failed); or a serving device stopped because it was
             unplugged (disconnected) or for a reason not confirmed as an
             unplug (failed). Absent
-            while serving, when disabled, and for a skip with no specific
-            class. Clients must tolerate values added later.
+            while serving, when disabled, from an older appliance, and in the
+            provisional record POST /devices returns when the new device has
+            not been applied yet. Clients must tolerate values added later.
         friendlyName:
           type: string
           description: >

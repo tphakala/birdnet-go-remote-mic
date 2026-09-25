@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
-import { captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -527,6 +527,13 @@ export class DashboardView {
     } finally {
       this.provisioning.delete(d.device);
       clearBusy(btn, "Enable");
+      // A poll that changed the list meanwhile rebuilt the card with a fresh
+      // busy button, which btn no longer is; re-render so it is not left stuck
+      // on "Enabling..." while an unchanged list skips the rebuild.
+      if (!btn.isConnected) {
+        this.availableKey = "";
+        this.renderAvailable(store.getState().available);
+      }
     }
   }
 
@@ -1024,9 +1031,7 @@ export class DashboardView {
     }
     if (entry.idle) {
       setHidden(entry.idle.banner, !d.error);
-      // An unplugged device is waiting to be reconnected, not broken, so it
-      // gets the warning icon like a skip rather than the error one.
-      const isError = d.state === "failed" && d.downCause !== "disconnected";
+      const isError = bannerIsError(d.state, d.downCause);
       const bannerKey = isError ? "error" : "warn";
       if (entry.idle.bannerIcon.dataset.icon !== bannerKey) {
         entry.idle.bannerIcon.dataset.icon = bannerKey;

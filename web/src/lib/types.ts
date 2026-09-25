@@ -208,7 +208,8 @@ export interface Device {
   opus?: OpusSettings;
   error?: string;
   // Class of why a skipped or failed device is not serving. Absent while
-  // serving, from an older appliance, and for a skip with no specific class.
+  // serving, when disabled, from an older appliance, and in the provisional
+  // record a provision returns before the device is applied.
   downCause?: DownCause;
   friendlyName?: string;
   // Current-boot ALSA address ("hw:4,0") the configured id resolved to, for
