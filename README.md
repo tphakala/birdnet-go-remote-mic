@@ -244,7 +244,9 @@ A name, id or path set through the web UI or the management API is limited to
 128 characters for a device name and a stream path, and 2048 for a device id. A
 config file that exceeds them still loads, so an upgrade never stops an
 appliance from starting, and a value already in the file does not block other
-changes; only a new over-long value is refused.
+changes; only a new over-long value is refused. mDNS advertises at most the
+first 63 bytes of a device name (with the stream path appended for a device
+with several streams), the most one DNS label holds.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
@@ -289,10 +291,14 @@ API listens. When the appliance is stopped, the commands edit the config file
 and the change applies at the next start. An appliance running without its
 management API has no config writer, so the commands edit the file too and the
 running process keeps its current token until it restarts. An API that failed
-to start (for example on a certificate it could not read) is retried in the
-background, 30 seconds after the failure and then less often, up to every 10
-minutes; each attempt applies an edited config file, even one that still
-cannot bring the API up. A command run while
+to start (for example on a certificate it could not read), or whose listener
+stopped while running, is retried in the background, 30 seconds after the
+failure and then less often, up to every 10 minutes; each attempt applies an
+edited config file, even one that still cannot bring the API up, and binds
+the `management.listen` address and reads the certificate from the
+`cert_dir` that file sets (serve flags still override them), so fixing a port
+in use or a certificate path in the file needs no restart. A file that sets
+`management.enabled: false` ends the retry. A command run while
 the appliance is still starting up, before it has published where its API
 listens, or while one of those background attempts runs, asks you to retry in
 a few seconds. The config is written 0600, so run
@@ -384,7 +390,8 @@ For a local end-to-end check without hardware, use the ALSA loopback
   logged and skipped. While the management API is serving (it is enabled by
   default) the process stays up so its status API keeps reporting every
   skipped device and its open error, even when no device opens at all. With
-  management disabled, or while its API has not come up yet, there is nothing
+  management disabled, or while its API is down (it has not come up yet, or
+  it stopped and is being retried), there is nothing
   to keep alive, so a total open failure exits nonzero and lets a supervisor
   restart the process.
 - A device that dies mid-run (a USB unplug) is retired: its path returns 404

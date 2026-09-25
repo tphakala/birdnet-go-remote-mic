@@ -93,21 +93,21 @@ func TestStartManagementServesRegeneratedCertToNewHandshake(t *testing.T) {
 	defer cancel()
 	prov := newProvider()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: prov})
 	if !ok {
 		t.Fatal("management should have started")
 	}
 	defer h.Wait()
 	defer cancel()
 
-	before := dialLeaf(t, h.addr)
+	before := dialLeaf(t, h.serving().addr)
 
 	// Regenerate with an extra SAN; the new certificate must reach a fresh handshake
 	// (sabotage target: TLSConfig.GetCertificate = prov.tlsCertificate).
 	if _, err := prov.Regenerate([]string{"mic.example.org"}); err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
-	after := dialLeaf(t, h.addr)
+	after := dialLeaf(t, h.serving().addr)
 
 	if before.SerialNumber.Cmp(after.SerialNumber) == 0 {
 		t.Error("handshake after regenerate still served the old certificate")
@@ -122,7 +122,7 @@ func TestStartManagementServesRegeneratedCertToNewHandshake(t *testing.T) {
 	// GET /system/certificate must report the new fingerprint, and the pair must be
 	// persisted (a restart would load it).
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
-	info := getCertInfo(t, ctx, client, h.addr)
+	info := getCertInfo(t, ctx, client, h.serving().addr)
 	if info.FingerprintSha256 != fingerprintHex(after.Raw) {
 		t.Errorf("reported fingerprint %q does not match the served cert", info.FingerprintSha256)
 	}
@@ -143,7 +143,7 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		prov := newProvider()
-		h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil, nil)
+		h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: prov})
 		if !ok {
 			t.Fatal("first run: management should have started")
 		}
@@ -159,7 +159,7 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: certDir}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider()})
 	if !ok {
 		t.Fatal("second run: management should have started")
 	}
@@ -167,7 +167,7 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 	defer cancel()
 
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
-	info := getCertInfo(t, ctx, client, h.addr)
+	info := getCertInfo(t, ctx, client, h.serving().addr)
 	if info.FingerprintSha256 != wantFP {
 		t.Errorf("after restart fingerprint %q, want the installed %q", info.FingerprintSha256, wantFP)
 	}
@@ -281,7 +281,7 @@ func TestStartManagementNoKeyMaterialInCertEndpoints(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prov := newProvider()
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, prov, nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: prov})
 	if !ok {
 		t.Fatal("management should have started")
 	}
@@ -293,12 +293,12 @@ func TestStartManagementNoKeyMaterialInCertEndpoints(t *testing.T) {
 
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
 	// The PEM endpoint returns only the public certificate.
-	pemBody := getBody(t, ctx, client, h.addr, "/api/v1/system/certificate/pem")
+	pemBody := getBody(t, ctx, client, h.serving().addr, "/api/v1/system/certificate/pem")
 	if strings.Contains(pemBody, "PRIVATE KEY") {
 		t.Error("certificate PEM endpoint leaked private key material")
 	}
 	// The JSON metadata carries no key field.
-	metaBody := getBody(t, ctx, client, h.addr, "/api/v1/system/certificate")
+	metaBody := getBody(t, ctx, client, h.serving().addr, "/api/v1/system/certificate")
 	if strings.Contains(metaBody, "PRIVATE KEY") || strings.Contains(strings.ToLower(metaBody), "keypem") {
 		t.Error("certificate metadata leaked key material")
 	}
@@ -307,7 +307,7 @@ func TestStartManagementNoKeyMaterialInCertEndpoints(t *testing.T) {
 func TestStartManagementEnforcesBearerOnCertWrites(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken), nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider(), guard: auth.NewGuard(testAuthToken)})
 	if !ok {
 		t.Fatal("management should have started")
 	}
@@ -317,7 +317,7 @@ func TestStartManagementEnforcesBearerOnCertWrites(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
 	do := func(method, path string) int {
 		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, method, "https://"+h.addr+path, strings.NewReader("{}"))
+		req, err := http.NewRequestWithContext(ctx, method, "https://"+h.serving().addr+path, strings.NewReader("{}"))
 		if err != nil {
 			t.Fatal(err)
 		}

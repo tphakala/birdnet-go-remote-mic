@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	capture "github.com/tphakala/go-audio-capture"
 	"github.com/tphakala/go-audio-stream/rtsp/sdp"
@@ -553,20 +554,20 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 
 	// Start the management API before the device-open phase so status and
 	// diagnostics are reachable even if every device fails to open. It reports
-	// zero devices until setDevices publishes the records below. mgmtServing
-	// tracks whether the API is serving (a cert or listener failure leaves it
-	// false until the background retry brings the API up, see the Up case in the
-	// run loop), so a configured-but-dead API is not mistaken for a live
+	// zero devices until setDevices publishes the records below. The handle's
+	// serving method reports whether an API serves right now (a cert or listener
+	// failure, at start or at runtime, leaves none until its supervisor brings
+	// one back), so a configured-but-dead API is not mistaken for a live
 	// diagnostic surface. The combined shutdown defer cancels ctx first (so the
 	// API's shutdown goroutine fires even when run() returns on an error, not a
 	// signal) and then drains in-flight API connections before the process exits.
 	var management *mgmt
-	mgmtServing := false
 	runLock := &runLockPublisher{lock: lock, cfgPath: cfgPath}
-	// Publish this process with no API before management starts: a failed start
-	// hands the lock to a background retry, and a startup write made after it
-	// could erase the endpoint the retry published. The mutex orders the writes
-	// only once both exist; publishing first orders the lifecycle.
+	// Publish this process with no API before management starts: from then on
+	// the management supervisor publishes where its API listens, or that none
+	// serves, so a write here after it started could erase its endpoint. When
+	// management is disabled, this no-API state stays, which also means no API
+	// handler can rewrite the config file.
 	runLock.publish(nil)
 	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
 	// only when a request asks, so an appliance with no browser open does no
@@ -575,21 +576,24 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// hostReader.cpu). Collect tolerates a nil gauge and omits CPUPercent.
 	if mgmtEnabled {
 		prov.cpu = sysinfo.NewCPUGauge()
-		management, mgmtServing = startManagement(ctx, cfgPath, &cfg, &storeCfg, prov, sse.Handler(hub, center), center, stop, reloader, guard, runLock)
+		management, _ = startManagement(ctx, &mgmtParams{
+			cfgPath:   cfgPath,
+			cfg:       &cfg,
+			storeCfg:  &storeCfg,
+			overrides: ov,
+			prov:      prov,
+			events:    sse.Handler(hub, center),
+			center:    center,
+			restartFn: stop,
+			reloader:  reloader,
+			guard:     guard,
+			runLock:   runLock,
+		})
 	}
 	defer func() {
 		stop()
 		management.Wait()
 	}()
-
-	// Publish where the management API listens. When it is not serving, the
-	// no-API state published above stays, which also means no API handler can
-	// rewrite the config file. An API that comes up later through its
-	// background retry republishes from the retry itself (see
-	// recoverManagement).
-	if mgmtServing {
-		runLock.publish(&mgmtEndpoint{addr: management.addr, certPath: management.certPath})
-	}
 
 	// Drive the level sampler for the lifetime of the process.
 	go hub.Run(ctx)
@@ -633,24 +637,14 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// While the management API is serving, the appliance stays up as a diagnostic
 	// surface even when nothing is serving (issue #10): GET /devices still reports
 	// every skipped device and its open error, and a hot reload can bring devices
-	// up later. When the API is not serving (management disabled or it failed to
-	// start) there is nothing to keep alive, so a total open failure is fatal and
-	// lets a supervisor restart the process. A deliberate all-disabled config is
-	// reported distinctly, since a restart cannot clear it.
-	//
-	// adoptRecovered takes an API a background retry brought up but the run loop
-	// has not yet handled (its endpoint sits buffered in Up). The two exit
-	// decisions below first adopt any pending endpoint (adoptPending), so a
-	// select that picks a pump ending over the pending Up cannot shut down an API
-	// that is already serving.
-	adoptRecovered := func(mgmtEndpoint) {
-		// The API is now the diagnostic surface that keeps a zero-serving
-		// appliance up. The retry already published its endpoint in the run
-		// lock, so the token commands have switched from editing the file to it.
-		mgmtServing = true
-	}
-	adoptPending(management, adoptRecovered)
-	if app.serving() == 0 && !mgmtServing {
+	// up later. When the API is not serving (management disabled, or it failed to
+	// start or stopped and its supervisor has not brought it back) there is
+	// nothing to keep alive, so a total open failure is fatal and lets systemd
+	// restart the process. A deliberate all-disabled config is reported
+	// distinctly, since a restart cannot clear it. Both exit decisions read the
+	// supervisor's state when they are made, so an API it brought back a moment
+	// ago counts.
+	if app.serving() == 0 && management.serving() == nil {
 		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")
 		}
@@ -698,16 +692,13 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 		case req := <-reconcileCh:
 			app.reconcile(&req.cfg)
 			req.reply <- nil
-		case ep := <-management.Up():
-			adoptRecovered(ep)
 		case <-prov.hwChanged:
 			app.retryDown()
 		case <-app.retryDue:
 			app.onRetryDue()
 		case res := <-app.pumpDone:
 			app.onPumpDone(res)
-			adoptPending(management, adoptRecovered)
-			if app.alive == 0 && !mgmtServing {
+			if app.alive == 0 && management.serving() == nil {
 				if app.lastPumpErr != nil {
 					return fmt.Errorf("all capture devices stopped, last error: %w", app.lastPumpErr)
 				}
@@ -828,7 +819,8 @@ var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRu
 // qualified with the stream path when a device fans out. The qualified name is
 // not guaranteed unique against a different device literally named "<name>
 // <path>", but the responder renames on a DNS-SD conflict, so a collision costs
-// only a suffix, not a dropped service.
+// only a suffix, not a dropped service. Each name is cut to fit one DNS label
+// (see instanceLabel).
 func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
 	_, portStr, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -847,7 +839,7 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 				name = rt.dev.Name + " " + strings.TrimPrefix(sr.stream.Path, "/")
 			}
 			infos = append(infos, announce.Info{
-				Name:         name,
+				Name:         instanceLabel(name),
 				Path:         sr.stream.Path,
 				Port:         port,
 				Codec:        pipeline.CodecName(sr.stream.Mode),
@@ -859,6 +851,27 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 		}
 	}
 	return infos, port, nil
+}
+
+// dnsLabelMax is the longest DNS label in bytes (RFC 1035 section 2.3.4). A
+// DNS-SD service instance name is one label, so it bounds the advertised name.
+const dnsLabelMax = 63
+
+// instanceLabel fits an advertised instance name into one DNS label. The config
+// accepts device names longer than a label holds, and a fanned-out device
+// advertises its name plus the stream path, so a longer name is cut at a rune
+// boundary within dnsLabelMax bytes rather than failing the advertisement. Two
+// names that agree up to the cut then collide, which the responder resolves
+// by renaming one, as for any other name conflict.
+func instanceLabel(name string) string {
+	if len(name) <= dnsLabelMax {
+		return name
+	}
+	cut := dnsLabelMax
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return strings.TrimRight(name[:cut], " ")
 }
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,

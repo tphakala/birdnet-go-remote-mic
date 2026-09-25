@@ -571,138 +571,188 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	return ds
 }
 
-// mgmt is a running management API's shutdown handle. Wait blocks until the
-// HTTP server has drained in-flight connections, so run() can hold process exit
-// until the API has shut down cleanly (a prerequisite for a future config PATCH
-// that must flush its response before the appliance restarts).
+// mgmt is the management API's lifecycle handle. It exists for the whole run
+// once management is enabled, whether or not an API is serving: a supervisor
+// goroutine (see superviseManagement) owns the API, brings it back when it
+// fails to start or stops on its own, and records the serving API (nil while
+// none serves) for run()'s exit decisions. Wait blocks until the supervisor has
+// stopped and the last API has drained in-flight connections, so run() can hold
+// process exit until the API has shut down cleanly.
 type mgmt struct {
-	// addr is the bound listener address (host:port), published in the run lock
-	// for the token commands and read by tests.
-	addr string
-	// certPath is the PEM certificate the listener serves, published beside addr
-	// so a token command can pin it.
-	certPath string
-	done     chan struct{}
-	// up delivers the endpoint once when a background retry brings up an API
-	// that failed to start (see retryManagement), telling the run loop the API
-	// now serves; the retry has already published the endpoint in the run lock.
-	// nil when the API came up at once.
-	up chan mgmtEndpoint
+	cur  atomic.Pointer[mgmtServer]
+	done chan struct{}
+}
+
+// mgmtServer is one serving management API.
+type mgmtServer struct {
+	mgmtEndpoint
+	// store is the API's persistence store, whose config (including every PATCH
+	// since the API came up) seeds the next API if this one stops.
+	store *mgmtserver.FileConfigStore
+	// ln is the bound listener. Closing it stops the API as a runtime listener
+	// fault would, which tests use to drive the recovery.
+	ln      net.Listener
+	stopped chan struct{}
+	// err is why the API stopped, set before stopped closes: nil after a
+	// shutdown on ctx, the serve error when the listener failed on its own.
+	err error
+}
+
+// wait blocks until the API has shut down and reports why it stopped: nil when
+// ctx was cancelled, the serve error when the API died at runtime.
+func (s *mgmtServer) wait() error {
+	<-s.stopped
+	return s.err
 }
 
 // mgmtEndpoint is where a serving management API listens, as published in the
-// run lock (by run() at startup, or by the background retry that brought the
-// API up, see recoverManagement).
+// run lock (see runLockPublisher) for the token commands.
 type mgmtEndpoint struct {
-	addr     string
+	// addr is the bound listener address (host:port).
+	addr string
+	// certPath is the PEM certificate the listener serves, so a token command
+	// can pin it.
 	certPath string
 }
 
 // Wait blocks until the management API has finished shutting down. It returns at
-// once on a nil handle (management disabled); on a retrying handle it returns
-// once ctx is cancelled and the retry, or the API it brought up, has stopped.
+// once on a nil handle (management disabled); otherwise it returns once ctx is
+// cancelled and the supervisor, and any API it runs, has stopped, or once the
+// supervisor gave up because the config file disabled management.
 func (m *mgmt) Wait() {
 	if m != nil {
 		<-m.done
 	}
 }
 
-// Up returns the channel that delivers the endpoint of an API brought up by a
-// background retry. It is nil (never ready in a select) on a nil handle and on
-// one that is not retrying.
-func (m *mgmt) Up() <-chan mgmtEndpoint {
+// serving returns the API serving now, or nil when none serves (it failed to
+// start, stopped at runtime and is being retried, or the handle is nil). run()
+// reads it for its exit decisions: only a serving API keeps an appliance with
+// no serving device up as a diagnostic surface.
+func (m *mgmt) serving() *mgmtServer {
 	if m == nil {
 		return nil
 	}
-	return m.up
+	return m.cur.Load()
 }
 
 // mgmtParams carries what serveManagement needs to bring the API up, so a
-// background retry can repeat the attempt with the same inputs.
+// background attempt can repeat it. After startManagement returns, only the
+// supervisor goroutine touches it.
 type mgmtParams struct {
 	cfgPath string
 	// cfg drives the listener bind and certificate location, so the serve
-	// override flags (--mgmt-listen, --cert-dir) take effect for the run.
+	// override flags (--mgmt-listen, --cert-dir) take effect for the run. A
+	// background attempt replaces it with the reloaded config plus the
+	// overrides (see useConfig).
 	cfg *config.Config
 	// storeCfg is the override-free on-disk config that seeds the persistence
 	// store, so a later PATCH /config never bakes an ephemeral override into
 	// config.yaml (issue #29).
-	storeCfg  *config.Config
+	storeCfg *config.Config
+	// overrides are the serve flags, re-applied to the config a background
+	// attempt reloads, as the serve reloader does on every PATCH.
+	overrides serveOverrides
 	prov      *provider
 	events    http.Handler
 	center    *notify.Center
 	restartFn func()
 	reloader  mgmtserver.Reloader
 	guard     *auth.Guard
-	// runLock publishes the run lock from a background retry (see
-	// recoverManagement); nil publishes nothing.
+	// runLock publishes where the API listens, or that none serves; nil
+	// publishes nothing.
 	runLock  *runLockPublisher
 	certPath string
 	keyPath  string
 }
 
-// startManagement generates or loads the self-signed certificate and serves the
-// management API over HTTPS in the background until ctx is cancelled. events, if
-// non-nil, is mounted as the hand-written SSE handler for GET /events. It reports
-// whether the API actually came up. A certificate or listener failure (including
-// an installed certificate it cannot read, which it never overwrites) is logged,
-// not fatal (the appliance keeps capturing and serving RTSP), and ok is false so
-// the caller does not mistake a configured-but-dead API for an available
-// diagnostic surface when deciding whether to stay alive with no serving device.
-// The attempt is then retried in the background with backoff (see
-// retryManagement), and the handle's Up channel reports when one succeeds.
-func startManagement(ctx context.Context, cfgPath string, cfg, storeCfg *config.Config, prov *provider, events http.Handler, center *notify.Center, restartFn func(), reloader mgmtserver.Reloader, guard *auth.Guard, runLock *runLockPublisher) (handle *mgmt, ok bool) {
-	return startManagementWith(ctx, &mgmtParams{
-		cfgPath:   cfgPath,
-		cfg:       cfg,
-		storeCfg:  storeCfg,
-		prov:      prov,
-		events:    events,
-		center:    center,
-		restartFn: restartFn,
-		reloader:  reloader,
-		guard:     guard,
-		runLock:   runLock,
-	}, mgmtRetryBackoff[:])
-}
-
-// startManagementWith is startManagement with the retry delays as a parameter,
-// so tests can retry without waiting out the real backoff. A failed start also
-// raises the management-unavailable notification, which a successful retry
-// clears.
-func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Duration) (handle *mgmt, ok bool) {
-	certDir := p.cfg.Management.CertDir
+// useConfig makes running (a config with the serve overrides applied) the one
+// the next serveManagement binds and reads the certificate from, and publishes
+// the certificate paths to the provider. setCertificate reads certPath to
+// decide the Managed flag (a pin marker sits beside it), and Regenerate/Install
+// write there, so the paths are published before the certificate is prepared.
+// No API serves while this runs, so no handler reads the provider's paths.
+func (p *mgmtParams) useConfig(running *config.Config) {
+	p.cfg = running
+	certDir := running.Management.CertDir
 	if certDir == "" {
 		certDir = filepath.Dir(p.cfgPath)
 	}
 	p.certPath = filepath.Join(certDir, "mgmt-cert.pem")
 	p.keyPath = filepath.Join(certDir, "mgmt-key.pem")
-	// setCertificate reads certPath to decide the Managed flag (a pin marker sits
-	// beside it), and Regenerate/Install write here, so publish the paths before
-	// the certificate is prepared.
 	p.prov.certPath = p.certPath
 	p.prov.keyPath = p.keyPath
+}
 
-	h, err := serveManagement(ctx, p)
+// startManagement generates or loads the self-signed certificate and serves the
+// management API over HTTPS in the background until ctx is cancelled. p.events,
+// if non-nil, is mounted as the hand-written SSE handler for GET /events. It
+// reports whether the API actually came up. A certificate or listener failure
+// (including an installed certificate it cannot read, which it never
+// overwrites) is logged, not fatal (the appliance keeps capturing and serving
+// RTSP), and ok is false so the caller does not mistake a configured-but-dead
+// API for an available diagnostic surface when deciding whether to stay alive
+// with no serving device. Either way the handle's supervisor keeps the API up
+// from then on, retrying a failed start and restarting an API that stops at
+// runtime (see superviseManagement); the handle's serving method follows it.
+func startManagement(ctx context.Context, p *mgmtParams) (handle *mgmt, ok bool) {
+	return startManagementWith(ctx, p, mgmtRetryBackoff[:])
+}
+
+// startManagementWith is startManagement with the retry delays as a parameter,
+// so tests can retry without waiting out the real backoff. A failed start also
+// raises the management-unavailable notification, which a successful attempt
+// clears. A serving API publishes its endpoint in the run lock.
+func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Duration) (handle *mgmt, ok bool) {
+	p.useConfig(p.cfg)
+	m := &mgmt{done: make(chan struct{})}
+	srv, err := serveManagement(ctx, p)
 	if err == nil {
-		return h, true
+		m.cur.Store(srv)
+		p.runLock.publish(&srv.mgmtEndpoint)
+	} else {
+		log.Printf("management API disabled: %v (retrying in the background)", err)
+		p.onsetDown(fmt.Sprintf("The web UI and API could not start: %v; retrying in the background", err))
 	}
-	log.Printf("management API disabled: %v (retrying in the background)", err)
-	// Raised now so the outage is in the history the UI shows once the API is
-	// back; recoverManagement clears it. A nil center is a no-op.
+	go superviseManagement(ctx, m, srv, err, mgmtRetry{
+		attempt: func() (*mgmtServer, error) { return recoverManagement(ctx, p) },
+		died:    p.died,
+		delays:  delays,
+		stable:  delays[len(delays)-1],
+	})
+	return m, err == nil
+}
+
+// onsetDown raises the management-unavailable condition with msg. It is raised
+// at once so the outage is in the history the UI shows once the API is back;
+// a successful attempt clears it. A nil center is a no-op.
+func (p *mgmtParams) onsetDown(msg string) {
 	p.center.Onset(notify.Notification{
 		Severity: notify.SeverityError,
 		Category: notify.CategorySystem,
 		Key:      mgmtDownKey,
 		Source:   "management",
 		Title:    "Management API unavailable",
-		Message:  fmt.Sprintf("The web UI and API could not start: %v; retrying in the background", err),
+		Message:  msg,
 	})
-	return retryManagement(ctx, func() (*mgmt, error) { return recoverManagement(ctx, p) }, delays, err), false
+}
+
+// died handles an API that stopped on its own (its listener failed), once the
+// server has drained: the next attempt seeds its store from this API's config,
+// which carries every PATCH since it came up; the run lock stops advertising
+// the dead address, so the token commands edit the file again; and the outage
+// is raised.
+func (p *mgmtParams) died(s *mgmtServer, err error) {
+	log.Printf("management API stopped: %v (restarting it in the background; RTSP serving continues)", err)
+	cfg := s.store.Config()
+	p.storeCfg = &cfg
+	p.runLock.publish(nil)
+	p.onsetDown(fmt.Sprintf("The web UI and API stopped: %v; restarting in the background", err))
 }
 
 // serveManagement makes one attempt to bring the API up: prepare the
-// certificate, bind the listener, and serve until ctx is cancelled.
+// certificate, bind the listener, and serve until ctx is cancelled or the
+// listener fails, which the returned server's wait reports.
 //
 // An installed (pinned) certificate that exists but cannot be read comes back as
 // *mgmtcert.PinnedReadError and fails the attempt: the API stays off rather than
@@ -710,7 +760,7 @@ func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Durat
 // editing the config file because no API address is published. Serving a
 // throwaway certificate instead would leave the token CLI pinning a file the
 // listener does not present.
-func serveManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
+func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 	cert, err := mgmtcert.Ensure(p.certPath, p.keyPath, certHosts())
 	if err != nil {
 		return nil, fmt.Errorf("cannot prepare TLS certificate: %w", err)
@@ -737,8 +787,9 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 		return nil, fmt.Errorf("cannot listen on %s: %w", p.cfg.Management.Listen, err)
 	}
 
+	store := mgmtserver.NewFileConfigStore(p.cfgPath, p.storeCfg)
 	opts := []mgmtserver.Option{
-		mgmtserver.WithConfigStore(mgmtserver.NewFileConfigStore(p.cfgPath, p.storeCfg)),
+		mgmtserver.WithConfigStore(store),
 		mgmtserver.WithSystemInfo(p.prov),
 		mgmtserver.WithRestart(p.restartFn),
 		mgmtserver.WithAuth(p.guard),
@@ -792,26 +843,41 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 		},
 	}
 
-	done := make(chan struct{})
+	s := &mgmtServer{
+		mgmtEndpoint: mgmtEndpoint{addr: ln.Addr().String(), certPath: p.certPath},
+		store:        store,
+		ln:           ln,
+		stopped:      make(chan struct{}),
+	}
+	died := make(chan error, 1)
 	go func() {
-		defer close(done)
-		<-ctx.Done()
+		defer close(s.stopped)
+		select {
+		case <-ctx.Done():
+		case s.err = <-died:
+		}
+		// Drain in-flight requests on either path: after a runtime fault too, so
+		// no handler of this API still writes the config or the certificate
+		// while the supervisor brings up the next one.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
+		}
 	}()
 
 	go func() {
 		// Serve over the already-bound listener wrapped for TLS from the provider's
 		// current certificate (via TLSConfig.GetCertificate), so an operator
-		// regenerate or install reaches new connections without a restart.
+		// regenerate or install reaches new connections without a restart. Serve
+		// closes the listener when it returns, so a restart can bind the port.
 		if serr := srv.Serve(tls.NewListener(ln, srv.TLSConfig)); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
-			log.Printf("management API stopped: %v (RTSP serving continues)", serr)
+			died <- serr
 		}
 	}()
 
 	log.Printf("management API on https://%s%s (certificate at %s)", p.cfg.Management.Listen, mgmtserver.BasePath, p.certPath)
-	return &mgmt{done: done, addr: ln.Addr().String(), certPath: p.certPath}, nil
+	return s, nil
 }
 
 // toCertInfo adapts the mgmtcert metadata into the mgmtserver domain type, so

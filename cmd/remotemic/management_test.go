@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
@@ -176,11 +177,11 @@ func TestProviderDeviceLookup(t *testing.T) {
 
 func TestNilMgmtWaitReturns(t *testing.T) {
 	// A nil handle (management disabled) must make Wait return immediately so
-	// shutdown never blocks on it, and report no retry.
+	// shutdown never blocks on it, and report no serving API.
 	var nilHandle *mgmt
 	nilHandle.Wait()
-	if nilHandle.Up() != nil {
-		t.Error("a nil handle must report no retry")
+	if nilHandle.serving() != nil {
+		t.Error("a nil handle must report no serving API")
 	}
 }
 
@@ -196,12 +197,12 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, filepath.Join(t.TempDir(), "config.yaml"), cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: filepath.Join(t.TempDir(), "config.yaml"), cfg: cfg, storeCfg: cfg, prov: newProvider()})
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
-	if h.Up() == nil {
-		t.Error("a certificate failure must leave a background retry running")
+	if h.serving() != nil {
+		t.Error("a certificate failure must leave no serving API")
 	}
 	cancel()
 	h.Wait() // cancelling ctx must stop the retry, so the handle does not block shutdown
@@ -228,19 +229,11 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")
 	}
-	if h.Up() == nil {
-		t.Fatal("a bind failure must leave a background retry running")
-	}
 	if cerr := occupied.Close(); cerr != nil {
 		t.Fatal(cerr)
 	}
-	select {
-	case ep := <-h.Up():
-		if ep.addr != addr {
-			t.Errorf("recovered on %s, want the configured %s", ep.addr, addr)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background retry did not bind once the port was free")
+	if s := waitServing(t, h, nil); s.addr != addr {
+		t.Errorf("recovered on %s, want the configured %s", s.addr, addr)
 	}
 	cancel()
 	h.Wait()
@@ -253,7 +246,7 @@ func TestStartManagementServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider()})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -271,7 +264,7 @@ func TestStartManagementServesNotifications(t *testing.T) {
 	center := notify.NewCenter()
 	center.Publish(notify.Started("v-test"))
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, center, nil, nil, nil, nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider(), center: center})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -279,7 +272,7 @@ func TestStartManagementServesNotifications(t *testing.T) {
 	defer cancel()
 
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.addr+"/api/v1/notifications", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.serving().addr+"/api/v1/notifications", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,11 +330,39 @@ func TestAnnounceInfosCarryAuth(t *testing.T) {
 	}
 }
 
+func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("a", 70)
+	tests := []struct {
+		name, in, want string
+	}{
+		{"short name unchanged", "Garden", "Garden"},
+		{"exactly 63 bytes unchanged", long[:63], long[:63]},
+		{"ascii cut at 63 bytes", long, long[:63]},
+		// 62 ASCII bytes then a 2-byte rune straddling byte 63: the rune is
+		// dropped whole rather than split.
+		{"rune never split", long[:62] + "ä" + "b", long[:62]},
+		{"trailing space trimmed", long[:62] + " rear", long[:62]},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := instanceLabel(tc.in)
+			if got != tc.want {
+				t.Errorf("instanceLabel(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if len(got) > dnsLabelMax || !utf8.ValidString(got) {
+				t.Errorf("instanceLabel(%q) = %q: %d bytes or invalid UTF-8", tc.in, got, len(got))
+			}
+		})
+	}
+}
+
 func TestStartManagementEnforcesBearer(t *testing.T) {
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h, ok := startManagement(ctx, "config.yaml", cfg, cfg, newProvider(), nil, nil, nil, nil, auth.NewGuard(testAuthToken), nil)
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider(), guard: auth.NewGuard(testAuthToken)})
 	if !ok {
 		t.Fatal("management should have started on an ephemeral port")
 	}
@@ -351,7 +372,7 @@ func TestStartManagementEnforcesBearer(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // self-signed test cert
 	get := func(path, bearer string) int {
 		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.addr+path, http.NoBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+h.serving().addr+path, http.NoBody)
 		if err != nil {
 			t.Fatal(err)
 		}

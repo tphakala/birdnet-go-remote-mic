@@ -68,7 +68,7 @@ func TestApplyServeOverridesManagementFalse(t *testing.T) {
 	}
 	applyServeOverrides(&cfg, serveOverrides{
 		management: false,
-		set:        map[string]bool{"management": true},
+		set:        map[string]bool{keyMgmt: true},
 	})
 	if cfg.ManagementEnabled() {
 		t.Fatalf("--management=false did not disable management")
@@ -109,7 +109,7 @@ func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
 	if pprofAddr != pprofAddr6060 {
 		t.Errorf("pprofAddr = %q, want 127.0.0.1:6060", pprofAddr)
 	}
-	for _, k := range []string{keyListen, keyMgmtListen, "cert-dir", "management", keyDiscovery} {
+	for _, k := range []string{keyListen, keyMgmtListen, "cert-dir", keyMgmt, keyDiscovery} {
 		if !ov.set[k] {
 			t.Errorf("ov.set[%q] not marked; flag name and set key disagree", k)
 		}

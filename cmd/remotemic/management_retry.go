@@ -19,14 +19,18 @@ import (
 // center.
 const mgmtDownKey = "management-api-down"
 
+// errMgmtDisabled fails a background attempt whose reloaded config disables the
+// management API, which ends the supervisor's retry.
+var errMgmtDisabled = errors.New("management API disabled in the config file")
+
 // mgmtRetryBackoff is the delay before each background attempt to bring up a
-// management API that failed to start, indexed by the number of attempts made;
-// the last entry repeats. The causes it waits out are slow (a certificate volume
-// that mounts late, a permission fixed by hand, a full or read-only filesystem
-// freed up, a port held by another process), so it starts at 30 s and caps at
-// 10 minutes: a permanent fault then costs one attempt every 10 minutes (a
-// config file read, a certificate check that may try to write a new pair, a
-// listen, and two run-lock writes).
+// management API that failed to start or stopped at runtime, indexed by the
+// number of attempts made; the last entry repeats. The causes it waits out are
+// slow (a certificate volume that mounts late, a permission fixed by hand, a
+// full or read-only filesystem freed up, a port held by another process), so
+// it starts at 30 s and caps at 10 minutes: a permanent fault then costs one
+// attempt every 10 minutes (a config file read, a certificate check that may
+// try to write a new pair, a listen, and two run-lock writes).
 var mgmtRetryBackoff = [...]time.Duration{
 	30 * time.Second,
 	time.Minute,
@@ -35,80 +39,112 @@ var mgmtRetryBackoff = [...]time.Duration{
 	10 * time.Minute,
 }
 
-// retryManagement retries attempt in the background after the management API
-// failed to start with firstErr, waiting delays[n] before attempt n+1 (the last
-// delay repeats). A failure is logged only when its message differs from the
-// previous one, so a permanent fault logs once rather than every attempt. When
-// an attempt succeeds, the new API's endpoint is sent once on the returned
-// handle's Up channel, and the handle's Wait then follows that API's shutdown.
-// Cancelling ctx stops the retry.
-func retryManagement(ctx context.Context, attempt func() (*mgmt, error), delays []time.Duration, firstErr error) *mgmt {
-	up := make(chan mgmtEndpoint, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		last := firstErr.Error()
-		for n := 0; ; n++ {
-			t := time.NewTimer(delays[min(n, len(delays)-1)])
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				return
-			case <-t.C:
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			h, err := attempt()
-			if err != nil {
-				if msg := err.Error(); msg != last {
-					log.Printf("management API still disabled: %v (retrying in the background)", err)
-					last = msg
-				}
-				continue
-			}
-			log.Printf("management API recovered after %d background attempt(s)", n+1)
-			up <- mgmtEndpoint{addr: h.addr, certPath: h.certPath}
-			h.Wait()
-			return
-		}
-	}()
-	return &mgmt{done: done, up: up}
+// mgmtRetry is what superviseManagement needs to keep the API up.
+type mgmtRetry struct {
+	// attempt makes one background attempt to bring the API up.
+	attempt func() (*mgmtServer, error)
+	// died handles an API that stopped on its own, after it drained.
+	died func(*mgmtServer, error)
+	// delays[n] is the wait before attempt n+1; the last delay repeats.
+	delays []time.Duration
+	// stable is how long an API must serve before its death restarts the
+	// backoff from delays[0]. An API that dies sooner resumes the backoff where
+	// it left off, so one that dies right after every start settles at the
+	// slowest delay instead of restarting every delays[0].
+	stable time.Duration
 }
 
-// pendingRecovery reports, without blocking, an endpoint a background retry has
-// delivered on m's Up channel but nobody has received yet. It returns false for
-// a nil handle, a handle that never retried, and one with nothing pending.
-func pendingRecovery(m *mgmt) (mgmtEndpoint, bool) {
-	select {
-	case ep := <-m.Up():
-		return ep, true
-	default:
-		return mgmtEndpoint{}, false
+// superviseManagement keeps the management API up until ctx is cancelled,
+// starting from srv (the API startManagement brought up) or, when that start
+// failed with startErr, from a retry. While an API serves it waits for it to
+// stop: a shutdown on ctx ends the supervisor, and a runtime failure hands the
+// dead API to r.died and retries. A retry waits out r.delays before each
+// attempt and logs a failure only when its message differs from the previous
+// one, so a permanent fault logs once rather than every attempt. An attempt
+// that finds management disabled in the config file ends the supervisor. m's
+// serving method follows the API that serves, and m.done closes on return.
+func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr error, r mgmtRetry) {
+	defer close(m.done)
+	var last string
+	if startErr != nil {
+		last = startErr.Error()
+	}
+	n := 0 // attempts since an API last served for r.stable, indexing r.delays
+	for {
+		if srv != nil {
+			since := time.Now()
+			err := srv.wait()
+			m.cur.Store(nil)
+			if err == nil {
+				return
+			}
+			if time.Since(since) >= r.stable {
+				n = 0
+			}
+			r.died(srv, err)
+			last = err.Error()
+		}
+		srv = retryManagement(ctx, r, &n, &last)
+		if srv == nil {
+			return
+		}
+		m.cur.Store(srv)
 	}
 }
 
-// adoptPending hands a pending recovered endpoint (see pendingRecovery) to
-// adopt, and does nothing when none is pending. Adopting early is always
-// correct: it is exactly what receiving from Up would do.
-func adoptPending(m *mgmt, adopt func(mgmtEndpoint)) {
-	if ep, ok := pendingRecovery(m); ok {
-		adopt(ep)
+// retryManagement runs superviseManagement's background attempts until one
+// brings the API up, which it returns. It returns nil when ctx is cancelled or
+// an attempt finds management disabled in the config file. n and last carry
+// the backoff position and the last logged failure across outages.
+func retryManagement(ctx context.Context, r mgmtRetry, n *int, last *string) *mgmtServer {
+	for tries := 1; ; tries++ {
+		t := time.NewTimer(r.delays[min(*n, len(r.delays)-1)])
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil
+		case <-t.C:
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		*n++
+		s, err := r.attempt()
+		if errors.Is(err, errMgmtDisabled) {
+			log.Print("management API: management.enabled is now false in the config file; stopped retrying")
+			return nil
+		}
+		if err != nil {
+			if msg := err.Error(); msg != *last {
+				log.Printf("management API still unavailable: %v (retrying in the background)", err)
+				*last = msg
+			}
+			continue
+		}
+		log.Printf("management API recovered after %d background attempt(s)", tries)
+		return s
 	}
 }
 
 // recoverManagement is one background attempt to bring up a management API that
-// failed to start. While the run lock shows this appliance with no API address,
-// the token CLI edits the config file directly (the appliance has no config
-// writer), so
-// the file may no longer match the startup snapshot that seeds the API's config
-// store. Seeding the store from the stale snapshot would let the next web UI
-// save revert the operator's edit, so the attempt reloads the file first and,
-// when it changed, applies it live through the reloader exactly as a PATCH
-// would, then seeds the store from it. A file that no longer loads fails the
-// attempt, as it would fail the next start; a file that is missing keeps the
-// startup snapshot. Applying an edited file publishes a config event, and a
-// successful attempt clears the management-unavailable condition.
+// failed to start or stopped at runtime. While the run lock shows this
+// appliance with no API address, the token CLI edits the config file directly
+// (the appliance has no config writer), so the file may no longer match the
+// config that seeds the API's store (the startup snapshot, or the config of the
+// API that stopped). Seeding the store from that stale config would let the
+// next web UI save revert the operator's edit, so the attempt reloads the file
+// first and, when it changed, applies it live through the reloader exactly as
+// a PATCH would, then seeds the store from it. A file that no longer loads
+// fails the attempt, as it would fail the next start; a file that is missing
+// keeps the config the attempt already has. Applying an edited file publishes
+// a config event, and a successful attempt clears the management-unavailable
+// condition.
+//
+// The listener address and certificate directory come from that config with
+// the serve flags applied, as they would on a restart, so editing the file
+// fixes a port in use or an unreadable cert_dir without one. A file that now
+// disables management fails the attempt with errMgmtDisabled, which ends the
+// retry.
 //
 // The attempt marks the appliance as starting up in the run lock before it
 // reloads the file, so a token command that reads the lock during the attempt
@@ -117,59 +153,53 @@ func adoptPending(m *mgmt, adopt func(mgmtEndpoint)) {
 // serves, and the lock without one when the attempt fails. What remains is a
 // token command that read the lock just before the attempt began and writes
 // the file just after the reload: the window between its own read and write.
-func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
+func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 	p.runLock.starting()
-	h, err := reloadAndServe(ctx, p)
+	s, err := reloadAndServe(ctx, p)
 	if err != nil {
 		p.runLock.publish(nil)
 		return nil, err
 	}
-	p.runLock.publish(&mgmtEndpoint{addr: h.addr, certPath: h.certPath})
-	return h, nil
+	p.runLock.publish(&s.mgmtEndpoint)
+	return s, nil
 }
 
 // reloadAndServe is recoverManagement's attempt: reload the config file,
-// apply it when it changed, and bring the API up.
-func reloadAndServe(ctx context.Context, p *mgmtParams) (*mgmt, error) {
+// apply it when it changed, and bring the API up as that config says.
+func reloadAndServe(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 	// LoadQuiet, not LoadOrDefault: a file missing now (a volume that went away,
 	// the very kind of fault this retry waits out) must not read as Default()
-	// and be applied live, tearing down every stream. It keeps the startup
-	// snapshot instead, as a missing file has no newer content to adopt. Quiet
-	// because the startup load already warned about the file's permissions.
+	// and be applied live, tearing down every stream. It keeps the config the
+	// attempt already has instead, as a missing file has no newer content to
+	// adopt. Quiet because the startup load already warned about the file's
+	// permissions.
 	fresh, err := config.LoadQuiet(p.cfgPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return serveRecovered(ctx, p)
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
 		return nil, fmt.Errorf("cannot reload config: %w", err)
-	}
-	if !reflect.DeepEqual(&fresh, p.storeCfg) {
-		if p.reloader != nil {
-			if err := p.reloader(ctx, fresh.Clone()); err != nil {
-				return nil, fmt.Errorf("cannot apply the config file edited while the API was down: %w", err)
-			}
-			log.Print("management API: applied the config file edited while the API was down")
-			// A PATCH leaves a config event in the history; so does this apply,
-			// since it can change the access token and end RTSP sessions.
-			p.center.Publish(notify.Notification{
-				Severity: notify.SeverityInfo,
-				Category: notify.CategoryConfig,
-				Kind:     notify.KindEvent,
-				Title:    "Config file applied",
-				Message:  "Applied the config file edited while the management API was down (for example by remote-mic token)",
-			})
+	case !reflect.DeepEqual(&fresh, p.storeCfg):
+		if err := p.applyEdited(ctx, &fresh); err != nil {
+			return nil, err
 		}
 		// A fresh pointer, not a write through p.storeCfg: run() still holds the
 		// startup snapshot it points at.
 		p.storeCfg = &fresh
 	}
-	return serveRecovered(ctx, p)
-}
 
-// serveRecovered brings the API up for recoverManagement and, once it serves,
-// clears the unavailable condition startManagementWith raised.
-func serveRecovered(ctx context.Context, p *mgmtParams) (*mgmt, error) {
-	h, err := serveManagement(ctx, p)
+	running := p.storeCfg.Clone()
+	applyServeOverrides(&running, p.overrides)
+	if !running.ManagementEnabled() {
+		p.center.Clear(mgmtDownKey, notify.Notification{
+			Severity: notify.SeverityInfo,
+			Title:    "Management API disabled",
+			Message:  "The config file disables the web UI and API; they stay off until it enables them and the appliance restarts",
+		})
+		return nil, errMgmtDisabled
+	}
+	p.useConfig(&running)
+
+	s, err := serveManagement(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -178,5 +208,27 @@ func serveRecovered(ctx context.Context, p *mgmtParams) (*mgmt, error) {
 		Title:    "Management API recovered",
 		Message:  "The web UI and API are now serving",
 	})
-	return h, nil
+	return s, nil
+}
+
+// applyEdited applies a config file edited while the API was down live
+// through the reloader, and records it in the history.
+func (p *mgmtParams) applyEdited(ctx context.Context, fresh *config.Config) error {
+	if p.reloader == nil {
+		return nil
+	}
+	if err := p.reloader(ctx, fresh.Clone()); err != nil {
+		return fmt.Errorf("cannot apply the config file edited while the API was down: %w", err)
+	}
+	log.Print("management API: applied the config file edited while the API was down")
+	// A PATCH leaves a config event in the history; so does this apply, since
+	// it can change the access token and end RTSP sessions.
+	p.center.Publish(notify.Notification{
+		Severity: notify.SeverityInfo,
+		Category: notify.CategoryConfig,
+		Kind:     notify.KindEvent,
+		Title:    "Config file applied",
+		Message:  "Applied the config file edited while the management API was down (for example by remote-mic token)",
+	})
+	return nil
 }
