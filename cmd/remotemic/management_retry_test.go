@@ -285,13 +285,26 @@ func TestSuperviseManagementBackoffAfterShortServe(t *testing.T) {
 func TestSuperviseManagementStopsWhenDisabled(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 		attempts := 0
 		attempt := func() (*mgmtServer, error) {
 			attempts++
 			return nil, errMgmtDisabled
 		}
-		h := supervise(t.Context(), nil, errors.New("broken"), mgmtRetry{attempt: attempt, delays: []time.Duration{time.Second}, stable: time.Hour})
-		h.Wait()
+		h := supervise(ctx, nil, errors.New("broken"), mgmtRetry{attempt: attempt, delays: []time.Duration{time.Second}, stable: time.Hour})
+		// Cancel on the way out, so a supervisor that kept retrying fails
+		// the checks below instead of hanging the test.
+		defer func() {
+			cancel()
+			h.Wait()
+		}()
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		select {
+		case <-h.done:
+		default:
+			t.Error("the supervisor still runs after the file disabled management")
+		}
 		if attempts != 1 || h.serving() != nil {
 			t.Errorf("got %d attempts, serving %v; want one attempt and no API", attempts, h.serving())
 		}
@@ -307,7 +320,7 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 	if err := os.WriteFile(certDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfgPath := filepath.Join(t.TempDir(), testCfgFile)
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: certDir}}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -351,7 +364,7 @@ func TestStartManagementRecoversAfterCertFailure(t *testing.T) {
 func TestStartManagementRestartsAfterListenerDies(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	// A first-run config, as LoadOrDefault returns with no file: defaults
 	// applied and a nil device list, which a save writes as "devices: []" and
 	// a reload reads back as an empty, non-nil list.
@@ -480,7 +493,7 @@ func TestMgmtParamsDied(t *testing.T) {
 func TestRecoverManagementFollowsEditedFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	editedDir := filepath.Join(dir, "edited-certs")
 	if err := os.Mkdir(editedDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -492,7 +505,7 @@ func TestRecoverManagementFollowsEditedFile(t *testing.T) {
 	if err := config.Save(cfgPath, &edited); err != nil {
 		t.Fatal(err)
 	}
-	ov := serveOverrides{mgmtListen: testListenAny, set: map[string]bool{"mgmt-listen": true}}
+	ov := serveOverrides{mgmtListen: testListenAny, set: map[string]bool{keyMgmtListen: true}}
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, overrides: ov, prov: newProvider()}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -502,6 +515,11 @@ func TestRecoverManagementFollowsEditedFile(t *testing.T) {
 	}
 	if want := filepath.Join(editedDir, testCertFile); s.certPath != want || p.prov.certPath != want {
 		t.Errorf("certificate at %q (provider %q), want the edited cert_dir's %q", s.certPath, p.prov.certPath, want)
+	}
+	// The file's port 1 would bind for root, so check the port as well as the
+	// handshake: the override's ephemeral port is never 1.
+	if _, port, _ := net.SplitHostPort(s.addr); port == "1" {
+		t.Errorf("API bound %s, the file's address, want the overriding --mgmt-listen", s.addr)
 	}
 	if leaf := dialLeaf(t, s.addr); leaf == nil {
 		t.Error("the API did not serve on the overriding --mgmt-listen address")
@@ -519,7 +537,7 @@ func TestRecoverManagementFollowsEditedFile(t *testing.T) {
 func TestRecoverManagementStopsWhenFileDisablesManagement(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	edited := startup.Clone()
 	edited.Management.Enabled = new(false)
@@ -551,7 +569,7 @@ func TestRecoverManagementStopsWhenFileDisablesManagement(t *testing.T) {
 func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	// The token CLI edited the file while no API was published.
 	edited := startup.Clone()
@@ -573,8 +591,6 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	defer cancel()
 	center := notify.NewCenter()
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader, center: center}
-	p.certPath = filepath.Join(dir, testCertFile)
-	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 
 	h, err := recoverManagement(ctx, p)
 	if err != nil {
@@ -633,7 +649,7 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 func TestRecoverManagementKeepsSnapshotWhenFileMissing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml") // never written
+	cfgPath := filepath.Join(dir, testCfgFile) // never written
 	startup := config.Config{
 		Management: config.Management{Listen: testListenAny, CertDir: dir},
 		Devices: []config.Device{{
@@ -649,8 +665,6 @@ func TestRecoverManagementKeepsSnapshotWhenFileMissing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader}
-	p.certPath = filepath.Join(dir, testCertFile)
-	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 
 	h, err := recoverManagement(ctx, p)
 	if err != nil {
@@ -684,9 +698,7 @@ func TestRecoverManagementFailedServeKeepsCondition(t *testing.T) {
 	startup := config.Config{Management: config.Management{Listen: occupied.Addr().String(), CertDir: dir}}
 	center := notify.NewCenter()
 	center.Onset(notify.Notification{Key: mgmtDownKey, Severity: notify.SeverityError, Category: notify.CategorySystem, Title: "down"})
-	p := &mgmtParams{cfgPath: filepath.Join(dir, "config.yaml"), cfg: &startup, storeCfg: &startup, prov: newProvider(), center: center}
-	p.certPath = filepath.Join(dir, testCertFile)
-	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+	p := &mgmtParams{cfgPath: filepath.Join(dir, testCfgFile), cfg: &startup, storeCfg: &startup, prov: newProvider(), center: center}
 	if _, err := recoverManagement(t.Context(), p); err == nil {
 		t.Fatal("recoverManagement on a busy port succeeded, want a bind failure")
 	}
@@ -701,7 +713,7 @@ func TestRecoverManagementFailedServeKeepsCondition(t *testing.T) {
 func TestRecoverManagementReloadErrorFailsAttempt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	edited := startup.Clone()
 	edited.Auth.Token = "rejected-by-reload-token"
@@ -710,8 +722,6 @@ func TestRecoverManagementReloadErrorFailsAttempt(t *testing.T) {
 	}
 	reloader := func(context.Context, config.Config) error { return errors.New("reconcile refused") }
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader}
-	p.certPath = filepath.Join(dir, testCertFile)
-	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	h, err := recoverManagement(ctx, p)
@@ -728,15 +738,12 @@ func TestRecoverManagementReloadErrorFailsAttempt(t *testing.T) {
 func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	if err := os.WriteFile(cfgPath, []byte("listen: [not, a, string\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	startup := config.Config{Management: config.Management{Listen: testListenAny, CertDir: dir}}
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider()}
-	// Valid certificate paths, so the attempt fails only for the config.
-	p.certPath = filepath.Join(dir, testCertFile)
-	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	h, err := recoverManagement(ctx, p)
@@ -759,7 +766,7 @@ func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
 func TestRecoverManagementPublishesRunLock(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgPath := filepath.Join(dir, testCfgFile)
 	lockPath := runlock.PathFor(cfgPath)
 	lock, err := runlock.Acquire(lockPath, time.Second)
 	if err != nil {
@@ -787,8 +794,6 @@ func TestRecoverManagementPublishesRunLock(t *testing.T) {
 		return nil
 	}
 	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader, center: notify.NewCenter(), runLock: pub}
-	p.certPath = filepath.Join(dir, testCertFile)
-	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	h, err := recoverManagement(ctx, p)

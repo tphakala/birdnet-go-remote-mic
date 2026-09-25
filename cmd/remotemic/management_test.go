@@ -197,7 +197,7 @@ func TestStartManagementCertFailureReportsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	h, ok := startManagement(ctx, &mgmtParams{cfgPath: filepath.Join(t.TempDir(), "config.yaml"), cfg: cfg, storeCfg: cfg, prov: newProvider()})
+	h, ok := startManagement(ctx, &mgmtParams{cfgPath: filepath.Join(t.TempDir(), testCfgFile), cfg: cfg, storeCfg: cfg, prov: newProvider()})
 	if ok {
 		t.Error("a certificate failure must report management unavailable")
 	}
@@ -224,7 +224,7 @@ func TestStartManagementBindFailureReportsUnavailable(t *testing.T) {
 
 	// A temp config path, so a stray config.yaml in the package directory cannot
 	// change what the recovery attempt reloads.
-	p := &mgmtParams{cfgPath: filepath.Join(t.TempDir(), "config.yaml"), cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	p := &mgmtParams{cfgPath: filepath.Join(t.TempDir(), testCfgFile), cfg: cfg, storeCfg: cfg, prov: newProvider()}
 	h, ok := startManagementWith(ctx, p, []time.Duration{10 * time.Millisecond})
 	if ok {
 		t.Error("a listener bind failure must report management unavailable")

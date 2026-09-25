@@ -81,9 +81,10 @@ Usage:
 When the appliance is running with its management API, generate, set, and clear
 apply the change through it, so it takes effect immediately. Running without that
 API, or with no appliance running, they edit the config file and it applies when
-the appliance next starts (or, for an appliance whose API failed to start, at
-its next background attempt to start it). A command run while the appliance is
-still starting up asks you to retry. Run a command with -h to see its flags.
+the appliance next starts (or, for an appliance whose API failed to start or
+stopped, at its next background attempt to bring it up). A command run while
+the appliance is still starting up asks you to retry. Run a command with -h to
+see its flags.
 `)
 }
 
@@ -376,8 +377,9 @@ func changeToken(cfgPath, token string, check func(cur string) error) (changeRes
 	if st.MgmtAddr == "" {
 		// Without its management API the appliance has no config writer, so the
 		// file edit is safe; it takes effect at the next start, or at the API's
-		// next background attempt, which applies an edited file even when the
-		// API itself still cannot start (see recoverManagement).
+		// next background attempt (after a failed start or a runtime stop),
+		// which applies an edited file even when the API itself still cannot
+		// come up (see recoverManagement).
 		res.outcome = changedFileRestart
 		return res, saveToken(cfgPath, token, check)
 	}
@@ -436,8 +438,8 @@ func reportChange(w io.Writer, res changeResult, headline string) {
 		out(w, "The appliance picks up the change when it next starts.\n")
 	case changedFileRestart:
 		out(w, "The running appliance (pid %d) has no management API to apply it through,\n"+
-			"so it keeps its previous setting until it restarts (or, if its API failed\n"+
-			"to start, until its next background attempt to start it applies the file).\n", res.pid)
+			"so it keeps its previous setting until it restarts (or, if its API is down,\n"+
+			"until its next background attempt to bring it up applies the file).\n", res.pid)
 	case changedLive:
 		out(w, "The running appliance (pid %d) applied it immediately.\n", res.pid)
 	case changedLiveRestart:

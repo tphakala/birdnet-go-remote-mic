@@ -27,7 +27,9 @@ var errMgmtDisabled = errors.New("management API disabled in the config file")
 
 // mgmtRetryBackoff is the delay before each background attempt to bring up a
 // management API that failed to start or stopped at runtime, indexed by the
-// number of attempts made; the last entry repeats. The causes it waits out are
+// number of attempts made since an API last served for the longest delay (so
+// an API that keeps dying soon after it comes back does not restart the
+// backoff); the last entry repeats. The causes it waits out are
 // slow (a certificate volume that mounts late, a permission fixed by hand, a
 // full or read-only filesystem freed up, a port held by another process), so
 // it starts at 30 s and caps at 10 minutes: a permanent fault then costs one

@@ -371,9 +371,10 @@ func publishRunLock(lock *runlock.Lock, cfgPath string, ep *mgmtEndpoint) {
 	}
 }
 
-// runLockPublisher serializes run-lock writes between the run loop and a
-// background management retry, which publishes from its own goroutine so the
-// lock tracks the attempt itself rather than waiting for the run loop. A nil
+// runLockPublisher writes the run lock for run() at startup and for the
+// management supervisor, which publishes from its own goroutine so the lock
+// tracks each API transition (up, stopped, a background attempt) as it
+// happens. The mutex keeps a write from interleaving with another. A nil
 // *runLockPublisher is a no-op, for tests that drive the retry without a lock.
 type runLockPublisher struct {
 	mu      sync.Mutex
@@ -643,7 +644,10 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// restart the process. A deliberate all-disabled config is reported
 	// distinctly, since a restart cannot clear it. Both exit decisions read the
 	// supervisor's state when they are made, so an API it brought back a moment
-	// ago counts.
+	// ago counts. They are made only here and when a pump ends: an API that
+	// stops, or whose retry ends, after the last pump already ended leaves the
+	// process up with the device and API retries still running, which is safe
+	// (it recovers in process) though not what a fresh start would decide.
 	if app.serving() == 0 && management.serving() == nil {
 		if app.allDisabled() {
 			return errors.New("all configured capture devices are disabled; enable at least one device, or enable the management API to keep the appliance up as a diagnostic surface")

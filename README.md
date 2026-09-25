@@ -295,12 +295,14 @@ management API has no config writer, so the commands edit the file too and the
 running process keeps its current token until it restarts. An API that failed
 to start (for example on a certificate it could not read), or whose listener
 stopped while running, is retried in the background, 30 seconds after the
-failure and then less often, up to every 10 minutes; each attempt applies an
-edited config file, even one that still cannot bring the API up, and binds
-the `management.listen` address and reads the certificate from the
-`cert_dir` that file sets (serve flags still override them), so fixing a port
-in use or a certificate path in the file needs no restart. A file that sets
-`management.enabled: false` ends the retry. A command run while
+failure and then less often, up to every 10 minutes (an API that stops again
+within 10 minutes of coming back resumes that backoff rather than starting
+it over); each attempt applies an edited config file, even one that still
+cannot bring the API up, and binds the `management.listen` address and reads
+the certificate from the `cert_dir` that file sets, so fixing a port in use
+or a certificate path in the file needs no restart. A file that sets
+`management.enabled: false` ends the retry. Serve flags (`--mgmt-listen`,
+`--cert-dir`, `--management`) still override the file. A command run while
 the appliance is still starting up, before it has published where its API
 listens, or while one of those background attempts runs, asks you to retry in
 a few seconds. The config is written 0600, so run
@@ -406,7 +408,10 @@ For a local end-to-end check without hardware, use the ALSA loopback
   waits for a config save, which also restarts a down device of either kind.
   While the management API is serving the process stays up after the
   last device dies, so the failure stays inspectable over the API; otherwise
-  it exits once every device has stopped.
+  it exits once every device has stopped. The appliance makes that decision
+  when a device's capture ends, so an API that stops (or stops being retried)
+  after the last device already ended leaves the process up, still running
+  the retries described here.
   A device that dies mid-run stays in the mDNS advertisement until it is next
   rebuilt (a config save, a hardware-change retry that starts a device, an
   automatic retry once it counts as recovered, or process exit), because

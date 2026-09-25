@@ -33,9 +33,9 @@ var ErrHeld = errors.New("runlock: held by another process")
 const retryInterval = 50 * time.Millisecond
 
 // State is what a running appliance publishes in its lock file. MgmtAddr and
-// CertPath are empty when the management API is not serving (disabled, or it
-// failed to start), in which case the appliance holds no writer for the config
-// file.
+// CertPath are empty when the management API is not serving (disabled, it
+// failed to start, or it stopped and is being retried), in which case the
+// appliance holds no writer for the config file.
 type State struct {
 	PID      int    `json:"pid"`
 	MgmtAddr string `json:"mgmtAddr,omitempty"` // bound listener address, host:port

@@ -715,7 +715,7 @@ func startManagementWith(ctx context.Context, p *mgmtParams, delays []time.Durat
 		m.cur.Store(srv)
 		p.runLock.publish(&srv.mgmtEndpoint)
 	} else {
-		log.Printf("management API disabled: %v (retrying in the background)", err)
+		log.Printf("management API unavailable: %v (retrying in the background)", err)
 		p.onsetDown(fmt.Sprintf("The web UI and API could not start: %v; retrying in the background", err))
 	}
 	go superviseManagement(ctx, m, srv, err, mgmtRetry{
