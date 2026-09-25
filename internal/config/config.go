@@ -396,8 +396,24 @@ func Default() Config {
 	return c
 }
 
-// Load reads, defaults, and validates a YAML config file.
+// Load reads, defaults, and validates a YAML config file, and warns when a file
+// holding a token is readable beyond its owner.
 func Load(path string) (Config, error) {
+	c, err := LoadQuiet(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if c.Auth.Token != "" {
+		warnIfTokenFileReadable(path)
+	}
+	return c, nil
+}
+
+// LoadQuiet is Load without the permission warning, for a caller that re-reads
+// a file the process already loaded (and warned about) once, so a periodic
+// re-read does not repeat the warning. A missing file returns an error wrapping
+// fs.ErrNotExist, as Load does.
+func LoadQuiet(path string) (Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is an operator-supplied CLI flag
 	if err != nil {
 		return Config{}, err
@@ -420,9 +436,6 @@ func Load(path string) (Config, error) {
 	c.ApplyDefaults()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
-	}
-	if c.Auth.Token != "" {
-		warnIfTokenFileReadable(path)
 	}
 	return c, nil
 }

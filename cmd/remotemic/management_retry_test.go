@@ -189,6 +189,46 @@ func TestRecoverManagementAppliesFileEditedWhileDown(t *testing.T) {
 	h2.Wait()
 }
 
+// TestRecoverManagementKeepsSnapshotWhenFileMissing pins the missing-file case: a
+// config file gone at retry time (an unmounted volume) must not read as the
+// device-less default and be applied live, which would tear down every stream.
+// The attempt serves with the startup snapshot and applies nothing.
+func TestRecoverManagementKeepsSnapshotWhenFileMissing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml") // never written
+	startup := config.Config{
+		Management: config.Management{Listen: testListenAny, CertDir: dir},
+		Devices: []config.Device{{
+			Name: "porch", Device: "hw:1,0", Rate: 48000, Format: "s16",
+			Streams: []config.Stream{{Path: "/porch", Mode: config.ModePCM, Channels: []int{1}}},
+		}},
+	}
+	var applied int
+	reloader := func(context.Context, config.Config) error {
+		applied++
+		return nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p := &mgmtParams{cfgPath: cfgPath, cfg: &startup, storeCfg: &startup, prov: newProvider(), reloader: reloader}
+	p.certPath = filepath.Join(dir, testCertFile)
+	p.keyPath = filepath.Join(dir, "mgmt-key.pem")
+
+	h, err := recoverManagement(ctx, p)
+	if err != nil {
+		t.Fatalf("recoverManagement with the file missing: %v, want the API up on the startup snapshot", err)
+	}
+	if applied != 0 {
+		t.Errorf("got %d reloads, want none for a missing file", applied)
+	}
+	if p.storeCfg != &startup || len(p.storeCfg.Devices) != 1 {
+		t.Errorf("store seeded with %+v, want the startup snapshot", p.storeCfg)
+	}
+	cancel()
+	h.Wait()
+}
+
 func TestRecoverManagementFailsOnUnloadableConfig(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

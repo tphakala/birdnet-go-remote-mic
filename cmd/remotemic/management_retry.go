@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"reflect"
 	"time"
@@ -75,13 +77,22 @@ func retryManagement(ctx context.Context, attempt func() (*mgmt, error), delays 
 // save revert the operator's edit, so the attempt reloads the file first and,
 // when it changed, applies it live through the reloader exactly as a PATCH
 // would, then seeds the store from it. A file that no longer loads fails the
-// attempt, as it would fail the next start.
+// attempt, as it would fail the next start; a file that is missing keeps the
+// startup snapshot.
 //
 // A token command that reads the lock before the run loop republishes it can
 // still edit the file after this reload; that window is the few milliseconds of
 // one successful attempt, once per outage.
 func recoverManagement(ctx context.Context, p *mgmtParams) (*mgmt, error) {
-	fresh, err := config.LoadOrDefault(p.cfgPath)
+	// LoadQuiet, not LoadOrDefault: a file missing now (a volume that went away,
+	// the very kind of fault this retry waits out) must not read as Default()
+	// and be applied live, tearing down every stream. It keeps the startup
+	// snapshot instead, as a missing file has no newer content to adopt. Quiet
+	// because the startup load already warned about the file's permissions.
+	fresh, err := config.LoadQuiet(p.cfgPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return serveManagement(ctx, p)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot reload config: %w", err)
 	}
