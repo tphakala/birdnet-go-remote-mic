@@ -818,9 +818,11 @@ var startAnnounce = func(ctx context.Context, listen string, devices []*deviceRu
 // instance name stays the device name for a lone stream (unchanged) and is
 // qualified with the stream path when a device fans out. The qualified name is
 // not guaranteed unique against a different device literally named "<name>
-// <path>", but the responder renames on a DNS-SD conflict, so a collision costs
-// only a suffix, not a dropped service. Each name is cut to fit one DNS label
-// (see instanceLabel).
+// <path>". The responder renames only on a conflict with another host (it
+// registers this appliance's services one by one before it answers probes),
+// so such a local duplicate is advertised twice under one name and a
+// discoverer may see either. Each name is fitted to one DNS label with room
+// for that rename (see instanceLabel).
 func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) ([]announce.Info, int, error) {
 	_, portStr, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -834,12 +836,12 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 	for _, rt := range devices {
 		multi := len(rt.streams) > 1
 		for _, sr := range rt.streams {
-			name := rt.dev.Name
+			var suffix string
 			if multi {
-				name = rt.dev.Name + " " + strings.TrimPrefix(sr.stream.Path, "/")
+				suffix = " " + strings.TrimPrefix(sr.stream.Path, "/")
 			}
 			infos = append(infos, announce.Info{
-				Name:         instanceLabel(name),
+				Name:         instanceLabel(rt.dev.Name, suffix),
 				Path:         sr.stream.Path,
 				Port:         port,
 				Codec:        pipeline.CodecName(sr.stream.Mode),
@@ -853,25 +855,47 @@ func announceInfos(listen string, devices []*deviceRuntime, authRequired bool) (
 	return infos, port, nil
 }
 
-// dnsLabelMax is the longest DNS label in bytes (RFC 1035 section 2.3.4). A
-// DNS-SD service instance name is one label, so it bounds the advertised name.
-const dnsLabelMax = 63
+const (
+	// dnsLabelMax is the longest DNS label in bytes (RFC 1035 section 2.3.4).
+	// A DNS-SD service instance name is one label, so it bounds the advertised
+	// name.
+	dnsLabelMax = 63
+	// renameRoom is the longest suffix the dnssd responder appends when it
+	// renames an instance on a conflict with another host: " (N)", where N
+	// stays at most 101 because it probes at most 100 times.
+	renameRoom = len(" (101)")
+	// labelBudget is what an advertised name may use, so that a renamed one
+	// still fits in a label.
+	labelBudget = dnsLabelMax - renameRoom
+)
 
-// instanceLabel fits an advertised instance name into one DNS label. The config
-// accepts device names longer than a label holds, and a fanned-out device
-// advertises its name plus the stream path, so a longer name is cut at a rune
-// boundary within dnsLabelMax bytes rather than failing the advertisement. Two
-// names that agree up to the cut then collide, which the responder resolves
-// by renaming one, as for any other name conflict.
-func instanceLabel(name string) string {
-	if len(name) <= dnsLabelMax {
-		return name
+// instanceLabel builds an advertised instance name from a device name and a
+// suffix (empty for a lone stream, " <path>" for a fanned-out device) that
+// fits labelBudget. The config accepts device names longer than a label
+// holds, so it cuts the device name, not the suffix: the suffix is what keeps
+// a device's streams apart. Only a suffix that alone exceeds the budget is cut
+// too, which leaves no room for the device name (and drops the suffix's
+// leading space). Cuts fall on a rune boundary, and a space left at a cut is
+// trimmed. A name that fits is returned unchanged.
+func instanceLabel(name, suffix string) string {
+	head := cutLabel(name, labelBudget-len(suffix))
+	if head == "" {
+		suffix = strings.TrimLeft(suffix, " ")
 	}
-	cut := dnsLabelMax
-	for cut > 0 && !utf8.RuneStart(name[cut]) {
+	return cutLabel(head+suffix, labelBudget)
+}
+
+// cutLabel returns s cut to at most n bytes at a rune boundary (nothing when
+// n is not positive), without a trailing space.
+func cutLabel(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := max(n, 0)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return strings.TrimRight(name[:cut], " ")
+	return strings.TrimRight(s[:cut], " ")
 }
 
 // fanoutStreams describes each stream's fan-out consumer: its drop counter,

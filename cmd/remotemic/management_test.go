@@ -333,28 +333,76 @@ func TestAnnounceInfosCarryAuth(t *testing.T) {
 func TestInstanceLabelFitsOneDNSLabel(t *testing.T) {
 	t.Parallel()
 	long := strings.Repeat("a", 70)
+	const north = " north"
 	tests := []struct {
-		name, in, want string
+		name, in, suffix, want string
 	}{
-		{"short name unchanged", "Garden", "Garden"},
-		{"exactly 63 bytes unchanged", long[:63], long[:63]},
-		{"ascii cut at 63 bytes", long, long[:63]},
-		// 62 ASCII bytes then a 2-byte rune straddling byte 63: the rune is
-		// dropped whole rather than split.
-		{"rune never split", long[:62] + "ä" + "b", long[:62]},
-		{"trailing space trimmed", long[:62] + " rear", long[:62]},
+		{"short name unchanged", nameAudioMoth, "", nameAudioMoth},
+		{"name at the budget unchanged", long[:labelBudget], "", long[:labelBudget]},
+		{"ascii cut to the budget", long, "", long[:labelBudget]},
+		// A 2-byte rune straddling the budget is dropped whole.
+		{"2-byte rune never split", long[:labelBudget-1] + "ä" + "b", "", long[:labelBudget-1]},
+		// A 3-byte rune whose first byte sits two bytes before the budget
+		// needs two steps back to its start.
+		{"3-byte rune never split", long[:labelBudget-2] + "€" + "b", "", long[:labelBudget-2]},
+		{"trailing space trimmed", long[:labelBudget-1] + " rear", "", long[:labelBudget-1]},
+		// The device name is cut, never the stream path that keeps a
+		// fanned-out device's streams apart.
+		{"suffix kept, name cut", long, north, long[:labelBudget-len(north)] + north},
+		// A name cut just after a space loses it, so the suffix does not
+		// follow a double space.
+		{"space at the name cut trimmed", long[:labelBudget-len(north)-1] + " rear", north, long[:labelBudget-len(north)-1] + north},
+		{"short name with suffix unchanged", nameAudioMoth, north, nameAudioMoth + north},
+		// A path that alone exceeds the budget leaves no room for the name
+		// and is cut itself.
+		{"over-long suffix cut", nameAudioMoth, " " + long, long[:labelBudget]},
+		// A name that fits keeps its spaces.
+		{"fitting name unchanged", " " + nameAudioMoth + " ", "", " " + nameAudioMoth + " "},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := instanceLabel(tc.in)
+			got := instanceLabel(tc.in, tc.suffix)
 			if got != tc.want {
-				t.Errorf("instanceLabel(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Errorf("instanceLabel(%q, %q) = %q, want %q", tc.in, tc.suffix, got, tc.want)
 			}
-			if len(got) > dnsLabelMax || !utf8.ValidString(got) {
-				t.Errorf("instanceLabel(%q) = %q: %d bytes or invalid UTF-8", tc.in, got, len(got))
+			// A responder rename appends up to renameRoom bytes, and the
+			// result must still fit one label.
+			if len(got)+renameRoom > dnsLabelMax || !utf8.ValidString(got) {
+				t.Errorf("instanceLabel(%q, %q) = %q: %d bytes leaves no room for a rename, or invalid UTF-8", tc.in, tc.suffix, got, len(got))
 			}
 		})
+	}
+}
+
+// TestAnnounceInfosLongFannedOutName pins the wiring of instanceLabel into
+// announceInfos: a device whose name alone exceeds a label still advertises
+// each of its streams under its own name, within the label budget.
+func TestAnnounceInfosLongFannedOutName(t *testing.T) {
+	t.Parallel()
+	rt := servingRecord(strings.Repeat("n", 100), "/north")
+	south := config.Stream{Path: "/south", Mode: config.ModeOpus, Channels: []int{2}}
+	rt.dev.Streams = append(rt.dev.Streams, south)
+	rt.streams = append(rt.streams, &streamRuntime{stream: south})
+	infos, _, err := announceInfos(testRTSP8554, []*deviceRuntime{rt, servingRecord(strings.Repeat("s", 100), "/solo")}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 3 {
+		t.Fatalf("got %d records, want 3", len(infos))
+	}
+	seen := map[string]bool{}
+	for _, in := range infos {
+		if len(in.Name) > labelBudget {
+			t.Errorf("record %s advertises %d bytes, over the %d-byte budget", in.Path, len(in.Name), labelBudget)
+		}
+		seen[in.Name] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("names %v: want three distinct names", infos)
+	}
+	if !strings.HasSuffix(infos[0].Name, " north") || !strings.HasSuffix(infos[1].Name, " south") {
+		t.Errorf("fanned-out names %q, %q: want each to keep its stream path", infos[0].Name, infos[1].Name)
 	}
 }
 

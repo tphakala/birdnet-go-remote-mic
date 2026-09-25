@@ -244,9 +244,11 @@ A name, id or path set through the web UI or the management API is limited to
 128 characters for a device name and a stream path, and 2048 for a device id. A
 config file that exceeds them still loads, so an upgrade never stops an
 appliance from starting, and a value already in the file does not block other
-changes; only a new over-long value is refused. mDNS advertises at most the
-first 63 bytes of a device name (with the stream path appended for a device
-with several streams), the most one DNS label holds.
+changes; only a new over-long value is refused. An mDNS service name is one
+DNS label (63 bytes), and the appliance keeps 6 of those free for the
+` (N)` suffix the responder adds when another host already uses the name, so
+it advertises at most 57 bytes: a longer device name is cut, keeping the
+stream path it gets for a device with several streams.
 
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
