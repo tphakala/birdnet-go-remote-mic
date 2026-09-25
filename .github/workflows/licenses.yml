@@ -6,11 +6,14 @@ name: Licenses
 # without touching go.mod.
 #
 # - On a Dependabot pull request, a dependency bump is expected to change the
-#   document, so the job regenerates it and commits the result to the PR
-#   branch; no one has to do it by hand.
-# - On every other pull request and on main, the job fails when the committed
-#   document is stale (run `task licenses:generate`) or when a linked module
-#   ships no license file.
+#   document, so the regenerate job rewrites it and commits the result to the
+#   PR branch; no one has to do it by hand. That commit is pushed with the
+#   workflow token, which by design starts no new workflow runs, so it carries
+#   no checks of its own; it only changes the generated document, and the
+#   dependency bump itself was checked on the commit before it.
+# - On every other pull request and on main, the verify job fails when the
+#   committed document is stale (run `task licenses:generate`), or when a
+#   linked module ships no license file or one the generator cannot name.
 
 on:
   push:
@@ -24,30 +27,48 @@ env:
 permissions:
   contents: read
 
+# A newer push to the same branch (a Dependabot rebase, say) supersedes a run
+# still in flight, so a regenerate job never pushes onto a branch that moved.
+concurrency:
+  group: licenses-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  licenses:
+  verify:
     name: Third-party licenses
+    if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    # Writing back to the PR branch needs contents: write; only the Dependabot
-    # path uses it, and it only touches THIRD_PARTY_LICENSES.md.
-    permissions:
-      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          # For a Dependabot pull request, check out the branch itself (not the
-          # merge commit) so the regenerated file can be committed back to it.
-          # Everything else, fork pull requests included, keeps the default ref.
-          ref: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.ref || '' }}
-
+          persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: Verify
+        run: go run ./tools/licensegen -check
 
-      - name: Regenerate for a Dependabot pull request
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+  regenerate:
+    name: Third-party licenses (Dependabot)
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # The only job with write access, and it only commits the generated file.
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the pull request branch
+        uses: actions/checkout@v7
+        with:
+          # The branch itself, not the merge commit, so the regenerated file
+          # can be committed back to it.
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Regenerate and commit
         run: |
           go run ./tools/licensegen
           if git diff --quiet -- THIRD_PARTY_LICENSES.md; then
@@ -59,7 +80,3 @@ jobs:
           git add THIRD_PARTY_LICENSES.md
           git commit -m "deps: update third-party licenses"
           git push
-
-      - name: Verify
-        if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]'
-        run: go run ./tools/licensegen -check

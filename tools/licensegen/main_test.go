@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -33,15 +34,25 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// TestCommittedDocumentIsCurrent runs the generator end to end from the
-// repository root (go list over every target, the module cache, GOROOT and the
-// font licenses) and checks the committed document matches, exactly as
-// `task licenses:verify` does. It needs the go command and network or a warm
-// module cache, which every build of this module already needs.
-func TestCommittedDocumentIsCurrent(t *testing.T) {
-	t.Chdir("../..")
-	if err := run(true); err != nil {
-		t.Fatalf("run(check) = %v, want the committed %s to be current", err, outFile)
+// TestUnrecognizedLicenseFails pins that a license file the classifier cannot
+// name fails generation, while an unrecognized notice or patent file does not.
+func TestUnrecognizedLicenseFails(t *testing.T) {
+	t.Parallel()
+	const license = "LICENSE"
+	odd := component{name: "example.com/odd", files: []licenseFile{{name: license, text: "All rights reserved."}}}
+	if err := checkRecognized(odd); !errors.Is(err, ErrUnrecognized) {
+		t.Errorf("unrecognized LICENSE: err = %v, want ErrUnrecognized", err)
+	}
+	withNotice := component{name: "example.com/ok", files: []licenseFile{
+		{name: license, text: "Permission is hereby granted, free of charge"},
+		{name: "NOTICE", text: "This product includes software developed by someone."},
+		{name: "PATENTS", text: "Additional IP Rights Grant (Patents)"},
+	}}
+	if err := checkRecognized(withNotice); err != nil {
+		t.Errorf("recognized LICENSE with NOTICE and PATENTS: err = %v, want nil", err)
+	}
+	if got := componentLicense(withNotice); got != "MIT" {
+		t.Errorf("componentLicense = %q, want MIT (notice and patent files name no license)", got)
 	}
 }
 
@@ -79,7 +90,8 @@ func TestIsLicenseName(t *testing.T) {
 	t.Parallel()
 	for name, want := range map[string]bool{
 		"LICENSE": true, "LICENSE.md": true, "license.txt": true, "LICENCE": true,
-		"COPYING": true, "NOTICE": true, "README.md": false, "go.mod": false,
+		"COPYING": true, "NOTICE": true, "PATENTS": true, "README.md": false, "go.mod": false,
+		"license.go": false, "notice.go": false,
 	} {
 		if got := isLicenseName(name); got != want {
 			t.Errorf("isLicenseName(%q) = %v, want %v", name, got, want)

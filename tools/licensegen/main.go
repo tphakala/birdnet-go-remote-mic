@@ -35,6 +35,9 @@ const outFile = "THIRD_PARTY_LICENSES.md"
 // mainPackage is the binary whose dependencies are listed.
 const mainPackage = "./cmd/remotemic"
 
+// unknownLicense is what classify returns for text it cannot name.
+const unknownLicense = "see license text"
+
 // target is one release build whose linked modules are collected; the union
 // over every target is listed, since each architecture can link a different
 // set (golang.org/x/sys, for one, varies by GOARCH).
@@ -94,7 +97,8 @@ func run(check bool) error {
 }
 
 // collect gathers every component: the linked modules (sorted by path), then
-// the Go standard library, then the bundled assets.
+// the Go standard library, then the bundled assets. It fails on a component
+// with no license file or with one the classifier cannot name.
 func collect() ([]component, error) {
 	mods := map[string]module{}
 	for _, t := range targets {
@@ -123,13 +127,15 @@ func collect() ([]component, error) {
 	if err != nil {
 		return nil, err
 	}
-	std, err := readLicense(filepath.Join(goroot, "LICENSE"))
+	// The Go distribution's LICENSE and PATENTS grant sit at the top of GOROOT,
+	// the same layout licenseFiles reads for a module.
+	std, err := licenseFiles(goroot)
 	if err != nil {
 		return nil, fmt.Errorf("go standard library: %w", err)
 	}
 	// No version: it would follow whichever toolchain generated the file, and
 	// the license does not change between releases.
-	comps = append(comps, component{name: "Go standard library and runtime", files: []licenseFile{std}})
+	comps = append(comps, component{name: "Go standard library and runtime", files: std})
 
 	for _, a := range assets {
 		f, err := readLicense(a.license)
@@ -137,6 +143,11 @@ func collect() ([]component, error) {
 			return nil, fmt.Errorf("%s: %w", a.name, err)
 		}
 		comps = append(comps, component{name: a.name, files: []licenseFile{f}})
+	}
+	for _, c := range comps {
+		if err := checkRecognized(c); err != nil {
+			return nil, err
+		}
 	}
 	return comps, nil
 }
@@ -153,7 +164,9 @@ func listModules(t target, mods map[string]module) error {
 	// skipfrontend selects the web embed stub, so listing needs no built web/dist;
 	// it does not change which modules are linked.
 	cmd := exec.Command("go", "list", "-deps", "-json=Module", "-tags", "skipfrontend", mainPackage)
-	cmd.Env = append(os.Environ(), "GOOS=linux", "CGO_ENABLED=0", "GOARCH="+t.goarch, "GOARM="+t.goarm)
+	// GOWORK=off: under a go.work every workspace module reports Main and would
+	// be left out, though the released binary links it from the module cache.
+	cmd.Env = append(os.Environ(), "GOOS=linux", "CGO_ENABLED=0", "GOARCH="+t.goarch, "GOARM="+t.goarm, "GOWORK=off")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -202,11 +215,15 @@ func licenseFiles(dir string) ([]licenseFile, error) {
 	return files, nil
 }
 
-// isLicenseName reports whether a file name is a license or notice file
-// (LICENSE, LICENSE.md, LICENCE, COPYING, NOTICE and the like).
+// isLicenseName reports whether a file name is a license, notice or patent
+// grant file (LICENSE, LICENSE.md, LICENCE, COPYING, NOTICE, PATENTS and the
+// like). Go source files such as license.go are code, not license text.
 func isLicenseName(name string) bool {
+	if strings.HasSuffix(name, ".go") {
+		return false
+	}
 	upper := strings.ToUpper(name)
-	for _, prefix := range []string{"LICENSE", "LICENCE", "COPYING", "NOTICE"} {
+	for _, prefix := range []string{"LICENSE", "LICENCE", "COPYING", "NOTICE", "PATENTS"} {
 		if strings.HasPrefix(upper, prefix) {
 			return true
 		}
@@ -262,28 +279,50 @@ func classify(text string) string {
 		ids = append(ids, "OFL-1.1")
 	}
 	if len(ids) == 0 {
-		return "see license text"
+		return unknownLicense
 	}
 	return strings.Join(ids, ", ")
 }
 
 // componentLicense summarizes a component's licenses over all its files.
+// Notice and patent files carry attributions or grants, not a license, so
+// they are listed in full but do not name one.
 func componentLicense(c component) string {
 	var ids []string
 	for _, f := range c.files {
+		if isNoticeName(f.name) {
+			continue
+		}
 		for id := range strings.SplitSeq(classify(f.text), ", ") {
 			if !slices.Contains(ids, id) {
 				ids = append(ids, id)
 			}
 		}
 	}
-	// A notice file alone classifies as unknown; drop that when a real license
-	// was recognized.
-	if len(ids) > 1 {
-		ids = slices.DeleteFunc(ids, func(id string) bool { return id == "see license text" })
-	}
 	slices.SortFunc(ids, cmp.Compare)
 	return strings.Join(ids, ", ")
+}
+
+// isNoticeName reports whether a license file is a notice or patent grant
+// rather than a license.
+func isNoticeName(name string) bool {
+	upper := strings.ToUpper(name)
+	return strings.HasPrefix(upper, "NOTICE") || strings.HasPrefix(upper, "PATENTS")
+}
+
+// ErrUnrecognized reports a license file the classifier cannot name. A new or
+// unusual license needs a human look (and a case in classify) before it ships,
+// rather than a quiet "see license text" row.
+var ErrUnrecognized = errors.New("unrecognized license; review it and teach classify to name it")
+
+// checkRecognized fails when any license file of c is unrecognized.
+func checkRecognized(c component) error {
+	for _, f := range c.files {
+		if !isNoticeName(f.name) && classify(f.text) == unknownLicense {
+			return fmt.Errorf("%s: %s: %w", c.name, f.name, ErrUnrecognized)
+		}
+	}
+	return nil
 }
 
 // fence wraps license text in a code fence longer than any backtick run inside

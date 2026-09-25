@@ -59,11 +59,14 @@ builds:
 
 archives:
   # e.g. birdnet-go-remote-mic_1.0.0_linux_amd64.tar.gz, containing the
-  # remote-mic binary plus the README and license.
+  # remote-mic binary plus the README, its license, and the licenses of the
+  # third-party code linked into it (their terms require the notices to travel
+  # with the binary).
   - formats: [tar.gz]
     files:
       - README.md
       - LICENSE
+      - THIRD_PARTY_LICENSES.md
 
 checksum:
   name_template: checksums.txt
@@ -102,6 +105,8 @@ nfpms:
       - src: LICENSE
         # Debian convention (and lintian) expect the license file at .../copyright.
         dst: /usr/share/doc/birdnet-go-remote-mic/copyright
+      - src: THIRD_PARTY_LICENSES.md
+        dst: /usr/share/doc/birdnet-go-remote-mic/THIRD_PARTY_LICENSES.md
 
 # Homebrew tap: on every tagged release, GoReleaser regenerates the formula in
 # tphakala/homebrew-tap and pushes it over SSH, so the tap stays current with no
