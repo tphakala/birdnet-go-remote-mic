@@ -1013,7 +1013,7 @@ components:
       properties:
         device:
           type: string
-          maxLength: 256
+          maxLength: 2048
           description: Capture device id to enable, as reported by GET /devices/available.
           examples: ["usb:1235:8218:s=S1A2B3:if=0,0"]
         name:
@@ -1297,7 +1297,7 @@ components:
           maxLength: 128
         device:
           type: string
-          maxLength: 256
+          maxLength: 2048
         path:
           type: string
           maxLength: 128

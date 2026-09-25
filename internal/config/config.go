@@ -29,12 +29,16 @@ const maxDevices = 32
 const MaxChannels = 8
 
 // Length caps, in characters, for the free-form device strings, matching the
-// API contract's maxLength. They are far above any real value; they exist so a
-// hand-edited config cannot carry names many KiB long, which would make every
-// full-array PATCH /config from the web UI exceed the API body cap.
+// API contract's maxLength. ValidateLengths enforces them on writes through the
+// management API, never at Load: a config that already runs must keep loading
+// after an upgrade, or the whole appliance (and its UI, the tool to fix it)
+// would stay down. The device id cap sits above the longest id go-audio-capture
+// can build (a USB serial of up to 126 UTF-16 units, each byte percent-escaped
+// to three characters, plus the fixed fields), so provisioning a detected
+// device never trips it.
 const (
 	MaxNameLen     = 128
-	MaxDeviceIDLen = 256
+	MaxDeviceIDLen = 2048
 	MaxPathLen     = 128
 )
 
@@ -549,7 +553,8 @@ func (c *Config) Validate() error {
 }
 
 // validateDevices checks the device list: the count cap, each device's fields,
-// and the uniqueness of names, paths and device ids.
+// and the uniqueness of names, paths and device ids. The length caps are not
+// here (see ValidateLengths).
 func (c *Config) validateDevices() error {
 	// An empty device list is valid: on first run the appliance boots with no
 	// configured devices so the web UI can enumerate the host's capture hardware
@@ -570,14 +575,8 @@ func (c *Config) validateDevices() error {
 		if strings.ContainsAny(d.Name, "\r\n") {
 			return &ValidationError{field("name"), "must not contain CR or LF"}
 		}
-		if utf8.RuneCountInString(d.Name) > MaxNameLen {
-			return &ValidationError{field("name"), fmt.Sprintf("must be at most %d characters", MaxNameLen)}
-		}
 		if d.Device == "" {
 			return &ValidationError{field("device"), "must not be empty"}
-		}
-		if utf8.RuneCountInString(d.Device) > MaxDeviceIDLen {
-			return &ValidationError{field("device"), fmt.Sprintf("must be at most %d characters", MaxDeviceIDLen)}
 		}
 		if d.Format != "s16" {
 			return &ValidationError{field("format"), "must be s16"}
@@ -744,11 +743,31 @@ func validatePath(p string) string {
 		return "must not contain whitespace"
 	case strings.HasSuffix(p, "/trackID=0"):
 		return "must not end with /trackID=0 (reserved for the per-track SETUP URL)"
-	case utf8.RuneCountInString(p) > MaxPathLen:
-		return fmt.Sprintf("must be at most %d characters", MaxPathLen)
 	default:
 		return ""
 	}
+}
+
+// ValidateLengths checks the length caps on each device's name and id and on
+// every stream path, counted in characters as JSON Schema maxLength counts
+// them. The management API calls it after Validate on every config it writes;
+// Load does not (see MaxNameLen).
+func (c *Config) ValidateLengths() error {
+	for i := range c.Devices {
+		d := &c.Devices[i]
+		if utf8.RuneCountInString(d.Name) > MaxNameLen {
+			return &ValidationError{fmt.Sprintf("devices[%d].name", i), fmt.Sprintf("must be at most %d characters", MaxNameLen)}
+		}
+		if utf8.RuneCountInString(d.Device) > MaxDeviceIDLen {
+			return &ValidationError{fmt.Sprintf("devices[%d].device", i), fmt.Sprintf("must be at most %d characters", MaxDeviceIDLen)}
+		}
+		for j := range d.Streams {
+			if utf8.RuneCountInString(d.Streams[j].Path) > MaxPathLen {
+				return &ValidationError{fmt.Sprintf("devices[%d].streams[%d].path", i, j), fmt.Sprintf("must be at most %d characters", MaxPathLen)}
+			}
+		}
+	}
+	return nil
 }
 
 // Clone returns a deep copy of c. The Devices slice and every pointer field (the

@@ -239,6 +239,11 @@ opens a different device in its place. Give each of the two units its own port
 id, not just one; `remote-mic devices list`, the web UI, and the ambiguity error
 (shown by the web UI and `--check`) all name the port id to use.
 
+Changes made through the web UI or the management API are limited to 128
+characters for a device name and a stream path, and 2048 for a device id. A
+config file that exceeds them still loads, so an upgrade never stops an
+appliance from starting; shorten the value before saving it from the UI.
+
 Serve flags override the loaded config for that run (precedence: flag over
 config over default), which is handy for relocating ports on a host where the
 defaults are taken:

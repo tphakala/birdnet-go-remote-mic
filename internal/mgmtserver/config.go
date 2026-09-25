@@ -172,7 +172,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 			cur.Devices = devs
 		}
 		cur.ApplyDefaults()
-		if verr := cur.Validate(); verr != nil {
+		if verr := validateWrite(&cur); verr != nil {
 			return config.Config{}, verr
 		}
 		return cur, nil
@@ -313,6 +313,16 @@ func validationProblem(verr *config.ValidationError) mgmtapi.ValidationProblem {
 			{Field: verr.Field, Reason: verr.Reason},
 		},
 	}
+}
+
+// validateWrite validates a config the API is about to persist that may carry
+// strings from the request: the full Validate plus the length caps, which Load
+// deliberately does not apply (see config.MaxNameLen).
+func validateWrite(c *config.Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	return c.ValidateLengths()
 }
 
 // configToWire maps the appliance configuration to the generated wire type. The
