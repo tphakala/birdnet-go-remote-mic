@@ -982,6 +982,38 @@ func TestTokenWriteMissingConfigDotDotAfterSymlink(t *testing.T) {
 	}
 }
 
+// TestCheckOwnerParentEdgeCases pins the parent directory the owner check
+// examines for a config not created yet at the edges of a path: a config at the
+// root examines the root, and a bare name whose working directory is gone
+// examines ".", never the root (which would tell the operator to run as root).
+func TestCheckOwnerParentEdgeCases(t *testing.T) {
+	if _, err := os.Stat("/remote-mic-no-such-config.yaml"); err == nil {
+		t.Skip("a file of the test's chosen name exists at /")
+	}
+	stubEUID(t, os.Geteuid()+1)
+	if os.Geteuid()+1 == 0 {
+		t.Skip("the stubbed uid would be root's")
+	}
+	err := checkOwner("/remote-mic-no-such-config.yaml", "token generate")
+	if err == nil || !strings.Contains(err.Error(), "the directory / (") {
+		t.Errorf("root-level config: err = %v, want a refusal naming /", err)
+	}
+
+	gone := t.TempDir()
+	t.Chdir(gone)
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Getwd(); err == nil {
+		t.Skip("this platform still resolves a removed working directory")
+	}
+	// The removed directory can still be examined through ".", so a refusal
+	// naming its real owner is fine; naming the root is the defect.
+	if err := checkOwner("config.yaml", "token generate"); err != nil && strings.Contains(err.Error(), "the directory / (") {
+		t.Errorf("bare name with the working directory gone: err = %v, want no fallback to /", err)
+	}
+}
+
 // TestTokenWriteMissingConfigSharedDirProceeds asserts that with no config yet
 // in a shared directory (sticky or world-writable, such as /tmp), the
 // directory's owner is not taken as the appliance account, so another account's

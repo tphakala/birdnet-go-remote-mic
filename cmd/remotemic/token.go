@@ -525,8 +525,14 @@ func checkOwner(cfgPath, command string) error {
 		// symlink names a different directory than the one the file lands in.
 		dir, base := filepath.Split(what)
 		dir = strings.TrimSuffix(dir, string(filepath.Separator))
+		// An empty parent is the root for an absolute path ("/config.yaml"), but
+		// the working directory for a bare relative name (absPath returns one
+		// when the working directory cannot be resolved).
 		if dir == "" {
-			dir = string(filepath.Separator)
+			dir = "."
+			if filepath.IsAbs(what) {
+				dir = string(filepath.Separator)
+			}
 		}
 		// Name the directory as resolved, so the message shows where the file
 		// actually lands rather than a spelling with "..".
