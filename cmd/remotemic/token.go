@@ -39,6 +39,10 @@ var (
 // only so tests can shorten it.
 var editLockWait = 5 * time.Second
 
+// lockEdits takes the config's edit lock (runlock.LockEdits). A variable only
+// so a test can observe that an edit is waiting on it.
+var lockEdits = runlock.LockEdits
+
 // liveTimeout bounds a token change sent to a running appliance. The API
 // persists and enforces the token before it answers, then waits for the live
 // reload, so allow for a slow reconcile rather than failing a change that landed.
@@ -448,7 +452,7 @@ func loadConfigForChange(cfgPath string, check func(cur string) error) (config.C
 // while an appliance holds the run lock without a management API) serialize
 // instead of the last writer silently discarding the other's change.
 func saveToken(cfgPath, token string, check func(cur string) error) error {
-	release, err := runlock.LockEdits(cfgPath, editLockWait)
+	release, err := lockEdits(cfgPath, editLockWait)
 	if errors.Is(err, runlock.ErrHeld) {
 		return fmt.Errorf("another token command is still editing %s; try again in a few seconds", absPath(cfgPath))
 	}

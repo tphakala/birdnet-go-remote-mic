@@ -1145,6 +1145,18 @@ func TestSaveTokenSerializesEdits(t *testing.T) {
 		cur        string
 		afterFirst bool
 	}
+	// Observe the second edit reaching the edit lock. The first already holds
+	// it (its check runs inside), so once the second is attempting it, its own
+	// check cannot run until the first releases: no timing window is needed. An
+	// edit that skipped the lock would never signal and fails below.
+	attempting := make(chan struct{})
+	realLock := lockEdits
+	lockEdits = func(p string, wait time.Duration) (func() error, error) {
+		close(attempting)
+		return realLock(p, wait)
+	}
+	t.Cleanup(func() { lockEdits = realLock })
+
 	secondSaw := make(chan seen, 1)
 	secondDone := make(chan error, 1)
 	go func() {
@@ -1154,16 +1166,16 @@ func TestSaveTokenSerializesEdits(t *testing.T) {
 		})
 	}()
 
-	// Give an unserialized second edit room to run its check while the first is
-	// still inside. This window can only let a broken lock pass by luck; it
-	// never delays or fails a correct one.
 	select {
+	case <-attempting:
 	case s := <-secondSaw:
 		close(unblock)
 		<-firstDone
 		<-secondDone
-		t.Fatalf("second edit ran its check (saw %q) while the first was still inside", s.cur)
-	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("second edit ran its check (saw %q) without taking the edit lock", s.cur)
+	case <-time.After(10 * time.Second): // a failure bound, not synchronization
+		close(unblock)
+		t.Fatal("second edit never attempted the edit lock")
 	}
 	unblocked.Store(true)
 	close(unblock)
