@@ -177,6 +177,10 @@ type deviceRuntime struct {
 	mu    sync.Mutex
 	state mgmtserver.DeviceState
 	err   string
+	// downCause is the down-condition class (downNotConnected and friends) of a
+	// skipped or failed record, reported as the wire downCause; empty while
+	// serving and for a skip with no specific class. Guarded by mu like state.
+	downCause string
 
 	// superseded marks a device the reconcile loop deliberately stopped (a
 	// hot-reload stop or restart). Its pump still delivers a final pumpResult;

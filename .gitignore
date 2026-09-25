@@ -29,6 +29,8 @@ coverage.txt
 # Run lock a serving appliance holds beside its config (either config extension).
 *.yaml.lock
 *.yml.lock
+# Edit lock the token commands take beside it while editing the config.
+*.lock.edit
 
 # Local tool caches
 cache/

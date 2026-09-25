@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps } from "../src/lib/store.js";
+import { setToken } from "../src/lib/auth.js";
 import { FakeTimers } from "./fixtures.js";
 import type { ApplianceStatus, Config, Device, SystemInfo } from "../src/lib/types.js";
 
@@ -351,4 +352,29 @@ test("startPolling again ends a hidden-page pause", () => {
   h.store.endTokenSwap();
   assert.equal(h.sseStarts(), 3);
   h.store.stopPolling();
+});
+
+test("a token-gated boot fetches /status once and applies the verifying read", async () => {
+  const h = harness(new FakeTimers());
+  setToken("stored-token");
+  try {
+    h.push("getHealth", { status: "ok", authRequired: true });
+    // Only ONE status is queued: a second GET /status would reject with
+    // "nothing queued" and fail the core load.
+    pollable(h);
+    let loadError = false;
+    h.store.addEventListener("loaderror", () => {
+      loadError = true;
+    });
+    assert.equal(await h.store.start(), true);
+    // loadInitial runs detached from start(); let its refreshes settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.calls.get("getStatus"), 1);
+    assert.deepEqual(h.store.getState().status, status(1));
+    assert.equal(h.events.get("status"), 1);
+    assert.equal(loadError, false);
+  } finally {
+    h.store.stopPolling();
+    setToken(null);
+  }
 });

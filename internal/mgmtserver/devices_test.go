@@ -727,15 +727,58 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 	})
 
 	t.Run("empty channels array still probes", func(t *testing.T) {
+		// Through ProvisionDevice, not preferredChannel directly: the decision to
+		// probe for an explicit empty array is made by ProvisionDevice's check.
+		called := false
+		store, _ := tempStore(t)
+		prov := &fakeProvider{available: []AvailableDevice{
+			{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}},
+		}}
+		s := New(prov, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }),
+			WithChannelProbe(func(context.Context, string, int, int) ([]float64, error) {
+				called = true
+				return []float64{-90, -10}, nil
+			}))
+		resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+			Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr()},
+		})
+		if err != nil {
+			t.Fatalf("ProvisionDevice: %v", err)
+		}
+		created, ok := resp.(mgmtapi.ProvisionDevice201JSONResponse)
+		if !ok {
+			t.Fatalf("returned %T, want 201", resp)
+		}
+		if !called || !slices.Equal(created.Channels, []int{2}) {
+			t.Errorf("probe called=%v, channels=%v; want the probe run and the loudest channel [2]", called, created.Channels)
+		}
+	})
+
+	t.Run("steps down when the widest count fails at the rate", func(t *testing.T) {
+		var tried []int
+		s := newServer(func(_ context.Context, _ string, _, channels int) ([]float64, error) {
+			tried = append(tried, channels)
+			if channels > 2 {
+				return nil, errors.New("invalid channel count at this rate")
+			}
+			return []float64{-90, -10}, nil
+		})
+		d := &AvailableDevice{SupportedRates: []int{192000}, SupportedChannels: []int{1, 2, 4, 8}}
+		got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)})
+		if got != 2 || !slices.Equal(tried, []int{8, 4, 2}) {
+			t.Errorf("channel %d after widths %v; want channel 2 after trying [8 4 2]", got, tried)
+		}
+	})
+
+	t.Run("single-channel device skips the probe", func(t *testing.T) {
 		called := false
 		s := newServer(func(context.Context, string, int, int) ([]float64, error) {
 			called = true
-			return []float64{-90, -10}, nil
+			return nil, nil
 		})
-		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{2}}
-		s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr()})
-		if !called {
-			t.Error("probe did not run for an explicit empty channels array")
+		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{1}}
+		if got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{}); called || got != 1 {
+			t.Errorf("probe called=%v, channel=%d; want no probe and channel 1", called, got)
 		}
 	})
 
@@ -801,6 +844,37 @@ func TestProvisionDeviceConfiguredUnderAnotherIDYields409(t *testing.T) {
 	}
 	if called {
 		t.Error("channel probe ran for a device the config already owns")
+	}
+}
+
+// TestProvisionDeviceRechecksAliasUnderLock pins the alias check repeated under
+// patchMu: a device the config comes to own under another id while this
+// request probes (a concurrent PATCH adding an alias, simulated from the probe)
+// is refused with a 409 instead of being persisted as a second entry.
+func TestProvisionDeviceRechecksAliasUnderLock(t *testing.T) {
+	store, _ := tempStore(t)
+	dev := AvailableDevice{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{48000}, SupportedChannels: []int{2}}
+	prov := &fakeProvider{available: []AvailableDevice{dev}}
+	probe := func(context.Context, string, int, int) ([]float64, error) {
+		// The concurrent alias lands: the device is still detected but no longer
+		// available.
+		prov.available, prov.detected = nil, []AvailableDevice{dev}
+		return []float64{-90, -10}, nil
+	}
+	before := len(store.Config().Devices)
+	s := New(prov, WithConfigStore(store), WithChannelProbe(probe),
+		WithReloader(func(context.Context, config.Config) error { return nil }))
+	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse); !ok {
+		t.Fatalf("returned %T, want 409", resp)
+	}
+	if got := len(store.Config().Devices); got != before {
+		t.Errorf("persisted %d devices, want %d (the aliased device must not be added)", got, before)
 	}
 }
 

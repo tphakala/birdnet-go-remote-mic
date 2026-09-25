@@ -14,6 +14,16 @@
 // holder's leftover state, and on release. Unlinking a flock'd path lets a late
 // opener lock the orphaned inode while a new file is locked under the same name,
 // so two holders could both believe they are alone.
+//
+// A second lock, the edit lock (EditPathFor, taken with LockEdits), serializes
+// direct edits of the config file between token commands. The run lock cannot
+// do that while an appliance runs without its management API: the appliance
+// holds the run lock for its whole life, so two token commands that both fall
+// back to editing the file would race their load, check, and save, and the last
+// writer would silently win. The edit lock lives in its own file, so taking it
+// never contends with the appliance's run lock, and the appliance never takes
+// it. It carries no content and, for the same reason as the run lock, is never
+// unlinked.
 package runlock
 
 import (
@@ -91,6 +101,46 @@ func PathFor(cfgPath string) string {
 		return filepath.Clean(target) + ".lock"
 	}
 	return full + ".lock"
+}
+
+// editSuffix names the edit lock file beside the run lock file.
+const editSuffix = ".edit"
+
+// EditPathFor returns the edit lock file path for the config file at cfgPath:
+// the run lock path from PathFor plus ".edit", so every spelling of one config
+// converges on one edit lock exactly as it does on one run lock.
+func EditPathFor(cfgPath string) string {
+	return PathFor(cfgPath) + editSuffix
+}
+
+// LockEdits takes the exclusive edit lock for the config file at cfgPath,
+// creating the lock file (0600) if needed. It retries for up to wait while
+// another process holds the lock, so a concurrent token command waits its turn
+// for the few milliseconds of an edit rather than failing; a lock still held
+// after wait returns ErrHeld. The caller holds it across the whole load, check,
+// and save of the config, then calls release, which closes the descriptor and so
+// drops the flock.
+func LockEdits(cfgPath string, wait time.Duration) (release func() error, err error) {
+	path := EditPathFor(cfgPath)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // path derives from the operator's --config
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) //nolint:gosec // an fd fits in int
+		switch {
+		case err == nil:
+			return f.Close, nil
+		case !errors.Is(err, syscall.EWOULDBLOCK):
+			_ = f.Close()
+			return nil, fmt.Errorf("runlock: lock %s: %w", path, err)
+		case !time.Now().Before(deadline):
+			_ = f.Close()
+			return nil, ErrHeld
+		}
+		time.Sleep(retryInterval)
+	}
 }
 
 // TryAcquire takes the lock at path without waiting, creating the file (0600)

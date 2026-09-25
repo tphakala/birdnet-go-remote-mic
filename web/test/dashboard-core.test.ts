@@ -5,7 +5,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { captureFormatLabel, channelLabel, tallyStates } from "../src/lib/dashboard-core.js";
+import { captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../src/lib/dashboard-core.js";
+
+test("downCauseTitle names each cause as its notification does and falls back", () => {
+  assert.equal(downCauseTitle("not-connected"), "Device not connected");
+  assert.equal(downCauseTitle("ambiguous"), "Device ambiguous");
+  assert.equal(downCauseTitle("malformed"), "Invalid device id");
+  assert.equal(downCauseTitle("same-hardware"), "Device conflict");
+  assert.equal(downCauseTitle("resolve-failed"), "Device unavailable");
+  assert.equal(downCauseTitle("open-failed"), "Device unavailable");
+  assert.equal(downCauseTitle("disconnected"), "Device disconnected");
+  assert.equal(downCauseTitle("failed"), "Device failed");
+  // An older appliance sends no cause, and a newer one may add a class.
+  assert.equal(downCauseTitle(undefined), "Device excluded from streaming");
+  assert.equal(downCauseTitle("some-future-cause"), "Device excluded from streaming");
+});
 
 test("channelLabel renders mono, contiguous, and non-contiguous selections", () => {
   assert.equal(channelLabel([]), "");

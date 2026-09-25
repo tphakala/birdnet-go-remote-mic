@@ -10,6 +10,10 @@ import { applyStoredToken } from "./lib/auth.js";
 
 const THEME_KEY = "remote-mic-theme";
 
+// How long the boot waits for the stream's connect re-sync to deliver the
+// notifications snapshot before loading it directly (see init).
+const NOTIFICATIONS_FALLBACK_MS = 3000;
+
 class App {
   public init(): void {
     this.initTheme();
@@ -32,10 +36,17 @@ class App {
     // token-gated appliance loads without a prompt on a returning browser.
     applyStoredToken();
     void store.start().then((running) => {
-      // Load the snapshot immediately too, independent of SSE connect timing.
-      // When the login prompt is up instead, the stream's connect after login
-      // re-syncs the snapshot.
-      if (running) void notifications.load();
+      // The stream's connect re-syncs the snapshot, and that load is the one
+      // that must run: it follows the subscription, so nothing raised between
+      // the snapshot and the stream is missed. Loading here as well fetched the
+      // snapshot twice on every boot. Load directly only as a fallback, when no
+      // snapshot has arrived shortly after boot (a stream that cannot connect,
+      // or a proxy that buffers it). When the login prompt is up instead, the
+      // stream's connect after login re-syncs the snapshot.
+      if (!running) return;
+      window.setTimeout(() => {
+        if (!notifications.hasLoaded()) void notifications.load();
+      }, NOTIFICATIONS_FALLBACK_MS);
     });
   }
 

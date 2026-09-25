@@ -11,8 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -29,6 +32,11 @@ var (
 	stdinIsTerminal           = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }              //nolint:gosec // an fd fits in int
 	readSecret                = func() ([]byte, error) { return term.ReadPassword(int(os.Stdin.Fd())) } //nolint:gosec // an fd fits in int
 )
+
+// editLockWait bounds how long a file edit waits for another token command's
+// edit of the same config to finish. An edit takes milliseconds, so a few
+// seconds covers a queue of them without hanging on a stuck holder.
+const editLockWait = 5 * time.Second
 
 // liveTimeout bounds a token change sent to a running appliance. The API
 // persists and enforces the token before it answers, then waits for the live
@@ -85,7 +93,9 @@ the appliance next starts (or, for an appliance whose API failed to start or
 stopped, at its next background attempt to bring it up, unless the file now
 disables the API). A command run while
 the appliance is still starting up, or in the seconds after its API stops
-while the API drains, asks you to retry. Run a command with -h to
+while the API drains, asks you to retry. Run generate, set, and clear as the
+account that owns the config (the account the appliance runs as, for example
+sudo -u remote-mic); they refuse to run as any other. Run a command with -h to
 see its flags.
 `)
 }
@@ -150,6 +160,9 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
+	if err := checkOwner(*cfgPath, "token generate"); err != nil {
+		return err
+	}
 	token, err := auth.GenerateToken()
 	if err != nil {
 		return fmt.Errorf("generate token: %w", err)
@@ -186,6 +199,9 @@ func runTokenSet(args []string, stderr io.Writer) error {
 	}
 	if fs.NArg() > 0 {
 		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
+	}
+	if err := checkOwner(*cfgPath, "token set"); err != nil {
+		return err
 	}
 	token, err := readNewToken(stderr)
 	if err != nil {
@@ -254,6 +270,9 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
 	quiet := fs.Bool("quiet", false, "print nothing on success")
 	if err := parseNoArgs(fs, args); err != nil {
+		return err
+	}
+	if err := checkOwner(*cfgPath, "token clear"); err != nil {
 		return err
 	}
 	// Load and confirm before touching the run lock. The y/N prompt must not run
@@ -421,8 +440,19 @@ func loadConfigForChange(cfgPath string, check func(cur string) error) (config.C
 }
 
 // saveToken edits the config file directly: load (or default, for a first run
-// with no file yet), check, set, and save atomically at 0600.
+// with no file yet), check, set, and save atomically at 0600. The edit lock is
+// held across all of it, so two token commands editing one config (possible
+// while an appliance holds the run lock without a management API) serialize
+// instead of the last writer silently discarding the other's change.
 func saveToken(cfgPath, token string, check func(cur string) error) error {
+	release, err := runlock.LockEdits(cfgPath, editLockWait)
+	if errors.Is(err, runlock.ErrHeld) {
+		return fmt.Errorf("another token command is still editing %s; try again in a few seconds", absPath(cfgPath))
+	}
+	if err != nil {
+		return withPermHint(err)
+	}
+	defer func() { _ = release() }()
 	cfg, err := loadConfigForChange(cfgPath, check)
 	if err != nil {
 		return err
@@ -458,6 +488,42 @@ func absPath(cfgPath string) string {
 		return abs
 	}
 	return cfgPath
+}
+
+// checkOwner refuses a write token command (named by command, such as
+// "token set") run as an account other than the one owning the config at
+// cfgPath, or, when the config does not exist yet, its resolved parent
+// directory. The appliance runs as that owner: a command run as another account
+// (typically root via sudo) would create a lock file, or rewrite the config,
+// that the appliance's own account then cannot open. It runs before any lock
+// file is created or touched. A path that cannot be examined is left to the
+// command itself to report.
+func checkOwner(cfgPath, command string) error {
+	what := absPath(cfgPath)
+	fi, err := os.Stat(cfgPath)
+	if errors.Is(err, os.ErrNotExist) {
+		dir := filepath.Dir(what)
+		fi, err = os.Stat(dir) // follows symlinks, so this is the resolved directory
+		what = "the directory " + dir + " (where " + filepath.Base(what) + " will be created)"
+	}
+	if err != nil {
+		return nil //nolint:nilerr // the command's own open reports the error, with a permission hint
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+	if int64(st.Uid) == int64(geteuid()) {
+		return nil
+	}
+	uid := strconv.FormatUint(uint64(st.Uid), 10)
+	// sudo takes a numeric uid as '#uid' when the account has no name here.
+	who, sudoUser := "uid "+uid, "'#"+uid+"'"
+	if u, err := user.LookupId(uid); err == nil && u.Username != "" {
+		who, sudoUser = fmt.Sprintf("%q (uid %s)", u.Username, uid), u.Username
+	}
+	return fmt.Errorf("%s is owned by %s; run this command as that account: sudo -u %s remote-mic %s --config %s",
+		what, who, sudoUser, command, absPath(cfgPath))
 }
 
 // withPermHint adds a pointer to the likely fix when err is a permission

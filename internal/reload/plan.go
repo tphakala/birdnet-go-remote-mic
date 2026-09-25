@@ -102,10 +102,14 @@ func CaptureParamsEqual(a, b *config.Device) bool {
 }
 
 // streamEqual reports whether two streams build an identical pipeline stage, SDP
-// and RTSP mount.
+// and RTSP mount. The Opus bitrate is compared as the encoder and SDP see it
+// (EffectiveBitrate), so a saved explicit value that equals the default and an
+// unset one (0, "follow the default") do not restart a stream that would come
+// back identical; a PCM stream has no encoder, so its bitrate is ignored.
 func streamEqual(a, b config.Stream) bool {
-	return a.Path == b.Path &&
-		a.Mode == b.Mode &&
-		a.Opus.Bitrate == b.Opus.Bitrate &&
-		slices.Equal(a.Channels, b.Channels)
+	if a.Path != b.Path || a.Mode != b.Mode || !slices.Equal(a.Channels, b.Channels) {
+		return false
+	}
+	return a.Mode != config.ModeOpus ||
+		a.Opus.EffectiveBitrate(len(a.Channels)) == b.Opus.EffectiveBitrate(len(b.Channels))
 }

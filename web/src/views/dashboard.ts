@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
-import { captureFormatLabel, channelLabel, tallyStates } from "../lib/dashboard-core.js";
+import { captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -65,6 +65,7 @@ interface LiveBody {
 interface IdleBody {
   banner: HTMLElement;
   bannerIcon: HTMLElement;
+  bannerTitle: HTMLElement;
   bannerDesc: HTMLElement;
   footerNote: HTMLElement;
 }
@@ -467,13 +468,17 @@ export class DashboardView {
     // has no friendly name: the address is what the rest of the card shows.
     info.appendChild(elem("div", "device-title", d.friendlyName || d.hwAddr || d.device));
     const sub = elem("div", "available-sub");
-    const addr = elem("span", "mono", d.hwAddr ?? d.device);
-    addr.title = `Device id: ${d.device}`;
-    sub.appendChild(addr);
+    sub.appendChild(elem("span", "mono", d.hwAddr ?? d.device));
     if (d.idStable === false) sub.appendChild(elem("span", "available-caps", "no stable id"));
     const caps = capsSummary(d);
     if (caps) sub.appendChild(elem("span", "available-caps", caps));
     info.appendChild(sub);
+    // The id provisioning persists, shown as selectable text rather than a
+    // tooltip (unreachable by keyboard, touch and screen readers), so an operator
+    // can tell which of two identical units (serial or port) this card binds.
+    if (d.hwAddr && d.device !== d.hwAddr) {
+      info.appendChild(elem("div", "available-id mono", `Device id: ${d.device}`));
+    }
 
     const enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
     // Name the device in the accessible label: there is one Enable button per
@@ -782,7 +787,9 @@ export class DashboardView {
       const banner = elem("div", "error-banner");
       const bannerIcon = iconSpan(ICON_WARN, "error-banner-icon");
       const body = elem("div", "error-banner-body");
-      body.appendChild(elem("span", "error-banner-title", "Device excluded from streaming"));
+      // syncCard titles the banner by the device's down cause.
+      const bannerTitle = elem("span", "error-banner-title", downCauseTitle(undefined));
+      body.appendChild(bannerTitle);
       const bannerDesc = elem("span", "error-banner-desc");
       body.appendChild(bannerDesc);
       banner.appendChild(bannerIcon);
@@ -796,7 +803,7 @@ export class DashboardView {
       footer.appendChild(settingsBtn);
       article.appendChild(footer);
 
-      idle = { banner, bannerIcon, bannerDesc, footerNote };
+      idle = { banner, bannerIcon, bannerTitle, bannerDesc, footerNote };
     }
 
     return {
@@ -1007,6 +1014,7 @@ export class DashboardView {
         entry.idle.bannerIcon.dataset.icon = bannerKey;
         entry.idle.bannerIcon.innerHTML = d.state === "failed" ? ICON_ERROR : ICON_WARN;
       }
+      setText(entry.idle.bannerTitle, downCauseTitle(d.downCause));
       setText(entry.idle.bannerDesc, d.error ?? "");
       setText(entry.idle.footerNote, nonServingFooterText(d.state, configEnabled));
     }

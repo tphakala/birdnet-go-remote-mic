@@ -194,6 +194,11 @@ export interface Device {
   droppedFrames: number;
   opus?: OpusSettings;
   error?: string;
+  // Class of why a skipped or failed device is not serving (not-connected,
+  // ambiguous, malformed, resolve-failed, same-hardware, open-failed,
+  // disconnected, failed). Absent while serving, from an older appliance, and
+  // for a skip with no specific class; a later appliance may add values.
+  downCause?: string;
   friendlyName?: string;
   // Current-boot ALSA address ("hw:4,0") the configured id resolved to, for
   // display only; absent when the id resolved to no single present device (not

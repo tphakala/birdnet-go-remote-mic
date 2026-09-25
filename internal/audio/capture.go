@@ -280,14 +280,17 @@ func (s *selectingSource) Read() (Period, error) {
 		s.out = make([]byte, need)
 	}
 	out := s.out[:need]
-	srcFrameBytes := s.srcCh * 2
-	for f := 0; f < p.Frames; f++ {
-		base := f * srcFrameBytes
-		o := f * outCh * 2
+	inStride := s.srcCh * 2
+	outStride := outCh * 2
+	for f := range p.Frames {
+		src := p.Buf[f*inStride : f*inStride+inStride]
+		dst := out[f*outStride : f*outStride+outStride]
 		for j, ci := range s.idx {
-			so := base + ci*2
-			out[o+j*2] = p.Buf[so]
-			out[o+j*2+1] = p.Buf[so+1]
+			// Binding each two-byte sample window drops the per-byte bounds checks.
+			in := src[ci*2 : ci*2+2 : ci*2+2]
+			o := dst[j*2 : j*2+2 : j*2+2]
+			o[0] = in[0]
+			o[1] = in[1]
 		}
 	}
 	return Period{Buf: out, Frames: p.Frames, Session: p.Session, Captured: p.Captured}, nil

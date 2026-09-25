@@ -638,6 +638,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			dev:               *dev,
 			state:             mgmtserver.StateSkipped,
 			err:               err.Error(),
+			downCause:         downOpenFailed,
 			friendlyName:      hw.Label,
 			hwAddr:            hw.HWAddr,
 			supportedRates:    rates,
@@ -694,6 +695,7 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 		dev:               *dev,
 		state:             mgmtserver.StateSkipped,
 		err:               msg,
+		downCause:         cause,
 		friendlyName:      hw.Label,
 		hwAddr:            hw.HWAddr,
 		supportedRates:    rates,
@@ -947,7 +949,6 @@ func (a *appliance) onPumpDone(res pumpResult) {
 	a.hub.RemoveMeter(res.rt.dev.Name)
 	if res.err != nil && a.ctx.Err() == nil {
 		a.lastPumpErr = res.err
-		res.rt.markFailed(res.err)
 		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Decide whether the device was LOST (unplugged or
@@ -966,6 +967,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			}
 		}
 		if lost {
+			res.rt.markFailed(res.err, downDisconnected)
 			// A lost device comes back on its own once reconnected, so arm a retry:
 			// the next enumeration restarts it even when the host's hardware
 			// signature is unchanged (an unplug and replug at the same card index
@@ -985,6 +987,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// The hardware-change retry brings it back, not the backoff.
 			a.dropRetry(name)
 		} else {
+			res.rt.markFailed(res.err, downFailed)
 			// The pump died but the device did not read as lost: it still resolves to
 			// present hardware, or the failure could not be confirmed as a loss (a
 			// deterministic encoder fault, an EIO right after open, a pump that died a

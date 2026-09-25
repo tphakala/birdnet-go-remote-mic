@@ -848,3 +848,165 @@ func TestLockStateAbsoluteCertPath(t *testing.T) {
 		t.Fatalf("state = %+v, want pid and address carried through", st)
 	}
 }
+
+// stubEUID makes the write token commands see euid as their effective uid.
+func stubEUID(t *testing.T, euid int) {
+	t.Helper()
+	prev := geteuid
+	geteuid = func() int { return euid }
+	t.Cleanup(func() { geteuid = prev })
+}
+
+// assertNoLockFiles fails if the run lock or the edit lock for cfgPath exists.
+func assertNoLockFiles(t *testing.T, cfgPath string) {
+	t.Helper()
+	for _, p := range []string{runlock.PathFor(cfgPath), runlock.EditPathFor(cfgPath)} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("lock file %s: stat err = %v, want it never created", p, err)
+		}
+	}
+}
+
+// TestTokenWriteRefusesOtherOwner asserts generate, set, and clear refuse,
+// before creating any lock file or touching the config, when run as an account
+// other than the config's owner (the root-owned lock case), naming the owner and
+// the command to run instead.
+func TestTokenWriteRefusesOtherOwner(t *testing.T) {
+	// Each case is the token subcommand and its flags; the subcommand names it.
+	cases := [][]string{
+		{"generate", "--force"},
+		{"set"},
+		{"clear", "--yes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc[0], func(t *testing.T) {
+			path := tempConfig(t)
+			seedConfigWithToken(t, path, tokenOld)
+			stubStdin(t, tokenNew+"\n", false)
+			stubEUID(t, os.Geteuid()+1)
+
+			args := append(append([]string{cmdToken}, tc...), flagConfig, path)
+			code, stdout, errOut := runCLI(args...)
+			if code != 1 {
+				t.Fatalf("exit %d stderr %q, want 1", code, errOut)
+			}
+			wantCmd := "remote-mic token " + tc[0] + " --config " + path
+			if !strings.Contains(errOut, "is owned by") || !strings.Contains(errOut, "sudo -u ") || !strings.Contains(errOut, wantCmd) {
+				t.Fatalf("stderr %q, want an owner refusal suggesting %q", errOut, wantCmd)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout %q, want nothing", stdout)
+			}
+			if got := loadToken(t, path); got != tokenOld {
+				t.Fatalf("token = %q, want %q unchanged", got, tokenOld)
+			}
+			assertNoLockFiles(t, path)
+		})
+	}
+}
+
+// TestTokenWriteOwnerMatchProceeds asserts a write command run as the config's
+// owner is not refused.
+func TestTokenWriteOwnerMatchProceeds(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubStdin(t, tokenNew+"\n", false)
+	stubEUID(t, os.Geteuid())
+
+	code, _, errOut := runCLI("token", "set", flagConfig, path)
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q, want 0", code, errOut)
+	}
+	if got := loadToken(t, path); got != tokenNew {
+		t.Fatalf("token = %q, want %q", got, tokenNew)
+	}
+}
+
+// TestTokenWriteMissingConfigChecksDirOwner asserts that with no config yet, the
+// owner check falls back to the directory that will hold it: another account is
+// refused without creating the config or a lock, and the directory's owner goes
+// ahead and creates it.
+func TestTokenWriteMissingConfigChecksDirOwner(t *testing.T) {
+	path := tempConfig(t)
+	stubEUID(t, os.Geteuid()+1)
+	code, _, errOut := runCLI("token", "generate", flagConfig, path)
+	if code != 1 || !strings.Contains(errOut, "the directory "+filepath.Dir(path)) {
+		t.Fatalf("exit %d stderr %q, want a refusal naming the directory", code, errOut)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config stat err = %v, want it not created", err)
+	}
+	assertNoLockFiles(t, path)
+
+	stubEUID(t, os.Geteuid())
+	code, stdout, errOut := runCLI("token", "generate", flagConfig, path)
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q, want 0 as the directory owner", code, errOut)
+	}
+	if got := loadToken(t, path); got == "" || got != strings.TrimSpace(stdout) {
+		t.Fatalf("saved token %q, printed %q, want the printed token saved", got, stdout)
+	}
+}
+
+// TestTokenGetIgnoresOwner asserts the read-only token get is not refused for
+// an account other than the owner (one that can read the file, such as root).
+func TestTokenGetIgnoresOwner(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubEUID(t, os.Geteuid()+1)
+
+	code, stdout, errOut := runCLI("token", "get", flagConfig, path)
+	if code != 0 || strings.TrimSpace(stdout) != tokenOld {
+		t.Fatalf("exit %d stdout %q stderr %q, want the token", code, stdout, errOut)
+	}
+}
+
+// TestTokenFileEditWaitsForEditLock asserts two token commands editing the file
+// under an appliance without a management API serialize on the edit lock: a
+// command started while another holds it waits, then applies its change once
+// the holder releases, rather than racing it (last writer wins).
+func TestTokenFileEditWaitsForEditLock(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	holdLock(t, path, &runlock.State{PID: 4242})
+	stubStdin(t, tokenNew+"\n", false)
+
+	release, err := runlock.LockEdits(path, 0)
+	if err != nil {
+		t.Fatalf("LockEdits: %v", err)
+	}
+	type result struct {
+		code   int
+		stderr string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, _, errOut := runCLI("token", "set", flagConfig, path)
+		done <- result{code, errOut}
+	}()
+	select {
+	case r := <-done:
+		_ = release()
+		t.Fatalf("token set finished (exit %d stderr %q) while another edit held the lock", r.code, r.stderr)
+	default:
+	}
+	if got := loadToken(t, path); got != tokenOld {
+		_ = release()
+		t.Fatalf("token = %q while the edit lock was held, want %q", got, tokenOld)
+	}
+
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	select {
+	case r := <-done:
+		if r.code != 0 {
+			t.Fatalf("exit %d stderr %q after release, want 0", r.code, r.stderr)
+		}
+	case <-time.After(editLockWait + 5*time.Second):
+		t.Fatal("token set did not finish after the edit lock was released")
+	}
+	if got := loadToken(t, path); got != tokenNew {
+		t.Fatalf("token = %q, want %q", got, tokenNew)
+	}
+}

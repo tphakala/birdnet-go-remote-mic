@@ -42,3 +42,29 @@ export function captureFormatLabel(token: string): string {
       return token.toUpperCase();
   }
 }
+
+// downCauseTitle is the banner title for a device that is not serving, matching
+// the title of the notification the appliance raises for the same cause. An
+// absent or unknown cause (an older appliance, or a class added later) keeps the
+// generic title.
+export function downCauseTitle(cause: string | undefined): string {
+  switch (cause) {
+    case "not-connected":
+      return "Device not connected";
+    case "ambiguous":
+      return "Device ambiguous";
+    case "malformed":
+      return "Invalid device id";
+    case "same-hardware":
+      return "Device conflict";
+    case "resolve-failed":
+    case "open-failed":
+      return "Device unavailable";
+    case "disconnected":
+      return "Device disconnected";
+    case "failed":
+      return "Device failed";
+    default:
+      return "Device excluded from streaming";
+  }
+}

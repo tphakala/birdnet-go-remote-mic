@@ -3122,6 +3122,14 @@ select.field-input {
 .available-caps {
   color: var(--text-secondary);
 }
+/* A stable id can be long (usb:vid:pid:serial or a port path); wrap it anywhere
+   rather than widening the card. */
+.available-id {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .available-enable {
   flex: 0 0 auto;
 }

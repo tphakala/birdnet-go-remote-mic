@@ -157,8 +157,9 @@ export class AppStore extends EventTarget {
   // everything and resumes polling. A rejected token is not kept.
   public async login(token: string): Promise<{ ok: boolean; message: string }> {
     setToken(token);
+    let status: ApplianceStatus;
     try {
-      await this.api.getStatus();
+      status = await this.api.getStatus();
     } catch (err: unknown) {
       setToken(null);
       if (err instanceof ApiError && err.status === 401) {
@@ -169,7 +170,7 @@ export class AppStore extends EventTarget {
     }
     this.loginPending = false;
     this.dispatchEvent(new CustomEvent("authok"));
-    await this.loadInitial();
+    await this.loadInitial(status);
     // loadInitial may have hit a fresh 401 (the token was revoked between the
     // verifying getStatus and the bulk load), which re-arms loginPending via
     // onUnauthorized. Resuming polling would only be rejected again, so report
@@ -214,13 +215,15 @@ export class AppStore extends EventTarget {
     });
   }
 
-  public async loadInitial(): Promise<void> {
+  // status, when given, is the /status body the caller already fetched to verify
+  // the token, so the boot does not request it twice.
+  public async loadInitial(status?: ApplianceStatus): Promise<void> {
     // Name every result rather than destructuring a prefix positionally: the
     // Promise.all order and the assignment order must agree, and a silent
     // misassignment (adding or reordering a refresh) is exactly the bug this
     // avoids. results[i] pairs 1:1 with the refresh at the same index below.
     const results = await Promise.all([
-      this.refreshStatus(),
+      this.refreshStatus(status),
       this.refreshDevices(),
       this.refreshSystem(),
       this.refreshConfig(),
@@ -264,13 +267,16 @@ export class AppStore extends EventTarget {
       // Unreachable or an older appliance without the field: fall through to
       // the normal load, which surfaces the failure per view (or a 401 prompts).
     }
+    // The token check's /status body seeds the load below, so a token-gated
+    // boot fetches it once.
+    let status: ApplianceStatus | undefined;
     if (authRequired) {
       if (!getToken()) {
         this.onUnauthorized();
         return false;
       }
       try {
-        await this.api.getStatus();
+        status = await this.api.getStatus();
       } catch {
         // A 401 has already raised the prompt through api.onUnauthorized; drop
         // the rejected token too, so the next page load goes straight to the
@@ -282,7 +288,7 @@ export class AppStore extends EventTarget {
         }
       }
     }
-    void this.loadInitial();
+    void this.loadInitial(status);
     this.startPolling();
     return true;
   }
@@ -415,10 +421,12 @@ export class AppStore extends EventTarget {
   // next successful read announces even when it returns data a view showed
   // before swapping in a load error; that is what repairs the view.
 
-  public refreshStatus(): Promise<boolean> {
+  // prefetched, when given, is a status the caller just fetched (the boot and
+  // login token check), applied through the same gate instead of a second GET.
+  public refreshStatus(prefetched?: ApplianceStatus): Promise<boolean> {
     return gatedRefresh(
       this.statusGate,
-      () => this.api.getStatus(),
+      () => (prefetched ? Promise.resolve(prefetched) : this.api.getStatus()),
       (status) => {
         this.state.status = status;
         if (this.statusChange.changed(status)) {

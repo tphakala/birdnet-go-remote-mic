@@ -218,7 +218,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.Name != devGarden || d.Mode != mgmtapi.Opus || d.Rate != 48000 || !slices.Equal(d.Channels, []int{1}) {
 		t.Errorf("config fields wrong: %+v", d)
 	}
-	if d.State != mgmtapi.Serving {
+	if d.State != mgmtapi.DeviceStateServing {
 		t.Errorf("state = %q, want serving", d.State)
 	}
 	if d.NegotiatedRate == nil || *d.NegotiatedRate != 48000 {
@@ -250,12 +250,32 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	}
 }
 
+// TestMapDeviceDownCause pins that the down class reaches the wire only for a
+// device that is not serving.
+func TestMapDeviceDownCause(t *testing.T) {
+	t.Parallel()
+	skipped := skippedPCM()
+	skipped.DownCause = "not-connected"
+	if got := mapDevice(&skipped).DownCause; got == nil || *got != mgmtapi.DeviceDownCauseNotConnected {
+		t.Errorf("skipped downCause = %v, want not-connected", got)
+	}
+	serving := skipped
+	serving.State = StateServing
+	if got := mapDevice(&serving).DownCause; got != nil {
+		t.Errorf("serving downCause = %v, want absent", *got)
+	}
+	skipped.DownCause = ""
+	if got := mapDevice(&skipped).DownCause; got != nil {
+		t.Errorf("unclassified skip downCause = %v, want absent", *got)
+	}
+}
+
 func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	s := New(&fakeProvider{devices: []DeviceStatus{skippedPCM()}})
 	resp, _ := s.ListDevices(context.Background(), mgmtapi.ListDevicesRequestObject{})
 	list := resp.(mgmtapi.ListDevices200JSONResponse)
 	d := list[0]
-	if d.State != mgmtapi.Skipped {
+	if d.State != mgmtapi.DeviceStateSkipped {
 		t.Errorf("state = %q, want skipped", d.State)
 	}
 	if d.Mode != mgmtapi.Pcm {

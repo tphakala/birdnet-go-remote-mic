@@ -35,6 +35,42 @@ func (e AvailableDeviceState) Valid() bool {
 	}
 }
 
+// Defines values for DeviceDownCause.
+const (
+	DeviceDownCauseAmbiguous     DeviceDownCause = "ambiguous"
+	DeviceDownCauseDisconnected  DeviceDownCause = "disconnected"
+	DeviceDownCauseFailed        DeviceDownCause = "failed"
+	DeviceDownCauseMalformed     DeviceDownCause = "malformed"
+	DeviceDownCauseNotConnected  DeviceDownCause = "not-connected"
+	DeviceDownCauseOpenFailed    DeviceDownCause = "open-failed"
+	DeviceDownCauseResolveFailed DeviceDownCause = "resolve-failed"
+	DeviceDownCauseSameHardware  DeviceDownCause = "same-hardware"
+)
+
+// Valid indicates whether the value is a known member of the DeviceDownCause enum.
+func (e DeviceDownCause) Valid() bool {
+	switch e {
+	case DeviceDownCauseAmbiguous:
+		return true
+	case DeviceDownCauseDisconnected:
+		return true
+	case DeviceDownCauseFailed:
+		return true
+	case DeviceDownCauseMalformed:
+		return true
+	case DeviceDownCauseNotConnected:
+		return true
+	case DeviceDownCauseOpenFailed:
+		return true
+	case DeviceDownCauseResolveFailed:
+		return true
+	case DeviceDownCauseSameHardware:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceFormat.
 const (
 	DeviceFormatS16 DeviceFormat = "s16"
@@ -67,22 +103,22 @@ func (e DeviceConfigFormat) Valid() bool {
 
 // Defines values for DeviceState.
 const (
-	Disabled DeviceState = "disabled"
-	Failed   DeviceState = "failed"
-	Serving  DeviceState = "serving"
-	Skipped  DeviceState = "skipped"
+	DeviceStateDisabled DeviceState = "disabled"
+	DeviceStateFailed   DeviceState = "failed"
+	DeviceStateServing  DeviceState = "serving"
+	DeviceStateSkipped  DeviceState = "skipped"
 )
 
 // Valid indicates whether the value is a known member of the DeviceState enum.
 func (e DeviceState) Valid() bool {
 	switch e {
-	case Disabled:
+	case DeviceStateDisabled:
 		return true
-	case Failed:
+	case DeviceStateFailed:
 		return true
-	case Serving:
+	case DeviceStateServing:
 		return true
-	case Skipped:
+	case DeviceStateSkipped:
 		return true
 	default:
 		return false
@@ -438,6 +474,9 @@ type Device struct {
 	// Examples: usb:1235:8218:s=S1A2B3:if=0,0, hw:CARD=Loopback,DEV=1
 	Device string `json:"device"`
 
+	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or failed while present (failed). Absent while serving, when disabled, and for a skip with no specific class. Clients must tolerate values added later.
+	DownCause *DeviceDownCause `json:"downCause,omitempty"`
+
 	// DroppedFrames Frames dropped because the connected client was not keeping up. Zero for devices that never served.
 	DroppedFrames int64 `json:"droppedFrames"`
 
@@ -517,6 +556,9 @@ type Device struct {
 	// Examples: [48000,96000,192000]
 	SupportedRates *[]int `json:"supportedRates,omitempty"`
 }
+
+// DeviceDownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or failed while present (failed). Absent while serving, when disabled, and for a skip with no specific class. Clients must tolerate values added later.
+type DeviceDownCause string
 
 // DeviceFormat Sample format (only S16LE is supported).
 type DeviceFormat string

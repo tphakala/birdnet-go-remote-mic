@@ -262,6 +262,96 @@ func TestTryAcquireOpenError(t *testing.T) {
 	}
 }
 
+// TestLockEditsSerializes asserts two edit-lock holders serialize: while one
+// holds the lock a no-wait attempt gets ErrHeld and a waiting attempt stays
+// blocked, and the waiter gets the lock once the first holder releases.
+func TestLockEditsSerializes(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	release, err := LockEdits(cfgPath, 0)
+	if err != nil {
+		t.Fatalf("first LockEdits: %v", err)
+	}
+	if _, err := LockEdits(cfgPath, 0); !errors.Is(err, ErrHeld) {
+		t.Fatalf("no-wait LockEdits while held: err = %v, want ErrHeld", err)
+	}
+
+	type result struct {
+		release func() error
+		err     error
+	}
+	got := make(chan result, 1)
+	go func() {
+		r, err := LockEdits(cfgPath, time.Minute)
+		got <- result{r, err}
+	}()
+	select {
+	case r := <-got:
+		if r.release != nil {
+			_ = r.release()
+		}
+		t.Fatalf("second LockEdits returned while the first held the lock: err = %v", r.err)
+	default:
+	}
+
+	if err := release(); err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+	select {
+	case r := <-got:
+		if r.err != nil {
+			t.Fatalf("second LockEdits after release: %v", r.err)
+		}
+		if err := r.release(); err != nil {
+			t.Errorf("second release: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second LockEdits did not get the lock within 10s of the first release")
+	}
+}
+
+// TestLockEditsIndependentOfRunLock asserts the edit lock never contends with
+// the run lock an appliance holds for its whole life, lives at EditPathFor with
+// mode 0600, and survives release (it is never unlinked).
+func TestLockEditsIndependentOfRunLock(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	run, err := TryAcquire(PathFor(cfgPath))
+	if err != nil {
+		t.Fatalf("TryAcquire run lock: %v", err)
+	}
+	defer func() { _ = run.Release() }()
+
+	release, err := LockEdits(cfgPath, 0)
+	if err != nil {
+		t.Fatalf("LockEdits under a held run lock: %v", err)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	editPath := EditPathFor(cfgPath)
+	if want := PathFor(cfgPath) + ".edit"; editPath != want {
+		t.Fatalf("EditPathFor = %q, want %q", editPath, want)
+	}
+	fi, err := os.Stat(editPath)
+	if err != nil {
+		t.Fatalf("edit lock file after release: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("edit lock mode = %o, want 600", got)
+	}
+}
+
+// TestLockEditsOpenError asserts an edit lock file that cannot be created is a
+// plain error, not ErrHeld.
+func TestLockEditsOpenError(t *testing.T) {
+	t.Parallel()
+	_, err := LockEdits(filepath.Join(t.TempDir(), "missing-dir", "config.yaml"), 0)
+	if err == nil || errors.Is(err, ErrHeld) {
+		t.Fatalf("LockEdits in a missing directory: err = %v, want a non-ErrHeld error", err)
+	}
+}
+
 // TestPublishAfterReleaseErrors asserts Publish reports a failed write rather
 // than silently dropping the state.
 func TestPublishAfterReleaseErrors(t *testing.T) {

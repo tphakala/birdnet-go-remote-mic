@@ -104,7 +104,6 @@ func TestReconcileRestartsOnParamChanges(t *testing.T) {
 		"channels": func(d config.Device) config.Device { d.Streams[0].Channels = []int{2}; return d },
 		"format":   func(d config.Device) config.Device { d.Format = "s32"; return d },
 		"mode":     func(d config.Device) config.Device { d.Streams[0].Mode = config.ModeOpus; return d },
-		"bitrate":  func(d config.Device) config.Device { d.Streams[0].Opus.Bitrate = 64000; return d },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -116,6 +115,42 @@ func TestReconcileRestartsOnParamChanges(t *testing.T) {
 			p := Reconcile(running, cfg(mutate(dev("a", "hw:0", "/a", 48000))))
 			if got := namesOf(p.Restart); !reflect.DeepEqual(got, []string{"a"}) {
 				t.Fatalf("%s change: Restart = %v, want [a]", name, got)
+			}
+		})
+	}
+}
+
+// TestReconcileOpusBitrateComparesEffective pins that the planner compares the
+// Opus bitrate the encoder and SDP actually use: an unset bitrate (0) and an
+// explicit value equal to the per-channel default are the same stream, while a
+// real change restarts it, and a PCM stream's bitrate never matters.
+func TestReconcileOpusBitrateComparesEffective(t *testing.T) {
+	t.Parallel()
+	withStream := func(mode config.Mode, channels []int, bitrate int) config.Device {
+		d := dev("a", "hw:0", "/a", 48000)
+		d.Streams[0].Mode = mode
+		d.Streams[0].Channels = channels
+		d.Streams[0].Opus.Bitrate = bitrate
+		return d
+	}
+	cases := []struct {
+		name          string
+		running, want config.Device
+		restart       bool
+	}{
+		{"mono explicit default to unset", withStream(config.ModeOpus, []int{1}, 128000), withStream(config.ModeOpus, []int{1}, 0), false},
+		{"mono unset to explicit default", withStream(config.ModeOpus, []int{1}, 0), withStream(config.ModeOpus, []int{1}, 128000), false},
+		{"stereo explicit default to unset", withStream(config.ModeOpus, []int{1, 2}, 256000), withStream(config.ModeOpus, []int{1, 2}, 0), false},
+		{"mono real change", withStream(config.ModeOpus, []int{1}, 128000), withStream(config.ModeOpus, []int{1}, 64000), true},
+		{"unset to non-default", withStream(config.ModeOpus, []int{1}, 0), withStream(config.ModeOpus, []int{1}, 96000), true},
+		{"pcm bitrate ignored", withStream(config.ModePCM, []int{1}, 0), withStream(config.ModePCM, []int{1}, 64000), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := Reconcile(map[string]config.Device{"a": tc.running}, cfg(tc.want))
+			if got := len(p.Restart) == 1; got != tc.restart {
+				t.Fatalf("restart = %v, want %v (plan %+v)", got, tc.restart, p)
 			}
 		})
 	}
