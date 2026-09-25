@@ -364,11 +364,15 @@ func buildProvisionedDevice(cur *config.Config, d *AvailableDevice, req *mgmtapi
 	}
 }
 
+// nameSuffixReserve is the room deriveName keeps for a "-N" collision suffix
+// when it shortens a base name to fit config.MaxNameLen.
+const nameSuffixReserve = 8
+
 // deriveName turns a hardware label into a unique, config-safe device name. It
 // slugifies the friendly name (falling back to the device id, then "device"),
 // shortens it to fit config.MaxNameLen with room for a suffix, then appends a
-// numeric suffix on collision. It deliberately never encodes the
-// channel count or mode: one device is one entry, named for the hardware.
+// numeric suffix on collision. It deliberately never encodes the channel count
+// or mode: one device is one entry, named for the hardware.
 func deriveName(friendly, id string, taken map[string]bool) string {
 	base := slug(friendly)
 	if base == "" {
@@ -381,7 +385,7 @@ func deriveName(friendly, id string, taken map[string]bool) string {
 	// "-N" suffix means no derived name exceeds config.MaxNameLen, which
 	// provisioning enforces: a slug of a long device id would otherwise make the
 	// device unprovisionable.
-	if limit := config.MaxNameLen - 8; len(base) > limit {
+	if limit := config.MaxNameLen - nameSuffixReserve; len(base) > limit {
 		base = strings.TrimRight(base[:limit], "-")
 	}
 	name := base

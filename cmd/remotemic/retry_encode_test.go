@@ -27,8 +27,8 @@ const (
 )
 
 // scriptedStage stands in for a stream's encode stage. It drains its source and
-// encodes nothing until the test "plays" it: a true on play faults the encode,
-// a false encodes one frame and then keeps draining.
+// encodes only when the test "plays" it: a true on play faults the encode, a
+// false encodes one frame and keeps running, so a later play can fault it.
 type scriptedStage struct{ play chan bool }
 
 func (s scriptedStage) Run(src audio.Source, _ func() bool, emit func(pipeline.Frame) error) error {
@@ -41,18 +41,18 @@ func (s scriptedStage) Run(src audio.Source, _ func() bool, emit func(pipeline.F
 			}
 		}
 	}()
-	select {
-	case fault := <-s.play:
-		if fault {
-			return errTestEncode
+	for {
+		select {
+		case fault := <-s.play:
+			if fault {
+				return errTestEncode
+			}
+			if err := emit(pipeline.Frame{}); err != nil {
+				return err
+			}
+		case <-ended:
+			return nil
 		}
-		if err := emit(pipeline.Frame{}); err != nil {
-			return err
-		}
-		<-ended
-		return nil
-	case <-ended:
-		return nil
 	}
 }
 
@@ -157,6 +157,34 @@ func TestRetryAfterEncodeFaultSettlesOnlyAfterEncoding(t *testing.T) {
 		runFor(t, app, 2*time.Minute)
 		if got := countDown(t, app, "moth", notify.KindClear); got != 2 {
 			t.Errorf("down clears = %d, want 2: the capture-fault outage settles without an encode", got)
+		}
+	})
+}
+
+// TestRetryEncodeFaultDuringSettleNeedsNewEncode pins that an encode seen by one
+// restart does not carry over: a fault during the settle that followed it
+// starts a new restart, which must itself encode before the condition clears.
+func TestRetryEncodeFaultDuringSettleNeedsNewEncode(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		play := scriptedStages(t, app, log)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, pathMoth, 48000)}})
+
+		play(pathMoth) <- true // fault 1
+		runFor(t, app, backoffDelay(1)+time.Second)
+		play(pathMoth) <- false // this restart encodes; its settle starts at the first deadline
+		runFor(t, app, retrySettle+time.Second)
+		play(pathMoth) <- true // fault 2, inside that settle
+		// The next restart serves well past its own window with no client.
+		runFor(t, app, 5*time.Minute)
+		if got := countDown(t, app, "moth", notify.KindClear); got != 0 {
+			t.Fatalf("down clears = %d, want 0: the earlier restart's encode must not prove this one", got)
+		}
+		play(pathMoth) <- false
+		runFor(t, app, retrySettle+time.Second)
+		if got := countDown(t, app, "moth", notify.KindClear); got != 1 {
+			t.Errorf("down clears = %d, want 1 once the new restart has encoded", got)
 		}
 	})
 }

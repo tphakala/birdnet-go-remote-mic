@@ -1,6 +1,7 @@
 package mgmtserver
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,6 +70,56 @@ func TestPatchConfigAllowsUnrelatedWriteWithStoredOverCapName(t *testing.T) {
 	}
 }
 
+// TestProvisionDeviceRejectsOverCapName pins that provisioning applies the caps
+// to the name a request supplies.
+func TestProvisionDeviceRejectsOverCapName(t *testing.T) {
+	t.Parallel()
+	store, _ := tempStore(t)
+	prov := &fakeProvider{available: []AvailableDevice{
+		{ID: devAttic, FriendlyName: nameAudioMoth, SupportedRates: []int{384000}, SupportedChannels: []int{1}},
+	}}
+	s := New(prov, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }))
+	name := strings.Repeat("n", config.MaxNameLen+1)
+	resp, err := s.ProvisionDevice(t.Context(), mgmtapi.ProvisionDeviceRequestObject{
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Name: &name},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse); !ok {
+		t.Fatalf("ProvisionDevice returned %T, want a 422 for an over-cap name", resp)
+	}
+}
+
+// TestDeleteDeviceIgnoresOverCapNameElsewhere pins that a removal is not blocked
+// by an over-cap string kept loadable on another device.
+func TestDeleteDeviceIgnoresOverCapNameElsewhere(t *testing.T) {
+	t.Parallel()
+	c := config.Config{
+		Listen: rtspAddr,
+		Devices: []config.Device{
+			{
+				Name: strings.Repeat("n", config.MaxNameLen+1), Device: devIface, Rate: 48000, Format: fmtS16,
+				Streams: []config.Stream{{Path: pathNorth, Mode: config.ModePCM, Channels: []int{1}}},
+			},
+			{
+				Name: nameIface, Device: devAttic, Rate: 48000, Format: fmtS16,
+				Streams: []config.Stream{{Path: pathSouth, Mode: config.ModePCM, Channels: []int{1}}},
+			},
+		},
+	}
+	c.ApplyDefaults()
+	store := NewFileConfigStore(filepath.Join(t.TempDir(), "config.yaml"), &c)
+	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(func(context.Context, config.Config) error { return nil }))
+	resp, err := s.DeleteDevice(t.Context(), mgmtapi.DeleteDeviceRequestObject{Name: nameIface})
+	if err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	if _, ok := resp.(mgmtapi.DeleteDevice204Response); !ok {
+		t.Fatalf("DeleteDevice returned %T, want 204 despite the over-cap name on another device", resp)
+	}
+}
+
 // TestDeriveNameStaysWithinCap pins that a derived name never exceeds the cap
 // provisioning enforces: a friendly name with no ASCII letters or digits falls
 // back to the device id, which can be far longer (an escaped USB serial).
@@ -84,7 +135,7 @@ func TestDeriveNameStaysWithinCap(t *testing.T) {
 	}
 	// An id whose slug has a separator exactly at the cut: the truncated name
 	// must not end in it.
-	cut := config.MaxNameLen - 8
+	cut := config.MaxNameLen - nameSuffixReserve
 	sepAtCut := strings.Repeat("a", cut-1) + ":" + strings.Repeat("b", 50)
 	if got := deriveName("", sepAtCut, map[string]bool{}); got != strings.Repeat("a", cut-1) {
 		t.Errorf("deriveName with a separator at the cut = %q, want the %d letters before it", got, cut-1)

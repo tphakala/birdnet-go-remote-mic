@@ -54,7 +54,7 @@ func TestLoadWarnsOnReadableTokenFile(t *testing.T) {
 	}
 }
 
-func TestLoadQuietOnOwnerOnlyTokenFile(t *testing.T) {
+func TestLoadSilentOnOwnerOnlyTokenFile(t *testing.T) {
 	path := savedTokenConfig(t, "k7Qm3vX9pL2wR8nT") // stays 0600
 	if out := loadCapturingLog(t, path); out != "" {
 		t.Errorf("Load warned on a 0600 token file; log = %q", out)
@@ -86,7 +86,7 @@ func TestLoadQuietNeverWarns(t *testing.T) {
 	}
 }
 
-func TestLoadQuietWhenNoTokenEvenIfReadable(t *testing.T) {
+func TestLoadSilentWhenNoTokenEvenIfReadable(t *testing.T) {
 	path := savedTokenConfig(t, "") // open access, no secret to leak
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("chmod: %v", err)
