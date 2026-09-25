@@ -59,8 +59,9 @@ type mgmtRetry struct {
 // superviseManagement keeps the management API up until ctx is cancelled,
 // starting from srv (the API startManagement brought up) or, when that start
 // failed with startErr, from a retry. While an API serves it waits for it to
-// stop: a shutdown on ctx ends the supervisor, and a runtime failure hands the
-// dead API to r.died and retries. A retry waits out r.delays before each
+// stop: a shutdown on ctx ends the supervisor (as does a listener failure
+// once ctx is cancelled, since the two can race), and a runtime failure hands
+// the dead API to r.died and retries. A retry waits out r.delays before each
 // attempt and logs a failure only when its message differs from the previous
 // one, so a permanent fault logs once rather than every attempt. An attempt
 // that finds management disabled in the config file ends the supervisor. m's
@@ -77,7 +78,9 @@ func superviseManagement(ctx context.Context, m *mgmt, srv *mgmtServer, startErr
 			since := time.Now()
 			err := srv.wait()
 			m.cur.Store(nil)
-			if err == nil {
+			// A listener failure racing shutdown can reach the server before
+			// the cancellation does; it is not a runtime death.
+			if err == nil || ctx.Err() != nil {
 				return
 			}
 			if time.Since(since) >= r.stable {

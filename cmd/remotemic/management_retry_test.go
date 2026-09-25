@@ -216,6 +216,27 @@ func TestSuperviseManagementRestartsDeadAPI(t *testing.T) {
 	})
 }
 
+// TestSuperviseManagementIgnoresDeathDuringShutdown pins that a listener
+// failure racing shutdown (the server may report it rather than the
+// cancellation) ends the supervisor instead of reporting a runtime death.
+func TestSuperviseManagementIgnoresDeathDuringShutdown(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		first, kill := fakeServer(testMgmtAddr)
+		deaths := 0
+		died := func(*mgmtServer, error) { deaths++ }
+		attempt := func() (*mgmtServer, error) { return nil, errors.New("unexpected attempt") }
+		h := supervise(ctx, first, nil, mgmtRetry{attempt: attempt, died: died, delays: []time.Duration{time.Second}, stable: time.Hour})
+		cancel()
+		kill(errors.New("accept: use of closed network connection"))
+		h.Wait()
+		if deaths != 0 {
+			t.Errorf("died called %d time(s) during shutdown, want 0", deaths)
+		}
+	})
+}
+
 // TestSuperviseManagementBackoffAfterShortServe pins the backoff across
 // outages: an API that dies before serving for stable resumes the backoff
 // where it left off, and one that served for stable restarts it.
