@@ -37,10 +37,13 @@ type Frame struct {
 // is read, and a period read while it reports inactive is drained but not
 // packetized or encoded, since its frames would be discarded downstream anyway.
 // A stateful stage (Opus) starts from a clean state whenever the session
-// changes, so every client gets the stream a freshly built encoder would
-// produce from its first period on, with no encoder history or partial frame
-// from an earlier client. That holds even when a teardown and the next PLAY
-// both land between two period reads, so the stage never sees the stream idle.
+// changes, so each client's frames come from an encoder with no history or
+// partial frame from an earlier client, even when a teardown and the next PLAY
+// both land between two period reads and the stage never sees the stream idle.
+// The reset is per period read, so two edges remain: a frame the stage is
+// encoding while a teardown and the next PLAY both complete is still delivered
+// to the new client, and periods already queued for a stage that had fallen
+// behind are encoded for whichever session is active when it reads them.
 // A nil gate means always active, in one session.
 type Stage interface {
 	Run(src audio.Source, gate Gate, emit func(Frame) error) error

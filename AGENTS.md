@@ -229,9 +229,9 @@ thelper, and testifylint. `unused` is disabled.
 - `internal/pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM`
   (L16) and `NewOpus` (960-sample frames). `Frame.Captured` is capture time.
   `Run` takes a `Gate` (`ChanSource.Session`, active flag plus play session):
-  with no client playing, a stage drains periods without encoding, and Opus
-  resets its encoder on every new session. The fan-out sends an idle stream
-  nothing (gated on `ChanSource.Active`).
+  a period read with no client playing is discarded unencoded, and Opus resets
+  its encoder on every new session. The fan-out sends an idle stream nothing
+  (gated on `ChanSource.Active`), so an idle stage blocks until the next PLAY.
 - `internal/rtspserver`: minimal RTSP server, one playing client per path.
   SETUP echoes client-chosen interleaved channels; PLAY returns RTP-Info.
   `writer.go` is the single writer per connection. `ChanSource` buffers only

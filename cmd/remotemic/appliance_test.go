@@ -267,13 +267,13 @@ func TestApplianceReconcileStartsDevice(t *testing.T) {
 	}
 }
 
-// recordedGate is the active gate the pump handed one stream's stage.
+// recordedGate is the gate the pump handed one stream's stage.
 type recordedGate struct {
 	path string
 	gate pipeline.Gate
 }
 
-// gateRecorder is a pipeline.Stage that hands the active gate it was given to
+// gateRecorder is a pipeline.Stage that hands the gate it was given to
 // the test, tagged with its stream's path, then drains its source until the
 // device stops.
 type gateRecorder struct {
@@ -294,8 +294,9 @@ func (g gateRecorder) Run(src audio.Source, gate pipeline.Gate, _ func(pipeline.
 }
 
 // TestAppliancePumpGatesStageOnFeed pins the production wiring of the encode
-// gate: the pump must hand each stage its own stream feed's active flag, so a
-// stream encodes exactly while a client plays it. A nil gate would bring back
+// gate: the pump must hand each stage its own stream feed's play session, so a
+// stream encodes exactly while a client plays it and each new client starts a
+// new session. A nil gate would bring back
 // encoding for no client, a gate that never opens would stream nothing to a
 // playing client, and a sibling's gate would encode one stream on another's
 // client; the stage-level tests cannot see any of these, because they pass the

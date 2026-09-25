@@ -402,10 +402,11 @@ func (a *appliance) runningParams() map[string]config.Device {
 // mid-period; each stream's pipeline runs on its own goroutine so N encodes fan
 // across cores and a slow encoder cannot blow the capture period budget. Each
 // stage is gated on its own stream feed's play session, so it encodes only
-// while a client plays that stream, starting each client from a fresh encoder,
-// and otherwise just drains its periods (the fan-out never backs up). The
-// fan-out is gated on the feed's active flag: it sends an idle stream nothing,
-// so an idle appliance pays for the capture read but not for copying, channel
+// while a client plays that stream (an Opus stage starts each client from a
+// fresh encoder), and discards unencoded any period it reads with no client.
+// The fan-out is gated on the feed's active flag: it sends an idle stream
+// nothing, so an idle stage blocks in its read and the fan-out never backs up.
+// An idle appliance thus pays for the capture read but not for copying, channel
 // extraction, encoding, or waking the idle stages. When the capture ends
 // the fan-out closes the stream feeds, so every stage goroutine returns, and
 // pump waits for them before reporting so no stage outlives the device's
@@ -644,9 +645,10 @@ func (a *appliance) skipDevice(dev *config.Device, hw *audio.Hardware, cause, ti
 // startDevice opens a device via openAndStart at startup, on a config save, or
 // on a hardware change (except a device waiting to prove an encoder after an
 // encode fault, see retryDown), stores its runtime, and clears the device's
-// down condition when a device that was down is now serving. The open-failure onset is emitted inside
-// openAndStart. A healthy param-change restart has no active down condition, so
-// it clears nothing, and a first start with no prior condition is silent too.
+// down condition when a device that was down is now serving. The open-failure
+// onset is emitted inside openAndStart. A healthy param-change restart has no
+// active down condition, so it clears nothing, and a first start with no prior
+// condition is silent too.
 //
 // None of these is an unattended retry, so it starts the device's backoff over:
 // a failure here schedules the first, shortest retry when scheduleRetry accepts
@@ -914,8 +916,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// onset/clear condition and climbing announceGen forever. Retry it on a
 			// backoff instead (scheduleRetry), which keeps the condition active across
 			// attempts and clears it once a retried restart has stayed up for
-			// retrySettle (a config save or hardware change clears it at once). A card-index
-			// entry is not retried unattended, so it waits for a config save.
+			// retrySettle. A config save clears it at once, and so does a hardware
+			// change unless the fault was an encode fault (see retryDown). A
+			// card-index entry is not retried unattended, so it waits for a config
+			// save.
 			restart := restartHint(&res.rt.dev)
 			if a.nextFailureLogged(name) {
 				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
@@ -971,7 +975,11 @@ func (a *appliance) retryDown() {
 			// A hardware change proves nothing about an encoder that faulted: restart
 			// it as an unattended attempt, which keeps its condition until each
 			// faulted stream has encoded, rather than clearing it at once and
-			// faulting again at the next PLAY.
+			// faulting again at the next PLAY. Its pending backoff is consumed by
+			// this attempt. Its reannounce result is not needed: any device that
+			// serves after this loop triggers the rebuild below. (The proof covers
+			// a hotplug of some other device; a disconnect of this device drops its
+			// retry state, so its own replug restarts it through startDevice.)
 			st.next = time.Time{}
 			a.attemptRetry(&d, st)
 		} else {

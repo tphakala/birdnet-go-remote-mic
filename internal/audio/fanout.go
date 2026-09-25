@@ -117,7 +117,9 @@ func (f *Fanout) Run() error {
 // allocation. An idle consumer is sent nothing, so it can neither wake its
 // stage nor fill its queue and count a drop. A client that starts playing
 // after this check loses this period, as it would had it connected that much
-// later; it gets no audio captured while the stream sat idle.
+// later; it gets no audio captured while the stream sat idle. Periods already
+// queued for a stage that had fallen behind stay queued across a teardown, so
+// a client that starts playing before the stage reads them gets them.
 func (f *Fanout) distribute(p Period) {
 	var cp Period
 	copied := false

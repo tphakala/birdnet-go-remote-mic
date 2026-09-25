@@ -427,9 +427,9 @@ func TestOpusStageIdleEmitsNothing(t *testing.T) {
 }
 
 // TestStagesIgnoreEmptyPeriodWhileActive pins what an active stage does with
-// an empty period (a zero-frame read): nothing. The fan-out no longer sends
-// one, but a Source may still return one, and a stage must not treat it as a
-// frame boundary. Each stage's output must equal its output for the real
+// an empty period (a zero-frame read): nothing. The fan-out sends none, but a
+// Source may still return one, and a stage must not treat it as a frame
+// boundary. Each stage's output must equal its output for the real
 // periods alone.
 func TestStagesIgnoreEmptyPeriodWhileActive(t *testing.T) {
 	t.Parallel()

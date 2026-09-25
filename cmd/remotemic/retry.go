@@ -55,8 +55,9 @@ const (
 
 // retryState tracks the unattended restart of one down device. It exists from
 // the device's first retryable failure until the device is removed, disabled,
-// restarted by a config save or hardware change, or goes down for a cause a
-// retry cannot fix.
+// restarted by a config save or by a hardware change (except after an encode
+// fault, when the hardware change makes a retry attempt and the state stays),
+// or goes down for a cause a retry cannot fix.
 type retryState struct {
 	// attempts counts consecutive failures since the backoff last reset; it picks
 	// the delay before the next attempt.
@@ -330,8 +331,10 @@ func (a *appliance) onRetryDue() {
 		case !st.next.IsZero() && !now.Before(st.next):
 			st.next = time.Time{}
 			// Defensive: every path that replaces or restarts a down device
-			// (startDevice, reconcileRecords) deletes its retry state first, so a
-			// due retry is expected to find a skipped or failed record here.
+			// either deletes its retry state first (startDevice, reconcileRecords)
+			// or consumes its pending deadline (retryDown's encode-fault attempt
+			// zeroes next), so a due retry is expected to find a skipped or failed
+			// record here.
 			if rt == nil || !isDown(rt.currentState()) {
 				continue
 			}
@@ -398,7 +401,8 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState) (reannounce b
 
 // finishRecovery clears the down condition of a device that is serving again. A
 // config-save or hardware-change restart calls it as soon as the open succeeds;
-// an unattended retry calls it once the restart has served for retrySettle
+// an unattended retry (including a hardware-change restart after an encode
+// fault, see retryDown) calls it once the restart has served for retrySettle
 // (after an encode fault, once each faulted stream has also encoded).
 func (a *appliance) finishRecovery(name string, rt *deviceRuntime) {
 	// A device is "recovered" only when it comes up from a down state (it could

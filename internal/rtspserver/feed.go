@@ -111,9 +111,9 @@ func (c *ChanSource) SetActive(active bool) {
 	}
 }
 
-// update applies f to state atomically. The play and teardown of one path's
-// successive clients run on different connection goroutines, so a plain
-// load-then-store could lose a session bump.
+// update applies f to state atomically. SetActive has no lock of its own: the
+// track slot orders successive clients' teardown and PLAY today, and the CAS
+// keeps a session bump from being lost if that ever changes.
 func (c *ChanSource) update(f func(uint64) uint64) {
 	for {
 		old := c.state.Load()
