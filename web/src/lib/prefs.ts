@@ -1,9 +1,10 @@
 // Per-browser preferences (the theme, hidden meter channels, the Events slash
 // shortcut, read and dismissed notifications) live in localStorage, which a
-// private window or blocked site data can refuse. The UI keeps working either
-// way, but a preference that quietly resets on reload looks like a bug, so the
-// first failed save on a page raises one notice covering them all, and later
-// failures stay quiet.
+// browser with site data blocked or storage full can refuse. The UI keeps
+// working either way, but a choice that quietly resets on reload looks like a
+// bug, so the first failed save of a choice the operator just made raises one
+// notice covering them all, and later failures stay quiet. Automatic writes (a
+// notification snapshot or live event) and a System theme choice never report.
 
 export class OnceNotice {
   private fired = false;

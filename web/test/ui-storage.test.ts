@@ -28,13 +28,16 @@ function withWindow(ls: object | "throws", fn: () => void): void {
 
 const event = (storageArea: object | null): StorageEvent => ({ storageArea }) as unknown as StorageEvent;
 
-test("a localStorage change, or a full clear, counts; a sessionStorage change does not", () => {
+test("a localStorage change or clear counts; a sessionStorage change does not", () => {
   const local = {};
   const session = {};
   withWindow(local, () => {
+    // A change and a clear (key null) in another tab both carry this
+    // window's localStorage as their area.
     assert.equal(isLocalStorageEvent(event(local)), true);
-    assert.equal(isLocalStorageEvent(event(null)), true);
     assert.equal(isLocalStorageEvent(event(session)), false);
+    // An event built without an area is let through.
+    assert.equal(isLocalStorageEvent(event(null)), true);
   });
 });
 

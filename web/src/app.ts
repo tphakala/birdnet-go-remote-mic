@@ -34,12 +34,13 @@ const MODE_LABEL: Record<ThemeMode, string> = { system: "System", light: "Light"
 
 class App {
   public init(): void {
-    // One notice for every per-browser preference that cannot be saved (the
-    // theme, hidden channels, notification read marks): a warning, held long
-    // enough to read, since it explains why choices appear to reset on reload.
+    // One notice for every display preference the operator chose that cannot
+    // be saved (the theme, hidden channels, read marks after Mark all read or
+    // Clear all): a warning, held long enough to read, since it explains why
+    // choices appear to reset on reload.
     prefSaveNotice.setHandler(() =>
       showToast(
-        "This browser could not save your display preferences, so they reset on reload. A private window cannot keep them; otherwise allow site data for this address in the browser settings.",
+        "This browser could not save your display preferences, so they reset on reload. It blocks site data here or its storage is full; allow site data for this address in the browser settings to keep them.",
         "warn",
         SAVE_FAILED_TOAST_MS,
       ),
@@ -84,7 +85,7 @@ class App {
 
   // The mode and the live OS follow live in lib/theme.ts; this hands it the
   // page's objects and binds the header menu button to it. A storage-blocked
-  // browser (a private window, site data blocked) still switches the theme,
+  // browser (site data blocked, storage full) still switches the theme,
   // and learns once why it will not stick.
   private initTheme(): void {
     let media: MediaQueryList | null = null;
