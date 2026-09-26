@@ -951,8 +951,10 @@ textarea {
   padding: 12px;
   /* Shared column template for the dB scale and every channel row: a fixed
      channel-label column, the flexible meter, and a fixed stats column. Driving
-     both off one variable keeps the scale aligned with the meter track. */
-  --meter-cols: 42px 1fr 132px;
+     both off one variable keeps the scale aligned with the meter track. The
+     stats column holds the widest readout ("-59.9 dBFS"), the gap and the CLIP
+     button on one line, so a changing level never reflows the row. */
+  --meter-cols: 42px 1fr 144px;
 }
 
 /* A high-channel interface (6-8 channels) would stack that many meter rows and
@@ -1027,14 +1029,17 @@ textarea {
   font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
-  min-width: 58px;
+  /* Reserve the widest value so the readout neither wraps nor resizes as the
+     level changes ~10 times a second: "-59.9 dBFS" is 10 monospace cells. */
+  min-width: 10ch;
+  white-space: nowrap;
   text-align: right;
 }
 
 .clip-latch-btn {
   font-family: var(--font-mono);
-  /* 11px, not 10px: this is interactive text ("CLIP", a clickable latch reset),
-     so keep it legible rather than at the meter-scale caption size. */
+  /* Interactive text ("CLIP", a clickable latch reset), so it stays at the
+     12px label size rather than the 11px meter-scale caption size. */
   font-size: 12px;
   font-weight: 700;
   display: inline-flex;
@@ -1193,6 +1198,12 @@ textarea {
   margin-top: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--border-base);
+}
+
+/* The device id row spans both columns of the settings grid: the id is long
+   and the Copy button sits beside it. */
+.device-identity {
+  grid-column: 1 / -1;
 }
 
 /* Let a wide table scroll within its card on narrow viewports instead of
