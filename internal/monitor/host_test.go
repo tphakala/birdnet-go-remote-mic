@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -982,6 +983,20 @@ func overrunPoll(h *Host, c *clk, feed *dropFeed, step time.Duration, n uint64) 
 	h.poll()
 }
 
+// overrunOnsetText and overrunClearText are the fragments the overrun onset and
+// clear messages must carry, derived from the thresholds so tuning a constant
+// does not break the message assertions.
+func overrunOnsetText() string {
+	return fmt.Sprintf("at least %d capture overruns within %s", overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)))
+}
+
+func overrunClearText() string {
+	return "no capture overruns for " + humanDuration(int(overrunClearAfter/time.Second))
+}
+
+// pollsIn is how many 10 s polls fit in d.
+func pollsIn(d time.Duration) int { return int(d / (10 * time.Second)) }
+
 func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	t.Parallel()
 	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1, Overruns: 7}}}
@@ -1005,8 +1020,8 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	if n.Category != notify.CategoryDevice || n.Severity != notify.SeverityWarning || n.Source != nameGarden {
 		t.Errorf("overrun onset = %+v, want a device warning sourced %q", n, nameGarden)
 	}
-	if !strings.Contains(n.Message, "5 capture overruns in the last 5 minutes") {
-		t.Errorf("overrun onset message = %q", n.Message)
+	if want := overrunOnsetText(); !strings.Contains(n.Message, want) {
+		t.Errorf("overrun onset message = %q, want it to contain %q", n.Message, want)
 	}
 
 	// Overruns keep coming, a minute apart: the condition holds.
@@ -1018,7 +1033,7 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	}
 
 	// Quiet: it clears once overrunClearAfter passes with none, not before.
-	pollEvery(h, c, 10*time.Second, int(overrunClearAfter/(10*time.Second))-1)
+	pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter)-1)
 	if !rec.isActive(key) {
 		t.Fatal("overrun condition cleared before the quiet dwell")
 	}
@@ -1026,8 +1041,8 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	if rec.isActive(key) || rec.clearCount(key) != 1 {
 		t.Fatalf("active=%v clears=%d after the quiet dwell, want cleared once", rec.isActive(key), rec.clearCount(key))
 	}
-	if msg := rec.clearMessage(key); !strings.Contains(msg, "no capture overruns for 5 minutes") {
-		t.Errorf("overrun clear message = %q", msg)
+	if msg, want := rec.clearMessage(key), overrunClearText(); !strings.Contains(msg, want) {
+		t.Errorf("overrun clear message = %q, want it to contain %q", msg, want)
 	}
 
 	// A fresh overrun after the clear starts a new window rather than re-raising.
@@ -1037,7 +1052,8 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	}
 }
 
-// Isolated overruns spread wider than the window never add up to an onset.
+// Overruns two minutes apart put at most three in any window, fewer than
+// overrunOnsetCount, so they never onset however long they go on.
 func TestHostOverrunsSporadicNeverOnset(t *testing.T) {
 	t.Parallel()
 	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
@@ -1053,8 +1069,8 @@ func TestHostOverrunsSporadicNeverOnset(t *testing.T) {
 	}
 }
 
-// The window is half open: an overrun exactly overrunWindow old no longer
-// counts, one a poll younger still does.
+// The window is closed, as notify.Flap keeps it: an overrun exactly
+// overrunWindow old still counts, one a poll older does not.
 func TestHostOverrunsWindowBoundary(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1062,8 +1078,8 @@ func TestHostOverrunsWindowBoundary(t *testing.T) {
 		after time.Duration
 		want  bool
 	}{
-		{"just inside", overrunWindow - 10*time.Second, true},
-		{"exactly the window", overrunWindow, false},
+		{"exactly the window", overrunWindow, true},
+		{"one poll past the window", overrunWindow + 10*time.Second, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1083,17 +1099,22 @@ func TestHostOverrunsWindowBoundary(t *testing.T) {
 
 // A restarted runtime's counter starts from zero after the poll that last saw
 // its predecessor, so its whole count is new: a Gen change, or without a Gen a
-// counter going backwards, counts the fresh value instead of diffing it.
+// counter going backwards, counts the fresh value instead of diffing it. The
+// polls after it must diff against the new runtime, or a restart would be
+// re-detected and re-counted on every poll and the warning would never clear.
 func TestHostOverrunsRestartCountsFreshCounter(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		first DeviceCounters
-		next  DeviceCounters
+		name       string
+		first      DeviceCounters
+		next       DeviceCounters
+		wantActive bool
 	}{
 		// The fresh counter already passed the old value: diffing would see only 3.
-		{"new gen", DeviceCounters{Name: nameGarden, Gen: 1, Overruns: 2}, DeviceCounters{Name: nameGarden, Gen: 2, Overruns: overrunOnsetCount}},
-		{"counter went backwards", DeviceCounters{Name: nameGarden, Overruns: 100}, DeviceCounters{Name: nameGarden, Overruns: overrunOnsetCount}},
+		{"new gen", DeviceCounters{Name: nameGarden, Gen: 1, Overruns: 2}, DeviceCounters{Name: nameGarden, Gen: 2, Overruns: overrunOnsetCount}, true},
+		{"counter went backwards", DeviceCounters{Name: nameGarden, Overruns: 100}, DeviceCounters{Name: nameGarden, Overruns: overrunOnsetCount}, true},
+		// Diffing across the reset would underflow into a huge count and onset.
+		{"counter went backwards below the onset", DeviceCounters{Name: nameGarden, Overruns: 100}, DeviceCounters{Name: nameGarden, Overruns: overrunOnsetCount - 2}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1101,23 +1122,82 @@ func TestHostOverrunsRestartCountsFreshCounter(t *testing.T) {
 			rec := newRecPub()
 			c := newClk()
 			h := newHostT(nil, feed.source, rec, hostSettings(), c)
+			key := deviceOverrunsKey(nameGarden)
 			h.poll()
 			c.advance(10 * time.Second)
 			feed.devs[0] = tc.next
 			h.poll()
-			if !rec.isActive(deviceOverrunsKey(nameGarden)) {
-				t.Fatalf("restarted runtime's %d overruns did not raise the condition", tc.next.Overruns)
+			if got := rec.isActive(key); got != tc.wantActive {
+				t.Fatalf("active after the restart poll = %v, want %v", got, tc.wantActive)
 			}
-			if msg := rec.onsetMessage(deviceOverrunsKey(nameGarden)); !strings.Contains(msg, " 5 capture overruns ") {
-				t.Errorf("onset message = %q, want the fresh runtime's 5 overruns", msg)
+			if !tc.wantActive {
+				return
 			}
-			// The next poll diffs against the new runtime, not the old one.
-			c.advance(10 * time.Second)
-			h.poll()
-			if n := rec.onsetCount(deviceOverrunsKey(nameGarden)); n != 1 {
-				t.Errorf("onsets = %d, want 1", n)
+			// Counters held steady from here: still active one poll short of the
+			// quiet dwell, cleared exactly once at it.
+			pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter)-1)
+			if !rec.isActive(key) {
+				t.Fatal("cleared before the quiet dwell after the restart")
+			}
+			pollEvery(h, c, 10*time.Second, 1)
+			if rec.isActive(key) || rec.clearCount(key) != 1 || rec.onsetCount(key) != 1 {
+				t.Errorf("after the quiet dwell: active=%v clears=%d onsets=%d, want cleared once after one onset",
+					rec.isActive(key), rec.clearCount(key), rec.onsetCount(key))
 			}
 		})
+	}
+}
+
+// A restart while the warning is up neither drops nor re-raises it: the
+// condition stays active and clears once, through the normal quiet dwell.
+func TestHostOverrunsRestartWhileActive(t *testing.T) {
+	t.Parallel()
+	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := deviceOverrunsKey(nameGarden)
+	h.poll()
+	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount)
+	if !rec.isActive(key) {
+		t.Fatal("overrun condition not raised")
+	}
+
+	c.advance(10 * time.Second)
+	feed.devs[0] = DeviceCounters{Name: nameGarden, Gen: 2}
+	h.poll()
+	if !rec.isActive(key) {
+		t.Fatal("a restart with no new overruns dropped the active condition")
+	}
+	// The last overrun was one poll before the restart, so the dwell ends one
+	// poll sooner than a full overrunClearAfter from here.
+	pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter)-2)
+	if !rec.isActive(key) {
+		t.Fatal("cleared before the quiet dwell")
+	}
+	pollEvery(h, c, 10*time.Second, 1)
+	if rec.isActive(key) || rec.clearCount(key) != 1 || rec.resolveCount(key) != 0 {
+		t.Errorf("active=%v clears=%d resolves=%d, want cleared once and never resolved", rec.isActive(key), rec.clearCount(key), rec.resolveCount(key))
+	}
+}
+
+// A pending window survives an absence inside the presence grace: it counts
+// overruns by wall-clock time, so the gap cannot stretch it.
+func TestHostOverrunsPendingWindowSpansAbsentBlip(t *testing.T) {
+	t.Parallel()
+	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	h.poll()
+	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount-1)
+	saved := feed.devs[0]
+	feed.devs = nil
+	pollEvery(h, c, 10*time.Second, devicePresenceGrace-1)
+	feed.devs = []DeviceCounters{saved}
+	overrunPoll(h, c, feed, 10*time.Second, 1)
+	if !rec.isActive(deviceOverrunsKey(nameGarden)) {
+		t.Error("the overruns before the blip no longer counted toward the onset")
 	}
 }
 
@@ -1134,23 +1214,24 @@ func TestHostOverrunsResolvedOnRemovalAndDisable(t *testing.T) {
 		t.Fatal("overrun condition not raised")
 	}
 
-	// Removed: resolved after the presence grace, never cleared as if recovered.
-	dev := feed.devs[0]
+	// Removed: kept through the presence grace, then resolved, never cleared as
+	// if recovered.
+	saved := feed.devs[0]
 	feed.devs = nil
 	pollEvery(h, c, 10*time.Second, devicePresenceGrace-1)
-	if rec.resolveCount(key) != 0 {
-		t.Fatal("resolved within the presence grace")
+	if !rec.isActive(key) || rec.resolveCount(key) != 0 {
+		t.Fatal("the condition did not survive an absence inside the presence grace")
 	}
 	pollEvery(h, c, 10*time.Second, 1)
 	if rec.resolveCount(key) != 1 || rec.clearCount(key) != 0 {
 		t.Fatalf("removed device: resolves=%d clears=%d, want 1 resolve and no clear", rec.resolveCount(key), rec.clearCount(key))
 	}
-	if got := rec.resolves[len(rec.resolves)-1].reason; got != "device stopped" {
-		t.Errorf("resolve reason = %q, want %q", got, "device stopped")
+	if got, want := rec.resolveReason(key), "device stopped"; got != want {
+		t.Errorf("resolve reason = %q, want %q", got, want)
 	}
 
 	// Back, raised again, then notifications disabled: resolved.
-	feed.devs = []DeviceCounters{dev}
+	feed.devs = []DeviceCounters{saved}
 	pollEvery(h, c, 10*time.Second, 1) // first sighting again: baseline
 	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount)
 	if !rec.isActive(key) {
@@ -1160,7 +1241,41 @@ func TestHostOverrunsResolvedOnRemovalAndDisable(t *testing.T) {
 	s.Enabled = false
 	h.Apply(&s)
 	pollEvery(h, c, 10*time.Second, 1)
-	if rec.resolveCount(key) != 2 {
-		t.Fatalf("disable: resolves = %d, want 2", rec.resolveCount(key))
+	if rec.resolveCount(key) != 2 || rec.clearCount(key) != 0 {
+		t.Fatalf("disable: resolves=%d clears=%d, want 2 resolves and no clear", rec.resolveCount(key), rec.clearCount(key))
+	}
+	if got, want := rec.resolveReason(key), "notifications disabled"; got != want {
+		t.Errorf("disable resolve reason = %q, want %q", got, want)
+	}
+}
+
+// A Gen-less runtime whose overrun counter goes backwards has restarted even
+// when its drop counter kept climbing, so the drops condition rebaselines
+// rather than carrying a pending onset run across the restart.
+func TestHostDropsRebaselineOnOverrunCounterReset(t *testing.T) {
+	t.Parallel()
+	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Overruns: 10}}}
+	rec := newRecPub()
+	c := newClk()
+	h := newHostT(nil, feed.source, rec, hostSettings(), c)
+	key := streamDropsKey(nameGarden)
+	h.poll() // t=0: baseline
+	step := func(overruns uint64) {
+		c.advance(10 * time.Second)
+		feed.devs[0].Dropped += 100 // 10 frames/s, over the onset rate
+		feed.devs[0].Overruns = overruns
+		h.poll()
+	}
+	step(10) // t=10: the drops onset run starts
+	step(2)  // t=20: the overrun counter went backwards, a restart
+	step(2)  // t=30
+	step(2)  // t=40: a run kept from t=10 would onset here
+	if rec.isActive(key) {
+		t.Fatal("the drops onset run survived a restart signalled by the overrun counter")
+	}
+	step(2) // t=50
+	step(2) // t=60: the run restarted at t=30 completes its 30 s
+	if !rec.isActive(key) {
+		t.Error("drops did not onset after the restart's fresh 30 s run")
 	}
 }

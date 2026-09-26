@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -145,20 +144,10 @@ type counterState struct {
 	missed int
 	seen   bool
 
-	// ovPrev is the last overrun count seen; ovRecent holds the overruns seen
-	// within the last overrunWindow, one entry per poll that saw any; ovLast is
-	// when the most recent one was seen; ovActive is whether the condition is
-	// raised.
-	ovPrev   uint64
-	ovRecent []overrunSample
-	ovLast   time.Time
-	ovActive bool
-}
-
-// overrunSample is the number of overruns one poll saw, with its time.
-type overrunSample struct {
-	at time.Time
-	n  uint64
+	// ovPrev is the last overrun count seen; ov counts the overruns since then
+	// into the sliding window and holds whether the condition is raised.
+	ovPrev uint64
+	ov     *notify.Flap
 }
 
 // Host is the host-health condition monitor. A single goroutine polls the
@@ -292,7 +281,7 @@ func (h *Host) resolveAll(reason string) {
 		if st.h.Active() {
 			h.pub.Resolve(streamDropsKey(name), reason)
 		}
-		if st.ovActive {
+		if st.ov.Active() {
 			h.pub.Resolve(deviceOverrunsKey(name), reason)
 		}
 	}
@@ -460,7 +449,9 @@ func (h *Host) evaluateCounters(now time.Time) {
 			// about what happened since the last poll.
 			h.devs[d.Name] = &counterState{
 				h:    notify.NewHysteresis(dropsEnterAfter, dropsClearAfter),
-				prev: d.Dropped, prevAt: now, gen: d.Gen, ovPrev: d.Overruns, seen: true,
+				prev: d.Dropped, prevAt: now, gen: d.Gen, seen: true,
+				ovPrev: d.Overruns,
+				ov:     notify.NewFlap(overrunOnsetCount-1, overrunWindow, overrunClearAfter),
 			}
 			continue
 		}
@@ -485,6 +476,8 @@ func (h *Host) evaluateCounters(now time.Time) {
 			// so a blip cannot carry it across the gap, but leave an active condition
 			// untouched. A device that stopped serving must end with the grace
 			// resolve ("device stopped"), never with a clear claiming it recovered.
+			// A pending overrun window is kept: it counts overruns by wall-clock time,
+			// so the gap cannot stretch it the way it would stretch a drops run.
 			if !st.h.Active() {
 				st.h.Reset()
 			}
@@ -493,7 +486,7 @@ func (h *Host) evaluateCounters(now time.Time) {
 		if st.h.Active() {
 			h.pub.Resolve(streamDropsKey(name), "device stopped")
 		}
-		if st.ovActive {
+		if st.ov.Active() {
 			h.pub.Resolve(deviceOverrunsKey(name), "device stopped")
 		}
 		delete(h.devs, name)
@@ -532,49 +525,39 @@ func (h *Host) observeDrops(st *counterState, now time.Time, name string, droppe
 		func() notify.Notification { return dropsClearFor(name) })
 }
 
-// observeOverruns counts one device's new capture overruns into its sliding
-// window and drives the overrun condition: the onset needs overrunOnsetCount
-// within overrunWindow, and an active condition clears after overrunClearAfter
-// with none. A restarted runtime's counter started at zero after the poll that
-// last saw its predecessor, so its whole count is new since that poll. Every
-// overrun short of the onset is logged, so an isolated one still leaves a
-// trace; once the condition is raised it speaks for them until it clears.
+// observeOverruns feeds one device's new capture overruns to its flap detector
+// and publishes what it reports: the onset needs overrunOnsetCount within
+// overrunWindow, and an active condition clears after overrunClearAfter with
+// none. A restarted runtime's counter started at zero after the poll that last
+// saw its predecessor, so its whole count is new since that poll. Each poll
+// that sees overruns short of the onset logs them; once the condition is
+// raised it speaks for them until it clears. Like every condition monitor this
+// runs only while notifications are enabled (the device's API and dashboard
+// counter keeps counting regardless), and a device's first sighting takes its
+// cumulative count as the baseline, so overruns before that are not logged.
 func (h *Host) observeOverruns(st *counterState, now time.Time, name string, total uint64, restarted bool) {
 	delta := total
 	if !restarted {
 		delta = total - st.ovPrev
 	}
 	st.ovPrev = total
-	if delta > 0 {
-		st.ovRecent = append(st.ovRecent, overrunSample{at: now, n: delta})
-		st.ovLast = now
+	if st.ov.Sweep(now) == notify.TransitionClear {
+		log.Printf("device %q: no capture overruns for %s, overrun warning cleared", name, humanDuration(int(overrunClearAfter/time.Second)))
+		h.pub.Clear(deviceOverrunsKey(name), overrunsClearFor(name))
 	}
-	cutoff := now.Add(-overrunWindow)
-	st.ovRecent = slices.DeleteFunc(st.ovRecent, func(s overrunSample) bool { return !s.at.After(cutoff) })
-
-	if st.ovActive {
-		if now.Sub(st.ovLast) >= overrunClearAfter {
-			st.ovActive = false
-			// Start the next onset from an empty window, so the overruns that raised
-			// this condition cannot count toward raising it again.
-			st.ovRecent = st.ovRecent[:0]
-			log.Printf("device %q: no capture overruns for %s, overrun warning cleared", name, humanDuration(int(overrunClearAfter/time.Second)))
-			h.pub.Clear(deviceOverrunsKey(name), overrunsClearFor(name))
+	// One Event per overrun, capped at the onset count: past it a burst changes
+	// nothing, since an active flap only records the time of its latest event.
+	// Sweep has already cleared a quiet-ended flap at this now, so Event can
+	// only report an onset.
+	for range min(delta, overrunOnsetCount) {
+		if st.ov.Event(now) == notify.TransitionOnset {
+			log.Printf("device %q: at least %d capture overruns within %s, audio lost; raising an overrun warning", name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)))
+			h.pub.Onset(overrunsOnset(name))
+			return
 		}
-		return
 	}
-	var recent uint64
-	for _, s := range st.ovRecent {
-		recent += s.n
-	}
-	if recent >= overrunOnsetCount {
-		st.ovActive = true
-		log.Printf("device %q: %d capture overruns in the last %s, audio lost; raising an overrun warning", name, recent, humanDuration(int(overrunWindow/time.Second)))
-		h.pub.Onset(overrunsOnset(name, recent))
-		return
-	}
-	if delta > 0 {
-		log.Printf("device %q: %d capture overrun(s) since the last check, audio lost (%d in the last %s)", name, delta, recent, humanDuration(int(overrunWindow/time.Second)))
+	if delta > 0 && !st.ov.Active() {
+		log.Printf("device %q: %d capture overrun(s) since the last check, audio lost", name, delta)
 	}
 }
 
@@ -621,15 +604,15 @@ func dropsClearFor(name string) notify.Notification {
 	return conditionClear("Client keeping up", name+" is no longer dropping frames")
 }
 
-func overrunsOnset(name string, count uint64) notify.Notification {
+func overrunsOnset(name string) notify.Notification {
 	return notify.Notification{
 		Severity: notify.SeverityWarning,
 		Category: notify.CategoryDevice,
 		Key:      deviceOverrunsKey(name),
 		Source:   name,
 		Title:    "Capture overruns",
-		Message: fmt.Sprintf("%s lost audio to %d capture overruns in the last %s; the host may be too busy or the USB connection unstable",
-			name, count, humanDuration(int(overrunWindow/time.Second))),
+		Message: fmt.Sprintf("%s lost audio to at least %d capture overruns within %s; the host may be too busy or the USB connection unstable",
+			name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second))),
 	}
 }
 
