@@ -102,20 +102,21 @@
 
   /* Type scale. Every font-size in this file names one of these roles, so a
      new view picks a role instead of a pixel value and the scale cannot drift
-     (test/legibility.test.ts enforces it). The sizes are px on purpose: the
-     layout around the text (meter columns, badge boxes, breakpoints) is px,
-     so rem text would outgrow it at a larger browser font setting. Browser
-     zoom still scales both. Sentences use body; caption is for short labels,
+     (test/legibility.test.ts enforces it). The sizes are rem, so a larger
+     browser font setting scales the text; the layout that holds text (meter
+     columns, badge boxes, pills) is rem too and the breakpoints are em, so it
+     grows with it. The px values named in the comments and the legibility
+     test are at the default 16px root. Sentences use body; caption is for short labels,
      badges and data at weight 500 or more. Micro is only for the two
      allowances listed in the legibility test. */
-  --font-size-micro: 11px;
-  --font-size-caption: 12px;
-  --font-size-body: 13px;
-  --font-size-label: 14px;
-  --font-size-title: 15px;
-  --font-size-value: 16px;
-  --font-size-heading: 20px;
-  --font-size-stat: 22px;
+  --font-size-micro: 0.6875rem;
+  --font-size-caption: 0.75rem;
+  --font-size-body: 0.8125rem;
+  --font-size-label: 0.875rem;
+  --font-size-title: 0.9375rem;
+  --font-size-value: 1rem;
+  --font-size-heading: 1.25rem;
+  --font-size-stat: 1.375rem;
   /* Inline code inside running text, relative to that text. Every host is
      body size or larger (the legibility test checks), so 0.93em keeps code at
      or above the 12px floor. */
@@ -340,6 +341,7 @@ textarea {
 
 .brand-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -370,6 +372,7 @@ textarea {
 
 .brand-sub {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: var(--font-size-caption);
@@ -412,6 +415,8 @@ textarea {
 /* Nav Tabs */
 .nav-group {
   display: flex;
+  /* At a large browser font on a phone the four tabs can outgrow one row. */
+  flex-wrap: wrap;
   align-items: center;
   background: var(--bg-page);
   border: 1px solid var(--border-subtle);
@@ -1003,7 +1008,7 @@ textarea {
      both off one variable keeps the scale aligned with the meter track. The
      stats column holds the widest readout ("-59.9 dBFS"), the gap and the CLIP
      button on one line, so a changing level never reflows the row. */
-  --meter-cols: 42px 1fr 144px;
+  --meter-cols: 2.625rem 1fr 9rem;
 }
 
 /* A high-channel interface (6-8 channels) would stack that many meter rows and
@@ -2291,15 +2296,15 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   position: absolute;
   top: -4px;
   right: -4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
   border-radius: var(--radius-full);
   background: var(--crit-fill-bg);
   color: var(--crit-fill-fg);
   font-size: var(--font-size-micro);
   font-weight: 700;
-  line-height: 16px;
+  line-height: 1rem;
   text-align: center;
   box-shadow: 0 0 0 2px var(--bg-page);
   pointer-events: none;
@@ -2452,7 +2457,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-caption);
   font-weight: 600;
   padding: 0 6px;
-  line-height: 16px;
+  line-height: 1rem;
   border-radius: var(--radius-full);
   background: var(--bg-surface-active);
   color: var(--text-secondary);
@@ -2598,7 +2603,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-caption);
   font-weight: 600;
   padding: 0 8px;
-  line-height: 18px;
+  line-height: 1.125rem;
   border-radius: var(--radius-full);
   background: var(--accent-cyan-bg);
   color: var(--accent-cyan-text);
@@ -2893,7 +2898,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-caption);
   font-weight: 600;
   padding: 0 6px;
-  line-height: 16px;
+  line-height: 1rem;
   border-radius: var(--radius-full);
   border: 1px solid currentColor;
 }
@@ -2997,7 +3002,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 48em) {
   .ev-row .notif-row-top {
     flex-direction: column;
     align-items: flex-start;
@@ -3014,7 +3019,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 /* On a phone-width header the four nav tabs with their icons are wider than
    the header, so they spilled out of it at 320 px. Drop the decorative icons
    (the labels carry the meaning) and tighten the padding and the type. */
-@media (max-width: 400px) {
+@media (max-width: 25em) {
   .nav-item {
     padding: 0 5px;
     font-size: var(--font-size-caption);
@@ -3026,7 +3031,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* Responsive Rules */
-@media (max-width: 768px) {
+@media (max-width: 48em) {
   .instrument-header {
     flex-direction: column;
     align-items: stretch;
@@ -3258,6 +3263,7 @@ select.field-input {
 }
 .network-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 16px;
@@ -3517,6 +3523,9 @@ select.field-input {
   font-size: var(--font-size-body);
   line-height: 1.6;
   color: var(--text-secondary);
+  /* A repository address has no break point, and at a large font on a phone
+     it is wider than the card. */
+  overflow-wrap: break-word;
 }
 .about-text a,
 .about-card .info-val a {

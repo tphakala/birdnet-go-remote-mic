@@ -38,7 +38,8 @@ The output must stay plain ES modules (plus the one classic script,
 - `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the REST client;
   raises `ApiError` from RFC 9457 problem bodies, handles the Bearer token and
   401; the one deliberate bypass is the restart modal's raw
-  `fetch("/api/v1/healthz")` probe), `sse.ts` (`sse`, fetch-streaming SSE
+  `fetch("/api/v1/healthz")` probe, which also follows an update's restart),
+  `sse.ts` (`sse`, fetch-streaming SSE
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
   state), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`,
   `#/about`; the pure route decisions are in `router-core.ts`),
@@ -46,8 +47,10 @@ The output must stay plain ES modules (plus the one classic script,
   formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow
   and cross-tab sync, with the browser objects injected so `node:test` covers
   it), `prefs.ts` (per-browser boolean preferences, `readBoolPref`/`writeBoolPref`,
-  `isLocalStorageEvent`, the hide-inactive keys, and the once-per-page
-  "preferences not saved" notice),
+  `onPrefChange` (every cross-tab preference listener), the hide-inactive
+  keys, and the once-per-page "preferences not saved" notice),
+  `update-core.ts` (the Software Update card's text and the `InstallWait`
+  that follows an update through its restart),
   `types.ts` (API types).
 - `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
   `CustomDropdown`, `MenuButton`, `VUMeter`, `DeviceSettingsForm`,
@@ -128,12 +131,15 @@ reconcile:
   live-region message), `MenuButton` (a single-choice header menu),
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
   switch; the static ones in `index.html` copy its markup, `role="switch"`
-  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size), and
-  icon constants such as `ICON_COPY` and `TOAST_ICONS`.
+  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size and
+  stroke width; every stroked icon uses it, from `lib/svg.ts`, a leaf module
+  `ui.ts` re-exports), `focusTarget` (where focus or a click went relative to
+  a popup and its opener), and icon constants such as `ICON_COPY` and
+  `TOAST_ICONS`.
 - A component with non-trivial event wiring keeps its state and sequencing in
   a DOM-free controller in `lib/*-core.ts` that drives injected ports (see
-  `MenuController` in `lib/menu-core.ts`), so node:test pins the wiring, not
-  only the decisions.
+  `MenuController` and `PopoverController` in `lib/menu-core.ts`), so
+  node:test pins the wiring, not only the decisions.
 
 ## DOM safety
 
@@ -165,8 +171,9 @@ reconcile:
   describe them. Secondary and muted text must reach `SMALL_TEXT` (5.5:1),
   not just AA.
 - Type scale and floor (`test/legibility.test.ts`): every `font-size` is a
-  `var(--font-size-*)` role token (px, defined on `:root`), never a literal,
-  and a `font:` shorthand may only reset (`font: inherit`). No text below
+  `var(--font-size-*)` role token (rem, defined on `:root`), never a literal,
+  and a `font:` shorthand may only reset (`font: inherit`). Sizes below are
+  at the default 16px root. No text below
   12px, and text below the 13px body size needs weight 500 or more. Sentences
   (subtitles, hints, notes, messages) use body (13px) at regular weight;
   caption (12px) is for short labels, badges and data at 500+. Declare the
@@ -210,6 +217,10 @@ reconcile:
   `#main-content` (device removal, login close) leaves the page where the
   operator was, while the router focuses the new view section and then scrolls
   to the top on purpose, so the header stays in view.
+- The UI follows the browser's font size setting: a box that holds text
+  (grid tracks, badge and pill heights, line heights) is sized in rem or em
+  or by its content, never px, and breakpoints are em. `task web:sweep`
+  renders every view at 16, 20 and 24px roots.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.
