@@ -152,7 +152,8 @@ export function switchControl(opts: SwitchOptions): { el: HTMLLabelElement; inpu
 
 // setButtonLabel updates a button's visible text without disturbing a leading
 // icon: it writes into the .btn-label span the factory adds, and falls back to
-// the element's own text for a plain button that has no such span.
+// the element's own text for a plain button that has no such span. It writes
+// only when the text changed.
 export function setButtonLabel(el: HTMLElement, text: string): void {
   let label = el.querySelector<HTMLElement>(".btn-label");
   // An icon-only button has a .btn-icon but no label span; add one rather than
@@ -161,8 +162,8 @@ export function setButtonLabel(el: HTMLElement, text: string): void {
     label = elem("span", "btn-label");
     el.appendChild(label);
   }
-  if (label) label.textContent = text;
-  else el.textContent = text;
+  // A render may re-apply the same busy label on every poll.
+  setText(label ?? el, text);
 }
 
 export function setBusy(el: HTMLElement, label?: string): void {

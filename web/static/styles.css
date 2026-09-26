@@ -3350,6 +3350,45 @@ select.field-input {
 .auth-state.open {
   color: var(--signal-warn-text);
 }
+/* Software Update card: a headline coloured by the state, the sentences
+   under it, then the version details. */
+.update-state {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 14px;
+}
+.update-state p {
+  margin: 0;
+}
+.update-headline {
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.update-headline.tone-ok {
+  color: var(--signal-ok-text);
+}
+.update-headline.tone-accent {
+  color: var(--accent-cyan-text);
+}
+.update-headline.tone-warn {
+  color: var(--signal-warn-text);
+}
+.update-headline.tone-error {
+  color: var(--signal-crit-text);
+}
+.update-detail,
+.update-hint {
+  font-size: var(--font-size-body);
+  color: var(--text-secondary);
+}
+.update-hint {
+  color: var(--text-primary);
+}
+#sys-update-info {
+  margin-bottom: 14px;
+}
 /* Certificate card: the two PEM textareas. .field-input supplies the chrome;
    this keeps them monospace, vertically resizable only (a width resize would
    break the card layout) and tall enough to show a PEM header plus a few lines. */

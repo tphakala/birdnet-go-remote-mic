@@ -230,6 +230,38 @@
           </div>
         </div>
 
+        <!-- Software updates: the daily release check and the one-button update (from live /system) -->
+        <div class="config-section-card" id="sys-update-card" hidden>
+          <div class="section-head">
+            <div>
+              <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg><span>Software Update</span></h2>
+              <span class="section-desc">Releases are signed; the appliance checks the signature and the checksums before it installs anything.</span>
+            </div>
+          </div>
+          <div class="update-state" id="sys-update-state" role="status">
+            <p class="update-headline" id="sys-update-headline"></p>
+            <p class="update-detail" id="sys-update-detail"></p>
+            <p class="update-hint" id="sys-update-hint" hidden></p>
+            <p class="update-detail" id="sys-update-note" hidden></p>
+          </div>
+          <dl class="info-grid" id="sys-update-info"></dl>
+          <div class="form-field">
+            <span class="field-label" id="sys-update-check-label">Update Check</span>
+            <label class="switch-control">
+              <input type="checkbox" id="sys-update-check" class="visually-hidden" role="switch" aria-labelledby="sys-update-check-label sys-update-check-caption" aria-describedby="sys-update-check-hint">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span class="switch-label" id="sys-update-check-caption">Check for a new release once a day</span>
+            </label>
+            <span class="field-hint" id="sys-update-check-hint">Asks GitHub for the newest release. Applies at once.</span>
+          </div>
+          <div class="network-actions" id="sys-update-actions">
+            <span id="sys-update-notes"></span>
+            <span class="network-actions-spacer"></span>
+            <button type="button" class="btn btn-secondary" id="btn-update-check">Check Now</button>
+            <button type="button" class="btn btn-primary" id="btn-update-apply" hidden>Update</button>
+          </div>
+        </div>
+
         <!-- Per-device stream status (from live /devices) -->
         <div class="client-card">
           <div class="section-head">
@@ -453,7 +485,7 @@
     <div class="spinner-ring" aria-hidden="true"></div>
     <div>
       <h3 id="modal-title" class="modal-title">Restarting Appliance</h3>
-      <p class="modal-text">
+      <p class="modal-text" id="modal-text">
         The appliance service is performing a graceful shutdown and restart. Polling <span class="mono">/healthz</span> for recovery.
       </p>
     </div>

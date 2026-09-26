@@ -2,6 +2,7 @@ import { api } from "../lib/api.js";
 import { showToast } from "./toast.js";
 import { confirmDialog, setAppInert, trapFocus } from "../lib/modal.js";
 import { announce } from "../lib/ui.js";
+import { formatElapsed, InstallWait, STAGE_LABELS } from "../lib/update-core.js";
 
 // restarting guards against a double click starting two restart flows (and thus
 // two countdown/health-poll intervals).
@@ -12,6 +13,13 @@ let restarting = false;
 // announce clears the region first, so a repeated phase is read again.
 function say(text: string): void {
   announce(document.getElementById("restart-announce"), text);
+}
+
+// sayNow writes the last phase before a reload at once. announce waits for the
+// next animation frame, which a background tab does not run before the reload.
+function sayNow(text: string): void {
+  const region = document.getElementById("restart-announce");
+  if (region) region.textContent = text;
 }
 
 // confirmRestart asks the user to confirm the disruptive restart before it runs.
@@ -90,7 +98,7 @@ function startHealthPolling(): void {
       if (res.ok) {
         clearInterval(interval);
         if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
-        say("Appliance is back online. Reloading.");
+        sayNow("Appliance is back online. Reloading.");
         window.setTimeout(() => {
           window.location.reload();
         }, 600);
@@ -116,4 +124,122 @@ function showRetry(): void {
   retry.hidden = false;
   retry.addEventListener("click", () => window.location.reload(), { once: true });
   retry.focus();
+}
+
+// How often the install wait probes /healthz, and how long one probe may take.
+const INSTALL_PROBE_MS = 2000;
+const INSTALL_PROBE_TIMEOUT_MS = 4000;
+
+// InstallWaitHandle is how the caller feeds the install wait the phases the
+// status poll reports.
+export interface InstallWaitHandle {
+  // installing reports the installing phase (the release is with the root
+  // updater), which starts the install allowance.
+  installing(): void;
+  // close ends the wait and hides the modal when the attempt failed or was
+  // abandoned without a restart. Once the appliance has gone down for the
+  // restart it does nothing, since only a probe can end the wait then. It
+  // returns whether it closed.
+  close(): boolean;
+}
+
+// probeVersion asks the open /healthz for the running version, or null when
+// the appliance does not answer (restarting). Like the restart probe it is a
+// deliberate raw fetch: api.ts would treat a failure as an error to report.
+async function probeVersion(): Promise<string | null> {
+  try {
+    const res = await fetch("/api/v1/healthz", { cache: "no-store", signal: AbortSignal.timeout(INSTALL_PROBE_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { version?: unknown };
+    return typeof body.version === "string" ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
+// awaitUpdateInstall shows the restart modal from the moment an update to
+// target starts until the appliance answers again, then reloads the page (see
+// InstallWait). It returns null when a restart or another wait already holds
+// the modal.
+export function awaitUpdateInstall(target: string): InstallWaitHandle | null {
+  const modal = document.getElementById("restart-modal");
+  const titleEl = document.getElementById("modal-title");
+  const textEl = document.getElementById("modal-text");
+  const timerEl = document.getElementById("reconnect-timer");
+  if (!modal || restarting) return null;
+  restarting = true;
+
+  const oldTitle = titleEl?.textContent ?? "";
+  const oldText = textEl?.textContent ?? "";
+  if (titleEl) titleEl.textContent = "Updating Appliance";
+  if (textEl) {
+    textEl.textContent = `Updating to ${target}. The appliance downloads and verifies the release, then restarts to install it, and goes back to the running version on its own if the new one does not start. This page reloads once it answers again.`;
+  }
+  const prevFocus = document.activeElement as HTMLElement | null;
+  modal.classList.add("open");
+  setAppInert(true);
+  const release = trapFocus(modal);
+  modal.querySelector<HTMLElement>(".modal-card")?.focus();
+  say(`Updating to ${target}. This page reloads when the appliance is back.`);
+
+  const started = Date.now();
+  const wait = new InstallWait(target, started);
+  let lastStage = wait.stage;
+  let done = false;
+  let timer = 0;
+  // The progress line is visual only (aria-hidden); a stage change is announced.
+  const tick = (): void => {
+    if (timerEl) timerEl.textContent = `${STAGE_LABELS[wait.stage]} (${formatElapsed(Date.now() - started)})`;
+    if (wait.stage !== lastStage) {
+      lastStage = wait.stage;
+      say(`${STAGE_LABELS[lastStage]}.`);
+    }
+  };
+  tick();
+  const finish = (): void => {
+    done = true;
+    window.clearTimeout(timer);
+  };
+  const step = async (): Promise<void> => {
+    const version = await probeVersion();
+    if (done) return;
+    const next = wait.probe(version, Date.now());
+    tick();
+    if (next === "reload") {
+      finish();
+      if (timerEl) timerEl.textContent = "Appliance online. Reloading...";
+      sayNow("The appliance is back. Reloading.");
+      window.setTimeout(() => window.location.reload(), 600);
+      return;
+    }
+    if (next === "timeout") {
+      finish();
+      if (timerEl) timerEl.textContent = "The appliance has not come back yet.";
+      say("The appliance has not come back yet. Use the reload button to try again.");
+      showRetry();
+      return;
+    }
+    timer = window.setTimeout(() => void step(), INSTALL_PROBE_MS);
+  };
+  timer = window.setTimeout(() => void step(), INSTALL_PROBE_MS);
+
+  return {
+    installing(): void {
+      if (done) return;
+      wait.installing(Date.now());
+      tick();
+    },
+    close(): boolean {
+      if (done || wait.wentDown) return false;
+      finish();
+      modal.classList.remove("open");
+      release();
+      setAppInert(false);
+      if (titleEl) titleEl.textContent = oldTitle;
+      if (textEl) textEl.textContent = oldText;
+      restarting = false;
+      prevFocus?.focus({ preventScroll: true });
+      return true;
+    },
+  };
 }

@@ -1,10 +1,11 @@
 import { api, ApiError } from "../lib/api.js";
 import { store } from "../lib/store.js";
 import { router } from "../lib/router.js";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
+import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
-import { triggerApplianceRestart } from "../components/restart-modal.js";
+import { awaitUpdateInstall, triggerApplianceRestart, type InstallWaitHandle } from "../components/restart-modal.js";
+import { describeUpdate, installMethodLabel, lastCheckText, safeNotesUrl } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -14,7 +15,7 @@ import {
   unparsedThresholds,
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.js";
-import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../lib/types.js";
 import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.js";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
@@ -196,6 +197,21 @@ export class SystemView {
   private notifyDirty = false;
   private notifySaving = false;
 
+  private updateCardEl: HTMLElement | null;
+  private updateCheckEl: HTMLInputElement | null;
+  private updateCheckBtn: HTMLElement | null;
+  private updateApplyBtn: HTMLElement | null;
+  // The info rows (Installed, Latest, Last Check, Installed With), built once.
+  private updateInfo = new Map<string, HTMLElement>();
+  private updateNotesUrl = "";
+  // Requests in flight from this card; a render never undoes their busy state.
+  private updateChecking = false;
+  private updateApplying = false;
+  private updateToggling = false;
+  // The wait for an update this tab started, from the request until the
+  // appliance answers again or the attempt fails.
+  private installWait: InstallWaitHandle | null = null;
+
   constructor() {
     this.tilesEl = document.getElementById("sys-tiles");
     this.infoHwEl = document.getElementById("sys-info-hw");
@@ -225,6 +241,10 @@ export class SystemView {
     this.certPemErrorEl = document.getElementById("sys-cert-pem-error");
     this.certKeyEl = document.getElementById("sys-cert-key") as HTMLTextAreaElement | null;
     this.certKeyErrorEl = document.getElementById("sys-cert-key-error");
+    this.updateCardEl = document.getElementById("sys-update-card");
+    this.updateCheckEl = document.getElementById("sys-update-check") as HTMLInputElement | null;
+    this.updateCheckBtn = document.getElementById("btn-update-check");
+    this.updateApplyBtn = document.getElementById("btn-update-apply");
     const btn = document.getElementById("btn-sys-restart") as HTMLButtonElement | null;
     if (btn) btn.addEventListener("click", () => triggerApplianceRestart());
     this.bindCertificate();
@@ -233,6 +253,7 @@ export class SystemView {
       this.system = (e as CustomEvent<SystemInfo>).detail;
       this.renderTiles();
       this.renderInfo();
+      this.renderUpdate();
     });
     store.addEventListener("status", (e: Event) => {
       this.status = (e as CustomEvent<ApplianceStatus>).detail;
@@ -290,6 +311,7 @@ export class SystemView {
     this.bindNetwork();
     this.bindAuth();
     this.bindNotifications();
+    this.bindUpdate();
   }
 
   // focusAuthCard scrolls the Access Control card into view and moves focus to
@@ -1037,6 +1059,174 @@ export class SystemView {
   // renderLoadError swaps the telemetry placeholder for the failure cause and a
   // Retry button so the system view is not stuck loading when /system is
   // unreachable. A successful retry re-renders via the system event.
+  private bindUpdate(): void {
+    this.updateCheckEl?.addEventListener("change", () => void this.saveUpdateCheck());
+    this.updateCheckBtn?.addEventListener("click", () => void this.checkForUpdate());
+    this.updateApplyBtn?.addEventListener("click", () => void this.startUpdate());
+  }
+
+  // renderUpdate patches the Software Update card from the last status, or the
+  // status a check or an update request just returned. An appliance without
+  // update support sends none and the card stays hidden.
+  private renderUpdate(fresh?: UpdateStatus): void {
+    const u = fresh ?? this.system?.update;
+    const card = this.updateCardEl;
+    if (!card) return;
+    setHidden(card, !u);
+    if (!u) return;
+    const view = describeUpdate(u);
+
+    const headline = document.getElementById("sys-update-headline");
+    if (headline) {
+      const cls = `update-headline tone-${view.tone}`;
+      if (headline.className !== cls) headline.className = cls;
+      setText(headline, view.headline);
+    }
+    const detail = document.getElementById("sys-update-detail");
+    if (detail) setText(detail, view.detail);
+    for (const [id, text] of [["sys-update-hint", view.hint], ["sys-update-note", view.note]] as const) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      setText(el, text);
+      setHidden(el, text === "");
+    }
+    this.renderUpdateInfo(u);
+
+    if (this.updateCheckEl && !this.updateToggling) this.updateCheckEl.checked = u.checkEnabled;
+    this.renderUpdateNotes(u.available ? safeNotesUrl(u.notesUrl) : "");
+
+    // Check Now stays in place (hiding a focused button would drop focus) and
+    // shows as unavailable while it cannot run.
+    const check = this.updateCheckBtn;
+    if (check) {
+      setHidden(check, !u.supported);
+      if (!this.updateChecking) {
+        if (view.canCheck) check.removeAttribute("aria-disabled");
+        else check.setAttribute("aria-disabled", "true");
+      }
+    }
+    const apply = this.updateApplyBtn;
+    if (apply) {
+      setHidden(apply, view.applyVersion === "" && !view.busy);
+      if (view.busy) setBusy(apply, u.phase === "downloading" ? "Downloading..." : "Installing...");
+      else if (!this.updateApplying) clearBusy(apply, `Update to ${view.applyVersion}`);
+    }
+    this.followInstall(u);
+  }
+
+  // renderUpdateInfo fills the fixed info rows, built on the first render.
+  private renderUpdateInfo(u: UpdateStatus): void {
+    const grid = document.getElementById("sys-update-info");
+    if (!grid) return;
+    const rows: [string, string][] = [
+      ["Installed Version", u.currentVersion || "-"],
+      ["Latest Release", u.latestVersion ?? "-"],
+      ["Last Check", lastCheckText(u.lastCheck, Date.now(), formatRelative)],
+      ["Installed With", installMethodLabel(u.installMethod)],
+    ];
+    for (const [label, value] of rows) {
+      let dd = this.updateInfo.get(label);
+      if (!dd) {
+        dd = elem("dd", "info-val mono");
+        grid.append(elem("dt", "info-key", label), dd);
+        this.updateInfo.set(label, dd);
+      }
+      setText(dd, value);
+    }
+  }
+
+  // renderUpdateNotes shows the release notes link for the offered release,
+  // rebuilt only when the address changes.
+  private renderUpdateNotes(url: string): void {
+    const slot = document.getElementById("sys-update-notes");
+    if (!slot || url === this.updateNotesUrl) return;
+    this.updateNotesUrl = url;
+    slot.replaceChildren(...(url ? [externalLink(url, "Release Notes")] : []));
+  }
+
+  // followInstall moves the wait for an update this tab started along with the
+  // phase the appliance reports: installing starts the install allowance, and
+  // idle or failed before any restart means the attempt ended here, so the
+  // card takes over again.
+  private followInstall(u: UpdateStatus): void {
+    const wait = this.installWait;
+    if (!wait) return;
+    if (u.phase === "installing") wait.installing();
+    else if (u.phase !== "downloading" && wait.close()) {
+      this.installWait = null;
+      if (u.phase === "failed") showToast(`Update failed: ${u.phaseMessage || "the attempt did not finish"}`, "error");
+    }
+  }
+
+  private async saveUpdateCheck(): Promise<void> {
+    const input = this.updateCheckEl;
+    if (!input || this.updateToggling) return;
+    const want = input.checked;
+    this.updateToggling = true;
+    input.setAttribute("aria-busy", "true");
+    try {
+      const res = await api.patchConfig({ updates: { check: want } });
+      store.applyConfig(res.config);
+      showToast(want ? "Daily update check turned on." : "Daily update check turned off.");
+    } catch (err: unknown) {
+      input.checked = !want;
+      showToast(`Could not change the update check: ${apiErrorMessage(err)}`, "error");
+    } finally {
+      this.updateToggling = false;
+      input.removeAttribute("aria-busy");
+    }
+    await store.refreshSystem();
+    this.renderUpdate();
+  }
+
+  private async checkForUpdate(): Promise<void> {
+    const btn = this.updateCheckBtn;
+    if (!btn || this.updateChecking || btn.getAttribute("aria-disabled") === "true") return;
+    this.updateChecking = true;
+    setBusy(btn, "Checking...");
+    try {
+      const status = await api.checkForUpdate();
+      this.renderUpdate(status);
+      if (status.lastError) showToast(`Update check failed: ${status.lastError}.`, "warn");
+      else if (!status.available) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
+    } catch (err: unknown) {
+      showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");
+    } finally {
+      this.updateChecking = false;
+      clearBusy(btn, "Check Now");
+    }
+    // The poll may have caught the state from before the check; ask again so
+    // the card settles on the result.
+    await store.refreshSystem();
+    this.renderUpdate();
+  }
+
+  private async startUpdate(): Promise<void> {
+    const btn = this.updateApplyBtn;
+    const u = this.system?.update;
+    const target = u ? describeUpdate(u).applyVersion : "";
+    if (!btn || !target || this.updateApplying || btn.getAttribute("aria-disabled") === "true") return;
+    const ok = await confirmDialog({
+      title: `Update to ${target}?`,
+      body: `The appliance downloads ${target}, checks its signature, and restarts to install it, which drops connected streams for a moment. If the new version does not start, it goes back to ${u?.currentVersion ?? "the running version"} on its own.`,
+      confirmLabel: "Update",
+    });
+    if (!ok) return;
+    this.updateApplying = true;
+    setBusy(btn, "Starting...");
+    try {
+      const status = await api.startUpdate();
+      this.installWait = awaitUpdateInstall(target);
+      this.renderUpdate(status);
+    } catch (err: unknown) {
+      showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
+    } finally {
+      this.updateApplying = false;
+    }
+    await store.refreshSystem();
+    this.renderUpdate();
+  }
+
   private renderLoadError(message: string): void {
     if (!this.tilesEl) return;
     this.tilesEl.textContent = "";
