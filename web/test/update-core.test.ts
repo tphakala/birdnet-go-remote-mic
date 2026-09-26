@@ -9,11 +9,11 @@ import {
   followEndText,
   formatElapsed,
   INSTALL_WAIT_TIMEOUT_MS,
-  installMethodLabel,
   lastCheckText,
   refusalText,
   safeNotesUrl,
   sentence,
+  withChecksSetting,
   TICK_GAP_MS,
   TICK_HOLD_MS,
   TickGuard,
@@ -180,6 +180,17 @@ test("sentence capitalises and ends a backend message once", () => {
   assert.equal(sentence(undefined), "");
 });
 
+test("withChecksSetting mirrors what the appliance does to its update state", () => {
+  const on = status({ latestVersion: "v0.3.0", available: true, notesUrl: "https://x/notes", phase: "downloading" });
+  const off = withChecksSetting(on, false);
+  assert.equal(off.checkEnabled, false);
+  assert.equal(off.available, false);
+  assert.equal(off.latestVersion, undefined);
+  assert.equal(off.notesUrl, undefined);
+  assert.equal(off.phase, "downloading", "the phase is left to the next read");
+  assert.deepEqual(withChecksSetting({ ...on, checkEnabled: false }, true), on);
+});
+
 test("refusalText shows the appliance's reason, never a stray body", () => {
   const busy = "an update is already in progress: an earlier update attempt may still be running (it counts as abandoned at most 15 minutes after it started); try again later";
   assert.equal(refusalText(409, "update not possible", busy), `${busy[0].toUpperCase()}${busy.slice(1)}.`);
@@ -187,11 +198,6 @@ test("refusalText shows the appliance's reason, never a stray body", () => {
   assert.equal(refusalText(502, "Bad Gateway", "<html><body>502</body></html>"), "Bad Gateway.", "HTML is not shown");
   assert.equal(refusalText(500, "update failed", "x".repeat(301)), "Update failed.", "a long dump is not shown");
   assert.equal(refusalText(502, "", ""), "HTTP 502.", "HTTP/2 has no status text");
-});
-
-test("installMethodLabel names each method and passes an unknown one through", () => {
-  assert.equal(installMethodLabel("deb"), "Debian package");
-  assert.equal(installMethodLabel("snap"), "snap");
 });
 
 test("safeNotesUrl accepts only https", () => {

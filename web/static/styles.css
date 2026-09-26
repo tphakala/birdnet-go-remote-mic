@@ -3165,13 +3165,15 @@ select.field-input {
 }
 /* Each row label carries a leading glyph. Centre the key against its value so
    the icon does not drag the row off the value's line, and scope it to the
-   System Information columns and the About card's details, so the certificate
-   info grid keeps its plain keys. */
+   System Information columns, the Software Update rows and the About card's
+   details, so the certificate info grid keeps its plain keys. */
 .sysinfo-group .info-grid,
+#sys-update-info,
 .about-card .info-grid {
   align-items: center;
 }
 .sysinfo-group .info-key,
+#sys-update-info .info-key,
 .about-card .info-key {
   display: inline-flex;
   align-items: center;

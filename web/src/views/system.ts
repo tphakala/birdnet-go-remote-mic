@@ -5,7 +5,7 @@ import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, e
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
-import { describeUpdate, followEndText, installMethodLabel, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch } from "../lib/update-core.js";
+import { describeUpdate, followEndText, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -36,6 +36,11 @@ const ICON_KERNEL =
   svgIcon('<polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line>', 14);
 const ICON_CLOCK =
   svgIcon('<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>', 14);
+// Software Update item icons, in the same style.
+const ICON_RELEASE =
+  svgIcon('<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"></path><path d="M12 22V12"></path><polyline points="3.29 7 12 12 20.71 7"></polyline><path d="m7.5 4.27 9 5.15"></path>', 14);
+const ICON_HISTORY =
+  svgIcon('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path>', 14);
 
 // Access-token reveal toggle glyphs, swapped by setAuthReveal. 12px to sit on the
 // .btn control beside the token field, matching the copy button's glyph size.
@@ -1144,23 +1149,24 @@ export class SystemView {
     this.followStatus(u);
   }
 
-  // renderUpdateInfo fills the fixed info rows, built on the first render.
+  // renderUpdateInfo fills the fixed info rows, built on the first render in
+  // the System Information style (leading icon, mono value).
   private renderUpdateInfo(u: UpdateStatus): void {
     const grid = document.getElementById("sys-update-info");
     if (!grid) return;
-    // Versions are code-like, so mono; the others are words. A build that
-    // names no release never checks, so its Latest Release and Last Check
-    // rows stay hidden.
-    const rows: [string, string, boolean, boolean][] = [
-      ["Installed Version", u.currentVersion || "-", true, true],
-      ["Latest Release", u.latestVersion ?? "-", true, u.supported],
-      ["Last Check", lastCheckText(u.lastCheck, Date.now(), formatRelative), false, u.supported],
-      ["Installed With", installMethodLabel(u.installMethod), false, true],
+    // A build that names no release never checks, so its Latest Release and
+    // Last Check rows stay hidden.
+    const rows: [string, string, string, boolean][] = [
+      ["Installed Version", ICON_VERSION, u.currentVersion || "-", true],
+      ["Latest Release", ICON_RELEASE, u.latestVersion ?? "-", u.supported],
+      ["Last Check", ICON_HISTORY, lastCheckText(u.lastCheck, Date.now(), formatRelative), u.supported],
     ];
-    for (const [label, value, mono, shown] of rows) {
+    for (const [label, icon, value, shown] of rows) {
       let row = this.updateInfo.get(label);
       if (!row) {
-        row = { dt: elem("dt", "info-key", label), dd: elem("dd", mono ? "info-val mono" : "info-val") };
+        const dt = elem("dt", "info-key");
+        dt.append(iconSpan(icon, "info-key-icon"), document.createTextNode(label));
+        row = { dt, dd: elem("dd", "info-val mono") };
         grid.append(row.dt, row.dd);
         this.updateInfo.set(label, row);
       }
@@ -1297,7 +1303,7 @@ export class SystemView {
       // update state too, which drops system reads started before it, so
       // neither such a read nor a failed refresh flips the switch back.
       const cur = store.getState().system?.update;
-      if (cur) store.applyUpdateStatus({ ...cur, checkEnabled: want });
+      if (cur) store.applyUpdateStatus(withChecksSetting(cur, want));
       showToast(want ? "Daily update check turned on." : "Daily update check turned off.");
     } catch (err: unknown) {
       input.checked = !want;
@@ -1319,7 +1325,10 @@ export class SystemView {
     try {
       const status = await api.checkForUpdate();
       store.applyUpdateStatus(status);
-      if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
+      // Checks turned off while it ran (here or in another tab) stop a check
+      // without a result; an old error must not read as this check's.
+      if (!status.checkEnabled) showToast("The check stopped because update checks were turned off.", "warn");
+      else if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
       else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
       showToast(`Update check failed: ${updateErrorText(err)}`, "error");

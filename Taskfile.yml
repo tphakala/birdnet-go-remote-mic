@@ -198,6 +198,7 @@ tasks:
       # The trap removes the build on every exit, a failed sweep and Ctrl-C
       # included (go-task's shell runs it on both).
       - |
+        set -e
         out=$(mktemp -d)
         trap 'rm -rf "$out"' EXIT
         npx -p typescript@7.0.2 tsc -p web/tsconfig.json --outDir "$out"

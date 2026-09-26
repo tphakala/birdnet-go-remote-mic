@@ -544,7 +544,8 @@ export class AppStore extends EventTarget {
   }
 
   // applyUpdateStatus records the update state an update check or an update
-  // request returned, as applyConfig does for a PATCH. A GET /system already
+  // request returned, or the one the view derives after saving the
+  // update-check switch, as applyConfig does for a PATCH. A GET /system already
   // in flight was read before that request, so the gate drops it: from here on
   // every "system" event carries a state read after the request, and a view
   // following an update can trust each one. Without a system snapshot yet

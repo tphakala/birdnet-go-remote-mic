@@ -2,7 +2,7 @@
 // for an update to install, split out so node:test covers it
 // (web/test/update-core.test.ts).
 
-import type { InstallMethod, UpdateStatus } from "./types.js";
+import type { UpdateStatus } from "./types.js";
 
 // UpdateTone colours the card's headline: ok for up to date, info for a neutral
 // state, accent for an update on offer, warn for a failed check, and error for
@@ -25,20 +25,6 @@ export interface UpdateView {
   hint: string;
   // An update in progress, which the card shows as busy.
   busy: boolean;
-}
-
-// INSTALL_METHOD_LABELS names how the running binary was installed.
-const INSTALL_METHOD_LABELS: Record<InstallMethod, string> = {
-  service: "remote-mic service install",
-  deb: "Debian package",
-  homebrew: "Homebrew",
-  manual: "Unpacked by hand",
-};
-
-// installMethodLabel names an install method; an unknown value from a later
-// appliance shows as sent.
-export function installMethodLabel(method: string): string {
-  return (INSTALL_METHOD_LABELS as Record<string, string>)[method] ?? method;
 }
 
 // sentence turns a backend message (a Go error string: lowercase, often no
@@ -145,6 +131,21 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
   view.headline = "Up to date";
   view.detail = `Running ${u.currentVersion}, the newest release.`;
   return view;
+}
+
+// withChecksSetting is the update state after the update-check switch was
+// saved, as the appliance makes it: turning checks off forgets the release it
+// found at once. The phase is left to the next read: a cancelled download
+// reaches idle only later, and one past its download may still install.
+export function withChecksSetting(u: UpdateStatus, on: boolean): UpdateStatus {
+  if (on) return { ...u, checkEnabled: true };
+  return {
+    ...u,
+    checkEnabled: false,
+    available: false,
+    latestVersion: undefined,
+    notesUrl: undefined,
+  };
 }
 
 // refusalText is what a refused update request shows: the problem detail the
