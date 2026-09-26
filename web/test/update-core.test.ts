@@ -1,5 +1,5 @@
-// Tests for the Software Update card's decisions and the install wait
-// (web/src/lib/update-core.ts).
+// Tests for the update status decisions in System Information and the
+// install wait (web/src/lib/update-core.ts).
 
 import test from "node:test";
 import assert from "node:assert/strict";

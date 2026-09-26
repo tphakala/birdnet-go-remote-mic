@@ -3435,8 +3435,8 @@ select.field-input {
   /* A hint can end in a long command or path. */
   overflow-wrap: anywhere;
 }
-/* The warning under the update footer while a download runs takes its own
-   line. */
+/* The switch's warning while a download runs takes its own line at the end
+   of the update footer. */
 .update-check-hint {
   flex-basis: 100%;
 }

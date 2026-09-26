@@ -215,8 +215,7 @@ export class SystemView {
   private updateCheckEl: HTMLInputElement | null;
   private updateCheckBtn: HTMLElement | null;
   private updateApplyBtn: HTMLElement | null;
-  // The info rows (Installed Version, Latest Release, Last Check, Installed
-  // With), built once.
+  // The release notes address the footer's link was built for.
   private updateNotesUrl = "";
   // Requests in flight from this card; a render never undoes their busy state.
   private updateChecking = false;
