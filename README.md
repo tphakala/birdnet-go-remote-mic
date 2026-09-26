@@ -498,8 +498,17 @@ first, or pass `-tags skipfrontend` to compile the Go code against a stub UI
 (what the CI Go jobs do).
 
 Tagged releases (`v*`) are built by GoReleaser (`.goreleaser.yaml`): Linux
-amd64/arm64 tarballs and `.deb` packages, plus the Homebrew formula pushed to
-[tphakala/homebrew-tap](https://github.com/tphakala/homebrew-tap).
+amd64, arm64 and 32-bit arm tarballs and `.deb` packages, plus the Homebrew
+formula pushed to [tphakala/homebrew-tap](https://github.com/tphakala/homebrew-tap).
+
+Each release also carries a signed release manifest, `manifest.json` with its
+Ed25519 signature in `manifest.json.sig`. It lists the version, the release
+date, the release notes link, and each target's tarball URL, size and SHA-256;
+the newest release's copy is always at
+`https://github.com/tphakala/birdnet-go-remote-mic/releases/latest/download/manifest.json`.
+The release workflow writes and signs it (`tools/releasemanifest`), and
+`go run ./tools/releasemanifest verify -dist <dir>` checks a downloaded pair
+against the public keys in `internal/releasemanifest/keys.go`.
 
 ## Design principles
 

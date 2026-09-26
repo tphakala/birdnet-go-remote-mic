@@ -68,6 +68,9 @@ archives:
       - LICENSE
       - THIRD_PARTY_LICENSES.md
 
+# checksums.txt is also the cross-check for the signed release manifest:
+# tools/releasemanifest (run by the release workflow after this config) refuses
+# to sign a manifest whose archive digests disagree with it.
 checksum:
   name_template: checksums.txt
 

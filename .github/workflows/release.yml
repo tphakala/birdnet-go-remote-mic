@@ -47,6 +47,15 @@ jobs:
       # insurance that the tagged tree still builds and passes unit tests.
       - name: Test before release
         run: task test
+      # The release manifest (manifest.json + manifest.json.sig) is signed after
+      # GoReleaser publishes, so check the signing key first: a missing secret,
+      # or a key absent from internal/releasemanifest/keys.go, fails here before
+      # anything is published rather than leaving a live release without a
+      # manifest that update checks can verify.
+      - name: Check the release manifest signing key
+        env:
+          RELEASE_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_KEY }}
+        run: go run ./tools/releasemanifest check-key
       # GoReleaser's brews step pushes the regenerated formula to the tap over
       # SSH. Prime the runner's known_hosts with GitHub's key so that push cannot
       # hang or fail on host-key verification, rather than relying on an
@@ -66,3 +75,23 @@ jobs:
           # Scoped write deploy key for tphakala/homebrew-tap; goreleaser's brews
           # step pushes the regenerated formula over SSH with it (no PAT needed).
           HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      # Write and sign the release manifest from GoReleaser's dist/ output (it
+      # cross-checks every archive digest against checksums.txt), attach it to
+      # the release, then download what was published and verify it with the
+      # keys compiled into the tool, exactly as an appliance will. Until the
+      # upload lands the release has no manifest; update checks treat that like
+      # any other failed check and try again later. If this step fails after
+      # publishing, rerun it by hand: `go run ./tools/releasemanifest generate`
+      # against the same dist/, then `gh release upload`.
+      - name: Publish the signed release manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          go run ./tools/releasemanifest generate -tag "$TAG" -dist dist
+          gh release upload "$TAG" dist/manifest.json dist/manifest.json.sig --clobber
+          mkdir -p published
+          gh release download "$TAG" --pattern 'manifest.json*' --dir published --clobber
+          go run ./tools/releasemanifest verify -dist published
