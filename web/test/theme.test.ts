@@ -1,8 +1,8 @@
 // Unit tests for initTheme (lib/theme.ts): the toggle keeps aria-pressed and
 // its tooltip in step with data-theme, the theme follows OS preference changes
-// live only while no choice is saved, a click stops the follow and saves, and a
-// save that fails is reported once. Run with node:test over the compiled output
-// (see web:test).
+// live only while no choice is saved (here or, by the next OS change, in another
+// tab), a click stops the follow and saves, and a save that fails is reported
+// once. Run with node:test over the compiled output (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -176,6 +176,34 @@ test("a click saves the choice and stops following the OS", () => {
   assert.equal(h.theme(), "dark");
   assert.equal(h.stored.get(THEME_KEY), "dark");
   assert.equal(h.saveFailures(), 0);
+});
+
+test("a choice saved by another tab wins at the next OS change", () => {
+  const h = harness({ initial: "dark" });
+  // Another tab clicks and saves light while this one is following the OS.
+  h.stored.set(THEME_KEY, "light");
+  h.osChange(false);
+  assert.equal(h.theme(), "light");
+  assert.equal(h.pressed(), "false");
+  assert.equal(h.listening(), false);
+
+  // Same when the listener cannot be removed: the flag alone ends the follow.
+  const sticky = harness({ initial: "dark", media: "sticky" });
+  sticky.stored.set(THEME_KEY, "light");
+  sticky.osChange(false);
+  assert.equal(sticky.theme(), "light");
+  assert.ok(sticky.listening(), "the stub keeps its listener");
+  sticky.stored.set(THEME_KEY, "dark");
+  sticky.osChange(true);
+  assert.equal(sticky.theme(), "light");
+});
+
+test("an unrecognized value saved by another tab keeps the follow", () => {
+  const h = harness({ initial: "dark" });
+  h.stored.set(THEME_KEY, "sepia");
+  h.osChange(true);
+  assert.equal(h.theme(), "light");
+  assert.ok(h.listening());
 });
 
 test("a click wins over OS changes even when the listener cannot be removed", () => {

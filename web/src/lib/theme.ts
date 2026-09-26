@@ -3,7 +3,8 @@
 // prefers-color-scheme); initTheme adopts that attribute, owns the toggle, and,
 // while no choice is saved, keeps following the OS preference as it changes (a
 // phone or laptop that switches at dusk), since a dashboard is often left open
-// for hours. A click is an explicit choice: it is saved and wins from then on.
+// for hours. A click is an explicit choice: it is saved and wins from then on,
+// in other open tabs too once they next see an OS change.
 //
 // The browser objects are passed in so the logic runs under node:test with
 // stubs; app.ts wires the real ones.
@@ -81,8 +82,27 @@ export function initTheme(env: ThemeEnv): void {
   // Follow the OS only while nothing is saved; a blocked storage reads as
   // nothing saved, the same way theme-init.ts treats it.
   let following = savedTheme(env.storage) === null;
+  // The flag alone ends the follow; removing the listener is only tidying, and
+  // may throw.
+  const stopFollowing = (): void => {
+    following = false;
+    try {
+      media?.removeEventListener?.("change", onChange);
+    } catch {
+      /* the following flag already ignores later changes */
+    }
+  };
   const onChange = (e: { matches: boolean }): void => {
-    if (following) applyTheme(e.matches ? "light" : "dark");
+    if (!following) return;
+    // Another tab may have saved an explicit choice since this page loaded; it
+    // wins here too, from this OS change on.
+    const saved = savedTheme(env.storage);
+    if (saved !== null) {
+      stopFollowing();
+      applyTheme(saved);
+      return;
+    }
+    applyTheme(e.matches ? "light" : "dark");
   };
   if (following) {
     try {
@@ -96,14 +116,7 @@ export function initTheme(env: ThemeEnv): void {
   toggle?.addEventListener("click", () => {
     const next: Theme = current() === "light" ? "dark" : "light";
     applyTheme(next);
-    if (following) {
-      following = false;
-      try {
-        media?.removeEventListener?.("change", onChange);
-      } catch {
-        /* the following flag already ignores later changes */
-      }
-    }
+    if (following) stopFollowing();
     try {
       env.storage().setItem(THEME_KEY, next);
     } catch {
