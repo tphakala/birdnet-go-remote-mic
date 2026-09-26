@@ -26,6 +26,7 @@
 package releasemanifest
 
 import (
+	"cmp"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -37,6 +38,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -141,9 +143,15 @@ var (
 // knownRequirements are the Requires values this build understands; none yet.
 var knownRequirements = []string{}
 
-// versionPattern accepts a v-prefixed semantic version with no leading zeros
-// and an optional prerelease of non-empty dot-separated identifiers.
-var versionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`)
+// versionPattern accepts a v-prefixed SemVer 2.0 version: no leading zeros,
+// and an optional prerelease of dot-separated identifiers, each numeric
+// without a leading zero or alphanumeric. Build metadata (+...) is refused on
+// purpose: SemVer ignores it for precedence, so two tags differing only in it
+// would be the same version to an update check.
+var versionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(` + prereleaseIdent + `(?:\.` + prereleaseIdent + `)*))?$`)
+
+// prereleaseIdent is one SemVer prerelease identifier.
+const prereleaseIdent = `(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`
 
 // sha256Pattern is a lowercase hex SHA-256 digest.
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -162,6 +170,80 @@ func TargetKey(goos, goarch, goarm string) string {
 // ValidVersion reports whether v is a v-prefixed semantic version.
 func ValidVersion(v string) bool {
 	return versionPattern.MatchString(v)
+}
+
+// CompareVersions orders two versions by SemVer 2.0 precedence, returning -1,
+// 0 or +1 as a is older than, the same as, or newer than b. A prerelease is
+// older than its release (v1.2.0-rc.1 < v1.2.0).
+func CompareVersions(a, b string) (int, error) {
+	pa, err := parseVersion(a)
+	if err != nil {
+		return 0, err
+	}
+	pb, err := parseVersion(b)
+	if err != nil {
+		return 0, err
+	}
+	for i := range 3 {
+		if c := cmp.Compare(pa.core[i], pb.core[i]); c != 0 {
+			return c, nil
+		}
+	}
+	switch {
+	case len(pa.pre) == 0 && len(pb.pre) == 0:
+		return 0, nil
+	case len(pa.pre) == 0:
+		return 1, nil
+	case len(pb.pre) == 0:
+		return -1, nil
+	}
+	for i := range min(len(pa.pre), len(pb.pre)) {
+		if c := comparePrerelease(pa.pre[i], pb.pre[i]); c != 0 {
+			return c, nil
+		}
+	}
+	return cmp.Compare(len(pa.pre), len(pb.pre)), nil
+}
+
+type version struct {
+	core [3]uint64
+	pre  []string
+}
+
+func parseVersion(v string) (version, error) {
+	m := versionPattern.FindStringSubmatch(v)
+	if m == nil {
+		return version{}, fmt.Errorf("%w: version %q is not a v-prefixed semantic version", ErrInvalid, v)
+	}
+	var p version
+	for i := range 3 {
+		n, err := strconv.ParseUint(m[i+1], 10, 64)
+		if err != nil {
+			return version{}, fmt.Errorf("%w: version %q: %w", ErrInvalid, v, err)
+		}
+		p.core[i] = n
+	}
+	if m[4] != "" {
+		p.pre = strings.Split(m[4], ".")
+	}
+	return p, nil
+}
+
+// comparePrerelease orders two prerelease identifiers: numeric ones
+// numerically, below alphanumeric ones, which compare in ASCII order.
+func comparePrerelease(a, b string) int {
+	na, errA := strconv.ParseUint(a, 10, 64)
+	nb, errB := strconv.ParseUint(b, 10, 64)
+	switch {
+	case errA == nil && errB == nil:
+		return cmp.Compare(na, nb)
+	case errA == nil:
+		return -1
+	case errB == nil:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
 }
 
 // Validate checks that m is complete and well formed.

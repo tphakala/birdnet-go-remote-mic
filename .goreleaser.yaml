@@ -77,12 +77,13 @@ checksum:
 # A tag with a prerelease suffix (v1.3.0-rc.1) is published as a GitHub
 # prerelease, so it never becomes "latest": the release manifest that update
 # checks fetch from releases/latest/download/ stays on the newest stable release.
-# Every other release becomes "latest", so a stable tag cut on an older line
-# (a v1.2.5 after v1.3.0) would move the manifest backwards; update checks only
-# act on a strictly newer version, so that is harmless, but set make_latest:
-# false on such a release.
+# A stable release becomes "latest" only when it is not older than the current
+# one: the release workflow decides with `releasemanifest make-latest` and
+# passes MAKE_LATEST, so a tag cut on an older line (v1.2.5 after v1.3.0) does
+# not move update checks backwards. Unset (a local run) keeps the default.
 release:
   prerelease: auto
+  make_latest: '{{ if index .Env "MAKE_LATEST" }}{{ .Env.MAKE_LATEST }}{{ end }}'
 
 changelog:
   use: github

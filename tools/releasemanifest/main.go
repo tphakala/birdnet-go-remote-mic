@@ -15,6 +15,7 @@
 //	go run ./tools/releasemanifest check-key [-tag vX.Y.Z]  # trusted key, valid tag?
 //	go run ./tools/releasemanifest generate [-tag vX.Y.Z] [-dist dist]
 //	go run ./tools/releasemanifest verify [-dist dist]
+//	go run ./tools/releasemanifest make-latest -tag vX.Y.Z [-latest vA.B.C]
 package main
 
 import (
@@ -115,6 +116,18 @@ func run(args []string, stdout io.Writer) error {
 		_, err = fmt.Fprintf(stdout, "wrote %s and %s for %s (%s)\n", releasemanifest.FileName,
 			releasemanifest.SignatureFileName, m.Version, strings.Join(slices.Sorted(maps.Keys(m.Targets)), ", "))
 		return err
+	case "make-latest":
+		tag := fs.String("tag", "", "the release tag being published")
+		latest := fs.String("latest", "", "the repository's current latest release tag; empty when there is none")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		ok, err := makeLatest(*tag, *latest)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, ok)
+		return err
 	case "verify":
 		if err := fs.Parse(args); err != nil {
 			return err
@@ -130,7 +143,7 @@ func run(args []string, stdout io.Writer) error {
 		_, err = fmt.Fprintf(stdout, "%s verifies: %s, %d targets\n", releasemanifest.FileName, m.Version, len(m.Targets))
 		return err
 	default:
-		return fmt.Errorf("unknown command %q (want keygen, check-key, generate or verify)", cmd)
+		return fmt.Errorf("unknown command %q (want keygen, check-key, generate, verify or make-latest)", cmd)
 	}
 }
 
@@ -155,6 +168,25 @@ func keygen(out string, stdout io.Writer) error {
 	_, err = fmt.Fprintf(stdout, "private key written to %s (store it as the %s secret, then keep it offline)\npublic key: %s\nkey id:     %s\n",
 		out, keyEnv, base64.StdEncoding.EncodeToString(pub), releasemanifest.KeyID(pub))
 	return err
+}
+
+// makeLatest reports whether tag should become the repository's "latest"
+// release, which is where update checks fetch the manifest: only when it is
+// not older than the current latest, so a stable release cut on an older line
+// (v1.2.5 after v1.3.0) cannot move update checks backwards. Prereleases never
+// become latest (GoReleaser forces that), so their answer does not matter.
+func makeLatest(tag, latest string) (bool, error) {
+	if !releasemanifest.ValidVersion(tag) {
+		return false, fmt.Errorf("%w: %q", ErrBadTag, tag)
+	}
+	if latest == "" {
+		return true, nil
+	}
+	c, err := releasemanifest.CompareVersions(tag, latest)
+	if err != nil {
+		return false, fmt.Errorf("current latest release: %w", err)
+	}
+	return c >= 0, nil
 }
 
 // signingKey reads the private key from the environment and the trusted keys
@@ -321,7 +353,8 @@ func archiveTarget(a *artifact, tag string, sums map[string]string) (releasemani
 // regular-file entry named releasemanifest.BinaryName must exist, at the top
 // level or in one wrapping directory. Its entry name is recorded verbatim, so
 // it is the name an installer finds; an unclean or absolute name is refused
-// rather than normalized.
+// rather than normalized. The whole gzip stream is read, so a corrupt gzip
+// trailer fails too.
 func binaryIn(archive string) (releasemanifest.Binary, error) {
 	f, err := os.Open(archive)
 	if err != nil {
@@ -360,6 +393,14 @@ func binaryIn(archive string) (releasemanifest.Binary, error) {
 			return releasemanifest.Binary{}, fmt.Errorf("%s: %s: %w", archive, hdr.Name, err)
 		}
 		found = append(found, releasemanifest.Binary{Path: hdr.Name, Size: size, SHA256: hex.EncodeToString(h.Sum(nil))})
+	}
+	// The tar reader stops at the end-of-archive blocks, before the gzip
+	// trailer; read to the end so a corrupt CRC or length fails here.
+	if _, err := io.Copy(io.Discard, gz); err != nil {
+		return releasemanifest.Binary{}, fmt.Errorf("%s: %w", archive, err)
+	}
+	if err := gz.Close(); err != nil {
+		return releasemanifest.Binary{}, fmt.Errorf("%s: %w", archive, err)
 	}
 	if len(found) != 1 {
 		return releasemanifest.Binary{}, fmt.Errorf("%w: %s has %d", ErrNoBinary, archive, len(found))

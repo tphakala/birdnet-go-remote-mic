@@ -2,6 +2,7 @@ package releasemanifest
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -160,6 +161,9 @@ func TestValidate(t *testing.T) {
 		{"backslash binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = `dir\remote-mic` }) }, ErrInvalid},
 		{"drive binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "C:/remote-mic" }) }, ErrInvalid},
 		{"empty prerelease identifier", func(m *Manifest) { m.Version = "v1.2.3-rc..1" }, ErrInvalid},
+		{"leading zero numeric prerelease", func(m *Manifest) { m.Version = "v1.2.3-01" }, ErrInvalid},
+		{"leading zero alphanumeric prerelease", func(m *Manifest) { m.Version = "v1.2.3-0a.rc-1" }, nil},
+		{"build metadata", func(m *Manifest) { m.Version = "v1.2.3+linux" }, ErrInvalid},
 		{"trailing prerelease dot", func(m *Manifest) { m.Version = "v1.2.3-." }, ErrInvalid},
 		{"unclean binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "./remote-mic" }) }, ErrInvalid},
 		{"zero binary size", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Size = 0 }) }, ErrInvalid},
@@ -327,5 +331,32 @@ func TestParsePrivateKeyRoundTrip(t *testing.T) {
 	}
 	if _, trustedPub := trusted[KeyID(pub)]; !trustedPub {
 		t.Errorf("parsed key id %s does not match the original", KeyID(pub))
+	}
+}
+
+// TestCompareVersions pins SemVer 2.0 precedence using the ordering example
+// from the specification, plus core-version and error cases.
+func TestCompareVersions(t *testing.T) {
+	t.Parallel()
+	const v100 = "v1.0.0"
+	ordered := []string{
+		"v0.9.9", "v1.0.0-alpha", "v1.0.0-alpha.1", "v1.0.0-alpha.beta", "v1.0.0-beta",
+		"v1.0.0-beta.2", "v1.0.0-beta.11", "v1.0.0-rc.1", v100, "v1.0.1", "v1.2.0", "v1.10.0", "v2.0.0",
+	}
+	for i := range ordered {
+		for j := range ordered {
+			got, err := CompareVersions(ordered[i], ordered[j])
+			if err != nil {
+				t.Fatalf("CompareVersions(%s, %s): %v", ordered[i], ordered[j], err)
+			}
+			if want := cmp.Compare(i, j); got != want {
+				t.Errorf("CompareVersions(%s, %s) = %d, want %d", ordered[i], ordered[j], got, want)
+			}
+		}
+	}
+	for _, bad := range [][2]string{{"1.0.0", v100}, {v100, "v1.0"}, {v100, "v99999999999999999999.0.0"}} {
+		if _, err := CompareVersions(bad[0], bad[1]); !errors.Is(err, ErrInvalid) {
+			t.Errorf("CompareVersions(%s, %s): err = %v, want ErrInvalid", bad[0], bad[1], err)
+		}
 	}
 }

@@ -22,6 +22,12 @@ import (
 
 const testTag = "v1.2.3"
 
+// Command-line words the run tests repeat.
+const (
+	makeLatestCmd = "make-latest"
+	tagFlag       = "-tag"
+)
+
 // tarEntry is one file in a fake release archive.
 type tarEntry struct {
 	name, content string
@@ -231,6 +237,7 @@ func TestGenerateRefuses(t *testing.T) {
 		{"binary is a hardlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeLink}}), ErrNoBinary},
 		{"binary is a symlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeSymlink}}), ErrNoBinary},
 		{"archive is not gzip", testTag, rewriteArchiveRaw(t, []byte("plain bytes")), gzip.ErrHeader},
+		{"gzip checksum is corrupt", testTag, rewriteArchiveRaw(t, corruptGzipCRC(t)), gzip.ErrChecksum},
 		{"archive is truncated", testTag, rewriteArchiveRaw(t, truncatedTarGz(t)), io.ErrUnexpectedEOF},
 	} {
 		priv, trusted := testKey(t)
@@ -268,6 +275,21 @@ func rewriteArchiveRaw(t *testing.T, content []byte) func([]artifact, map[string
 		sums[a.Name] = sum
 		a.Extra.Checksum = "sha256:" + sum
 	}
+}
+
+// corruptGzipCRC returns a well-formed tar.gz holding the binary whose gzip
+// CRC-32 trailer is wrong, which only a reader that consumes the whole gzip
+// stream notices.
+func corruptGzipCRC(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "a.tar.gz")
+	writeTarGz(t, path, []tarEntry{{releasemanifest.BinaryName, "binary", tar.TypeReg}})
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[len(b)-8] ^= 0xff // first byte of the CRC-32 trailer
+	return b
 }
 
 // truncatedTarGz returns a valid gzip stream holding a tar whose binary entry
@@ -397,11 +419,13 @@ func TestRunCommands(t *testing.T) {
 		{"check-key without key", "", []string{checkKeyCmd}, ErrNoKey},
 		{"generate without key", "", []string{"generate"}, ErrNoKey},
 		{"check-key with malformed key", "!!!", []string{checkKeyCmd}, nil},
-		{"check-key with a bad tag", string(seed), []string{checkKeyCmd, "-tag", "1.2.3"}, ErrBadTag},
+		{"check-key with a bad tag", string(seed), []string{checkKeyCmd, tagFlag, "1.2.3"}, ErrBadTag},
 		// A fresh key is not in keys.go, so it must be refused.
 		{"check-key with untrusted key", string(seed), []string{checkKeyCmd}, releasemanifest.ErrUntrustedKey},
 		{"generate without dist", string(seed), []string{"generate", "-dist", empty}, os.ErrNotExist},
 		{"verify without dist", "", []string{"verify", "-dist", empty}, os.ErrNotExist},
+		{"make-latest with a bad tag", "", []string{makeLatestCmd, tagFlag, "1.2.3"}, ErrBadTag},
+		{"make-latest with a bad flag", "", []string{makeLatestCmd, "-nope"}, nil},
 	} {
 		t.Setenv(keyEnv, tc.env)
 		err := run(tc.args, io.Discard)
@@ -440,5 +464,40 @@ func TestVerifyFilesRejectsBrokenPair(t *testing.T) {
 	writeFile(t, filepath.Join(dist, "metadata.json"), "{")
 	if _, err := generate(dist, testTag, priv, trusted); err == nil {
 		t.Error("unparsable metadata.json: got nil error")
+	}
+}
+
+// TestMakeLatest pins which releases become "latest": a newer or equal
+// version does, an older line's release does not, and a bad tag fails.
+func TestMakeLatest(t *testing.T) {
+	t.Parallel()
+	const v130 = "v1.3.0"
+	for _, tc := range []struct {
+		tag, latest string
+		want        bool
+	}{
+		{v130, "", true},
+		{v130, "v1.2.9", true},
+		{v130, v130, true},
+		{"v1.2.5", v130, false},
+		{"v1.10.0", "v1.9.0", true},
+	} {
+		got, err := makeLatest(tc.tag, tc.latest)
+		if err != nil {
+			t.Fatalf("makeLatest(%s, %s): %v", tc.tag, tc.latest, err)
+		}
+		if got != tc.want {
+			t.Errorf("makeLatest(%s, %s) = %v, want %v", tc.tag, tc.latest, got, tc.want)
+		}
+	}
+	if _, err := makeLatest("1.2.3", ""); !errors.Is(err, ErrBadTag) {
+		t.Errorf("bad tag: err = %v, want ErrBadTag", err)
+	}
+	if _, err := makeLatest("v1.2.3", "latest"); err == nil {
+		t.Error("unparsable latest: got nil error")
+	}
+	var out strings.Builder
+	if err := run([]string{makeLatestCmd, tagFlag, "v1.2.5", "-latest", v130}, &out); err != nil || out.String() != "false\n" {
+		t.Errorf("run make-latest: out %q, err %v; want \"false\\n\"", out.String(), err)
 	}
 }

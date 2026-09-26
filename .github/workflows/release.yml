@@ -53,6 +53,19 @@ jobs:
       # anything is published rather than leaving a live release without a
       # manifest that update checks can verify. It also rejects a tag that is not
       # a v-prefixed semantic version, which the manifest would refuse later.
+      # Only a release that is not older than the current latest becomes
+      # "latest", where update checks fetch the manifest; .goreleaser.yaml reads
+      # MAKE_LATEST. No latest release yet (gh fails) means this one is.
+      - name: Decide whether this release becomes latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          make_latest=$(go run ./tools/releasemanifest make-latest -tag "$TAG" -latest "$latest")
+          echo "latest release: ${latest:-none}; make $TAG latest: $make_latest"
+          echo "MAKE_LATEST=$make_latest" >> "$GITHUB_ENV"
       - name: Check the release manifest signing key
         env:
           RELEASE_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_KEY }}
