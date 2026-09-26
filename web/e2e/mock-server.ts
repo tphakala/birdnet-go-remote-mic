@@ -54,7 +54,7 @@ function uptimeMs(): number {
 const DEVICES: Device[] = [
   {
     name: "Garden",
-    device: "usb-0d8c:0014-C-Media_USB_Audio",
+    device: "usb:0d8c:0014:s=CM108A1:if=0,0",
     path: "/garden",
     mode: "opus",
     format: "s16",
@@ -81,7 +81,7 @@ const DEVICES: Device[] = [
   },
   {
     name: "Bat Detector",
-    device: "usb-16d0:0b40-Dodotronic_Ultramic384K",
+    device: "usb:16d0:0b40:s=UM384K02:if=0,0",
     path: "/bats",
     mode: "pcm",
     format: "s16",
@@ -104,7 +104,7 @@ const DEVICES: Device[] = [
   },
   {
     name: "Pond",
-    device: "usb-1397:0508-Behringer_UMC202HD",
+    device: "usb:1397:0508:p=1-1.2:if=0,0",
     path: "/pond",
     mode: "opus",
     format: "s16",
@@ -125,13 +125,15 @@ const DEVICES: Device[] = [
   },
   {
     name: "Hedge",
-    device: "usb-0c76:161f-JMTek_USB_PnP_Audio_Device",
+    device: "usb:0c76:161f:p=1-1.4:if=0,0",
     path: "/hedge",
     mode: "opus",
     format: "s16",
     rate: 48000,
     channels: [1],
+    streamedChannels: [1],
     state: "disabled",
+    opus: { bitrate: 128000 },
     clientConnected: false,
     droppedFrames: 0,
     friendlyName: "USB PnP Audio Device",
@@ -145,6 +147,7 @@ const DEVICES: Device[] = [
     format: "s16",
     rate: 96000,
     channels: [1],
+    streamedChannels: [1],
     state: "skipped",
     clientConnected: false,
     droppedFrames: 0,
@@ -156,7 +159,7 @@ const DEVICES: Device[] = [
 
 const AVAILABLE: AvailableDevice[] = [
   {
-    device: "usb-2752:0019-Focusrite_Scarlett_2i2_4th_Gen",
+    device: "usb:2752:0019:s=Y8ZQ2BM1:if=0,0",
     state: "available",
     hwAddr: "hw:4,0",
     idStable: true,
@@ -167,7 +170,8 @@ const AVAILABLE: AvailableDevice[] = [
 ];
 
 // deviceConfig derives the persisted config entry from a runtime fixture, the
-// way the appliance's config mirrors its devices.
+// way the appliance's config mirrors its devices, streams included for every
+// device (two for Garden, one mirroring the flat fields otherwise).
 function deviceConfig(d: Device): DeviceConfig {
   const cfg: DeviceConfig = {
     name: d.name,
@@ -181,12 +185,15 @@ function deviceConfig(d: Device): DeviceConfig {
     quietAlert: d.mode !== "pcm",
   };
   if (d.opus) cfg.opus = d.opus;
-  if (d.name === "Garden") {
-    cfg.streams = [
-      { path: "/garden", mode: "opus", channels: [1], opus: { bitrate: 96000 } },
-      { path: "/garden-right", mode: "pcm", channels: [2] },
-    ];
-  }
+  // A read always carries streams, one entry for a single-stream device, so
+  // the UI's stream paths render as they do against the appliance.
+  cfg.streams =
+    d.name === "Garden"
+      ? [
+          { path: "/garden", mode: "opus", channels: [1], opus: { bitrate: 96000 } },
+          { path: "/garden-right", mode: "pcm", channels: [2] },
+        ]
+      : [{ path: d.path, mode: d.mode, channels: d.channels, ...(d.opus ? { opus: d.opus } : {}) }];
   return cfg;
 }
 

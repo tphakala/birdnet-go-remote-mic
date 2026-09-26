@@ -1709,11 +1709,27 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   border-radius: var(--radius-full);
   font-size: var(--font-size-caption);
   font-weight: 600;
+}
+/* The pulse is on a dot, not the label: fading the text dropped it below the
+   contrast floor for half of every cycle. */
+.staged-badge::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
   animation: pulse-warn 1.8s infinite ease-in-out;
 }
 @keyframes pulse-warn {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.65; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .staged-badge::before {
+    animation: none;
+  }
 }
 
 /* The serve-overrides indicator on the Network card. Layout only, with no color

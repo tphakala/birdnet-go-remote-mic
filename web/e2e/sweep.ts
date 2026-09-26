@@ -254,6 +254,41 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
   const smallColors = new Set(opts.smallTokens.map(probeColor).filter((c): c is string => c !== null));
   const smallNames = new Map(opts.smallTokens.map((t) => [probeColor(t), t] as const));
 
+  // looping reports an animation that repeats for ever, as a pulse does.
+  function looping(a: Animation): boolean {
+    return a.effect?.getComputedTiming().iterations === Infinity;
+  }
+
+  // Settle every animation first: finish the one-shot ones, so an entrance
+  // fade is read at its end, and hold the looping ones at their start.
+  for (const a of document.getAnimations()) {
+    if (looping(a)) {
+      a.pause();
+      a.currentTime = 0;
+    } else {
+      try {
+        a.finish();
+      } catch {
+        // An infinite effect cannot finish; looping() caught those already.
+      }
+    }
+  }
+
+  // lowestOpacity is the dimmest opacity el reaches: its current one, or the
+  // lowest keyframe opacity of a looping animation on it.
+  function lowestOpacity(el: Element, current: number): number {
+    let low = current;
+    for (const a of el.getAnimations()) {
+      if (!looping(a)) continue;
+      const effect = a.effect as KeyframeEffect | null;
+      for (const k of effect?.getKeyframes() ?? []) {
+        const o = Number(k.opacity);
+        if (k.opacity !== undefined && Number.isFinite(o)) low = Math.min(low, o);
+      }
+    }
+    return low;
+  }
+
   function describe(el: Element): string {
     const one = (e: Element): string => {
       let s = e.tagName.toLowerCase();
@@ -336,7 +371,7 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
     for (let cur: HTMLElement | null = el; cur; cur = cur.parentElement) path.unshift(cur);
     const styles = path.map((e) => getComputedStyle(e));
     const paint = styles.map(paintLayers);
-    const opacity = styles.map((s) => Number(s.opacity));
+    const opacity = styles.map((s, i) => lowestOpacity(path[i], Number(s.opacity)));
 
     const cs = styles[styles.length - 1];
     const fgRaw = parse(cs.color);
@@ -504,6 +539,13 @@ interface Flags {
   keepOpen: boolean;
 }
 
+// oneOf returns v when it is one of the allowed values and throws otherwise, so
+// a mistyped filter fails the run instead of sweeping nothing and passing.
+function oneOf(flag: string, v: string, allowed: readonly string[]): string {
+  if (!allowed.includes(v)) throw new Error(`${flag} must be one of ${allowed.join(", ")}`);
+  return v;
+}
+
 function parseFlags(argv: string[]): Flags {
   const f: Flags = { dist: "", onlyView: null, onlyTheme: null, onlyWidth: null, onlyFont: null, headed: false, keepOpen: false };
   for (let i = 0; i < argv.length; i++) {
@@ -517,9 +559,9 @@ function parseFlags(argv: string[]): Flags {
       const v = val();
       if (!(VIEWS as readonly string[]).includes(v)) throw new Error(`--only-view must be one of ${VIEWS.join(", ")}`);
       f.onlyView = v as ViewName;
-    } else if (a === "--only-theme") f.onlyTheme = val();
-    else if (a === "--only-width") f.onlyWidth = Number(val());
-    else if (a === "--only-font") f.onlyFont = Number(val());
+    } else if (a === "--only-theme") f.onlyTheme = oneOf(a, val(), THEMES);
+    else if (a === "--only-width") f.onlyWidth = Number(oneOf(a, val(), WIDTHS.map(String)));
+    else if (a === "--only-font") f.onlyFont = Number(oneOf(a, val(), FONT_SIZES.map(String)));
     else if (a === "--headed") f.headed = true;
     else if (a === "--keep-open") f.keepOpen = f.headed = true;
     else if (a.startsWith("--")) throw new Error(`unknown flag ${a}`);
@@ -574,7 +616,23 @@ async function run(): Promise<number> {
   // Port 0 lets the OS pick a free port, so a sweep never collides with a
   // mock server someone left running on the default port.
   const server = await startMockServer(dist, 0);
-  const browser: Browser = await pw.chromium.launch({ headless: !flags.headed });
+  let browser: Browser | null = null;
+  try {
+    browser = await pw.chromium.launch({ headless: !flags.headed });
+    return await sweep(flags, browser, server.url);
+  } finally {
+    // A failure part way (a control that never appeared) must not leave the
+    // browser and the mock's timers keeping the process alive, and a browser
+    // that fails to close must not keep the mock open either.
+    try {
+      await browser?.close();
+    } finally {
+      await server.close();
+    }
+  }
+}
+
+async function sweep(flags: Flags, browser: Browser, serverUrl: string): Promise<number> {
 
   const combos: Combo[] = [];
   for (const theme of THEMES) {
@@ -587,6 +645,7 @@ async function run(): Promise<number> {
       }
     }
   }
+  if (combos.length === 0) throw new Error("the filters leave no combination to sweep");
   const views = flags.onlyView ? [flags.onlyView] : [...VIEWS];
 
   const byCombo = new Map<string, Finding[]>();
@@ -594,6 +653,9 @@ async function run(): Promise<number> {
   // larger font sizes are compared against. The font size loop runs 16 px first.
   const baseSizes = new Map<string, Map<string, number>>();
   const skippedTotals: Record<string, number> = {};
+  // Font sizes swept without a 16 px run to compare against (an --only-font
+  // filter), whose scaling therefore went unchecked.
+  const unscaled = new Set<string>();
   let checkedTotal = 0;
   const fontMethods = new Set<string>();
   const t0 = Date.now();
@@ -624,14 +686,16 @@ async function run(): Promise<number> {
       findings.push({ kind: "js-error", where: "page", key: `uncaught: ${err.message}`, detail: err.message });
     });
     fontMethods.add(await setDefaultFontSize(context, page, combo.font));
-    // CSS animations and transitions settle to their end state at once, so a
-    // check never catches a fade half way. Reduced motion is deliberately not
-    // emulated: it also stops the meters' animation loop, whose peak-hold
-    // ballistics the stability check depends on.
+    // Transitions are off, so a check never reads a fade half way. The
+    // contrast audit settles CSS animations itself: a one-shot one (an
+    // entrance) is finished, and a looping one (a pulse) is judged at its
+    // lowest keyframe opacity. Reduced motion is deliberately not emulated: it
+    // also stops the meters' animation loop, whose peak-hold ballistics the
+    // stability check depends on.
     await page.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
         const style = document.createElement("style");
-        style.textContent = "*,*::before,*::after{animation:none!important;transition:none!important}";
+        style.textContent = "*,*::before,*::after{transition:none!important}";
         document.head.appendChild(style);
       });
     });
@@ -639,6 +703,11 @@ async function run(): Promise<number> {
     const check = async (where: string, scope: string | null): Promise<void> => {
       const c = await page.evaluate(auditContrast, { scope, smallTokens: SMALL_TEXT_TOKENS, aa: AA, aaLarge: AA_LARGE, smallText: SMALL_TEXT });
       checkedTotal += c.checked;
+      // A check that looked at nothing is a failure, not a pass: the scope
+      // never rendered, or the page came up empty.
+      if (c.skipped["scope not found"] || c.checked === 0) {
+        findings.push({ kind: "render", where, key: `${where}: nothing checked`, detail: `${scope ?? "page"} had no text to check` });
+      }
       for (const [why, n] of Object.entries(c.skipped)) skippedTotals[why] = (skippedTotals[why] ?? 0) + n;
       for (const h of c.hits) {
         findings.push({
@@ -651,7 +720,9 @@ async function run(): Promise<number> {
       const base = `${combo.theme}|${combo.width}|${where}`;
       if (combo.font === 16) {
         baseSizes.set(base, new Map(c.sizes));
-      } else if (baseSizes.has(base)) {
+      } else if (!baseSizes.has(base)) {
+        unscaled.add(`${combo.font}px`);
+      } else {
         const want = combo.font / 16;
         const baseline = baseSizes.get(base) as Map<string, number>;
         let compared = 0;
@@ -661,6 +732,14 @@ async function run(): Promise<number> {
           if (was === undefined) continue;
           compared++;
           if (size < was * want * SCALE_TOLERANCE) stuck.push(`${key} ${was}px -> ${size}px`);
+        }
+        if (compared === 0) {
+          findings.push({
+            kind: "scaling",
+            where,
+            key: `${where}: nothing to compare`,
+            detail: `no text element matched the ${combo.font}px run against the 16px one`,
+          });
         }
         if (stuck.length) {
           findings.push({
@@ -696,7 +775,7 @@ async function run(): Promise<number> {
       }
     };
 
-    await page.goto(`${server.url}/#/${views[0]}`);
+    await page.goto(`${serverUrl}/#/${views[0]}`);
     for (const view of views) {
       await page.evaluate((v: string) => {
         location.hash = `#/${v}`;
@@ -757,7 +836,7 @@ async function run(): Promise<number> {
       await page.keyboard.press("Escape");
 
       // Last, because an error toast lingers for seconds over whatever follows.
-      await fetch(`${server.url}/__mock/notify`, { method: "POST" });
+      await fetch(`${serverUrl}/__mock/notify`, { method: "POST" });
       try {
         await page.waitForSelector(".toast-container .toast", { timeout: 3000 });
         await page.waitForTimeout(200);
@@ -809,18 +888,17 @@ async function run(): Promise<number> {
   out.push("", "=== Coverage ===");
   out.push(`combinations: ${combos.length}; views: ${views.join(", ")}; text elements checked: ${checkedTotal}`);
   out.push(`font size method: ${[...fontMethods].join(", ")}`);
+  if (unscaled.size) out.push(`scaling not checked at ${[...unscaled].join(", ")}: no 16px run to compare against`);
   out.push(`not checked: ${Object.entries(skippedTotals).map(([k, v]) => `${k} x${v}`).join(", ") || "nothing"}; also ::before/::after text and canvas drawing`);
   out.push(`result: ${failures ? `FAIL, ${failures} failure(s)` : "PASS"} in ${Math.round((Date.now() - t0) / 1000)}s`);
   console.log(out.join("\n"));
 
   if (flags.keepOpen) {
     const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
-    await page.goto(`${server.url}/#/dashboard`);
-    console.log(`keep-open: browser and ${server.url} stay up; Ctrl-C to quit`);
+    await page.goto(`${serverUrl}/#/dashboard`);
+    console.log(`keep-open: browser and ${serverUrl} stay up; Ctrl-C to quit`);
     await new Promise<never>(() => {});
   }
-  await browser.close();
-  await server.close();
   return failures ? 1 : 0;
 }
 

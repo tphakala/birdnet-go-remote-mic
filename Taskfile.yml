@@ -142,9 +142,13 @@ tasks:
       - cp -r web/static/* web/dist/
 
   web:typecheck:
-    desc: Type-check web UI TypeScript without emitting
+    desc: Type-check web UI TypeScript (and the rendered sweep in web/e2e) without emitting
     cmds:
       - npx -p typescript@7.0.2 tsc -p web/tsconfig.json --noEmit
+      # The sweep's mock fixtures are typed against web/src/lib/types.ts, so a
+      # type change that breaks them fails here, not only in the optional sweep.
+      # Its Playwright typings are local, so this needs no browser.
+      - npx -p typescript@7.0.2 tsc -p web/e2e/tsconfig.json
 
   web:lint:
     desc: Lint web UI TypeScript and JavaScript
@@ -191,14 +195,14 @@ tasks:
     # a build or a test run.
     cmds:
       - npx -p typescript@7.0.2 tsc -p web/e2e/tsconfig.json
+      # The trap removes the build on every exit, a failed sweep and Ctrl-C
+      # included (go-task's shell runs it on both).
       - |
         out=$(mktemp -d)
-        npx -p typescript@7.0.2 tsc -p web/tsconfig.json --outDir "$out" &&
-          cp -r web/static/. "$out"/ &&
-          npx -p playwright@1.59.0 node web/e2e/sweep.ts "$out" {{.CLI_ARGS}}
-        status=$?
-        rm -rf "$out"
-        exit $status
+        trap 'rm -rf "$out"' EXIT
+        npx -p typescript@7.0.2 tsc -p web/tsconfig.json --outDir "$out"
+        cp -r web/static/. "$out"/
+        npx -p playwright@1.59.0 node web/e2e/sweep.ts "$out" {{.CLI_ARGS}}
 
   agents:size:
     desc: Fail if any AGENTS.md exceeds 20 KB
