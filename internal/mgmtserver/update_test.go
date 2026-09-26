@@ -14,8 +14,12 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
-// vLatest is the newer release the update tests report.
-const vLatest = "v0.3.0"
+// vCurrent and vLatest are the running version and the newer release the
+// update tests report.
+const (
+	vCurrent = "v0.2.0"
+	vLatest  = "v0.3.0"
+)
 
 type fakeUpdates struct {
 	st       update.Status
@@ -39,7 +43,7 @@ func (f *fakeUpdates) StartApply() (update.Status, error) {
 
 func availableStatus() update.Status {
 	return update.Status{
-		Current:      "v0.2.0",
+		Current:      vCurrent,
 		Supported:    true,
 		CheckEnabled: true,
 		Latest:       vLatest,
@@ -63,7 +67,7 @@ func TestGetSystemIncludesUpdate(t *testing.T) {
 		t.Fatalf("GetSystem returned %T with update %v", resp, got.Update)
 	}
 	u := got.Update
-	if u.CurrentVersion != "v0.2.0" || !u.Available || *u.LatestVersion != vLatest || u.InstallMethod != mgmtapi.Deb ||
+	if u.CurrentVersion != vCurrent || !u.Available || *u.LatestVersion != vLatest || u.InstallMethod != mgmtapi.Deb ||
 		u.CanApply || *u.UpgradeHint != "apt install" || u.Phase != mgmtapi.UpdateStatusPhaseIdle || u.LastError != nil || u.PhaseMessage != nil {
 		t.Errorf("update %+v", u)
 	}
@@ -222,5 +226,45 @@ func TestGetConfigMaterializesUpdatesCheck(t *testing.T) {
 	got := resp.(mgmtapi.GetConfig200JSONResponse)
 	if got.Updates.Check == nil || !*got.Updates.Check {
 		t.Errorf("updates.check = %v, want true by default", got.Updates.Check)
+	}
+}
+
+// TestUpdateToWireEveryField pins every UpdateStatus field on the wire,
+// including the ones the first fixture leaves empty or false.
+func TestUpdateToWireEveryField(t *testing.T) {
+	t.Parallel()
+	st := availableStatus()
+	// Each boolean differs from its neighbours, so a swapped mapping shows.
+	st.Supported, st.CheckEnabled = true, false
+	st.LastError = "HTTP 503"
+	st.Install = update.Install{Method: update.MethodService, CanApply: true}
+	st.Phase, st.PhaseMessage = update.PhaseInstalling, "Installing v0.3.0"
+	w := updateToWire(&st)
+	switch {
+	case w.CurrentVersion != vCurrent, !w.Supported, w.CheckEnabled, !w.Available, !w.CanApply:
+		t.Errorf("flags or version wrong: %+v", w)
+	case w.LatestVersion == nil || *w.LatestVersion != vLatest:
+		t.Errorf("latestVersion %v", w.LatestVersion)
+	case w.NotesUrl == nil || *w.NotesUrl != st.NotesURL:
+		t.Errorf("notesUrl %v", w.NotesUrl)
+	case w.LastCheck == nil || !w.LastCheck.Equal(st.LastCheck):
+		t.Errorf("lastCheck %v", w.LastCheck)
+	case w.LastError == nil || *w.LastError != "HTTP 503":
+		t.Errorf("lastError %v", w.LastError)
+	case w.InstallMethod != mgmtapi.Service || w.UpgradeHint != nil:
+		t.Errorf("install %q hint %v", w.InstallMethod, w.UpgradeHint)
+	case w.Phase != mgmtapi.UpdateStatusPhaseInstalling || w.PhaseMessage == nil || *w.PhaseMessage != "Installing v0.3.0":
+		t.Errorf("phase %q message %v", w.Phase, w.PhaseMessage)
+	}
+	// Every domain value maps to a wire enum member.
+	for _, m := range []update.Method{update.MethodService, update.MethodDeb, update.MethodHomebrew, update.MethodManual} {
+		if !mgmtapi.UpdateStatusInstallMethod(m).Valid() {
+			t.Errorf("install method %q is not a wire enum value", m)
+		}
+	}
+	for _, p := range []update.Phase{update.PhaseIdle, update.PhaseDownloading, update.PhaseInstalling, update.PhaseFailed} {
+		if !mgmtapi.UpdateStatusPhase(p).Valid() {
+			t.Errorf("phase %q is not a wire enum value", p)
+		}
 	}
 }

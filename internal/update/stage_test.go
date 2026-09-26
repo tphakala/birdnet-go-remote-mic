@@ -6,6 +6,8 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +22,7 @@ func stagedRelease(t *testing.T) (*fakeGitHub, *release, *Release) {
 	g := newFakeGitHub(t)
 	rel := newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("the new binary"))
 	g.publish(rel)
-	f := &Fetcher{Client: g.srv.Client(), Base: g.srv.URL, Trusted: trusted}
+	f := g.fetcher(trusted)
 	got, err := f.Latest(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +90,7 @@ func TestStageRefuses(t *testing.T) {
 			mutate: func(_ *testing.T, g *fakeGitHub, rel *release, _ *Release) {
 				g.files["/releases/download/v0.3.0/remote-mic.tar.gz"] = rel.tarball[:len(rel.tarball)-1]
 			},
-			want: "want",
+			want: "remote-mic.tar.gz: got ", // the download size check
 		},
 		{
 			name: "binary does not match the manifest",
@@ -130,7 +132,7 @@ func TestStageRefuses(t *testing.T) {
 				tgt.Binary.Size++
 				verified.Manifest.Targets[testTarget] = tgt
 			},
-			want: "bytes, want",
+			want: "tarball entry remote-mic is 14 bytes, want",
 		},
 		{
 			name: "tarball missing",
@@ -174,5 +176,21 @@ func TestStageRefuses(t *testing.T) {
 				t.Errorf("failed stage left %s behind", e.Name())
 			}
 		})
+	}
+}
+
+// TestStageRefusesHTTPDowngrade pins that the tarball download, like the
+// manifest's, does not follow a redirect to plain http.
+func TestStageRefusesHTTPDowngrade(t *testing.T) {
+	t.Parallel()
+	g, _, verified := stagedRelease(t)
+	plain := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the plain http server was contacted")
+	}))
+	t.Cleanup(plain.Close)
+	g.assetRedirect = plain.URL
+	s := &Stager{Dir: filepath.Join(t.TempDir(), DirName), Client: g.srv.Client(), Target: testTarget}
+	if err := s.Stage(t.Context(), verified); err == nil || !strings.Contains(err.Error(), "refusing a redirect") {
+		t.Errorf("Stage: got %v, want a refused redirect", err)
 	}
 }

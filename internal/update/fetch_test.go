@@ -2,6 +2,7 @@ package update
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,30 +13,29 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/releasemanifest"
 )
 
-// fakeGitHub serves the release pages Fetcher reads: /releases/latest
-// redirects to the tag page, and /releases/download/<tag>/<file> serves
-// assets. Handlers may be replaced per test.
+// repoPath is the repository part of the fake's base URL, as on GitHub.
+const repoPath = "/tphakala/birdnet-go-remote-mic"
+
+// fakeGitHub serves the release pages the way GitHub does:
+// {base}/releases/latest redirects (absolute URL) to the tag page, or to the
+// release list with no release, and {base}/releases/download/<tag>/<file>
+// redirects to a separate storage host, which serves the asset or a 404.
+// (GitHub answers a missing asset with a 404 without redirecting, and its
+// storage URLs are opaque; the Fetcher looks at neither.) files is keyed by
+// the path below the base.
 type fakeGitHub struct {
-	srv    *httptest.Server
-	latest atomic.Pointer[string] // the tag /releases/latest redirects to; nil means no release
-	files  map[string][]byte      // path -> body
-	hits   atomic.Int64
+	srv     *httptest.Server
+	storage *httptest.Server
+	latest  atomic.Pointer[string] // the tag /releases/latest redirects to; nil means no release
+	files   map[string][]byte      // path below the base -> body
+	// assetRedirect, when set, replaces the storage host in asset redirects.
+	assetRedirect string
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
 	g := &fakeGitHub{files: map[string][]byte{}}
-	g.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.hits.Add(1)
-		if r.URL.Path == "/releases/latest" {
-			tag := g.latest.Load()
-			if tag == nil {
-				http.Redirect(w, r, "/releases", http.StatusFound)
-				return
-			}
-			http.Redirect(w, r, "/releases/tag/"+*tag, http.StatusFound)
-			return
-		}
+	g.storage = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := g.files[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -43,8 +43,40 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		}
 		_, _ = w.Write(body)
 	}))
+	t.Cleanup(g.storage.Close)
+	g.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := strings.CutPrefix(r.URL.Path, repoPath)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case p == "/releases/latest":
+			if tag := g.latest.Load(); tag != nil {
+				http.Redirect(w, r, g.base()+"/releases/tag/"+*tag, http.StatusFound)
+			} else {
+				http.Redirect(w, r, g.base()+"/releases", http.StatusFound)
+			}
+		case strings.HasPrefix(p, "/releases/download/"):
+			host := g.storage.URL
+			if g.assetRedirect != "" {
+				host = g.assetRedirect
+			}
+			http.Redirect(w, r, host+p, http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 	t.Cleanup(g.srv.Close)
 	return g
+}
+
+// base is the repository page, the Fetcher's Base.
+func (g *fakeGitHub) base() string { return g.srv.URL + repoPath }
+
+// fetcher is a Fetcher for this fake.
+func (g *fakeGitHub) fetcher(trusted map[string]ed25519.PublicKey) *Fetcher {
+	return &Fetcher{Client: g.srv.Client(), Base: g.base(), Trusted: trusted}
 }
 
 // publish serves rel as the latest release.
@@ -57,7 +89,7 @@ func (g *fakeGitHub) publish(rel *release) {
 }
 
 func (g *fakeGitHub) tarURL(version string) string {
-	return g.srv.URL + "/releases/download/" + version + "/remote-mic.tar.gz"
+	return g.base() + "/releases/download/" + version + "/remote-mic.tar.gz"
 }
 
 func TestFetcherLatest(t *testing.T) {
@@ -67,7 +99,7 @@ func TestFetcherLatest(t *testing.T) {
 	rel := newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("new binary"))
 	g.publish(rel)
 
-	f := &Fetcher{Client: g.srv.Client(), Base: g.srv.URL, Trusted: trusted}
+	f := g.fetcher(trusted)
 	got, err := f.Latest(t.Context())
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
@@ -151,7 +183,7 @@ func TestFetcherLatestRefuses(t *testing.T) {
 			t.Parallel()
 			g := newFakeGitHub(t)
 			tt.setup(g)
-			f := &Fetcher{Client: g.srv.Client(), Base: g.srv.URL, Trusted: trusted}
+			f := g.fetcher(trusted)
 			_, err := f.Latest(t.Context())
 			if !tt.check(err) {
 				t.Errorf("got error %v", err)
@@ -171,15 +203,8 @@ func TestFetcherRefusesHTTPDowngrade(t *testing.T) {
 	t.Cleanup(plain.Close)
 	g := newFakeGitHub(t)
 	g.publish(newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x")))
-	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, releasemanifest.FileName) {
-			http.Redirect(w, r, plain.URL+"/manifest.json", http.StatusFound)
-			return
-		}
-		g.srv.Config.Handler.ServeHTTP(w, r)
-	}))
-	t.Cleanup(tlsSrv.Close)
-	f := &Fetcher{Client: tlsSrv.Client(), Base: tlsSrv.URL, Trusted: trusted}
+	g.assetRedirect = plain.URL // the asset host answers on plain http
+	f := g.fetcher(trusted)
 	if _, err := f.Latest(t.Context()); err == nil || !strings.Contains(err.Error(), "refusing a redirect") {
 		t.Errorf("got %v, want a refused redirect", err)
 	}

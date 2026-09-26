@@ -29,8 +29,10 @@ func TestDispatchVersion(t *testing.T) {
 		if code := dispatch([]string{arg}, &out, &errb); code != 0 {
 			t.Errorf("%q: exit %d, want 0", arg, code)
 		}
-		if !strings.Contains(out.String(), "remote-mic") {
-			t.Errorf("%q: version not printed: %q", arg, out.String())
+		// The root updater checks a staged binary by this line (trimmed, in
+		// internal/update Applier.install), across versions: keep it.
+		if want := "remote-mic " + version + "\n"; out.String() != want {
+			t.Errorf("%q: printed %q, want %q", arg, out.String(), want)
 		}
 	}
 }
@@ -190,7 +192,7 @@ func TestDispatchVersionFlagAnyPosition(t *testing.T) {
 	})()
 	var out bytes.Buffer
 	dispatch([]string{flagConfig, cfgPathX, "-version"}, &out, &bytes.Buffer{})
-	if !strings.Contains(out.String(), "remote-mic") {
+	if out.String() != "remote-mic "+version+"\n" {
 		t.Errorf("-config x -version did not print version: %q", out.String())
 	}
 }

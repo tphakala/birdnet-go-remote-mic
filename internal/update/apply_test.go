@@ -176,8 +176,13 @@ func TestApplyInstallsAndKeepsPrevious(t *testing.T) {
 	if prev, _ := os.ReadFile(env.binPath + ".prev"); string(prev) != oldBinary {
 		t.Errorf("previous binary %q not kept", prev)
 	}
-	if r := env.result(t); r.Outcome != OutcomeUpdated || r.From != vOld || r.To != vNew {
+	if r := env.result(t); r.Outcome != OutcomeUpdated || r.From != vOld || r.To != vNew || r.Installed != vNew || r.Time.IsZero() {
 		t.Errorf("result %+v", r)
+	}
+	for _, name := range []string{BinaryFile, ManifestFile, SignatureFile} {
+		if exists(filepath.Join(env.stateDir, DirName, name)) {
+			t.Errorf("staged %s left behind after a successful update", name)
+		}
 	}
 	if env.restarts != 1 {
 		t.Errorf("got %d restarts, want 1", env.restarts)
@@ -244,7 +249,7 @@ func TestApplyRollsBack(t *testing.T) {
 }
 
 // TestApplyIgnoresStaleHealth pins that a health file left from before the
-// restart, naming the old version, does not pass for the new one.
+// restart does not pass for the new version, even when it names that version.
 func TestApplyIgnoresStaleHealth(t *testing.T) {
 	t.Parallel()
 	env := newApplyEnv(t)
@@ -860,5 +865,75 @@ func TestCheckRootOnlyWalksAncestors(t *testing.T) {
 	}
 	if err := checkRootOnly(bin, func(os.FileInfo) (uint32, uint32, bool) { return 0, 0, true }); err != nil {
 		t.Errorf("all root-owned: %v", err)
+	}
+}
+
+// TestApplyStagingDirIsALink pins the os.Root property: when the service user
+// replaces the staging directory with a link to a directory elsewhere, the
+// updater touches nothing there (no claim, no status) and installs nothing.
+func TestApplyStagingDirIsALink(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	outside := t.TempDir()
+	dir := filepath.Join(env.stateDir, DirName)
+	if err := os.Rename(dir, filepath.Join(outside, DirName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, DirName), dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = env.a.Apply(t.Context())
+	moved := filepath.Join(outside, DirName)
+	if !exists(filepath.Join(moved, RequestFile)) || exists(filepath.Join(moved, TakenFile)) || exists(filepath.Join(moved, StatusFile)) {
+		t.Error("the updater acted through the link, outside the state directory")
+	}
+	if got := env.installed(t); got != oldBinary || env.restarts != 0 {
+		t.Errorf("installed %q with %d restarts, want nothing done", got, env.restarts)
+	}
+}
+
+// TestApplyBadRequest pins that a request that is not a regular file, or does
+// not parse, ends as a failed result and is removed, so the path unit does
+// not start the updater on it again.
+func TestApplyBadRequest(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		plant func(t *testing.T, path string)
+	}{
+		{"malformed", func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"symlink", func(t *testing.T, path string) {
+			t.Helper()
+			target := filepath.Join(t.TempDir(), "request.json")
+			if err := os.WriteFile(target, []byte(`{"version":"v0.3.0"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := newApplyEnv(t)
+			req := filepath.Join(env.stateDir, DirName, RequestFile)
+			_ = os.Remove(req)
+			tt.plant(t, req)
+			if err := env.a.Apply(t.Context()); err == nil {
+				t.Fatal("Apply accepted a bad request")
+			}
+			if r := env.result(t); r.Outcome != OutcomeFailed || r.Installed != vOld {
+				t.Errorf("result %+v", r)
+			}
+			if got := env.installed(t); got != oldBinary {
+				t.Errorf("installed %q", got)
+			}
+			env.requestGone(t)
+		})
 	}
 }

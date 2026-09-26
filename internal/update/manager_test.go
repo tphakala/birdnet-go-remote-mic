@@ -213,13 +213,18 @@ func TestManagerAvailableNotification(t *testing.T) {
 
 func TestManagerNoUpdateForSameVersion(t *testing.T) {
 	t.Parallel()
-	f := &fakeFetch{rel: fakeRelease(vOld)}
+	// First a newer release raises the condition, then the release seen is
+	// no newer (for example the newer one was withdrawn): it must clear.
+	f := &fakeFetch{rel: fakeRelease(vNew)}
 	c := notify.NewCenter()
 	m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Publisher: c, Logf: (&logSink{}).logf})
 	m.Apply(on())
-	if _, err := m.CheckNow(t.Context()); err != nil {
-		t.Fatal(err)
+	m.check(t.Context(), false)
+	if len(c.Active()) != 1 {
+		t.Fatalf("precondition: conditions %+v, want the available one", c.Active())
 	}
+	f.set(fakeRelease(vOld), nil)
+	m.check(t.Context(), false)
 	if st := m.Status(); st.Available || st.Latest != vOld {
 		t.Errorf("status %+v", st)
 	}
@@ -362,7 +367,13 @@ func TestStartApplyUpdaterMissing(t *testing.T) {
 		if _, err := m.StartApply(); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(updaterStartTimeout + 2*resultPoll)
+		// Not withdrawn before the timeout.
+		time.Sleep(updaterStartTimeout - resultPoll)
+		synctest.Wait()
+		if st := m.Status(); st.Phase != PhaseInstalling || !exists(filepath.Join(dir, RequestFile)) {
+			t.Fatalf("before the timeout: status %+v, request present %t", st, exists(filepath.Join(dir, RequestFile)))
+		}
+		time.Sleep(3 * resultPoll)
 		synctest.Wait()
 		st := m.Status()
 		if st.Phase != PhaseFailed || !strings.Contains(st.PhaseMessage, "service install") {
@@ -437,8 +448,17 @@ func TestStartApplyNoResult(t *testing.T) {
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		_ = os.Remove(filepath.Join(dir, RequestFile)) // the updater took it
-		time.Sleep(updaterStartTimeout + DefaultHealthTimeout + 2*time.Minute)
+		// The updater took it.
+		if err := os.Rename(filepath.Join(dir, RequestFile), filepath.Join(dir, TakenFile)); err != nil {
+			t.Fatal(err)
+		}
+		deadline := updaterStartTimeout + DefaultHealthTimeout + time.Minute
+		time.Sleep(deadline - resultPoll)
+		synctest.Wait()
+		if st := m.Status(); st.Phase != PhaseInstalling {
+			t.Fatalf("before the deadline: status %+v, want installing", st)
+		}
+		time.Sleep(3 * resultPoll)
 		synctest.Wait()
 		if st := m.Status(); st.Phase != PhaseFailed || !strings.Contains(st.PhaseMessage, "no result") {
 			t.Errorf("status %+v", st)
@@ -579,22 +599,24 @@ func TestManagerOffClearsAndRefuses(t *testing.T) {
 			}
 		})
 	})
-	t.Run("turned off before the download starts", func(t *testing.T) {
+	t.Run("turned off right after the update starts", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			var startedLive bool
+			// A download that completes after an hour unless cancelled.
 			m, c, _ := applyManager(t, func(ctx context.Context, _ *Release) error {
-				startedLive = ctx.Err() == nil
-				return ctx.Err()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Hour):
+					return nil
+				}
 			})
 			if _, err := m.StartApply(); err != nil {
 				t.Fatal(err)
 			}
-			m.Apply(off()) // before the apply goroutine has run
+			m.Apply(off()) // right away, whether or not the download has begun
+			time.Sleep(2 * time.Hour)
 			synctest.Wait()
-			if startedLive {
-				t.Error("the download started with checks already off")
-			}
 			if st := m.Status(); st.Phase != PhaseIdle {
 				t.Errorf("status %+v, want idle", st)
 			}

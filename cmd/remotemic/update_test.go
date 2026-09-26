@@ -39,9 +39,9 @@ func TestServiceApplyUpdateDispatch(t *testing.T) {
 		t.Errorf("applyUpdate(%q, %q)", gotBin, gotState)
 	}
 
-	gotBin = ""
-	if code := dispatch([]string{cmdService, cmdApplyUpdate}, &bytes.Buffer{}, &stderr); code != 0 || gotBin != selfBin {
-		t.Errorf("defaults: exit %d, bin %q", code, gotBin)
+	gotBin, gotState = "", ""
+	if code := dispatch([]string{cmdService, cmdApplyUpdate}, &bytes.Buffer{}, &stderr); code != 0 || gotBin != selfBin || gotState != "/var/lib/remote-mic" {
+		t.Errorf("defaults: exit %d, bin %q, state %q", code, gotBin, gotState)
 	}
 }
 
