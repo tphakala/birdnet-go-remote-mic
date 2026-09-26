@@ -30,7 +30,6 @@ const ICON_INFO = svg('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-
 const ICON_HELP = svg('<circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path>');
 const ICON_HEART = svg('<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>');
 const ICON_SCALE = svg('<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path><path d="M7 21h10"></path><path d="M12 3v18"></path><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"></path>');
-const ICON_PACKAGE = svg('<path d="M16.5 9.4 7.55 4.24"></path><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><path d="M3.29 7 12 12l8.71-5"></path><path d="M12 22V12"></path>');
 const ICON_BUG = svg('<path d="m8 2 1.88 1.88"></path><path d="M14.12 3.88 16 2"></path><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"></path><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"></path><path d="M12 20v-9"></path><path d="M6.53 9C4.6 8.8 3 7.1 3 5"></path><path d="M6 13H2"></path><path d="M3 21c0-2.1 1.7-3.9 3.8-4"></path><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"></path><path d="M22 13h-4"></path><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"></path>', 12);
 const ICON_CHAT = svg('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path>', 12);
 const ICON_HEART_SM = svg('<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>', 12);
@@ -110,7 +109,7 @@ export class AboutView {
 
   private build(): HTMLElement {
     const stack = elem("div", "config-layout");
-    stack.append(this.buildProject(), this.buildSupport(), this.buildHelp(), this.buildLicense(), this.buildThirdParty());
+    stack.append(this.buildProject(), this.buildSupport(), this.buildHelp(), this.buildLicense());
     return stack;
   }
 
@@ -190,23 +189,23 @@ export class AboutView {
     return card;
   }
 
+  // buildLicense is one card for every license: remote-mic's own MIT license,
+  // then the third-party components the build links, each with its full text.
   private buildLicense(): HTMLElement {
-    const { card, body } = section(ICON_SCALE, "License", "Remote Mic is open source under the MIT License.");
-    const p = elem("p", "about-text", "You may use, copy, modify, and distribute it under the license's terms. ");
+    const { card, body } = section(
+      ICON_SCALE,
+      "Licenses",
+      "Remote Mic is open source under the MIT License, and built on open source components under their own licenses.",
+    );
+    const p = elem("p", "about-text", "You may use, copy, modify, and distribute Remote Mic under the MIT License's terms. ");
     p.appendChild(externalLink(`${REPO_URL}/blob/main/LICENSE`, "Read it on GitHub"));
     body.appendChild(p);
     // The full text arrives with licenses.json; until then the link above covers it.
     this.projectLicenseEl = elem("div");
     body.appendChild(this.projectLicenseEl);
-    return card;
-  }
 
-  private buildThirdParty(): HTMLElement {
-    const { card, body } = section(
-      ICON_PACKAGE,
-      "Third-Party Licenses",
-      "Remote Mic is built on these open source components, each under its own license. The list comes from the modules linked into this build.",
-    );
+    body.appendChild(elem("h3", "about-subtitle", "Third-Party Components"));
+    body.appendChild(elem("p", "about-text", "The list comes from the modules linked into this build."));
     this.thirdPartyEl = elem("div", "about-third-party", LOADING_TEXT);
     body.appendChild(this.thirdPartyEl);
     return card;
