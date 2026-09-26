@@ -147,8 +147,12 @@ interface Known {
 // Values shorter than this are not replaced literally: a card-index id such as
 // "1" identifies nothing, and replacing it would garble numbers in the text.
 const MIN_KNOWN_LENGTH = 3;
+// A card-index id ("hw:1,0", "2,0") names a slot, not the unit, and the
+// hardware address it matches is what a same-hardware error needs to show.
+const CARD_INDEX_ID = /^(?:hw:)?\d+(?:,\d+)?$/;
 
-// knownValues is every configured device id across ALL devices, longest first,
+// knownValues is every configured device id across ALL devices except card
+// indexes (which identify nothing), longest first,
 // since an error on one device can quote another's, and an id the catch-all
 // rules do not recognize (a malformed one) is printed unquoted. Names and
 // paths are not listed: the appliance quotes a name with %q, which the quoted
@@ -158,7 +162,7 @@ const MIN_KNOWN_LENGTH = 3;
 function knownValues(devices: readonly Device[]): Known[] {
   return devices
     .map((d) => d.device.trim())
-    .filter((id) => id.length >= MIN_KNOWN_LENGTH)
+    .filter((id) => id.length >= MIN_KNOWN_LENGTH && !CARD_INDEX_ID.test(id))
     .map((id) => ({ value: id, placeholder: usbLabel(id) ?? "<device id>" }))
     .sort((a, b) => b.value.length - a.value.length);
 }
@@ -170,7 +174,8 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\
 // id's own "if=0,0" and inner colons stay inside it.
 const TOKEN_TAIL = String.raw`(?:[^\s"'(),:]|[,:](?!\s|$))*`;
 const USB_TOKEN = new RegExp(String.raw`\busb:` + TOKEN_TAIL, "gi");
-const CARD_TOKEN = new RegExp(String.raw`\bhw:CARD=` + TOKEN_TAIL, "gi");
+// No word boundary before hw: so a plughw:CARD= prefix is caught too.
+const CARD_TOKEN = new RegExp(String.raw`hw:CARD=` + TOKEN_TAIL, "gi");
 // A Go %q string, escapes included, so a quote inside a name cannot end it early.
 const QUOTED = /"(?:[^"\\]|\\.)*"/g;
 // Single-quoted and backtick spans: the appliance quotes with %q today, but a
@@ -188,8 +193,9 @@ const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}\u202A-\u202E\u2066-\u2069]+/gu;
 // operator's setup, and are kept for the diagnosis.
 const PATH_TOKEN = /(?<![A-Za-z0-9_.-])\/(?!proc\/|dev\/snd\/)\S+/g;
 // What a scrubbed quoted span may still hold and be kept: exactly a
-// placeholder this scrub writes, or a vendor:product id.
-const SAFE_QUOTED = /^"(?:<device id>|usb:[0-9a-f]{4}:[0-9a-f]{4})"$/;
+// placeholder this scrub writes, a vendor:product id, or one of the fixed
+// selector names go-audio-capture quotes in its id-format hints.
+const SAFE_QUOTED = /^"(?:<device id>|usb:[0-9a-f]{4}:[0-9a-f]{4}|s=|p=|:if=)"$/;
 
 // scrub makes a device's error text safe to paste publicly. Configured ids go
 // first, while they still match literally, and only as whole tokens. Then

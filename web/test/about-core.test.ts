@@ -185,7 +185,7 @@ const realErrors: { what: string; d: Device; want: string }[] = [
   {
     what: "malformed selector quoting a serial",
     d: device({ name: "garden", device: "usb:1235:8218:serial=ABC123:if=0,0", state: "skipped", downCause: "malformed", error: 'Malformed device id usb:1235:8218:serial=ABC123:if=0,0: capture: invalid device id "usb:1235:8218:serial=ABC123:if=0,0": selector must be "s=" (serial) or "p=" (port), got "serial=ABC123"' }),
-    want: 'Malformed device id usb:1235:8218: capture: invalid device id "usb:1235:8218": selector must be "<redacted>" (serial) or "<redacted>" (port), got "<redacted>"',
+    want: 'Malformed device id usb:1235:8218: capture: invalid device id "usb:1235:8218": selector must be "s=" (serial) or "p=" (port), got "<redacted>"',
   },
   {
     what: "malformed selector with an upper-case key, unknown to the UI",
@@ -198,6 +198,16 @@ const realErrors: { what: string; d: Device; want: string }[] = [
     want: 'Same hardware as "<redacted>": <device id> is hw:3,0, which that device already captures from',
   },
   {
+    what: "same hardware for a card-index id, whose address stays readable",
+    d: device({ name: "garden", device: "hw:1,0", state: "skipped", downCause: "same-hardware", error: 'Same hardware as "Other": hw:1,0 is hw:1,0, which that device already captures from' }),
+    want: 'Same hardware as "<redacted>": hw:1,0 is hw:1,0, which that device already captures from',
+  },
+  {
+    what: "a prefixed card-name id",
+    d: device({ name: "garden", device: "hw:2,0", state: "failed", downCause: "open-failed", error: "open capture: plughw:CARD=Secret,DEV=0: busy" }),
+    want: "open capture: plughw:CARD=<card>: busy",
+  },
+  {
     what: "canonical card id spelled differently from the config",
     d: device({ name: "garden", device: "hw:card=MyCard", state: "failed", downCause: "open-failed", error: "open capture: hw:CARD=MyCard,DEV=0: device busy" }),
     want: "open capture: hw:CARD=<card>: device busy",
@@ -205,7 +215,7 @@ const realErrors: { what: string; d: Device; want: string }[] = [
   {
     what: "kernel paths are kept for the diagnosis",
     d: device({ name: "garden", device: "hw:1,0", state: "skipped", downCause: "open-failed", error: "Cannot resolve hw:1,0: read /proc/asound/cards: permission denied" }),
-    want: "Cannot resolve <device id>: read /proc/asound/cards: permission denied",
+    want: "Cannot resolve hw:1,0: read /proc/asound/cards: permission denied",
   },
 ];
 
@@ -224,7 +234,7 @@ test("supportDetails never includes a USB serial, stream path, card name or devi
   const owner = device({ name: "Backyard Mic at Smiths", device: "usb:1235:8218:s=OWNSERIAL:if=0,0" });
   const audio = device({ name: "audio", device: "hw:4,0", path: "/audio-path", state: "failed", downCause: "open-failed", error: "open capture: audio: device busy on /audio-path" });
   const got = supportDetails(null, null, [usbMic, downCard, owner, audio, ...realErrors.map((c) => c.d)]);
-  for (const secret of ["SERIAL", "ABC123", "OTHERSERIAL", "s=", "p=", "14.0-1", "TOKENPATH", "SECRETPATH", "SECRET2", "zz-garden", "aa-bats", "Smiths", "MyCard", "audio-path"]) {
+  for (const secret of ["SERIAL", "ABC123", "OTHERSERIAL", "s=S", "s=N", "s=O", "p=0000", "14.0-1", "TOKENPATH", "SECRETPATH", "SECRET2", "zz-garden", "aa-bats", "Smiths", "MyCard", "audio-path"]) {
     assert.ok(!got.includes(secret), `details leak ${JSON.stringify(secret)}:\n${got}`);
   }
   assert.ok(got.includes("open capture: audio: device busy on <path>"), got);
