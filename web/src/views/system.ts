@@ -1114,12 +1114,10 @@ export class SystemView {
     }
     this.renderUpdateInfo(u);
 
-    // A build that names no release never checks, so the check switch and the
-    // actions would only contradict the headline.
+    // A build that names no release never checks, so the check switch and
+    // Check Now beside it would only contradict the headline.
     const checkField = this.updateCheckEl?.closest<HTMLElement>(".form-field");
     if (checkField) setHidden(checkField, !u.supported);
-    const actions = document.getElementById("sys-update-actions");
-    if (actions) setHidden(actions, !u.supported);
     if (this.updateCheckEl && !this.updateToggling) this.updateCheckEl.checked = u.checkEnabled;
     // Turning checks off stops a download (not an install already handed to
     // the root updater), so say so while one runs.
@@ -1146,6 +1144,10 @@ export class SystemView {
       if (view.busy) setBusy(apply, u.phase === "installing" ? "Installing..." : u.phase === "downloading" ? "Downloading..." : "Updating...");
       else if (!this.updateApplying && view.applyVersion) clearBusy(apply, `Update to ${view.applyVersion}`);
     }
+    // The footer holds only the release notes and Update, so it goes away
+    // while there is neither, keeping an up-to-date card short.
+    const actions = document.getElementById("sys-update-actions");
+    if (actions) setHidden(actions, !u.supported || (this.updateNotesUrl === "" && apply?.hidden !== false));
     this.followStatus(u);
   }
 

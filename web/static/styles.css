@@ -3435,6 +3435,16 @@ select.field-input {
 #sys-update-info {
   margin-bottom: 14px;
 }
+/* The daily-check switch and Check Now share a row; the button wraps below
+   the switch on a narrow card. */
+.update-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: var(--control-h-md);
+}
 /* On a narrow card (a phone, or a large browser font) the label column would
    squeeze the values to a few characters a line; stack each label over its
    value instead. */
