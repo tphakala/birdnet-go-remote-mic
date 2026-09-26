@@ -183,16 +183,19 @@ func (m *Manager) Apply(s *monitor.Settings) {
 	if !s.UpdateCheck {
 		m.mu.Lock()
 		m.latest, m.available = nil, false
-		cancel, cancelCheck := m.cancelApply, m.cancelCheck
+		cancel := m.cancelApply
 		// Under m.mu, so a check finishing now either sees checks off or has
 		// already raised the condition this resolves.
 		m.cfg.Publisher.Resolve(AvailableKey, "Update checks turned off")
+		// Also under m.mu, where the check records its result: a fetch that
+		// returns on its own just after this, with checks turned back on in
+		// between, still finds the cause set and keeps nothing.
+		if m.cancelCheck != nil {
+			m.cancelCheck(ErrChecksDisabled)
+		}
 		m.mu.Unlock()
 		if cancel != nil {
 			cancel(ErrChecksDisabled)
-		}
-		if cancelCheck != nil {
-			cancelCheck(ErrChecksDisabled)
 		}
 	}
 	select {
