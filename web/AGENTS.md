@@ -158,9 +158,9 @@ reconcile:
   `src/theme-init.ts` is a classic (non-module) script loaded in `<head>`
   that applies it before the first paint: the saved choice, else (nothing
   saved, or storage blocked) `prefers-color-scheme`, else dark when
-  `matchMedia` is unavailable. Keep
-  it import-free and non-throwing; `test/theme-init.test.ts` runs it as a
-  classic script and pins its `<head>` tag and its key against `THEME_KEY`.
+  `matchMedia` is unavailable. Keep it import-free and non-throwing;
+  `test/theme-init.test.ts` runs it as a classic script and pins its `<head>`
+  tag and its key against `THEME_KEY`.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.
