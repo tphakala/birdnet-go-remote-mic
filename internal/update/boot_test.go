@@ -1,7 +1,6 @@
 package update
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -164,6 +163,10 @@ func TestBootWatcherGivesUp(t *testing.T) {
 		}
 		c := notify.NewCenter()
 		Boot(t.Context(), dir, vNew, c, t.Logf)
+		synctest.Wait()
+		if !exists(req) {
+			t.Fatal("Boot treated the fresh request as abandoned instead of watching")
+		}
 		time.Sleep(DefaultHealthTimeout + 2*time.Minute)
 		synctest.Wait()
 		writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeUpdated, From: vOld, To: vNew, Installed: vNew})
@@ -175,7 +178,9 @@ func TestBootWatcherGivesUp(t *testing.T) {
 	})
 }
 
-func TestTakeResultRefusesLinkAndGarbage(t *testing.T) {
+// TestReadResultRefusesLinkAndGarbage pins that a linked status file is not
+// followed (nor its target removed) and a malformed one is refused and removed.
+func TestReadResultRefusesLinkAndGarbage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(t.TempDir(), "target")
@@ -228,22 +233,30 @@ func TestResultMessage(t *testing.T) {
 func TestBootResultForAnotherVersion(t *testing.T) {
 	t.Parallel()
 	for _, inFlight := range []bool{true, false} {
-		dir := t.TempDir()
-		if inFlight {
-			writeJSON(t, filepath.Join(dir, TakenFile), Request{Version: vNew})
-		}
-		// The rolled-back result belongs to the restored old version.
-		writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew, Installed: vOld})
-		c := notify.NewCenter()
-		ctx, cancel := context.WithCancel(t.Context())
-		Boot(ctx, dir, vNew, c, t.Logf)
-		cancel()
-		if n := len(c.Snapshot().Notifications); n != 0 {
-			t.Errorf("in flight %t: %d notifications, want none", inFlight, n)
-		}
-		if got := exists(filepath.Join(dir, StatusFile)); got != inFlight {
-			t.Errorf("in flight %t: status file present %t, want %t", inFlight, got, inFlight)
-		}
+		// A bubble, so the in-flight watcher has settled before the checks.
+		synctest.Test(t, func(t *testing.T) {
+			dir := t.TempDir()
+			if inFlight {
+				taken := filepath.Join(dir, TakenFile)
+				writeJSON(t, taken, Request{Version: vNew})
+				now := time.Now()
+				if err := os.Chtimes(taken, now, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The rolled-back result belongs to the restored old version.
+			writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew, Installed: vOld})
+			c := notify.NewCenter()
+			Boot(t.Context(), dir, vNew, c, t.Logf)
+			time.Sleep(3 * resultPoll)
+			synctest.Wait()
+			if n := len(c.Snapshot().Notifications); n != 0 {
+				t.Errorf("in flight %t: %d notifications, want none", inFlight, n)
+			}
+			if got := exists(filepath.Join(dir, StatusFile)); got != inFlight {
+				t.Errorf("in flight %t: status file present %t, want %t", inFlight, got, inFlight)
+			}
+		})
 	}
 }
 

@@ -691,11 +691,6 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	if !mgmtEnabled {
 		runLock.publish(nil)
 	}
-	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
-	// only when a request asks, so an appliance with no browser open does no
-	// sampling work at all. It exists only while the management API is enabled (its
-	// sole consumer; the host monitor diffs /proc/stat over its own poll window in
-	// hostReader.cpu). Collect tolerates a nil gauge and omits CPUPercent.
 	// The release update check and the one-button update exist only with the
 	// management API, their only consumer besides the notification bell.
 	updateDir := updateDirFor(&cfg, cfgPath)
@@ -703,6 +698,11 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	if mgmtEnabled {
 		updates = newUpdateManager(ctx, updateDir, center)
 	}
+	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
+	// only when a request asks, so an appliance with no browser open does no
+	// sampling work at all. It exists only while the management API is enabled (its
+	// sole consumer; the host monitor diffs /proc/stat over its own poll window in
+	// hostReader.cpu). Collect tolerates a nil gauge and omits CPUPercent.
 	if mgmtEnabled {
 		prov.cpu = sysinfo.NewCPUGauge()
 		management, _ = startManagement(ctx, &mgmtParams{

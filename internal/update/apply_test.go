@@ -427,7 +427,7 @@ func TestApplyHealthNeedsRunningUnitAndVersion(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(e.stateDir, DirName, HealthFile), h, 0o644)
 	}
 	env.a.MainPID = func(string) (int, error) { return 0, nil } // not running
-	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "runs as 0") {
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "is not running") {
 		t.Errorf("health naming no process, unit not running: got %v", err)
 	}
 
@@ -447,7 +447,7 @@ func TestApplyHealthNeedsRunningUnitAndVersion(t *testing.T) {
 
 	env = newApplyEnv(t)
 	env.a.MainPID = func(string) (int, error) { return 0, nil } // not running
-	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "runs as 0") {
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "is not running") {
 		t.Errorf("inactive unit: got %v", err)
 	}
 }
@@ -1125,5 +1125,19 @@ func TestApplyDatesTheClaim(t *testing.T) {
 	}
 	if age := time.Since(claimed); claimed.IsZero() || age > time.Minute {
 		t.Errorf("claim dated %v ago, want just now", age)
+	}
+}
+
+// TestApplyWithoutStateDirOrJournal pins that a missing state directory with
+// nothing to recover is reported as an error, leaving the binary alone.
+func TestApplyWithoutStateDirOrJournal(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	env.a.StateDir = filepath.Join(t.TempDir(), "missing")
+	if err := env.a.Apply(t.Context()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Apply: got %v, want the missing state directory", err)
+	}
+	if got := env.installed(t); got != oldBinary || env.restarts != 0 {
+		t.Errorf("installed %q with %d restarts, want nothing touched", got, env.restarts)
 	}
 }

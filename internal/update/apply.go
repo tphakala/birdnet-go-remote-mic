@@ -547,7 +547,8 @@ func fileSHA256(p string) string {
 // and the settle rejects one that dies right after writing it. A candidate
 // first seen before the timeout may finish its settle after it. It gives up
 // at the timeout, or when ctx is cancelled (the updater being stopped); the
-// timeout error says what was missing last.
+// timeout error says what was missing last (the unit not running, a health
+// file from another process or version, or none at all).
 func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version string) error {
 	timeout := cmp.Or(a.HealthTimeout, DefaultHealthTimeout)
 	settle := cmp.Or(a.HealthSettle, DefaultHealthSettle)
@@ -573,7 +574,9 @@ func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version strin
 				switch {
 				case err != nil:
 					last, candidate = fmt.Sprintf("query the main process of %s: %v", a.Unit, err), 0
-				case pid == 0 || pid != h.PID:
+				case pid == 0:
+					last, candidate = fmt.Sprintf("%s is not running", a.Unit), 0
+				case pid != h.PID:
 					last, candidate = fmt.Sprintf("the health file is from process %d, but %s runs as %d", h.PID, a.Unit, pid), 0
 				case candidate != pid:
 					candidate, since = pid, time.Now()

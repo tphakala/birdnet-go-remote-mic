@@ -200,7 +200,8 @@ export class ApiClient {
   // startUpdate starts the one-button update to the newest release found. It
   // returns at once in the downloading phase; the appliance restarts when the
   // root updater installs it. A 409 means there is nothing to install, this
-  // installation cannot update itself, or an update is already running.
+  // installation cannot update itself, update checks are off, or an update is
+  // already running.
   public async startUpdate(): Promise<UpdateStatus> {
     return this.request<UpdateStatus>("/system/update", {
       method: "POST",

@@ -625,7 +625,7 @@ func TestManagerOffClearsAndRefuses(t *testing.T) {
 			}
 		})
 	})
-	t.Run("queued check after turning off", func(t *testing.T) {
+	t.Run("check with checks off fetches nothing", func(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetch{rel: fakeRelease(vNew)}
 		m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Logf: (&logSink{}).logf})

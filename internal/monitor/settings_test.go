@@ -30,12 +30,11 @@ func TestSettingsFromMapsEveryField(t *testing.T) {
 	if !s.UpdateCheck {
 		t.Error("UpdateCheck = false, want true (absent updates.check defaults on)")
 	}
-	cfg.Updates.Check = &off
+	cfg.Updates.Check = new(false)
 	if SettingsFrom(&cfg).UpdateCheck {
 		t.Error("UpdateCheck = true with updates.check false")
 	}
-	on := true
-	cfg.Updates.Check = &on
+	cfg.Updates.Check = new(true)
 	if !SettingsFrom(&cfg).UpdateCheck {
 		t.Error("UpdateCheck = false with updates.check true")
 	}
