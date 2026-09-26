@@ -75,5 +75,5 @@ export function withFirstStream(edited: DeviceConfig, saved: readonly StreamConf
 export function extraStreamsNote(streams: readonly StreamConfig[] | undefined): string {
   const n = streams?.length ?? 0;
   if (n < 2) return "";
-  return `This device serves ${n} streams from one capture. The path, mode and channels here are the first stream's; the other streams keep theirs, and the sample rate applies to all of them.`;
+  return `This device serves ${n} streams from one capture. The path, codec mode, channels and Opus bitrate here are the first stream's; the other streams keep theirs, and the sample rate applies to all of them.`;
 }

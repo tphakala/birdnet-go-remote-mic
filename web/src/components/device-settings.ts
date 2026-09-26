@@ -8,7 +8,6 @@ import {
   extraStreamsNote,
   inputMaxLength,
   lengthError,
-  withFirstStream,
 } from "../lib/device-settings-core.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
@@ -131,6 +130,17 @@ export class DeviceSettingsForm {
 
     const grid = elem("div", "form-grid-2col");
 
+    // A device with several streams: say first, before any field, which fields
+    // are the first stream's. The first-stream fields point at the note too
+    // (aria-describedby), so a screen reader can read it from each of them.
+    const streamsNote = extraStreamsNote(d.streams);
+    const noteId = streamsNote ? `set-${uid}-streams-note` : "";
+    if (streamsNote) {
+      const note = elem("p", "field-hint form-grid-note", streamsNote);
+      note.id = noteId;
+      grid.appendChild(note);
+    }
+
     // Resolve the codec mode the form actually opens on BEFORE building the
     // channel field. modeOptions() may not offer the saved mode (Opus on
     // hardware that cannot do 48 kHz), and pick() then coerces it to PCM.
@@ -226,8 +236,6 @@ export class DeviceSettingsForm {
 
     // Stream group: how the capture is named, addressed, and encoded.
     this.groupTitle(grid, "Stream");
-    const streamsNote = extraStreamsNote(d.streams);
-    if (streamsNote) grid.appendChild(elem("p", "field-hint form-grid-note", streamsNote));
 
     // Name, defaulting from the sound card's friendly label when blank.
     const initialName = d.name || this.hardware.friendlyName || "";
@@ -351,6 +359,17 @@ export class DeviceSettingsForm {
     this.rateHidden.addEventListener("change", () => {
       if (this.ready) this.validate();
     });
+
+    if (noteId) {
+      for (const el of [
+        this.pathEl,
+        this.channelsGroup,
+        mode.container.querySelector(".dropdown-trigger"),
+        bitrate.container.querySelector(".dropdown-trigger"),
+      ]) {
+        if (el) el.setAttribute("aria-describedby", `${el.getAttribute("aria-describedby") ?? ""} ${noteId}`.trim());
+      }
+    }
   }
 
   // buildIdentity renders the read-only "Device id" row (a focusable, selectable
@@ -522,7 +541,9 @@ export class DeviceSettingsForm {
       // mode change does not silently discard the operator's bitrate.
       dev.opus = this.device.opus;
     }
-    return withFirstStream(dev, this.device.streams);
+    // Flat: the save adds the device's other streams from the config current
+    // at that moment (withFirstStream), not from when this form opened.
+    return dev;
   }
 
   // groupTitle appends a full-width heading that visually separates the field

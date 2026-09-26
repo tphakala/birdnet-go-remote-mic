@@ -170,20 +170,22 @@ test("supportDetails lists each capture device, ordered by name, without identif
 });
 
 test("supportDetails lists every configured stream without its path", () => {
-  const cfg = (name: string, streams: StreamConfig[]): DeviceConfig => ({
-    name, device: "x", path: streams[0].path, mode: streams[0].mode, rate: 48000, channels: streams[0].channels, format: "s16", streams,
+  // Configs match their device by id; the names differ on purpose (a rename
+  // the runtime record has not caught up with).
+  const cfg = (device: string, streams: StreamConfig[]): DeviceConfig => ({
+    name: "renamed", device, path: streams[0].path, mode: streams[0].mode, rate: 48000, channels: streams[0].channels, format: "s16", streams,
   });
   const live = { ...usbMic, streams: [
     { path: "/k7Qp2ZxTOKENPATH", clientConnected: true, droppedFrames: 12 },
     { path: "/second-SECRET", clientConnected: false, droppedFrames: 0 },
   ] };
   const configs = [
-    cfg("zz-garden", [
+    cfg(usbMic.device, [
       { path: "/k7Qp2ZxTOKENPATH", mode: "opus", channels: [1] },
       { path: "/second-SECRET", mode: "pcm", channels: [1, 2] },
     ]),
     // aa-bats is down, so it has no runtime streams to take drops from.
-    cfg("aa-bats", [{ path: "/bats-SECRETPATH", mode: "pcm", channels: [1] }]),
+    cfg(downCard.device, [{ path: "/bats-SECRETPATH", mode: "pcm", channels: [1] }]),
   ];
   const got = supportDetails(null, null, [live, downCard], configs);
   const lines = got.split("\n");

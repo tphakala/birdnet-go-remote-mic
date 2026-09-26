@@ -1578,7 +1578,8 @@ export class SystemView {
     // goes in the tooltip.
     setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
     if (r.alsa.title !== `Device id: ${d.device}`) r.alsa.title = `Device id: ${d.device}`;
-    const streams = streamSummary(d, store.getState().config?.devices.find((c) => c.name === d.name));
+    // By the device id, which a rename does not change.
+    const streams = streamSummary(d, store.getState().config?.devices.find((c) => c.device === d.device));
     // One path per line (the cell keeps the line breaks), in stream order.
     setText(r.path, streams.paths.join("\n"));
     const rate = d.negotiatedRate ?? d.rate;

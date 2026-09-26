@@ -117,8 +117,27 @@ test("withFirstStream puts the edit in streams[0] and keeps the others", () => {
   assert.equal(got.path, "/new");
 });
 
+test("withFirstStream keeps every other stream exactly, and an edit without opus adds none", () => {
+  const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1, 2], format: "s16" };
+  const second = { path: "/b", mode: "opus" as const, channels: [1], opus: { bitrate: 64000 } };
+  const third = { path: "/c", mode: "pcm" as const, channels: [2] };
+  const got = withFirstStream(edited, [{ path: "/a", mode: "opus", channels: [1], opus: { bitrate: 96000 } }, second, third]);
+  assert.deepEqual(got.streams, [{ path: "/a", mode: "pcm", channels: [1, 2] }, second, third]);
+});
+
+test("withFirstStream takes the other streams from the list it is given, not the edit", () => {
+  // The save passes the config current at save time; a stream added there
+  // since the form opened is kept, and one removed there stays removed.
+  const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16" };
+  const now = [{ path: "/a", mode: "pcm" as const, channels: [1] }, { path: "/new", mode: "pcm" as const, channels: [2] }];
+  assert.deepEqual(withFirstStream(edited, now).streams?.map((st) => st.path), ["/a", "/new"]);
+  assert.equal(withFirstStream(edited, [now[0]]).streams, undefined, "down to one stream, the edit goes flat");
+});
+
 test("extraStreamsNote speaks only for a multi-stream device", () => {
   assert.equal(extraStreamsNote(undefined), "");
   assert.equal(extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }]), "");
-  assert.ok(extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }, { path: "/b", mode: "pcm", channels: [2] }]).includes("serves 2 streams"));
+  const note = extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }, { path: "/b", mode: "pcm", channels: [2] }]);
+  assert.ok(note.includes("serves 2 streams"), note);
+  assert.ok(note.includes("Opus bitrate"), note);
 });

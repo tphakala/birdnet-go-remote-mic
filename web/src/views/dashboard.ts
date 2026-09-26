@@ -8,6 +8,7 @@ import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, 
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
+import { withFirstStream } from "../lib/device-settings-core.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
@@ -1461,10 +1462,14 @@ export class DashboardView {
       // the settings form does not edit enabled, the card toggle may have changed
       // it since the panel opened, and a prior queued mutation may have changed
       // the base. Building here (not at collect time) avoids clobbering either.
-      const curEnabled = store.getState().config?.devices.find((cd) => cd.device === edited.device)?.enabled;
-      if (curEnabled !== undefined) edited.enabled = curEnabled;
-      const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? edited : cd));
-      if (!merged.some((cd) => cd.device === edited.device)) merged.push(edited);
+      const cur = store.getState().config?.devices.find((cd) => cd.device === edited.device);
+      if (cur?.enabled !== undefined) edited.enabled = cur.enabled;
+      // The form edits the first stream; a multi-stream device keeps its other
+      // streams as the config holds them now, so a change made elsewhere since
+      // the form opened is not reverted.
+      const toSave = withFirstStream(edited, cur?.streams);
+      const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? toSave : cd));
+      if (!merged.some((cd) => cd.device === edited.device)) merged.push(toSave);
 
       try {
         const res = await api.patchConfig({ devices: merged });

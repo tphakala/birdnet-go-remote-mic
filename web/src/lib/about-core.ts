@@ -106,14 +106,15 @@ export function supportDetails(
 // independent of the browser's locale. Every device's configured id feeds
 // each block's error scrub, since one device's error can quote another's, and
 // a note above the blocks explains the placeholders whenever an error shows.
-// Each block takes its streams from the config of the same name, if any.
+// Each block takes its streams from the config of the same device id (a rename
+// does not change it), if any.
 function deviceDetails(devices: readonly Device[], configs: readonly DeviceConfig[]): string[] {
   if (devices.length === 0) return ["Capture devices: none"];
   const sorted = [...devices].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const known = knownValues(devices);
   const lines = [`Capture devices: ${sorted.length}`];
   if (sorted.some((d) => d.state !== "serving" && d.error)) lines.push(PRIVACY_NOTE);
-  sorted.forEach((d, i) => lines.push("", ...deviceBlock(d, i + 1, known, configs.find((c) => c.name === d.name))));
+  sorted.forEach((d, i) => lines.push("", ...deviceBlock(d, i + 1, known, configs.find((c) => c.device === d.device))));
   return lines;
 }
 
