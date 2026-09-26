@@ -350,7 +350,7 @@ func archiveTarget(a *artifact, tag string, sums map[string]string) (releasemani
 }
 
 // binaryIn hashes the executable inside a .tar.gz release archive. Exactly one
-// regular-file entry named releasemanifest.BinaryName must exist, at the top
+// executable regular-file entry named releasemanifest.BinaryName must exist, at the top
 // level or in one wrapping directory. Its entry name is recorded verbatim, so
 // it is the name an installer finds; an unclean or absolute name is refused
 // rather than normalized. The whole gzip stream is read, so a corrupt gzip
@@ -386,6 +386,9 @@ func binaryIn(archive string) (releasemanifest.Binary, error) {
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			return releasemanifest.Binary{}, fmt.Errorf("%w: %s: %s is not a regular file", ErrNoBinary, archive, hdr.Name)
+		}
+		if hdr.Mode&0o111 == 0 {
+			return releasemanifest.Binary{}, fmt.Errorf("%w: %s: %s is not executable (mode %o)", ErrNoBinary, archive, hdr.Name, hdr.Mode)
 		}
 		h := sha256.New()
 		size, err := io.Copy(h, tr)

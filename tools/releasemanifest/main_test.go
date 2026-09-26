@@ -28,10 +28,11 @@ const (
 	tagFlag       = "-tag"
 )
 
-// tarEntry is one file in a fake release archive.
+// tarEntry is one file in a fake release archive. mode 0 means 0o755.
 type tarEntry struct {
 	name, content string
 	typeflag      byte
+	mode          int64
 }
 
 // writeTarGz writes a gzipped tar archive holding entries.
@@ -41,7 +42,11 @@ func writeTarGz(t *testing.T, path string, entries []tarEntry) {
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	for _, e := range entries {
-		hdr := &tar.Header{Name: e.name, Mode: 0o755, Typeflag: e.typeflag}
+		mode := e.mode
+		if mode == 0 {
+			mode = 0o755
+		}
+		hdr := &tar.Header{Name: e.name, Mode: mode, Typeflag: e.typeflag}
 		if e.typeflag == tar.TypeReg {
 			hdr.Size = int64(len(e.content))
 		}
@@ -100,8 +105,8 @@ func fakeDist(t *testing.T, mutate func(arts []artifact, sums map[string]string)
 		name := "birdnet-go-remote-mic_1.2.3_linux_" + suffix + ".tar.gz"
 		path := filepath.Join(dist, name)
 		writeTarGz(t, path, []tarEntry{
-			{"README.md", "readme", tar.TypeReg},
-			{releasemanifest.BinaryName, binaryContent(suffix), tar.TypeReg},
+			{"README.md", "readme", tar.TypeReg, 0},
+			{releasemanifest.BinaryName, binaryContent(suffix), tar.TypeReg, 0},
 		})
 		hexSum := hashArchive(t, path)
 		sums[name] = hexSum
@@ -227,15 +232,16 @@ func TestGenerateRefuses(t *testing.T) {
 		{"goreleaser record disagrees", testTag, func(arts []artifact, _ map[string]string) {
 			archiveFor(t, arts, "armv6").Extra.Checksum = "sha256:" + strings.Repeat("0", 64)
 		}, ErrChecksum},
-		{"archive without the binary", testTag, rewriteArchive(t, []tarEntry{{"README.md", "readme", tar.TypeReg}}), ErrNoBinary},
+		{"archive without the binary", testTag, rewriteArchive(t, []tarEntry{{"README.md", "readme", tar.TypeReg, 0}}), ErrNoBinary},
 		{"archive with two binaries", testTag, rewriteArchive(t, []tarEntry{
-			{releasemanifest.BinaryName, "one", tar.TypeReg},
-			{"sub/" + releasemanifest.BinaryName, "two", tar.TypeReg},
+			{releasemanifest.BinaryName, "one", tar.TypeReg, 0},
+			{"sub/" + releasemanifest.BinaryName, "two", tar.TypeReg, 0},
 		}), ErrNoBinary},
-		{"unclean entry name", testTag, rewriteArchive(t, []tarEntry{{"./" + releasemanifest.BinaryName, "x", tar.TypeReg}}), ErrNoBinary},
-		{"escaping entry name", testTag, rewriteArchive(t, []tarEntry{{"../" + releasemanifest.BinaryName, "x", tar.TypeReg}}), ErrNoBinary},
-		{"binary is a hardlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeLink}}), ErrNoBinary},
-		{"binary is a symlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeSymlink}}), ErrNoBinary},
+		{"unclean entry name", testTag, rewriteArchive(t, []tarEntry{{"./" + releasemanifest.BinaryName, "x", tar.TypeReg, 0}}), ErrNoBinary},
+		{"escaping entry name", testTag, rewriteArchive(t, []tarEntry{{"../" + releasemanifest.BinaryName, "x", tar.TypeReg, 0}}), ErrNoBinary},
+		{"binary is not executable", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "x", tar.TypeReg, 0o644}}), ErrNoBinary},
+		{"binary is a hardlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeLink, 0}}), ErrNoBinary},
+		{"binary is a symlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeSymlink, 0}}), ErrNoBinary},
 		{"archive is not gzip", testTag, rewriteArchiveRaw(t, []byte("plain bytes")), gzip.ErrHeader},
 		{"gzip checksum is corrupt", testTag, rewriteArchiveRaw(t, corruptGzipCRC(t)), gzip.ErrChecksum},
 		{"archive is truncated", testTag, rewriteArchiveRaw(t, truncatedTarGz(t)), io.ErrUnexpectedEOF},
@@ -283,7 +289,7 @@ func rewriteArchiveRaw(t *testing.T, content []byte) func([]artifact, map[string
 func corruptGzipCRC(t *testing.T) []byte {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "a.tar.gz")
-	writeTarGz(t, path, []tarEntry{{releasemanifest.BinaryName, "binary", tar.TypeReg}})
+	writeTarGz(t, path, []tarEntry{{releasemanifest.BinaryName, "binary", tar.TypeReg, 0}})
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -324,8 +330,8 @@ func TestGenerateWrappedBinary(t *testing.T) {
 	priv, trusted := testKey(t)
 	wrapped := "birdnet-go-remote-mic_1.2.3_linux_arm64/" + releasemanifest.BinaryName
 	dist := fakeDist(t, rewriteArchive(t, []tarEntry{
-		{"a/b/" + releasemanifest.BinaryName, "too deep", tar.TypeReg},
-		{wrapped, "wrapped", tar.TypeReg},
+		{"a/b/" + releasemanifest.BinaryName, "too deep", tar.TypeReg, 0},
+		{wrapped, "wrapped", tar.TypeReg, 0},
 	}))
 	m, err := generate(dist, testTag, priv, trusted)
 	if err != nil {
