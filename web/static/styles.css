@@ -3354,7 +3354,6 @@ select.field-input {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-secondary);
-  max-width: 75ch;
 }
 .about-text a,
 .about-card .info-val a {
