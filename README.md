@@ -308,6 +308,13 @@ off the appliance makes no outbound update request at all. A check that fails
 (no network, GitHub down) logs one line per kind of failure and retries later;
 it never raises a notification and never affects audio.
 
+In the web UI, the Software Update card on the System page shows the running
+and newest versions and the last check, with a switch for the daily check and
+a Check Now button. Where the installation can update itself it offers an
+Update button; the page then follows the download, the install and the
+restart, and reloads once the appliance answers again. Otherwise it shows how
+to update by hand.
+
 Every release publishes a manifest signed with the project's release key, and
 the appliance acts only on a manifest that verifies against the key compiled
 into it, and only on a version strictly newer than the one it runs.
