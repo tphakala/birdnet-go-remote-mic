@@ -47,25 +47,35 @@ jobs:
       # insurance that the tagged tree still builds and passes unit tests.
       - name: Test before release
         run: task test
-      # The release manifest (manifest.json + manifest.json.sig) is signed after
-      # GoReleaser publishes, so check the signing key first: a missing secret,
-      # or a key absent from internal/releasemanifest/keys.go, fails here before
-      # anything is published rather than leaving a live release without a
-      # manifest that update checks can verify. It also rejects a tag that is not
-      # a v-prefixed semantic version, which the manifest would refuse later.
       # Only a release that is not older than the current latest becomes
       # "latest", where update checks fetch the manifest; .goreleaser.yaml reads
-      # MAKE_LATEST. No latest release yet (gh fails) means this one is.
+      # MAKE_LATEST. "release not found" (no release yet) means this one is;
+      # any other gh failure stops the release rather than guessing. Tags pushed
+      # together decide concurrently and the last to publish becomes latest, so
+      # push release tags one at a time. (A concurrency group cannot serialize
+      # them: GitHub keeps one pending run per group and cancels the others.)
       - name: Decide whether this release becomes latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          if ! latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>"$RUNNER_TEMP/gh.err"); then
+            if ! grep -q 'release not found' "$RUNNER_TEMP/gh.err"; then
+              cat "$RUNNER_TEMP/gh.err" >&2
+              exit 1
+            fi
+            latest=
+          fi
           make_latest=$(go run ./tools/releasemanifest make-latest -tag "$TAG" -latest "$latest")
           echo "latest release: ${latest:-none}; make $TAG latest: $make_latest"
           echo "MAKE_LATEST=$make_latest" >> "$GITHUB_ENV"
+      # The release manifest (manifest.json + manifest.json.sig) is signed after
+      # GoReleaser publishes, so check the signing key first: a missing secret,
+      # or a key absent from internal/releasemanifest/keys.go, fails here before
+      # anything is published rather than leaving a live release without a
+      # manifest that update checks can verify. It also rejects a tag that is not
+      # a v-prefixed semantic version, which the manifest would refuse later.
       - name: Check the release manifest signing key
         env:
           RELEASE_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_KEY }}

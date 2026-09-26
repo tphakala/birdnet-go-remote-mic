@@ -354,7 +354,17 @@ func TestCompareVersions(t *testing.T) {
 			}
 		}
 	}
-	for _, bad := range [][2]string{{"1.0.0", v100}, {v100, "v1.0"}, {v100, "v99999999999999999999.0.0"}} {
+	// Numbers past uint64 still order by value, in the core and in a prerelease.
+	huge := []string{
+		"v1.0.0-99999999999999999999", "v1.0.0-100000000000000000000", "v1.0.0-x",
+		"v99999999999999999999.0.0", "v100000000000000000000.0.0",
+	}
+	for i := 1; i < len(huge); i++ {
+		if got, err := CompareVersions(huge[i-1], huge[i]); err != nil || got != -1 {
+			t.Errorf("CompareVersions(%s, %s) = %d, %v; want -1", huge[i-1], huge[i], got, err)
+		}
+	}
+	for _, bad := range [][2]string{{"1.0.0", v100}, {v100, "v1.0"}} {
 		if _, err := CompareVersions(bad[0], bad[1]); !errors.Is(err, ErrInvalid) {
 			t.Errorf("CompareVersions(%s, %s): err = %v, want ErrInvalid", bad[0], bad[1], err)
 		}

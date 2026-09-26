@@ -38,7 +38,6 @@ import (
 	"path"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -185,7 +184,7 @@ func CompareVersions(a, b string) (int, error) {
 		return 0, err
 	}
 	for i := range 3 {
-		if c := cmp.Compare(pa.core[i], pb.core[i]); c != 0 {
+		if c := compareNumeric(pa.core[i], pb.core[i]); c != 0 {
 			return c, nil
 		}
 	}
@@ -205,8 +204,10 @@ func CompareVersions(a, b string) (int, error) {
 	return cmp.Compare(len(pa.pre), len(pb.pre)), nil
 }
 
+// version holds a parsed version's numeric parts as digit strings, so a
+// number of any length compares correctly (see compareNumeric).
 type version struct {
-	core [3]uint64
+	core [3]string
 	pre  []string
 }
 
@@ -215,14 +216,7 @@ func parseVersion(v string) (version, error) {
 	if m == nil {
 		return version{}, fmt.Errorf("%w: version %q is not a v-prefixed semantic version", ErrInvalid, v)
 	}
-	var p version
-	for i := range 3 {
-		n, err := strconv.ParseUint(m[i+1], 10, 64)
-		if err != nil {
-			return version{}, fmt.Errorf("%w: version %q: %w", ErrInvalid, v, err)
-		}
-		p.core[i] = n
-	}
+	p := version{core: [3]string{m[1], m[2], m[3]}}
 	if m[4] != "" {
 		p.pre = strings.Split(m[4], ".")
 	}
@@ -232,18 +226,31 @@ func parseVersion(v string) (version, error) {
 // comparePrerelease orders two prerelease identifiers: numeric ones
 // numerically, below alphanumeric ones, which compare in ASCII order.
 func comparePrerelease(a, b string) int {
-	na, errA := strconv.ParseUint(a, 10, 64)
-	nb, errB := strconv.ParseUint(b, 10, 64)
+	numA, numB := isNumeric(a), isNumeric(b)
 	switch {
-	case errA == nil && errB == nil:
-		return cmp.Compare(na, nb)
-	case errA == nil:
+	case numA && numB:
+		return compareNumeric(a, b)
+	case numA:
 		return -1
-	case errB == nil:
+	case numB:
 		return 1
 	default:
 		return strings.Compare(a, b)
 	}
+}
+
+// compareNumeric orders two decimal digit strings without leading zeros
+// (versionPattern guarantees that) by value, at any length: the longer one is
+// larger, and equal lengths compare digit by digit.
+func compareNumeric(a, b string) int {
+	if c := cmp.Compare(len(a), len(b)); c != 0 {
+		return c
+	}
+	return strings.Compare(a, b)
+}
+
+func isNumeric(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 // Validate checks that m is complete and well formed.
