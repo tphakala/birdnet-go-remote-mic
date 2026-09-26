@@ -1,7 +1,7 @@
 // Package atomicfile writes a file atomically: a reader sees either the old
 // contents or the new, never a partial write. It is shared by the config
-// persister and the certificate writer, which need the same durable-replace
-// semantics.
+// persister, the certificate writer and the service installer, which need the
+// same durable-replace semantics.
 package atomicfile
 
 import (
@@ -27,6 +27,21 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		target = resolved
 	}
+	return write(target, data, perm, true)
+}
+
+// Replace is Write for a path whose existing entry must not be trusted: it
+// replaces the directory entry at path itself with a new regular file owned by
+// the caller (its group can come from a setgid directory). A symlink at path
+// is replaced, not followed, and the old file's owner is not carried over, so
+// an entry planted by someone who can write the directory can neither
+// redirect the write to a file of their choosing nor keep ownership of what
+// is written. Symlinks in the directories above path are still followed.
+func Replace(path string, data []byte, perm os.FileMode) error {
+	return write(path, data, perm, false)
+}
+
+func write(target string, data []byte, perm os.FileMode, keepOwner bool) error {
 	dir := filepath.Dir(target)
 	f, err := os.CreateTemp(dir, "."+filepath.Base(target)+".tmp-*")
 	if err != nil {
@@ -41,7 +56,9 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	// and on a filesystem without ownership the chown is moot. This runs BEFORE
 	// Chmod because a chown clears the setuid/setgid bits for a non-root caller,
 	// which would silently strip a mode the caller requested via perm.
-	preserveOwner(f, target)
+	if keepOwner {
+		preserveOwner(f, target)
+	}
 	if err := f.Chmod(perm); err != nil {
 		_ = f.Close()
 		return err

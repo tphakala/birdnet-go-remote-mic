@@ -53,6 +53,12 @@ var (
 	ErrBusy           = errors.New("an update is already in progress")
 )
 
+// errEarlierAttempt is ErrBusy for an attempt found on disk rather than one
+// this process started. The status may then read idle or failed (the attempt
+// was started before a restart, or the updater was killed mid-run), so the
+// message says why the button is refused and how long it can last.
+var errEarlierAttempt = fmt.Errorf("%w: an earlier update attempt may still be running (it counts as abandoned at most %d minutes after it started); try again later", ErrBusy, int(claimMaxAge/time.Minute))
+
 // Phase is where a one-button update stands.
 type Phase string
 
@@ -140,6 +146,8 @@ type Manager struct {
 	phaseMsg  string
 	// cancelApply stops an in-flight download when checks are turned off.
 	cancelApply context.CancelCauseFunc
+	// cancelCheck stops an in-flight check when checks are turned off.
+	cancelCheck context.CancelCauseFunc
 }
 
 // Checks run only while the monitors have been applied with UpdateCheck on.
@@ -163,9 +171,10 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 }
 
 // Apply turns the periodic check on or off from the config. Turning it off
-// forgets the release found, clears its notification, and stops a download
-// in progress, so the appliance makes no update request with checks off. An
-// update already handed to the root updater is past that point and goes on.
+// forgets the release found, clears its notification, and stops a check or
+// download in progress, so the appliance makes no update request with checks
+// off. An update already handed to the root updater is past that point and
+// goes on.
 func (m *Manager) Apply(s *monitor.Settings) {
 	was := m.enabled.Swap(s.UpdateCheck)
 	if was == s.UpdateCheck {
@@ -178,6 +187,12 @@ func (m *Manager) Apply(s *monitor.Settings) {
 		// Under m.mu, so a check finishing now either sees checks off or has
 		// already raised the condition this resolves.
 		m.cfg.Publisher.Resolve(AvailableKey, "Update checks turned off")
+		// Also under m.mu, where the check records its result: a fetch that
+		// returns on its own just after this, with checks turned back on in
+		// between, still finds the cause set and keeps nothing.
+		if m.cancelCheck != nil {
+			m.cancelCheck(ErrChecksDisabled)
+		}
 		m.mu.Unlock()
 		if cancel != nil {
 			cancel(ErrChecksDisabled)
@@ -258,29 +273,33 @@ func (m *Manager) CheckNow(context.Context) (Status, error) {
 }
 
 // check fetches the newest release and records the outcome, unless checks
-// were turned off meanwhile. A manual check skips the fetch when another
-// finished within manualThrottle, re-read after waiting for any check in
-// flight, so a burst of requests makes one fetch. It returns the number of
-// consecutive failures, zero after a success.
+// were turned off meanwhile; turning them off also stops a fetch in progress,
+// which is then not recorded even if checks are back on when it returns.
+// A manual check skips the fetch when another finished within
+// manualThrottle, re-read after waiting for any check in flight, so a burst
+// of requests makes one fetch. It returns the number of consecutive failures,
+// zero after a success.
 func (m *Manager) check(ctx context.Context, manual bool) int {
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
+	cctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	m.mu.Lock()
 	// Checks may have been turned off while this call waited for another.
-	if !m.enabled.Load() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.failures
+	// Read under m.mu, where the cancel is registered: Apply(off) sets
+	// enabled before it takes m.mu, so it either is seen here or finds the
+	// cancel and stops the fetch.
+	skip := !m.enabled.Load() ||
+		manual && !m.lastCheck.IsZero() && time.Since(m.lastCheck) < manualThrottle
+	failures := m.failures
+	if !skip {
+		m.cancelCheck = stop
 	}
-	if manual {
-		m.mu.Lock()
-		recent := !m.lastCheck.IsZero() && time.Since(m.lastCheck) < manualThrottle
-		failures := m.failures
-		m.mu.Unlock()
-		if recent {
-			return failures
-		}
+	m.mu.Unlock()
+	if skip {
+		return failures
 	}
-	fctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	fctx, cancel := context.WithTimeout(cctx, checkTimeout)
 	rel, err := m.cfg.Fetch(fctx)
 	cancel()
 	var newer bool
@@ -290,8 +309,12 @@ func (m *Manager) check(ctx context.Context, manual bool) int {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.enabled.Load() {
-		return m.failures // turned off while fetching: keep nothing
+	m.cancelCheck = nil
+	// Turned off while fetching: keep nothing, even when checks were turned
+	// back on before the stopped fetch returned, since its error is not a
+	// failed check.
+	if !m.enabled.Load() || errors.Is(context.Cause(cctx), ErrChecksDisabled) {
+		return m.failures
 	}
 	m.lastCheck = time.Now()
 	if err != nil {
@@ -400,7 +423,7 @@ func (m *Manager) StartApply() (Status, error) {
 	// An attempt on disk counts too: one started before this process (which
 	// may be the new version the updater is still watching) has not ended.
 	if inFlight(m.cfg.Dir) {
-		return m.Status(), ErrBusy
+		return m.Status(), errEarlierAttempt
 	}
 	m.mu.Lock()
 	switch {

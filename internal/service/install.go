@@ -31,9 +31,18 @@ type Installer struct {
 	userExists func(name string) bool
 	lookupUser func(name string) (uid, gid int, err error)
 	ensureDir  func(path string, perm os.FileMode) error
-	chownTree  func(root string, uid, gid int) error
-	copyFile   func(src, dst string, perm os.FileMode) error
-	writeFile  func(path string, data []byte, perm os.FileMode) error
+	// binDirOK refuses a bin directory anyone but root could change (see
+	// checkBinDir); it runs before install writes anything.
+	binDirOK func(dir string) error
+	// makeBinDir creates the bin directory when it is missing and leaves an
+	// existing one as it is (see ensureBinDir).
+	makeBinDir func(path string) error
+	// isLink reports whether path is a symlink, for the warning that the
+	// install replaces it.
+	isLink    func(path string) bool
+	chownTree func(root string, uid, gid int) error
+	copyFile  func(src, dst string, perm os.FileMode) error
+	writeFile func(path string, data []byte, perm os.FileMode) error
 	// stagingDir creates the update staging directory inside the state
 	// directory and hands it to the service user.
 	stagingDir func(stateDir string, uid, gid int) error
@@ -58,6 +67,9 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		userExists: userExists,
 		lookupUser: lookupUser,
 		ensureDir:  ensureDir,
+		binDirOK:   checkBinDir,
+		makeBinDir: ensureBinDir,
+		isLink:     isSymlink,
 		chownTree:  chownTree,
 		copyFile:   copyFile,
 		writeFile:  atomicfile.Write,
@@ -71,12 +83,14 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // Install creates the service user, installs the binary, the unit and the root
 // updater's path and service units, hands the config, state and update staging
 // directories to the service user, then reloads systemd and enables the unit
-// and the updater's path unit (starting both too when now is true). Since the
-// root updater runs the installed binary, a binary or bin directory (or a
-// directory above it) that anyone but root can write gets no updater: install
-// warns, removes updater units an earlier install left, and installs the
-// appliance alone. That check runs on the installed binary after the config
-// and state directories are handed over, so neither can hand it over too.
+// and the updater's path unit (starting both too when now is true). A bin
+// directory (or a directory above it) that anyone but root can write is
+// refused before anything is written. Since the root updater runs the
+// installed binary, an installed binary that still fails the root-only check
+// gets no updater: install warns, removes updater units an earlier install
+// left, and installs the appliance alone. That check runs on the installed
+// binary after the config and state directories are handed over, so neither
+// can hand it over too.
 //
 // The order is deliberate: ownership is handed over BEFORE the unit starts, so
 // the appliance can write config.yaml on first provision and take its run lock
@@ -91,6 +105,12 @@ func (in *Installer) Install(now bool) error {
 	if !in.Init.Present() {
 		return errors.New("service: systemd is not the active init system (no /run/systemd/system); cannot install a service unit")
 	}
+	// Before anything is written: in a bin directory, or a directory above
+	// it, that someone else can write, they could plant a link that sends
+	// root's writes below somewhere of their choosing.
+	if err := in.binDirOK(filepath.Dir(s.BinPath)); err != nil {
+		return fmt.Errorf("service: refusing to install to %s: %w; install it somewhere only root can write (the default is %s)", s.BinPath, err, DefaultBinPath)
+	}
 
 	if err := in.ensureUser(s); err != nil {
 		return err
@@ -104,11 +124,15 @@ func (in *Installer) Install(now bool) error {
 	if err != nil {
 		return fmt.Errorf("service: locate the running binary: %w", err)
 	}
-	if err := in.ensureDir(filepath.Dir(s.BinPath), 0o755); err != nil {
+	if err := in.makeBinDir(filepath.Dir(s.BinPath)); err != nil {
 		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
 	}
+	replacesLink := in.isLink(s.BinPath)
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
 		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
+	}
+	if replacesLink {
+		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", s.BinPath)
 	}
 	unit, err := Render(s)
 	if err != nil {
@@ -138,10 +162,9 @@ func (in *Installer) Install(now bool) error {
 
 	// The root updater runs this binary, so nobody but root may be able to
 	// replace it; otherwise the appliance is installed without the updater.
-	// The installed file is checked, not just its directory (the copy keeps
-	// an existing file's owner and writes through an existing link), and only
-	// after the ownership handover, which a config or state path aliased
-	// onto the bin directory through a link would otherwise slip past. An
+	// The installed file is checked, not just its directory, and only after
+	// the ownership handover, which a config or state path aliased onto the
+	// bin directory through a link would otherwise slip past. An
 	// install that fails before here leaves an earlier install's updater
 	// units in place; the updater makes this same check before it acts.
 	updater := true
@@ -279,6 +302,60 @@ func ensureDir(path string, perm os.FileMode) error {
 	return os.Chmod(path, perm)
 }
 
+// checkBinDir refuses dir unless only root can change what it resolves to
+// (update.CheckRootOnly). A dir that does not exist yet is judged by its
+// deepest existing ancestor, under which root creates the rest.
+func checkBinDir(dir string) error {
+	for {
+		_, err := os.Lstat(dir)
+		if err == nil {
+			return update.CheckRootOnly(dir)
+		}
+		parent := filepath.Dir(dir)
+		if !errors.Is(err, fs.ErrNotExist) || parent == dir {
+			return err
+		}
+		dir = parent
+	}
+}
+
+// ensureBinDir creates the bin directory and any missing parents with mode
+// 0755, whatever the umask, so the service user can reach the binary. It
+// never chmods a directory that already existed: that is the operator's
+// (often /usr/local/bin). It relies on checkBinDir having passed, so nobody
+// but root can swap a directory it creates for a link before the chmod.
+func ensureBinDir(path string) error {
+	var missing []string
+	for p := path; ; {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	for _, p := range missing {
+		if err := os.Chmod(p, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isSymlink reports whether path is a symlink itself.
+func isSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&fs.ModeSymlink != 0
+}
+
 // chownTree chowns root and its immediate flat-file entries to uid/gid, without
 // descending into subdirectories, using Lchown so a symlink entry is retargeted
 // rather than followed. Staying shallow both matches the flat layout (config,
@@ -343,10 +420,15 @@ func ensureStagingDir(stateDir string, uid, gid int) error {
 // file into memory (the binary is small). It uses atomicfile so a concurrent
 // reader never sees a partial binary, and copying the running binary onto its
 // own destination is safe (the source is fully read before the rename).
+//
+// The copy replaces the entry at dst rather than writing through it
+// (atomicfile.Replace): on a bin directory someone else can write, a link
+// planted at dst would otherwise have root overwrite a file of their choosing,
+// and a file they own there would keep its owner.
 func copyFile(src, dst string, perm os.FileMode) error {
 	data, err := os.ReadFile(src) //nolint:gosec // src is the running binary path from os.Executable
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(dst, data, perm)
+	return atomicfile.Replace(dst, data, perm)
 }
