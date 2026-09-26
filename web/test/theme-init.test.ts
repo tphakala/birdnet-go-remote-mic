@@ -29,10 +29,15 @@ function appThemeKey(): string {
 }
 
 interface Env {
-  // The stored preference; undefined makes storage access throw.
+  // The stored preference; undefined blocks storage the way Chromium does
+  // with site data blocked, where reading localStorage itself throws.
   stored?: string | null;
-  // The OS preference; undefined makes matchMedia throw.
+  // Blocks storage the other way instead: localStorage exists, getItem throws.
+  getItemThrows?: boolean;
+  // The OS preference; undefined makes the matchMedia call throw.
   prefersLight?: boolean;
+  // Replaces matchMedia with an absent property, or one that returns null.
+  media?: "missing" | "null";
 }
 
 // How many times the last runThemeInit called matchMedia, so a test can tell
@@ -48,17 +53,6 @@ function runThemeInit(env: Env): string | null {
   // The context is the script's global object; window refers back to it, as
   // in a browser, so bare and window-qualified names resolve alike.
   const context: Record<string, unknown> = {
-    localStorage: {
-      getItem(k: string): string | null {
-        if (env.stored === undefined) throw new Error("storage blocked");
-        return k === key ? env.stored : null;
-      },
-    },
-    matchMedia(query: string): { matches: boolean } {
-      mediaCalls++;
-      if (env.prefersLight === undefined) throw new Error("no matchMedia");
-      return { matches: query === "(prefers-color-scheme: light)" && env.prefersLight };
-    },
     document: {
       documentElement: {
         setAttribute(name: string, value: string): void {
@@ -68,6 +62,33 @@ function runThemeInit(env: Env): string | null {
     },
   };
   context.window = context;
+  if (env.stored === undefined) {
+    Object.defineProperty(context, "localStorage", {
+      get(): never {
+        throw new Error("SecurityError: storage blocked");
+      },
+    });
+  } else {
+    const stored = env.stored;
+    context.localStorage = {
+      getItem(k: string): string | null {
+        if (env.getItemThrows) throw new Error("storage blocked");
+        return k === key ? stored : null;
+      },
+    };
+  }
+  if (env.media === "null") {
+    context.matchMedia = (): null => {
+      mediaCalls++;
+      return null;
+    };
+  } else if (env.media !== "missing") {
+    context.matchMedia = (query: string): { matches: boolean } => {
+      mediaCalls++;
+      if (env.prefersLight === undefined) throw new Error("no matchMedia");
+      return { matches: query === "(prefers-color-scheme: light)" && env.prefersLight };
+    };
+  }
   script.runInNewContext(context);
   return theme;
 }
@@ -91,6 +112,8 @@ test("blocked storage still follows the OS preference without throwing", () => {
   assert.equal(runThemeInit({ stored: undefined, prefersLight: true }), "light");
   assert.equal(runThemeInit({ stored: undefined, prefersLight: false }), "dark");
   assert.equal(runThemeInit({ stored: undefined, prefersLight: undefined }), "dark");
+  assert.equal(runThemeInit({ stored: null, getItemThrows: true, prefersLight: true }), "light");
+  assert.equal(runThemeInit({ stored: null, getItemThrows: true, prefersLight: false }), "dark");
 });
 
 test("a missing matchMedia keeps the dark default without throwing", () => {
@@ -98,6 +121,8 @@ test("a missing matchMedia keeps the dark default without throwing", () => {
   // Pins that the counter sees a call whose throw was swallowed, which the
   // saved-choice test below relies on.
   assert.equal(mediaCalls, 1);
+  assert.equal(runThemeInit({ stored: null, media: "missing" }), "dark");
+  assert.equal(runThemeInit({ stored: null, media: "null" }), "dark");
 });
 
 test("a saved choice applies without consulting matchMedia", () => {
