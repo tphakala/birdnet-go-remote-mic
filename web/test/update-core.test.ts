@@ -72,7 +72,7 @@ test("describeUpdate: a failed check with nothing on offer", () => {
   assert.equal(v.headline, "Update check failed");
   assert.equal(v.tone, "warn");
   assert.equal(v.detail, "Signature.");
-  assert.equal(v.note, "Running v0.2.0. The appliance tries again on its own, within the hour at first.");
+  assert.equal(v.note, "Running v0.2.0. The appliance tries again on its own; Check Now asks at once.");
 });
 
 test("describeUpdate: never checked", () => {
@@ -147,9 +147,11 @@ test("describeUpdate: a failed update with nothing newer offers no update", () =
 test("describeUpdate: up to date only when the newest release is known", () => {
   // Checks turned off and on again forget the latest release but keep lastCheck.
   const v = describeUpdate(status({ latestVersion: undefined }));
-  assert.equal(v.headline, "Checking again");
+  assert.equal(v.headline, "Checking soon");
   assert.ok(v.detail.includes("checks are turned on"), v.detail);
-  assert.equal(describeUpdate(status({ latestVersion: undefined, lastCheck: undefined })).headline, "Not checked yet");
+  const never = describeUpdate(status({ latestVersion: undefined, lastCheck: undefined }));
+  assert.equal(never.headline, "Not checked yet");
+  assert.ok(never.detail.includes("or checks are turned on"), never.detail);
 });
 
 test("describeUpdate: no upgrade hint still ends in a sentence and says where to look", () => {

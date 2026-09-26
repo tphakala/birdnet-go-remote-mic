@@ -1553,11 +1553,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 /* In-flight state: the input is disabled while its PATCH runs, so dim the
    track and show a progress cursor rather than a frozen-looking switch. */
-.switch-control input:disabled + .switch-track {
+.switch-control input:disabled + .switch-track,
+.switch-control input[aria-disabled="true"] + .switch-track {
   opacity: 0.55;
   cursor: progress;
 }
-.switch-control:has(input:disabled) {
+.switch-control:has(input:disabled),
+.switch-control:has(input[aria-disabled="true"]) {
   cursor: progress;
 }
 
@@ -3334,6 +3336,18 @@ select.field-input {
 .available-enable {
   flex: 0 0 auto;
 }
+/* A control that cannot act now (aria-disabled keeps it focusable) looks it,
+   unless it is busy, which has its own look below. */
+.btn[aria-disabled="true"]:not(.is-busy),
+.btn[aria-disabled="true"]:not(.is-busy):hover,
+.btn[aria-disabled="true"]:not(.is-busy):active {
+  opacity: 0.55;
+  cursor: not-allowed;
+  /* No hover or press feedback on a control that will not act. */
+  box-shadow: none;
+  transform: none;
+}
+
 /* Busy affordance for a control kept focusable (aria-disabled, not disabled). */
 .is-busy {
   opacity: 0.65;
@@ -3413,6 +3427,8 @@ select.field-input {
 }
 .update-hint {
   color: var(--text-primary);
+  /* A hint can end in a long command or path. */
+  overflow-wrap: anywhere;
 }
 #sys-update-info {
   margin-bottom: 14px;

@@ -1113,6 +1113,14 @@ export class SystemView {
     const actions = document.getElementById("sys-update-actions");
     if (actions) setHidden(actions, !u.supported);
     if (this.updateCheckEl && !this.updateToggling) this.updateCheckEl.checked = u.checkEnabled;
+    // Turning checks off stops a download (not an install already handed to
+    // the root updater), so say so while one runs.
+    const checkHint = document.getElementById("sys-update-check-hint");
+    if (checkHint) {
+      setText(checkHint, u.phase === "downloading"
+        ? "Turning this off stops the download under way."
+        : "Asks GitHub for the newest release. Applies at once.");
+    }
     this.renderUpdateNotes(u.available ? safeNotesUrl(u.notesUrl) : "");
 
     // Check Now stays in place (hiding a focused button would drop focus) and
@@ -1313,7 +1321,7 @@ export class SystemView {
       const status = await api.checkForUpdate();
       store.applyUpdateStatus(status);
       if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
-      else if (!status.available) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
+      else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
       showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");
     } finally {

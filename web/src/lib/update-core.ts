@@ -126,18 +126,18 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     view.tone = "warn";
     view.headline = "Update check failed";
     view.detail = sentence(u.lastError);
-    view.note = `Running ${u.currentVersion}. The appliance tries again on its own, within the hour at first.`;
+    view.note = `Running ${u.currentVersion}. The appliance tries again on its own; Check Now asks at once.`;
     return view;
   }
   if (!u.lastCheck) {
     view.headline = "Not checked yet";
-    view.detail = `Running ${u.currentVersion}. The first check runs a few minutes after the appliance starts; Check Now asks at once.`;
+    view.detail = `Running ${u.currentVersion}. The first check runs a few minutes after the appliance starts or checks are turned on; Check Now asks at once.`;
     return view;
   }
   // Up to date needs a known newest release: turning checks off forgets it
   // while keeping the time of the last check.
   if (!latest) {
-    view.headline = "Checking again";
+    view.headline = "Checking soon";
     view.detail = `Running ${u.currentVersion}. The newest release is looked up again a few minutes after checks are turned on; Check Now asks at once.`;
     return view;
   }
