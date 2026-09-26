@@ -51,9 +51,10 @@ func NewInstaller(spec ServiceSpec) *Installer {
 	}
 }
 
-// Install creates the service user, installs the binary and unit, hands the
-// config and state directories to the service user, then reloads systemd and
-// enables the unit (starting it too when now is true).
+// Install creates the service user, installs the binary, the unit and the root
+// updater's path and service units, hands the config, state and update staging
+// directories to the service user, then reloads systemd and enables the unit
+// and the updater's path unit (starting both too when now is true).
 //
 // The order is deliberate: ownership is handed over BEFORE the unit starts, so
 // the appliance can write config.yaml on first provision and take its run lock
@@ -95,16 +96,29 @@ func (in *Installer) Install(now bool) error {
 	if err := in.writeFile(s.UnitPath(), unit, 0o644); err != nil {
 		return fmt.Errorf("service: write unit %s: %w", s.UnitPath(), err)
 	}
+	pathUnit, updaterUnit, err := RenderUpdater(s)
+	if err != nil {
+		return err
+	}
+	if err := in.writeFile(s.UpdateServiceUnitPath(), updaterUnit, 0o644); err != nil {
+		return fmt.Errorf("service: write unit %s: %w", s.UpdateServiceUnitPath(), err)
+	}
+	if err := in.writeFile(s.UpdatePathUnitPath(), pathUnit, 0o644); err != nil {
+		return fmt.Errorf("service: write unit %s: %w", s.UpdatePathUnitPath(), err)
+	}
 
 	// Create the config and state directories and hand them to the service user
 	// recursively, so a pre-existing root-owned config.yaml or config.yaml.lock
 	// (left by an earlier hand-run `sudo remote-mic serve`) is handed over too.
+	// The update staging directory is listed on its own because chownTree does
+	// not descend into subdirectories.
 	dirs := []struct {
 		path string
 		perm os.FileMode
 	}{
 		{s.ConfigDir(), 0o750},
 		{s.StateDir, 0o700},
+		{s.UpdateDir(), 0o700},
 	}
 	for _, d := range dirs {
 		if err := in.ensureDir(d.path, d.perm); err != nil {
@@ -120,6 +134,10 @@ func (in *Installer) Install(now bool) error {
 	}
 	if err := in.Init.Enable(DefaultUnitName, now); err != nil {
 		return fmt.Errorf("service: enable %s: %w", DefaultUnitName, err)
+	}
+	// Only the path unit is enabled: it starts the updater service on demand.
+	if err := in.Init.Enable(UpdatePathUnit, now); err != nil {
+		return fmt.Errorf("service: enable %s: %w", UpdatePathUnit, err)
 	}
 	return nil
 }

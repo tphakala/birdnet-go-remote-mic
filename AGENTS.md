@@ -275,6 +275,15 @@ thelper, and testifylint. `unused` is disabled.
 - `internal/runlock`: advisory lock at `<config path>.lock` marking a live
   appliance, so token commands use its API instead of editing its config.
 - `internal/atomicfile`: atomic durable file replace (config, certs).
+- `internal/update`: the appliance side of updates. `Manager` is a
+  `monitor.Monitors` member (daily check gated on `updates.check`, the
+  available notification, one-button apply); `Fetcher` resolves the latest
+  tag once and verifies the manifest pair; `Stager` stages the release in
+  `<cert dir>/update/`; `Applier` is the root updater
+  (`service apply-update`, started by `remote-mic-update.path`), which
+  re-verifies everything through an `os.Root`, swaps the binary, and rolls
+  back unless the new version writes its health file; `Boot` reports the
+  outcome and writes that file.
 - `internal/releasemanifest`: the signed release manifest schema, Ed25519
   signing and verification, and the trusted release keys. Platform-neutral,
   standard library only, shared by the release tool and update code.

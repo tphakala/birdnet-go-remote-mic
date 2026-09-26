@@ -173,6 +173,7 @@ type Server struct {
 	restartFn     func()
 	reloader      Reloader
 	channelProbe  ChannelProbe
+	updates       UpdateProvider
 	staticFS      fs.FS
 	// guard gates the API routes with the shared bearer token; nil or disabled
 	// means open access.

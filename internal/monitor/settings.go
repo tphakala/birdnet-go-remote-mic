@@ -25,10 +25,14 @@ type Settings struct {
 	// armed (the per-device quiet_alert flag, default on). A device missing from
 	// the map is treated as armed by the signal monitor.
 	QuietAlert map[string]bool
+	// UpdateCheck reports whether the periodic release check runs (the
+	// updates.check flag, default on). It is independent of Enabled: the
+	// check's result is surfaced in the system view as well as the bell.
+	UpdateCheck bool
 }
 
-// SettingsFrom builds a Settings from cfg: the materialized notifications block
-// plus a quiet-alert entry for every configured device. It reads the config but
+// SettingsFrom builds a Settings from cfg: the materialized notifications block,
+// a quiet-alert entry for every configured device, and the updates.check flag. It reads the config but
 // never retains a reference to it, so the returned value is safe to hand across
 // goroutines.
 func SettingsFrom(cfg *config.Config) Settings {
@@ -37,10 +41,11 @@ func SettingsFrom(cfg *config.Config) Settings {
 		qa[cfg.Devices[i].Name] = cfg.Devices[i].QuietAlertEnabled()
 	}
 	return Settings{
-		Enabled:    cfg.NotificationsEnabled(),
-		Audio:      cfg.Notifications.Audio,
-		Host:       cfg.Notifications.Host,
-		QuietAlert: qa,
+		Enabled:     cfg.NotificationsEnabled(),
+		Audio:       cfg.Notifications.Audio,
+		Host:        cfg.Notifications.Host,
+		QuietAlert:  qa,
+		UpdateCheck: cfg.UpdateCheckEnabled(),
 	}
 }
 

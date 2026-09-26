@@ -227,6 +227,54 @@ func (e StreamMode) Valid() bool {
 	}
 }
 
+// Defines values for UpdateStatusInstallMethod.
+const (
+	Deb      UpdateStatusInstallMethod = "deb"
+	Homebrew UpdateStatusInstallMethod = "homebrew"
+	Manual   UpdateStatusInstallMethod = "manual"
+	Service  UpdateStatusInstallMethod = "service"
+)
+
+// Valid indicates whether the value is a known member of the UpdateStatusInstallMethod enum.
+func (e UpdateStatusInstallMethod) Valid() bool {
+	switch e {
+	case Deb:
+		return true
+	case Homebrew:
+		return true
+	case Manual:
+		return true
+	case Service:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UpdateStatusPhase.
+const (
+	UpdateStatusPhaseDownloading UpdateStatusPhase = "downloading"
+	UpdateStatusPhaseFailed      UpdateStatusPhase = "failed"
+	UpdateStatusPhaseIdle        UpdateStatusPhase = "idle"
+	UpdateStatusPhaseInstalling  UpdateStatusPhase = "installing"
+)
+
+// Valid indicates whether the value is a known member of the UpdateStatusPhase enum.
+func (e UpdateStatusPhase) Valid() bool {
+	switch e {
+	case UpdateStatusPhaseDownloading:
+		return true
+	case UpdateStatusPhaseFailed:
+		return true
+	case UpdateStatusPhaseIdle:
+		return true
+	case UpdateStatusPhaseInstalling:
+		return true
+	default:
+		return false
+	}
+}
+
 // ApplianceStatus Appliance-level runtime state.
 type ApplianceStatus struct {
 	// AuthRequired Whether a shared access token is configured, so the API, web UI and RTSP stream require credentials.
@@ -420,6 +468,9 @@ type Config struct {
 
 	// Notifications Condition-monitor settings behind the notification center. In a read every field is materialized to its effective value; in a patch an absent field (or an absent nested object) leaves the current value unchanged, so a partial block like {"host":{"cpuPercent":95}} touches only that field.
 	Notifications NotificationSettings `json:"notifications"`
+
+	// Updates Release update check settings.
+	Updates UpdateSettings `json:"updates"`
 }
 
 // ConfigOverride One config field overridden by a serve CLI flag for this run. The effective value is in force now; the persisted value is what the config file holds and what a restart without the flag would use.
@@ -449,6 +500,9 @@ type ConfigPatch struct {
 
 	// Notifications Condition-monitor settings behind the notification center. In a read every field is materialized to its effective value; in a patch an absent field (or an absent nested object) leaves the current value unchanged, so a partial block like {"host":{"cpuPercent":95}} touches only that field.
 	Notifications *NotificationSettings `json:"notifications,omitempty"`
+
+	// Updates Release update check settings.
+	Updates *UpdateSettings `json:"updates,omitempty"`
 }
 
 // ConfigUpdateResult Outcome of a persisted configuration update.
@@ -938,7 +992,68 @@ type SystemInfo struct {
 
 	// TempCelsius SoC or CPU temperature in degrees Celsius. Absent when no thermal sensor is exposed (typical off Raspberry Pi hardware).
 	TempCelsius *float64 `json:"tempCelsius,omitempty"`
+
+	// Update The release update state: the running and newest known versions, the last check, how this appliance was installed (which decides whether it can update itself), and a one-button update in progress.
+	Update *UpdateStatus `json:"update,omitempty"`
 }
+
+// UpdateSettings Release update check settings.
+type UpdateSettings struct {
+	// Check Whether the appliance checks daily for a newer release; defaults to true when absent. With it off the appliance makes no outbound update request at all. In a patch, an absent field leaves the setting unchanged.
+	Check *bool `json:"check,omitempty"`
+}
+
+// UpdateStatus The release update state: the running and newest known versions, the last check, how this appliance was installed (which decides whether it can update itself), and a one-button update in progress.
+type UpdateStatus struct {
+	// Available Whether latestVersion is newer than the running version.
+	Available bool `json:"available"`
+
+	// CanApply Whether `POST /system/update` can install an update here: a service installation whose root updater units are installed.
+	CanApply bool `json:"canApply"`
+
+	// CheckEnabled Whether the daily check is on (`updates.check`).
+	CheckEnabled bool `json:"checkEnabled"`
+
+	// CurrentVersion The running version.
+	//
+	// Examples: v0.2.0
+	CurrentVersion string `json:"currentVersion"`
+
+	// InstallMethod How the running binary was installed. `service` is `remote-mic service install`; `deb` and `homebrew` belong to a package manager, which is never bypassed; `manual` is a binary run from where it was unpacked.
+	InstallMethod UpdateStatusInstallMethod `json:"installMethod"`
+
+	// LastCheck When the last check finished (appliance wall clock); absent before the first check.
+	LastCheck *time.Time `json:"lastCheck,omitempty"`
+
+	// LastError Why the last check failed; absent after a success.
+	LastError *string `json:"lastError,omitempty"`
+
+	// LatestVersion The newest stable release found; absent before a successful check.
+	//
+	// Examples: v0.3.0
+	LatestVersion *string `json:"latestVersion,omitempty"`
+
+	// NotesUrl The newest release's release notes; absent before a successful check.
+	NotesUrl *string `json:"notesUrl,omitempty"`
+
+	// Phase Where a one-button update stands. `installing` means the root updater has the release and restarts the appliance when it is done; `failed` means the last attempt failed (see phaseMessage).
+	Phase UpdateStatusPhase `json:"phase"`
+
+	// PhaseMessage A human-readable detail for the phase.
+	PhaseMessage *string `json:"phaseMessage,omitempty"`
+
+	// Supported False for a build that is not a release (a development build), which never checks for updates.
+	Supported bool `json:"supported"`
+
+	// UpgradeHint How to update by hand when canApply is false.
+	UpgradeHint *string `json:"upgradeHint,omitempty"`
+}
+
+// UpdateStatusInstallMethod How the running binary was installed. `service` is `remote-mic service install`; `deb` and `homebrew` belong to a package manager, which is never bypassed; `manual` is a binary run from where it was unpacked.
+type UpdateStatusInstallMethod string
+
+// UpdateStatusPhase Where a one-button update stands. `installing` means the root updater has the release and restarts the appliance when it is done; `failed` means the last attempt failed (see phaseMessage).
+type UpdateStatusPhase string
 
 // ValidationProblem A problem detail carrying per-field validation errors.
 type ValidationProblem struct {
@@ -1241,6 +1356,20 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
 	PostSystemRestart(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSystemUpdate Install the available update
+	//
+	// Starts a one-button update to the newest release the last check found. The appliance downloads the release for its platform, checks its size and SHA-256 against the signed manifest, and hands it to the root updater, which verifies it again, installs it, and restarts the appliance (dropping connected RTSP clients briefly). A new version that does not come up is rolled back automatically. The response returns at once with the update in the downloading phase; progress and the outcome arrive as notifications and in `GET /system`. Only a `remote-mic service install` installation with the root updater units can update itself (`update.canApply`).
+	//
+	// Corresponds with POST /system/update (the `PostSystemUpdate` operationId).
+	PostSystemUpdate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSystemUpdateCheck Check for an update now
+	//
+	// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+	//
+	// Corresponds with POST /system/update/check (the `PostSystemUpdateCheck` operationId).
+	PostSystemUpdateCheck(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // GetConfig Get the running configuration
@@ -1637,6 +1766,40 @@ func (c *Client) RegenerateSystemCertificate(ctx context.Context, body Regenerat
 // Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
 func (c *Client) PostSystemRestart(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostSystemRestartRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSystemUpdate Install the available update
+//
+// Starts a one-button update to the newest release the last check found. The appliance downloads the release for its platform, checks its size and SHA-256 against the signed manifest, and hands it to the root updater, which verifies it again, installs it, and restarts the appliance (dropping connected RTSP clients briefly). A new version that does not come up is rolled back automatically. The response returns at once with the update in the downloading phase; progress and the outcome arrive as notifications and in `GET /system`. Only a `remote-mic service install` installation with the root updater units can update itself (`update.canApply`).
+//
+// Corresponds with POST /system/update (the `PostSystemUpdate` operationId).
+func (c *Client) PostSystemUpdate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSystemUpdateRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSystemUpdateCheck Check for an update now
+//
+// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+//
+// Corresponds with POST /system/update/check (the `PostSystemUpdateCheck` operationId).
+func (c *Client) PostSystemUpdateCheck(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSystemUpdateCheckRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -2199,6 +2362,60 @@ func NewPostSystemRestartRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewPostSystemUpdateRequest constructs an http.Request for the PostSystemUpdate method
+func NewPostSystemUpdateRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/update")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostSystemUpdateCheckRequest constructs an http.Request for the PostSystemUpdateCheck method
+func NewPostSystemUpdateCheckRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system/update/check")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -2462,6 +2679,24 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /system/restart (the `PostSystemRestart` operationId).
 	PostSystemRestartWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemRestartResponse, error)
+
+	// PostSystemUpdateWithResponse Install the available update
+	//
+	// Starts a one-button update to the newest release the last check found. The appliance downloads the release for its platform, checks its size and SHA-256 against the signed manifest, and hands it to the root updater, which verifies it again, installs it, and restarts the appliance (dropping connected RTSP clients briefly). A new version that does not come up is rolled back automatically. The response returns at once with the update in the downloading phase; progress and the outcome arrive as notifications and in `GET /system`. Only a `remote-mic service install` installation with the root updater units can update itself (`update.canApply`).
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /system/update (the `PostSystemUpdate` operationId).
+	PostSystemUpdateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemUpdateResponse, error)
+
+	// PostSystemUpdateCheckWithResponse Check for an update now
+	//
+	// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /system/update/check (the `PostSystemUpdateCheck` operationId).
+	PostSystemUpdateCheckWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemUpdateCheckResponse, error)
 }
 
 type GetConfigResponse struct {
@@ -3315,6 +3550,116 @@ func (r PostSystemRestartResponse) ContentType() string {
 	return ""
 }
 
+type PostSystemUpdateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *UpdateStatus
+	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
+	ApplicationproblemJSON409 *Problem
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r PostSystemUpdateResponse) GetJSON202() *UpdateStatus {
+	return r.JSON202
+}
+
+// GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
+func (r PostSystemUpdateResponse) GetApplicationproblemJSON409() *Problem {
+	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r PostSystemUpdateResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r PostSystemUpdateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostSystemUpdateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostSystemUpdateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostSystemUpdateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostSystemUpdateCheckResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *UpdateStatus
+	// ApplicationproblemJSON409 the response for an HTTP 409 `application/problem+json` response
+	ApplicationproblemJSON409 *Problem
+	// ApplicationproblemJSONDefault the response for an HTTP default `application/problem+json` response
+	ApplicationproblemJSONDefault *Problem
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostSystemUpdateCheckResponse) GetJSON200() *UpdateStatus {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON409 returns the response for an HTTP 409 `application/problem+json` response
+func (r PostSystemUpdateCheckResponse) GetApplicationproblemJSON409() *Problem {
+	return r.ApplicationproblemJSON409
+}
+
+// GetApplicationproblemJSONDefault returns the response for an HTTP default `application/problem+json` response
+func (r PostSystemUpdateCheckResponse) GetApplicationproblemJSONDefault() *Problem {
+	return r.ApplicationproblemJSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r PostSystemUpdateCheckResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostSystemUpdateCheckResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostSystemUpdateCheckResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostSystemUpdateCheckResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // GetConfigWithResponse Get the running configuration
 //
 // The configuration as loaded (defaults applied). This includes the shared access token, which only an authenticated caller can read (this route is behind the bearer gate when a token is set); the Access Control card needs it to show what to paste into BirdNET-Go.
@@ -3659,6 +4004,36 @@ func (c *ClientWithResponses) PostSystemRestartWithResponse(ctx context.Context,
 		return nil, err
 	}
 	return ParsePostSystemRestartResponse(rsp)
+}
+
+// PostSystemUpdateWithResponse Install the available update
+//
+// Starts a one-button update to the newest release the last check found. The appliance downloads the release for its platform, checks its size and SHA-256 against the signed manifest, and hands it to the root updater, which verifies it again, installs it, and restarts the appliance (dropping connected RTSP clients briefly). A new version that does not come up is rolled back automatically. The response returns at once with the update in the downloading phase; progress and the outcome arrive as notifications and in `GET /system`. Only a `remote-mic service install` installation with the root updater units can update itself (`update.canApply`).
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /system/update (the `PostSystemUpdate` operationId).
+func (c *ClientWithResponses) PostSystemUpdateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemUpdateResponse, error) {
+	rsp, err := c.PostSystemUpdate(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSystemUpdateResponse(rsp)
+}
+
+// PostSystemUpdateCheckWithResponse Check for an update now
+//
+// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /system/update/check (the `PostSystemUpdateCheck` operationId).
+func (c *ClientWithResponses) PostSystemUpdateCheckWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSystemUpdateCheckResponse, error) {
+	rsp, err := c.PostSystemUpdateCheck(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSystemUpdateCheckResponse(rsp)
 }
 
 // ParseGetConfigResponse parses an HTTP response from a GetConfigWithResponse call
@@ -4260,6 +4635,86 @@ func ParsePostSystemRestartResponse(rsp *http.Response) (*PostSystemRestartRespo
 	return response, nil
 }
 
+// ParsePostSystemUpdateResponse parses an HTTP response from a PostSystemUpdateWithResponse call
+func ParsePostSystemUpdateResponse(rsp *http.Response) (*PostSystemUpdateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostSystemUpdateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest UpdateStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostSystemUpdateCheckResponse parses an HTTP response from a PostSystemUpdateCheckWithResponse call
+func ParsePostSystemUpdateCheckResponse(rsp *http.Response) (*PostSystemUpdateCheckResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostSystemUpdateCheckResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest UpdateStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Problem
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetConfig Get the running configuration
@@ -4313,6 +4768,12 @@ type ServerInterface interface {
 	// PostSystemRestart Request an appliance restart
 	// (POST /system/restart)
 	PostSystemRestart(w http.ResponseWriter, r *http.Request)
+	// PostSystemUpdate Install the available update
+	// (POST /system/update)
+	PostSystemUpdate(w http.ResponseWriter, r *http.Request)
+	// PostSystemUpdateCheck Check for an update now
+	// (POST /system/update/check)
+	PostSystemUpdateCheck(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -4605,6 +5066,34 @@ func (siw *ServerInterfaceWrapper) PostSystemRestart(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// PostSystemUpdate operation middleware
+func (siw *ServerInterfaceWrapper) PostSystemUpdate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostSystemUpdate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostSystemUpdateCheck operation middleware
+func (siw *ServerInterfaceWrapper) PostSystemUpdateCheck(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostSystemUpdateCheck(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -4738,6 +5227,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/config", wrapper.PatchConfig)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system", wrapper.GetSystem)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/restart", wrapper.PostSystemRestart)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/update", wrapper.PostSystemUpdate)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/system/update/check", wrapper.PostSystemUpdateCheck)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system/certificate", wrapper.GetSystemCertificate)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/system/certificate", wrapper.PutSystemCertificate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/system/certificate/pem", wrapper.GetSystemCertificatePem)
@@ -5543,6 +6034,110 @@ func (response PostSystemRestartdefaultApplicationProblemPlusJSONResponse) Visit
 	return err
 }
 
+type PostSystemUpdateRequestObject struct {
+}
+
+type PostSystemUpdateResponseObject interface {
+	VisitPostSystemUpdateResponse(w http.ResponseWriter) error
+}
+
+type PostSystemUpdate202JSONResponse UpdateStatus
+
+func (response PostSystemUpdate202JSONResponse) VisitPostSystemUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSystemUpdate409ApplicationProblemPlusJSONResponse Problem
+
+func (response PostSystemUpdate409ApplicationProblemPlusJSONResponse) VisitPostSystemUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSystemUpdatedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PostSystemUpdatedefaultApplicationProblemPlusJSONResponse) VisitPostSystemUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSystemUpdateCheckRequestObject struct {
+}
+
+type PostSystemUpdateCheckResponseObject interface {
+	VisitPostSystemUpdateCheckResponse(w http.ResponseWriter) error
+}
+
+type PostSystemUpdateCheck200JSONResponse UpdateStatus
+
+func (response PostSystemUpdateCheck200JSONResponse) VisitPostSystemUpdateCheckResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSystemUpdateCheck409ApplicationProblemPlusJSONResponse Problem
+
+func (response PostSystemUpdateCheck409ApplicationProblemPlusJSONResponse) VisitPostSystemUpdateCheckResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSystemUpdateCheckdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PostSystemUpdateCheckdefaultApplicationProblemPlusJSONResponse) VisitPostSystemUpdateCheckResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetConfig Get the running configuration
@@ -5596,6 +6191,12 @@ type StrictServerInterface interface {
 	// PostSystemRestart Request an appliance restart
 	// (POST /system/restart)
 	PostSystemRestart(ctx context.Context, request PostSystemRestartRequestObject) (PostSystemRestartResponseObject, error)
+	// PostSystemUpdate Install the available update
+	// (POST /system/update)
+	PostSystemUpdate(ctx context.Context, request PostSystemUpdateRequestObject) (PostSystemUpdateResponseObject, error)
+	// PostSystemUpdateCheck Check for an update now
+	// (POST /system/update/check)
+	PostSystemUpdateCheck(ctx context.Context, request PostSystemUpdateCheckRequestObject) (PostSystemUpdateCheckResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -6072,6 +6673,54 @@ func (sh *strictHandler) PostSystemRestart(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PostSystemRestartResponseObject); ok {
 		if err := validResponse.VisitPostSystemRestartResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PostSystemUpdate operation middleware
+func (sh *strictHandler) PostSystemUpdate(w http.ResponseWriter, r *http.Request) {
+	var request PostSystemUpdateRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostSystemUpdate(ctx, request.(PostSystemUpdateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostSystemUpdate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostSystemUpdateResponseObject); ok {
+		if err := validResponse.VisitPostSystemUpdateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PostSystemUpdateCheck operation middleware
+func (sh *strictHandler) PostSystemUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	var request PostSystemUpdateCheckRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostSystemUpdateCheck(ctx, request.(PostSystemUpdateCheckRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostSystemUpdateCheck")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostSystemUpdateCheckResponseObject); ok {
+		if err := validResponse.VisitPostSystemUpdateCheckResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

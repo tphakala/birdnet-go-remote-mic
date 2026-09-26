@@ -49,6 +49,16 @@ const (
 	DefaultConfigPath = "/etc/remote-mic/config.yaml"
 	DefaultStateDir   = "/var/lib/remote-mic"
 	DefaultUnitName   = "remote-mic.service"
+	// UpdatePathUnit watches the staging directory for an update request and
+	// starts UpdateServiceUnit, the root updater that installs it.
+	UpdatePathUnit    = "remote-mic-update.path"
+	UpdateServiceUnit = "remote-mic-update.service"
+	// UpdateDirName is the staging directory inside the state directory; it
+	// matches update.DirName, which the appliance and the updater use.
+	UpdateDirName = "update"
+	// updateRequestFile is what the path unit watches for; it matches
+	// update.RequestFile.
+	updateRequestFile = "request.json"
 )
 
 // unitDir is where the generated unit is written. Kept unexported: an operator
@@ -91,6 +101,18 @@ func (s ServiceSpec) ConfigDir() string { return filepath.Dir(s.ConfigPath) }
 
 // UnitPath is the absolute path the unit file is written to.
 func (s ServiceSpec) UnitPath() string { return filepath.Join(unitDir, DefaultUnitName) }
+
+// UpdateDir is the update staging directory, owned by the service user.
+func (s ServiceSpec) UpdateDir() string { return filepath.Join(s.StateDir, UpdateDirName) }
+
+// UpdatePathUnitPath and UpdateServiceUnitPath are where the root updater's
+// units are written.
+func (s ServiceSpec) UpdatePathUnitPath() string { return filepath.Join(unitDir, UpdatePathUnit) }
+
+// UpdateServiceUnitPath is where the root updater's service unit is written.
+func (s ServiceSpec) UpdateServiceUnitPath() string {
+	return filepath.Join(unitDir, UpdateServiceUnit)
+}
 
 // Validate rejects a spec that would render an unusable unit or damage the
 // host: an invalid system user name, a non-absolute path (systemd requires

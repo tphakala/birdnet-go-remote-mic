@@ -40,6 +40,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -695,6 +696,13 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// sampling work at all. It exists only while the management API is enabled (its
 	// sole consumer; the host monitor diffs /proc/stat over its own poll window in
 	// hostReader.cpu). Collect tolerates a nil gauge and omits CPUPercent.
+	// The release update check and the one-button update exist only with the
+	// management API, their only consumer besides the notification bell.
+	updateDir := updateDirFor(&cfg, cfgPath)
+	var updates *update.Manager
+	if mgmtEnabled {
+		updates = newUpdateManager(ctx, updateDir, center)
+	}
 	if mgmtEnabled {
 		prov.cpu = sysinfo.NewCPUGauge()
 		management, _ = startManagement(ctx, &mgmtParams{
@@ -709,6 +717,7 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			reloader:  reloader,
 			guard:     guard,
 			runLock:   runLock,
+			updates:   updates,
 		})
 	}
 	defer func() {
@@ -734,7 +743,14 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	if monSettings.Enabled {
 		logUndervoltageSupport()
 	}
-	app.monitors = buildMonitors(ctx, hub, prov.dataPath, prov.deviceCounters, center, &monSettings)
+	group := buildMonitors(ctx, hub, prov.dataPath, prov.deviceCounters, center, &monSettings)
+	// The update manager is a monitor too, so every reconcile applies the
+	// updates.check flag; the initial reconcile below switches it on.
+	if updates != nil {
+		group = append(group, updates)
+		go updates.Run(ctx)
+	}
+	app.monitors = group
 
 	// Sweep stale client-flap warnings: the connect-driven detector only clears on
 	// the next connect after the quiet window, which a client that settles into a
@@ -771,6 +787,10 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	if err := startupExit(app.serving(), management.serving() != nil, app.allDisabled(), mgmtEnabled); err != nil {
 		return err
 	}
+
+	// The appliance is up: report the outcome of an update that restarted it
+	// and tell a waiting root updater this version is healthy.
+	update.Boot(ctx, updateDir, version, center, log.Printf)
 
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- app.srv.ListenAndServe(ctx) }()

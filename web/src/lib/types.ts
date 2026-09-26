@@ -94,21 +94,29 @@ export interface NotificationSettings {
   host?: HostAlertSettings;
 }
 
+// UpdateSettings configures the daily release check. check defaults on; with
+// it off the appliance makes no outbound update request.
+export interface UpdateSettings {
+  check?: boolean;
+}
+
 export interface Config {
   listen: string;
   discovery?: DiscoverySettings;
   management?: ManagementSettings;
   auth?: AuthSettings;
   notifications?: NotificationSettings;
+  updates?: UpdateSettings;
   devices: DeviceConfig[];
 }
 
-// Only discovery, auth, notifications and devices are patchable; the server
-// ignores anything else (see api/openapi.yaml ConfigPatch).
+// Only discovery, auth, notifications, updates and devices are patchable; the
+// server ignores anything else (see api/openapi.yaml ConfigPatch).
 export interface ConfigPatch {
   discovery?: DiscoverySettings;
   auth?: AuthSettings;
   notifications?: NotificationSettings;
+  updates?: UpdateSettings;
   devices?: DeviceConfig[];
 }
 
@@ -280,6 +288,33 @@ export interface SystemInfo {
   diskUsedBytes: number;
   tempCelsius?: number;
   network: NetworkInterface[];
+  update?: UpdateStatus;
+}
+
+// How the running binary was installed: only "service" (remote-mic service
+// install) can update itself, and only when canApply says the root updater is
+// installed. Package-manager installs get upgradeHint instead.
+export type InstallMethod = "service" | "deb" | "homebrew" | "manual";
+
+// Where a one-button update stands; "installing" means the root updater has
+// the release and restarts the appliance when it is done.
+export type UpdatePhase = "idle" | "downloading" | "installing" | "failed";
+
+export interface UpdateStatus {
+  currentVersion: string;
+  supported: boolean;
+  checkEnabled: boolean;
+  latestVersion?: string;
+  notesUrl?: string;
+  available: boolean;
+  // Appliance wall clock, which can step on a Pi without an RTC.
+  lastCheck?: string;
+  lastError?: string;
+  installMethod: InstallMethod;
+  canApply: boolean;
+  upgradeHint?: string;
+  phase: UpdatePhase;
+  phaseMessage?: string;
 }
 
 export interface ChannelLevels {

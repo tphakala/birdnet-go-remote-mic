@@ -58,12 +58,17 @@ func TestInstallSequence(t *testing.T) {
 		"mkdir /usr/local/bin",
 		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
 		"write /etc/systemd/system/remote-mic.service",
+		"write /etc/systemd/system/remote-mic-update.service",
+		"write /etc/systemd/system/remote-mic-update.path",
 		"mkdir /etc/remote-mic",
 		"chown /etc/remote-mic 990:990",
 		"mkdir /var/lib/remote-mic",
 		"chown /var/lib/remote-mic 990:990",
+		"mkdir /var/lib/remote-mic/update",
+		"chown /var/lib/remote-mic/update 990:990",
 		evReload,
 		"enable --now remote-mic.service",
+		"enable --now remote-mic-update.path",
 	})
 }
 
@@ -120,11 +125,9 @@ func TestInstallUserExistsSkipsCreation(t *testing.T) {
 	if !groupadd {
 		t.Error("groupadd must run even when the user exists, to ensure the group")
 	}
-	// now=false enables without starting.
-	last := events[len(events)-1]
-	if last != "enable remote-mic.service" {
-		t.Errorf("last event = %q, want %q", last, "enable remote-mic.service")
-	}
+	// now=false enables without starting, the appliance and the updater's
+	// path unit alike.
+	wantSeq(t, events[len(events)-2:], []string{"enable remote-mic.service", "enable remote-mic-update.path"})
 }
 
 // TestChownTreeStaysShallow proves the TOCTOU fix: chownTree touches the root

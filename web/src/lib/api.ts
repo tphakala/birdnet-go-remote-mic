@@ -13,6 +13,7 @@ import type {
   ProvisionDeviceRequest,
   RestartResult,
   SystemInfo,
+  UpdateStatus,
   ValidationProblem,
 } from "./types.js";
 
@@ -183,6 +184,25 @@ export class ApiClient {
 
   public async postSystemRestart(): Promise<RestartResult> {
     return this.request<RestartResult>("/system/restart", {
+      method: "POST",
+    });
+  }
+
+  // checkForUpdate checks for a newer release now; a failed check is not an
+  // error response but a status carrying lastError. A 409 means checks are
+  // off or the build is not a release.
+  public async checkForUpdate(): Promise<UpdateStatus> {
+    return this.request<UpdateStatus>("/system/update/check", {
+      method: "POST",
+    });
+  }
+
+  // startUpdate starts the one-button update to the newest release found. It
+  // returns at once in the downloading phase; the appliance restarts when the
+  // root updater installs it. A 409 means there is nothing to install, this
+  // installation cannot update itself, or an update is already running.
+  public async startUpdate(): Promise<UpdateStatus> {
+    return this.request<UpdateStatus>("/system/update", {
       method: "POST",
     });
   }

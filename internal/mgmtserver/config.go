@@ -110,8 +110,8 @@ func WithReloader(fn Reloader) Option {
 }
 
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
-// Only discovery, the access token, the notifications block and the device list
-// are patchable; an absent field is left unchanged, and a present devices array
+// Only discovery, the access token, the notifications and updates blocks and
+// the device list are patchable; an absent field is left unchanged, and a present devices array
 // replaces the whole list.
 // The merged configuration must validate as a whole. With a reloader mounted the
 // change is applied to the running pipeline in place (restartRequired=false);
@@ -126,7 +126,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 	patch := request.Body
 	// An empty patch changes nothing: report the current config without
 	// rewriting the file and without claiming a restart is pending.
-	if patch == nil || (patch.Discovery == nil && patch.Auth == nil && patch.Notifications == nil && patch.Devices == nil) {
+	if patch == nil || (patch.Discovery == nil && patch.Auth == nil && patch.Notifications == nil && patch.Updates == nil && patch.Devices == nil) {
 		cur := s.configStore.Config()
 		return mgmtapi.PatchConfig200JSONResponse{
 			Config:          configToWire(&cur),
@@ -142,29 +142,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 
 	err := s.configStore.Update(func(cur config.Config) (config.Config, error) {
 		prev := cur.Clone() // the stored config, for validateWrite's length caps
-		// A discovery block with no enabled field is a no-op: copying the patch's
-		// nil pointer straight in would reset the flag, and a nil discovery flag
-		// defaults ON, so discovery:{} would silently re-enable advertisement an
-		// operator explicitly turned off. Copy a present value into fresh storage
-		// so the persisted config never aliases the request body (parity with the
-		// device and auth branches).
-		if patch.Discovery != nil && patch.Discovery.Enabled != nil {
-			v := *patch.Discovery.Enabled
-			cur.Discovery.Enabled = &v
-		}
-		// An auth block with no token field is a no-op; an empty string clears
-		// the token (open access), which Validate accepts.
-		if patch.Auth != nil && patch.Auth.Token != nil {
-			cur.Auth.Token = *patch.Auth.Token
-		}
-		// A notifications block merges field by field: only the present fields (and
-		// present nested objects) change, so {"host":{"cpuPercent":95}} touches one
-		// threshold and leaves the rest as stored. mergeNotifications preserves
-		// presence, so ApplyDefaults below fills only fields left absent while an
-		// explicitly supplied out-of-range value is kept for Validate to reject.
-		if patch.Notifications != nil {
-			mergeNotifications(&cur.Notifications, patch.Notifications)
-		}
+		mergeBlocks(&cur, patch)
 		if patch.Devices != nil {
 			devs, derr := patchedDevices(cur.Devices, *patch.Devices)
 			if derr != nil {
@@ -339,9 +317,42 @@ func validateWrite(c, prev *config.Config) error {
 	return c.ValidateLengths(prev)
 }
 
+// mergeBlocks applies the present settings blocks of a patch (discovery, the
+// access token, notifications and updates) onto dst. The device list, which
+// can fail to merge, is handled by the caller.
+func mergeBlocks(dst *config.Config, patch *mgmtapi.ConfigPatch) {
+	// A discovery block with no enabled field is a no-op: copying the patch's
+	// nil pointer straight in would reset the flag, and a nil discovery flag
+	// defaults ON, so discovery:{} would silently re-enable advertisement an
+	// operator explicitly turned off. Copy a present value into fresh storage
+	// so the persisted config never aliases the request body (parity with the
+	// device and auth branches).
+	if patch.Discovery != nil && patch.Discovery.Enabled != nil {
+		v := *patch.Discovery.Enabled
+		dst.Discovery.Enabled = &v
+	}
+	// An auth block with no token field is a no-op; an empty string clears
+	// the token (open access), which Validate accepts.
+	if patch.Auth != nil && patch.Auth.Token != nil {
+		dst.Auth.Token = *patch.Auth.Token
+	}
+	// A notifications block merges field by field: only the present fields (and
+	// present nested objects) change, so {"host":{"cpuPercent":95}} touches one
+	// threshold and leaves the rest as stored. mergeNotifications preserves
+	// presence, so the caller's ApplyDefaults fills only fields left absent while an
+	// explicitly supplied out-of-range value is kept for Validate to reject.
+	if patch.Notifications != nil {
+		mergeNotifications(&dst.Notifications, patch.Notifications)
+	}
+	// An updates block with no check field is a no-op, like discovery.
+	if patch.Updates != nil && patch.Updates.Check != nil {
+		dst.Updates.Check = ptr(*patch.Updates.Check)
+	}
+}
+
 // configToWire maps the appliance configuration to the generated wire type. The
-// discovery and management "enabled" flags are materialized to their effective
-// boolean (both default on when absent) so the web UI sees a concrete value
+// discovery and management "enabled" flags and updates.check are materialized
+// to their effective boolean (all default on when absent) so the web UI sees a concrete value
 // rather than a null it would have to reinterpret.
 func configToWire(c *config.Config) mgmtapi.Config {
 	devs := make([]mgmtapi.DeviceConfig, 0, len(c.Devices))
@@ -360,6 +371,7 @@ func configToWire(c *config.Config) mgmtapi.Config {
 		// the Access Control card needs it to show what to paste into BirdNET-Go.
 		Auth:          mgmtapi.AuthSettings{Token: ptr(c.Auth.Token)},
 		Notifications: notificationsToWire(c),
+		Updates:       mgmtapi.UpdateSettings{Check: ptr(c.UpdateCheckEnabled())},
 		Devices:       devs,
 	}
 	if c.Management.Listen != "" {

@@ -187,6 +187,11 @@ certificate under `/var/lib/remote-mic`, both owned by the service user. There
 is no config file on a fresh install, so open the web UI and enable a device;
 the zero-config first start writes the file for you.
 
+It also installs the root updater behind [one-button updates](#updates):
+`remote-mic-update.path` watches `/var/lib/remote-mic/update/` and starts
+`remote-mic-update.service` when the appliance stages a release there.
+Re-running `service install` on an existing install adds them.
+
 Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
 your password for the privileged steps. Flags override the defaults (`--user`,
 `--config`, `--state-dir`, `--bin-path`, and `--no-start` to enable without
@@ -220,6 +225,8 @@ discovery:
   enabled: true
 auth:
   token: ""              # set a token to require credentials (see Authentication)
+updates:
+  check: true            # daily check for a newer release (see Updates)
 devices:
   - name: garden-mic       # unique instance name; also the mDNS label
     device: "usb:1235:8218:s=S1A2B3C4:if=0,0"   # from `remote-mic devices list`
@@ -286,6 +293,37 @@ remote-mic --config config.yaml --check   # validate config, show what each devi
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
 `rtsp://<host>:8554/garden`. A single-device config is just a one-entry list.
+
+## Updates
+
+The appliance checks once a day for a newer release (a few minutes after it
+starts, then about every 24 hours) and raises an "Update available"
+notification with a link to the release notes. The latest known version, the
+last check and any error are in `GET /api/v1/system` under `update`, and
+`POST /api/v1/system/update/check` checks right away. Turn checks off with
+`updates: {check: false}` in the config or `PATCH /api/v1/config`; with them
+off the appliance makes no outbound update request at all. A check that fails
+(no network, GitHub down) logs one line per kind of failure and retries later;
+it never raises a notification and never affects audio.
+
+Every release publishes a manifest signed with the project's release key, and
+the appliance acts only on a manifest that verifies against the key compiled
+into it, and only on a version strictly newer than the one it runs.
+
+An appliance installed with `sudo remote-mic service install` can update
+itself: `POST /api/v1/system/update` downloads the release for its platform,
+checks it against the signed manifest, and hands it to the root updater. The
+updater verifies it again with its own copy of the key, keeps the current
+binary as `/usr/local/bin/remote-mic.prev`, installs the new one and restarts
+the service, which drops connected streams for a few seconds. If the new
+version does not come up within two minutes, the updater puts the previous
+binary back and restarts it, and the appliance reports the rollback in the
+notification bell. The appliance itself never gets write access to its own
+binary.
+
+Installs managed by a package manager are never replaced behind its back: a
+`.deb` or Homebrew install, or a binary run from where it was unpacked, shows
+the update and the command to install it instead (`update.upgradeHint`).
 
 ## Authentication
 

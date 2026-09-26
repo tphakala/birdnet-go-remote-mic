@@ -25,8 +25,13 @@ func TestUninstallKeepsData(t *testing.T) {
 		t.Fatalf("Uninstall: %v", err)
 	}
 	wantSeq(t, events, []string{
+		"stop remote-mic-update.path",
+		"disable remote-mic-update.path",
+		"stop remote-mic-update.service",
 		"stop remote-mic.service",
 		"disable remote-mic.service",
+		"rm /etc/systemd/system/remote-mic-update.path",
+		"rm /etc/systemd/system/remote-mic-update.service",
 		"rm /etc/systemd/system/remote-mic.service",
 		evReload,
 	})
@@ -39,8 +44,13 @@ func TestUninstallPurge(t *testing.T) {
 		t.Fatalf("Uninstall purge: %v", err)
 	}
 	wantSeq(t, events, []string{
+		"stop remote-mic-update.path",
+		"disable remote-mic-update.path",
+		"stop remote-mic-update.service",
 		"stop remote-mic.service",
 		"disable remote-mic.service",
+		"rm /etc/systemd/system/remote-mic-update.path",
+		"rm /etc/systemd/system/remote-mic-update.service",
 		"rm /etc/systemd/system/remote-mic.service",
 		evReload,
 		"rm /usr/local/bin/remote-mic",

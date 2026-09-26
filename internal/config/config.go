@@ -68,6 +68,7 @@ type Config struct {
 	Management    Management    `yaml:"management"`
 	Auth          Auth          `yaml:"auth,omitempty"`
 	Notifications Notifications `yaml:"notifications,omitempty"`
+	Updates       Updates       `yaml:"updates,omitempty"`
 	Devices       []Device      `yaml:"devices"`
 }
 
@@ -193,6 +194,19 @@ func (n *Notifications) clone() Notifications {
 // An absent block or an absent enabled flag both default on.
 func (c *Config) NotificationsEnabled() bool {
 	return c.Notifications.Enabled == nil || *c.Notifications.Enabled
+}
+
+// Updates configures the release update check. Check is a pointer so an
+// absent block defaults to on while an explicit "check: false" turns it off;
+// with it off the appliance makes no outbound update request at all.
+type Updates struct {
+	Check *bool `yaml:"check,omitempty"` // default on
+}
+
+// UpdateCheckEnabled reports whether the periodic release check runs (the
+// default).
+func (c *Config) UpdateCheckEnabled() bool {
+	return c.Updates.Check == nil || *c.Updates.Check
 }
 
 // Management configures the HTTPS management API. Enabled is a pointer so an
@@ -797,7 +811,8 @@ func (c *Config) ValidateLengths(prev *Config) error {
 }
 
 // Clone returns a deep copy of c. The Devices slice and every pointer field (the
-// discovery, management and notifications enabled flags, each device's Enabled
+// discovery, management and notifications enabled flags, the updates.check
+// flag, each device's Enabled
 // and QuietAlert flags, and the notification thresholds) get their own backing
 // storage, so a caller may mutate the copy (for example ApplyDefaults over a
 // patched device list) without racing a concurrent reader of the original.
@@ -815,6 +830,10 @@ func (c *Config) Clone() Config {
 	// thresholds); the struct assignment above only shallow-copied them, so give
 	// the whole block its own backing storage.
 	out.Notifications = c.Notifications.clone()
+	if c.Updates.Check != nil {
+		v := *c.Updates.Check
+		out.Updates.Check = &v
+	}
 	if c.Devices != nil {
 		out.Devices = make([]Device, len(c.Devices))
 		copy(out.Devices, c.Devices)

@@ -33,9 +33,9 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 	}
 }
 
-// Uninstall stops and disables the unit, removes the unit file, and reloads
-// systemd. With purge it also removes the binary, the config and state
-// directories, and the service user.
+// Uninstall stops and disables the unit and the root updater's units, removes
+// their unit files, and reloads systemd. With purge it also removes the
+// binary, the config and state directories, and the service user.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
 // enabled is not an error, so a partial or repeated uninstall still converges.
@@ -48,11 +48,18 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 		return err
 	}
 
+	// The path unit goes first, so it cannot start the updater while the
+	// appliance is being torn down.
+	_ = un.Init.Stop(UpdatePathUnit)
+	_ = un.Init.Disable(UpdatePathUnit)
+	_ = un.Init.Stop(UpdateServiceUnit)
 	_ = un.Init.Stop(DefaultUnitName)
 	_ = un.Init.Disable(DefaultUnitName)
 
-	if err := un.removeFile(s.UnitPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service: remove unit %s: %w", s.UnitPath(), err)
+	for _, p := range []string{s.UpdatePathUnitPath(), s.UpdateServiceUnitPath(), s.UnitPath()} {
+		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("service: remove unit %s: %w", p, err)
+		}
 	}
 	if err := un.Init.DaemonReload(); err != nil {
 		return fmt.Errorf("service: daemon-reload: %w", err)
