@@ -94,8 +94,12 @@ export class NotificationCenter {
       // Closing the panel would drop focus to the body. The router moves focus to
       // the Events view section on a view change, but already on #/events the
       // hash does not change, so focus that same section here too (a harmless
-      // repeat otherwise).
-      requestAnimationFrame(() => document.getElementById("view-events")?.focus());
+      // repeat otherwise). preventScroll: once the view is shown, a plain
+      // focus() would scroll a view taller than the window past the header,
+      // undoing the router's scroll to the top, or, already on #/events,
+      // moving a page that should stay put. (If this frame runs before the
+      // hashchange, the view is still hidden and the focus is a no-op.)
+      requestAnimationFrame(() => document.getElementById("view-events")?.focus({ preventScroll: true }));
     });
     this.countEl = elem("span", "notif-panel-count");
     this.countEl.hidden = true;

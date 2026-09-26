@@ -157,7 +157,7 @@ tasks:
       - npx -p html-validate@11.10.0 html-validate -c web/.htmlvalidate.json web/static/index.html
 
   web:test:
-    desc: Compile and run the pure notification-core unit tests (node:test)
+    desc: Compile and run the web UI unit tests (node:test)
     cmds:
       # A second tsconfig emits src + test to web/.test-out preserving structure,
       # so the compiled test resolves ../src/... the same as the source tree. The

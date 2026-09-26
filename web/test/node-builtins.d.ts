@@ -36,3 +36,12 @@ declare module "node:fs" {
 declare module "node:url" {
   export function fileURLToPath(url: string): string;
 }
+
+// node:vm, for running a classic (non-module) browser script against stubbed
+// globals with script semantics rather than as an ES module.
+declare module "node:vm" {
+  export class Script {
+    constructor(code: string, options?: { filename?: string });
+    runInNewContext(contextObject?: object): unknown;
+  }
+}
