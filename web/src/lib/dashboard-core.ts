@@ -1,12 +1,45 @@
 // Pure, DOM-free helpers for the dashboard view, split out so they can be unit
 // tested with node:test (see web/test/dashboard-core.test.ts) without a DOM.
 
+import type { Device, DeviceConfig, StreamMode } from "./types.js";
+
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
 // "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.
 export function channelLabel(channels: number[]): string {
   if (!channels.length) return "";
   if (channels.length === 1) return `Ch ${channels[0]}`;
   return "Ch " + channels.join("+");
+}
+
+// StreamSummary is one device's streams as the System view's Stream Status table
+// lists them: every path, the distinct modes in stream order, and how many
+// streams have a client.
+export interface StreamSummary {
+  paths: string[];
+  modes: StreamMode[];
+  connected: number;
+}
+
+// streamSummary combines a device record with its config. The config lists every
+// stream even while the device is down; the record's streams array exists only
+// while serving, and its flat fields cover the first stream alone (an older
+// appliance, or before GET /config loads).
+export function streamSummary(
+  d: Pick<Device, "path" | "mode" | "clientConnected" | "streams">,
+  cfg?: Pick<DeviceConfig, "streams">,
+): StreamSummary {
+  const configured = cfg?.streams ?? [];
+  const paths = configured.length > 0 ? configured.map((s) => s.path) : d.streams?.map((s) => s.path) ?? [d.path];
+  const modes = configured.length > 0 ? [...new Set(configured.map((s) => s.mode))] : [d.mode];
+  const connected = d.streams ? d.streams.filter((s) => s.clientConnected).length : d.clientConnected ? 1 : 0;
+  return { paths, modes, connected };
+}
+
+// clientSummary is the Client cell: a single stream says Connected or "-", and a
+// device with several says how many of them have a client.
+export function clientSummary(s: StreamSummary): string {
+  if (s.paths.length > 1) return `${s.connected} of ${s.paths.length} connected`;
+  return s.connected > 0 ? "Connected" : "-";
 }
 
 // tallyStates maps the streamed channel numbers (1-based) to a per-row on/off

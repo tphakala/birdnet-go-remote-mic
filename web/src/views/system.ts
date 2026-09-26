@@ -15,7 +15,7 @@ import {
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.js";
 import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo } from "../lib/types.js";
-import { captureFormatLabel } from "../lib/dashboard-core.js";
+import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.js";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
 // into a Hardware column (physical machine) and a Software column (OS + build).
@@ -136,6 +136,7 @@ export class SystemView {
   private infoRows = new Map<string, { dt: HTMLElement; dd: HTMLElement }>();
   private deviceRows = new Map<string, DeviceRowRefs>();
   private deviceEmptyRow: HTMLElement | null = null;
+  private devicesLoaded = false;
 
   private netCardEl: HTMLElement | null;
   private netActionsEl: HTMLElement | null;
@@ -256,6 +257,7 @@ export class SystemView {
       if ((e as CustomEvent<string>).detail === "system" && this.status !== null) this.maybeLoadCertificate();
     });
     store.addEventListener("devices", (e: Event) => {
+      this.devicesLoaded = true;
       this.renderDeviceRows((e as CustomEvent<Device[]>).detail);
     });
     store.addEventListener("config", (e: Event) => {
@@ -263,6 +265,11 @@ export class SystemView {
       if (!this.netDirty && cfg) this.populateNetwork(cfg);
       if (!this.authDirty && cfg) this.populateAuth(cfg);
       if (!this.notifyDirty && cfg) this.populateNotifications(cfg);
+      // The table lists every configured stream, which only the config holds.
+      // config fires on every poll, but the rows write only what changed.
+      // Only once the devices loaded, or a config arriving first would flash
+      // "No devices configured".
+      if (this.devicesLoaded) this.renderDeviceRows(store.getState().devices);
     });
     store.addEventListener("loaderror", (e: Event) => {
       const detail = (e as CustomEvent<LoadError>).detail;
@@ -1281,7 +1288,7 @@ export class SystemView {
     const tr = document.createElement("tr");
     const name = this.td("");
     const alsa = this.td("", true);
-    const path = this.td("", true);
+    const path = elem("td", "mono stream-paths");
     const codec = this.td("", true);
     const client = this.td("", true);
     const stateTd = document.createElement("td");
@@ -1299,16 +1306,18 @@ export class SystemView {
     // goes in the tooltip.
     setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
     if (r.alsa.title !== `Device id: ${d.device}`) r.alsa.title = `Device id: ${d.device}`;
-    setText(r.path, d.path);
+    const streams = streamSummary(d, store.getState().config?.devices.find((c) => c.name === d.name));
+    // One path per line (the cell keeps the line breaks), in stream order.
+    setText(r.path, streams.paths.join("\n"));
     const rate = d.negotiatedRate ?? d.rate;
     const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
-    setText(r.codec, `${modeLabel(d.mode)} ${rate.toLocaleString("en-US")} Hz${negFormat}`);
+    setText(r.codec, `${streams.modes.map(modeLabel).join(" + ")} ${rate.toLocaleString("en-US")} Hz${negFormat}`);
     // The format is the hardware capture depth; the RTSP stream stays 16-bit.
     const codecTitle = d.negotiatedFormat
       ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
       : "";
     if (r.codec.title !== codecTitle) r.codec.title = codecTitle;
-    setText(r.client, d.clientConnected ? "Connected" : "-");
+    setText(r.client, clientSummary(streams));
     const badge = deviceStateBadge(d.state);
     if (r.stateSpan.className !== badge.cls) r.stateSpan.className = badge.cls;
     setText(r.stateSpan, badge.label);

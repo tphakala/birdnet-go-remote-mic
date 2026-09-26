@@ -1255,6 +1255,12 @@ textarea {
   border-top: 1px solid var(--border-base);
 }
 
+/* A note under a group title that spans both columns of the settings grid. */
+.form-grid-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 /* The device id row spans both columns of the settings grid: the id is long
    and the Copy button sits beside it. */
 .device-identity {
@@ -2011,6 +2017,11 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .client-table tr:last-child td {
   border-bottom: none;
+}
+
+/* A device with several streams lists one path per line. */
+.client-table td.stream-paths {
+  white-space: pre-line;
 }
 
 /* Modal Overlay (Restarting & Confirm) */

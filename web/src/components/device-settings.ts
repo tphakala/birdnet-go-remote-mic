@@ -5,8 +5,10 @@ import {
   MAX_PATH_LEN,
   bitrateFollowsDefault,
   defaultOpusBitrate,
+  extraStreamsNote,
   inputMaxLength,
   lengthError,
+  withFirstStream,
 } from "../lib/device-settings-core.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
@@ -224,6 +226,8 @@ export class DeviceSettingsForm {
 
     // Stream group: how the capture is named, addressed, and encoded.
     this.groupTitle(grid, "Stream");
+    const streamsNote = extraStreamsNote(d.streams);
+    if (streamsNote) grid.appendChild(elem("p", "field-hint form-grid-note", streamsNote));
 
     // Name, defaulting from the sound card's friendly label when blank.
     const initialName = d.name || this.hardware.friendlyName || "";
@@ -518,7 +522,7 @@ export class DeviceSettingsForm {
       // mode change does not silently discard the operator's bitrate.
       dev.opus = this.device.opus;
     }
-    return dev;
+    return withFirstStream(dev, this.device.streams);
   }
 
   // groupTitle appends a full-width heading that visually separates the field

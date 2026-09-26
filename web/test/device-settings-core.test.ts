@@ -17,7 +17,10 @@ import {
   runeLength,
   bitrateFollowsDefault,
   defaultOpusBitrate,
+  extraStreamsNote,
+  withFirstStream,
 } from "../src/lib/device-settings-core.js";
+import type { DeviceConfig } from "../src/lib/types.js";
 
 test("defaultOpusBitrate scales per channel, floors at one, and caps at the Opus ceiling", () => {
   assert.equal(defaultOpusBitrate(1), OPUS_BITRATE_PER_CHANNEL); // 128000
@@ -95,4 +98,27 @@ test("the name and path limits match internal/config MaxNameLen and MaxPathLen",
   const src = readFileSync(CONFIG_GO, "utf8");
   assert.equal(MAX_NAME_LEN, goConst(src, "MaxNameLen"));
   assert.equal(MAX_PATH_LEN, goConst(src, "MaxPathLen"));
+});
+
+test("withFirstStream sends a single-stream device flat", () => {
+  const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16" };
+  assert.equal(withFirstStream(edited, undefined), edited);
+  assert.equal(withFirstStream(edited, [{ path: "/old", mode: "opus", channels: [1] }]), edited);
+});
+
+test("withFirstStream puts the edit in streams[0] and keeps the others", () => {
+  const edited: DeviceConfig = {
+    name: "a", device: "hw:1,0", path: "/new", mode: "opus", rate: 48000, channels: [2], format: "s16", opus: { bitrate: 0 },
+  };
+  const second = { path: "/b", mode: "pcm" as const, channels: [1, 2] };
+  const got = withFirstStream(edited, [{ path: "/old", mode: "pcm", channels: [1] }, second]);
+  assert.deepEqual(got.streams, [{ path: "/new", mode: "opus", channels: [2], opus: { bitrate: 0 } }, second]);
+  // The flat fields stay too, mirroring streams[0] as the API does.
+  assert.equal(got.path, "/new");
+});
+
+test("extraStreamsNote speaks only for a multi-stream device", () => {
+  assert.equal(extraStreamsNote(undefined), "");
+  assert.equal(extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }]), "");
+  assert.ok(extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }, { path: "/b", mode: "pcm", channels: [2] }]).includes("serves 2 streams"));
 });

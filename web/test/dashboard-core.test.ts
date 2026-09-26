@@ -12,11 +12,13 @@ import {
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
+  clientSummary,
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
   hiddenRows,
   needsNotificationsFallback,
+  streamSummary,
   tallyStates,
 } from "../src/lib/dashboard-core.js";
 import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.js";
@@ -151,4 +153,36 @@ test("parseBoolPref reads 1 and 0, and falls back for anything else", () => {
   // An unrecognized value reads as the default, not as off.
   assert.equal(parseBoolPref("yes", true), true);
   assert.equal(parseBoolPref("", true), true);
+});
+
+test("streamSummary lists every configured stream, even while the device is down", () => {
+  const flat = { path: "/a", mode: "opus" as const, clientConnected: false };
+  const cfg = { streams: [
+    { path: "/a", mode: "opus" as const, channels: [1] },
+    { path: "/b", mode: "pcm" as const, channels: [1, 2] },
+    { path: "/c", mode: "opus" as const, channels: [2] },
+  ] };
+  const down = streamSummary(flat, cfg);
+  assert.deepEqual(down, { paths: ["/a", "/b", "/c"], modes: ["opus", "pcm"], connected: 0 });
+  assert.equal(clientSummary(down), "0 of 3 connected");
+
+  const serving = streamSummary({ ...flat, clientConnected: true, streams: [
+    { path: "/a", clientConnected: true, droppedFrames: 0 },
+    { path: "/b", clientConnected: true, droppedFrames: 0 },
+    { path: "/c", clientConnected: false, droppedFrames: 0 },
+  ] }, cfg);
+  assert.equal(clientSummary(serving), "2 of 3 connected");
+});
+
+test("streamSummary falls back to the record without a config", () => {
+  const s = streamSummary({ path: "/a", mode: "pcm", clientConnected: true });
+  assert.deepEqual(s, { paths: ["/a"], modes: ["pcm"], connected: 1 });
+  assert.equal(clientSummary(s), "Connected");
+  assert.equal(clientSummary(streamSummary({ path: "/a", mode: "pcm", clientConnected: false })), "-");
+  // A serving record lists its runtime streams when the config has not loaded.
+  const live = streamSummary({ path: "/a", mode: "pcm", clientConnected: false, streams: [
+    { path: "/a", clientConnected: false, droppedFrames: 0 },
+    { path: "/b", clientConnected: false, droppedFrames: 0 },
+  ] }, { streams: [] });
+  assert.deepEqual(live.paths, ["/a", "/b"]);
 });

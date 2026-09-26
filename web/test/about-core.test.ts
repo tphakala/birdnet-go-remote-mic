@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { componentTitle, parseLicenseDoc, supportDetails } from "../src/lib/about-core.js";
-import type { ApplianceStatus, Device, SystemInfo } from "../src/lib/types.js";
+import type { ApplianceStatus, Device, DeviceConfig, StreamConfig, SystemInfo } from "../src/lib/types.js";
 
 // The compiled test runs from web/.test-out/test/, so web/ is two levels up.
 const LICENSES_JSON = fileURLToPath(new URL("../../static/licenses.json", import.meta.url).href);
@@ -167,6 +167,36 @@ test("supportDetails lists each capture device, ordered by name, without identif
   );
   // Order follows the name, not the API's order.
   assert.equal(supportDetails(status, null, [downCard, usbMic]), got);
+});
+
+test("supportDetails lists every configured stream without its path", () => {
+  const cfg = (name: string, streams: StreamConfig[]): DeviceConfig => ({
+    name, device: "x", path: streams[0].path, mode: streams[0].mode, rate: 48000, channels: streams[0].channels, format: "s16", streams,
+  });
+  const live = { ...usbMic, streams: [
+    { path: "/k7Qp2ZxTOKENPATH", clientConnected: true, droppedFrames: 12 },
+    { path: "/second-SECRET", clientConnected: false, droppedFrames: 0 },
+  ] };
+  const configs = [
+    cfg("zz-garden", [
+      { path: "/k7Qp2ZxTOKENPATH", mode: "opus", channels: [1] },
+      { path: "/second-SECRET", mode: "pcm", channels: [1, 2] },
+    ]),
+    // aa-bats is down, so it has no runtime streams to take drops from.
+    cfg("aa-bats", [{ path: "/bats-SECRETPATH", mode: "pcm", channels: [1] }]),
+  ];
+  const got = supportDetails(null, null, [live, downCard], configs);
+  const lines = got.split("\n");
+  const bats = lines.indexOf("Device 1: (no name reported)");
+  const garden = lines.indexOf("Device 2: Scarlett Solo 4th Gen");
+  assert.deepEqual(lines.slice(bats + 4, bats + 6), ["  Streams: 1", "    Stream 1: PCM, channels 1"]);
+  assert.deepEqual(lines.slice(garden + 5, garden + 8), [
+    "  Streams: 2",
+    "    Stream 1: Opus, channels 1, dropped frames 12",
+    "    Stream 2: PCM, channels 1,2, dropped frames 0",
+  ]);
+  assert.ok(!got.includes("First stream"), got);
+  assert.ok(!got.includes("SECRET") && !got.includes("TOKENPATH"), got);
 });
 
 // Error texts in the formats cmd/remotemic writes into a device record
