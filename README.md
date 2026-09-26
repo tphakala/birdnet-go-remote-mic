@@ -103,8 +103,9 @@ A built-in HTTPS management UI (default `:8443`) runs alongside the streams. The
 level meters, stream state, negotiated rate and channel count, the RTSP URL with
 one-click copy, and dropped-frame and capture-overrun counters. A capture
 overrun means the sound card's buffer filled before it was read, so audio was
-lost on every stream of that device; five within five minutes raise a warning
-notification, which clears after five minutes without one. Its **Available
+lost on every stream of that device; with notifications on (the default), five
+within five minutes raise a warning notification, which clears after five
+minutes without one. Its **Available
 Devices** list enumerates capture hardware on the host that is not streaming
 yet, so you enable a device straight from the browser with no config-file
 editing.

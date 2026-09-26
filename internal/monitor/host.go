@@ -47,8 +47,8 @@ const (
 
 	// Capture overruns are sporadic events rather than a steady rate, so their
 	// condition counts them over a sliding window: overrunOnsetCount within
-	// overrunWindow raises it, and overrunClearAfter with none clears it. One
-	// isolated overrun (a scheduling hiccup at startup, say) is only logged; a
+	// overrunWindow raises it, and overrunClearAfter with none clears it. An
+	// isolated overrun (a passing scheduling hiccup, say) is only logged; a
 	// recurring pattern means the host is too busy or the USB link is unstable.
 	overrunWindow     = 5 * time.Minute
 	overrunOnsetCount = 5
@@ -445,8 +445,10 @@ func (h *Host) evaluateCounters(now time.Time) {
 	for _, d := range h.counters() {
 		st := h.devs[d.Name]
 		if st == nil {
-			// First sighting: baseline only, since a cumulative counter says nothing
-			// about what happened since the last poll.
+			// First sighting (the monitor's first poll, a device back after the
+			// presence grace, or a re-enable): baseline only. A cumulative counter
+			// cannot say how much of its count is recent, so nothing is counted or
+			// logged until the next poll shows what changed.
 			h.devs[d.Name] = &counterState{
 				h:    notify.NewHysteresis(dropsEnterAfter, dropsClearAfter),
 				prev: d.Dropped, prevAt: now, gen: d.Gen, seen: true,
