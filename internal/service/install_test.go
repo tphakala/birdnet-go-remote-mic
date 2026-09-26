@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // testInstaller wires an Installer whose every side effect logs into events, so
@@ -28,6 +32,7 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		userExists: func(string) bool { return *userThere },
 		lookupUser: func(string) (int, int, error) { return 990, 990, nil },
 		ensureDir:  func(p string, _ os.FileMode) error { *events = append(*events, "mkdir "+p); return nil },
+		binDirOK:   func(d string) error { *events = append(*events, "bindir "+d); return nil },
 		makeBinDir: func(p string) error { *events = append(*events, "mkbindir "+p); return nil },
 		isLink:     func(string) bool { return false },
 		chownTree: func(root string, uid, gid int) error {
@@ -64,6 +69,7 @@ func TestInstallSequence(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	wantSeq(t, events, []string{
+		"bindir /usr/local/bin",
 		evGroupadd,
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
@@ -271,6 +277,7 @@ func TestInstallWithoutUpdaterOnUntrustedBin(t *testing.T) {
 		t.Errorf("warning %q, want it to name the reason updates are off", got)
 	}
 	wantSeq(t, events, []string{
+		"bindir /usr/local/bin",
 		evGroupadd,
 		"mkbindir /usr/local/bin",
 		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
@@ -345,9 +352,11 @@ func TestCopyFileReplacesPlantedLink(t *testing.T) {
 }
 
 // TestEnsureBinDirLeavesExistingMode pins that the bin directory is created
-// but an existing one is not chmodded, since its name may be a planted link.
+// but an existing one is not chmodded, since it is the operator's. Not
+// parallel: it sets the process umask.
 func TestEnsureBinDirLeavesExistingMode(t *testing.T) {
-	t.Parallel()
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
 	dir := filepath.Join(t.TempDir(), "bin")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -362,12 +371,63 @@ func TestEnsureBinDirLeavesExistingMode(t *testing.T) {
 	if got := fi.Mode().Perm(); got != 0o700 {
 		t.Errorf("existing bin dir mode = %v, want 0700 unchanged", got)
 	}
-	missing := filepath.Join(t.TempDir(), "a", "b")
+	// Created directories get 0755 despite the 077 umask, so the service
+	// user can reach the binary.
+	base := t.TempDir()
+	missing := filepath.Join(base, "a", "b")
 	if err := ensureBinDir(missing); err != nil {
 		t.Fatalf("ensureBinDir(missing): %v", err)
 	}
-	if fi, err := os.Stat(missing); err != nil || !fi.IsDir() {
-		t.Errorf("missing bin dir not created: %v", err)
+	if fi, err := os.Stat(base); err != nil {
+		t.Fatal(err)
+	} else if got := fi.Mode().Perm(); got != 0o700 {
+		t.Errorf("existing ancestor %s: mode %v, want 0700 unchanged", base, got)
+	}
+	for _, p := range []string{filepath.Join(base, "a"), missing} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); !fi.IsDir() || got != 0o755 {
+			t.Errorf("created %s: mode %v, want a 0755 directory", p, fi.Mode())
+		}
+	}
+}
+
+// TestInstallRefusesLooseBinDir pins that a bin directory anyone but root
+// could change is refused before install writes or creates anything.
+func TestInstallRefusesLooseBinDir(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := false
+	in := testInstaller(&events, init, &userThere)
+	in.binDirOK = func(string) error { return errors.New("/opt is writable by group 50") }
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "refusing to install to /usr/local/bin/remote-mic") {
+		t.Fatalf("Install: got %v, want a refusal naming the bin path", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("events %q, want nothing done before the refusal", events)
+	}
+}
+
+// TestCheckBinDir pins that a missing bin directory is judged by its deepest
+// existing ancestor, and that a directory not owned by root is refused.
+func TestCheckBinDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir() // owned by the test user, not root
+	if os.Getuid() == 0 {
+		t.Skip("running as root: the temp dir is root-owned")
+	}
+	// A missing dir under a root-only ancestor is judged by that ancestor.
+	if update.CheckRootOnly("/") == nil {
+		if err := checkBinDir("/remote-mic-missing-" + filepath.Base(dir) + "/bin"); err != nil {
+			t.Errorf("checkBinDir under /: %v, want nil", err)
+		}
+	}
+	err := checkBinDir(filepath.Join(dir, "missing", "bin"))
+	if err == nil || errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "not root") {
+		t.Errorf("checkBinDir under a user-owned dir: got %v, want a refusal of an existing ancestor not owned by root", err)
 	}
 }
 
@@ -405,5 +465,22 @@ func TestIsSymlink(t *testing.T) {
 		if got := isSymlink(p); got != want {
 			t.Errorf("isSymlink(%s) = %t, want %t", filepath.Base(p), got, want)
 		}
+	}
+}
+
+// TestBinDirUnderAFile pins that a bin path through a regular file is an
+// error, not a missing directory to walk past or create.
+func TestBinDirUnderAFile(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(file, "bin")
+	if err := checkBinDir(bin); !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("checkBinDir: got %v, want ENOTDIR", err)
+	}
+	if err := ensureBinDir(bin); !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("ensureBinDir: got %v, want ENOTDIR", err)
 	}
 }

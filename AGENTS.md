@@ -272,8 +272,10 @@ thelper, and testifylint. `unused` is disabled.
   host monitor. Parsers are platform-neutral; readers are Linux-only.
 - `internal/service`: installs a systemd unit running as a least-privilege
   system user, plus the root updater's path and oneshot units
-  (`remote-mic-update.path`/`.service`), left out (with a warning) when
-  anyone but root can write the bin path.
+  (`remote-mic-update.path`/`.service`). It refuses a bin directory anyone
+  but root can write before writing anything, replaces (never follows) a
+  link at the bin path, and leaves the updater units out (with a warning)
+  when the installed binary still fails the root-only check.
 - `internal/runlock`: advisory lock at `<config path>.lock` marking a live
   appliance, so token commands use its API instead of editing its config.
 - `internal/atomicfile`: atomic durable file replace (config, certs).

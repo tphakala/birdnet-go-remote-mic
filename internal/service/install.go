@@ -31,6 +31,9 @@ type Installer struct {
 	userExists func(name string) bool
 	lookupUser func(name string) (uid, gid int, err error)
 	ensureDir  func(path string, perm os.FileMode) error
+	// binDirOK refuses a bin directory anyone but root could change (see
+	// checkBinDir); it runs before install writes anything.
+	binDirOK func(dir string) error
 	// makeBinDir creates the bin directory when it is missing and leaves an
 	// existing one as it is (see ensureBinDir).
 	makeBinDir func(path string) error
@@ -64,6 +67,7 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		userExists: userExists,
 		lookupUser: lookupUser,
 		ensureDir:  ensureDir,
+		binDirOK:   checkBinDir,
 		makeBinDir: ensureBinDir,
 		isLink:     isSymlink,
 		chownTree:  chownTree,
@@ -79,12 +83,14 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // Install creates the service user, installs the binary, the unit and the root
 // updater's path and service units, hands the config, state and update staging
 // directories to the service user, then reloads systemd and enables the unit
-// and the updater's path unit (starting both too when now is true). Since the
-// root updater runs the installed binary, a binary or bin directory (or a
-// directory above it) that anyone but root can write gets no updater: install
-// warns, removes updater units an earlier install left, and installs the
-// appliance alone. That check runs on the installed binary after the config
-// and state directories are handed over, so neither can hand it over too.
+// and the updater's path unit (starting both too when now is true). A bin
+// directory (or a directory above it) that anyone but root can write is
+// refused before anything is written. Since the root updater runs the
+// installed binary, an installed binary that still fails the root-only check
+// gets no updater: install warns, removes updater units an earlier install
+// left, and installs the appliance alone. That check runs on the installed
+// binary after the config and state directories are handed over, so neither
+// can hand it over too.
 //
 // The order is deliberate: ownership is handed over BEFORE the unit starts, so
 // the appliance can write config.yaml on first provision and take its run lock
@@ -98,6 +104,12 @@ func (in *Installer) Install(now bool) error {
 	}
 	if !in.Init.Present() {
 		return errors.New("service: systemd is not the active init system (no /run/systemd/system); cannot install a service unit")
+	}
+	// Before anything is written: in a bin directory, or a directory above
+	// it, that someone else can write, they could plant a link that sends
+	// root's writes below somewhere of their choosing.
+	if err := in.binDirOK(filepath.Dir(s.BinPath)); err != nil {
+		return fmt.Errorf("service: refusing to install to %s: %w; install it somewhere only root can write (the default is %s)", s.BinPath, err, DefaultBinPath)
 	}
 
 	if err := in.ensureUser(s); err != nil {
@@ -290,14 +302,52 @@ func ensureDir(path string, perm os.FileMode) error {
 	return os.Chmod(path, perm)
 }
 
-// ensureBinDir creates the bin directory (and parents) when missing. Unlike
-// ensureDir it never chmods an existing directory: the bin directory is the
-// operator's (often /usr/local/bin), and when anyone but root can write the
-// directory above it, the name may be a planted link that a chmod would
-// follow. A bin directory that is not root-only is reported by the root-only
-// check instead, which installs without the updater.
+// checkBinDir refuses dir unless only root can change what it resolves to
+// (update.CheckRootOnly). A dir that does not exist yet is judged by its
+// deepest existing ancestor, under which root creates the rest.
+func checkBinDir(dir string) error {
+	for {
+		_, err := os.Lstat(dir)
+		if err == nil {
+			return update.CheckRootOnly(dir)
+		}
+		parent := filepath.Dir(dir)
+		if !errors.Is(err, fs.ErrNotExist) || parent == dir {
+			return err
+		}
+		dir = parent
+	}
+}
+
+// ensureBinDir creates the bin directory and any missing parents with mode
+// 0755, whatever the umask, so the service user can reach the binary. It
+// never chmods a directory that already existed: that is the operator's
+// (often /usr/local/bin). It relies on checkBinDir having passed, so nobody
+// but root can swap a directory it creates for a link before the chmod.
 func ensureBinDir(path string) error {
-	return os.MkdirAll(path, 0o755)
+	var missing []string
+	for p := path; ; {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	for _, p := range missing {
+		if err := os.Chmod(p, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // isSymlink reports whether path is a symlink itself.
