@@ -53,10 +53,12 @@ function fontRules(source: string): Rule[] {
   const block = /([^{}]+)\{([^{}]*)\}/g;
   let m: RegExpExecArray | null;
   while ((m = block.exec(css)) !== null) {
-    const size = /(?:^|[;\s])font-size\s*:\s*([\d.]+)(px|rem)\s*;/.exec(m[2]);
+    // The last declaration in a block may omit its semicolon, and either may
+    // carry !important.
+    const size = /(?:^|[;\s])font-size\s*:\s*([\d.]+)(px|rem)\s*(?:!important\s*)?(?:;|$)/.exec(m[2]);
     if (!size) continue;
     const px = size[2] === "rem" ? Number(size[1]) * ROOT_PX : Number(size[1]);
-    const weight = /(?:^|[;\s])font-weight\s*:\s*(\d+)\s*;/.exec(m[2]);
+    const weight = /(?:^|[;\s])font-weight\s*:\s*(\d+)\s*(?:!important\s*)?(?:;|$)/.exec(m[2]);
     const selectorStart = m.index + (m[1].length - m[1].trimStart().length);
     rules.push({
       selector: m[1].trim().replace(/\s+/g, " "),
@@ -112,11 +114,14 @@ test("the checker flags small, thin and undeclared-weight text", () => {
     .d { font-size: 0.75rem; font-weight: 500; }
     @media (max-width: 600px) { .e { font-size: 11px; font-weight: 500; } }
     /* .f { font-size: 8px; } */
+    .g { color: red; font-size: 10px }
+    .h { font-size: 12px !important; font-weight: 400 }
+    .ok4 { font-weight: 500; font-size: 12px }
     .ok1 { font-size: 12px; font-weight: 500; }
     .ok2 { font-size: 13px; }
     .ok3 { font-size: 0.9em; }
     .notif-badge { font-size: 11px; font-weight: 700; }
   `;
   const got = violations(fontRules(sample)).map((v) => v.split(" ")[1].replace(":", ""));
-  assert.deepEqual(got, [".a", ".b", ".c", ".e"]);
+  assert.deepEqual(got, [".a", ".b", ".c", ".e", ".g", ".g", ".h"]);
 });
