@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // userNameRe is the standard shadow-utils NAME_REGEX for a system account. It
@@ -53,12 +55,9 @@ const (
 	// starts UpdateServiceUnit, the root updater that installs it.
 	UpdatePathUnit    = "remote-mic-update.path"
 	UpdateServiceUnit = "remote-mic-update.service"
-	// UpdateDirName is the staging directory inside the state directory; it
-	// matches update.DirName, which the appliance and the updater use.
-	UpdateDirName = "update"
-	// updateRequestFile is what the path unit watches for; it matches
-	// update.RequestFile.
-	updateRequestFile = "request.json"
+	// UpdateDirName is the staging directory inside the state directory,
+	// where the appliance and the updater meet.
+	UpdateDirName = update.DirName
 )
 
 // unitDir is where the generated unit is written. Kept unexported: an operator
@@ -116,9 +115,10 @@ func (s ServiceSpec) UpdateServiceUnitPath() string {
 
 // Validate rejects a spec that would render an unusable unit or damage the
 // host: an invalid system user name, a non-absolute path (systemd requires
-// absolute ExecStart and directory paths), or a config or state directory that
+// absolute ExecStart and directory paths), a config or state directory that
 // is a shared system location the installer would chown recursively and --purge
-// would delete. It assumes defaults have already been applied.
+// would delete, or a bin path inside the config or state directory, which the
+// service user owns. It assumes defaults have already been applied.
 func (s ServiceSpec) Validate() error {
 	if !userNameRe.MatchString(s.User) {
 		return fmt.Errorf("service: invalid user name %q (want %s)", s.User, userNameRe)
@@ -148,8 +148,20 @@ func (s ServiceSpec) Validate() error {
 			return fmt.Errorf("service: %s %q is a shared system directory; use a dedicated subdirectory such as %s or %s",
 				label, filepath.Clean(dir), filepath.Dir(DefaultConfigPath), DefaultStateDir)
 		}
+		// The root updater runs the installed binary, so the service user,
+		// which owns these directories, must not be able to replace it.
+		if within(filepath.Dir(s.BinPath), dir) {
+			return fmt.Errorf("service: bin path %q is inside the %s %q, which the service user can write; the root updater runs that binary",
+				s.BinPath, label, filepath.Clean(dir))
+		}
 	}
 	return nil
+}
+
+// within reports whether path is dir or lies under it, lexically.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
 // isSharedSystemDir reports whether dir is the filesystem root or a well-known

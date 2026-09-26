@@ -10,8 +10,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // Installer performs a system-wide install of the appliance as a systemd
@@ -31,6 +33,12 @@ type Installer struct {
 	chownTree  func(root string, uid, gid int) error
 	copyFile   func(src, dst string, perm os.FileMode) error
 	writeFile  func(path string, data []byte, perm os.FileMode) error
+	// stagingDir creates the update staging directory inside the state
+	// directory and hands it to the service user.
+	stagingDir func(stateDir string, uid, gid int) error
+	// rootOnly refuses a directory that it or a directory above it lets
+	// anyone but root write (update.CheckRootOnly).
+	rootOnly func(dir string) error
 }
 
 // NewInstaller builds an Installer for spec with the production init system,
@@ -48,13 +56,17 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		chownTree:  chownTree,
 		copyFile:   copyFile,
 		writeFile:  atomicfile.Write,
+		stagingDir: ensureStagingDir,
+		rootOnly:   update.CheckRootOnly,
 	}
 }
 
 // Install creates the service user, installs the binary, the unit and the root
 // updater's path and service units, hands the config, state and update staging
 // directories to the service user, then reloads systemd and enables the unit
-// and the updater's path unit (starting both too when now is true).
+// and the updater's path unit (starting both too when now is true). It refuses,
+// before copying anything, a bin directory that it or a directory above it
+// lets anyone but root write, since the root updater runs that binary.
 //
 // The order is deliberate: ownership is handed over BEFORE the unit starts, so
 // the appliance can write config.yaml on first provision and take its run lock
@@ -85,6 +97,11 @@ func (in *Installer) Install(now bool) error {
 	if err := in.ensureDir(filepath.Dir(s.BinPath), 0o755); err != nil {
 		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
 	}
+	// The root updater runs this binary, so nobody but root may be able to
+	// replace it: refuse before installing anything.
+	if err := in.rootOnly(filepath.Dir(s.BinPath)); err != nil {
+		return fmt.Errorf("service: the root updater would run %s, but %w; install the binary somewhere only root can write", s.BinPath, err)
+	}
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
 		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
 	}
@@ -110,15 +127,12 @@ func (in *Installer) Install(now bool) error {
 	// Create the config and state directories and hand them to the service user
 	// recursively, so a pre-existing root-owned config.yaml or config.yaml.lock
 	// (left by an earlier hand-run `sudo remote-mic serve`) is handed over too.
-	// The update staging directory is listed on its own because chownTree does
-	// not descend into subdirectories.
 	dirs := []struct {
 		path string
 		perm os.FileMode
 	}{
 		{s.ConfigDir(), 0o750},
 		{s.StateDir, 0o700},
-		{s.UpdateDir(), 0o700},
 	}
 	for _, d := range dirs {
 		if err := in.ensureDir(d.path, d.perm); err != nil {
@@ -127,6 +141,12 @@ func (in *Installer) Install(now bool) error {
 		if err := in.chownTree(d.path, uid, gid); err != nil {
 			return fmt.Errorf("service: chown %s to %s: %w", d.path, s.User, err)
 		}
+	}
+
+	// The staging directory sits in the state directory the service user
+	// owns, so it is handled on its own (see ensureStagingDir).
+	if err := in.stagingDir(s.StateDir, uid, gid); err != nil {
+		return fmt.Errorf("service: update staging directory %s: %w", s.UpdateDir(), err)
 	}
 
 	if err := in.Init.DaemonReload(); err != nil {
@@ -217,7 +237,8 @@ func chownTree(root string, uid, gid int) error {
 			return err
 		}
 		// Do not descend into subdirectories: the config and state dirs hold only
-		// flat files (config, run lock, certificate, key, pin marker), and refusing
+		// flat files (config, run lock, certificate, key, pin marker) apart from
+		// the update staging directory, which ensureStagingDir handles, and refusing
 		// to recurse closes a TOCTOU where an unprivileged user swaps a
 		// subdirectory for a symlink between the walk's stat and its read, which
 		// would otherwise let the chown escape to a linked-to tree.
@@ -226,6 +247,39 @@ func chownTree(root string, uid, gid int) error {
 		}
 		return lchown(p, uid, gid)
 	})
+}
+
+// ensureStagingDir creates UpdateDirName inside stateDir with mode 0700 and
+// hands it to uid:gid. The state directory belongs to the service user, who
+// could have planted a link or a file at that name, so the name is resolved
+// through an os.Root on the state directory and anything but a real directory
+// is refused: root never chmods or chowns something else in its place.
+func ensureStagingDir(stateDir string, uid, gid int) error {
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.Mkdir(UpdateDirName, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	if fi, err := root.Lstat(UpdateDirName); err != nil {
+		return err
+	} else if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory (%s); remove it and re-run the install", UpdateDirName, fi.Mode().Type())
+	}
+	// Act on an open handle, not the name: the name can be swapped after the
+	// check, but a directory handle cannot turn into a link or a hard link to
+	// a file.
+	f, err := root.OpenFile(UpdateDirName, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Chmod(0o700); err != nil {
+		return err
+	}
+	return f.Chown(uid, gid)
 }
 
 // copyFile copies src to dst atomically with the given mode, reading the whole

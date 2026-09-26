@@ -91,6 +91,10 @@ func newApplyEnv(t *testing.T) *applyEnv {
 			line, _, _ := strings.Cut(string(b), "\n")
 			return line + "\n", nil
 		},
+		// The test's temporary directories belong to the test user; stand
+		// in root as their owner (TestApplyRefusesUntrustedBinDir covers the
+		// real check).
+		Owner:         func(os.FileInfo) (uint32, uint32, bool) { return 0, 0, true },
 		HealthTimeout: 200 * time.Millisecond,
 		HealthSettle:  20 * time.Millisecond,
 		Poll:          5 * time.Millisecond,
@@ -727,4 +731,134 @@ func TestApplyHealthNeedsStablePID(t *testing.T) {
 			}
 		})
 	})
+}
+
+// TestApplyRefusesUntrustedBinDir pins that the updater installs nothing, and
+// does not even run a pending recovery, when the bin directory or binary is
+// writable by anyone but root; a group-writable directory owned by root's
+// group is accepted.
+func TestApplyRefusesUntrustedBinDir(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		uid, gid uint32
+		dirMode  os.FileMode
+		want     string // "" means the update goes ahead
+	}{
+		{name: "owned by a user", uid: 1000, dirMode: 0o755, want: "not root"},
+		{name: "world-writable", dirMode: 0o757, want: "writable by everyone"},
+		{name: "group-writable by staff", gid: 50, dirMode: 0o775, want: "writable by group 50"},
+		{name: "group-writable by root", gid: 0, dirMode: 0o775},
+		{name: "another group, not writable by it", gid: 50, dirMode: 0o755},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := newApplyEnv(t)
+			if err := os.Chmod(filepath.Dir(env.binPath), tt.dirMode); err != nil {
+				t.Fatal(err)
+			}
+			env.a.Owner = func(os.FileInfo) (uint32, uint32, bool) { return tt.uid, tt.gid, true }
+			err := env.a.Apply(t.Context())
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Apply: got %v, want %q", err, tt.want)
+			}
+			if got := env.installed(t); got != oldBinary || env.restarts != 0 {
+				t.Errorf("installed %q with %d restarts, want nothing touched", got, env.restarts)
+			}
+			env.requestGone(t)
+		})
+	}
+	t.Run("only the binary owned by a user", func(t *testing.T) {
+		t.Parallel()
+		env := newApplyEnv(t)
+		binFI, err := os.Lstat(env.binPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.a.Owner = func(fi os.FileInfo) (uint32, uint32, bool) {
+			if os.SameFile(fi, binFI) {
+				return 1000, 1000, true
+			}
+			return 0, 0, true
+		}
+		if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "owned by uid 1000") {
+			t.Errorf("Apply: got %v", err)
+		}
+	})
+	t.Run("owner unknown", func(t *testing.T) {
+		t.Parallel()
+		env := newApplyEnv(t)
+		env.a.Owner = func(os.FileInfo) (uint32, uint32, bool) { return 0, 0, false }
+		if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "cannot tell who owns") {
+			t.Errorf("Apply: got %v", err)
+		}
+	})
+	t.Run("binary is a symlink", func(t *testing.T) {
+		t.Parallel()
+		env := newApplyEnv(t)
+		target := filepath.Join(t.TempDir(), "remote-mic")
+		if err := os.Rename(env.binPath, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, env.binPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("Apply: got %v", err)
+		}
+	})
+	t.Run("recovery waits too", func(t *testing.T) {
+		t.Parallel()
+		env := interruptedEnv(t)
+		env.a.Owner = func(os.FileInfo) (uint32, uint32, bool) { return 1000, 1000, true }
+		err := env.a.Apply(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "interrupted update is waiting") {
+			t.Errorf("Apply: got %v, want the pending rollback named", err)
+		}
+		if got := env.installed(t); got != newBinary || !exists(env.binPath+".pending") {
+			t.Errorf("installed %q, journal kept %t: a recovery ran in an untrusted directory", got, exists(env.binPath+".pending"))
+		}
+	})
+}
+
+// TestCheckRootOnlyWalksAncestors pins that the check covers every directory
+// above the bin directory, after resolving links, not only the directory.
+func TestCheckRootOnlyWalksAncestors(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bin := filepath.Join(base, "opt", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(bin, link); err != nil {
+		t.Fatal(err)
+	}
+	// Everything is root's except the ancestor opt, owned by a user.
+	opt := filepath.Join(base, "opt")
+	optFI, err := os.Lstat(opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := func(fi os.FileInfo) (uint32, uint32, bool) {
+		if os.SameFile(fi, optFI) {
+			return 1000, 1000, true
+		}
+		return 0, 0, true
+	}
+	for _, dir := range []string{bin, link} {
+		if err := checkRootOnly(dir, owner); err == nil || !strings.Contains(err.Error(), "opt is owned by uid 1000") {
+			t.Errorf("checkRootOnly(%s): got %v, want the user-owned ancestor named", dir, err)
+		}
+	}
+	if err := checkRootOnly(bin, func(os.FileInfo) (uint32, uint32, bool) { return 0, 0, true }); err != nil {
+		t.Errorf("all root-owned: %v", err)
+	}
 }

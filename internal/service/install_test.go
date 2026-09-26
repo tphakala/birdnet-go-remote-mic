@@ -3,9 +3,11 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +36,11 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 			return nil
 		},
 		writeFile: func(path string, _ []byte, _ os.FileMode) error { *events = append(*events, "write "+path); return nil },
+		rootOnly:  func(dir string) error { *events = append(*events, "rootonly "+dir); return nil },
+		stagingDir: func(stateDir string, uid, gid int) error {
+			*events = append(*events, fmt.Sprintf("staging %s %d:%d", stateDir, uid, gid))
+			return nil
+		},
 	}
 }
 
@@ -56,6 +63,7 @@ func TestInstallSequence(t *testing.T) {
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
 		"mkdir /usr/local/bin",
+		"rootonly /usr/local/bin",
 		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
 		"write /etc/systemd/system/remote-mic.service",
 		"write /etc/systemd/system/remote-mic-update.service",
@@ -64,8 +72,7 @@ func TestInstallSequence(t *testing.T) {
 		"chown /etc/remote-mic 990:990",
 		"mkdir /var/lib/remote-mic",
 		"chown /var/lib/remote-mic 990:990",
-		"mkdir /var/lib/remote-mic/update",
-		"chown /var/lib/remote-mic/update 990:990",
+		"staging /var/lib/remote-mic 990:990",
 		evReload,
 		"enable --now remote-mic.service",
 		"enable --now remote-mic-update.path",
@@ -183,5 +190,71 @@ func TestInstallRefusesWithoutSystemd(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("no side effects expected before the systemd check, got %v", events)
+	}
+}
+
+// TestEnsureStagingDir pins the real staging-directory step: it creates the
+// directory 0700 inside the state directory, tightens an existing one, and
+// refuses a symlink the service user planted there, leaving its target alone.
+func TestEnsureStagingDir(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid() // Lchown to ourselves works unprivileged
+	state := t.TempDir()
+	if err := ensureStagingDir(state, uid, gid); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fi, err := os.Lstat(filepath.Join(state, UpdateDirName))
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("staging dir %v, %v; want a 0700 directory", fi, err)
+	}
+	if err := os.Chmod(filepath.Join(state, UpdateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureStagingDir(state, uid, gid); err != nil {
+		t.Fatalf("existing: %v", err)
+	}
+	if fi, _ := os.Lstat(filepath.Join(state, UpdateDirName)); fi.Mode().Perm() != 0o700 {
+		t.Errorf("existing staging dir mode %v, want 0700", fi.Mode().Perm())
+	}
+
+	state = t.TempDir()
+	victim := t.TempDir()
+	if err := os.Chmod(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(state, UpdateDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureStagingDir(state, uid, gid); err == nil {
+		t.Error("a planted symlink was accepted as the staging directory")
+	}
+	if fi, _ := os.Stat(victim); fi.Mode().Perm() != 0o755 {
+		t.Errorf("the link target's mode changed to %v", fi.Mode().Perm())
+	}
+
+	state = t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, UpdateDirName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureStagingDir(state, uid, gid); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("a planted file: got %v", err)
+	}
+}
+
+// TestInstallRefusesUntrustedBinDir pins that install stops before copying
+// the binary or writing any unit when the bin directory is not root-only.
+func TestInstallRefusesUntrustedBinDir(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.rootOnly = func(string) error { return errors.New("/opt is writable by group 50") }
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "writable by group 50") {
+		t.Fatalf("Install: got %v", err)
+	}
+	for _, e := range events {
+		if strings.HasPrefix(e, "copy ") || strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "enable") {
+			t.Errorf("install went on after the refusal: %q", e)
+		}
 	}
 }

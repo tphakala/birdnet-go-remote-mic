@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"path/filepath"
 	"text/template"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // unitTemplate is the systemd unit rendered for an install. Choices worth
@@ -143,7 +145,7 @@ func render(tmpl *template.Template, s ServiceSpec) ([]byte, error) {
 		ConfigPath:  s.ConfigPath,
 		ConfigDir:   s.ConfigDir(),
 		StateDir:    s.StateDir,
-		RequestPath: filepath.Join(s.UpdateDir(), updateRequestFile),
+		RequestPath: filepath.Join(s.UpdateDir(), update.RequestFile),
 	}); err != nil {
 		return nil, err
 	}

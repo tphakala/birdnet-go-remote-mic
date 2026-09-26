@@ -35,7 +35,8 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 
 // Uninstall stops and disables the unit and the root updater's units, removes
 // their unit files, and reloads systemd. With purge it also removes the
-// binary, the config and state directories, and the service user.
+// binary (with the copies the updater keeps beside it), the config and state
+// directories, and the service user.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
 // enabled is not an error, so a partial or repeated uninstall still converges.
@@ -68,8 +69,12 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 	if !purge {
 		return nil
 	}
-	if err := un.removeFile(s.BinPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service: remove binary %s: %w", s.BinPath, err)
+	// The root updater leaves the previous binary beside the installed one,
+	// and a cut-off update can leave its staged copy and journal.
+	for _, p := range []string{s.BinPath, s.BinPath + ".prev", s.BinPath + ".new", s.BinPath + ".pending"} {
+		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("service: remove binary %s: %w", p, err)
+		}
 	}
 	for _, dir := range []string{s.ConfigDir(), s.StateDir} {
 		if err := un.removeAll(dir); err != nil {

@@ -199,7 +199,7 @@ starting). Manage it afterwards:
 
 ```bash
 remote-mic service status                    # enabled at boot? running now?
-sudo remote-mic service uninstall            # stop, disable, remove the unit (keeps config)
+sudo remote-mic service uninstall            # stop, disable, remove the units (keeps config)
 sudo remote-mic service uninstall --purge    # also remove config, state, binary, and user
 ```
 
@@ -322,7 +322,8 @@ back and restarts it, and the appliance reports the rollback in the
 notification bell. An update cut off by
 a power loss is rolled back the same way when the updater next starts, even
 after a reboot. The appliance itself never gets write access to its own
-binary.
+binary, and the updater refuses to act when the binary or its directory can
+be written by anyone but root.
 
 Installs managed by a package manager are never replaced behind its back: a
 `.deb` or Homebrew install, or a binary run from where it was unpacked, shows

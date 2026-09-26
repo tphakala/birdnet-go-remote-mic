@@ -85,6 +85,8 @@ type Applier struct {
 	MainPID func(unit string) (int, error)
 	// Version runs a binary's version command and returns its output.
 	Version func(ctx context.Context, bin string) (string, error)
+	// Owner returns a file's numeric owner; fileOwner (stat data) when nil.
+	Owner func(fi os.FileInfo) (uid, gid uint32, ok bool)
 
 	// HealthTimeout bounds the wait for the new version to report healthy;
 	// HealthSettle is how long its process must then stay the unit's main
@@ -102,10 +104,11 @@ type Applier struct {
 // nothing when no request is pending. It claims the request by renaming it to
 // TakenFile, so the path unit does not start it again, and removes the claim
 // at exit; it writes the outcome to the status file for the appliance to
-// report. When an install journal is found, a previous run was cut off
-// mid-install, and Apply rolls that back (recoverInterrupted) instead of
-// installing anything. The returned error is the same outcome, for the unit's
-// log.
+// report. It first refuses a binary or bin directory that anyone but root
+// could write (checkBinDir). When an install journal is found, a previous run
+// was cut off mid-install, and Apply rolls that back (recoverInterrupted)
+// instead of installing anything. The returned error is the same outcome, for
+// the unit's log.
 func (a *Applier) Apply(ctx context.Context) error {
 	root, err := os.OpenRoot(a.StateDir)
 	if err != nil {
@@ -115,6 +118,16 @@ func (a *Applier) Apply(ctx context.Context) error {
 	reqPath := path.Join(DirName, RequestFile)
 	takenPath := path.Join(DirName, TakenFile)
 	defer func() { _ = root.Remove(takenPath) }()
+	// Before touching anything in the bin directory (the journal included),
+	// make sure only root can write there: root runs the binary it holds.
+	if err := a.checkBinDir(); err != nil {
+		defer func() { _ = root.Remove(reqPath) }()
+		reason := "refusing to update: " + err.Error()
+		if _, jerr := os.Lstat(a.journalPath()); jerr == nil {
+			reason += "; an interrupted update is waiting to be rolled back once only root can write there"
+		}
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: reason})
+	}
 	if _, err := os.Lstat(a.journalPath()); err == nil {
 		defer func() { _ = root.Remove(reqPath) }()
 		return a.finish(root, a.recoverInterrupted(root))
@@ -345,6 +358,79 @@ func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 		res.Reason += fmt.Sprintf("; %s matches neither version, so it was left as it is", a.BinPath)
 	}
 	return res
+}
+
+// checkBinDir refuses a binary, or a directory above it, that anyone but
+// root could write (see CheckRootOnly), and a binary that is not a regular
+// file. The updater installs and runs what is there as root, so such a path
+// would hand root to that user or group. It is defence in depth: this runs
+// inside the very binary it protects, so service install makes the same
+// check before it enables the updater.
+func (a *Applier) checkBinDir() error {
+	fi, err := os.Lstat(a.BinPath)
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (%s)", a.BinPath, fi.Mode().Type())
+	}
+	owner := a.Owner
+	if owner == nil {
+		owner = fileOwner
+	}
+	if err := rootOnly(a.BinPath, fi, owner); err != nil {
+		return err
+	}
+	return checkRootOnly(filepath.Dir(a.BinPath), owner)
+}
+
+// CheckRootOnly refuses dir when it, or any directory above it (after
+// resolving symlinks), is not owned by root, is writable by everyone, or is
+// writable by a group other than root's: whoever could write there could
+// replace what root later runs from it.
+func CheckRootOnly(dir string) error {
+	return checkRootOnly(dir, fileOwner)
+}
+
+func checkRootOnly(dir string, owner func(os.FileInfo) (uint32, uint32, bool)) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	for p := filepath.Clean(resolved); ; p = filepath.Dir(p) {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		if err := rootOnly(p, fi, owner); err != nil {
+			return err
+		}
+		if p == filepath.Dir(p) {
+			return nil
+		}
+	}
+}
+
+// rootOnly checks one path's owner and mode. A sticky directory (such as
+// /tmp) is writable by others, but they cannot rename or remove what they do
+// not own in it, so it does not let them replace anything below.
+func rootOnly(p string, fi os.FileInfo, owner func(os.FileInfo) (uint32, uint32, bool)) error {
+	uid, gid, ok := owner(fi)
+	perm := fi.Mode().Perm()
+	sticky := fi.IsDir() && fi.Mode()&os.ModeSticky != 0
+	switch {
+	case !ok:
+		return fmt.Errorf("cannot tell who owns %s", p)
+	case uid != 0:
+		return fmt.Errorf("%s is owned by uid %d, not root", p, uid)
+	case sticky:
+		return nil
+	case perm&0o002 != 0:
+		return fmt.Errorf("%s is writable by everyone (%v)", p, perm)
+	case perm&0o020 != 0 && gid != 0:
+		return fmt.Errorf("%s is writable by group %d (%v)", p, gid, perm)
+	}
+	return nil
 }
 
 func (a *Applier) journalPath() string { return a.BinPath + ".pending" }
