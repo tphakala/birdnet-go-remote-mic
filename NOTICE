@@ -1,6 +1,7 @@
 BirdNET-Go Remote Mic
 Copyright 2026 Tomi P. Hakala
 
-Licensed under the Apache License, Version 2.0 (see LICENSE). The licenses
+Licensed under the Apache License, Version 2.0 (see LICENSE, or
+/usr/share/common-licenses/Apache-2.0 on Debian systems). The licenses
 of the third-party components built into the binary are in
 THIRD_PARTY_LICENSES.md.

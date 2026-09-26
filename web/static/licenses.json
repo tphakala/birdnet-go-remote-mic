@@ -9,7 +9,7 @@
       },
       {
         "name": "NOTICE",
-        "text": "BirdNET-Go Remote Mic\nCopyright 2026 Tomi P. Hakala\n\nLicensed under the Apache License, Version 2.0 (see LICENSE). The licenses\nof the third-party components built into the binary are in\nTHIRD_PARTY_LICENSES.md."
+        "text": "BirdNET-Go Remote Mic\nCopyright 2026 Tomi P. Hakala\n\nLicensed under the Apache License, Version 2.0 (see LICENSE, or\n/usr/share/common-licenses/Apache-2.0 on Debian systems). The licenses\nof the third-party components built into the binary are in\nTHIRD_PARTY_LICENSES.md."
       }
     ]
   },

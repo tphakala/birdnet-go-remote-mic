@@ -43,6 +43,9 @@ const jsonFile = "web/static/licenses.json"
 // with its NOTICE; both sit at the repository root.
 const projectLicense = "LICENSE"
 
+// projectNotice is remote-mic's Apache NOTICE, read next to projectLicense.
+const projectNotice = "NOTICE"
+
 // mainPackage is the binary whose dependencies are listed.
 const mainPackage = "./cmd/remotemic"
 
@@ -93,12 +96,10 @@ func run(check bool) error {
 	if err != nil {
 		return err
 	}
-	// The root's LICENSE and NOTICE, read the way a module's are.
-	own, err := licenseFiles(".")
+	project, err := readProject(".")
 	if err != nil {
-		return fmt.Errorf("remote-mic %s: %w", projectLicense, err)
+		return err
 	}
-	project := component{name: "remote-mic", files: own}
 	// The same bar as every dependency: a LICENSE the classifier cannot name
 	// would list remote-mic itself as "see license text" on the About page.
 	if err := checkRecognized(project); err != nil {
@@ -115,6 +116,21 @@ func run(check bool) error {
 // markdown document and the About page's JSON copy.
 func generatedOutputs(doc, js []byte) []output {
 	return []output{{outFile, doc}, {jsonFile, js}}
+}
+
+// readProject reads exactly remote-mic's LICENSE and NOTICE from dir (Apache
+// 2.0 section 4(d) wants the NOTICE carried along), both required; a stray
+// LICENSE.orig or NOTICE~ beside them is never read.
+func readProject(dir string) (component, error) {
+	project := component{name: "remote-mic"}
+	for _, name := range []string{projectLicense, projectNotice} {
+		f, err := readLicense(filepath.Join(dir, name))
+		if err != nil {
+			return component{}, fmt.Errorf("remote-mic %s: %w", name, err)
+		}
+		project.files = append(project.files, f)
+	}
+	return project, nil
 }
 
 // output is one generated file and the bytes it must hold.
@@ -282,7 +298,7 @@ func isLicenseName(name string) bool {
 
 // readLicense reads a license file with CRLF line endings normalized.
 func readLicense(path string) (licenseFile, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // paths come from the module cache, GOROOT, the fixed asset table, or the repository LICENSE
+	b, err := os.ReadFile(path) //nolint:gosec // paths come from the module cache, GOROOT, the fixed asset table, or the repository LICENSE and NOTICE
 	if err != nil {
 		return licenseFile{}, err
 	}

@@ -3004,7 +3004,8 @@ select.field-input {
 }
 /* Each row label carries a leading glyph. Centre the key against its value so
    the icon does not drag the row off the value's line, and scope it to the
-   System Information columns so the certificate info grid keeps its plain keys. */
+   System Information columns and the About card's details, so the certificate
+   info grid keeps its plain keys. */
 .sysinfo-group .info-grid,
 .about-card .info-grid {
   align-items: center;

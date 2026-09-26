@@ -232,3 +232,30 @@ func TestRenderNamesProjectLicense(t *testing.T) {
 		t.Errorf("document lacks %q", want)
 	}
 }
+
+// TestReadProject pins that remote-mic's LICENSE and NOTICE are both read, in
+// that order, that a missing NOTICE fails, and that a stray file beside them
+// is not picked up.
+func TestReadProject(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name, text string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(projectLicense, "Apache License\nVersion 2.0")
+	write("LICENSE.orig", "stale")
+	if _, err := readProject(dir); err == nil {
+		t.Fatal("readProject without a NOTICE succeeded; want an error")
+	}
+	write(projectNotice, "Copyright holder")
+	p, err := readProject(dir)
+	if err != nil {
+		t.Fatalf("readProject: %v", err)
+	}
+	if len(p.files) != 2 || p.files[0].name != projectLicense || p.files[1].name != projectNotice {
+		t.Errorf("files = %+v, want LICENSE then NOTICE only", p.files)
+	}
+}

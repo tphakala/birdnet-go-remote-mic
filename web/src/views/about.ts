@@ -1,7 +1,7 @@
 // AboutView renders the About page (#/about): what the appliance is and its
 // build version, a sponsorship request, where to report bugs and ask questions,
-// and the licenses of remote-mic and of everything it ships. The license texts come
-// from licenses.json, which tools/licensegen writes from the build's module
+// and the licenses of remote-mic and of everything it ships. The license texts
+// come from licenses.json, which tools/licensegen writes from the build's module
 // graph; it is a static file (served without the token), loaded the first time
 // the page is shown, so an appliance nobody opens About on never fetches it.
 import {
