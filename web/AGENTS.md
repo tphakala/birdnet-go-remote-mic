@@ -164,7 +164,7 @@ reconcile:
   tokens even for a one-off surface, so a pair can describe them. Secondary
   and muted text must reach `SMALL_TEXT` (5.5:1), not just AA.
 - Type scale and floor (`test/legibility.test.ts`): every `font-size` is a
-  `var(--font-size-*)` role token (rem, defined on `:root`), never a literal,
+  `var(--font-size-*)` role token (px, defined on `:root`), never a literal,
   and a `font:` shorthand may only reset (`font: inherit`). No text below
   12px, and text below the 13px body size needs weight 500 or more. Sentences
   (subtitles, hints, notes, messages) use body (13px) at regular weight;

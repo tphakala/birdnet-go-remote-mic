@@ -31,7 +31,6 @@ const STYLES = fileURLToPath(new URL("../../static/styles.css", import.meta.url)
 const MIN_PX = 12;
 const BODY_PX = 13;
 const SMALL_TEXT_WEIGHT = 500;
-const ROOT_PX = 16;
 
 // Selector to the smallest size it may use, with the reason it cannot meet
 // MIN_PX. Each still has to meet the small-text weight.
@@ -55,11 +54,12 @@ interface Rule {
 const TOKEN_DECL = /(--font-size-[\w-]+)\s*:\s*([\d.]+)(px|rem|em)\s*;/g;
 const GLOBAL_KEYWORDS = new Set(["inherit", "initial", "unset", "revert", "revert-layer"]);
 
-// The type scale tokens: name to px, or null for a relative (em) token.
+// The type scale tokens: name to px, or null for a relative (em or rem) token,
+// which the scale test below refuses outside the one code token.
 function scaleTokens(css: string): Map<string, number | null> {
   const tokens = new Map<string, number | null>();
   for (const m of css.matchAll(TOKEN_DECL)) {
-    tokens.set(m[1], m[3] === "em" ? null : m[3] === "rem" ? Number(m[2]) * ROOT_PX : Number(m[2]));
+    tokens.set(m[1], m[3] === "px" ? Number(m[2]) : null);
   }
   return tokens;
 }
@@ -165,19 +165,21 @@ test("every below-floor allowance names a rule that still exists", () => {
   assert.deepEqual(stale, []);
 });
 
-test("the type scale is defined in rem, except the relative code size", () => {
+test("the type scale is px, apart from the one relative code token", () => {
   const tokens = scaleTokens(blankComments(css));
   assert.ok(tokens.size >= 5, `found only ${tokens.size} --font-size-* tokens`);
-  // px tokens would ignore the browser font-size setting.
-  const px = [...blankComments(css).matchAll(TOKEN_DECL)].filter((m) => m[3] === "px").map((m) => m[1]);
-  assert.deepEqual(px, []);
+  // rem text would outgrow the px layout around it (see the scale comment in
+  // styles.css), and any relative token escapes the floor check, which cannot
+  // resolve it.
+  const relative = [...tokens].filter(([, px]) => px === null).map(([name]) => name);
+  assert.deepEqual(relative, ["--font-size-code"]);
   assert.equal(tokens.get("--font-size-caption"), MIN_PX);
   assert.equal(tokens.get("--font-size-body"), BODY_PX);
 });
 
 test("the checker flags literals, unknown tokens, shorthands, and small or thin text", () => {
   const sample = `
-    :root { --font-size-tiny: 0.625rem; --font-size-micro: 0.6875rem; --font-size-small: 0.75rem; --font-size-body: 13px; --font-size-code: 0.9em; }
+    :root { --font-size-tiny: 10px; --font-size-micro: 11px; --font-size-small: 12px; --font-size-body: 13px; --font-size-code: 0.9em; }
     .a { font-size: var(--font-size-tiny); font-weight: 600; }
     .b { font-size: var(--font-size-small); color: red; }
     .c { font-size: var(--font-size-small); font-weight: 400; }
