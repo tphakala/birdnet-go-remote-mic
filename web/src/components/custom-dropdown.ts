@@ -66,6 +66,12 @@ export class CustomDropdown {
     });
 
     this.trigger.addEventListener("keydown", (e) => this.onKeydown(e));
+    // The options cannot take focus, so a mousedown on one would move focus to
+    // the nearest focusable ancestor (the view section), and the focusout
+    // below (or the page-wide focusin listener) would close the list before the
+    // click picked the option. Keeping focus on the trigger is the usual
+    // listbox pattern.
+    this.menu.addEventListener("mousedown", (e) => e.preventDefault());
     // Focus leaving the dropdown for elsewhere on the page closes it; a window
     // blur (no relatedTarget) keeps it open, as the header menus do.
     this.container.addEventListener("focusout", (e) => {
