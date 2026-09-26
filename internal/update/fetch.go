@@ -86,7 +86,8 @@ func (f *Fetcher) Latest(ctx context.Context) (*Release, error) {
 
 // latestTag asks the repository's "latest release" page where it redirects:
 // GitHub answers with a redirect to /releases/tag/<tag>, or to the release
-// list when there is no stable release.
+// list when there is no stable release (ErrNoRelease). A redirect anywhere
+// else, such as a renamed repository, is reported as an error, not followed.
 func (f *Fetcher) latestTag(ctx context.Context) (string, error) {
 	u := f.Base + "/releases/latest"
 	req, err := f.newRequest(ctx, u)
@@ -111,7 +112,12 @@ func (f *Fetcher) latestTag(ctx context.Context) (string, error) {
 	}
 	_, tag, found := strings.Cut(loc.EscapedPath(), "/releases/tag/")
 	if !found {
-		return "", ErrNoRelease
+		// A repository with no stable release redirects to its release list;
+		// anything else (a renamed or moved repository) is not "no release".
+		if strings.HasSuffix(strings.TrimSuffix(loc.EscapedPath(), "/"), "/releases") {
+			return "", ErrNoRelease
+		}
+		return "", fmt.Errorf("GET %s: unexpected redirect to %s", u, loc.Redacted())
 	}
 	tag, err = url.PathUnescape(tag)
 	if err != nil || !releasemanifest.ValidVersion(tag) {

@@ -100,6 +100,7 @@ func TestPostSystemUpdate(t *testing.T) {
 		{"no update", update.ErrNoUpdate, http.StatusConflict},
 		{"cannot apply", update.ErrCannotApply, http.StatusConflict},
 		{"busy", update.ErrBusy, http.StatusConflict},
+		{"checks off", update.ErrChecksDisabled, http.StatusConflict},
 		{"other", errors.New("disk full"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {

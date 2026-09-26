@@ -114,29 +114,60 @@ func TestBootCleansAbandonedAttempt(t *testing.T) {
 
 // TestBootWatchesPendingUpdate pins that a boot with a fresh request (this
 // process is the new version the updater is waiting on) leaves the staged
-// files alone and reports the result once the updater writes it.
+// files alone, reports a result the updater writes only after the boot (the
+// normal order: the updater waits for this process's health file first), and
+// stops watching once the updater's wait has passed.
 func TestBootWatchesPendingUpdate(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
-		writeJSON(t, filepath.Join(dir, RequestFile), Request{Version: vNew})
+		req := filepath.Join(dir, RequestFile)
+		writeJSON(t, req, Request{Version: vNew})
+		staged := time.Now().Add(-5 * time.Minute) // staged a while ago
+		if err := os.Chtimes(req, staged, staged); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(dir, BinaryFile), []byte("x"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		c := notify.NewCenter()
 		Boot(t.Context(), dir, vNew, c, t.Logf)
+		synctest.Wait() // the watcher has looked once and found nothing
 		if !exists(filepath.Join(dir, BinaryFile)) {
 			t.Fatal("Boot removed the staged binary of a pending update")
 		}
-		writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeUpdated, From: vOld, To: vNew, Installed: vNew})
+		status := Result{Outcome: OutcomeUpdated, From: vOld, To: vNew, Installed: vNew}
+		writeJSON(t, filepath.Join(dir, StatusFile), status)
 		time.Sleep(resultPoll + time.Millisecond)
 		synctest.Wait()
 		if snap := c.Snapshot(); len(snap.Notifications) != 1 || snap.Notifications[0].Title != titleUpdated {
-			t.Errorf("notifications %+v", snap.Notifications)
+			t.Fatalf("notifications %+v", snap.Notifications)
 		}
-		// The watcher gives up once the updater's wait has passed.
+	})
+}
+
+// TestBootWatcherGivesUp pins that the watcher stops once the updater's wait
+// has passed: a result written after that is left for the next boot.
+func TestBootWatcherGivesUp(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		req := filepath.Join(dir, RequestFile)
+		writeJSON(t, req, Request{Version: vNew})
+		now := time.Now()
+		if err := os.Chtimes(req, now, now); err != nil {
+			t.Fatal(err)
+		}
+		c := notify.NewCenter()
+		Boot(t.Context(), dir, vNew, c, t.Logf)
 		time.Sleep(DefaultHealthTimeout + 2*time.Minute)
 		synctest.Wait()
+		writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeUpdated, From: vOld, To: vNew, Installed: vNew})
+		time.Sleep(2 * resultPoll)
+		synctest.Wait()
+		if n := len(c.Snapshot().Notifications); n != 0 {
+			t.Errorf("%d notifications after the watcher's limit, want none", n)
+		}
 	})
 }
 

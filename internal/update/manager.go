@@ -136,6 +136,8 @@ type Manager struct {
 	announced string // the version last logged as available
 	phase     Phase
 	phaseMsg  string
+	// cancelApply stops an in-flight download when checks are turned off.
+	cancelApply context.CancelCauseFunc
 }
 
 // Checks run only while the monitors have been applied with UpdateCheck on.
@@ -158,14 +160,26 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 	return &Manager{cfg: cfg, supported: supported, wake: make(chan struct{}, 1), ctx: ctx, phase: PhaseIdle}
 }
 
-// Apply turns the periodic check on or off from the config.
+// Apply turns the periodic check on or off from the config. Turning it off
+// forgets the release found, clears its notification, and stops a download
+// in progress, so the appliance makes no update request with checks off. An
+// update already handed to the root updater is past that point and goes on.
 func (m *Manager) Apply(s *monitor.Settings) {
 	was := m.enabled.Swap(s.UpdateCheck)
 	if was == s.UpdateCheck {
 		return
 	}
 	if !s.UpdateCheck {
+		m.mu.Lock()
+		m.latest, m.available = nil, false
+		cancel := m.cancelApply
+		// Under m.mu, so a check finishing now either sees checks off or has
+		// already raised the condition this resolves.
 		m.cfg.Publisher.Resolve(AvailableKey, "Update checks turned off")
+		m.mu.Unlock()
+		if cancel != nil {
+			cancel(ErrChecksDisabled)
+		}
 	}
 	select {
 	case m.wake <- struct{}{}:
@@ -204,7 +218,7 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		case <-m.wake:
 		case <-tick:
-			failures := m.check(ctx)
+			failures := m.check(ctx, false)
 			timer = time.NewTimer(nextCheck(failures, m.cfg.Jitter))
 		}
 	}
@@ -227,28 +241,43 @@ func nextCheck(failures int, jitter func(time.Duration) time.Duration) time.Dura
 }
 
 // CheckNow checks immediately for the management API. A check finished in
-// the last few seconds is returned as it is.
-func (m *Manager) CheckNow(ctx context.Context) (Status, error) {
+// the last few seconds is returned as it is. The check runs on the
+// appliance's own lifetime, not the caller's: a client that goes away mid
+// check must not turn it into a recorded failure.
+func (m *Manager) CheckNow(context.Context) (Status, error) {
 	if !m.supported {
 		return m.Status(), ErrNotRelease
 	}
 	if !m.enabled.Load() {
 		return m.Status(), ErrChecksDisabled
 	}
-	m.mu.Lock()
-	recent := !m.lastCheck.IsZero() && time.Since(m.lastCheck) < manualThrottle
-	m.mu.Unlock()
-	if !recent {
-		m.check(ctx)
-	}
+	m.check(m.ctx, true)
 	return m.Status(), nil
 }
 
-// check fetches the newest release and records the outcome. It returns the
-// number of consecutive failures, zero after a success.
-func (m *Manager) check(ctx context.Context) int {
+// check fetches the newest release and records the outcome, unless checks
+// were turned off meanwhile. A manual check skips the fetch when another
+// finished within manualThrottle, re-read after waiting for any check in
+// flight, so a burst of requests makes one fetch. It returns the number of
+// consecutive failures, zero after a success.
+func (m *Manager) check(ctx context.Context, manual bool) int {
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
+	// Checks may have been turned off while this call waited for another.
+	if !m.enabled.Load() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.failures
+	}
+	if manual {
+		m.mu.Lock()
+		recent := !m.lastCheck.IsZero() && time.Since(m.lastCheck) < manualThrottle
+		failures := m.failures
+		m.mu.Unlock()
+		if recent {
+			return failures
+		}
+	}
 	fctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	rel, err := m.cfg.Fetch(fctx)
 	cancel()
@@ -259,6 +288,9 @@ func (m *Manager) check(ctx context.Context) int {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.enabled.Load() {
+		return m.failures // turned off while fetching: keep nothing
+	}
 	m.lastCheck = time.Now()
 	if err != nil {
 		m.lastErr = err.Error()
@@ -349,10 +381,14 @@ func (m *Manager) Status() Status {
 
 // StartApply begins a one-button update to the newest release found: it
 // stages the release in the background and hands it to the root updater,
-// which restarts the appliance. It returns at once with the new phase.
+// which restarts the appliance. It returns at once with the new phase. It
+// refuses while checks are off, since staging downloads the release.
 func (m *Manager) StartApply() (Status, error) {
 	if !m.cfg.Install.CanApply {
 		return m.Status(), ErrCannotApply
+	}
+	if !m.enabled.Load() {
+		return m.Status(), ErrChecksDisabled
 	}
 	m.mu.Lock()
 	switch {
@@ -365,14 +401,21 @@ func (m *Manager) StartApply() (Status, error) {
 	}
 	rel := m.latest
 	m.phase, m.phaseMsg = PhaseDownloading, "Downloading "+rel.Manifest.Version
+	// The cancel is in place before m.mu is released: Apply(off) sets
+	// enabled before it takes m.mu, so it either made latest nil above or
+	// finds this cancel.
+	ctx, stop := context.WithCancelCause(m.ctx)
+	m.cancelApply = stop
 	m.mu.Unlock()
-	go m.apply(rel)
+	go m.apply(ctx, stop, rel)
 	return m.Status(), nil
 }
 
-// apply stages rel and watches for the updater to take it. A panic here
-// would end the appliance, so it is recovered and reported as a failure.
-func (m *Manager) apply(rel *Release) {
+// apply stages rel on ctx, which turning checks off cancels (the attempt
+// then goes back to idle), and watches for the updater to take it. stop
+// releases ctx once staging ends. A panic here would end the appliance, so
+// it is recovered and reported as a failure.
+func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *Release) {
 	v := rel.Manifest.Version
 	defer func() {
 		if r := recover(); r != nil {
@@ -380,10 +423,20 @@ func (m *Manager) apply(rel *Release) {
 		}
 	}()
 	m.cfg.Logf("update: downloading %s", v)
-	ctx, cancel := context.WithTimeout(m.ctx, stageTimeout)
-	err := m.cfg.Stage(ctx, rel)
+	sctx, cancel := context.WithTimeout(ctx, stageTimeout)
+	err := m.cfg.Stage(sctx, rel)
 	cancel()
+	m.mu.Lock()
+	m.cancelApply = nil
+	m.mu.Unlock()
+	stop(nil)
 	if err != nil {
+		// Turning checks off is the operator's choice, not a failed update.
+		if errors.Is(context.Cause(ctx), ErrChecksDisabled) {
+			m.cfg.Logf("update: stopped downloading %s: update checks were turned off", v)
+			m.setPhase(PhaseIdle, "")
+			return
+		}
 		m.fail(v, err)
 		return
 	}

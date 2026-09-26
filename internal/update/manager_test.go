@@ -197,7 +197,7 @@ func TestManagerAvailableNotification(t *testing.T) {
 	}
 
 	f.set(fakeRelease("v0.4.0"), nil)
-	m.check(t.Context())
+	m.check(t.Context(), false)
 	if n := activeKeys(c)[AvailableKey]; !strings.Contains(n.Title, "v0.4.0") {
 		t.Errorf("condition not rewritten for v0.4.0: %+v", n)
 	}
@@ -307,6 +307,10 @@ func TestStartApplyRefuses(t *testing.T) {
 		t.Errorf("deb install: got %v, want ErrCannotApply", err)
 	}
 	m = NewManager(t.Context(), &Config{Running: vOld, Install: Install{Method: MethodService, CanApply: true}, Logf: (&logSink{}).logf})
+	if _, err := m.StartApply(); !errors.Is(err, ErrChecksDisabled) {
+		t.Errorf("checks off: got %v, want ErrChecksDisabled", err)
+	}
+	m.Apply(on())
 	if _, err := m.StartApply(); !errors.Is(err, ErrNoUpdate) {
 		t.Errorf("nothing available: got %v, want ErrNoUpdate", err)
 	}
@@ -513,4 +517,123 @@ func TestStartApplyIgnoresStaleResult(t *testing.T) {
 			t.Error("a result addressed to another version was consumed")
 		}
 	})
+}
+
+// TestManagerOffClearsAndRefuses pins "checks off" end to end: the release
+// found is forgotten, apply is refused, a check that finishes after checks
+// were turned off keeps nothing and raises nothing, and a download in
+// progress is stopped.
+func TestManagerOffClearsAndRefuses(t *testing.T) {
+	t.Parallel()
+	t.Run("found release forgotten", func(t *testing.T) {
+		t.Parallel()
+		m, c, _ := applyManager(t, nil)
+		m.Apply(off())
+		if st := m.Status(); st.Available || st.Latest != "" {
+			t.Errorf("status %+v after checks off, want nothing available", st)
+		}
+		if _, err := m.StartApply(); !errors.Is(err, ErrChecksDisabled) {
+			t.Errorf("StartApply: got %v, want ErrChecksDisabled", err)
+		}
+		if len(c.Active()) != 0 {
+			t.Errorf("conditions %+v, want none", c.Active())
+		}
+	})
+	t.Run("turned off during a check", func(t *testing.T) {
+		t.Parallel()
+		c := notify.NewCenter()
+		var m *Manager
+		m = NewManager(t.Context(), &Config{
+			Running: vOld,
+			Fetch: func(context.Context) (*Release, error) {
+				m.Apply(off()) // the operator turns checks off mid fetch
+				return fakeRelease(vNew), nil
+			},
+			Publisher: c,
+			Logf:      (&logSink{}).logf,
+		})
+		m.Apply(on())
+		m.check(t.Context(), false)
+		if st := m.Status(); st.Available || st.Latest != "" || !st.LastCheck.IsZero() {
+			t.Errorf("status %+v, want nothing kept", st)
+		}
+		if len(c.Active()) != 0 {
+			t.Errorf("conditions %+v, want none", c.Active())
+		}
+	})
+	t.Run("download stopped", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			m, _, _ := applyManager(t, func(ctx context.Context, _ *Release) error {
+				<-ctx.Done() // a slow download
+				return ctx.Err()
+			})
+			if _, err := m.StartApply(); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+			m.Apply(off())
+			synctest.Wait()
+			if st := m.Status(); st.Phase != PhaseIdle {
+				t.Errorf("status %+v, want the download stopped and the attempt idle", st)
+			}
+		})
+	})
+	t.Run("turned off before the download starts", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			var startedLive bool
+			m, c, _ := applyManager(t, func(ctx context.Context, _ *Release) error {
+				startedLive = ctx.Err() == nil
+				return ctx.Err()
+			})
+			if _, err := m.StartApply(); err != nil {
+				t.Fatal(err)
+			}
+			m.Apply(off()) // before the apply goroutine has run
+			synctest.Wait()
+			if startedLive {
+				t.Error("the download started with checks already off")
+			}
+			if st := m.Status(); st.Phase != PhaseIdle {
+				t.Errorf("status %+v, want idle", st)
+			}
+			if slices.Contains(titles(c), "Update failed") {
+				t.Error("turning checks off was reported as a failed update")
+			}
+		})
+	})
+	t.Run("queued check after turning off", func(t *testing.T) {
+		t.Parallel()
+		f := &fakeFetch{rel: fakeRelease(vNew)}
+		m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Logf: (&logSink{}).logf})
+		// A check that was already waiting for checkMu when checks went off.
+		m.check(t.Context(), true)
+		if n := f.count(); n != 0 {
+			t.Errorf("a check with checks off made %d fetches, want 0", n)
+		}
+	})
+}
+
+// TestManagerCheckNowIgnoresCallerContext pins that a manual check runs on
+// the appliance's lifetime, so a client that goes away does not turn it into
+// a recorded failure.
+func TestManagerCheckNowIgnoresCallerContext(t *testing.T) {
+	t.Parallel()
+	var sawCancelled bool
+	m := NewManager(t.Context(), &Config{
+		Running: vOld,
+		Fetch: func(ctx context.Context) (*Release, error) {
+			sawCancelled = ctx.Err() != nil
+			return fakeRelease(vOld), nil
+		},
+		Logf: (&logSink{}).logf,
+	})
+	m.Apply(on())
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	st, err := m.CheckNow(ctx)
+	if err != nil || sawCancelled || st.LastError != "" {
+		t.Errorf("CheckNow with a gone caller: %+v, %v (fetch saw a cancelled context: %t)", st, err, sawCancelled)
+	}
 }

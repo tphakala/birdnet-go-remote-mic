@@ -208,3 +208,19 @@ func TestFetcherLatestStatusAndUserAgent(t *testing.T) {
 		t.Errorf("502: got %v", err)
 	}
 }
+
+// TestFetcherLatestUnexpectedRedirect pins that only a redirect to the
+// release list reads as "no release": one elsewhere (a renamed or moved
+// repository) is an error of its own.
+func TestFetcherLatestUnexpectedRedirect(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/someone/renamed/releases/latest", http.StatusMovedPermanently)
+	}))
+	t.Cleanup(srv.Close)
+	f := &Fetcher{Client: srv.Client(), Base: srv.URL}
+	_, err := f.Latest(t.Context())
+	if err == nil || errors.Is(err, ErrNoRelease) || !strings.Contains(err.Error(), "unexpected redirect") {
+		t.Errorf("got %v, want an unexpected-redirect error", err)
+	}
+}

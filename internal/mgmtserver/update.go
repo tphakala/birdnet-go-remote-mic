@@ -37,7 +37,7 @@ func (s *Server) PostSystemUpdate(_ context.Context, _ mgmtapi.PostSystemUpdateR
 	switch {
 	case err == nil:
 		return mgmtapi.PostSystemUpdate202JSONResponse(updateToWire(&st)), nil
-	case errors.Is(err, update.ErrNoUpdate), errors.Is(err, update.ErrCannotApply), errors.Is(err, update.ErrBusy):
+	case errors.Is(err, update.ErrNoUpdate), errors.Is(err, update.ErrCannotApply), errors.Is(err, update.ErrBusy), errors.Is(err, update.ErrChecksDisabled):
 		return mgmtapi.PostSystemUpdate409ApplicationProblemPlusJSONResponse(problem(http.StatusConflict, "update not possible", err.Error())), nil
 	default:
 		return mgmtapi.PostSystemUpdatedefaultApplicationProblemPlusJSONResponse{

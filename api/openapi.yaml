@@ -446,7 +446,8 @@ paths:
         "409":
           description: >
             No update is available, this installation cannot update itself,
-            or an update is already in progress.
+            update checks are turned off, or an update is already in
+            progress.
           content:
             application/problem+json:
               schema:
