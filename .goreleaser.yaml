@@ -68,8 +68,22 @@ archives:
       - LICENSE
       - THIRD_PARTY_LICENSES.md
 
+# checksums.txt is also the cross-check for the signed release manifest:
+# tools/releasemanifest (run by the release workflow after this config) refuses
+# to sign a manifest whose archive digests disagree with it.
 checksum:
   name_template: checksums.txt
+
+# A tag with a prerelease suffix (v1.3.0-rc.1) is published as a GitHub
+# prerelease, so it never becomes "latest": the release manifest that update
+# checks fetch from releases/latest/download/ stays on the newest stable release.
+# A stable release becomes "latest" only when it is not older than the current
+# one: the release workflow decides with `releasemanifest make-latest` and
+# passes MAKE_LATEST, so a tag cut on an older line (v1.2.5 after v1.3.0) does
+# not move update checks backwards. Unset (a local run) keeps the default.
+release:
+  prerelease: auto
+  make_latest: '{{ if index .Env "MAKE_LATEST" }}{{ .Env.MAKE_LATEST }}{{ end }}'
 
 changelog:
   use: github
@@ -127,6 +141,8 @@ brews:
         url: "git@github.com:tphakala/homebrew-tap.git"
         private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     directory: Formula
+    # A prerelease (rc) tag leaves the formula alone, as it leaves "latest".
+    skip_upload: auto
     homepage: "https://github.com/tphakala/birdnet-go-remote-mic"
     description: "Remote microphone appliance for BirdNET-Go (ALSA capture served over RTSP)"
     license: MIT
