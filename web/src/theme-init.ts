@@ -8,8 +8,9 @@
 // lib/theme.ts initTheme derives the theme again the same way (THEME_KEY and
 // PREFERS_LIGHT_QUERY; a test pins both), so it corrects an OS change between
 // the two scripts or a theme-init.js that never ran, and reads the attribute set
-// here only when matchMedia is missing. It owns the toggle, which saves the
-// choice under the same key, and follows later OS changes.
+// here only when matchMedia is missing. It owns the header theme menu, which
+// saves a Light or Dark choice under the same key (System removes it), and
+// follows later OS changes.
 (() => {
   let saved: string | null = null;
   try {

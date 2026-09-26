@@ -1,4 +1,9 @@
-export type ViewName = "dashboard" | "events" | "system";
+export type ViewName = "dashboard" | "events" | "system" | "about";
+
+// isViewName narrows a hash fragment or a nav item's data-view to a route.
+export function isViewName(v: string | undefined): v is ViewName {
+  return v === "dashboard" || v === "events" || v === "system" || v === "about";
+}
 
 // The document title per route, so a browser tab, history entry and a screen
 // reader's page announcement all name the page being shown.
@@ -7,6 +12,7 @@ const VIEW_TITLES: Record<ViewName, string> = {
   dashboard: "Dashboard",
   events: "Events",
   system: "System",
+  about: "About",
 };
 
 export class Router extends EventTarget {
@@ -33,11 +39,7 @@ export class Router extends EventTarget {
 
   private handleHashChange(moveFocus: boolean): void {
     const rawHash = window.location.hash.replace(/^#\/?/, "");
-    let view: ViewName = "dashboard";
-
-    if (rawHash === "system" || rawHash === "events") {
-      view = rawHash;
-    }
+    const view: ViewName = isViewName(rawHash) ? rawHash : "dashboard";
 
     const changed = view !== this.currentView;
     this.currentView = view;

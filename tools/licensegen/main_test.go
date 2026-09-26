@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -100,5 +101,46 @@ func TestIsLicenseName(t *testing.T) {
 		if got := isLicenseName(name); got != want {
 			t.Errorf("isLicenseName(%q) = %v, want %v", name, got, want)
 		}
+	}
+}
+
+// TestRenderJSON pins the About page's contract: the project entry first, then
+// every component in order with its summarized license and full texts, and an
+// omitted version where the document shows "-".
+func TestRenderJSON(t *testing.T) {
+	t.Parallel()
+	own := licenseFile{name: projectLicense, text: "MIT License\n\nPermission is hereby granted, free of charge"}
+	comps := []component{
+		{name: "example.com/a", version: "v1.0.0", files: []licenseFile{{name: "LICENSE.txt", text: "Apache License\nVersion 2.0"}}},
+		{name: "Go standard library and runtime", files: []licenseFile{
+			{name: "LICENSE.md", text: "Redistribution and use in source and binary forms ... Neither the name of"},
+			{name: "NOTICE", text: "Portions copyright the authors"},
+		}},
+	}
+	b, err := renderJSON(own, comps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc licenseDoc
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if doc.Project.Name != "remote-mic" || doc.Project.License != classify(own.text) || doc.Project.Files[0].Text != own.text {
+		t.Errorf("project = %+v, want remote-mic, its classified license, the LICENSE text", doc.Project)
+	}
+	if got := len(doc.Components); got != 2 {
+		t.Fatalf("got %d components, want 2", got)
+	}
+	if c := doc.Components[0]; c.Name != "example.com/a" || c.Version != "v1.0.0" || c.License != "Apache-2.0" {
+		t.Errorf("component 0 = %+v, want example.com/a v1.0.0 Apache-2.0", c)
+	}
+	if c := doc.Components[1]; c.Version != "" || c.License != "BSD-3-Clause" || len(c.Files) != 2 {
+		t.Errorf("component 1 = %+v, want no version, BSD-3-Clause, 2 files", c)
+	}
+	if strings.Contains(string(b), `"version": ""`) {
+		t.Error("an empty version is written; want it omitted")
+	}
+	if !strings.HasSuffix(string(b), "}\n") {
+		t.Error("output does not end in a newline")
 	}
 }

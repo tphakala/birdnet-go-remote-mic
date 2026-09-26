@@ -7,7 +7,21 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, footerMetrics, needsNotificationsFallback, tallyStates } from "../src/lib/dashboard-core.js";
+import {
+  bannerIsError,
+  captureFormatLabel,
+  channelLabel,
+  channelStoppedMessage,
+  downCauseTitle,
+  focusFallbackRow,
+  footerMetrics,
+  hiddenRows,
+  hideInactivePrefDevice,
+  needsNotificationsFallback,
+  parseBoolPref,
+  tallyStates,
+} from "../src/lib/dashboard-core.js";
+import { hideInactiveKey } from "../src/lib/ui.js";
 
 test("needsNotificationsFallback loads when nothing loaded or the stream is down", () => {
   assert.equal(needsNotificationsFallback(true, true), false); // healthy: the connect re-sync loaded it
@@ -100,4 +114,37 @@ test("footerMetrics formats the card footer counters", () => {
   });
   // An appliance that predates the overrun counter omits it: zero, not "undefined".
   assert.equal(footerMetrics({ clientConnected: false, droppedFrames: 5 }).overruns, "0");
+});
+
+test("hiddenRows hides the rows no stream carries, only with the preference on", () => {
+  assert.deepEqual(hiddenRows([true, false, true, false], true), [false, true, false, true]);
+  assert.deepEqual(hiddenRows([true, false], false), [false, false]);
+  // Never every row: a selection that matches no row shows them all.
+  assert.deepEqual(hiddenRows([false, false], true), [false, false]);
+  assert.deepEqual(hiddenRows([], true), []);
+});
+
+test("focusFallbackRow picks the first visible row, or -1 when none is", () => {
+  assert.equal(focusFallbackRow([true, false, false]), 1);
+  assert.equal(focusFallbackRow([false, true]), 0);
+  assert.equal(focusFallbackRow([true, true]), -1);
+  // Chained with hiddenRows, a stranded focus always has a row to land on.
+  assert.notEqual(focusFallbackRow(hiddenRows([false, true], true)), -1);
+});
+
+test("channelStoppedMessage names the 1-based channel", () => {
+  assert.equal(channelStoppedMessage(3), "Channel 3 stopped streaming. Focus moved to the next visible channel.");
+});
+
+test("hideInactivePrefDevice reads back the device id of a hide-inactive key", () => {
+  assert.equal(hideInactivePrefDevice(hideInactiveKey("usb-Foo_Mic-00")), "usb-Foo_Mic-00");
+  assert.equal(hideInactivePrefDevice("remote-mic-theme"), null);
+  assert.equal(hideInactivePrefDevice(null), null);
+});
+
+test("parseBoolPref reads 1 and 0, and falls back for anything else", () => {
+  assert.equal(parseBoolPref("1", false), true);
+  assert.equal(parseBoolPref("0", true), false);
+  assert.equal(parseBoolPref(null, true), true);
+  assert.equal(parseBoolPref("yes", false), false);
 });

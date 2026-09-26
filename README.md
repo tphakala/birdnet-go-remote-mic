@@ -119,6 +119,15 @@ The **System** tab covers host information (platform, CPU, memory, temperature,
 disk), per-device stream status, the network and discovery settings, and the
 Access Control card for setting or rotating the shared access token.
 
+The **About** tab shows the running version, where to report a bug or ask a
+question (with a button that copies the version and host details a bug report
+needs), and the license of remote-mic and of every third-party component built
+into it.
+
+The theme menu in the header picks **System** (follow the operating system's
+light or dark setting, the default), **Light**, or **Dark**. The choice is kept
+per browser and applies at once in every open tab.
+
 ## Discovery
 
 Each configured device is advertised as its own mDNS/DNS-SD `_rtsp._tcp`
@@ -523,4 +532,16 @@ against the public keys in `internal/releasemanifest/keys.go`.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The licenses of the third-party components built
+into the binary are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and
+on the web UI's About tab.
+
+## Support
+
+Found a bug? Please [open an issue](https://github.com/tphakala/birdnet-go-remote-mic/issues).
+Questions, ideas, and field reports go to
+[Discussions](https://github.com/tphakala/birdnet-go-remote-mic/discussions).
+
+If remote-mic or [BirdNET-Go](https://github.com/tphakala/birdnet-go) is
+valuable to you, please consider
+[sponsoring the project](https://github.com/sponsors/tphakala).

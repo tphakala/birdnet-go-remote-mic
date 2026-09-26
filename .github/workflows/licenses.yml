@@ -1,6 +1,7 @@
 name: Licenses
 
-# Keeps THIRD_PARTY_LICENSES.md in step with what the binary actually links
+# Keeps THIRD_PARTY_LICENSES.md (and web/static/licenses.json, the About
+# page's copy) in step with what the binary actually links
 # (tools/licensegen). It runs on every pull request, not only on go.mod
 # changes: code can start linking a package from a module go.mod already lists
 # without touching go.mod.
@@ -57,7 +58,7 @@ jobs:
     name: Third-party licenses (Dependabot)
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
-    # The only job with write access, and it only commits the generated file.
+    # The only job with write access, and it only commits the generated files.
     permissions:
       contents: write
     steps:
@@ -74,12 +75,12 @@ jobs:
       - name: Regenerate and commit
         run: |
           go run ./tools/licensegen
-          if git diff --quiet -- THIRD_PARTY_LICENSES.md; then
-            echo "THIRD_PARTY_LICENSES.md is already up to date."
+          if git diff --quiet -- THIRD_PARTY_LICENSES.md web/static/licenses.json; then
+            echo "THIRD_PARTY_LICENSES.md and web/static/licenses.json are already up to date."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add THIRD_PARTY_LICENSES.md
+          git add THIRD_PARTY_LICENSES.md web/static/licenses.json
           git commit -m "deps: update third-party licenses"
           git push

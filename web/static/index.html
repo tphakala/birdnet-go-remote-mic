@@ -61,32 +61,47 @@
         </svg>
         <span>System</span>
       </a>
+      <a href="#/about" class="nav-item" data-view="about">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 16v-4"></path>
+          <path d="M12 8h.01"></path>
+        </svg>
+        <span>About</span>
+      </a>
     </nav>
 
     <!-- Header Quick Actions -->
     <div class="header-actions">
-      <!-- A toggle: pressed means the dark theme is on. lib/theme.ts sets
-           aria-pressed and the title and keeps them in step with data-theme;
-           neither is hardcoded here, because theme-init.js may already have
-           applied light, and a stale "pressed" would stay if app.js failed to
-           load. The icon shows the current theme (moon for dark, sun for
-           light) through CSS on data-theme. -->
-      <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" aria-label="Dark theme">
-        <svg class="theme-icon-dark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
-        </svg>
-        <svg class="theme-icon-light" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="4"></circle>
-          <path d="M12 2v2"></path>
-          <path d="M12 20v2"></path>
-          <path d="m4.93 4.93 1.41 1.41"></path>
-          <path d="m17.66 17.66 1.41 1.41"></path>
-          <path d="M2 12h2"></path>
-          <path d="M20 12h2"></path>
-          <path d="m6.34 17.66-1.41 1.41"></path>
-          <path d="m19.07 4.93-1.41 1.41"></path>
-        </svg>
-      </button>
+      <!-- The theme menu button: System, Light or Dark (components/menu-button.ts
+           builds the menu; lib/theme.ts owns the mode). The label and title name
+           the mode and the theme it shows ("Theme: System (dark)"); app.ts sets
+           them, so the static label is only the fallback if app.js fails to load.
+           The icon shows the mode through CSS: a monitor while following the OS,
+           else the moon or sun of the current theme on data-theme. -->
+      <div class="menu-wrap">
+        <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" aria-label="Theme" aria-haspopup="menu" aria-expanded="false">
+          <svg class="theme-icon-dark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+          <svg class="theme-icon-light" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2"></path>
+            <path d="M12 20v2"></path>
+            <path d="m4.93 4.93 1.41 1.41"></path>
+            <path d="m17.66 17.66 1.41 1.41"></path>
+            <path d="M2 12h2"></path>
+            <path d="M20 12h2"></path>
+            <path d="m6.34 17.66-1.41 1.41"></path>
+            <path d="m19.07 4.93-1.41 1.41"></path>
+          </svg>
+          <svg class="theme-icon-system" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+            <line x1="8" x2="16" y1="21" y2="21"></line>
+            <line x1="12" x2="12" y1="17" y2="21"></line>
+          </svg>
+        </button>
+      </div>
       <div class="notif-wrap">
         <button type="button" class="icon-btn" id="header-bell-btn" title="Notifications" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false" aria-controls="notif-panel">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -156,6 +171,10 @@
     <section id="view-dashboard" class="view-panel view-container active" aria-label="Dashboard" tabindex="-1">
 
       <h2 class="visually-hidden">Streaming Devices</h2>
+      <!-- Announces a keyboard focus move the operator did not make: a control
+           holding focus hid because its channel stopped streaming or access
+           control was turned off. Present from load so the first message is read. -->
+      <span class="visually-hidden" id="dashboard-announce" role="status" aria-live="polite"></span>
       <div class="channel-rack" id="channel-rack">
         <p class="rack-empty" id="rack-empty">Loading devices...</p>
       </div>
@@ -417,6 +436,9 @@
 
       </div>
     </section>
+
+    <!-- ================= VIEW 4: ABOUT (rendered by views/about.ts) ================= -->
+    <section id="view-about" class="view-panel view-container" aria-label="About" tabindex="-1"></section>
 
   </main>
 

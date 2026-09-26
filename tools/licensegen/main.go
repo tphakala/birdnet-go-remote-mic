@@ -1,5 +1,7 @@
 // Command licensegen writes THIRD_PARTY_LICENSES.md: the license of every
-// third-party component shipped in the remote-mic binary. That is the Go
+// third-party component shipped in the remote-mic binary. It also writes the
+// same data, plus remote-mic's own LICENSE, as web/static/licenses.json, which
+// the web UI's About page loads, so the page never drifts from the document. That is the Go
 // modules linked into ./cmd/remotemic for each release target, the Go standard
 // library and runtime, and the fonts bundled with the web UI.
 //
@@ -10,8 +12,8 @@
 //
 // Usage, from the repository root:
 //
-//	go run ./tools/licensegen          # rewrite THIRD_PARTY_LICENSES.md
-//	go run ./tools/licensegen -check   # exit 1 if it is out of date
+//	go run ./tools/licensegen          # rewrite both generated files
+//	go run ./tools/licensegen -check   # exit 1 if either is out of date
 package main
 
 import (
@@ -31,6 +33,13 @@ import (
 
 // outFile is the generated document, relative to the repository root.
 const outFile = "THIRD_PARTY_LICENSES.md"
+
+// jsonFile is the About page's copy of the same data; web:build copies
+// web/static into the embedded UI.
+const jsonFile = "web/static/licenses.json"
+
+// projectLicense is remote-mic's own license, shown first on the About page.
+const projectLicense = "LICENSE"
 
 // mainPackage is the binary whose dependencies are listed.
 const mainPackage = "./cmd/remotemic"
@@ -65,11 +74,11 @@ type component struct {
 // licenseFile is one license or notice file of a component.
 type licenseFile struct{ name, text string }
 
-// ErrStale reports that the committed document differs from a fresh one.
-var ErrStale = errors.New(outFile + " is out of date; run: task licenses:generate")
+// ErrStale reports that a committed generated file differs from a fresh one.
+var ErrStale = errors.New("is out of date; run: task licenses:generate")
 
 func main() {
-	check := flag.Bool("check", false, "exit 1 if "+outFile+" is out of date instead of rewriting it")
+	check := flag.Bool("check", false, "exit 1 if "+outFile+" or "+jsonFile+" is out of date instead of rewriting them")
 	flag.Parse()
 	if err := run(*check); err != nil {
 		fmt.Fprintln(os.Stderr, "licensegen:", err)
@@ -82,16 +91,32 @@ func run(check bool) error {
 	if err != nil {
 		return err
 	}
-	doc := render(comps)
-	if !check {
-		return os.WriteFile(outFile, doc, 0o644) //nolint:gosec // a public document in the repository, meant to be world-readable
+	own, err := readLicense(projectLicense)
+	if err != nil {
+		return fmt.Errorf("remote-mic %s: %w", projectLicense, err)
 	}
-	cur, err := os.ReadFile(outFile)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	js, err := renderJSON(own, comps)
+	if err != nil {
 		return err
 	}
-	if !bytes.Equal(cur, doc) {
-		return ErrStale
+	outputs := []struct {
+		path string
+		data []byte
+	}{{outFile, render(comps)}, {jsonFile, js}}
+	for _, o := range outputs {
+		if !check {
+			if err := os.WriteFile(o.path, o.data, 0o644); err != nil { //nolint:gosec // public documents in the repository, meant to be world-readable
+				return err
+			}
+			continue
+		}
+		cur, err := os.ReadFile(o.path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if !bytes.Equal(cur, o.data) {
+			return fmt.Errorf("%s %w", o.path, ErrStale)
+		}
 	}
 	return nil
 }
@@ -375,4 +400,47 @@ func render(comps []component) []byte {
 		}
 	}
 	return []byte(b.String())
+}
+
+// licenseDoc is the JSON the web UI's About page reads (web/src/lib/about-core.ts
+// validates the same shape).
+type licenseDoc struct {
+	Project    licenseEntry   `json:"project"`
+	Components []licenseEntry `json:"components"`
+}
+
+type licenseEntry struct {
+	Name    string      `json:"name"`
+	Version string      `json:"version,omitempty"`
+	License string      `json:"license"`
+	Files   []fileEntry `json:"files"`
+}
+
+type fileEntry struct {
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
+// renderJSON encodes remote-mic's own license and every component, in the
+// document's order, indented so a diff of the committed file stays readable.
+func renderJSON(own licenseFile, comps []component) ([]byte, error) {
+	entry := func(c component) licenseEntry {
+		files := make([]fileEntry, 0, len(c.files))
+		for _, f := range c.files {
+			files = append(files, fileEntry{Name: f.name, Text: f.text})
+		}
+		return licenseEntry{Name: c.name, Version: c.version, License: componentLicense(c), Files: files}
+	}
+	doc := licenseDoc{
+		Project:    entry(component{name: "remote-mic", files: []licenseFile{own}}),
+		Components: make([]licenseEntry, 0, len(comps)),
+	}
+	for _, c := range comps {
+		doc.Components = append(doc.Components, entry(c))
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }

@@ -242,6 +242,21 @@ const PAIRS: Pair[] = [
   { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: AA },
   { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
 
+  // Menu button popover (the header theme menu): items on the card surface,
+  // the hovered or focused item on the raised surface, and the accent check
+  // mark on the chosen one.
+  { what: "menu item label (hover)", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
+  { what: "menu item icon", fg: "--text-secondary", bg: ["--bg-surface"], min: AA_NON_TEXT },
+  { what: "menu check mark (hover)", fg: "--accent-cyan-text", bg: ["--bg-surface-raised"], min: AA_NON_TEXT },
+
+  // About page: license texts and the system details sit on the page ground
+  // inside a card; the log command is inline code on the raised surface.
+  { what: "license text", fg: "--text-secondary", bg: ["--bg-page"], min: AA },
+  { what: "system details text", fg: "--text-primary", bg: ["--bg-page"], min: AA },
+  { what: "license file name", fg: "--text-muted", bg: ["--bg-surface"], min: AA },
+  { what: "about inline code", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
+  { what: "license disclosure link", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
+
   // Toasts are the neutral raised surface for every severity.
   { what: "toast message", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
   { what: "toast dismiss glyph", fg: "--text-muted", bg: ["--bg-surface-raised"], min: AA_NON_TEXT },

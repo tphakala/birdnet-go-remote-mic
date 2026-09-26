@@ -4,6 +4,8 @@
 // label maps live in exactly one place.
 import { ApiError } from "./api.js";
 import { showToast } from "../components/toast.js";
+import { prefSaveNotice } from "./prefs.js";
+import { HIDE_INACTIVE_PREFIX, parseBoolPref } from "./dashboard-core.js";
 
 // elem creates an element with an optional class and text content.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
@@ -170,14 +172,14 @@ export function clearBusy(el: HTMLElement, label?: string): void {
 // viewer view option, not appliance config, so it lives in localStorage keyed by
 // the stable device id rather than in the saved config. read/write are wrapped
 // because localStorage can throw (private mode, disabled storage); a failure
-// falls back to the default and simply does not persist.
+// falls back to the default, does not persist, and raises the shared notice
+// once per page (lib/prefs.ts).
 export function hideInactiveKey(deviceId: string): string {
-  return `remote-mic-hide-inactive:${deviceId}`;
+  return `${HIDE_INACTIVE_PREFIX}${deviceId}`;
 }
 export function readBoolPref(key: string, fallback: boolean): boolean {
   try {
-    const v = localStorage.getItem(key);
-    return v === null ? fallback : v === "1";
+    return parseBoolPref(localStorage.getItem(key), fallback);
   } catch {
     return fallback;
   }
@@ -186,7 +188,7 @@ export function writeBoolPref(key: string, value: boolean): void {
   try {
     localStorage.setItem(key, value ? "1" : "0");
   } catch {
-    /* storage unavailable: the preference just does not persist */
+    prefSaveNotice.report();
   }
 }
 
@@ -287,6 +289,18 @@ export function copyText(value: string, successMessage: string): void {
 export function setText(el: HTMLElement, text: string): void {
   if (el.textContent !== text) el.textContent = text;
 }
+// announce puts a message in a polite live region (role=status, present in the
+// page from load so the first message is read). The region is cleared first,
+// so a repeat of the same message is announced again.
+export function announce(region: HTMLElement | null, message: string): void {
+  if (!region) return;
+  region.textContent = "";
+  // The next frame, so the clear and the new text are separate mutations.
+  requestAnimationFrame(() => {
+    region.textContent = message;
+  });
+}
+
 export function setHidden(el: HTMLElement, hidden: boolean): void {
   if (el.hidden !== hidden) el.hidden = hidden;
 }
@@ -366,4 +380,20 @@ export function renderLoadError(
     onRetry();
   });
   container.appendChild(retry);
+}
+
+// externalLink builds a link that opens in a new tab (the appliance UI stays
+// open behind it), with rel="noopener" so the new page cannot reach back into
+// this one, and a visually hidden note so a screen reader says so too. Pass a
+// .btn class and an icon for a button-styled link.
+export function externalLink(href: string, text: string, opts: { className?: string; icon?: string } = {}): HTMLAnchorElement {
+  const a = document.createElement("a");
+  if (opts.className) a.className = opts.className;
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener";
+  if (opts.icon) a.appendChild(iconSpan(opts.icon, "btn-icon"));
+  a.appendChild(elem("span", undefined, text));
+  a.appendChild(elem("span", "visually-hidden", " (opens in a new tab)"));
+  return a;
 }

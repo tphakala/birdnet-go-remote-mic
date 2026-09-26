@@ -8,6 +8,7 @@ import { api, ApiError, type ApiClient } from "./api.js";
 import { sse, type SSEClient } from "./sse.js";
 import { store, type Timers } from "./store.js";
 import { showToast } from "../components/toast.js";
+import { prefSaveNotice } from "./prefs.js";
 import {
   LoadTracker,
   applyLive,
@@ -294,7 +295,9 @@ export class NotificationStore extends EventTarget {
       localStorage.setItem(STORAGE_KEY, next);
     } catch {
       // A quota or availability error must not break the UI; the read state is
-      // a convenience, rebuilt from the server on the next load either way.
+      // a convenience, rebuilt from the server on the next load either way. The
+      // shared notice says once why read marks reset on reload.
+      prefSaveNotice.report();
     }
   }
 
