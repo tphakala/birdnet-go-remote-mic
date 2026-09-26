@@ -1,16 +1,17 @@
 import { api } from "../lib/api.js";
 import { showToast } from "./toast.js";
 import { confirmDialog, setAppInert, trapFocus } from "../lib/modal.js";
+import { announce } from "../lib/ui.js";
 
 // restarting guards against a double click starting two restart flows (and thus
 // two countdown/health-poll intervals).
 let restarting = false;
 
-// announce writes to the polite live region that carries only phase changes, so
-// a screen reader is not spammed by the per-second visual countdown.
-function announce(text: string): void {
-  const el = document.getElementById("restart-announce");
-  if (el) el.textContent = text;
+// say writes to the polite live region that carries only phase changes, so a
+// screen reader is not spammed by the per-second visual countdown. The shared
+// announce clears the region first, so a repeated phase is read again.
+function say(text: string): void {
+  announce(document.getElementById("restart-announce"), text);
 }
 
 // confirmRestart asks the user to confirm the disruptive restart before it runs.
@@ -57,7 +58,7 @@ export async function triggerApplianceRestart(): Promise<void> {
 
   // Announce the phase once; the per-second countdown below updates only the
   // aria-hidden visual element, so it is not read out on every tick.
-  announce("Restarting the appliance. Reconnecting shortly.");
+  say("Restarting the appliance. Reconnecting shortly.");
 
   let seconds = 5;
   if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
@@ -69,7 +70,7 @@ export async function triggerApplianceRestart(): Promise<void> {
     } else {
       clearInterval(countdown);
       if (timerEl) timerEl.textContent = "Probing /healthz...";
-      announce("Checking whether the appliance is back online.");
+      say("Checking whether the appliance is back online.");
       startHealthPolling();
     }
   }, 1000);
@@ -89,7 +90,7 @@ function startHealthPolling(): void {
       if (res.ok) {
         clearInterval(interval);
         if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
-        announce("Appliance is back online. Reloading.");
+        say("Appliance is back online. Reloading.");
         window.setTimeout(() => {
           window.location.reload();
         }, 600);
@@ -101,7 +102,7 @@ function startHealthPolling(): void {
     if (attempts >= maxAttempts) {
       clearInterval(interval);
       if (timerEl) timerEl.textContent = "Restart timed out.";
-      announce("Restart timed out. Use the reload button to try again.");
+      say("Restart timed out. Use the reload button to try again.");
       showRetry();
     }
   }, 1000);

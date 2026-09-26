@@ -128,19 +128,10 @@ export function channelHiddenMessage(hidden: number, target: number | null): str
   return `Channel ${hidden} is hidden. Focus moved to ${where}.`;
 }
 export const TOKEN_HIDDEN_MESSAGE = "This stream no longer needs the access token. Focus moved to the device settings.";
+// Said when a card rebuilds into a shape without the control that held focus
+// (a copy or clip button after a flip from serving to idle).
+export const CONTROL_GONE_MESSAGE = "That control is no longer shown. Focus moved to the device settings.";
 
-// HIDE_INACTIVE_PREFIX starts every "hide inactive channels" storage key; the
-// device id follows it (hideInactiveKey in ui.ts builds the key).
-export const HIDE_INACTIVE_PREFIX = "remote-mic-hide-inactive:";
-
-// hideInactivePrefDevice returns the device id a storage key belongs to when it
-// is a "hide inactive channels" key, else null.
-export function hideInactivePrefDevice(key: string | null): string | null {
-  return key !== null && key.startsWith(HIDE_INACTIVE_PREFIX) ? key.slice(HIDE_INACTIVE_PREFIX.length) : null;
-}
-
-// parseBoolPref reads a stored boolean preference ("1" on, "0" off) with the
-// default for anything else, including a removed key (null).
-export function parseBoolPref(v: string | null, fallback: boolean): boolean {
-  return v === "1" ? true : v === "0" ? false : fallback;
-}
+// Said after a device is removed, following the "Removed" toast: its card and
+// the Remove button that held focus are gone, so focus moved to the dashboard.
+export const REMOVED_FOCUS_MESSAGE = "Focus moved to the dashboard.";

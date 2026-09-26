@@ -41,11 +41,13 @@ The output must stay plain ES modules (plus the one classic script,
   `fetch("/api/v1/healthz")` probe), `sse.ts` (`sse`, fetch-streaming SSE
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
   state), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`,
-  `#/about`),
+  `#/about`; the pure route decisions are in `router-core.ts`),
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
   formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow
   and cross-tab sync, with the browser objects injected so `node:test` covers
-  it), `prefs.ts` (the once-per-page "preferences not saved" notice),
+  it), `prefs.ts` (per-browser boolean preferences, `readBoolPref`/`writeBoolPref`,
+  `isLocalStorageEvent`, the hide-inactive keys, and the once-per-page
+  "preferences not saved" notice),
   `types.ts` (API types).
 - `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
   `CustomDropdown`, `MenuButton`, `VUMeter`, `DeviceSettingsForm`,
@@ -126,7 +128,12 @@ reconcile:
   live-region message), `MenuButton` (a single-choice header menu),
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
   switch; the static ones in `index.html` copy its markup, `role="switch"`
-  included), and icon constants such as `ICON_COPY` and `TOAST_ICONS`.
+  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size), and
+  icon constants such as `ICON_COPY` and `TOAST_ICONS`.
+- A component with non-trivial event wiring keeps its state and sequencing in
+  a DOM-free controller in `lib/*-core.ts` that drives injected ports (see
+  `MenuController` in `lib/menu-core.ts`), so node:test pins the wiring, not
+  only the decisions.
 
 ## DOM safety
 
@@ -143,22 +150,28 @@ reconcile:
   preference the operator just chose cannot be saved, call
   `prefSaveNotice.report()` (`lib/prefs.ts`), which warns once per page; an
   automatic write (a snapshot or a live event) and the access token stay
-  silent. Each key has one writer. The theme and the hidden channels also
-  follow changes made in another tab (the `storage` event).
+  silent. Each key has one writer. The theme, the hidden channels and the
+  Events `/` shortcut also follow changes made in another tab (the `storage`
+  event).
 
 ## Accessibility (a CI gate, not a nicety)
 
 - `web:a11y` (html-validate on `index.html`) and the WCAG contrast test
   (`test/contrast.test.ts`) must pass. The contrast test checks only the pairs
   in its `PAIRS` table, so any new colored surface or text-on-background
-  combination needs a new entry. Secondary and muted text must reach
-  `SMALL_TEXT` (5.5:1), not just AA.
-- Type floor (`test/legibility.test.ts`): no text below 12px, and text below
-  the 13px body size needs weight 500 or more. Sentences (subtitles, hints,
-  notes, messages) use 13px at regular weight; 12px is for short labels,
-  badges and data at 500+. Declare the weight next to the size, since the test
-  reads each rule on its own. The two allowed 11px exceptions are listed in
-  the test with their reasons.
+  combination needs a new entry (each foreground and ground pair once; name
+  another surface that shares it in the entry's description). Colors are
+  tokens even for a one-off surface, so a pair can describe them. Secondary
+  and muted text must reach `SMALL_TEXT` (5.5:1), not just AA.
+- Type scale and floor (`test/legibility.test.ts`): every `font-size` is a
+  `var(--font-size-*)` role token (rem, defined on `:root`), never a literal,
+  and a `font:` shorthand may only reset (`font: inherit`). No text below
+  12px, and text below the 13px body size needs weight 500 or more. Sentences
+  (subtitles, hints, notes, messages) use body (13px) at regular weight;
+  caption (12px) is for short labels, badges and data at 500+. Declare the
+  weight next to the size, since the test reads each rule on its own. The two
+  allowed 11px exceptions (`--font-size-micro`) are listed in the test with
+  their reasons.
 - Everything is keyboard-operable with a visible focus ring. Modals trap focus
   (`trapFocus`), make the background inert (`setAppInert`), and return focus
   to the invoker on close. Updates must not steal or drop focus.

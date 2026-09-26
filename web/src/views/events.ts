@@ -12,7 +12,8 @@
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.js";
-import { button, clearBusy, downloadBlob, elem, iconSpan, readBoolPref, setBusy, setHidden, setText, switchControl, writeBoolPref } from "../lib/ui.js";
+import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, switchControl } from "../lib/ui.js";
+import { isLocalStorageEvent, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { showToast } from "../components/toast.js";
 import { FilterChips } from "../components/filter-chips.js";
 import { StatTile } from "../components/stat-tile.js";
@@ -163,6 +164,7 @@ export class EventsView {
   private cacheBoot: string | null = null;
   private search!: HTMLInputElement;
   private searchKbd!: HTMLElement;
+  private slashInput!: HTMLInputElement;
   private sevChips!: FilterChips;
   private catChips!: FilterChips;
   private filterBar!: HTMLElement;
@@ -205,6 +207,17 @@ export class EventsView {
       this.setVisible((e as CustomEvent<string>).detail === "events");
     });
     document.addEventListener("keydown", this.onKeydown);
+    // A "/" shortcut change saved in another tab applies here at once (the
+    // storage event fires only in the other tabs); a cleared storage (key
+    // null) means the default, on.
+    window.addEventListener("storage", (e: StorageEvent) => {
+      if (!isLocalStorageEvent(e) || (e.key !== null && e.key !== SLASH_PREF_KEY)) return;
+      const on = parseBoolPref(e.key === null ? null : e.newValue, true);
+      if (on === this.slashShortcut) return;
+      this.slashShortcut = on;
+      this.slashInput.checked = on;
+      this.applySlashShortcut();
+    });
     this.setVisible(router.getCurrentView() === "events");
   }
 
@@ -385,6 +398,7 @@ export class EventsView {
       extraClass: "ev-shortcut-toggle",
       checked: this.slashShortcut,
     });
+    this.slashInput = input;
     input.addEventListener("change", () => {
       this.slashShortcut = input.checked;
       writeBoolPref(SLASH_PREF_KEY, input.checked);

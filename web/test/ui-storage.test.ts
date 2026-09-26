@@ -1,4 +1,4 @@
-// Unit tests for isLocalStorageEvent (lib/ui.ts), the guard both storage
+// Unit tests for isLocalStorageEvent (lib/prefs.ts), the guard both storage
 // listeners use to ignore sessionStorage changes, including a browser where
 // reading localStorage itself throws. Run with node:test over the compiled
 // output (see web:test).
@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { isLocalStorageEvent } from "../src/lib/ui.js";
+import { isLocalStorageEvent } from "../src/lib/prefs.js";
 
 const g = globalThis as unknown as { window?: unknown };
 

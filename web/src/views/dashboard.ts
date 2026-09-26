@@ -3,8 +3,9 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, isLocalStorageEvent, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeBoolPref, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, hideInactivePrefDevice, parseBoolPref, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
+import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
+import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, CONTROL_GONE_MESSAGE, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
+import { hideInactiveKey, hideInactivePrefDevice, isLocalStorageEvent, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -627,6 +628,7 @@ export class DashboardView {
         document.getElementById("main-content")?.focus({ preventScroll: true });
         await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         showToast(`Removed ${entry.device.name}.`);
+        announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Remove failed");
@@ -1158,8 +1160,13 @@ export class DashboardView {
       // A control that is gone or hidden in the rebuilt shape (copy and clip-N
       // after a flip to idle, or the token tag when the stream no longer needs
       // the token) cannot take focus; keep focus on the card via the settings
-      // button rather than letting it fall to <body>.
-      (node && !node.hidden && !node.closest("[hidden]") ? node : entry.settingsBtn).focus();
+      // button rather than letting it fall to <body>, and say why it moved.
+      if (node && !node.hidden && !node.closest("[hidden]")) {
+        node.focus();
+      } else {
+        entry.settingsBtn.focus();
+        announce(this.announceEl, CONTROL_GONE_MESSAGE);
+      }
     }
   }
 

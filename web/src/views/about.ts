@@ -21,23 +21,22 @@ import {
 import { router } from "../lib/router.js";
 import { store } from "../lib/store.js";
 import type { ApplianceStatus, Device, SystemInfo } from "../lib/types.js";
-import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText } from "../lib/ui.js";
+import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.js";
 
 // Section and link icons: static, trusted markup.
-const svg = (body: string, size = 16): string =>
-  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-const ICON_INFO = svg('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>');
-const ICON_HELP = svg('<circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path>');
-const ICON_HEART = svg('<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>');
+const ICON_INFO = svgIcon('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>');
+const ICON_HELP = svgIcon('<circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path>');
+const HEART_PATH = '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>';
+const ICON_HEART = svgIcon(HEART_PATH);
 const SCALE_PATH = '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path><path d="M7 21h10"></path><path d="M12 3v18"></path><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"></path>';
-const ICON_SCALE = svg(SCALE_PATH);
-const ICON_BUG = svg('<path d="m8 2 1.88 1.88"></path><path d="M14.12 3.88 16 2"></path><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"></path><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"></path><path d="M12 20v-9"></path><path d="M6.53 9C4.6 8.8 3 7.1 3 5"></path><path d="M6 13H2"></path><path d="M3 21c0-2.1 1.7-3.9 3.8-4"></path><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"></path><path d="M22 13h-4"></path><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"></path>', 12);
-const ICON_CHAT = svg('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path>', 12);
+const ICON_SCALE = svgIcon(SCALE_PATH);
+const ICON_BUG = svgIcon('<path d="m8 2 1.88 1.88"></path><path d="M14.12 3.88 16 2"></path><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"></path><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"></path><path d="M12 20v-9"></path><path d="M6.53 9C4.6 8.8 3 7.1 3 5"></path><path d="M6 13H2"></path><path d="M3 21c0-2.1 1.7-3.9 3.8-4"></path><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"></path><path d="M22 13h-4"></path><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"></path>', 12);
+const ICON_CHAT = svgIcon('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path>', 12);
 // Detail-row icons (14px Lucide glyphs), as in the System Information card.
-const ICON_AUTHOR = svg('<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>', 14);
-const ICON_CODE = svg('<polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline>', 14);
-const ICON_SCALE_SM = svg(SCALE_PATH, 14);
-const ICON_HEART_SM = svg('<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>', 12);
+const ICON_AUTHOR = svgIcon('<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>', 14);
+const ICON_CODE = svgIcon('<polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline>', 14);
+const ICON_SCALE_SM = svgIcon(SCALE_PATH, 14);
+const ICON_HEART_SM = svgIcon(HEART_PATH, 12);
 
 const LOADING_TEXT = "Loading license texts...";
 const LICENSES_TIMEOUT_MS = 15_000;

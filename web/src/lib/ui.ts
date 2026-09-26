@@ -4,8 +4,6 @@
 // label maps live in exactly one place.
 import { ApiError } from "./api.js";
 import { showToast } from "../components/toast.js";
-import { prefSaveNotice } from "./prefs.js";
-import { HIDE_INACTIVE_PREFIX, parseBoolPref } from "./dashboard-core.js";
 
 // elem creates an element with an optional class and text content.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
@@ -35,6 +33,17 @@ export const ICON_COPY =
 // card and the About page so the same fact carries the same icon.
 export const ICON_VERSION =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" x2="7.01" y1="7" y2="7"></line></svg>';
+
+// svgIcon wraps the body of a 24x24 stroked (Lucide style) glyph in its <svg>
+// element at the given pixel size, so an icon constant carries only its paths.
+// The body must be static, trusted markup: the result goes through innerHTML.
+export function svgIcon(body: string, size = 16): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+}
+
+// ICON_EXTERNAL marks a link that opens in a new tab, for sighted users; the
+// visually hidden note in externalLink tells screen reader users.
+const ICON_EXTERNAL = svgIcon('<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>', 12);
 
 // iconSpan wraps trusted, static icon markup in a decorative (aria-hidden) span.
 // The control's own text or aria-label carries the meaning, so the graphic is
@@ -171,43 +180,6 @@ export function clearBusy(el: HTMLElement, label?: string): void {
   el.removeAttribute("aria-disabled");
   el.removeAttribute("aria-busy");
   el.classList.remove("is-busy");
-}
-
-// Per-device meter display preference: "hide inactive channels". It is a per-
-// viewer view option, not appliance config, so it lives in localStorage keyed by
-// the stable device id rather than in the saved config. read/write are wrapped
-// because localStorage can throw (site data blocked, storage full): a failed
-// read falls back to the default, and a failed write does not persist and
-// raises the shared notice once per page (lib/prefs.ts).
-export function hideInactiveKey(deviceId: string): string {
-  return `${HIDE_INACTIVE_PREFIX}${deviceId}`;
-}
-export function readBoolPref(key: string, fallback: boolean): boolean {
-  try {
-    return parseBoolPref(localStorage.getItem(key), fallback);
-  } catch {
-    return fallback;
-  }
-}
-// isLocalStorageEvent reports whether a storage event is a localStorage change
-// (a clear in another tab arrives with key null and this window's
-// localStorage as its area), not a sessionStorage one. A null area only occurs
-// on an event built without one, which is let through. Reading localStorage
-// can itself throw where site data is blocked.
-export function isLocalStorageEvent(e: StorageEvent): boolean {
-  try {
-    return e.storageArea === null || e.storageArea === window.localStorage;
-  } catch {
-    return false;
-  }
-}
-
-export function writeBoolPref(key: string, value: boolean): void {
-  try {
-    localStorage.setItem(key, value ? "1" : "0");
-  } catch {
-    prefSaveNotice.report();
-  }
 }
 
 // How long a download's object URL outlives the click. Some browsers start
@@ -412,8 +384,9 @@ export function renderLoadError(
 
 // externalLink builds a link that opens in a new tab (the appliance UI stays
 // open behind it), with rel="noopener" so the new page cannot reach back into
-// this one, and a visually hidden note so a screen reader says so too. Pass a
-// .btn class and an icon for a button-styled link.
+// this one, a small external-link icon after the text, and a visually hidden
+// note so a screen reader says so too. Pass a .btn class and an icon for a
+// button-styled link.
 export function externalLink(href: string, text: string, opts: { className?: string; icon?: string } = {}): HTMLAnchorElement {
   const a = document.createElement("a");
   if (opts.className) a.className = opts.className;
@@ -422,6 +395,7 @@ export function externalLink(href: string, text: string, opts: { className?: str
   a.rel = "noopener";
   if (opts.icon) a.appendChild(iconSpan(opts.icon, "btn-icon"));
   a.appendChild(elem("span", undefined, text));
+  a.appendChild(iconSpan(ICON_EXTERNAL, "external-icon"));
   a.appendChild(elem("span", "visually-hidden", " (opens in a new tab)"));
   return a;
 }

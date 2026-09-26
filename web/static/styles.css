@@ -518,14 +518,14 @@ textarea {
    current theme's icon does. Dark is the default, so anything but
    data-theme="light" is dark, and before app.js sets a mode the button shows
    the theme like a Light or Dark choice. */
-:root[data-theme="light"] .theme-toggle .theme-icon-dark,
-:root:not([data-theme="light"]) .theme-toggle .theme-icon-light,
-.theme-toggle .theme-icon-system,
-.theme-toggle[data-mode="system"] .theme-icon-dark,
-.theme-toggle[data-mode="system"] .theme-icon-light {
+:root[data-theme="light"] .theme-menu-btn .theme-icon-dark,
+:root:not([data-theme="light"]) .theme-menu-btn .theme-icon-light,
+.theme-menu-btn .theme-icon-system,
+.theme-menu-btn[data-mode="system"] .theme-icon-dark,
+.theme-menu-btn[data-mode="system"] .theme-icon-light {
   display: none;
 }
-.theme-toggle[data-mode="system"] .theme-icon-system {
+.theme-menu-btn[data-mode="system"] .theme-icon-system {
   display: block;
 }
 
@@ -1428,6 +1428,17 @@ textarea.field-input {
 /* Custom Switch Toggle */
 /* Visually hides an element while keeping it in the accessibility tree and
    keyboard-focusable (do NOT use display:none, which removes focusability). */
+/* The new-tab mark after an external link's text (lib/ui.ts externalLink). */
+.external-icon {
+  display: inline-flex;
+  margin-left: 4px;
+  vertical-align: -1px;
+  opacity: 0.8;
+}
+.btn .external-icon {
+  margin-left: 0;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
