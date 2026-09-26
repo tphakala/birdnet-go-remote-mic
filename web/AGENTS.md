@@ -165,9 +165,11 @@ reconcile:
   `PREFERS_LIGHT_QUERY` in `lib/theme.ts`. While nothing is saved,
   `lib/theme.ts` follows OS changes live; a toggle click saves and wins.
   `color-scheme` on each theme block keeps native controls in step.
-- Programmatic focus moved to a tall region as a fallback (`#main-content`, a
-  view section) uses `focus({ preventScroll: true })`, so the page stays where
-  the operator was.
+- Programmatic focus on a tall region uses `focus({ preventScroll: true })`,
+  so the focus call never picks the scroll position: a fallback focus onto
+  `#main-content` (device removal, login close) leaves the page where the
+  operator was, while the router focuses the new view section and then scrolls
+  to the top on purpose, so the header stays in view.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.

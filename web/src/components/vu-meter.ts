@@ -1,9 +1,9 @@
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (the toggle, or a
-// live OS switch while no theme is saved). The lit
-// segment colours (green/amber/red) read on both grounds and stay fixed; only
-// the track and unlit-segment tints need to swap, since white-on-light was
-// invisible. Shared by every meter instance.
+// live OS switch while no theme is saved). The lit segment colours
+// (green/amber/red) read on both grounds and stay fixed; only the track and
+// unlit-segment tints need to swap, since white-on-light was invisible. Shared
+// by every meter instance.
 let meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
 try {
   new MutationObserver(() => {

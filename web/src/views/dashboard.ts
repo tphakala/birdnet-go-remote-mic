@@ -129,8 +129,9 @@ interface CardEntry extends ArticleParts {
   dirty: boolean;
   // The per-device "hide inactive channels" display preference. Read from
   // storage once when the entry is created and updated by the settings switch,
-  // rather than re-read on every poll; also keeps the choice working for this
-  // visit when the browser cannot persist it.
+  // rather than re-read on every poll. It lives as long as the card entry: a
+  // change made in another tab shows after a reload, and when the browser
+  // cannot persist it the choice holds until the device leaves the list.
   hideInactive: boolean;
 }
 
@@ -597,10 +598,9 @@ export class DashboardView {
         await api.deleteDevice(entry.device.name);
         // The card (and this button) is about to be destroyed by the refresh,
         // which would drop focus to the document body. Move it to the workspace
-        // region first so a keyboard user keeps a sensible place. A fallback focus
-        // onto that tall landmark never scrolls (as in the router and the login
-        // modal): a plain focus() would jump the page to the top of <main>, away
-        // from where the removed card was.
+        // region first so a keyboard user keeps a sensible place. preventScroll,
+        // as in the login modal: a plain focus() would jump the page to the top
+        // of <main>, away from where the removed card was.
         document.getElementById("main-content")?.focus({ preventScroll: true });
         await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         showToast(`Removed ${entry.device.name}.`);
@@ -1079,8 +1079,8 @@ export class DashboardView {
         if (clip && clip.getAttribute("aria-label") !== clipAria) clip.setAttribute("aria-label", clipAria);
       });
       if (strandedFocus) {
-        // The nearest stable place: the first visible row's clip button (anyLive
-        // guarantees one), else the card's settings button.
+        // A stable place in the same card: the first visible row's clip button
+        // (anyLive guarantees one), else the card's settings button.
         const next = entry.live.rows.find((r) => !r.hidden)?.querySelector<HTMLElement>(".clip-latch-btn");
         (next ?? entry.settingsBtn).focus();
       }
