@@ -1,6 +1,6 @@
-// AboutView renders the About page (#/about): what the appliance is, its build
-// version, where to report bugs and ask questions, a sponsorship request, and
-// the licenses of remote-mic and of everything it ships. The license texts come
+// AboutView renders the About page (#/about): what the appliance is and its
+// build version, a sponsorship request, where to report bugs and ask questions,
+// and the licenses of remote-mic and of everything it ships. The license texts come
 // from licenses.json, which tools/licensegen writes from the build's module
 // graph; it is a static file (served without the token), loaded the first time
 // the page is shown, so an appliance nobody opens About on never fetches it.
@@ -110,12 +110,12 @@ export class AboutView {
 
   private build(): HTMLElement {
     const stack = elem("div", "config-layout");
-    stack.append(this.buildProject(), this.buildHelp(), this.buildSupport(), this.buildLicense(), this.buildThirdParty());
+    stack.append(this.buildProject(), this.buildSupport(), this.buildHelp(), this.buildLicense(), this.buildThirdParty());
     return stack;
   }
 
   private buildProject(): HTMLElement {
-    const { card, body } = section(ICON_INFO, "About Remote Mic", "A network microphone appliance for BirdNET-Go.");
+    const { card, body } = section(ICON_INFO, "About Remote Mic", "A remote microphone streaming appliance for BirdNET-Go.");
     body.appendChild(elem(
       "p",
       "about-text",
