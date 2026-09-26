@@ -4,8 +4,8 @@ import { router } from "../lib/router.js";
 import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.js";
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
-import { awaitUpdateInstall, triggerApplianceRestart, type InstallWaitHandle } from "../components/restart-modal.js";
-import { describeUpdate, installMethodLabel, lastCheckText, safeNotesUrl } from "../lib/update-core.js";
+import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
+import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, UpdateFollow, VersionWatch } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -82,6 +82,10 @@ function formatCertTime(iso: string): string {
 // TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
 // so an obviously invalid token is caught before the round trip.
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
+
+// VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
+// enough to be seen by someone who comes back to the tab.
+const VERSION_NOTICE_MS = 5 * 60_000;
 
 // CERT_LOAD_ERROR_THRESHOLD is the number of consecutive certificate load
 // failures (one attempt per status poll) before the card shows its load-error
@@ -208,13 +212,16 @@ export class SystemView {
   private updateChecking = false;
   private updateApplying = false;
   private updateToggling = false;
-  // The wait for an update this tab started, from the request until the
-  // appliance answers again or the attempt fails.
-  private installWait: InstallWaitHandle | null = null;
-  // Whether a status fetched after the update request has arrived. A poll
-  // that started before the request can land after it still reading idle,
-  // which must not end the wait.
-  private installFresh = false;
+  // The update this tab started, followed from the request until it ends or
+  // the page reloads onto the new version; null when not following.
+  private follow: UpdateFollow | null = null;
+  private updateModal: UpdateModal | null = null;
+  private followTimer: ReturnType<typeof setInterval> | null = null;
+  // The version this page's scripts came from, and the last new version this
+  // tab was told about, so the reload notice shows once per version.
+  private readonly versionWatch = new VersionWatch();
+  private versionNoticeFor = "";
+  private reloading = false;
 
   constructor() {
     this.tilesEl = document.getElementById("sys-tiles");
@@ -261,6 +268,7 @@ export class SystemView {
     });
     store.addEventListener("status", (e: Event) => {
       this.status = (e as CustomEvent<ApplianceStatus>).detail;
+      this.watchVersion(this.status.version);
       this.renderTiles();
       this.renderInfo();
       this.renderOverrides();
@@ -1069,11 +1077,11 @@ export class SystemView {
     this.updateApplyBtn?.addEventListener("click", () => void this.startUpdate());
   }
 
-  // renderUpdate patches the Software Update card from the last status, or the
-  // status a check or an update request just returned. An appliance without
-  // update support sends none and the card stays hidden.
-  private renderUpdate(fresh?: UpdateStatus): void {
-    const u = fresh ?? this.system?.update;
+  // renderUpdate patches the Software Update card from the store's status (a
+  // check or an update request merges its response there first). An
+  // appliance without update support sends none and the card stays hidden.
+  private renderUpdate(): void {
+    const u = this.system?.update;
     const card = this.updateCardEl;
     if (!card) return;
     setHidden(card, !u);
@@ -1115,7 +1123,7 @@ export class SystemView {
       if (view.busy) setBusy(apply, u.phase === "downloading" ? "Downloading..." : "Installing...");
       else if (!this.updateApplying) clearBusy(apply, `Update to ${view.applyVersion}`);
     }
-    this.followInstall(u);
+    this.followStatus(u);
   }
 
   // renderUpdateInfo fills the fixed info rows, built on the first render.
@@ -1148,21 +1156,82 @@ export class SystemView {
     slot.replaceChildren(...(url ? [externalLink(url, "Release Notes")] : []));
   }
 
-  // followInstall moves the wait for an update this tab started along with the
-  // phase the appliance reports: installing starts the install allowance, and
-  // idle or failed before any restart means the attempt ended here, so the
-  // card takes over again.
-  private followInstall(u: UpdateStatus): void {
-    const wait = this.installWait;
-    if (!wait) return;
-    if (u.phase === "installing") wait.installing();
-    else if (u.phase !== "downloading" && this.installFresh && wait.close()) {
-      this.installWait = null;
-      // Back on the card, on the control that retries when there is one.
+  // followStatus feeds each status to the update this tab follows. The store
+  // drops reads started before the request, so every status here is current.
+  private followStatus(u: UpdateStatus): void {
+    const step = this.follow?.status(u, Date.now());
+    if (step === "show") this.showInstallModal(u.latestVersion ?? "the update");
+    else if (step === "end") this.endFollow(u);
+  }
+
+  private startFollow(fromVersion: string): void {
+    this.follow = new UpdateFollow(fromVersion);
+    this.versionWatch.rebase(fromVersion);
+  }
+
+  // showInstallModal shows the install modal and runs its timer and deadline.
+  // A restart holding the modal leaves the follow without one; the version
+  // watch still reloads the page.
+  private showInstallModal(target: string): void {
+    this.updateModal = showUpdateModal(target);
+    if (!this.updateModal) return;
+    const shownAt = Date.now();
+    this.followTimer = setInterval(() => {
+      const now = Date.now();
+      this.updateModal?.elapsed(now - shownAt);
+      if (this.follow?.tick(now) === "timeout") {
+        this.stopFollowTimer();
+        this.updateModal?.overdue();
+      }
+    }, 1000);
+  }
+
+  private stopFollowTimer(): void {
+    if (this.followTimer !== null) clearInterval(this.followTimer);
+    this.followTimer = null;
+  }
+
+  // endFollow ends a follow whose attempt stopped without a restart: the modal
+  // (if it showed) closes, focus goes back to the card's retry control, and a
+  // notice says why.
+  private endFollow(u: UpdateStatus): void {
+    const hadModal = this.updateModal !== null;
+    this.stopFollowTimer();
+    this.updateModal?.hide();
+    this.updateModal = null;
+    this.follow = null;
+    const { text, tone } = followEndText(u);
+    showToast(text, tone);
+    if (hadModal) {
       const apply = this.updateApplyBtn;
       (apply && !apply.hidden ? apply : this.updateCheckBtn)?.focus({ preventScroll: true });
-      if (u.phase === "failed") showToast(`Update failed: ${u.phaseMessage || "the attempt did not finish"}`, "error");
     }
+  }
+
+  // watchVersion notices the appliance running another version than this page
+  // loaded against. A tab following its own update reloads once the new version
+  // is confirmed; any other tab (or one whose follow already ended) is told to
+  // reload, never reloaded under unsaved input.
+  private watchVersion(version: string): void {
+    // Only a version read twice in a row counts: one that answers once and is
+    // then rolled back reloads nothing and announces nothing.
+    if (this.versionWatch.seen(version) !== "confirmed") return;
+    if (this.follow) {
+      this.reloadOntoNewVersion(version);
+      return;
+    }
+    if (version === this.versionNoticeFor) return;
+    this.versionNoticeFor = version;
+    showToast(`The appliance now runs ${version}. Reload this page to use its web UI.`, "warn", VERSION_NOTICE_MS);
+  }
+
+  private reloadOntoNewVersion(version: string): void {
+    if (this.reloading) return;
+    this.reloading = true;
+    this.stopFollowTimer();
+    this.updateModal ??= showUpdateModal(version);
+    this.updateModal?.reloading();
+    setTimeout(() => window.location.reload(), 600);
   }
 
   private async saveUpdateCheck(): Promise<void> {
@@ -1193,8 +1262,8 @@ export class SystemView {
     setBusy(btn, "Checking...");
     try {
       const status = await api.checkForUpdate();
-      this.renderUpdate(status);
-      if (status.lastError) showToast(`Update check failed: ${status.lastError}.`, "warn");
+      store.applyUpdateStatus(status);
+      if (status.lastError) showToast(`Update check failed: ${status.lastError}`, "warn");
       else if (!status.available) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
       showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");
@@ -1202,9 +1271,6 @@ export class SystemView {
       this.updateChecking = false;
       clearBusy(btn, "Check Now");
     }
-    // The poll may have caught the state from before the check; ask again so
-    // the card settles on the result.
-    await store.refreshSystem();
     this.renderUpdate();
   }
 
@@ -1212,10 +1278,10 @@ export class SystemView {
     const btn = this.updateApplyBtn;
     const u = this.system?.update;
     const target = u ? describeUpdate(u).applyVersion : "";
-    if (!btn || !target || this.updateApplying || btn.getAttribute("aria-disabled") === "true") return;
+    if (!btn || !u || !target || this.updateApplying || btn.getAttribute("aria-disabled") === "true") return;
     const ok = await confirmDialog({
       title: `Update to ${target}?`,
-      body: `The appliance downloads ${target}, checks its signature, and restarts to install it, which drops connected streams for a moment. If the new version does not start, it goes back to ${u?.currentVersion ?? "the running version"} on its own.`,
+      body: `The appliance downloads ${target}, checks its signature, and restarts to install it, which drops connected streams for a moment. If the new version does not start, it goes back to ${u.currentVersion} on its own.`,
       confirmLabel: "Update",
     });
     if (!ok) return;
@@ -1223,18 +1289,23 @@ export class SystemView {
     setBusy(btn, "Starting...");
     try {
       const status = await api.startUpdate();
-      this.installFresh = false;
-      this.installWait = awaitUpdateInstall(target);
-      this.renderUpdate(status);
+      this.startFollow(u.currentVersion);
+      store.applyUpdateStatus(status);
     } catch (err: unknown) {
-      showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
+      // The request may have reached the appliance with only the answer lost,
+      // or another tab may have started an update: read the state again and
+      // follow an update that is under way.
+      const now = (await store.refreshSystem()) ? this.system?.update : undefined;
+      if (now && (now.phase === "downloading" || now.phase === "installing")) {
+        showToast("An update is already under way; following it here.", "warn");
+        this.startFollow(u.currentVersion);
+        this.followStatus(now);
+      } else {
+        showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
+      }
     } finally {
       this.updateApplying = false;
     }
-    // This read starts after the request, so the store's gate keeps any older
-    // poll from overwriting it; from here a status can end the wait.
-    await store.refreshSystem();
-    this.installFresh = true;
     this.renderUpdate();
   }
 

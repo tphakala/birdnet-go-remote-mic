@@ -5,16 +5,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DOWNLOAD_WAIT_TIMEOUT_MS,
   describeUpdate,
+  followEndText,
   formatElapsed,
   INSTALL_WAIT_TIMEOUT_MS,
-  InstallWait,
   installMethodLabel,
   lastCheckText,
   safeNotesUrl,
+  UpdateFollow,
+  VersionWatch,
 } from "../src/lib/update-core.js";
-import type { UpdateStatus } from "../src/lib/types.js";
+import type { UpdatePhase, UpdateStatus } from "../src/lib/types.js";
 
 // status builds an up-to-date, checked service install; a test overrides what
 // it is about.
@@ -137,45 +138,95 @@ test("formatElapsed", () => {
   assert.equal(formatElapsed(-5), "0:00");
 });
 
-test("InstallWait reloads when the new version answers", () => {
-  const w = new InstallWait("v0.3.0", 0);
-  assert.equal(w.stage, "downloading");
-  assert.equal(w.probe("v0.2.0", 1000), "wait");
-  w.installing(2000);
-  assert.equal(w.stage, "installing");
-  assert.equal(w.probe(null, 3000), "wait");
-  assert.equal(w.stage, "restarting");
-  assert.equal(w.probe("v0.3.0", 4000), "reload");
+test("VersionWatch takes the first version as the page's own", () => {
+  const w = new VersionWatch();
+  assert.equal(w.seen("v0.2.0"), "same");
+  assert.equal(w.seen("v0.2.0"), "same");
+  assert.equal(w.seen(undefined), "same");
+  assert.equal(w.seen(""), "same");
 });
 
-test("InstallWait reloads onto the old version after a restart (a rollback)", () => {
-  const w = new InstallWait("v0.3.0", 0);
-  assert.equal(w.wentDown, false);
-  assert.equal(w.probe(null, 1000), "wait");
-  assert.equal(w.wentDown, true);
-  assert.equal(w.probe("v0.2.0", 2000), "reload");
+test("VersionWatch confirms a new version on the second read in a row", () => {
+  const w = new VersionWatch();
+  w.seen("v0.2.0");
+  assert.equal(w.seen("v0.3.0"), "changed");
+  assert.equal(w.seen("v0.3.0"), "confirmed");
+  assert.equal(w.seen("v0.3.0"), "confirmed");
 });
 
-test("InstallWait gives up after the download and install allowances", () => {
-  const w = new InstallWait("v0.3.0", 0);
-  const all = DOWNLOAD_WAIT_TIMEOUT_MS + INSTALL_WAIT_TIMEOUT_MS;
-  assert.equal(w.probe("v0.2.0", all - 1), "wait");
-  assert.equal(w.probe("v0.2.0", all), "timeout");
+test("VersionWatch starts over when the page's own version answers again (a rollback)", () => {
+  const w = new VersionWatch();
+  w.seen("v0.2.0");
+  assert.equal(w.seen("v0.3.0"), "changed");
+  assert.equal(w.seen("v0.2.0"), "same");
+  assert.equal(w.seen("v0.3.0"), "changed");
 });
 
-test("InstallWait restarts its deadline once, when installing is first seen", () => {
-  const w = new InstallWait("v0.3.0", 0);
-  w.installing(1000);
-  // A later report does not push the deadline out again.
-  w.installing(5000);
-  assert.equal(w.probe("v0.2.0", 1000 + INSTALL_WAIT_TIMEOUT_MS - 1), "wait");
-  assert.equal(w.probe(null, 1000 + INSTALL_WAIT_TIMEOUT_MS), "timeout");
+test("VersionWatch rebase forgets a change read before an update starts", () => {
+  // A tab loaded on v0.2.0 was told about v0.3.0, then updates from v0.3.0.
+  const w = new VersionWatch();
+  w.seen("v0.2.0");
+  w.seen("v0.3.0");
+  assert.equal(w.seen("v0.3.0"), "confirmed");
+  w.rebase("v0.3.0");
+  assert.equal(w.seen("v0.3.0"), "same", "the version updated from is not the update landing");
+  assert.equal(w.seen("v0.4.0"), "changed");
+  assert.equal(w.seen("v0.4.0"), "confirmed");
+  // A rebase starts the count again, even straight into another version.
+  w.rebase("v0.3.0");
+  assert.equal(w.seen("v0.4.0"), "changed");
 });
 
-test("InstallWait reloads when the new version answers without a missed probe", () => {
-  // A restart quicker than the probe interval is never seen down.
-  const w = new InstallWait("v0.3.0", 0);
-  assert.equal(w.probe("v0.2.0", 1000), "wait");
-  assert.equal(w.probe("v0.3.0", 3000), "reload");
-  assert.equal(w.wentDown, false);
+test("UpdateFollow keeps following while downloading or in an unknown phase", () => {
+  const f = new UpdateFollow("v0.2.0");
+  assert.equal(f.status(status({ phase: "downloading" }), 0), "none");
+  assert.equal(f.status(status({ phase: "verifying" as UpdatePhase }), 0), "none");
+  assert.equal(f.isShown, false);
+  assert.equal(f.tick(INSTALL_WAIT_TIMEOUT_MS * 10), "none", "no deadline before the modal shows");
+});
+
+test("UpdateFollow shows the modal when installing is first seen", () => {
+  const f = new UpdateFollow("v0.2.0");
+  assert.equal(f.status(status({ phase: "installing" }), 1000), "show");
+  assert.equal(f.isShown, true);
+  assert.equal(f.status(status({ phase: "installing" }), 5000), "none", "shown once");
+});
+
+test("UpdateFollow ends on idle or failed on the version it started from", () => {
+  for (const phase of ["idle", "failed"] as const) {
+    const f = new UpdateFollow("v0.2.0");
+    f.status(status({ phase: "installing" }), 0);
+    assert.equal(f.status(status({ phase }), 1000), "end", phase);
+    assert.equal(f.isShown, false, phase);
+  }
+});
+
+test("UpdateFollow ignores a status from another version", () => {
+  const f = new UpdateFollow("v0.2.0");
+  // The restarted appliance starts idle; that is VersionWatch's to handle.
+  assert.equal(f.status(status({ currentVersion: "v0.3.0", phase: "idle" }), 0), "none");
+  assert.equal(f.status(status({ phase: "installing" }), 0), "show", "still following");
+});
+
+test("UpdateFollow ignores statuses after it ended", () => {
+  const f = new UpdateFollow("v0.2.0");
+  assert.equal(f.status(status({ phase: "failed" }), 0), "end");
+  assert.equal(f.status(status({ phase: "installing" }), 0), "none");
+  assert.equal(f.status(status({ phase: "idle" }), 0), "none");
+});
+
+test("UpdateFollow times out once, only after showing, at the install deadline", () => {
+  const f = new UpdateFollow("v0.2.0");
+  f.status(status({ phase: "installing" }), 1000);
+  assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS - 1), "none");
+  assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS), "timeout");
+  assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS + 1), "none");
+  assert.equal(f.status(status({ phase: "idle" }), 0), "none", "a timed-out follow has ended");
+});
+
+test("followEndText says why from the status", () => {
+  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" })), { text: "Update failed: signature", tone: "error" });
+  assert.equal(followEndText(status({ phase: "failed" })).text, "Update failed: the attempt did not finish");
+  assert.deepEqual(followEndText(status({ phase: "idle", checkEnabled: false })), { text: "The update stopped because update checks were turned off.", tone: "warn" });
+  assert.equal(followEndText(status({ phase: "idle" })).text, "The update did not install; still running v0.2.0. The notifications say why.");
 });

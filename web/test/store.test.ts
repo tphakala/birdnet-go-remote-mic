@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps } from "../src/lib/store.js";
 import { setToken } from "../src/lib/auth.js";
 import { FakeTimers } from "./fixtures.js";
-import type { ApplianceStatus, Config, Device, SystemInfo } from "../src/lib/types.js";
+import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../src/lib/types.js";
 
 // Outcome is one queued result for an endpoint: a value to resolve with, an
 // Error to reject with, or a promise the test settles itself.
@@ -210,6 +210,35 @@ test("applyConfig wins over a config read already in flight", async () => {
   slow.resolve({ devices: [] } as unknown as Config);
   await read;
   assert.equal(h.store.getState().config, patched);
+});
+
+test("applyUpdateStatus wins over a system read already in flight and announces", async () => {
+  const h = harness();
+  h.push("getSystem", { hostname: "pi" } as unknown as SystemInfo);
+  await h.store.refreshSystem();
+  const slow = deferred<SystemInfo>();
+  h.push("getSystem", slow.promise);
+  const read = h.store.refreshSystem();
+  const update = { phase: "downloading" } as unknown as UpdateStatus;
+  h.store.applyUpdateStatus(update);
+  assert.equal(h.events.get("system"), 2, "the applied state announces");
+  slow.resolve({ hostname: "pi", update: { phase: "idle" } } as unknown as SystemInfo);
+  await read;
+  assert.equal(h.store.getState().system?.update, update, "the older read is dropped");
+  assert.equal(h.store.getState().system?.hostname, "pi", "the rest of the snapshot is kept");
+  assert.equal(h.events.get("system"), 2);
+});
+
+test("applyUpdateStatus without a system snapshot still drops the older read", async () => {
+  const h = harness();
+  const slow = deferred<SystemInfo>();
+  h.push("getSystem", slow.promise);
+  const read = h.store.refreshSystem();
+  h.store.applyUpdateStatus({ phase: "downloading" } as unknown as UpdateStatus);
+  slow.resolve({ hostname: "stale" } as unknown as SystemInfo);
+  await read;
+  assert.equal(h.store.getState().system, null);
+  assert.equal(h.events.get("system") ?? 0, 0);
 });
 
 test("polling waits while the page is hidden and refreshes at once on showing", async () => {

@@ -141,10 +141,6 @@ export function lastCheckText(lastCheck: string | undefined, nowMs: number, rela
   return Number.isFinite(t) ? relative(t, nowMs) : "Unknown";
 }
 
-// DOWNLOAD_WAIT_TIMEOUT_MS is how long the appliance may take to download and
-// verify a release (stageTimeout in internal/update manager.go).
-export const DOWNLOAD_WAIT_TIMEOUT_MS = 15 * 60_000;
-
 // INSTALL_WAIT_TIMEOUT_MS bounds the wait once the release is handed to the
 // root updater. The appliance reports a missing updater result after four
 // minutes (a minute for the updater to start, two for the new version to come
@@ -152,64 +148,100 @@ export const DOWNLOAD_WAIT_TIMEOUT_MS = 15 * 60_000;
 // longer.
 export const INSTALL_WAIT_TIMEOUT_MS = 6 * 60_000;
 
-// InstallWaitStep is what the wait does after a probe: keep waiting, reload
-// the page onto whatever runs now, or give up and offer a manual reload.
-export type InstallWaitStep = "wait" | "reload" | "timeout";
+// VersionChange is what a status read says about the running version: the one
+// this page was loaded against, another one read once, or another one read on
+// two reads in a row.
+export type VersionChange = "same" | "changed" | "confirmed";
 
-// InstallStage is what the wait shows the operator.
-export type InstallStage = "downloading" | "installing" | "restarting";
+// VersionWatch notices the appliance running another version than the one this
+// page's scripts came from: after an update, from any tab, or after a rollback.
+// The first version read is taken as the page's own, and a tab starting an
+// update rebases on the version it updates from. A tab following its own update
+// reloads once the new version is confirmed (read twice in a row, so a process
+// that answers once and is then rolled back or dies does not strand the page on
+// a reload that fails); any other tab only offers the reload, since it may hold
+// unsaved input.
+export class VersionWatch {
+  private base: string | null = null;
+  private streak = 0;
 
-// InstallWait follows the appliance through an update from a stream of
-// /healthz probes (null for a probe that failed) and the phases the status
-// poll reports. The page reloads as soon as the target version answers. Once
-// the appliance has been seen down, any version answering means the attempt
-// ended (a rollback brings the old one back, and its notification says why),
-// so that reloads too. While the old version keeps answering without going
-// down, the download or the updater is still at work, so the wait goes on
-// until its deadline: the download allowance plus the install allowance, cut
-// to the install allowance once the installing phase is seen.
-export class InstallWait {
-  private seenDown = false;
-  private installSeen = false;
-  private deadline: number;
-
-  constructor(private readonly target: string, nowMs: number) {
-    this.deadline = nowMs + DOWNLOAD_WAIT_TIMEOUT_MS + INSTALL_WAIT_TIMEOUT_MS;
+  // rebase makes version the page's own, forgetting any change read so far: a
+  // tab that updates from a version it was told about must not take that
+  // version for its update landing.
+  rebase(version: string): void {
+    this.base = version;
+    this.streak = 0;
   }
 
-  // wentDown reports whether a probe has failed since the wait began. Before
-  // that, a failed or abandoned attempt can still close the wait; after it the
-  // restart is under way and only a probe ends it.
-  get wentDown(): boolean {
-    return this.seenDown;
-  }
-
-  get stage(): InstallStage {
-    if (this.seenDown) return "restarting";
-    return this.installSeen ? "installing" : "downloading";
-  }
-
-  // installing records the status poll reporting the installing phase; the
-  // first report starts the install allowance.
-  installing(nowMs: number): void {
-    if (this.installSeen) return;
-    this.installSeen = true;
-    this.deadline = nowMs + INSTALL_WAIT_TIMEOUT_MS;
-  }
-
-  probe(version: string | null, nowMs: number): InstallWaitStep {
-    if (version === null) this.seenDown = true;
-    else if (version === this.target || this.seenDown) return "reload";
-    return nowMs >= this.deadline ? "timeout" : "wait";
+  seen(version: string | undefined): VersionChange {
+    if (!version) return "same";
+    if (this.base === null) this.base = version;
+    if (version === this.base) {
+      this.streak = 0;
+      return "same";
+    }
+    this.streak += 1;
+    return this.streak >= 2 ? "confirmed" : "changed";
   }
 }
 
-// STAGE_LABELS names each stage in the wait's progress line.
-export const STAGE_LABELS: Record<InstallStage, string> = {
-  downloading: "Downloading and verifying",
-  installing: "Installing",
-  restarting: "Restarting",
-};
+// FollowStep is what the card does with a status while following its update:
+// nothing, show the install modal, end the follow, or report the install as
+// overdue.
+export type FollowStep = "none" | "show" | "end" | "timeout";
+
+// UpdateFollow follows one update this tab started, from statuses read after
+// the request (the store drops older reads). The page stays usable while the
+// release downloads; the modal shows once the root updater has it, and a
+// deadline runs only from then. idle or failed on the version the update started
+// from means the attempt ended without a restart. A status on another version
+// is left to VersionWatch, which reloads the page.
+export class UpdateFollow {
+  private shown = false;
+  private ended = false;
+  private deadline = 0;
+
+  constructor(private readonly fromVersion: string) {}
+
+  get isShown(): boolean {
+    return this.shown && !this.ended;
+  }
+
+  status(u: UpdateStatus, nowMs: number): FollowStep {
+    if (this.ended || u.currentVersion !== this.fromVersion) return "none";
+    switch (u.phase) {
+      case "idle":
+      case "failed":
+        this.ended = true;
+        return "end";
+      case "installing":
+        if (this.shown) return "none";
+        this.shown = true;
+        this.deadline = nowMs + INSTALL_WAIT_TIMEOUT_MS;
+        return "show";
+      default:
+        // downloading, or a phase a later appliance adds: still under way.
+        return "none";
+    }
+  }
+
+  // tick reports the install as overdue, once, when the deadline passes while
+  // the modal shows.
+  tick(nowMs: number): FollowStep {
+    if (!this.shown || this.ended || nowMs < this.deadline) return "none";
+    this.ended = true;
+    return "timeout";
+  }
+}
+
+// followEndText says why a follow ended without a restart, from the status
+// alone: a failure carries its reason, checks turned off (here or in another
+// tab) stop a download, and anything else is left to the notifications.
+export function followEndText(u: UpdateStatus): { text: string; tone: "warn" | "error" } {
+  if (u.phase === "failed") return { text: `Update failed: ${u.phaseMessage || "the attempt did not finish"}`, tone: "error" };
+  if (!u.checkEnabled) return { text: "The update stopped because update checks were turned off.", tone: "warn" };
+  return { text: `The update did not install; still running ${u.currentVersion}. The notifications say why.`, tone: "warn" };
+}
 
 // formatElapsed renders a wait as m:ss.
 export function formatElapsed(ms: number): string {

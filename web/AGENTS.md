@@ -38,10 +38,11 @@ The output must stay plain ES modules (plus the one classic script,
 - `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the REST client;
   raises `ApiError` from RFC 9457 problem bodies, handles the Bearer token and
   401; the one deliberate bypass is the restart modal's raw
-  `fetch("/api/v1/healthz")` probe, which also follows an update's restart),
+  `fetch("/api/v1/healthz")` probe),
   `sse.ts` (`sse`, fetch-streaming SSE
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
-  state), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`,
+  state; `applyUpdateStatus` merges an update check or request response and
+  drops older system reads), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`,
   `#/about`; the pure route decisions are in `router-core.ts`),
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
   formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow
@@ -49,8 +50,10 @@ The output must stay plain ES modules (plus the one classic script,
   it), `prefs.ts` (per-browser boolean preferences, `readBoolPref`/`writeBoolPref`,
   `onPrefChange` (every cross-tab preference listener), the hide-inactive
   keys, and the once-per-page "preferences not saved" notice),
-  `update-core.ts` (the Software Update card's text and the `InstallWait`
-  that follows an update through its restart),
+  `update-core.ts` (the Software Update card's text, `UpdateFollow` for an
+  update this tab started, and `VersionWatch`, which notices the appliance
+  running another version than the page loaded against: the following tab
+  reloads, any other tab is told to),
   `types.ts` (API types).
 - `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
   `CustomDropdown`, `MenuButton`, `VUMeter`, `DeviceSettingsForm`,

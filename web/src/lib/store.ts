@@ -11,6 +11,7 @@ import type {
   DeviceLevels,
   LevelsEvent,
   SystemInfo,
+  UpdateStatus,
 } from "./types.js";
 
 // How often the REST resources are polled while the page is visible.
@@ -540,6 +541,22 @@ export class AppStore extends EventTarget {
     this.configGate.invalidate();
     this.state.config = config;
     this.dispatchEvent(new CustomEvent("config", { detail: config }));
+  }
+
+  // applyUpdateStatus records the update state an update check or an update
+  // request returned, as applyConfig does for a PATCH. A GET /system already
+  // in flight was read before that request, so the gate drops it: from here on
+  // every "system" event carries a state read after the request, and a view
+  // following an update can trust each one. Without a system snapshot yet
+  // there is nothing to merge into; the next read is post-request anyway.
+  public applyUpdateStatus(update: UpdateStatus): void {
+    this.systemGate.invalidate();
+    const system = this.state.system;
+    if (!system) return;
+    this.state.system = { ...system, update };
+    if (this.systemChange.changed(this.state.system)) {
+      this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
+    }
   }
 }
 

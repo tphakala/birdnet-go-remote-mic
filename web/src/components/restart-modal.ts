@@ -1,11 +1,12 @@
 import { api } from "../lib/api.js";
 import { showToast } from "./toast.js";
-import { confirmDialog, setAppInert, trapFocus } from "../lib/modal.js";
+import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.js";
 import { announce } from "../lib/ui.js";
-import { formatElapsed, InstallWait, STAGE_LABELS } from "../lib/update-core.js";
+import { formatElapsed } from "../lib/update-core.js";
 
 // restarting guards against a double click starting two restart flows (and thus
-// two countdown/health-poll intervals).
+// two countdown/health-poll intervals), and against the update's install modal
+// taking the modal while a restart holds it (or the reverse).
 let restarting = false;
 
 // say writes to the polite live region that carries only phase changes, so a
@@ -126,120 +127,81 @@ function showRetry(): void {
   retry.focus();
 }
 
-// How often the install wait probes /healthz, and how long one probe may take.
-const INSTALL_PROBE_MS = 2000;
-const INSTALL_PROBE_TIMEOUT_MS = 4000;
-
-// InstallWaitHandle is how the caller feeds the install wait the phases the
-// status poll reports.
-export interface InstallWaitHandle {
-  // installing reports the installing phase (the release is with the root
-  // updater), which starts the install allowance.
-  installing(): void;
-  // close ends the wait and hides the modal when the attempt failed or was
-  // abandoned without a restart; the caller then places focus. Once the
-  // appliance has gone down for the restart it does nothing, since only a
-  // probe can end the wait then. It returns whether it closed.
-  close(): boolean;
+// UpdateModal is the install modal for an update this tab started. It shows
+// once the root updater has the release, or when the new version answers
+// first; the view drives it from the store's post-request statuses (see
+// UpdateFollow and VersionWatch).
+export interface UpdateModal {
+  // elapsed refreshes the visual timer line.
+  elapsed(ms: number): void;
+  // overdue says the install has not finished in time and offers Reload.
+  overdue(): void;
+  // reloading says the new version answers, just before the page reloads.
+  reloading(): void;
+  // hide closes the modal when the attempt ended without a restart. It puts
+  // the modal back as the restart flow expects it; the caller places focus.
+  hide(): void;
 }
 
-// probeVersion asks the open /healthz for the running version, or null when
-// the appliance does not answer (restarting). Like the restart probe it is a
-// deliberate raw fetch: api.ts would treat a failure as an error to report.
-async function probeVersion(): Promise<string | null> {
-  try {
-    const res = await fetch("/api/v1/healthz", { cache: "no-store", signal: AbortSignal.timeout(INSTALL_PROBE_TIMEOUT_MS) });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { version?: unknown };
-    return typeof body.version === "string" ? body.version : null;
-  } catch {
-    return null;
-  }
-}
-
-// awaitUpdateInstall shows the restart modal from the moment an update to
-// target starts until the appliance answers again, then reloads the page (see
-// InstallWait). It returns null when a restart or another wait already holds
-// the modal. The page behind stays inert until then; when the handle closes
-// the wait early, placing focus is left to the caller, which knows which
-// control is still shown.
-export function awaitUpdateInstall(target: string): InstallWaitHandle | null {
+// showUpdateModal shows the restart modal for installing target, or returns
+// null when a restart already holds it. Transient dialogs (a confirm) close
+// first, as the login prompt does, so the modal is never stacked on one.
+export function showUpdateModal(target: string): UpdateModal | null {
   const modal = document.getElementById("restart-modal");
   const titleEl = document.getElementById("modal-title");
   const textEl = document.getElementById("modal-text");
   const timerEl = document.getElementById("reconnect-timer");
   if (!modal || restarting) return null;
   restarting = true;
+  closeTransientDialogs();
 
   const oldTitle = titleEl?.textContent ?? "";
-  const oldText = textEl?.textContent ?? "";
-  if (titleEl) titleEl.textContent = "Updating Appliance";
+  // The restart text holds markup (a code span), so keep its nodes, not its text.
+  const oldText = textEl ? Array.from(textEl.childNodes) : [];
+  if (titleEl) titleEl.textContent = "Installing Update";
   if (textEl) {
-    textEl.textContent = `Updating to ${target}. The appliance downloads and verifies the release, then restarts to install it, and goes back to the running version on its own if the new one does not start. This page reloads once it answers again.`;
+    textEl.textContent = `Installing ${target}. The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start. This page reloads once the new version answers.`;
   }
   modal.classList.add("open");
   setAppInert(true);
   const release = trapFocus(modal);
   modal.querySelector<HTMLElement>(".modal-card")?.focus();
-  say(`Updating to ${target}. This page reloads when the appliance is back.`);
+  say(`Installing ${target}. This page reloads when the new version answers.`);
+  if (timerEl) timerEl.textContent = `Installing (${formatElapsed(0)})`;
 
-  const started = Date.now();
-  const wait = new InstallWait(target, started);
-  let lastStage = wait.stage;
-  let done = false;
-  let timer = 0;
-  // The progress line is visual only (aria-hidden); a stage change is announced.
-  const tick = (): void => {
-    if (timerEl) timerEl.textContent = `${STAGE_LABELS[wait.stage]} (${formatElapsed(Date.now() - started)})`;
-    if (wait.stage !== lastStage) {
-      lastStage = wait.stage;
-      say(`${STAGE_LABELS[lastStage]}.`);
-    }
-  };
-  tick();
-  const finish = (): void => {
-    done = true;
-    window.clearTimeout(timer);
-  };
-  const step = async (): Promise<void> => {
-    const version = await probeVersion();
-    if (done) return;
-    const next = wait.probe(version, Date.now());
-    tick();
-    if (next === "reload") {
-      finish();
-      if (timerEl) timerEl.textContent = "Appliance online. Reloading...";
-      sayNow("The appliance is back. Reloading.");
-      window.setTimeout(() => window.location.reload(), 600);
-      return;
-    }
-    if (next === "timeout") {
-      finish();
-      if (timerEl) timerEl.textContent = "The appliance has not come back yet.";
-      say("The appliance has not come back yet. Use the reload button to try again.");
-      showRetry();
-      return;
-    }
-    timer = window.setTimeout(() => void step(), INSTALL_PROBE_MS);
-  };
-  timer = window.setTimeout(() => void step(), INSTALL_PROBE_MS);
-
+  let settled = false;
+  let hidden = false;
   return {
-    installing(): void {
-      if (done) return;
-      wait.installing(Date.now());
-      tick();
+    elapsed(ms: number): void {
+      if (!settled && timerEl) timerEl.textContent = `Installing (${formatElapsed(ms)})`;
     },
-    close(): boolean {
-      if (done || wait.wentDown) return false;
-      finish();
+    overdue(): void {
+      settled = true;
+      if (timerEl) timerEl.textContent = "The update has not finished yet.";
+      say("The update has not finished yet. Use the reload button to see where it stands.");
+      showRetry();
+    },
+    reloading(): void {
+      settled = true;
+      if (timerEl) timerEl.textContent = "New version online. Reloading...";
+      sayNow("The new version answers. Reloading.");
+    },
+    hide(): void {
+      if (hidden) return;
+      hidden = true;
+      settled = true;
       modal.classList.remove("open");
       release();
       setAppInert(false);
       if (titleEl) titleEl.textContent = oldTitle;
-      if (textEl) textEl.textContent = oldText;
+      textEl?.replaceChildren(...oldText);
       restarting = false;
-      return true;
+      // announce writes on the next frame; clearing on a later frame drops a
+      // phase still queued, so a hidden modal leaves nothing to be read out.
+      const region = document.getElementById("restart-announce");
+      requestAnimationFrame(() => {
+        if (region) region.textContent = "";
+      });
     },
   };
 }

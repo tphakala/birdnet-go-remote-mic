@@ -311,8 +311,9 @@ it never raises a notification and never affects audio.
 In the web UI, the Software Update card on the System page shows the running
 and newest versions and the last check, with a switch for the daily check and
 a Check Now button. Where the installation can update itself it offers an
-Update button; the page then follows the download, the install and the
-restart, and reloads once the appliance answers again. Otherwise it shows how
+Update button. The page stays usable while the release downloads, shows the
+install while the appliance restarts, and reloads once the new version
+answers; any other open page is told to reload. Otherwise the card shows how
 to update by hand.
 
 Every release publishes a manifest signed with the project's release key, and
