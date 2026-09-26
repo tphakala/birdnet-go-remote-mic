@@ -50,7 +50,7 @@ The output must stay plain ES modules (plus the one classic script,
   it), `prefs.ts` (per-browser boolean preferences, `readBoolPref`/`writeBoolPref`,
   `onPrefChange` (every cross-tab preference listener), the hide-inactive
   keys, and the once-per-page "preferences not saved" notice),
-  `update-core.ts` (the Software Update card's text, `UpdateFollow` for an
+  `update-core.ts` (the update status text in System Information, `UpdateFollow` for an
   update this tab started, and `VersionWatch`, which notices the appliance
   running another version than the page loaded against: the following tab
   reloads, any other tab is told to),

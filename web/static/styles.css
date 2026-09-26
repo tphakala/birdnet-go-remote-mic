@@ -3165,9 +3165,8 @@ select.field-input {
 }
 /* Each row label carries a leading glyph. Centre the key against its value so
    the icon does not drag the row off the value's line, and scope it to the
-   System Information columns (and the Software Update card, which uses them)
-   and the About card's details, so the certificate info grid keeps its plain
-   keys. */
+   System Information columns and the About card's details, so the certificate
+   info grid keeps its plain keys. */
 .sysinfo-group .info-grid,
 .about-card .info-grid {
   align-items: center;
@@ -3393,8 +3392,8 @@ select.field-input {
 .auth-state.open {
   color: var(--signal-warn-text);
 }
-/* Software Update card: a headline coloured by the state, the sentences
-   under it, then the version details. */
+/* Update status in System Information: a headline coloured by the state and
+   the sentences under it, above the columns. */
 .update-state {
   display: flex;
   flex-direction: column;
@@ -3436,17 +3435,10 @@ select.field-input {
   /* A hint can end in a long command or path. */
   overflow-wrap: anywhere;
 }
-/* On a narrow card (a phone, or a large browser font) the label column would
-   squeeze the values to a few characters a line; stack each label over its
-   value instead. */
-@media (max-width: 30em) {
-  #sys-update-info {
-    grid-template-columns: 1fr;
-    gap: 2px;
-  }
-  #sys-update-info .info-val {
-    margin-bottom: 8px;
-  }
+/* The warning under the update footer while a download runs takes its own
+   line. */
+.update-check-hint {
+  flex-basis: 100%;
 }
 /* Certificate card: the two PEM textareas. .field-input supplies the chrome;
    this keeps them monospace, vertically resizable only (a width resize would

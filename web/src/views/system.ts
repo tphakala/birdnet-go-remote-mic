@@ -36,7 +36,7 @@ const ICON_KERNEL =
   svgIcon('<polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line>', 14);
 const ICON_CLOCK =
   svgIcon('<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>', 14);
-// Software Update item icons, in the same style.
+// Release rows in the Software column.
 const ICON_RELEASE =
   svgIcon('<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"></path><path d="M12 22V12"></path><polyline points="3.29 7 12 12 20.71 7"></polyline><path d="m7.5 4.27 9 5.15"></path>', 14);
 const ICON_HISTORY =
@@ -212,13 +212,11 @@ export class SystemView {
   private notifyDirty = false;
   private notifySaving = false;
 
-  private updateCardEl: HTMLElement | null;
   private updateCheckEl: HTMLInputElement | null;
   private updateCheckBtn: HTMLElement | null;
   private updateApplyBtn: HTMLElement | null;
   // The info rows (Installed Version, Latest Release, Last Check, Installed
   // With), built once.
-  private updateInfo = new Map<string, { dt: HTMLElement; dd: HTMLElement }>();
   private updateNotesUrl = "";
   // Requests in flight from this card; a render never undoes their busy state.
   private updateChecking = false;
@@ -264,7 +262,6 @@ export class SystemView {
     this.certPemErrorEl = document.getElementById("sys-cert-pem-error");
     this.certKeyEl = document.getElementById("sys-cert-key") as HTMLTextAreaElement | null;
     this.certKeyErrorEl = document.getElementById("sys-cert-key-error");
-    this.updateCardEl = document.getElementById("sys-update-card");
     this.updateCheckEl = document.getElementById("sys-update-check") as HTMLInputElement | null;
     this.updateCheckBtn = document.getElementById("btn-update-check");
     this.updateApplyBtn = document.getElementById("btn-update-apply");
@@ -1080,21 +1077,24 @@ export class SystemView {
     }
   }
 
-  // bindUpdate wires the Software Update card's switch and buttons.
+  // bindUpdate wires the update switch and buttons in the System Information
+  // card.
   private bindUpdate(): void {
     this.updateCheckEl?.addEventListener("change", () => void this.saveUpdateCheck());
     this.updateCheckBtn?.addEventListener("click", () => void this.checkForUpdate());
     this.updateApplyBtn?.addEventListener("click", () => void this.startUpdate());
   }
 
-  // renderUpdate patches the Software Update card from the store's status (a
-  // check or an update request merges its response there first). An
-  // appliance without update support sends none and the card stays hidden.
+  // renderUpdate patches the update status and footer of the System
+  // Information card from the store's status (a check or an update request
+  // merges its response there first); renderInfo adds the release rows. An
+  // appliance without update support sends none and both stay hidden.
   private renderUpdate(): void {
     const u = this.system?.update;
-    const card = this.updateCardEl;
-    if (!card) return;
-    setHidden(card, !u);
+    const state = document.getElementById("sys-update-state");
+    if (state) setHidden(state, !u);
+    const actions = document.getElementById("sys-update-actions");
+    if (actions) setHidden(actions, !u?.supported);
     if (!u) return;
     const view = describeUpdate(u);
 
@@ -1119,22 +1119,17 @@ export class SystemView {
       setText(el, text);
       setHidden(el, text === "");
     }
-    this.renderUpdateInfo(u);
 
-    // A build that names no release never checks, so the check switch and the
-    // actions would only contradict the headline.
-    const checkGroup = document.getElementById("sys-update-check-group");
-    if (checkGroup) setHidden(checkGroup, !u.supported);
-    const actions = document.getElementById("sys-update-actions");
-    if (actions) setHidden(actions, !u.supported);
+    // A build that names no release never checks, so the footer (hidden above)
+    // with its switch and actions would only contradict the headline.
     if (this.updateCheckEl && !this.updateToggling) this.updateCheckEl.checked = u.checkEnabled;
     // Turning checks off stops a download (not an install already handed to
     // the root updater), so say so while one runs.
     const checkHint = document.getElementById("sys-update-check-hint");
     if (checkHint) {
-      setText(checkHint, u.phase === "downloading"
-        ? "Turning this off stops the download under way."
-        : "Asks GitHub for the newest release. Applies at once.");
+      const warn = u.phase === "downloading" ? "Turning this off stops the download under way." : "";
+      setText(checkHint, warn);
+      setHidden(checkHint, warn === "");
     }
     this.renderUpdateNotes(u.available ? safeNotesUrl(u.notesUrl) : "");
 
@@ -1154,33 +1149,6 @@ export class SystemView {
       else if (!this.updateApplying && view.applyVersion) clearBusy(apply, `Update to ${view.applyVersion}`);
     }
     this.followStatus(u);
-  }
-
-  // renderUpdateInfo fills the fixed info rows, built on the first render in
-  // the System Information style (leading icon, mono value).
-  private renderUpdateInfo(u: UpdateStatus): void {
-    const grid = document.getElementById("sys-update-info");
-    if (!grid) return;
-    // A build that names no release never checks, so its Latest Release and
-    // Last Check rows stay hidden.
-    const rows: [string, string, string, boolean][] = [
-      ["Installed Version", ICON_VERSION, u.currentVersion || "-", true],
-      ["Latest Release", ICON_RELEASE, u.latestVersion ?? "-", u.supported],
-      ["Last Check", ICON_HISTORY, lastCheckText(u.lastCheck, Date.now(), formatRelative), u.supported],
-    ];
-    for (const [label, icon, value, shown] of rows) {
-      let row = this.updateInfo.get(label);
-      if (!row) {
-        const dt = elem("dt", "info-key");
-        dt.append(iconSpan(icon, "info-key-icon"), document.createTextNode(label));
-        row = { dt, dd: elem("dd", "info-val mono") };
-        grid.append(row.dt, row.dd);
-        this.updateInfo.set(label, row);
-      }
-      setText(row.dd, value);
-      setHidden(row.dt, !shown);
-      setHidden(row.dd, !shown);
-    }
   }
 
   // renderUpdateNotes shows the release notes link for the offered release,
@@ -1600,10 +1568,14 @@ export class SystemView {
       if (sys.os) rows.push({ group: "sw", label: "OS", icon: ICON_OS, value: sys.os });
       if (sys.kernel) rows.push({ group: "sw", label: "Kernel", icon: ICON_KERNEL, value: sys.kernel });
     }
-    if (st) {
-      rows.push({ group: "sw", label: "Version", icon: ICON_VERSION, value: st.version || "-" });
-      rows.push({ group: "sw", label: "Uptime", icon: ICON_CLOCK, value: formatUptime(st.uptimeSeconds) });
+    if (st) rows.push({ group: "sw", label: "Version", icon: ICON_VERSION, value: st.version || "-" });
+    // A build that names no release never checks, so it has no release rows.
+    const u = sys?.update;
+    if (u?.supported) {
+      rows.push({ group: "sw", label: "Latest Release", icon: ICON_RELEASE, value: u.latestVersion ?? "-" });
+      rows.push({ group: "sw", label: "Last Check", icon: ICON_HISTORY, value: lastCheckText(u.lastCheck, Date.now(), formatRelative) });
     }
+    if (st) rows.push({ group: "sw", label: "Uptime", icon: ICON_CLOCK, value: formatUptime(st.uptimeSeconds) });
 
     const want = new Set(rows.map((r) => r.label));
     for (const [key, pair] of this.infoRows) {

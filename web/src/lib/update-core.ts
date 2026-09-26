@@ -1,4 +1,4 @@
-// Pure, DOM-free logic for the System view's Software Update card and the wait
+// Pure, DOM-free logic for the System view's update status and the wait
 // for an update to install, split out so node:test covers it
 // (web/test/update-core.test.ts).
 
