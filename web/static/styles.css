@@ -1691,15 +1691,19 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .stat-tile.is-action:focus-visible,
 .notif-chip-btn:focus-visible,
 .ev-source-pill:focus-visible,
-.notif-panel-all:focus-visible {
+.notif-panel-all:focus-visible,
+.clip-latch-btn:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
 
 /* A route change moves focus to the view's section (tabindex=-1) only so a
-   screen reader announces the page; it is not an interactive control, and a
-   ring around the whole page would be noise. */
-.view-container:focus {
+   screen reader announces the page, and a device removal or a closed login
+   prompt parks focus on the workspace (#main-content) so it does not drop to the
+   body. Neither is an interactive control, and a ring around the whole page
+   would be noise. */
+.view-container:focus,
+.app-main:focus {
   outline: none;
 }
 
