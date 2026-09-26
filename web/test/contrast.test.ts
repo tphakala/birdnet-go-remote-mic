@@ -185,17 +185,18 @@ const PAIRS: Pair[] = [
 
   // Body copy on each of the three opaque grounds.
   { what: "primary text on a card", fg: "--text-primary", bg: ["--bg-surface"], min: AA },
-  { what: "primary text on the page", fg: "--text-primary", bg: ["--bg-page"], min: AA },
+  { what: "primary text on the page (About system details)", fg: "--text-primary", bg: ["--bg-page"], min: AA },
   { what: "primary text on the app ground", fg: "--text-primary", bg: ["--bg-app"], min: AA },
-  { what: "secondary text on a card", fg: "--text-secondary", bg: ["--bg-surface"], min: SMALL_TEXT },
+  { what: "secondary text on a card (and the menu item icon)", fg: "--text-secondary", bg: ["--bg-surface"], min: SMALL_TEXT },
   { what: "secondary text on a raised card", fg: "--text-secondary", bg: ["--bg-surface-raised"], min: SMALL_TEXT },
+  { what: "primary text on a raised card (hovered menu item, inline code, toast message)", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
   { what: "secondary text on the app ground", fg: "--text-secondary", bg: ["--bg-app"], min: SMALL_TEXT },
 
   // Muted text is the 12px label size and the 11px meter scale, so it is the
   // most fragile. --meter-bg is a distinctly different ground from the cards
   // and was the one --text-muted had never been checked against.
-  { what: "muted text on a card", fg: "--text-muted", bg: ["--bg-surface"], min: SMALL_TEXT },
-  { what: "muted text on a raised card", fg: "--text-muted", bg: ["--bg-surface-raised"], min: SMALL_TEXT },
+  { what: "muted text on a card (license file names)", fg: "--text-muted", bg: ["--bg-surface"], min: SMALL_TEXT },
+  { what: "muted text on a raised card (and the toast dismiss glyph)", fg: "--text-muted", bg: ["--bg-surface-raised"], min: SMALL_TEXT },
   { what: "muted text on the page", fg: "--text-muted", bg: ["--bg-page"], min: SMALL_TEXT },
   { what: "meter scale labels on the meter trough", fg: "--text-muted", bg: ["--meter-bg"], min: SMALL_TEXT },
 
@@ -213,12 +214,10 @@ const PAIRS: Pair[] = [
 
   // Accent used as text: the highlighted tech tag and the dropdown's selected
   // value. The raised card is the worse of the two grounds.
-  { what: "accent tag label", fg: "--accent-cyan-text", bg: ["--bg-surface", "--accent-cyan-bg"], min: AA },
+  // The login/confirm modal status line is the same pair.
+  { what: "accent tag label (and modal status text)", fg: "--accent-cyan-text", bg: ["--bg-surface", "--accent-cyan-bg"], min: AA },
   { what: "accent tag label on a raised card", fg: "--accent-cyan-text", bg: ["--bg-surface-raised", "--accent-cyan-bg"], min: AA },
-  { what: "accent label on a card", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
-  // The login/confirm modal status line: accent text on the accent tint over a
-  // card surface.
-  { what: "modal status text", fg: "--accent-cyan-text", bg: ["--bg-surface", "--accent-cyan-bg"], min: AA },
+  { what: "accent label on a card (license disclosure link)", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
 
   // The ultrasonic (PCM L16) tag, same shape as the accent tag.
   { what: "ultrasonic tag label", fg: "--ultrasonic-text", bg: ["--bg-surface", "--ultrasonic-bg"], min: AA },
@@ -241,38 +240,54 @@ const PAIRS: Pair[] = [
   // by a tint), so one set of pairs covers them all. It still needs asserting:
   // it is a different ground from any plain card, and it is the one every row
   // in the panel uses.
-  { what: "notification row timestamp", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: SMALL_TEXT },
-  { what: "notification row message", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: SMALL_TEXT },
+  { what: "notification row timestamp and message", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: SMALL_TEXT },
   { what: "notification row title", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
   // Panel furniture that sits on its own grounds rather than on a row.
   { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: SMALL_TEXT },
   { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
+  // The unread count on the header bell: the smallest text in the UI (11px
+  // bold), so it takes the small-text bar.
+  { what: "unread badge count", fg: "--badge-unread-fg", bg: ["--badge-unread-bg"], min: SMALL_TEXT },
 
-  // Menu button popover (the header theme menu): items on the card surface,
-  // the hovered or focused item on the raised surface, and the accent check
-  // mark on the chosen one.
-  { what: "menu item label (hover)", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
-  { what: "menu item icon", fg: "--text-secondary", bg: ["--bg-surface"], min: AA_NON_TEXT },
+  // Menu button popover (the header theme menu): the item icons and the
+  // hovered or focused item's label reuse pairs above; the accent check mark
+  // marks the chosen one.
   { what: "menu check mark (hover)", fg: "--accent-cyan-text", bg: ["--bg-surface-raised"], min: AA_NON_TEXT },
 
-  // About page: license texts and the system details sit on the page ground
-  // inside a card; the log command is inline code on the raised surface.
+  // About page: license texts sit on the page ground inside a card (the system
+  // details, file names, inline code and disclosure link reuse pairs above).
   { what: "license text", fg: "--text-secondary", bg: ["--bg-page"], min: SMALL_TEXT },
-  { what: "system details text", fg: "--text-primary", bg: ["--bg-page"], min: AA },
-  { what: "license file name", fg: "--text-muted", bg: ["--bg-surface"], min: SMALL_TEXT },
-  { what: "about inline code", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
-  { what: "license disclosure link", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
 
-  // Toasts are the neutral raised surface for every severity.
-  { what: "toast message", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
-  { what: "toast dismiss glyph", fg: "--text-muted", bg: ["--bg-surface-raised"], min: AA_NON_TEXT },
+  // Toasts are the neutral raised surface for every severity; the message and
+  // the dismiss glyph reuse the raised-card pairs above.
 
   // Severity glyphs in their badge tile. These are icons, not text, so SC
   // 1.4.11 applies: they still have to be distinguishable from the tile.
   { what: "ok glyph in its severity badge", fg: "--signal-ok-text", bg: ["--bg-surface", "--signal-ok-glow"], min: AA_NON_TEXT },
   { what: "warn glyph in its severity badge", fg: "--signal-warn-text", bg: ["--bg-surface", "--signal-warn-glow"], min: AA_NON_TEXT },
   { what: "crit glyph in its severity badge", fg: "--signal-crit-text", bg: ["--bg-surface", "--signal-crit-glow"], min: AA_NON_TEXT },
+
+  // The keyboard focus ring (a 2px --accent-cyan outline, 2px outside the
+  // control) against every ground a focusable control sits on. SC 1.4.11
+  // applies: the ring is the only sign of focus.
+  { what: "focus ring on the app ground", fg: "--accent-cyan", bg: ["--bg-app"], min: AA_NON_TEXT },
+  { what: "focus ring on the page", fg: "--accent-cyan", bg: ["--bg-page"], min: AA_NON_TEXT },
+  { what: "focus ring on a card", fg: "--accent-cyan", bg: ["--bg-surface"], min: AA_NON_TEXT },
+  { what: "focus ring on a raised card", fg: "--accent-cyan", bg: ["--bg-surface-raised"], min: AA_NON_TEXT },
 ];
+
+// Rules that paint the saturated base accent as an icon colour, where the
+// accent would fail as the only indicator but each is decorative under SC
+// 1.4.11: a visible label or ARIA state beside it carries the meaning. The
+// judgement is recorded here so the list is reviewed when one of them
+// changes; a test below keeps it in step with the stylesheet. A rendered
+// sweep would be needed to prove nothing else paints the base accent on its
+// own.
+const DECORATIVE = new Map<string, string>([
+  [".brand-icon", "the logo beside the brand name"],
+  [".nav-item:hover svg", "hover tint on a tab icon; the tab label carries the meaning"],
+  [".custom-dropdown.open .dropdown-chevron", "open chevron; aria-expanded and the open list carry the state"],
+]);
 
 const css = readFileSync(STYLES, "utf8");
 
@@ -296,6 +311,31 @@ for (const theme of ["dark", "light"] as const) {
     assert.deepEqual(failures, [], `\n  ${failures.join("\n  ")}\n`);
   });
 }
+
+test("each foreground and ground pair is listed once", () => {
+  // A repeated pair asserts nothing new and hides which surfaces share it;
+  // name the extra surface in the existing entry's description instead.
+  const seen = new Map<string, string>();
+  const repeats: string[] = [];
+  for (const pair of PAIRS) {
+    const key = `${pair.fg} on ${pair.bg.join(" + ")}`;
+    const first = seen.get(key);
+    if (first !== undefined) repeats.push(`"${pair.what}" repeats "${first}" (${key})`);
+    else seen.set(key, pair.what);
+  }
+  assert.deepEqual(repeats, []);
+});
+
+test("every decorative accent icon rule still paints the base accent", () => {
+  const source = stripComments(css);
+  const stale: string[] = [];
+  for (const selector of DECORATIVE.keys()) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rule = new RegExp(`(?:^|[}\\s,])${escaped}\\s*\\{([^}]*)\\}`, "m").exec(source);
+    if (!rule || !/color\s*:\s*var\(--accent-cyan\)/.test(rule[1])) stale.push(selector);
+  }
+  assert.deepEqual(stale, [], "update DECORATIVE: these rules no longer paint --accent-cyan");
+});
 
 test("a theme override only redefines tokens the base theme declares", () => {
   // The light block is an override layer, so it is expected to redeclare only a
