@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 import {
   bannerIsError,
   captureFormatLabel,
+  channelHiddenMessage,
   channelLabel,
-  channelStoppedMessage,
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
@@ -132,8 +132,9 @@ test("focusFallbackRow picks the first visible row, or -1 when none is", () => {
   assert.notEqual(focusFallbackRow(hiddenRows([false, true], true)), -1);
 });
 
-test("channelStoppedMessage names the 1-based channel", () => {
-  assert.equal(channelStoppedMessage(3), "Channel 3 stopped streaming. Focus moved to the next visible channel.");
+test("channelHiddenMessage names the hidden channel and where focus landed", () => {
+  assert.equal(channelHiddenMessage(3, 1), "Channel 3 is hidden. Focus moved to channel 1.");
+  assert.equal(channelHiddenMessage(2, null), "Channel 2 is hidden. Focus moved to the device settings.");
 });
 
 test("hideInactivePrefDevice reads back the device id of a hide-inactive key", () => {

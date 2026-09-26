@@ -119,8 +119,13 @@ export function focusFallbackRow(hidden: boolean[]): number {
 
 // Polite announcements for a focus move the operator did not make, so a screen
 // reader user learns why focus jumped rather than finding it somewhere new.
-export function channelStoppedMessage(channel: number): string {
-  return `Channel ${channel} stopped streaming. Focus moved to the next visible channel.`;
+// channelHiddenMessage names the 1-based channel whose row hid (because its
+// channel left the stream, or another tab turned on hiding inactive channels,
+// so the cause is left neutral) and where focus actually landed: the target
+// channel's row, or the device settings when target is null.
+export function channelHiddenMessage(hidden: number, target: number | null): string {
+  const where = target === null ? "the device settings" : `channel ${target}`;
+  return `Channel ${hidden} is hidden. Focus moved to ${where}.`;
 }
 export const TOKEN_HIDDEN_MESSAGE = "This stream no longer needs the access token. Focus moved to the device settings.";
 

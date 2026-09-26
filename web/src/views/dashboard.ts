@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeBoolPref, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelLabel, channelStoppedMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, hideInactivePrefDevice, parseBoolPref, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, hideInactivePrefDevice, parseBoolPref, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -1109,9 +1109,10 @@ export class DashboardView {
       if (strandedRow >= 0) {
         // A stable place in the same card: the first visible row's clip button
         // (hiddenRows never hides them all), else the card's settings button.
-        const next = entry.live.rows[focusFallbackRow(hidden)]?.querySelector<HTMLElement>(".clip-latch-btn");
+        const target = focusFallbackRow(hidden);
+        const next = entry.live.rows[target]?.querySelector<HTMLElement>(".clip-latch-btn");
         (next ?? entry.settingsBtn).focus();
-        announce(this.announceEl, channelStoppedMessage(strandedRow + 1));
+        announce(this.announceEl, channelHiddenMessage(strandedRow + 1, next ? target + 1 : null));
       }
     }
     if (entry.idle) {
