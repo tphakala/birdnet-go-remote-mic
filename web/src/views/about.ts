@@ -86,7 +86,9 @@ export class AboutView {
   private status: ApplianceStatus | null = null;
   private system: SystemInfo | null = null;
   // Undefined until the first device list arrives, so the details leave the
-  // device section out instead of claiming there are no devices.
+  // device section out instead of claiming there are no devices. The store
+  // announces the first applied list even when empty, and the view is built
+  // before the store starts, so the event is the only feed needed.
   private devices: readonly Device[] | undefined;
   // idle until the first visit; loading while the fetch runs; done once rendered.
   // A failure returns to idle so Retry (or the next visit) tries again.
@@ -98,7 +100,6 @@ export class AboutView {
     const { status, system } = store.getState();
     this.status = status;
     this.system = system;
-    if (status) this.devices = store.getState().devices;
     root.appendChild(this.build());
     this.renderLive();
 

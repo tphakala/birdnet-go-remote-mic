@@ -97,52 +97,114 @@ export function supportDetails(status: ApplianceStatus | null, system: SystemInf
 // device name so the text does not depend on the API's order. The name itself
 // is left out: it is the DNS-SD instance name the operator chose, and the stream
 // path is usually derived from it. A plain code-unit comparison keeps the order
-// independent of the browser's locale.
+// independent of the browser's locale. Every device's configured values feed
+// each block's error scrub, since one device's error can quote another's.
 function deviceDetails(devices: readonly Device[]): string[] {
   if (devices.length === 0) return ["Capture devices: none"];
   const sorted = [...devices].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const known = knownValues(devices);
   const lines = [`Capture devices: ${sorted.length}`];
-  sorted.forEach((d, i) => lines.push("", ...deviceBlock(d, i + 1)));
+  sorted.forEach((d, i) => lines.push("", ...deviceBlock(d, i + 1, known)));
   return lines;
 }
 
 const USB_ID = /^usb:([0-9a-f]{4}):([0-9a-f]{4})(?::|$)/i;
 
+// usbLabel is a USB id reduced to vendor:product, the part that names the
+// model and not the unit, or null when id is not a USB id.
+function usbLabel(id: string): string | null {
+  const m = USB_ID.exec(id);
+  return m ? `usb:${m[1].toLowerCase()}:${m[2].toLowerCase()}` : null;
+}
+
 // deviceIdKind describes a configured device id without the parts that identify
 // the unit: a USB id keeps only vendor:product (never the s= serial or the p=
 // port), a stable ALSA card-name id and a card index are named by kind only.
 // idStable is absent from an older appliance, so the id's own form decides then,
-// matching config.IsCardIndexID.
+// as config.IsCardIndexID does: any usb: id, or an hw: id naming its card.
 function deviceIdKind(d: Device): string {
   const id = d.device.trim();
-  const usb = USB_ID.exec(id);
-  const stable = d.idStable ?? (usb !== null || (id.startsWith("hw:") && id.includes("=")));
+  const usb = usbLabel(id);
+  const stable = d.idStable ?? (id.startsWith("usb:") || (id.startsWith("hw:") && id.includes("=")));
   let kind = "card index";
-  if (usb) kind = `USB ${usb[1].toLowerCase()}:${usb[2].toLowerCase()}`;
+  if (usb) kind = `USB ${usb.slice("usb:".length)}`;
   else if (stable) kind = "ALSA card name";
   return `${kind}, ${stable ? "stable" : "not stable (can change after a reboot or replug)"}`;
 }
 
-// redact strips what an error message may quote from the device's config: the
-// id (with its serial) and the stream path, plus any other USB id beyond its
-// vendor:product.
-function redact(text: string, d: Device): string {
-  let out = text;
-  const usb = USB_ID.exec(d.device.trim());
-  if (d.device.trim()) out = out.replaceAll(d.device.trim(), usb ? `usb:${usb[1]}:${usb[2]}` : "<device id>");
-  if (d.path && d.path !== "/") out = out.replaceAll(d.path, "<path>");
-  return out.replace(/\b(usb:[0-9a-f]{4}:[0-9a-f]{4}):[^\s"';)]*/gi, "$1");
+// A replacement of one configured value in error text.
+interface Known {
+  value: string;
+  placeholder: string;
 }
+
+// Values shorter than this are not replaced literally: a card-index id such as
+// "1" identifies nothing, and replacing it would garble numbers in the text.
+const MIN_KNOWN_LENGTH = 3;
+
+// knownValues is every configured id and first stream path across ALL devices,
+// longest first, since an error on one device can quote another's. Names are
+// not listed: the appliance always quotes a device name (%q), which the quoted
+// rule covers, and a name that is an ordinary word ("audio") would otherwise
+// rewrite unrelated text.
+function knownValues(devices: readonly Device[]): Known[] {
+  const known: Known[] = [];
+  for (const d of devices) {
+    const id = d.device.trim();
+    known.push({ value: id, placeholder: usbLabel(id) ?? "<device id>" });
+    if (d.path !== "/") known.push({ value: d.path, placeholder: "<path>" });
+  }
+  return known.filter((k) => k.value.length >= MIN_KNOWN_LENGTH).sort((a, b) => b.value.length - a.value.length);
+}
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// A token here runs to whitespace, a quote or a bracket, and stops before a
+// comma or colon that ends it (", " in a list, ": " before a message), so a USB
+// id's own "if=0,0" and inner colons stay inside it.
+const TOKEN_TAIL = String.raw`(?:[^\s"'(),:]|[,:](?!\s|$))*`;
+const USB_TOKEN = new RegExp(String.raw`\busb:` + TOKEN_TAIL, "gi");
+const CARD_TOKEN = new RegExp(String.raw`\bhw:CARD=` + TOKEN_TAIL, "gi");
+// A Go %q string, escapes included, so a quote inside a name cannot end it early.
+const QUOTED = /"(?:[^"\\]|\\.)*"/g;
+// An absolute path starting a token, to the next whitespace: a stream path may
+// hold any other character. A trailing colon is the message's own separator
+// and is kept. /proc and /dev/snd paths name kernel interfaces, not the
+// operator's setup, and are kept for the diagnosis.
+const PATH_TOKEN = /(?<=^|[\s("=])\/(?!proc\/|dev\/snd\/)\S+/g;
+// What a scrubbed quoted span may still hold and be kept.
+const SAFE_QUOTED = /^"(?:<[a-z ]+>|usb:[0-9a-f]{4}:[0-9a-f]{4})"$/;
+
+// scrub makes a device's error text safe to paste publicly. Configured ids and
+// paths go first, while they still match literally, and only as whole tokens.
+// Then catch-all rules cover what the web UI does not know: any quoted string
+// (Go quotes device names and malformed ids with %q), any USB or card-name id,
+// and any other absolute path (a stream past the first, which the record
+// omits).
+function scrub(text: string, known: readonly Known[]): string {
+  let out = text;
+  for (const k of known) {
+    out = out.replace(new RegExp(`(?<![A-Za-z0-9_.-])${escapeRegExp(k.value)}(?![A-Za-z0-9_.-])`, "g"), k.placeholder);
+  }
+  out = out.replace(USB_TOKEN, (t) => usbLabel(t) ?? "usb:<id>");
+  out = out.replace(CARD_TOKEN, "hw:CARD=<card>");
+  out = out.replace(QUOTED, (q) => (SAFE_QUOTED.test(q) ? q : `"<redacted>"`));
+  return out.replace(PATH_TOKEN, (t) => (t.endsWith(":") ? "<path>:" : "<path>"));
+}
+
+// ALSA's long card name can end in the bus position ("... at usb-0000:01:00.0-1.2,
+// high speed"); the kernel's short name is the part before it.
+const shortCardName = (name: string): string => name.replace(/\s+at\s+usb-.*$/, "");
 
 const channelList = (ch: readonly number[]): string => (ch.length > 0 ? ch.join(",") : "none");
 
-function deviceBlock(d: Device, n: number): string[] {
-  const lines = [`Device ${n}: ${d.friendlyName || "(no name reported)"}`];
+function deviceBlock(d: Device, n: number, known: readonly Known[]): string[] {
+  const lines = [`Device ${n}: ${(d.friendlyName && shortCardName(d.friendlyName)) || "(no name reported)"}`];
   lines.push(`  ID: ${deviceIdKind(d)}`);
   let state: string = d.state;
   if (d.state !== "serving") {
     if (d.downCause) state += ` (${d.downCause})`;
-    if (d.error) state += `: ${redact(d.error, d)}`;
+    if (d.error) state += `: ${scrub(d.error, known)}`;
   }
   lines.push(`  State: ${state}`);
   // The record projects only the first stream's selection; streamedChannels is
@@ -153,6 +215,8 @@ function deviceBlock(d: Device, n: number): string[] {
   if (d.negotiatedChannels) neg.push(`${d.negotiatedChannels} ${d.negotiatedChannels === 1 ? "channel" : "channels"}`);
   if (d.negotiatedFormat) neg.push(d.negotiatedFormat);
   if (neg.length > 0) lines.push(`  Negotiated: ${neg.join(", ")}`);
+  // Plain words rather than the UI's modeLabel badges ("OPUS", "PCM L16"):
+  // this is prose for a bug report.
   lines.push(`  First stream: ${d.mode === "opus" ? "Opus" : "PCM"}, channels ${channelList(d.channels)}`);
   lines.push(`  Overruns: ${d.overruns ?? "not reported"}, dropped frames: ${d.droppedFrames}`);
   return lines;
