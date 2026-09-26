@@ -424,12 +424,12 @@ func mapMode(m config.Mode) mgmtapi.StreamMode {
 	return mgmtapi.Pcm
 }
 
-// firstStream maps d's first stream exactly as the streams array carries it,
-// for the flat path/mode/channels/opus fields the wire Device and DeviceConfig
-// keep so a client that predates fan-out still reads a usable single-stream
-// device; it reports false for a device with no streams. Deriving the flat
-// fields from streamConfigToWire keeps them from drifting from the per-stream
-// mapping.
+// firstStream maps d's first stream exactly as DeviceConfig's streams array
+// (streamConfigToWire) carries it, for the flat path/mode/channels/opus fields
+// the wire Device and DeviceConfig keep so a client that predates fan-out still
+// reads a usable single-stream device; it reports false for a device with no
+// streams. Deriving the flat fields from streamConfigToWire keeps them from
+// drifting from the per-stream mapping.
 func firstStream(d *config.Device) (mgmtapi.StreamConfig, bool) {
 	if len(d.Streams) == 0 {
 		return mgmtapi.StreamConfig{}, false

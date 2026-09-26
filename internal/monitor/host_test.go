@@ -1353,8 +1353,8 @@ func (l *logRec) all() []string {
 	return slices.Clone(l.lines)
 }
 
-// overrunLogCount parses the overrun count out of a sub-threshold or
-// first-sighting line, or reports ok=false for any other line.
+// overrunLogCount parses the overrun count out of a sub-threshold line, or
+// reports ok=false for any other line.
 func overrunLogCount(line string) (n uint64, ok bool) {
 	var name string
 	if _, err := fmt.Sscanf(line, "device %q: %d capture overrun(s)", &name, &n); err != nil {
@@ -1450,7 +1450,7 @@ func TestHostOverrunLogOnsetAndClear(t *testing.T) {
 	want := []string{
 		gardenOneOverrunLine,
 		`device "garden": ` + overrunOnsetText() + `, audio lost; raising an overrun warning`,
-		fmt.Sprintf(`device "garden": no capture overruns at any check for %s, overrun warning cleared (%d overrun(s) while it was raised)`,
+		fmt.Sprintf(`device "garden": no capture overruns for %s, overrun warning cleared (%d overrun(s) since the check that raised it)`,
 			humanDuration(int(overrunClearAfter/time.Second)), episode),
 		gardenOneOverrunLine,
 	}
@@ -1489,23 +1489,30 @@ func TestHostOverrunLogFirstSighting(t *testing.T) {
 
 // When a device stops serving or notifications are turned off, the overrun
 // state owes a line before it goes: the raised warning's count, or the
-// overruns the rate limit still held back.
+// overruns the rate limit still held back. A device that owes nothing writes
+// no further line, and the owed line is written exactly once.
 func TestHostOverrunLogFlushOnStop(t *testing.T) {
 	t.Parallel()
+	// The raised cases start with more than the onset count in one poll, so an
+	// episode that capped the onset poll's overruns would under-report.
+	raised := []uint64{overrunOnsetCount + 3, 2}
+	raisedTotal := overrunOnsetCount + 5
 	for _, tc := range []struct {
 		name    string
 		bursts  []uint64
 		disable bool
-		want    string
+		last    string
 	}{
 		{"held back, device stops", []uint64{1, 2}, false,
-			`device "garden": 2 capture overrun(s) since the last overrun report, audio lost (device stopped)`},
+			`device "garden": device stopped; 2 capture overrun(s) since the last overrun report, audio lost`},
 		{"held back, notifications disabled", []uint64{1, 2}, true,
-			`device "garden": 2 capture overrun(s) since the last overrun report, audio lost (notifications disabled)`},
-		{"raised, device stops", []uint64{overrunOnsetCount, 2}, false,
-			fmt.Sprintf(`device "garden": overrun warning resolved (device stopped) after %d overrun(s) while it was raised`, overrunOnsetCount+2)},
-		{"raised, notifications disabled", []uint64{overrunOnsetCount, 2}, true,
-			fmt.Sprintf(`device "garden": overrun warning resolved (notifications disabled) after %d overrun(s) while it was raised`, overrunOnsetCount+2)},
+			`device "garden": notifications disabled; 2 capture overrun(s) since the last overrun report, audio lost`},
+		{"raised, device stops", raised, false,
+			fmt.Sprintf(`device "garden": device stopped; overrun warning resolved after %d overrun(s) since the check that raised it`, raisedTotal)},
+		{"raised, notifications disabled", raised, true,
+			fmt.Sprintf(`device "garden": notifications disabled; overrun warning resolved after %d overrun(s) since the check that raised it`, raisedTotal)},
+		{"nothing owed, device stops", []uint64{1}, false, gardenOneOverrunLine},
+		{"nothing owed, notifications disabled", []uint64{1}, true, gardenOneOverrunLine},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1516,6 +1523,7 @@ func TestHostOverrunLogFlushOnStop(t *testing.T) {
 			for _, n := range tc.bursts {
 				overrunPoll(h, c, feed, 10*time.Second, n)
 			}
+			before := len(lr.all())
 			if tc.disable {
 				s := hostSettings()
 				s.Enabled = false
@@ -1526,8 +1534,12 @@ func TestHostOverrunLogFlushOnStop(t *testing.T) {
 				pollEvery(h, c, 10*time.Second, devicePresenceGrace)
 			}
 			got := lr.all()
-			if len(got) == 0 || got[len(got)-1] != tc.want {
-				t.Errorf("lines = %q, want the last to be %q", got, tc.want)
+			wantNew := 1
+			if tc.last == gardenOneOverrunLine {
+				wantNew = 0
+			}
+			if len(got)-before != wantNew || len(got) == 0 || got[len(got)-1] != tc.last {
+				t.Errorf("lines = %q, want %d new line(s) ending with %q", got, wantNew, tc.last)
 			}
 		})
 	}
