@@ -1827,8 +1827,8 @@ components:
         supported:
           type: boolean
           description: >
-            False for a build that is not a release (a development build),
-            which never checks for updates.
+            False for a build that names no release (such as one built as
+            "dev"), which never checks for updates.
         checkEnabled:
           type: boolean
           description: Whether the daily check is on (`updates.check`).

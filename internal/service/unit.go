@@ -80,7 +80,12 @@ WantedBy=multi-user.target
 // up. It needs no network, and may write only the binary's directory and the
 // state directory; restarting the appliance goes through systemd's own
 // socket, which PrivateNetwork does not affect. StartLimitBurst keeps a
-// request the updater somehow cannot remove from restarting it in a loop.
+// request or journal the updater somehow cannot clear from restarting it in a
+// loop.
+//
+// Self-updated appliances keep the units their install wrote, so every later
+// release is started by this ExecStart line: its subcommand and flags are a
+// contract between versions (see AGENTS.md, Releases).
 const updateServiceTemplate = `[Unit]
 Description=Install a staged remote-mic update
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic
@@ -99,7 +104,7 @@ PrivateNetwork=true
 ReadWritePaths={{.BinDir}} {{.StateDir}}
 `
 
-// unitTmpl is parsed once at package init; the template text is a compile-time
+// The templates are parsed once at package init; their text is a compile-time
 // constant, so a parse failure is a programming error and panicking is correct.
 var (
 	unitTmpl          = template.Must(template.New("unit").Parse(unitTemplate))

@@ -12,8 +12,10 @@ import (
 )
 
 // The staging directory is DirName inside the service's state directory. The
-// appliance owns it and writes the staged release there; the root updater
-// only reads what it verifies itself, and writes StatusFile back.
+// appliance owns it and writes the staged release there. The root updater
+// trusts nothing it reads there without verifying it, claims and removes the
+// request, removes the stale health file before a restart and the staged
+// release once it is installed, and writes StatusFile back.
 const (
 	DirName = "update"
 	// RequestFile asks the root updater to install the staged release. It is

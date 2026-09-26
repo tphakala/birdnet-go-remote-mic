@@ -1042,7 +1042,7 @@ type UpdateStatus struct {
 	// PhaseMessage A human-readable detail for the phase.
 	PhaseMessage *string `json:"phaseMessage,omitempty"`
 
-	// Supported False for a build that is not a release (a development build), which never checks for updates.
+	// Supported False for a build that names no release (such as one built as "dev"), which never checks for updates.
 	Supported bool `json:"supported"`
 
 	// UpgradeHint How to update by hand when canApply is false.

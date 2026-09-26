@@ -156,8 +156,8 @@ func TestFetcherLatestRefuses(t *testing.T) {
 				delete(g.files, "/releases/download/v0.3.0/"+releasemanifest.SignatureFileName)
 			},
 			check: func(err error) bool {
-				var se *StatusError
-				return errors.As(err, &se) && se.Code == http.StatusNotFound
+				se, ok := errors.AsType[*StatusError](err)
+				return ok && se.Code == http.StatusNotFound
 			},
 		},
 		{
@@ -228,8 +228,8 @@ func TestFetcherLatestStatusAndUserAgent(t *testing.T) {
 		t.Errorf("User-Agent %v", got)
 	}
 	status = http.StatusBadGateway
-	var se *StatusError
-	if _, err := f.Latest(t.Context()); !errors.As(err, &se) || se.Code != http.StatusBadGateway {
+	_, err := f.Latest(t.Context())
+	if se, ok := errors.AsType[*StatusError](err); !ok || se.Code != http.StatusBadGateway {
 		t.Errorf("502: got %v", err)
 	}
 }

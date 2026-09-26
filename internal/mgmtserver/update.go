@@ -83,22 +83,22 @@ func updateToWire(st *update.Status) mgmtapi.UpdateStatus {
 		Phase:          mgmtapi.UpdateStatusPhase(st.Phase),
 	}
 	if st.Latest != "" {
-		out.LatestVersion = ptr(st.Latest)
+		out.LatestVersion = new(st.Latest)
 	}
 	if st.NotesURL != "" {
-		out.NotesUrl = ptr(st.NotesURL)
+		out.NotesUrl = new(st.NotesURL)
 	}
 	if !st.LastCheck.IsZero() {
-		out.LastCheck = ptr(st.LastCheck.UTC())
+		out.LastCheck = new(st.LastCheck.UTC())
 	}
 	if st.LastError != "" {
-		out.LastError = ptr(st.LastError)
+		out.LastError = new(st.LastError)
 	}
 	if st.Install.Hint != "" {
-		out.UpgradeHint = ptr(st.Install.Hint)
+		out.UpgradeHint = new(st.Install.Hint)
 	}
 	if st.PhaseMessage != "" {
-		out.PhaseMessage = ptr(st.PhaseMessage)
+		out.PhaseMessage = new(st.PhaseMessage)
 	}
 	return out
 }

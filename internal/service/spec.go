@@ -104,8 +104,7 @@ func (s ServiceSpec) UnitPath() string { return filepath.Join(unitDir, DefaultUn
 // UpdateDir is the update staging directory, owned by the service user.
 func (s ServiceSpec) UpdateDir() string { return filepath.Join(s.StateDir, UpdateDirName) }
 
-// UpdatePathUnitPath and UpdateServiceUnitPath are where the root updater's
-// units are written.
+// UpdatePathUnitPath is where the root updater's path unit is written.
 func (s ServiceSpec) UpdatePathUnitPath() string { return filepath.Join(unitDir, UpdatePathUnit) }
 
 // UpdateServiceUnitPath is where the root updater's service unit is written.

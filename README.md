@@ -190,7 +190,9 @@ the zero-config first start writes the file for you.
 It also installs the root updater behind [one-button updates](#updates):
 `remote-mic-update.path` watches `/var/lib/remote-mic/update/` and starts
 `remote-mic-update.service` when the appliance stages a release there.
-Re-running `service install` on an existing install adds them.
+Re-running `service install` on an existing install adds them; restart the
+service afterwards (`sudo systemctl restart remote-mic`) so the running
+appliance offers the one-button update.
 
 Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
 your password for the privileged steps. Flags override the defaults (`--user`,
@@ -296,11 +298,11 @@ Then pull each stream at `rtsp://<host>:8554<path>`, for example
 
 ## Updates
 
-The appliance checks once a day for a newer release (a few minutes after it
-starts, then about every 24 hours) and raises an "Update available"
-notification with a link to the release notes. The latest known version, the
-last check and any error are in `GET /api/v1/system` under `update`, and
-`POST /api/v1/system/update/check` checks right away. Turn checks off with
+With the management API enabled, the appliance checks once a day for a newer
+release (a few minutes after it starts, then about every 24 hours) and raises
+an "Update available" notification naming the release notes URL. The latest
+known version, the last check and any error are in `GET /api/v1/system` under
+`update`, and `POST /api/v1/system/update/check` checks right away. Turn checks off with
 `updates: {check: false}` in the config or `PATCH /api/v1/config`; with them
 off the appliance makes no outbound update request at all. A check that fails
 (no network, GitHub down) logs one line per kind of failure and retries later;
@@ -319,11 +321,11 @@ the service, which drops connected streams for a few seconds. If the new
 version does not come up within two minutes and stay up for ten seconds, or
 the updater is stopped before it has, the updater puts the previous binary
 back and restarts it, and the appliance reports the rollback in the
-notification bell. An update cut off by
-a power loss is rolled back the same way when the updater next starts, even
-after a reboot. The appliance itself never gets write access to its own
-binary, and the updater refuses to act when the binary or its directory can
-be written by anyone but root.
+notification bell. An update cut off by a power loss is rolled back the same
+way when the updater next starts, even after a reboot. The appliance itself
+never gets write access to its own binary: `service install` refuses a binary
+path when its directory, or any directory above it, can be written by anyone
+but root, and the updater checks again before it acts.
 
 Installs managed by a package manager are never replaced behind its back: a
 `.deb` or Homebrew install, or a binary run from where it was unpacked, shows

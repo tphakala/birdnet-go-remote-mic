@@ -76,7 +76,7 @@ func (s *Server) GetSystem(_ context.Context, _ mgmtapi.GetSystemRequestObject) 
 	out := systemToWire(&si)
 	if s.updates != nil {
 		st := s.updates.Status()
-		out.Update = ptr(updateToWire(&st))
+		out.Update = new(updateToWire(&st))
 	}
 	return mgmtapi.GetSystem200JSONResponse(out), nil
 }

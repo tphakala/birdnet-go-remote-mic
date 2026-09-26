@@ -46,7 +46,8 @@ type journal struct {
 	NewSHA256  string `json:"newSha256"`
 }
 
-// Default timings for Applier.
+// Timings for Applier: the health defaults (overridable per Applier) and the
+// fixed bound on running the new binary's version command.
 const (
 	DefaultHealthTimeout = 2 * time.Minute
 	DefaultHealthSettle  = 10 * time.Second

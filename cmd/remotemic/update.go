@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -79,7 +81,7 @@ func detectInstall(dir string) update.Install {
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			inst.CanApply = false
-			inst.Hint = "Re-run sudo remote-mic service install to create the update staging directory " + dir
+			inst.Hint = "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to create the update staging directory " + dir
 		}
 	}
 	return inst
@@ -154,12 +156,23 @@ var applyUpdate = func(ctx context.Context, binPath, stateDir string) error {
 		Running:  version,
 		Target:   update.RunningTarget(),
 		Trusted:  trusted,
-		Restart: sd.Restart,
-		MainPID: sd.MainPID,
+		Restart:  sd.Restart,
+		MainPID:  sd.MainPID,
 		Version: func(ctx context.Context, bin string) (string, error) {
 			b, err := exec.CommandContext(ctx, bin, "version").Output() //nolint:gosec // bin is the staged binary, verified against the signed manifest
+			if ee, ok := errors.AsType[*exec.ExitError](err); ok && len(ee.Stderr) > 0 {
+				err = fmt.Errorf("%w: %q", err, truncate(strings.TrimSpace(string(ee.Stderr)), 200))
+			}
 			return string(b), err
 		},
 	}
 	return a.Apply(ctx)
+}
+
+// truncate shortens s to at most n bytes for a log or status message.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

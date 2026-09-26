@@ -171,7 +171,7 @@ them; new code MUST use them and existing code migrates when touched:
   fields). The `ptr[T]` (`internal/mgmtserver`) and `ptrInt` (config tests)
   helpers predate this; do not add more.
 - Errors: wrap with `fmt.Errorf("...: %w", err)`, compare with `errors.Is`,
-  (new) extract with `errors.AsType`. Sentinels are `ErrXxx`, types are
+  extract with `errors.AsType`. Sentinels are `ErrXxx`, types are
   `XxxError` (errname). `errors.New` for constant messages.
 - Logging is the standard `log` package, lowercase messages that lead with the
   subsystem (`pprof: ...`) or device (`device %q disconnected: ...`). No
@@ -271,7 +271,9 @@ thelper, and testifylint. `unused` is disabled.
 - `internal/sysinfo`: `/proc`, `/sys`, statfs readers for `GET /system` and the
   host monitor. Parsers are platform-neutral; readers are Linux-only.
 - `internal/service`: installs a systemd unit running as a least-privilege
-  system user.
+  system user, plus the root updater's path and oneshot units
+  (`remote-mic-update.path`/`.service`), and refuses a bin path anyone but
+  root can write.
 - `internal/runlock`: advisory lock at `<config path>.lock` marking a live
   appliance, so token commands use its API instead of editing its config.
 - `internal/atomicfile`: atomic durable file replace (config, certs).

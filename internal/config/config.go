@@ -831,8 +831,7 @@ func (c *Config) Clone() Config {
 	// the whole block its own backing storage.
 	out.Notifications = c.Notifications.clone()
 	if c.Updates.Check != nil {
-		v := *c.Updates.Check
-		out.Updates.Check = &v
+		out.Updates.Check = new(*c.Updates.Check)
 	}
 	if c.Devices != nil {
 		out.Devices = make([]Device, len(c.Devices))

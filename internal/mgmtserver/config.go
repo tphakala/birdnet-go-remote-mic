@@ -346,7 +346,7 @@ func mergeBlocks(dst *config.Config, patch *mgmtapi.ConfigPatch) {
 	}
 	// An updates block with no check field is a no-op, like discovery.
 	if patch.Updates != nil && patch.Updates.Check != nil {
-		dst.Updates.Check = ptr(*patch.Updates.Check)
+		dst.Updates.Check = new(*patch.Updates.Check)
 	}
 }
 
@@ -371,7 +371,7 @@ func configToWire(c *config.Config) mgmtapi.Config {
 		// the Access Control card needs it to show what to paste into BirdNET-Go.
 		Auth:          mgmtapi.AuthSettings{Token: ptr(c.Auth.Token)},
 		Notifications: notificationsToWire(c),
-		Updates:       mgmtapi.UpdateSettings{Check: ptr(c.UpdateCheckEnabled())},
+		Updates:       mgmtapi.UpdateSettings{Check: new(c.UpdateCheckEnabled())},
 		Devices:       devs,
 	}
 	if c.Management.Listen != "" {

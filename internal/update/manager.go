@@ -70,8 +70,8 @@ const (
 type Status struct {
 	// Current is the running version.
 	Current string
-	// Supported is false for a build that is not a release (a dev build),
-	// which never checks.
+	// Supported is false for a build that names no release (such as one
+	// built as "dev"), which never checks.
 	Supported bool
 	// CheckEnabled mirrors the operator's toggle.
 	CheckEnabled bool
@@ -338,16 +338,20 @@ func (m *Manager) failuresLocked() int {
 	return m.failures
 }
 
+func isNetError(err error) bool {
+	_, ok := errors.AsType[net.Error](err)
+	return ok
+}
+
 // failureCause names the kind of a check failure, for logging each kind once.
 func failureCause(err error) string {
-	var se *StatusError
-	var ne net.Error
-	switch {
-	case errors.As(err, &se):
+	if se, ok := errors.AsType[*StatusError](err); ok {
 		return fmt.Sprintf("http %d", se.Code)
+	}
+	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
-	case errors.As(err, &ne):
+	case isNetError(err):
 		return "network"
 	case errors.Is(err, ErrNoRelease):
 		return "no release"

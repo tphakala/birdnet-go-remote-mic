@@ -103,3 +103,12 @@ func TestNewUpdateManager(t *testing.T) {
 		t.Errorf("status %+v", st)
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{"short": "short", "exactly10!": "exactly10!", "longer than ten": "longer tha..."} {
+		if got := truncate(in, 10); got != want {
+			t.Errorf("truncate(%q, 10) = %q, want %q", in, got, want)
+		}
+	}
+}
