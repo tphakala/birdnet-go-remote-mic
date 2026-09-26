@@ -91,12 +91,12 @@ tasks:
       - go run github.com/daveshanley/vacuum@v0.30.1 lint -d -e api/openapi.yaml
 
   licenses:generate:
-    desc: Regenerate THIRD_PARTY_LICENSES.md from the modules linked into the binary and the bundled fonts
+    desc: Regenerate THIRD_PARTY_LICENSES.md and web/static/licenses.json from the modules linked into the binary and the bundled fonts
     cmds:
       - go run ./tools/licensegen
 
   licenses:verify:
-    desc: Fail if THIRD_PARTY_LICENSES.md is stale, or a linked module has no license file or an unrecognized one
+    desc: Fail if THIRD_PARTY_LICENSES.md or web/static/licenses.json is stale, or a linked module has no license file or an unrecognized one
     cmds:
       - go run ./tools/licensegen -check
 

@@ -4,6 +4,8 @@
 // label maps live in exactly one place.
 import { ApiError } from "./api.js";
 import { showToast } from "../components/toast.js";
+import { prefSaveNotice } from "./prefs.js";
+import { HIDE_INACTIVE_PREFIX, parseBoolPref } from "./dashboard-core.js";
 
 // elem creates an element with an optional class and text content.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
@@ -28,6 +30,11 @@ export function elem(tag: string, className?: string, text?: string): HTMLElemen
 // result. Keep new copy controls pointed here.
 export const ICON_COPY =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
+
+// ICON_VERSION is the build-version tag glyph, shared by the System Information
+// card and the About page so the same fact carries the same icon.
+export const ICON_VERSION =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" x2="7.01" y1="7" y2="7"></line></svg>';
 
 // iconSpan wraps trusted, static icon markup in a decorative (aria-hidden) span.
 // The control's own text or aria-label carries the meaning, so the graphic is
@@ -169,24 +176,37 @@ export function clearBusy(el: HTMLElement, label?: string): void {
 // Per-device meter display preference: "hide inactive channels". It is a per-
 // viewer view option, not appliance config, so it lives in localStorage keyed by
 // the stable device id rather than in the saved config. read/write are wrapped
-// because localStorage can throw (private mode, disabled storage); a failure
-// falls back to the default and simply does not persist.
+// because localStorage can throw (site data blocked, storage full): a failed
+// read falls back to the default, and a failed write does not persist and
+// raises the shared notice once per page (lib/prefs.ts).
 export function hideInactiveKey(deviceId: string): string {
-  return `remote-mic-hide-inactive:${deviceId}`;
+  return `${HIDE_INACTIVE_PREFIX}${deviceId}`;
 }
 export function readBoolPref(key: string, fallback: boolean): boolean {
   try {
-    const v = localStorage.getItem(key);
-    return v === null ? fallback : v === "1";
+    return parseBoolPref(localStorage.getItem(key), fallback);
   } catch {
     return fallback;
   }
 }
+// isLocalStorageEvent reports whether a storage event is a localStorage change
+// (a clear in another tab arrives with key null and this window's
+// localStorage as its area), not a sessionStorage one. A null area only occurs
+// on an event built without one, which is let through. Reading localStorage
+// can itself throw where site data is blocked.
+export function isLocalStorageEvent(e: StorageEvent): boolean {
+  try {
+    return e.storageArea === null || e.storageArea === window.localStorage;
+  } catch {
+    return false;
+  }
+}
+
 export function writeBoolPref(key: string, value: boolean): void {
   try {
     localStorage.setItem(key, value ? "1" : "0");
   } catch {
-    /* storage unavailable: the preference just does not persist */
+    prefSaveNotice.report();
   }
 }
 
@@ -287,6 +307,18 @@ export function copyText(value: string, successMessage: string): void {
 export function setText(el: HTMLElement, text: string): void {
   if (el.textContent !== text) el.textContent = text;
 }
+// announce puts a message in a polite live region (role=status, present in the
+// page from load so the first message is read). The region is cleared first,
+// so a repeat of the same message is announced again.
+export function announce(region: HTMLElement | null, message: string): void {
+  if (!region) return;
+  region.textContent = "";
+  // The next frame, so the clear and the new text are separate mutations.
+  requestAnimationFrame(() => {
+    region.textContent = message;
+  });
+}
+
 export function setHidden(el: HTMLElement, hidden: boolean): void {
   if (el.hidden !== hidden) el.hidden = hidden;
 }
@@ -362,8 +394,34 @@ export function renderLoadError(
     // the screen reader does not read "Loading..." as an alert. A later failure
     // re-adds it when renderLoadError runs again.
     container.removeAttribute("role");
+    // Replacing the content removes the focused Retry button, which would drop
+    // keyboard focus to the page body. Park it on the enclosing view section
+    // (focusable, ringless, and never removed, so focus survives the reload
+    // replacing or hiding this container), else on the container itself.
+    const hadFocus = container.contains(document.activeElement);
     container.textContent = loadingText;
+    if (hadFocus) {
+      const target = container.closest<HTMLElement>(".view-container") ?? container;
+      if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
     onRetry();
   });
   container.appendChild(retry);
+}
+
+// externalLink builds a link that opens in a new tab (the appliance UI stays
+// open behind it), with rel="noopener" so the new page cannot reach back into
+// this one, and a visually hidden note so a screen reader says so too. Pass a
+// .btn class and an icon for a button-styled link.
+export function externalLink(href: string, text: string, opts: { className?: string; icon?: string } = {}): HTMLAnchorElement {
+  const a = document.createElement("a");
+  if (opts.className) a.className = opts.className;
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener";
+  if (opts.icon) a.appendChild(iconSpan(opts.icon, "btn-icon"));
+  a.appendChild(elem("span", undefined, text));
+  a.appendChild(elem("span", "visually-hidden", " (opens in a new tab)"));
+  return a;
 }

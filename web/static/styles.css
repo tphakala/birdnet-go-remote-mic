@@ -474,11 +474,20 @@ body {
   transform: scale(0.97);
 }
 
-/* The theme toggle carries a moon and a sun; only the current theme's icon
-   shows. Dark is the default, so anything but data-theme="light" is dark. */
+/* The theme menu button carries a moon, a sun and a monitor. In System mode
+   (data-mode="system", set by app.ts) the monitor shows; otherwise only the
+   current theme's icon does. Dark is the default, so anything but
+   data-theme="light" is dark, and before app.js sets a mode the button shows
+   the theme like a Light or Dark choice. */
 :root[data-theme="light"] .theme-toggle .theme-icon-dark,
-:root:not([data-theme="light"]) .theme-toggle .theme-icon-light {
+:root:not([data-theme="light"]) .theme-toggle .theme-icon-light,
+.theme-toggle .theme-icon-system,
+.theme-toggle[data-mode="system"] .theme-icon-dark,
+.theme-toggle[data-mode="system"] .theme-icon-light {
   display: none;
+}
+.theme-toggle[data-mode="system"] .theme-icon-system {
+  display: block;
 }
 
 /* Telemetry Dashboard Ribbon */
@@ -1692,7 +1701,11 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .notif-chip-btn:focus-visible,
 .ev-source-pill:focus-visible,
 .notif-panel-all:focus-visible,
-.clip-latch-btn:focus-visible {
+.clip-latch-btn:focus-visible,
+.menu-item:focus-visible,
+.license-summary:focus-visible,
+.license-text-summary:focus-visible,
+.license-text:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
@@ -2864,12 +2877,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   }
 }
 
-/* On a phone-width header the three nav tabs with their icons are wider than
-   the header, so the page scrolled sideways at 320 px. Drop the decorative
-   icons (the labels carry the meaning) and tighten the padding. */
+/* On a phone-width header the four nav tabs with their icons are wider than
+   the header, so they spilled out of it at 320 px. Drop the decorative icons
+   (the labels carry the meaning) and tighten the padding and the type. */
 @media (max-width: 400px) {
   .nav-item {
-    padding: 0 8px;
+    padding: 0 5px;
+    font-size: 11px;
   }
   .nav-item svg {
     display: none;
@@ -2990,11 +3004,14 @@ select.field-input {
 }
 /* Each row label carries a leading glyph. Centre the key against its value so
    the icon does not drag the row off the value's line, and scope it to the
-   System Information columns so the certificate info grid keeps its plain keys. */
-.sysinfo-group .info-grid {
+   System Information columns and the About card's details, so the certificate
+   info grid keeps its plain keys. */
+.sysinfo-group .info-grid,
+.about-card .info-grid {
   align-items: center;
 }
-.sysinfo-group .info-key {
+.sysinfo-group .info-key,
+.about-card .info-key {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -3264,4 +3281,211 @@ select.field-input {
 }
 .login-field {
   gap: 6px;
+}
+
+/* Menu button popover (components/menu-button.ts): a small single-choice menu
+   under its button, such as the header theme menu. It shares the notification
+   panel's surface and slide-in. */
+.menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.menu-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 150px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 1500;
+}
+.menu-popover:not([hidden]) {
+  animation: notif-panel-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--bg-surface-raised);
+}
+.menu-item-icon {
+  display: inline-flex;
+  color: var(--text-secondary);
+}
+.menu-item-label {
+  flex: 1;
+}
+/* The check mark shows on the chosen item only; aria-checked carries the state
+   for assistive tech. */
+.menu-item-check {
+  display: inline-flex;
+  color: var(--accent-cyan-text);
+  visibility: hidden;
+}
+.menu-item[aria-checked="true"] .menu-item-check {
+  visibility: visible;
+}
+
+/* About page (views/about.ts). Cards reuse .config-section-card; these style
+   the prose, the help columns, and the license disclosures. */
+.about-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.about-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.about-text a,
+.about-card .info-val a {
+  color: var(--accent-cyan-text);
+  font-weight: 600;
+}
+.about-subtitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.about-help-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 18px 32px;
+}
+.about-help-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.about-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.about-list code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--text-primary);
+  background: var(--bg-surface-raised);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  overflow-wrap: anywhere;
+}
+.about-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.about-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.about-details {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.about-third-party {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.license-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.license-item + .license-item {
+  border-top: 1px solid var(--border-subtle);
+}
+.license-summary,
+.license-text-summary {
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+/* The summary keeps its default list-item display: that is what draws the
+   disclosure triangle, the cue that a row opens. */
+.license-summary {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.license-summary .license-tag {
+  margin-left: 8px;
+}
+.license-name {
+  overflow-wrap: anywhere;
+}
+.license-text-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-cyan-text);
+  width: fit-content;
+}
+.license-file {
+  padding: 0 12px 12px;
+}
+.license-file-name {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.license-text {
+  margin: 8px 0 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.license-file .license-text {
+  margin-top: 0;
 }

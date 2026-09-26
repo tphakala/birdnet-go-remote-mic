@@ -65,7 +65,7 @@ function runThemeInit(env: Env): string | null {
     context.localStorage = {
       getItem(k: string): string | null {
         if (env.getItemThrows) throw new Error("storage blocked");
-        // Only the key lib/theme.ts saves the toggle's choice under reads back,
+        // Only the key lib/theme.ts saves the chosen mode under reads back,
         // so the two cannot drift apart unnoticed (theme-init cannot import it).
         return k === THEME_KEY ? stored : null;
       },

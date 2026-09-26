@@ -100,3 +100,47 @@ export function footerMetrics(d: { clientConnected: boolean; droppedFrames: numb
     overruns: String(d.overruns ?? 0),
   };
 }
+
+// hiddenRows decides which meter rows the per-device "hide inactive channels"
+// preference hides: the rows no stream carries (states[i] false). It never
+// hides every row: if no row is streamed (a channel-count/selection mismatch),
+// all rows show rather than leave an empty meter console.
+export function hiddenRows(states: boolean[], hideInactive: boolean): boolean[] {
+  const anyLive = states.some((s) => s);
+  return states.map((on) => hideInactive && anyLive && !on);
+}
+
+// focusFallbackRow picks where keyboard focus goes when the row holding it is
+// hidden: the first row still visible, or -1 when none is (the caller then
+// falls back to the card's settings button).
+export function focusFallbackRow(hidden: boolean[]): number {
+  return hidden.indexOf(false);
+}
+
+// Polite announcements for a focus move the operator did not make, so a screen
+// reader user learns why focus jumped rather than finding it somewhere new.
+// channelHiddenMessage names the 1-based channel whose row hid (because its
+// channel left the stream, or another tab turned on hiding inactive channels,
+// so the cause is left neutral) and where focus actually landed: the target
+// channel's row, or the device settings when target is null.
+export function channelHiddenMessage(hidden: number, target: number | null): string {
+  const where = target === null ? "the device settings" : `channel ${target}`;
+  return `Channel ${hidden} is hidden. Focus moved to ${where}.`;
+}
+export const TOKEN_HIDDEN_MESSAGE = "This stream no longer needs the access token. Focus moved to the device settings.";
+
+// HIDE_INACTIVE_PREFIX starts every "hide inactive channels" storage key; the
+// device id follows it (hideInactiveKey in ui.ts builds the key).
+export const HIDE_INACTIVE_PREFIX = "remote-mic-hide-inactive:";
+
+// hideInactivePrefDevice returns the device id a storage key belongs to when it
+// is a "hide inactive channels" key, else null.
+export function hideInactivePrefDevice(key: string | null): string | null {
+  return key !== null && key.startsWith(HIDE_INACTIVE_PREFIX) ? key.slice(HIDE_INACTIVE_PREFIX.length) : null;
+}
+
+// parseBoolPref reads a stored boolean preference ("1" on, "0" off) with the
+// default for anything else, including a removed key (null).
+export function parseBoolPref(v: string | null, fallback: boolean): boolean {
+  return v === "1" ? true : v === "0" ? false : fallback;
+}

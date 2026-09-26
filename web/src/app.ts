@@ -1,4 +1,4 @@
-import { router } from "./lib/router.js";
+import { isViewName, router } from "./lib/router.js";
 import { store } from "./lib/store.js";
 import { DashboardView } from "./views/dashboard.js";
 import { SystemView } from "./views/system.js";
@@ -8,19 +8,43 @@ import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 import { needsNotificationsFallback } from "./lib/dashboard-core.js";
-import { initTheme, PREFERS_LIGHT_QUERY } from "./lib/theme.js";
+import { initTheme, PREFERS_LIGHT_QUERY, type Theme, type ThemeMode } from "./lib/theme.js";
+import { prefSaveNotice } from "./lib/prefs.js";
 import { ERROR_TTL_MS, showToast } from "./components/toast.js";
+import { isLocalStorageEvent } from "./lib/ui.js";
+import { MenuButton } from "./components/menu-button.js";
+import { AboutView } from "./views/about.js";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
 // notifications snapshot before loading it directly (see init).
 const NOTIFICATIONS_FALLBACK_MS = 3000;
 
-// How long the "theme not saved" warning stays up: as long as an error toast,
-// since it is two sentences and appears while the whole page changes colour.
+// How long the "preferences not saved" warning stays up: as long as an error
+// toast, since it is two sentences and can appear while the whole page changes
+// colour.
 const SAVE_FAILED_TOAST_MS = ERROR_TTL_MS;
+
+// Icons for the theme menu's items (static, trusted markup), matching the
+// header button's icons in index.html.
+const ICON_SYSTEM = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line></svg>`;
+const ICON_SUN = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
+const ICON_MOON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>`;
+
+const MODE_LABEL: Record<ThemeMode, string> = { system: "System", light: "Light", dark: "Dark" };
 
 class App {
   public init(): void {
+    // One notice for every browser preference the operator chose that cannot
+    // be saved (a Light or Dark theme, hidden channels, the Events / shortcut,
+    // read marks after Mark all read or Clear all): a warning, held long enough
+    // to read, since it explains why choices appear to reset on reload.
+    prefSaveNotice.setHandler(() =>
+      showToast(
+        "This browser could not save your preferences, so they reset on reload. Allow site data for this address in the browser settings, or free up browser storage, to keep them.",
+        "warn",
+        SAVE_FAILED_TOAST_MS,
+      ),
+    );
     this.initTheme();
     this.initNav();
     initLoginModal();
@@ -59,9 +83,10 @@ class App {
     });
   }
 
-  // The toggle and the live OS follow live in lib/theme.ts; this only hands it
-  // the page's objects. A storage-blocked browser (a private window, site data
-  // blocked) still switches the theme, and learns once why it will not stick.
+  // The mode and the live OS follow live in lib/theme.ts; this hands it the
+  // page's objects and binds the header menu button to it. A storage-blocked
+  // browser (site data blocked, storage full) still switches the theme,
+  // and learns once why it will not stick.
   private initTheme(): void {
     let media: MediaQueryList | null = null;
     try {
@@ -69,29 +94,51 @@ class App {
     } catch {
       /* matchMedia unavailable: no live follow */
     }
-    initTheme({
+    const btn = document.getElementById("theme-toggle-btn");
+    let menu: MenuButton | null = null;
+    // The label spells out the mode and the theme it shows, and the title
+    // repeats it word for word, so a screen reader does not read the tooltip
+    // again as a description.
+    const show = (mode: ThemeMode, theme: Theme): void => {
+      if (!btn) return;
+      const label = mode === "system" ? `Theme: System (${MODE_LABEL[theme]})` : `Theme: ${MODE_LABEL[mode]}`;
+      if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
+      if (btn.title !== label) btn.title = label;
+      if (btn.dataset.mode !== mode) btn.dataset.mode = mode;
+      menu?.set(mode);
+    };
+    const controller = initTheme({
       root: document.documentElement,
-      toggle: document.getElementById("theme-toggle-btn"),
       storage: () => window.localStorage,
       media,
-      // A warning, held long enough to read: it explains why the theme will
-      // appear to reset on its own after a reload.
-      onSaveFailed: () =>
-        showToast(
-          "Theme changed for this visit only: this browser could not save it, so it resets on reload. Check that this browser allows site data here to keep it.",
-          "warn",
-          SAVE_FAILED_TOAST_MS,
-        ),
+      // Only localStorage holds the theme; a sessionStorage change is not ours.
+      onStorage: (listener) =>
+        window.addEventListener("storage", (e) => {
+          if (isLocalStorageEvent(e)) listener({ key: e.key, newValue: e.newValue });
+        }),
+      onApply: show,
+      onSaveFailed: () => prefSaveNotice.report(),
     });
+    if (!btn) return;
+    menu = new MenuButton(btn, {
+      label: "Theme",
+      choices: [
+        { value: "system", label: "System", icon: ICON_SYSTEM },
+        { value: "light", label: "Light", icon: ICON_SUN },
+        { value: "dark", label: "Dark", icon: ICON_MOON },
+      ],
+      onSelect: (v) => {
+        if (v === "system" || v === "light" || v === "dark") controller.setMode(v);
+      },
+    });
+    menu.set(controller.mode());
   }
 
   private initNav(): void {
     document.querySelectorAll<HTMLElement>(".nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
         const view = btn.dataset.view;
-        if (view === "dashboard" || view === "events" || view === "system") {
-          router.navigate(view);
-        }
+        if (isViewName(view)) router.navigate(view);
       });
     });
   }
@@ -100,6 +147,7 @@ class App {
     new DashboardView();
     new EventsView(notifications);
     new SystemView();
+    new AboutView();
   }
 }
 

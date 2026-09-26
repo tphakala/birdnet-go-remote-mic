@@ -1,5 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { button, copyText, elem, hideInactiveKey, ICON_COPY, switchControl, writeBoolPref } from "../lib/ui.js";
+import { button, copyText, elem, ICON_COPY, switchControl } from "../lib/ui.js";
 import {
   MAX_NAME_LEN,
   MAX_PATH_LEN,
@@ -105,6 +105,8 @@ export class DeviceSettingsForm {
   private hardware: DeviceHardware;
   private onDirty: () => void;
   private display: DisplayPrefs;
+  // The "hide inactive channels" switch, when the device has more than one channel.
+  private hideInput: HTMLInputElement | null = null;
   private ready = false;
   // loadCoercion is set when opening the form silently downgraded the saved codec
   // because the hardware no longer supports it, so the caller can tell the
@@ -295,9 +297,9 @@ export class DeviceSettingsForm {
 
     // Meter display preference (not appliance config): hide the channels no
     // stream carries from the VU meter. On by default. Stored client-side and
-    // applied at once through the DisplayPrefs callback, so it stays outside
-    // collect() and the save/dirty flow. Only meaningful when the device has more
-    // than one channel.
+    // applied at once through the DisplayPrefs callback (the dashboard saves
+    // it), so it stays outside collect() and the save/dirty flow. Only
+    // meaningful when the device has more than one channel.
     if (this.maxChannels() > 1) {
       const hideField = elem("div", "form-field");
       const hideId = `set-${uid}-hideinactive`;
@@ -311,10 +313,9 @@ export class DeviceSettingsForm {
         checked: this.display.hideInactive,
         describedBy: hideHintId,
       });
-      hideInput.addEventListener("change", () => {
-        writeBoolPref(hideInactiveKey(this.device.device), hideInput.checked);
-        this.display.onHideInactiveChange(hideInput.checked);
-      });
+      // The dashboard owns the stored value; the form only reports the change.
+      hideInput.addEventListener("change", () => this.display.onHideInactiveChange(hideInput.checked));
+      this.hideInput = hideInput;
       hideField.appendChild(hideSwitch);
       hideField.appendChild(this.hint(
         "On by default. Shows only the channels the current selection streams; turn off to see every captured channel, dimmed when inactive.",
@@ -413,6 +414,12 @@ export class DeviceSettingsForm {
     } finally {
       this.settingBitrate = false;
     }
+  }
+
+  // setHideInactive shows a "hide inactive channels" value changed outside the
+  // form (in another tab), without reporting it back through the callback.
+  public setHideInactive(hide: boolean): void {
+    if (this.hideInput && this.hideInput.checked !== hide) this.hideInput.checked = hide;
   }
 
   public destroy(): void {

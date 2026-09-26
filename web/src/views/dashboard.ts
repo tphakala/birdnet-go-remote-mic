@@ -3,8 +3,8 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, footerMetrics, tallyStates } from "../lib/dashboard-core.js";
+import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, isLocalStorageEvent, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeBoolPref, writeToClipboard } from "../lib/ui.js";
+import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, hideInactivePrefDevice, parseBoolPref, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -128,10 +128,11 @@ interface CardEntry extends ArticleParts {
   expanded: boolean;
   dirty: boolean;
   // The per-device "hide inactive channels" display preference. Read from
-  // storage once when the entry is created and updated by the settings switch,
-  // rather than re-read on every poll. It lives as long as the card entry: a
-  // change made in another tab shows after a reload, and when the browser
-  // cannot persist it the choice holds until the device leaves the list.
+  // storage once when the entry is created, rather than on every poll; the
+  // settings switch and a change saved in another tab (the storage event)
+  // update it. The dashboard is the key's one owner: it alone writes it. When
+  // the browser cannot persist it, the choice holds until the device leaves
+  // the list.
   hideInactive: boolean;
 }
 
@@ -304,6 +305,8 @@ export class DashboardView {
   private emptyEl: HTMLElement | null;
   private availableSection: HTMLElement | null;
   private availableRack: HTMLElement | null;
+  // The polite status region for focus moves the operator did not make.
+  private announceEl: HTMLElement | null;
   // Device ids with a provisioning request in flight, so the Enable button shows
   // progress and a second click cannot double-provision.
   private provisioning: Set<string> = new Set();
@@ -324,6 +327,7 @@ export class DashboardView {
     this.emptyEl = document.getElementById("rack-empty");
     this.availableSection = document.getElementById("available-section");
     this.availableRack = document.getElementById("available-rack");
+    this.announceEl = document.getElementById("dashboard-announce");
     this.initHeader();
     this.bindEvents();
   }
@@ -336,6 +340,25 @@ export class DashboardView {
   }
 
   private bindEvents(): void {
+    // A "hide inactive channels" change saved in another tab applies here at
+    // once (the storage event fires only in the other tabs), including in an
+    // open settings form's switch. A cleared storage (key null) resets every
+    // card to the default.
+    window.addEventListener("storage", (e: StorageEvent) => {
+      if (!isLocalStorageEvent(e)) return;
+      const id = hideInactivePrefDevice(e.key);
+      if (e.key !== null && id === null) return;
+      let changed = false;
+      for (const entry of this.cards.values()) {
+        if (id !== null && entry.device.device !== id) continue;
+        const hide = parseBoolPref(e.newValue, true);
+        if (entry.hideInactive === hide) continue;
+        entry.hideInactive = hide;
+        entry.settingsForm?.setHideInactive(hide);
+        changed = true;
+      }
+      if (changed) this.render();
+    });
     // The view is a function of store state: devices, status and config each
     // trigger a full render() that reads store.getState(), rather than each
     // patching its own subset of the DOM. status is stored first because URLs
@@ -1004,7 +1027,16 @@ export class DashboardView {
     const chLabel = channelLabel(d.streamedChannels ?? d.channels);
     setText(entry.chTag, chLabel);
     setHidden(entry.chTag, !serving || !chLabel);
-    setHidden(entry.lockEl, !serving || !this.status?.authRequired);
+    // The Token tag hides in place when access control is turned off elsewhere
+    // (the card shape does not change, so mount's focus capture never runs);
+    // if it held focus, keep focus on the card and say why it moved.
+    const hideLock = !serving || !this.status?.authRequired;
+    const lockHadFocus = hideLock && !entry.lockEl.hidden && entry.lockEl.contains(document.activeElement);
+    setHidden(entry.lockEl, hideLock);
+    if (lockHadFocus) {
+      entry.settingsBtn.focus();
+      announce(this.announceEl, TOKEN_HIDDEN_MESSAGE);
+    }
 
     const badge = deviceStateBadge(d.state);
     if (entry.statusEl.className !== badge.cls) entry.statusEl.className = badge.cls;
@@ -1048,24 +1080,21 @@ export class DashboardView {
       // row is marked live and the tally lights stay consistent. Rows index
       // hardware channels from 0, selections number them from 1.
       const states = tallyStates(d.streamedChannels ?? d.channels, entry.live.rows.length);
-      const hideInactive = entry.hideInactive;
-      // Never hide every row: if no row is streamed (a channel-count/selection
-      // mismatch), show them all rather than leave an empty meter console.
-      const anyLive = states.some((s) => s);
+      const hidden = hiddenRows(states, entry.hideInactive);
       // meters is indexed the same as rows (both come from buildMeterConsole);
       // capture it here so the callback below does not re-narrow entry.live.
       const meters = entry.live.meters;
-      // A row hidden while it holds focus (its clip button, as its channel stops
-      // streaming) would drop focus to the document body; note it and re-home
-      // focus after the loop, once the visible rows are settled.
+      // A row hidden while it holds focus (its clip button, as its channel leaves
+      // the stream or hiding turns on) would drop focus to the document body;
+      // note it and re-home focus after the loop, once the visible rows settle.
       const active = document.activeElement;
-      let strandedFocus = false;
+      let strandedRow = -1;
       entry.live.rows.forEach((row, i) => {
         const on = states[i];
         row.classList.toggle("ch-live", on);
         row.classList.toggle("ch-off", !on);
-        const hide = hideInactive && anyLive && !on;
-        if (hide && !row.hidden && active instanceof Node && row.contains(active)) strandedFocus = true;
+        const hide = hidden[i];
+        if (hide && !row.hidden && active instanceof Node && row.contains(active)) strandedRow = i;
         setHidden(row, hide);
         // Stop the hidden row's ~60fps canvas loop; resume it when shown again.
         const meter = meters[i];
@@ -1078,11 +1107,13 @@ export class DashboardView {
         const clipAria = `Channel ${i + 1} (${on ? "streamed" : "not streamed"}) clip indicator, click to clear`;
         if (clip && clip.getAttribute("aria-label") !== clipAria) clip.setAttribute("aria-label", clipAria);
       });
-      if (strandedFocus) {
+      if (strandedRow >= 0) {
         // A stable place in the same card: the first visible row's clip button
-        // (anyLive guarantees one), else the card's settings button.
-        const next = entry.live.rows.find((r) => !r.hidden)?.querySelector<HTMLElement>(".clip-latch-btn");
+        // (hiddenRows never hides them all), else the card's settings button.
+        const target = focusFallbackRow(hidden);
+        const next = entry.live.rows[target]?.querySelector<HTMLElement>(".clip-latch-btn");
         (next ?? entry.settingsBtn).focus();
+        announce(this.announceEl, channelHiddenMessage(strandedRow + 1, next ? target + 1 : null));
       }
     }
     if (entry.idle) {
@@ -1272,6 +1303,7 @@ export class DashboardView {
         hideInactive: entry.hideInactive,
         onHideInactiveChange: (hide) => {
           entry.hideInactive = hide;
+          writeBoolPref(hideInactiveKey(entry.device.device), hide);
           this.render();
         },
       });
