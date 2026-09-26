@@ -11,6 +11,7 @@ import {
   INSTALL_WAIT_TIMEOUT_MS,
   installMethodLabel,
   lastCheckText,
+  refusalText,
   safeNotesUrl,
   sentence,
   TICK_GAP_MS,
@@ -177,6 +178,15 @@ test("sentence capitalises and ends a backend message once", () => {
   assert.equal(sentence("dangles:"), "Dangles.");
   assert.equal(sentence("  "), "");
   assert.equal(sentence(undefined), "");
+});
+
+test("refusalText shows the appliance's reason, never a stray body", () => {
+  const busy = "an update is already in progress: an earlier update attempt may still be running (it counts as abandoned at most 15 minutes after it started); try again later";
+  assert.equal(refusalText(409, "update not possible", busy), `${busy[0].toUpperCase()}${busy.slice(1)}.`);
+  assert.equal(refusalText(409, "cannot check for updates", "update checks are turned off"), "Update checks are turned off.");
+  assert.equal(refusalText(502, "Bad Gateway", "<html><body>502</body></html>"), "Bad Gateway.", "HTML is not shown");
+  assert.equal(refusalText(500, "update failed", "x".repeat(301)), "Update failed.", "a long dump is not shown");
+  assert.equal(refusalText(502, "", ""), "HTTP 502.", "HTTP/2 has no status text");
 });
 
 test("installMethodLabel names each method and passes an unknown one through", () => {

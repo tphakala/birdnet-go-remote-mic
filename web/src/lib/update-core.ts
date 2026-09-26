@@ -147,6 +147,17 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
   return view;
 }
 
+// refusalText is what a refused update request shows: the problem detail the
+// appliance gave (why it refused, such as an earlier attempt still running) as
+// a sentence, when it reads as a message; else the problem title, else the
+// HTTP status. A body that was not a problem (a proxy's HTML error page, a
+// long plain-text dump) arrives as the detail too and is not shown.
+export function refusalText(status: number, title: string, detail: string | undefined): string {
+  const d = (detail ?? "").trim();
+  if (d && d.length <= 300 && !d.includes("<")) return sentence(d);
+  return sentence(title) || `HTTP ${status}.`;
+}
+
 // safeNotesUrl returns the release notes address when it is an https URL, and
 // "" otherwise, so a link never carries another scheme.
 export function safeNotesUrl(url: string | undefined): string {

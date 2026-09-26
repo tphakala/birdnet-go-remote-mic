@@ -5,7 +5,7 @@ import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, e
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
-import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch } from "../lib/update-core.js";
+import { describeUpdate, followEndText, installMethodLabel, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -82,6 +82,12 @@ function formatCertTime(iso: string): string {
 // TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
 // so an obviously invalid token is caught before the round trip.
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
+
+// updateErrorText says why an update request failed: the appliance's own
+// reason for a refusal (see refusalText), or the error's message.
+function updateErrorText(err: unknown): string {
+  return err instanceof ApiError ? refusalText(err.status, err.title, err.detail) : apiErrorMessage(err);
+}
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
 // enough to be seen by someone who comes back to the tab.
@@ -1295,7 +1301,7 @@ export class SystemView {
       showToast(want ? "Daily update check turned on." : "Daily update check turned off.");
     } catch (err: unknown) {
       input.checked = !want;
-      showToast(`Could not change the update check: ${apiErrorMessage(err)}`, "error");
+      showToast(`Could not change the update check: ${updateErrorText(err)}`, "error");
     } finally {
       this.updateToggling = false;
       input.removeAttribute("aria-busy");
@@ -1316,7 +1322,7 @@ export class SystemView {
       if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
       else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
-      showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");
+      showToast(`Update check failed: ${updateErrorText(err)}`, "error");
     } finally {
       this.updateChecking = false;
       clearBusy(btn, "Check Now");
@@ -1353,7 +1359,7 @@ export class SystemView {
         this.startFollow(now.currentVersion);
         this.followStatus(now);
       } else {
-        showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
+        showToast(`Update did not start: ${updateErrorText(err)}`, "error");
       }
     } finally {
       this.updateApplying = false;
