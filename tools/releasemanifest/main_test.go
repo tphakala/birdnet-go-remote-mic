@@ -95,7 +95,7 @@ func fakeDist(t *testing.T, mutate func(arts []artifact, sums map[string]string)
 		path := filepath.Join(dist, name)
 		writeTarGz(t, path, []tarEntry{
 			{"README.md", "readme", tar.TypeReg},
-			{binaryName, binaryContent(suffix), tar.TypeReg},
+			{releasemanifest.BinaryName, binaryContent(suffix), tar.TypeReg},
 		})
 		hexSum := hashArchive(t, path)
 		sums[name] = hexSum
@@ -178,7 +178,7 @@ func TestGenerate(t *testing.T) {
 		t.Errorf("armv6 sha256 = %s, want %s", armv6.SHA256, want)
 	}
 	binSum := sha256.Sum256([]byte(binaryContent("armv6")))
-	wantBin := releasemanifest.Binary{Path: binaryName, Size: int64(len(binaryContent("armv6"))), SHA256: hex.EncodeToString(binSum[:])}
+	wantBin := releasemanifest.Binary{Path: releasemanifest.BinaryName, Size: int64(len(binaryContent("armv6"))), SHA256: hex.EncodeToString(binSum[:])}
 	if armv6.Binary != wantBin {
 		t.Errorf("armv6 binary = %+v, want %+v", armv6.Binary, wantBin)
 	}
@@ -223,10 +223,13 @@ func TestGenerateRefuses(t *testing.T) {
 		}, ErrChecksum},
 		{"archive without the binary", testTag, rewriteArchive(t, []tarEntry{{"README.md", "readme", tar.TypeReg}}), ErrNoBinary},
 		{"archive with two binaries", testTag, rewriteArchive(t, []tarEntry{
-			{binaryName, "one", tar.TypeReg},
-			{"sub/" + binaryName, "two", tar.TypeReg},
+			{releasemanifest.BinaryName, "one", tar.TypeReg},
+			{"sub/" + releasemanifest.BinaryName, "two", tar.TypeReg},
 		}), ErrNoBinary},
-		{"binary is a symlink", testTag, rewriteArchive(t, []tarEntry{{binaryName, "", tar.TypeSymlink}}), ErrNoBinary},
+		{"unclean entry name", testTag, rewriteArchive(t, []tarEntry{{"./" + releasemanifest.BinaryName, "x", tar.TypeReg}}), ErrNoBinary},
+		{"escaping entry name", testTag, rewriteArchive(t, []tarEntry{{"../" + releasemanifest.BinaryName, "x", tar.TypeReg}}), ErrNoBinary},
+		{"binary is a hardlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeLink}}), ErrNoBinary},
+		{"binary is a symlink", testTag, rewriteArchive(t, []tarEntry{{releasemanifest.BinaryName, "", tar.TypeSymlink}}), ErrNoBinary},
 		{"archive is not gzip", testTag, rewriteArchiveRaw(t, []byte("plain bytes")), gzip.ErrHeader},
 		{"archive is truncated", testTag, rewriteArchiveRaw(t, truncatedTarGz(t)), io.ErrUnexpectedEOF},
 	} {
@@ -274,7 +277,7 @@ func truncatedTarGz(t *testing.T) []byte {
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
 	content := strings.Repeat("x", 4096)
-	if err := tw.WriteHeader(&tar.Header{Name: binaryName, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+	if err := tw.WriteHeader(&tar.Header{Name: releasemanifest.BinaryName, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tw.Write([]byte(content)); err != nil {
@@ -290,6 +293,25 @@ func truncatedTarGz(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return out.Bytes()
+}
+
+// TestGenerateWrappedBinary pins that a binary inside one wrapping directory
+// is found and recorded under its entry name, and a deeper one is not.
+func TestGenerateWrappedBinary(t *testing.T) {
+	t.Parallel()
+	priv, trusted := testKey(t)
+	wrapped := "birdnet-go-remote-mic_1.2.3_linux_arm64/" + releasemanifest.BinaryName
+	dist := fakeDist(t, rewriteArchive(t, []tarEntry{
+		{"a/b/" + releasemanifest.BinaryName, "too deep", tar.TypeReg},
+		{wrapped, "wrapped", tar.TypeReg},
+	}))
+	m, err := generate(dist, testTag, priv, trusted)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if got := m.Targets["linux/arm64"].Binary; got.Path != wrapped || got.Size != int64(len("wrapped")) {
+		t.Errorf("binary = %+v, want path %q size %d", got, wrapped, len("wrapped"))
+	}
 }
 
 // TestGenerateRefusesUntrustedKey pins that a signing key missing from the

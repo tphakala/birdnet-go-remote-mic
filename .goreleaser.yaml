@@ -77,6 +77,10 @@ checksum:
 # A tag with a prerelease suffix (v1.3.0-rc.1) is published as a GitHub
 # prerelease, so it never becomes "latest": the release manifest that update
 # checks fetch from releases/latest/download/ stays on the newest stable release.
+# Every other release becomes "latest", so a stable tag cut on an older line
+# (a v1.2.5 after v1.3.0) would move the manifest backwards; update checks only
+# act on a strictly newer version, so that is harmless, but set make_latest:
+# false on such a release.
 release:
   prerelease: auto
 
@@ -136,6 +140,8 @@ brews:
         url: "git@github.com:tphakala/homebrew-tap.git"
         private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     directory: Formula
+    # A prerelease (rc) tag leaves the formula alone, as it leaves "latest".
+    skip_upload: auto
     homepage: "https://github.com/tphakala/birdnet-go-remote-mic"
     description: "Remote microphone appliance for BirdNET-Go (ALSA capture served over RTSP)"
     license: MIT

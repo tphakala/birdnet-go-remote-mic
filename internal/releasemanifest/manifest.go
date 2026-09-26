@@ -15,7 +15,9 @@
 // manifest, or keep serving the last one (a static asset cannot expire). So a
 // consumer must act only on a version strictly newer than the one it runs,
 // must not treat a prerelease version as an update unless the operator opted
-// in, and must read at most MaxManifestSize and MaxSignatureSize bytes. Fetch
+// in, and must refuse a download longer than MaxManifestSize or
+// MaxSignatureSize (read one byte past the limit to tell; a LimitReader alone
+// truncates silently and surfaces as a bad signature). Fetch
 // the manifest and its signature from the same release tag (resolve "latest"
 // once), or a publish between the two downloads yields a mismatched pair.
 //
@@ -52,6 +54,9 @@ const (
 	FileName          = "manifest.json"
 	SignatureFileName = "manifest.json.sig"
 )
+
+// BinaryName is the executable each release tarball holds.
+const BinaryName = "remote-mic"
 
 // Repository is the GitHub repository releases are published from.
 const Repository = "tphakala/birdnet-go-remote-mic"
@@ -136,9 +141,9 @@ var (
 // knownRequirements are the Requires values this build understands; none yet.
 var knownRequirements = []string{}
 
-// versionPattern accepts a v-prefixed semantic version, with an optional
-// prerelease suffix and no leading zeros.
-var versionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`)
+// versionPattern accepts a v-prefixed semantic version with no leading zeros
+// and an optional prerelease of non-empty dot-separated identifiers.
+var versionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`)
 
 // sha256Pattern is a lowercase hex SHA-256 digest.
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -192,8 +197,8 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("%w: target %s: sha256 %q is not 64 lowercase hex digits", ErrInvalid, key, t.SHA256)
 		}
 		b := t.Binary
-		if b.Path == "" || b.Path == ".." || path.IsAbs(b.Path) || path.Clean(b.Path) != b.Path || strings.HasPrefix(b.Path, "../") {
-			return fmt.Errorf("%w: target %s: binary path %q is not a clean relative path", ErrInvalid, key, b.Path)
+		if !validBinaryPath(b.Path) {
+			return fmt.Errorf("%w: target %s: binary path %q is not %s at the top level or in one directory", ErrInvalid, key, b.Path, BinaryName)
 		}
 		if b.Size <= 0 {
 			return fmt.Errorf("%w: target %s: binary size %d", ErrInvalid, key, b.Size)
@@ -203,6 +208,21 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// validBinaryPath reports whether p names the release executable as a clean
+// tar entry: BinaryName at the top level or inside one wrapping directory,
+// with no absolute, parent, backslash or drive-letter forms.
+func validBinaryPath(p string) bool {
+	if p == "" || path.IsAbs(p) || path.Clean(p) != p || strings.ContainsAny(p, `\:`) {
+		return false
+	}
+	dir, base := path.Split(p)
+	if base != BinaryName {
+		return false
+	}
+	dir = strings.TrimSuffix(dir, "/")
+	return dir == "" || dir != ".." && !strings.Contains(dir, "/")
 }
 
 func checkHTTPS(raw string) error {

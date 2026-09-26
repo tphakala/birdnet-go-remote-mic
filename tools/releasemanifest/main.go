@@ -46,10 +46,6 @@ import (
 // keyEnv holds the base64 Ed25519 seed that signs the manifest.
 const keyEnv = "RELEASE_MANIFEST_KEY"
 
-// binaryName is the executable inside each release tarball (`binary:` in
-// .goreleaser.yaml).
-const binaryName = "remote-mic"
-
 // requiredTargets mirrors the release builds in .goreleaser.yaml. A release
 // missing one would leave those appliances without an update, so generate
 // refuses it.
@@ -63,7 +59,7 @@ var (
 	ErrMissingTarget   = errors.New("release is missing a target")
 	ErrDuplicateTarget = errors.New("release has two archives for one target")
 	ErrBadTag          = errors.New("tag is not a v-prefixed semantic version")
-	ErrNoBinary        = errors.New("archive does not hold exactly one " + binaryName + " executable")
+	ErrNoBinary        = errors.New("archive does not hold exactly one " + releasemanifest.BinaryName + " executable")
 )
 
 func main() {
@@ -322,8 +318,10 @@ func archiveTarget(a *artifact, tag string, sums map[string]string) (releasemani
 }
 
 // binaryIn hashes the executable inside a .tar.gz release archive. Exactly one
-// regular-file entry named binaryName must exist, at the top level or in one
-// wrapping directory, so the recorded path is the one an installer extracts.
+// regular-file entry named releasemanifest.BinaryName must exist, at the top
+// level or in one wrapping directory. Its entry name is recorded verbatim, so
+// it is the name an installer finds; an unclean or absolute name is refused
+// rather than normalized.
 func binaryIn(archive string) (releasemanifest.Binary, error) {
 	f, err := os.Open(archive)
 	if err != nil {
@@ -344,7 +342,13 @@ func binaryIn(archive string) (releasemanifest.Binary, error) {
 		if err != nil {
 			return releasemanifest.Binary{}, fmt.Errorf("%s: %w", archive, err)
 		}
-		if path.Base(hdr.Name) != binaryName || strings.Count(path.Clean(hdr.Name), "/") > 1 {
+		if path.Base(hdr.Name) != releasemanifest.BinaryName {
+			continue
+		}
+		if path.Clean(hdr.Name) != hdr.Name || path.IsAbs(hdr.Name) || strings.HasPrefix(hdr.Name, "../") {
+			return releasemanifest.Binary{}, fmt.Errorf("%w: %s: entry name %q is not clean", ErrNoBinary, archive, hdr.Name)
+		}
+		if strings.Count(hdr.Name, "/") > 1 {
 			continue
 		}
 		if hdr.Typeflag != tar.TypeReg {
@@ -355,7 +359,7 @@ func binaryIn(archive string) (releasemanifest.Binary, error) {
 		if err != nil {
 			return releasemanifest.Binary{}, fmt.Errorf("%s: %s: %w", archive, hdr.Name, err)
 		}
-		found = append(found, releasemanifest.Binary{Path: path.Clean(hdr.Name), Size: size, SHA256: hex.EncodeToString(h.Sum(nil))})
+		found = append(found, releasemanifest.Binary{Path: hdr.Name, Size: size, SHA256: hex.EncodeToString(h.Sum(nil))})
 	}
 	if len(found) != 1 {
 		return releasemanifest.Binary{}, fmt.Errorf("%w: %s has %d", ErrNoBinary, archive, len(found))
