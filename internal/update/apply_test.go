@@ -161,6 +161,8 @@ func TestApplyRollsBack(t *testing.T) {
 	t.Parallel()
 	env := newApplyEnv(t)
 	var statusAtSecondRestart Outcome
+	writes := 0
+	env.a.Now = func() time.Time { writes++; return time.Now() }
 	env.onRestart = func(env *applyEnv, n int) {
 		if n == 2 {
 			statusAtSecondRestart = env.result(t).Outcome
@@ -176,6 +178,9 @@ func TestApplyRollsBack(t *testing.T) {
 	}
 	if env.restarts != 2 {
 		t.Errorf("got %d restarts, want 2", env.restarts)
+	}
+	if writes != 1 {
+		t.Errorf("status written %d times, want once", writes)
 	}
 	if statusAtSecondRestart != OutcomeRolledBack {
 		t.Errorf("status before the restoring restart: %q, want rolled_back", statusAtSecondRestart)
@@ -362,5 +367,85 @@ func TestApplyHealthNeedsActiveUnitAndVersion(t *testing.T) {
 	env.a.Active = func(string) (bool, error) { return false, nil }
 	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "is not active") {
 		t.Errorf("inactive unit: got %v", err)
+	}
+}
+
+// TestApplyRollsBackOnCancel pins that stopping the updater during the health
+// wait (SIGTERM cancels ctx) restores the previous binary and reports it,
+// rather than leaving the unverified new binary installed.
+func TestApplyRollsBackOnCancel(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	env.onRestart = func(_ *applyEnv, n int) {
+		if n == 1 {
+			cancel() // stopped while the new version starts
+		}
+	}
+	env.a.HealthTimeout = time.Minute // only the cancel can end the wait
+	err := env.a.Apply(ctx)
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Apply: got %v, want a stopped rollback", err)
+	}
+	if got := env.installed(t); got != oldBinary {
+		t.Errorf("installed %q, want the previous binary", got)
+	}
+	r := env.result(t)
+	if r.Outcome != OutcomeRolledBack || r.Installed != vOld {
+		t.Errorf("result %+v, want rolled_back with %s installed", r, vOld)
+	}
+	if env.restarts != 2 {
+		t.Errorf("got %d restarts, want 2 (onto the new binary, then the restored one)", env.restarts)
+	}
+}
+
+// TestApplyRestoreFailureWritesStatus pins that when the previous binary
+// cannot be put back, the result still gets written (once), names the new
+// version as installed, and the unit is still restarted.
+func TestApplyRestoreFailureWritesStatus(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	writes := 0
+	env.a.Now = func() time.Time { writes++; return time.Now() }
+	env.onRestart = func(env *applyEnv, n int) {
+		if n == 1 {
+			// The new version never comes up, and the kept copy vanishes.
+			_ = os.Remove(env.binPath + ".prev")
+		}
+	}
+	err := env.a.Apply(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "stays installed") {
+		t.Fatalf("Apply: got %v", err)
+	}
+	r := env.result(t)
+	if r.Outcome != OutcomeFailed || r.Installed != vNew || !strings.Contains(r.Reason, "no healthy start") {
+		t.Errorf("result %+v, want failed with %s installed", r, vNew)
+	}
+	if env.restarts != 2 {
+		t.Errorf("got %d restarts, want 2", env.restarts)
+	}
+	if writes != 1 {
+		t.Errorf("status written %d times, want once", writes)
+	}
+}
+
+// TestApplyCancelledBeforeSwap pins that a stop before the binary is swapped
+// leaves it untouched and restarts nothing.
+func TestApplyCancelledBeforeSwap(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	env.a.Version = func(context.Context, string) (string, error) {
+		cancel() // stopped while checking the new binary, which the stop kills
+		return "", errors.New("signal: killed")
+	}
+	if err := env.a.Apply(ctx); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Apply: got %v", err)
+	}
+	if got := env.installed(t); got != oldBinary {
+		t.Errorf("installed %q, want it untouched", got)
+	}
+	if r := env.result(t); r.Outcome != OutcomeFailed || r.Installed != vOld || env.restarts != 0 {
+		t.Errorf("result %+v, %d restarts", r, env.restarts)
 	}
 }

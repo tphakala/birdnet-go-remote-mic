@@ -56,18 +56,26 @@ const (
 	// OutcomeRolledBack means the new version was installed but did not come
 	// up, so the previous binary was restored.
 	OutcomeRolledBack Outcome = "rolled_back"
-	// OutcomeFailed means the update was refused before the installed binary
-	// was touched.
+	// OutcomeFailed means the update did not happen as intended: it was
+	// refused before the installed binary was touched, or, when Installed is
+	// the new version, the previous binary could not be put back.
 	OutcomeFailed Outcome = "failed"
 )
 
 // Result is the content of StatusFile.
 type Result struct {
-	Outcome Outcome   `json:"outcome"`
-	From    string    `json:"from"`
-	To      string    `json:"to"`
-	Reason  string    `json:"reason,omitempty"`
-	Time    time.Time `json:"time"`
+	Outcome Outcome `json:"outcome"`
+	From    string  `json:"from"`
+	To      string  `json:"to"`
+	// Installed is the version at the binary path when the result was
+	// written: the process running that version is the one to report it.
+	Installed string    `json:"installed"`
+	Reason    string    `json:"reason,omitempty"`
+	Time      time.Time `json:"time"`
+
+	// written records that the updater already wrote this result, so it is
+	// written exactly once whatever the outcome.
+	written bool
 }
 
 // Health is the content of HealthFile.

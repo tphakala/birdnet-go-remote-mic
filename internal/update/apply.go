@@ -93,17 +93,17 @@ func (a *Applier) Apply(ctx context.Context) error {
 	}
 	defer func() { _ = root.Remove(reqPath) }()
 	if err != nil {
-		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Reason: err.Error()})
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
 	}
 	var req Request
 	if err := decodeSmall(RequestFile, reqBytes, &req); err != nil {
-		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Reason: err.Error()})
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
 	}
 	a.logf("apply-update: update to %s requested", req.Version)
 
 	m, bin, err := a.verifyStaged(root)
 	if err != nil {
-		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, To: req.Version, Reason: err.Error()})
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, To: req.Version, Installed: a.Running, Reason: err.Error()})
 	}
 	res := a.install(ctx, root, m, bin)
 	if res.Outcome == OutcomeUpdated {
@@ -159,9 +159,10 @@ func (a *Applier) verifyStaged(root *os.Root) (*releasemanifest.Manifest, []byte
 }
 
 // install swaps in bin, restarts the unit and waits for the new version to
-// report healthy, restoring the previous binary when it does not.
+// report healthy, restoring the previous binary when it does not, including
+// when ctx is cancelled (the updater being stopped) during the wait.
 func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest.Manifest, bin []byte) *Result {
-	res := &Result{From: a.Running, To: m.Version}
+	res := &Result{From: a.Running, To: m.Version, Installed: a.Running}
 	fail := func(err error) *Result {
 		res.Outcome, res.Reason = OutcomeFailed, err.Error()
 		return res
@@ -174,6 +175,9 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 	vctx, cancel := context.WithTimeout(ctx, versionTimeout)
 	out, err := a.Version(vctx, newPath)
 	cancel()
+	if cerr := ctx.Err(); cerr != nil {
+		return fail(fmt.Errorf("the updater was stopped: %w", cerr))
+	}
 	if err != nil {
 		return fail(fmt.Errorf("the new binary does not run: %w", err))
 	}
@@ -193,32 +197,40 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 		return fail(fmt.Errorf("install the new binary: %w", err))
 	}
 	atomicfile.SyncDir(filepath.Dir(a.BinPath))
+	res.Installed = m.Version
 	a.logf("apply-update: installed %s, restarting %s", m.Version, a.Unit)
 
 	if err := a.Restart(a.Unit); err != nil {
-		return a.rollback(root, res, prev, fmt.Errorf("restart %s: %w", a.Unit, err))
+		return a.rollback(root, res, fmt.Errorf("restart %s: %w", a.Unit, err))
 	}
 	if err := a.awaitHealthy(ctx, root, m.Version); err != nil {
-		return a.rollback(root, res, prev, err)
+		return a.rollback(root, res, err)
 	}
 	res.Outcome = OutcomeUpdated
 	a.logf("apply-update: %s is up", m.Version)
 	return res
 }
 
-// rollback restores the previous binary and restarts the unit on it. The
-// result is written before the restart, so the restored appliance finds it
-// when it boots.
-func (a *Applier) rollback(root *os.Root, res *Result, prev []byte, cause error) *Result {
+// rollback puts the previous binary back by renaming BinPath.prev over it,
+// which needs no free space, then writes the result and restarts the unit on
+// the restored binary. The result is written before the restart so the
+// restored appliance finds it when it boots. When the rename fails the new
+// binary stays installed: the result says so, and the unit is restarted
+// anyway, since leaving it stopped helps nobody.
+func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 	res.Outcome, res.Reason = OutcomeRolledBack, cause.Error()
 	a.logf("apply-update: %s did not come up (%v); restoring %s", res.To, cause, res.From)
-	if err := atomicfile.Write(a.BinPath, prev, 0o755); err != nil {
-		res.Reason += fmt.Sprintf("; restoring the previous binary failed: %v", err)
-		return res
+	if err := os.Rename(a.BinPath+".prev", a.BinPath); err != nil {
+		res.Outcome = OutcomeFailed
+		res.Reason += fmt.Sprintf("; restoring %s failed, so %s stays installed: %v", res.From, res.To, err)
+	} else {
+		atomicfile.SyncDir(filepath.Dir(a.BinPath))
+		res.Installed = res.From
 	}
 	if err := a.writeResult(root, res); err != nil {
 		a.logf("apply-update: write status: %v", err)
 	}
+	res.written = true
 	if err := a.Restart(a.Unit); err != nil {
 		a.logf("apply-update: restart %s on the restored binary: %v", a.Unit, err)
 	}
@@ -226,11 +238,13 @@ func (a *Applier) rollback(root *os.Root, res *Result, prev []byte, cause error)
 }
 
 // awaitHealthy waits until the unit is active and the appliance has written a
-// health file naming version, or the timeout passes; the timeout error says
-// which of the two was missing last.
+// health file naming version, or the timeout passes, or ctx is cancelled (the
+// updater being stopped); the timeout error says which of the two was missing
+// last.
 func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version string) error {
 	timeout := cmp.Or(a.HealthTimeout, DefaultHealthTimeout)
 	poll := cmp.Or(a.Poll, defaultPoll)
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	t := time.NewTicker(poll)
@@ -250,6 +264,9 @@ func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version strin
 		}
 		select {
 		case <-ctx.Done():
+			if parent.Err() != nil {
+				return fmt.Errorf("the updater was stopped before %s was confirmed healthy", version)
+			}
 			if last == "" {
 				last = "it never wrote its health file"
 			}
@@ -259,11 +276,11 @@ func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version strin
 	}
 }
 
-// finish writes res to the status file and returns it as an error for the
-// unit's log (nil for a successful update).
+// finish writes res to the status file, unless a rollback already did, and
+// returns it as an error for the unit's log (nil for a successful update).
 func (a *Applier) finish(root *os.Root, res *Result) error {
-	// A rolled-back result was written before its restart.
-	if res.Outcome != OutcomeRolledBack {
+	// A rollback writes its result before its restart.
+	if !res.written {
 		if err := a.writeResult(root, res); err != nil {
 			a.logf("apply-update: write status: %v", err)
 		}

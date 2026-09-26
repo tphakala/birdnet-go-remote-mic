@@ -125,6 +125,12 @@ func resultMessage(res *Result) string {
 	case OutcomeRolledBack:
 		return fmt.Sprintf("%s did not come up, so %s was restored: %s", res.To, res.From, res.Reason)
 	default:
+		if res.Installed != "" && res.Installed == res.To {
+			return fmt.Sprintf("%s did not come up and %s could not be restored: %s", res.To, res.From, res.Reason)
+		}
+		if res.To == "" {
+			return "The update was not installed: " + res.Reason
+		}
 		return fmt.Sprintf("The update to %s was not installed: %s", res.To, res.Reason)
 	}
 }

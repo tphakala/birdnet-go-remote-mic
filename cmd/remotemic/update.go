@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
@@ -129,7 +131,12 @@ func runServiceApplyUpdate(args []string, stderr io.Writer) error {
 	if geteuid() != 0 {
 		return fmt.Errorf("apply-update must run as root (it is started by %s)", service.UpdateServiceUnit)
 	}
-	return applyUpdate(context.Background(), *binPath, *stateDir)
+	// systemd stops the updater with SIGTERM (a shutdown, service uninstall,
+	// or the unit's start timeout). Cancelling ctx then makes a pending health
+	// wait roll back rather than leave an unverified binary installed.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	return applyUpdate(ctx, *binPath, *stateDir)
 }
 
 // applyUpdate is a seam so the command's flag handling is testable without

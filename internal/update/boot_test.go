@@ -158,3 +158,24 @@ func TestTakeResultRefusesLinkAndGarbage(t *testing.T) {
 		t.Errorf("malformed status file not removed: %v", err)
 	}
 }
+
+// TestResultMessage pins that a failed result says whether the new version
+// stayed installed (a restore that failed) or was never installed.
+func TestResultMessage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		res  Result
+		want string
+	}{
+		{Result{Outcome: OutcomeFailed, From: vOld, To: vNew, Installed: vOld, Reason: "bad"}, "The update to v0.3.0 was not installed: bad"},
+		{Result{Outcome: OutcomeFailed, From: vOld, To: vNew, Installed: vNew, Reason: "gone"}, "v0.3.0 did not come up and v0.2.0 could not be restored: gone"},
+		{Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew, Installed: vOld, Reason: "slow"}, "v0.3.0 did not come up, so v0.2.0 was restored: slow"},
+		// A request the updater could not read names no version.
+		{Result{Outcome: OutcomeFailed, From: vOld, Reason: "unreadable"}, "The update was not installed: unreadable"},
+	}
+	for _, tt := range tests {
+		if got := resultMessage(&tt.res); got != tt.want {
+			t.Errorf("resultMessage(%+v) = %q, want %q", tt.res, got, tt.want)
+		}
+	}
+}

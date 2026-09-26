@@ -316,10 +316,10 @@ checks it against the signed manifest, and hands it to the root updater. The
 updater verifies it again with its own copy of the key, keeps the current
 binary as `/usr/local/bin/remote-mic.prev`, installs the new one and restarts
 the service, which drops connected streams for a few seconds. If the new
-version does not come up within two minutes, the updater puts the previous
-binary back and restarts it, and the appliance reports the rollback in the
-notification bell. The appliance itself never gets write access to its own
-binary.
+version does not come up within two minutes, or the updater is stopped before
+it has, the updater puts the previous binary back and restarts it, and the
+appliance reports the rollback in the notification bell. The appliance itself
+never gets write access to its own binary.
 
 Installs managed by a package manager are never replaced behind its back: a
 `.deb` or Homebrew install, or a binary run from where it was unpacked, shows
