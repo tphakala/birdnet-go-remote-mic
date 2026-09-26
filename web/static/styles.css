@@ -32,10 +32,13 @@
 
   /* Typography Colors */
   --text-primary: #f0f4f9;
-  --text-secondary: #94a3b8;
-  /* Lightened from #64748b: on the card surface #131c2a it was ~3.6:1, below
-     WCAG AA for the 10-11px meter scale and muted hints; #7a8ba4 is ~4.9:1. */
-  --text-muted: #7a8ba4;
+  /* #94a3b8 was 5.4:1 on --bg-surface-active, under the SMALL_TEXT bar for
+     the 12px notification chips. */
+  --text-secondary: #98a6ba;
+  /* Muted text is the small print (12px labels, hints, the meter scale), so
+     it carries the stricter SMALL_TEXT bar in test/contrast.test.ts rather
+     than bare AA: #8d9cb3 is ~6.1:1 on a card and ~5.7:1 on a raised card. */
+  --text-muted: #8d9cb3;
   --text-faint: #475569;
 
   /* Accent & Signaling Tokens */
@@ -157,12 +160,10 @@
 
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  /* Darkened from #64748b, which dipped to ~4.3:1 on the lighter surfaces
-     (#eef2f6/#f1f5f9). The first pass at this picked #5b6b82 and claimed
-     ">=4.8:1 everywhere", but "everywhere" had only been checked against the
-     card surfaces: on --meter-bg (#e2e8f0), where the 10px meter scale labels
-     sit, it was 4.40:1. #566579 clears every ground it is used on. */
-  --text-muted: #566579;
+  /* Held to the SMALL_TEXT bar like the dark value. The lowest ground it sits
+     on is --meter-bg (#e2e8f0) under the meter scale labels, where #4b596b is
+     ~5.8:1. */
+  --text-muted: #4b596b;
   --text-faint: #94a3b8;
 
   --accent-cyan: #0891b2;
@@ -233,6 +234,16 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* Form controls do not inherit the page font by default, so any button or
+   field whose own rule sets no family rendered in the browser's fallback
+   face (Arial) at its own size. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 .mono {
@@ -306,7 +317,7 @@ body {
 
 .appliance-badge {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -322,7 +333,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -414,7 +426,7 @@ body {
 }
 
 .nav-badge {
-  font-size: 10px;
+  font-size: 12px;
   padding: 1px 5px;
   border-radius: var(--radius-full);
   background: var(--accent-cyan-bg);
@@ -508,7 +520,7 @@ body {
 }
 
 .telemetry-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -531,13 +543,13 @@ body {
 }
 
 .telemetry-unit {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-weight: 500;
 }
 
 .status-badge {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   min-height: var(--control-h-tag);
   padding: 0 8px;
@@ -651,7 +663,8 @@ body {
 }
 
 .device-path {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -664,7 +677,7 @@ body {
 
 .tech-tag {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   display: inline-flex;
   align-items: center;
@@ -707,19 +720,19 @@ body {
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .endpoint-label {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
 }
 
 .endpoint-url {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -730,7 +743,8 @@ body {
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xs);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   min-height: var(--control-h-sm);
   padding: 0 9px;
   display: inline-flex;
@@ -827,7 +841,8 @@ body {
 .dropdown-value-group .tech-tag {
   min-height: 0;
   padding: 1px 5px;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .dropdown-chevron {
@@ -876,7 +891,7 @@ body {
   padding: 8px 10px;
   border-radius: var(--radius-xs);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -902,9 +917,9 @@ body {
 }
 
 .dropdown-item .item-desc {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
-  font-weight: 400;
+  font-weight: 500;
 }
 
 .dropdown-item.selected .item-desc {
@@ -968,7 +983,8 @@ body {
   display: flex;
   justify-content: space-between;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-muted);
   user-select: none;
 }
@@ -1019,7 +1035,7 @@ body {
   font-family: var(--font-mono);
   /* 11px, not 10px: this is interactive text ("CLIP", a clickable latch reset),
      so keep it legible rather than at the meter-scale caption size. */
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
@@ -1054,7 +1070,8 @@ body {
   justify-content: space-between;
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   flex-wrap: wrap;
   gap: 10px;
@@ -1112,7 +1129,8 @@ body {
 
 .error-banner-desc {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
@@ -1151,8 +1169,8 @@ body {
 }
 
 .section-desc {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .form-grid-2col {
@@ -1164,7 +1182,7 @@ body {
 /* Full-width heading that separates field groups within the two-column grid. */
 .form-group-title {
   grid-column: 1 / -1;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1253,12 +1271,12 @@ textarea.field-input {
 }
 
 .field-hint {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
 .field-error {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--signal-crit-text);
   font-weight: 500;
   display: none;
@@ -1453,7 +1471,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .switch-caption {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -1505,13 +1523,14 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   background: var(--signal-warn-bg);
   border: 1px solid var(--signal-warn);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
 /* Per-channel meter row label, shown for every device (one row per captured channel). */
 .meter-channel-label {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   /* The only visible per-channel identifier; keep it at AA contrast. */
   color: var(--text-secondary);
   flex-shrink: 0;
@@ -1590,7 +1609,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   min-height: var(--control-h-tag);
   padding: 0 8px;
   border-radius: var(--radius-full);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   animation: pulse-warn 1.8s infinite ease-in-out;
 }
@@ -1609,7 +1628,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   align-items: flex-start;
   gap: 6px;
   margin-bottom: 16px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -1853,7 +1872,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .tile-sub {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -1887,7 +1907,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .client-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .client-table th {
@@ -1897,7 +1917,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-weight: 600;
   border-bottom: 1px solid var(--border-subtle);
   text-transform: uppercase;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .client-table td {
@@ -2147,7 +2167,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
      this small size, which white on --signal-crit does not. */
   background: #b91c1c;
   color: #fff;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 16px;
   text-align: center;
@@ -2218,7 +2238,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .notif-panel-btn {
   min-height: var(--control-h-sm);
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .notif-panel-close {
@@ -2244,7 +2265,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .notif-group-head {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -2260,7 +2281,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .notif-empty {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   text-align: center;
   padding: 24px 12px;
 }
@@ -2298,7 +2319,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .notif-row-time {
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 500;
   /* text-secondary, not text-muted: at 10px the muted tone is too faint to
      read comfortably on the row surface. */
   color: var(--text-secondary);
@@ -2320,10 +2342,10 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .notif-chip {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   padding: 0 6px;
-  line-height: 15px;
+  line-height: 16px;
   border-radius: var(--radius-full);
   background: var(--bg-surface-active);
   color: var(--text-secondary);
@@ -2337,7 +2359,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .notif-row-msg {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.4;
   word-break: break-word;
@@ -2357,6 +2379,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 /* "Showing 50 of N events" when the popover caps its history. */
 .notif-panel-count {
   font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -2428,7 +2451,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .stat-tile-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2446,7 +2469,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .stat-tile-caption {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-secondary);
   min-height: 1em;
 }
@@ -2464,7 +2488,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .ev-unread-pill {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   padding: 0 8px;
   line-height: 18px;
@@ -2504,7 +2528,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   position: absolute;
   right: 9px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   line-height: 18px;
   padding: 0 6px;
   border: 1px solid var(--border-base);
@@ -2542,7 +2567,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 .ev-load-notice-text {
   flex: 1 1 260px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-primary);
 }
 
@@ -2560,7 +2585,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .filter-chips-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2615,7 +2640,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .filter-chip-dot.tone-info  { background: var(--signal-ok); }
 
 .filter-chip-count {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .filter-chip.is-on .filter-chip-count {
@@ -2628,7 +2654,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   min-height: var(--control-h-tag);
 }
@@ -2644,7 +2670,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   background: var(--accent-cyan-bg);
   color: var(--text-primary);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 .ev-source-pill-key {
@@ -2658,7 +2684,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 .ev-reset {
   color: var(--accent-cyan-text);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* The log. Rows reuse the bell's .notif-row family with a roomier layout. */
@@ -2674,7 +2700,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   z-index: 1;
   margin: 8px 0 2px;
   padding: 4px 2px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2727,7 +2753,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .ev-abs-time {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-primary);
 }
 
@@ -2756,10 +2783,10 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 /* Condition lifecycle badge: ongoing in the row's severity tone, resolved in
    the OK tone. */
 .ev-life {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   padding: 0 6px;
-  line-height: 15px;
+  line-height: 16px;
   border-radius: var(--radius-full);
   border: 1px solid currentColor;
 }
@@ -2784,7 +2811,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   color: var(--text-primary);
 }
 .ev-empty-body {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   margin-bottom: 6px;
 }
@@ -2802,7 +2829,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .ev-retention-note {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -2883,7 +2910,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 @media (max-width: 400px) {
   .nav-item {
     padding: 0 5px;
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 500;
   }
   .nav-item svg {
     display: none;
@@ -2948,8 +2976,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 .device-config-hw {
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 400;
+  font-size: 12px;
+  font-weight: 500;
 }
 select.field-input {
   cursor: pointer;
@@ -2967,7 +2995,8 @@ select.field-input {
   align-items: baseline;
 }
 .info-grid .info-key {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
@@ -2994,7 +3023,7 @@ select.field-input {
 }
 .sysinfo-group-title {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -3042,7 +3071,7 @@ select.field-input {
   background: var(--bg-surface-raised);
   color: var(--text-secondary);
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -3098,7 +3127,7 @@ select.field-input {
   align-items: center;
   gap: 4px;
   color: var(--signal-warn-text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .btn-link {
@@ -3159,7 +3188,7 @@ select.field-input {
   align-items: center;
   gap: 10px;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 13px;
 }
 .available-caps {
   color: var(--text-secondary);
@@ -3168,7 +3197,7 @@ select.field-input {
    rather than widening the card. */
 .available-id {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 .available-enable {
@@ -3194,7 +3223,7 @@ select.field-input {
   border: 1px solid var(--signal-warn);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
 }
 .open-access-banner svg {
@@ -3223,7 +3252,7 @@ select.field-input {
    break the card layout) and tall enough to show a PEM header plus a few lines. */
 .cert-pem {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   resize: vertical;
   min-height: 7em;
@@ -3401,7 +3430,7 @@ select.field-input {
 }
 .about-note {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 .about-actions {
@@ -3412,7 +3441,7 @@ select.field-input {
 .about-details {
   margin: 0;
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--bg-page);
@@ -3449,7 +3478,7 @@ select.field-input {
    disclosure triangle, the cue that a row opens. */
 .license-summary {
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-primary);
 }
 .license-summary .license-tag {
@@ -3469,7 +3498,8 @@ select.field-input {
 }
 .license-file-name {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .license-text {
@@ -3477,7 +3507,7 @@ select.field-input {
   max-height: 360px;
   overflow: auto;
   padding: 10px 12px;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--text-secondary);
   background: var(--bg-page);

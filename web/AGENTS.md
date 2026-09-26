@@ -151,7 +151,14 @@ reconcile:
 - `web:a11y` (html-validate on `index.html`) and the WCAG contrast test
   (`test/contrast.test.ts`) must pass. The contrast test checks only the pairs
   in its `PAIRS` table, so any new colored surface or text-on-background
-  combination needs a new entry.
+  combination needs a new entry. Secondary and muted text must reach
+  `SMALL_TEXT` (5.5:1), not just AA.
+- Type floor (`test/legibility.test.ts`): no text below 12px, and text below
+  the 13px body size needs weight 500 or more. Sentences (subtitles, hints,
+  notes, messages) use 13px at regular weight; 12px is for short labels,
+  badges and data at 500+. Declare the weight next to the size, since the test
+  reads each rule on its own. The two allowed 11px exceptions are listed in
+  the test with their reasons.
 - Everything is keyboard-operable with a visible focus ring. Modals trap focus
   (`trapFocus`), make the background inert (`setAppInert`), and return focus
   to the invoker on close. Updates must not steal or drop focus.
