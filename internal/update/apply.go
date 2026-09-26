@@ -226,7 +226,8 @@ func (a *Applier) rollback(root *os.Root, res *Result, prev []byte, cause error)
 }
 
 // awaitHealthy waits until the unit is active and the appliance has written a
-// health file naming version, or the timeout passes.
+// health file naming version, or the timeout passes; the timeout error says
+// which of the two was missing last.
 func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version string) error {
 	timeout := cmp.Or(a.HealthTimeout, DefaultHealthTimeout)
 	poll := cmp.Or(a.Poll, defaultPoll)
@@ -250,9 +251,9 @@ func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version strin
 		select {
 		case <-ctx.Done():
 			if last == "" {
-				last = "it never reported healthy"
+				last = "it never wrote its health file"
 			}
-			return fmt.Errorf("%s did not come up within %s: %s", version, timeout, last)
+			return fmt.Errorf("no healthy start within %s: %s", timeout, last)
 		case <-t.C:
 		}
 	}

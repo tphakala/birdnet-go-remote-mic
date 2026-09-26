@@ -180,7 +180,7 @@ func TestApplyRollsBack(t *testing.T) {
 	if statusAtSecondRestart != OutcomeRolledBack {
 		t.Errorf("status before the restoring restart: %q, want rolled_back", statusAtSecondRestart)
 	}
-	if r := env.result(t); r.Outcome != OutcomeRolledBack || !strings.Contains(r.Reason, "did not come up") {
+	if r := env.result(t); r.Outcome != OutcomeRolledBack || !strings.Contains(r.Reason, "no healthy start") {
 		t.Errorf("result %+v", r)
 	}
 	env.requestGone(t)
