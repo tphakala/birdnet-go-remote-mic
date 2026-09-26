@@ -117,8 +117,10 @@
   --font-size-heading: 20px;
   --font-size-stat: 22px;
   --font-size-display: 24px;
-  /* Inline code inside running text, relative to that text. */
-  --font-size-code: 0.92em;
+  /* Inline code inside running text, relative to that text. Every host is
+     body size or larger (the legibility test checks), so 0.93em keeps code at
+     or above the 12px floor. */
+  --font-size-code: 0.93em;
 
   /* Geometry & Rhythm */
   /* Control sizing scale. Every control that can share a row with another one
@@ -161,11 +163,13 @@
   --btn-danger-bg: #dc2626;
   --btn-danger-bg-hover: #b91c1c;
   --btn-danger-fg: #ffffff;
-  /* Unread count on the header bell. Darker than --signal-crit on purpose:
-     white on #b91c1c clears the small-text bar (6.47:1) at the badge's 11px,
-     which white on --signal-crit does not. Shared by both themes. */
-  --badge-unread-bg: #b91c1c;
-  --badge-unread-fg: #ffffff;
+  /* A solid critical fill carrying small text: the unread count on the header
+     bell and the latched CLIP button. Darker than --signal-crit on purpose:
+     white on #b91c1c clears the small-text bar (6.47:1) at 11-12px, which
+     white on --signal-crit (3.76:1 on the dark theme) does not. The crit
+     border and glow keep --signal-crit. Shared by both themes. */
+  --crit-fill-bg: #b91c1c;
+  --crit-fill-fg: #ffffff;
 }
 
 /* Light Theme (Laboratory Instrument) */
@@ -1093,8 +1097,8 @@ textarea {
 }
 
 .clip-latch-btn.clipped {
-  background: var(--signal-crit);
-  color: #ffffff;
+  background: var(--crit-fill-bg);
+  color: var(--crit-fill-fg);
   border-color: var(--signal-crit);
   box-shadow: 0 0 10px var(--signal-crit-glow);
   animation: flash-clip 0.3s ease;
@@ -1213,6 +1217,18 @@ textarea {
 .section-desc {
   font-size: var(--font-size-body);
   color: var(--text-secondary);
+}
+
+/* The restart card's action title and its explanation (System view). */
+.lifecycle-title {
+  display: block;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.lifecycle-desc {
+  font-size: var(--font-size-body);
+  color: var(--text-muted);
 }
 
 .form-grid-2col {
@@ -2260,8 +2276,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   height: 16px;
   padding: 0 4px;
   border-radius: var(--radius-full);
-  background: var(--badge-unread-bg);
-  color: var(--badge-unread-fg);
+  background: var(--crit-fill-bg);
+  color: var(--crit-fill-fg);
   font-size: var(--font-size-micro);
   font-weight: 700;
   line-height: 16px;

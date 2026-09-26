@@ -27,6 +27,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const STYLES = fileURLToPath(new URL("../../static/styles.css", import.meta.url).href);
+const INDEX = fileURLToPath(new URL("../../static/index.html", import.meta.url).href);
 
 const MIN_PX = 12;
 const BODY_PX = 13;
@@ -163,6 +164,44 @@ test("every below-floor allowance names a rule that still exists", () => {
   const selectors = new Set(fontRules(css).map((r) => r.selector));
   const stale = [...ALLOWED_BELOW_MIN.keys()].filter((s) => !selectors.has(s));
   assert.deepEqual(stale, []);
+});
+
+test("index.html sets no font size inline", () => {
+  // An inline style is invisible to the checks above, which read styles.css.
+  const html = readFileSync(INDEX, "utf8");
+  const inline = [...html.matchAll(/style="[^"]*\bfont(?:-size)?\s*:[^"]*"/g)].map((m) => m[0]);
+  assert.deepEqual(inline, []);
+});
+
+// codeHosts maps each rule that sizes inline code relative to its text (the
+// --font-size-code token) to the px size of the text around it, or null when
+// the host rule sets no resolvable size.
+function codeHosts(source: string): Map<string, number | null> {
+  const rules = fontRules(source);
+  const px = new Map(rules.filter((r) => r.px !== null).map((r) => [r.selector, r.px]));
+  const hosts = new Map<string, number | null>();
+  for (const r of rules) {
+    if (r.value !== "var(--font-size-code)") continue;
+    for (const sel of r.selector.split(",").map((x) => x.trim())) {
+      const host = sel.replace(/\s+code$/, "");
+      hosts.set(sel, host === sel ? null : (px.get(host) ?? null));
+    }
+  }
+  return hosts;
+}
+
+test("inline code sits only in body-size or larger text, so it stays above the floor", () => {
+  const hosts = codeHosts(css);
+  assert.ok(hosts.size > 0, "no rule uses --font-size-code");
+  const small = [...hosts].filter(([, px]) => px === null || px < BODY_PX).map(([sel, px]) => `${sel}: host ${px ?? "unknown"}`);
+  assert.deepEqual(small, []);
+  const sample = codeHosts(`
+    :root { --font-size-small: 12px; --font-size-body: 13px; --font-size-code: 0.93em; }
+    .note { font-size: var(--font-size-small); font-weight: 500; }
+    .note code, .para code { font-size: var(--font-size-code); }
+    .para { font-size: var(--font-size-body); }
+  `);
+  assert.deepEqual([...sample], [[".note code", 12], [".para code", 13]]);
 });
 
 test("the type scale is px, apart from the one relative code token", () => {

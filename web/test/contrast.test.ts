@@ -245,9 +245,10 @@ const PAIRS: Pair[] = [
   // Panel furniture that sits on its own grounds rather than on a row.
   { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: SMALL_TEXT },
   { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
-  // The unread count on the header bell: the smallest text in the UI (11px
-  // bold), so it takes the small-text bar.
-  { what: "unread badge count", fg: "--badge-unread-fg", bg: ["--badge-unread-bg"], min: SMALL_TEXT },
+  // The unread count on the header bell and the latched CLIP label: the
+  // smallest text in the UI (11-12px bold) on a solid crit fill, so it takes
+  // the small-text bar.
+  { what: "unread badge count and latched CLIP label", fg: "--crit-fill-fg", bg: ["--crit-fill-bg"], min: SMALL_TEXT },
 
   // Menu button popover (the header theme menu): the item icons and the
   // hovered or focused item's label reuse pairs above; the accent check mark
