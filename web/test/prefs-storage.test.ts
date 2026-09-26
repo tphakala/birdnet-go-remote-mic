@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { isLocalStorageEvent, prefSaveNotice, readBoolPref, writeBoolPref } from "../src/lib/prefs.js";
+import { isLocalStorageEvent, onPrefChange, prefSaveNotice, readBoolPref, writeBoolPref, type PrefChange } from "../src/lib/prefs.js";
 
 const g = globalThis as unknown as { window?: unknown };
 
@@ -90,4 +90,26 @@ test("blocked storage reads the default and reports a failed save once", () => {
     writeBoolPref("k", false);
   });
   assert.equal(shown, 1);
+});
+
+test("onPrefChange passes matching localStorage changes and clears, nothing else", () => {
+  const local = {};
+  withWindow(local, () => {
+    let fire: ((e: StorageEvent) => void) | null = null;
+    const target = {
+      addEventListener: (type: string, fn: (e: StorageEvent) => void): void => {
+        assert.equal(type, "storage");
+        fire = fn;
+      },
+    } as unknown as Pick<Window, "addEventListener">;
+    const got: PrefChange[] = [];
+    onPrefChange((key) => key === "mine", (c) => got.push(c), target);
+    const send = (key: string | null, newValue: string | null, area: object = local): void =>
+      fire?.({ key, newValue, storageArea: area } as unknown as StorageEvent);
+    send("mine", "1");
+    send("other", "1");
+    send(null, null);
+    send("mine", "0", {});
+    assert.deepEqual(got, [{ key: "mine", newValue: "1" }, { key: null, newValue: null }]);
+  });
 });

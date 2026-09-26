@@ -1,6 +1,10 @@
 package mgmtserver
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -215,4 +219,148 @@ func TestStaticHandlerRevalidates(t *testing.T) {
 			t.Errorf("%s: Cache-Control = %q, want no-cache", p, got)
 		}
 	}
+}
+
+// gzipLicenses is a compressible asset body for the gzip tests.
+var gzipLicenses = strings.Repeat(`{"name":"module","license":"MIT"},`, 200)
+
+// gzipFixture is a static handler over a compressible index and JSON file, a
+// script too small to compress, a font (already compressed), and text gzip
+// cannot shrink.
+func gzipFixture() http.Handler {
+	return newStaticHandler(fstest.MapFS{
+		indexAsset:      &fstest.MapFile{Data: []byte("<!doctype html>" + strings.Repeat("<p>x</p>", 300))},
+		"licenses.json": &fstest.MapFile{Data: []byte(gzipLicenses)},
+		"small.js":      &fstest.MapFile{Data: []byte("console.log(1);")},
+		"font.woff2":    &fstest.MapFile{Data: []byte(gzipLicenses)},
+		"noise.txt":     &fstest.MapFile{Data: noise(4096)},
+	})
+}
+
+// gzipGetStatic sends a GET for path with the given Accept-Encoding and
+// If-None-Match (either may be empty).
+func gzipGetStatic(t *testing.T, h http.Handler, path, accept, ifNoneMatch string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, http.NoBody)
+	if accept != "" {
+		req.Header.Set("Accept-Encoding", accept)
+	}
+	if ifNoneMatch != "" {
+		req.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func gunzipBody(t *testing.T, b []byte) string {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("read gzip body: %v", err)
+	}
+	return string(out)
+}
+
+func TestStaticHandlerGzipsWhenAccepted(t *testing.T) {
+	t.Parallel()
+	rec := gzipGetStatic(t, gzipFixture(), "/licenses.json", "gzip, br", "")
+	if got := rec.Header().Get("Content-Encoding"); got != encGzip {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := rec.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Errorf("Vary = %q, want Accept-Encoding", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if rec.Body.Len() >= len(gzipLicenses) {
+		t.Errorf("body is %d bytes, want fewer than %d", rec.Body.Len(), len(gzipLicenses))
+	}
+	if gunzipBody(t, rec.Body.Bytes()) != gzipLicenses {
+		t.Errorf("decompressed body differs from the asset")
+	}
+}
+
+func TestStaticHandlerPlainWithoutGzip(t *testing.T) {
+	t.Parallel()
+	h := gzipFixture()
+	for _, accept := range []string{"", "br", "gzip;q=0.0", "*;q=0"} {
+		rec := gzipGetStatic(t, h, "/licenses.json", accept, "")
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Errorf("Accept-Encoding %q: Content-Encoding = %q, want none", accept, got)
+		}
+		if rec.Body.String() != gzipLicenses {
+			t.Errorf("Accept-Encoding %q: body differs from the asset", accept)
+		}
+		if got := rec.Header().Get("Vary"); got != "Accept-Encoding" {
+			t.Errorf("Accept-Encoding %q: Vary = %q, want Accept-Encoding", accept, got)
+		}
+	}
+}
+
+func TestStaticHandlerGzipETag(t *testing.T) {
+	t.Parallel()
+	h := gzipFixture()
+	plain := gzipGetStatic(t, h, "/licenses.json", "", "").Header().Get("ETag")
+	zipped := gzipGetStatic(t, h, "/licenses.json", encGzip, "").Header().Get("ETag")
+	if plain == "" || zipped == "" || plain == zipped {
+		t.Fatalf("ETags plain %q and gzip %q, want two different ones", plain, zipped)
+	}
+	if rec := gzipGetStatic(t, h, "/licenses.json", encGzip, zipped); rec.Code != http.StatusNotModified {
+		t.Errorf("revalidating the gzip ETag: status %d, want 304", rec.Code)
+	}
+	if rec := gzipGetStatic(t, h, "/licenses.json", "", zipped); rec.Code != http.StatusOK {
+		t.Errorf("gzip ETag on a plain request: status %d, want 200", rec.Code)
+	}
+}
+
+func TestStaticHandlerGzipsFallback(t *testing.T) {
+	t.Parallel()
+	rec := gzipGetStatic(t, gzipFixture(), "/system", encGzip, "")
+	if got := rec.Header().Get("Content-Encoding"); got != encGzip {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
+	}
+	if !strings.HasPrefix(gunzipBody(t, rec.Body.Bytes()), "<!doctype html>") {
+		t.Errorf("fallback body is not index.html")
+	}
+}
+
+func TestStaticHandlerSendsIncompressibleAsIs(t *testing.T) {
+	t.Parallel()
+	h := gzipFixture()
+	rec := gzipGetStatic(t, h, "/noise.txt", encGzip, "")
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Errorf("noise: Content-Encoding = %q, want none", got)
+	}
+	if rec.Body.Len() != 4096 {
+		t.Errorf("noise: body is %d bytes, want the 4096 of the asset", rec.Body.Len())
+	}
+	// Too small, or compressed already: not even a Vary.
+	for _, path := range []string{"/small.js", "/font.woff2"} {
+		rec := gzipGetStatic(t, h, path, encGzip, "")
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Errorf("%s: Content-Encoding = %q, want none", path, got)
+		}
+		if got := rec.Header().Get("Vary"); got != "" {
+			t.Errorf("%s: Vary = %q, want none", path, got)
+		}
+	}
+}
+
+// noise returns n bytes that gzip cannot shrink, the same on every run.
+func noise(n int) []byte {
+	r := rand.New(rand.NewPCG(1, 2))
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(r.Uint32())
+	}
+	return b
 }

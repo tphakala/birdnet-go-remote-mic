@@ -1,3 +1,6 @@
+import { closesOnFocusOut } from "../lib/menu-core.js";
+import { focusTarget } from "../lib/ui.js";
+
 let dropdownSeq = 0;
 
 export class CustomDropdown {
@@ -8,6 +11,13 @@ export class CustomDropdown {
   private hiddenInput: HTMLInputElement | null;
   private onChange?: (val: string) => void;
   private docClickHandler!: (e: MouseEvent) => void;
+  // Page-wide listeners that live only while the list is open: focus arriving
+  // outside it (a dialog taking focus, which blurs nothing inside with a
+  // relatedTarget) and a route change both close it.
+  private readonly onFocusIn = (e: FocusEvent): void => {
+    if (closesOnFocusOut(this.isOpen(), focusTarget(e.target, this.menu, this.trigger))) this.close();
+  };
+  private readonly onHashChange = (): void => this.close();
   private activeIndex = -1;
 
   constructor(containerIdOrEl: string | HTMLElement, onChange?: (val: string) => void) {
@@ -56,6 +66,11 @@ export class CustomDropdown {
     });
 
     this.trigger.addEventListener("keydown", (e) => this.onKeydown(e));
+    // Focus leaving the dropdown for elsewhere on the page closes it; a window
+    // blur (no relatedTarget) keeps it open, as the header menus do.
+    this.container.addEventListener("focusout", (e) => {
+      if (closesOnFocusOut(this.isOpen(), focusTarget(e.relatedTarget, this.container, this.trigger))) this.close();
+    });
 
     this.items.forEach((item) => {
       item.addEventListener("click", (e) => {
@@ -136,6 +151,21 @@ export class CustomDropdown {
 
   public destroy(): void {
     document.removeEventListener("click", this.docClickHandler);
+    this.setPageListeners(false);
+  }
+
+  private isOpen(): boolean {
+    return this.container.classList.contains("open");
+  }
+
+  private setPageListeners(on: boolean): void {
+    if (on) {
+      document.addEventListener("focusin", this.onFocusIn);
+      window.addEventListener("hashchange", this.onHashChange);
+    } else {
+      document.removeEventListener("focusin", this.onFocusIn);
+      window.removeEventListener("hashchange", this.onHashChange);
+    }
   }
 
   public toggle(): void {
@@ -161,12 +191,14 @@ export class CustomDropdown {
     });
     this.container.classList.add("open");
     this.trigger.setAttribute("aria-expanded", "true");
+    this.setPageListeners(true);
     // Start the roving highlight on the selected option.
     const selected = this.items.findIndex((item) => item.classList.contains("selected"));
     this.setActive(selected >= 0 ? selected : 0);
   }
 
   public close(): void {
+    this.setPageListeners(false);
     this.container.classList.remove("open");
     this.trigger.setAttribute("aria-expanded", "false");
     this.trigger.removeAttribute("aria-activedescendant");

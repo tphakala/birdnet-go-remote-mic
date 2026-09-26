@@ -160,12 +160,32 @@ export function channelHiddenMessage(hidden: number, target: number | null): str
   const where = target === null ? "the device settings" : `channel ${target}`;
   return `Channel ${hidden} is hidden. Focus moved to ${where}.`;
 }
-export const TOKEN_HIDDEN_MESSAGE = "This stream no longer needs the access token. Focus moved to the device settings.";
-// Said when a card rebuilds into a shape without the control that held focus
-// (a copy or clip button, or the token tag, after a flip from serving to
-// idle); a token tag hidden because the token is no longer required gets
-// TOKEN_HIDDEN_MESSAGE instead.
-export const CONTROL_GONE_MESSAGE = "That control is no longer shown. Focus moved to the device settings.";
+
+// tokenHiddenMessage is said when a device's Token tag, which held focus, hides
+// because access control was turned off.
+export function tokenHiddenMessage(device: string): string {
+  return `${device} no longer needs the access token. Focus moved to its device settings.`;
+}
+
+// controlName names a card control by its data-focus key (copy, token, clip-N
+// with N the zero-based channel row), for the message below.
+export function controlName(key: string): string {
+  if (key === "copy") return "Copy URL button";
+  if (key === "token") return "Token tag";
+  const clip = /^clip-(\d+)$/.exec(key);
+  if (clip) return `channel ${Number(clip[1]) + 1} clip button`;
+  return "control";
+}
+
+// controlGoneMessage is said when a card rebuilds into a shape without the
+// control that held focus (a copy or clip button, or the token tag, after a
+// flip from serving to idle); a token tag hidden because the token is no
+// longer required gets tokenHiddenMessage instead. It names the device, the
+// control, and why it went.
+export function controlGoneMessage(device: string, key: string, serving: boolean): string {
+  const why = serving ? "is no longer shown" : "went away because the device stopped streaming";
+  return `${device}: the ${controlName(key)} ${why}. Focus moved to its device settings.`;
+}
 
 // Said after a device is removed, following the "Removed" toast: its card and
 // the Remove button that held focus are gone, so focus moved to the dashboard.

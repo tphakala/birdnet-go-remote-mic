@@ -81,3 +81,26 @@ export function isLocalStorageEvent(e: StorageEvent): boolean {
     return false;
   }
 }
+
+// PrefChange is a preference changed in another tab: its key, or null when that
+// tab cleared all of storage, and the new value, null when removed or cleared.
+export interface PrefChange {
+  key: string | null;
+  newValue: string | null;
+}
+
+// onPrefChange calls listener for every localStorage change another tab makes
+// to a key match accepts, and for a clear of all storage, which resets every
+// preference. The storage event fires only in the other tabs, so a tab's own
+// writes never come back. Each listener still decides whether the value
+// differs from what it shows. target is the window, or a stub under test.
+export function onPrefChange(
+  match: (key: string) => boolean,
+  listener: (change: PrefChange) => void,
+  target: Pick<Window, "addEventListener"> = window,
+): void {
+  target.addEventListener("storage", (e: StorageEvent) => {
+    if (!isLocalStorageEvent(e) || (e.key !== null && !match(e.key))) return;
+    listener({ key: e.key, newValue: e.newValue });
+  });
+}

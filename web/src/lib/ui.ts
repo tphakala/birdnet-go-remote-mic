@@ -4,6 +4,7 @@
 // label maps live in exactly one place.
 import { ApiError } from "./api.js";
 import { showToast } from "../components/toast.js";
+import type { FocusTarget } from "./menu-core.js";
 
 // elem creates an element with an optional class and text content.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
@@ -288,6 +289,16 @@ export function announce(region: HTMLElement | null, message: string): void {
   requestAnimationFrame(() => {
     region.textContent = message;
   });
+}
+
+// focusTarget classifies where focus (or a click) went relative to a popup and
+// the control that opens it, for closesOnFocusOut: nowhere (the window blurred),
+// into the popup, onto the opener, or elsewhere on the page.
+export function focusTarget(t: EventTarget | null, popup: Node, opener: Node): FocusTarget {
+  if (!(t instanceof Node)) return "none";
+  if (popup.contains(t)) return "menu";
+  if (opener.contains(t)) return "button";
+  return "outside";
 }
 
 export function setHidden(el: HTMLElement, hidden: boolean): void {

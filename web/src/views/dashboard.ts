@@ -3,9 +3,9 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, CONTROL_GONE_MESSAGE, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
-import { hideInactiveKey, hideInactivePrefDevice, isLocalStorageEvent, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
+import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
+import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.js";
+import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -345,14 +345,12 @@ export class DashboardView {
     // once (the storage event fires only in the other tabs), including in an
     // open settings form's switch. A cleared storage (key null) resets every
     // card to the default.
-    window.addEventListener("storage", (e: StorageEvent) => {
-      if (!isLocalStorageEvent(e)) return;
-      const id = hideInactivePrefDevice(e.key);
-      if (e.key !== null && id === null) return;
+    onPrefChange((key) => hideInactivePrefDevice(key) !== null, ({ key, newValue }) => {
+      const id = hideInactivePrefDevice(key);
+      const hide = parseBoolPref(newValue, true);
       let changed = false;
       for (const entry of this.cards.values()) {
         if (id !== null && entry.device.device !== id) continue;
-        const hide = parseBoolPref(e.newValue, true);
         if (entry.hideInactive === hide) continue;
         entry.hideInactive = hide;
         entry.settingsForm?.setHideInactive(hide);
@@ -600,7 +598,9 @@ export class DashboardView {
 
   // removeDevice deletes a configured device after confirmation, returning its
   // hardware to the available list. On success the card disappears via the device
-  // refresh; on failure the button is restored so it can be retried.
+  // refresh; on failure the button is restored so it can be retried. A refresh
+  // that fails after the delete succeeded is reported as such, not as a failed
+  // removal: the next poll takes the card away.
   private async removeDevice(entry: CardEntry, btn: HTMLElement): Promise<void> {
     // aria-disabled keeps the button focusable while busy, so guard against a
     // keyboard re-activation that pointer-events cannot block: without this a
@@ -614,12 +614,14 @@ export class DashboardView {
     });
     if (!ok) return;
     setBusy(btn, "Removing...");
+    let removed = false;
     try {
       // Serialize with toggles and settings saves: a stale full-array PATCH from
       // one of those must not run interleaved with this delete and restore the
       // removed device (or drop a concurrently provisioned one).
       await this.enqueue(async () => {
         await api.deleteDevice(entry.device.name);
+        removed = true;
         // The card (and this button) is about to be destroyed by the refresh,
         // which would drop focus to the document body. Move it to the workspace
         // region first so a keyboard user keeps a sensible place. preventScroll,
@@ -627,13 +629,19 @@ export class DashboardView {
         // of <main>, away from where the removed card was.
         const main = document.getElementById("main-content");
         main?.focus({ preventScroll: true });
-        await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-        showToast(`Removed ${entry.device.name}.`);
+        const refreshed = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+        if (refreshed.every(Boolean)) showToast(`Removed ${entry.device.name}.`);
+        else showToast(`Removed ${entry.device.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
         // Only while focus is still where it was put: the refresh can take a
         // while on a slow link, and the operator may have moved on.
         if (main && document.activeElement === main) announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
       });
     } catch (err: unknown) {
+      if (removed) {
+        // The device is gone; only the follow-up went wrong.
+        showToast(`Removed ${entry.device.name}. The page could not update: ${apiErrorMessage(err)}`, "warn");
+        return;
+      }
       this.apiErrorToast(err, "Remove failed");
       clearBusy(btn, "Remove");
     }
@@ -1040,7 +1048,7 @@ export class DashboardView {
     setHidden(entry.lockEl, hideLock);
     if (lockHadFocus) {
       entry.settingsBtn.focus();
-      announce(this.announceEl, TOKEN_HIDDEN_MESSAGE);
+      announce(this.announceEl, tokenHiddenMessage(d.name));
     }
 
     const badge = deviceStateBadge(d.state);
@@ -1174,7 +1182,8 @@ export class DashboardView {
         // longer needed; a device that stopped serving loses it too, and there
         // the token is still required.
         const tokenDropped = saved.key === "token" && serving && !this.status?.authRequired;
-        announce(this.announceEl, tokenDropped ? TOKEN_HIDDEN_MESSAGE : CONTROL_GONE_MESSAGE);
+        const name = entry.device.name;
+        announce(this.announceEl, tokenDropped ? tokenHiddenMessage(name) : controlGoneMessage(name, saved.key, serving));
       }
     }
   }

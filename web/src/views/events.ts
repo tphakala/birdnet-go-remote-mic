@@ -13,7 +13,7 @@
 
 import { router } from "../lib/router.js";
 import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, switchControl } from "../lib/ui.js";
-import { isLocalStorageEvent, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
+import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { showToast } from "../components/toast.js";
 import { FilterChips } from "../components/filter-chips.js";
 import { StatTile } from "../components/stat-tile.js";
@@ -210,9 +210,8 @@ export class EventsView {
     // A "/" shortcut change saved in another tab applies here at once (the
     // storage event fires only in the other tabs); a cleared storage (key
     // null) means the default, on.
-    window.addEventListener("storage", (e: StorageEvent) => {
-      if (!isLocalStorageEvent(e) || (e.key !== null && e.key !== SLASH_PREF_KEY)) return;
-      const on = parseBoolPref(e.newValue, true);
+    onPrefChange((key) => key === SLASH_PREF_KEY, ({ newValue }) => {
+      const on = parseBoolPref(newValue, true);
       if (on === this.slashShortcut) return;
       this.slashShortcut = on;
       this.slashInput.checked = on;

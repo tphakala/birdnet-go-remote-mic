@@ -13,6 +13,7 @@ import {
   channelHiddenMessage,
   channelLabel,
   clientSummary,
+  controlGoneMessage,
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
@@ -20,6 +21,7 @@ import {
   needsNotificationsFallback,
   streamSummary,
   tallyStates,
+  tokenHiddenMessage,
 } from "../src/lib/dashboard-core.js";
 import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.js";
 
@@ -185,4 +187,15 @@ test("streamSummary falls back to the record without a config", () => {
     { path: "/b", clientConnected: false, droppedFrames: 0 },
   ] }, { streams: [] });
   assert.deepEqual(live.paths, ["/a", "/b"]);
+});
+
+test("focus messages name the device, the control and why it went", () => {
+  assert.equal(
+    controlGoneMessage("Garden", "clip-1", false),
+    "Garden: the channel 2 clip button went away because the device stopped streaming. Focus moved to its device settings.",
+  );
+  assert.equal(controlGoneMessage("Garden", "copy", true), "Garden: the Copy URL button is no longer shown. Focus moved to its device settings.");
+  assert.equal(controlGoneMessage("Garden", "token", false).startsWith("Garden: the Token tag went away"), true);
+  assert.equal(controlGoneMessage("Garden", "other", true), "Garden: the control is no longer shown. Focus moved to its device settings.");
+  assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
 });

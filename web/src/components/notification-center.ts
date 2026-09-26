@@ -3,7 +3,8 @@
 // concerns (open/close, focus, keyboard, DOM). All state lives in the store and
 // its pure core.
 
-import { button, elem, setHidden, setText } from "../lib/ui.js";
+import { button, elem, focusTarget, setHidden, setText } from "../lib/ui.js";
+import { closesOnFocusOut } from "../lib/menu-core.js";
 import { ICON_CLOSE } from "./toast.js";
 import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.js";
 import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
@@ -208,11 +209,14 @@ export class NotificationCenter {
     if (restoreFocus) this.bell.focus();
   }
 
+  // outside reports focus or a click landing on page content outside the
+  // panel and the bell, which closes the panel.
+  private outside(t: EventTarget | null): boolean {
+    return closesOnFocusOut(this.isOpen, focusTarget(t, this.panel, this.bell));
+  }
+
   private readonly onDocClick = (e: MouseEvent): void => {
-    const target = e.target as Node | null;
-    if (!target) return;
-    if (this.panel.contains(target) || this.bell.contains(target)) return;
-    this.close();
+    if (this.outside(e.target)) this.close();
   };
 
   private readonly onKeydown = (e: KeyboardEvent): void => {
@@ -226,22 +230,17 @@ export class NotificationCenter {
   };
 
   private readonly onFocusOut = (e: FocusEvent): void => {
-    const next = e.relatedTarget as Node | null;
     // Keep the panel open when focus stays inside it or moves to the bell, and
     // when focus leaves the document entirely (relatedTarget null, e.g. the
     // window blurred) so alt-tabbing away does not dismiss it. Close only when
     // focus lands on page content behind the panel, mirroring the outside-click
     // close for keyboard users who Tab past the last control. No restoreFocus:
     // focus has already moved on, so pulling it back to the bell would fight it.
-    if (!next) return;
-    if (this.panel.contains(next) || this.bell.contains(next)) return;
-    this.close();
+    if (this.outside(e.relatedTarget)) this.close();
   };
 
   private readonly onFocusIn = (e: FocusEvent): void => {
-    const target = e.target;
-    if (!(target instanceof Node) || this.panel.contains(target) || this.bell.contains(target)) return;
-    this.close();
+    if (this.outside(e.target)) this.close();
   };
 
   private readonly onHashChange = (): void => {

@@ -2,6 +2,7 @@ package mgmtserver
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,28 +31,74 @@ func WithStaticAssets(staticFS fs.FS) Option {
 	}
 }
 
+// gzipMinSize is the smallest asset worth compressing; below it the saving
+// does not pay for the encoding header and the CPU.
+const gzipMinSize = 1024
+
 // staticAsset is a fully-precomputed embedded file: its bytes, its content-addressed
 // ETag, and its content type, all derived once at construction. The embedded assets
 // are immutable for the life of the process, so nothing here is recomputed per request.
+// gz is the gzip encoding of a compressible asset, nil for one that is not.
 type staticAsset struct {
 	data        []byte
 	etag        string
 	contentType string
+	gz          *gzipped
+}
+
+// gzipped is an asset's gzip encoding, made on the first request that accepts
+// it and kept: an appliance nobody opens the UI on never spends the CPU or the
+// memory. data stays nil when compressing did not make the asset smaller.
+type gzipped struct {
+	once sync.Once
+	data []byte
+	etag string
+}
+
+// get returns the encoding of a and its ETag, compressing on the first call,
+// or nil when the encoding is no smaller.
+func (g *gzipped) get(a *staticAsset) (data []byte, etag string) {
+	g.once.Do(func() {
+		var buf bytes.Buffer
+		// Only an invalid level fails, and BestCompression is valid; writes
+		// into a bytes.Buffer do not fail either.
+		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		_, _ = zw.Write(a.data)
+		if zw.Close() != nil || buf.Len() >= len(a.data) {
+			return
+		}
+		g.data = buf.Bytes()
+		// A different representation needs a different validator.
+		g.etag = strings.TrimSuffix(a.etag, `"`) + `-gz"`
+	})
+	return g.data, g.etag
+}
+
+// compressible reports whether an asset of this type and size is worth
+// gzipping: text, scripts, JSON and SVG. Fonts and images are compressed
+// already. An asset with no known type is left alone, since ServeContent
+// would sniff its type from the compressed bytes.
+func compressible(contentType string, size int) bool {
+	if size < gzipMinSize || contentType == "" {
+		return false
+	}
+	mt, _, _ := strings.Cut(contentType, ";")
+	return strings.HasPrefix(mt, "text/") || strings.HasSuffix(mt, "javascript") ||
+		strings.HasSuffix(mt, "json") || strings.HasSuffix(mt, "+xml")
 }
 
 // staticHandler serves the embedded web UI with SPA fallback (serving index.html
 // for unknown navigation paths) and security headers. All assets are precomputed
 // into assets at construction; ServeHTTP never re-reads or re-hashes the FS.
 type staticHandler struct {
-	assets    map[string]staticAsset
-	indexFile []byte
-	indexETag string
-	modTime   time.Time
+	assets  map[string]*staticAsset
+	index   *staticAsset
+	modTime time.Time
 }
 
 func newStaticHandler(staticFS fs.FS) http.Handler {
 	sh := &staticHandler{
-		assets:  make(map[string]staticAsset),
+		assets:  make(map[string]*staticAsset),
 		modTime: time.Now().UTC(),
 	}
 
@@ -71,21 +119,47 @@ func newStaticHandler(staticFS fs.FS) http.Handler {
 			return nil
 		}
 		sum := sha256.Sum256(data)
-		etag := `"` + hex.EncodeToString(sum[:8]) + `"`
-		asset := staticAsset{
+		asset := &staticAsset{
 			data:        data,
-			etag:        etag,
+			etag:        `"` + hex.EncodeToString(sum[:8]) + `"`,
 			contentType: mime.TypeByExtension(path.Ext(p)),
 		}
-		sh.assets[p] = asset
 		if p == "index.html" {
-			sh.indexFile = data
-			sh.indexETag = etag
+			// The SPA fallback serves it for paths without an extension too.
+			sh.index = asset
 		}
+		if compressible(asset.contentType, len(data)) {
+			asset.gz = &gzipped{}
+		}
+		sh.assets[p] = asset
 		return nil
 	})
 
 	return sh
+}
+
+// serve writes asset a, gzipped when it is compressible and the request
+// accepts that (acceptsGzip in gzip.go). Vary tells a cache the body depends
+// on Accept-Encoding.
+func (sh *staticHandler) serve(w http.ResponseWriter, r *http.Request, name string, a *staticAsset) {
+	if a.contentType != "" {
+		w.Header().Set("Content-Type", a.contentType)
+	}
+	body, etag := a.data, a.etag
+	if a.gz != nil {
+		w.Header().Add("Vary", "Accept-Encoding")
+		if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+			if gz, gzETag := a.gz.get(a); gz != nil {
+				body, etag = gz, gzETag
+				w.Header().Set("Content-Encoding", "gzip")
+			}
+		}
+	}
+	w.Header().Set("ETag", etag)
+	// http.ServeContent evaluates If-None-Match against the ETag set above,
+	// handling "*", entity-tag lists, and weak validators per RFC 9110, so no
+	// separate conditional check is needed here.
+	http.ServeContent(w, r, name, sh.modTime, bytes.NewReader(body))
 }
 
 func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -110,14 +184,7 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Serve a precomputed asset directly.
 	if asset, ok := sh.assets[cleanPath]; ok {
-		if asset.contentType != "" {
-			w.Header().Set("Content-Type", asset.contentType)
-		}
-		w.Header().Set("ETag", asset.etag)
-		// http.ServeContent evaluates If-None-Match against the ETag set above,
-		// handling "*", entity-tag lists, and weak validators per RFC 9110, so no
-		// separate conditional check is needed here.
-		http.ServeContent(w, r, cleanPath, sh.modTime, bytes.NewReader(asset.data))
+		sh.serve(w, r, cleanPath, asset)
 		return
 	}
 
@@ -125,10 +192,8 @@ func (sh *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// extension, e.g. /dashboard, /system). A path with an extension is a
 	// missing asset (e.g. a mistyped /styles.css) and must 404 rather than
 	// silently return HTML with a 200.
-	if len(sh.indexFile) > 0 && path.Ext(cleanPath) == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("ETag", sh.indexETag)
-		http.ServeContent(w, r, "index.html", sh.modTime, bytes.NewReader(sh.indexFile))
+	if sh.index != nil && path.Ext(cleanPath) == "" {
+		sh.serve(w, r, "index.html", sh.index)
 		return
 	}
 

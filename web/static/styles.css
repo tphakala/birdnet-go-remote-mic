@@ -116,7 +116,6 @@
   --font-size-value: 16px;
   --font-size-heading: 20px;
   --font-size-stat: 22px;
-  --font-size-display: 24px;
   /* Inline code inside running text, relative to that text. Every host is
      body size or larger (the legibility test checks), so 0.93em keeps code at
      or above the 12px floor. */
@@ -170,6 +169,13 @@
      border and glow keep --signal-crit. Shared by both themes. */
   --crit-fill-bg: #b91c1c;
   --crit-fill-fg: #ffffff;
+  /* The thumb of a switch that is on, over the accent track. Shared by both
+     themes. */
+  --switch-thumb-on: #ffffff;
+  /* The scrim behind a modal. Dark in both themes: it dims the page either way. */
+  --modal-scrim: rgba(4, 7, 12, 0.82);
+  /* The wash under the meter canvas: light on the dark meter ground. */
+  --meter-wash: rgba(255, 255, 255, 0.03);
 }
 
 /* Light Theme (Laboratory Instrument) */
@@ -235,6 +241,8 @@
 
   --meter-bg: #e2e8f0;
   --meter-peak: #0284c7;
+  /* A light wash is invisible on the light meter ground; darken it here. */
+  --meter-wash: rgba(0, 0, 0, 0.04);
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -1044,12 +1052,8 @@ textarea {
   position: relative;
   border-radius: var(--radius-xs);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.03);
-}
-/* The dark wash is invisible on the light meter ground; darken it there so the
-   canvas track reads (the segments themselves are drawn theme-aware in script). */
-:root[data-theme="light"] .meter-canvas-container {
-  background: rgba(0, 0, 0, 0.04);
+  /* The segments themselves are drawn theme-aware in script. */
+  background: var(--meter-wash);
 }
 
 .meter-canvas {
@@ -1532,7 +1536,7 @@ input[type="checkbox"]:checked + .switch-track {
 }
 
 input[type="checkbox"]:checked + .switch-track .switch-thumb {
-  background: #ffffff;
+  background: var(--switch-thumb-on);
   transform: translateX(16px);
 }
 
@@ -2028,7 +2032,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(4, 7, 12, 0.82);
+  background: var(--modal-scrim);
   backdrop-filter: blur(6px);
   display: none;
   align-items: center;
@@ -2562,7 +2566,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .stat-tile-value {
-  font-size: var(--font-size-display);
+  font-size: var(--font-size-stat);
   font-weight: 700;
   line-height: 1.1;
   color: var(--text-primary);
