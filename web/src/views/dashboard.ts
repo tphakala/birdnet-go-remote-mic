@@ -3,8 +3,9 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, isLocalStorageEvent, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeBoolPref, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, hideInactivePrefDevice, parseBoolPref, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
+import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
+import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, CONTROL_GONE_MESSAGE, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
+import { hideInactiveKey, hideInactivePrefDevice, isLocalStorageEvent, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -624,9 +625,13 @@ export class DashboardView {
         // region first so a keyboard user keeps a sensible place. preventScroll,
         // as in the login modal: a plain focus() would jump the page to the top
         // of <main>, away from where the removed card was.
-        document.getElementById("main-content")?.focus({ preventScroll: true });
+        const main = document.getElementById("main-content");
+        main?.focus({ preventScroll: true });
         await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         showToast(`Removed ${entry.device.name}.`);
+        // Only while focus is still where it was put: the refresh can take a
+        // while on a slow link, and the operator may have moved on.
+        if (main && document.activeElement === main) announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Remove failed");
@@ -692,7 +697,7 @@ export class DashboardView {
     // Swap in place if the card was already mounted in the rack; otherwise the
     // ordering pass in reconcile() inserts it.
     if (oldArticle.parentNode) oldArticle.replaceWith(entry.article);
-    this.restoreFocus(entry, saved);
+    this.restoreFocus(entry, saved, d.state === "serving");
   }
 
   // syncSettingsButton reflects whether the settings panel is open on the
@@ -1146,7 +1151,9 @@ export class DashboardView {
     return key ? { key } : null;
   }
 
-  private restoreFocus(entry: CardEntry, saved: { el?: HTMLElement; key?: string } | null): void {
+  // serving is the device's state in the rebuilt shape (mount runs before
+  // syncCard updates entry.device).
+  private restoreFocus(entry: CardEntry, saved: { el?: HTMLElement; key?: string } | null, serving: boolean): void {
     if (!saved) return;
     if (saved.el) {
       // The panel node was moved into the new article and is connected again.
@@ -1158,8 +1165,17 @@ export class DashboardView {
       // A control that is gone or hidden in the rebuilt shape (copy and clip-N
       // after a flip to idle, or the token tag when the stream no longer needs
       // the token) cannot take focus; keep focus on the card via the settings
-      // button rather than letting it fall to <body>.
-      (node && !node.hidden && !node.closest("[hidden]") ? node : entry.settingsBtn).focus();
+      // button rather than letting it fall to <body>, and say why it moved.
+      if (node && !node.hidden && !node.closest("[hidden]")) {
+        node.focus();
+      } else {
+        entry.settingsBtn.focus();
+        // The token message only when the tag went because the token is no
+        // longer needed; a device that stopped serving loses it too, and there
+        // the token is still required.
+        const tokenDropped = saved.key === "token" && serving && !this.status?.authRequired;
+        announce(this.announceEl, tokenDropped ? TOKEN_HIDDEN_MESSAGE : CONTROL_GONE_MESSAGE);
+      }
     }
   }
 

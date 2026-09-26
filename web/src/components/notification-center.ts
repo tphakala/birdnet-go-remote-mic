@@ -176,6 +176,11 @@ export class NotificationCenter {
     // Close when a keyboard user Tabs focus off the panel onto page content
     // behind it; the capture-phase click handler only covers pointer users.
     this.panel.addEventListener("focusout", this.onFocusOut);
+    // The login prompt inerts the page before it takes focus, so the panel's
+    // focused control blurs with no relatedTarget and focusout alone would
+    // leave the panel open behind the dialog; focus arriving anywhere outside
+    // the panel and the bell closes it too.
+    document.addEventListener("focusin", this.onFocusIn);
     // Keep the relative "N ago" times from freezing while the panel sits open
     // with no store change to drive a re-render.
     this.timeTimer = setInterval(() => this.restampTimes(), RESTAMP_MS);
@@ -195,6 +200,7 @@ export class NotificationCenter {
     document.removeEventListener("keydown", this.onKeydown);
     window.removeEventListener("hashchange", this.onHashChange);
     this.panel.removeEventListener("focusout", this.onFocusOut);
+    document.removeEventListener("focusin", this.onFocusIn);
     if (this.timeTimer !== null) {
       clearInterval(this.timeTimer);
       this.timeTimer = null;
@@ -229,6 +235,12 @@ export class NotificationCenter {
     // focus has already moved on, so pulling it back to the bell would fight it.
     if (!next) return;
     if (this.panel.contains(next) || this.bell.contains(next)) return;
+    this.close();
+  };
+
+  private readonly onFocusIn = (e: FocusEvent): void => {
+    const target = e.target;
+    if (!(target instanceof Node) || this.panel.contains(target) || this.bell.contains(target)) return;
     this.close();
   };
 

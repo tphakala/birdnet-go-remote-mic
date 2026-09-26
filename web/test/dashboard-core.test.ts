@@ -16,12 +16,10 @@ import {
   focusFallbackRow,
   footerMetrics,
   hiddenRows,
-  hideInactivePrefDevice,
   needsNotificationsFallback,
-  parseBoolPref,
   tallyStates,
 } from "../src/lib/dashboard-core.js";
-import { hideInactiveKey } from "../src/lib/ui.js";
+import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.js";
 
 test("needsNotificationsFallback loads when nothing loaded or the stream is down", () => {
   assert.equal(needsNotificationsFallback(true, true), false); // healthy: the connect re-sync loaded it

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { componentTitle, parseLicenseDoc, supportDetails } from "../src/lib/about-core.js";
-import type { ApplianceStatus, SystemInfo } from "../src/lib/types.js";
+import type { ApplianceStatus, Device, SystemInfo } from "../src/lib/types.js";
 
 // The compiled test runs from web/.test-out/test/, so web/ is two levels up.
 const LICENSES_JSON = fileURLToPath(new URL("../../static/licenses.json", import.meta.url).href);
@@ -89,4 +89,267 @@ test("supportDetails leaves out what the host does not report", () => {
   assert.equal(supportDetails(status, bare), "remote-mic version: unknown\nPlatform: unknown");
   const noCores = { platform: "linux/arm", cpuModel: "ARMv6", cpuCores: 0, hostname: "h", network: [] } as unknown as SystemInfo;
   assert.equal(supportDetails(status, noCores), "remote-mic version: unknown\nPlatform: linux/arm\nCPU: ARMv6");
+});
+
+// device builds a serving device record with every required field defaulted, so
+// a test sets only what it is about.
+const device = (over: Partial<Device> & { name: string }): Device => ({
+  device: "hw:CARD=Loopback,DEV=1",
+  path: `/${over.name}`,
+  mode: "pcm",
+  format: "s16",
+  rate: 48000,
+  channels: [1],
+  state: "serving",
+  clientConnected: false,
+  droppedFrames: 0,
+  ...over,
+});
+
+// A USB microphone with two streams (Opus on channel 1, PCM on channels 1-2),
+// and a card-index device that is down. The API lists them in reverse name
+// order, which the output must not follow.
+const usbMic = device({
+  name: "zz-garden",
+  device: "usb:1235:8218:s=SERIAL123:if=0,0",
+  path: "/k7Qp2ZxTOKENPATH",
+  friendlyName: "Scarlett Solo 4th Gen",
+  idStable: true,
+  mode: "opus",
+  channels: [1],
+  streamedChannels: [1, 2],
+  negotiatedRate: 48000,
+  negotiatedChannels: 2,
+  negotiatedFormat: "s32",
+  overruns: 3,
+  droppedFrames: 12,
+});
+const downCard = device({
+  name: "aa-bats",
+  device: "hw:2,0",
+  path: "/bats-SECRETPATH",
+  idStable: false,
+  rate: 384000,
+  state: "failed",
+  downCause: "open-failed",
+  // The shape of main.go's openDevice error for a stream past the first, whose
+  // path the record does not carry (paths may hold ':' and ',').
+  error: "build sdp for /second:stream,SECRET2: bad",
+  overruns: 0,
+});
+
+test("supportDetails lists each capture device, ordered by name, without identifying details", () => {
+  const status = { version: "v0.3.0" } as ApplianceStatus;
+  const got = supportDetails(status, null, [usbMic, downCard]);
+  assert.equal(
+    got,
+    [
+      "remote-mic version: v0.3.0",
+      "",
+      "Capture devices: 2",
+      "Values in <angle brackets> and after usb:vendor:product were removed for privacy.",
+      "",
+      "Device 1: (no name reported)",
+      "  ID: card index, not stable (can change after a reboot or replug)",
+      "  State: failed (open-failed): build sdp for <path>: bad",
+      "  Configured: 384000 Hz, channels 1",
+      "  First stream: PCM, channels 1",
+      "  Overruns: 0, dropped frames: 0",
+      "",
+      "Device 2: Scarlett Solo 4th Gen",
+      "  ID: USB 1235:8218, stable",
+      "  State: serving",
+      "  Configured: 48000 Hz, channels 1,2",
+      "  Negotiated: 48000 Hz, 2 channels, s32",
+      "  First stream: Opus, channels 1",
+      "  Overruns: 3, dropped frames: 12",
+    ].join("\n"),
+  );
+  // Order follows the name, not the API's order.
+  assert.equal(supportDetails(status, null, [downCard, usbMic]), got);
+});
+
+// Error texts in the formats cmd/remotemic writes into a device record
+// (resolveError, skipDevice, openDevice), each quoting identifying values.
+const realErrors: { what: string; d: Device; want: string }[] = [
+  {
+    what: "not connected",
+    d: device({ name: "garden", device: "usb:1235:8218:s=NCSERIAL:if=0,0", state: "skipped", downCause: "not-connected", error: "Not connected: no device matches usb:1235:8218:s=NCSERIAL:if=0,0" }),
+    want: "Not connected: no device matches usb:1235:8218",
+  },
+  {
+    what: "ambiguous, ports listed unquoted",
+    d: device({ name: "garden", device: "usb:0d8c:0014", state: "skipped", downCause: "ambiguous", error: "Ambiguous: usb:0d8c:0014 matches 2 devices (usb:0D8C:0014:p=0000:00:14.0-1.2:if=0,0, usb:0d8c:0014:p=0000:00:14.0-1.3:if=0,0). Remove this entry and re-add each unit by its own id." }),
+    want: "Ambiguous: usb:0d8c:0014 matches 2 devices (usb:0d8c:0014, usb:0d8c:0014). Remove this entry and re-add each unit by its own id.",
+  },
+  {
+    what: "malformed selector quoting a serial",
+    d: device({ name: "garden", device: "usb:1235:8218:serial=ABC123:if=0,0", state: "skipped", downCause: "malformed", error: 'Malformed device id usb:1235:8218:serial=ABC123:if=0,0: capture: invalid device id "usb:1235:8218:serial=ABC123:if=0,0": selector must be "s=" (serial) or "p=" (port), got "serial=ABC123"' }),
+    want: 'Malformed device id usb:1235:8218: capture: invalid device id "usb:1235:8218": selector must be "s=" (serial) or "p=" (port), got "<redacted>"',
+  },
+  {
+    what: "malformed selector with an upper-case key, unknown to the UI",
+    d: device({ name: "garden", device: "hw:1,0", state: "skipped", downCause: "malformed", error: 'Malformed device id usb:1235:8218:S=UPSERIAL: capture: got "S=UPSERIAL"' }),
+    want: 'Malformed device id usb:1235:8218: capture: got "<redacted>"',
+  },
+  {
+    what: "same hardware, naming another device",
+    d: device({ name: "garden", device: "hw:CARD=Solo,DEV=0", state: "skipped", downCause: "same-hardware", error: 'Same hardware as "Backyard Mic at Smiths": hw:CARD=Solo,DEV=0 is hw:3,0, which that device already captures from' }),
+    want: 'Same hardware as "<redacted>": <device id> is hw:3,0, which that device already captures from',
+  },
+  {
+    what: "same hardware for a card-index id, whose address stays readable",
+    d: device({ name: "garden", device: "hw:1,0", state: "skipped", downCause: "same-hardware", error: 'Same hardware as "Other": hw:1,0 is hw:1,0, which that device already captures from' }),
+    want: 'Same hardware as "<redacted>": hw:1,0 is hw:1,0, which that device already captures from',
+  },
+  {
+    what: "a prefixed card-name id",
+    d: device({ name: "garden", device: "hw:2,0", state: "failed", downCause: "open-failed", error: "open capture: plughw:CARD=Secret,DEV=0: busy" }),
+    want: "open capture: plughw:CARD=<card>: busy",
+  },
+  {
+    what: "canonical card id spelled differently from the config",
+    d: device({ name: "garden", device: "hw:card=MyCard", state: "failed", downCause: "open-failed", error: "open capture: hw:CARD=MyCard,DEV=0: device busy" }),
+    want: "open capture: hw:CARD=<card>: device busy",
+  },
+  {
+    what: "kernel paths are kept for the diagnosis",
+    d: device({ name: "garden", device: "hw:1,0", state: "skipped", downCause: "open-failed", error: "Cannot resolve hw:1,0: read /proc/asound/cards: permission denied" }),
+    want: "Cannot resolve hw:1,0: read /proc/asound/cards: permission denied",
+  },
+];
+
+for (const c of realErrors) {
+  test(`supportDetails scrubs a real error: ${c.what}`, () => {
+    const got = supportDetails(null, null, [c.d]);
+    const state = got.split("\n").find((l) => l.startsWith("  State: "));
+    assert.equal(state, `  State: ${c.d.state} (${c.d.downCause}): ${c.want}`);
+  });
+}
+
+test("supportDetails never includes a USB serial, stream path, card name or device name", () => {
+  // Another device's name inside this device's error, and an unquoted name that
+  // is an ordinary word, which is left alone: names are removed only when
+  // quoted, as the appliance always quotes them.
+  const owner = device({ name: "Backyard Mic at Smiths", device: "usb:1235:8218:s=OWNSERIAL:if=0,0" });
+  const audio = device({ name: "audio", device: "hw:4,0", path: "/audio-path", state: "failed", downCause: "open-failed", error: "open capture: audio: device busy on /audio-path" });
+  const got = supportDetails(null, null, [usbMic, downCard, owner, audio, ...realErrors.map((c) => c.d)]);
+  for (const secret of ["SERIAL", "ABC123", "OTHERSERIAL", "s=S", "s=N", "s=O", "p=0000", "14.0-1", "TOKENPATH", "SECRETPATH", "SECRET2", "zz-garden", "aa-bats", "Smiths", "MyCard", "audio-path"]) {
+    assert.ok(!got.includes(secret), `details leak ${JSON.stringify(secret)}:\n${got}`);
+  }
+  assert.ok(got.includes("open capture: audio: device busy on <path>"), got);
+  // A configured path glued to a colon is not a token start for the path rule;
+  // the literal pass still catches it.
+  const glued = supportDetails(null, null, [device({ name: "g", path: "/glued-SECRET", state: "failed", error: "rtsp path:/glued-SECRET taken" })]);
+  assert.ok(!glued.includes("glued-SECRET"), glued);
+});
+
+// Hostile or unlucky values: every entry's secret must be gone from the output.
+const hostile: { what: string; devices: Device[]; secret: string; keep?: string }[] = [
+  {
+    what: "a second stream's path extending the first",
+    devices: [device({ name: "g", path: "/garden", state: "failed", error: "build sdp for /garden/night-SECRET: bad" })],
+    secret: "night-SECRET",
+    keep: "build sdp for <path>: bad",
+  },
+  {
+    what: "a path glued to a colon and one to a parenthesis",
+    devices: [device({ name: "g", state: "failed", error: "rtsp path:/glued-SECRET taken (/paren-SECRET)" })],
+    secret: "SECRET",
+    keep: "rtsp path:<path> taken (<path>)",
+  },
+  {
+    what: "another device's path in this device's error",
+    devices: [device({ name: "a", state: "failed", error: "path=/other-SECRET in use" }), device({ name: "b", path: "/other-SECRET" })],
+    secret: "other-SECRET",
+  },
+  {
+    what: "a path that starts like a kernel interface",
+    devices: [device({ name: "g", state: "failed", error: "build sdp for /production-SECRET: bad; /dev/garden-SECRET" })],
+    secret: "SECRET",
+  },
+  {
+    what: "a name with an escaped quote",
+    devices: [device({ name: "g", state: "skipped", error: 'Same hardware as "Bob \\"Smith\\" Jones": hw:3,0' })],
+    secret: "Smith",
+  },
+  {
+    what: "a name that looks like a placeholder",
+    devices: [device({ name: "g", state: "skipped", error: 'Same hardware as "<smith house>": hw:3,0' })],
+    secret: "smith",
+  },
+  {
+    what: "a quoted name holding a path",
+    devices: [device({ name: "g", state: "skipped", error: 'Same hardware as "Mic /garden SECRET": hw:3,0' })],
+    secret: "SECRET",
+  },
+  {
+    what: "upper-case id prefixes",
+    devices: [device({ name: "g", state: "failed", error: "open USB:1235:8218:s=UPSECRET and HW:card=CARDSECRET" })],
+    secret: "SECRET",
+  },
+];
+
+for (const c of hostile) {
+  test(`supportDetails scrubs ${c.what}`, () => {
+    const got = supportDetails(null, null, c.devices);
+    assert.ok(!got.includes(c.secret), got);
+    if (c.keep) assert.ok(got.includes(c.keep), got);
+  });
+}
+
+test("supportDetails keeps apostrophes inside words", () => {
+  const got = supportDetails(null, null, [device({ name: "g", state: "failed", error: "can't open usb:1235:8218:s=X, don't retry" })]);
+  assert.ok(got.includes("can't open usb:1235:8218, don't retry"), got);
+});
+
+test("supportDetails folds line separators and bidi controls into spaces", () => {
+  const got = supportDetails(null, null, [device({ name: "g", friendlyName: "Mic\r\u2028Device 9\u202Eforged", state: "failed", error: "a\u2029b" })]);
+  assert.ok(got.includes("Device 1: Mic Device 9 forged\n"), got);
+  assert.ok(got.includes(": a b"), got);
+});
+
+test("supportDetails redacts other quoting styles and keeps each device on its own lines", () => {
+  const d = device({
+    name: "x",
+    friendlyName: "Evil\nDevice 9: forged",
+    state: "failed",
+    error: "cannot open 'Backyard Mic at Smiths' or `Other Name`\nState: forged",
+  });
+  const got = supportDetails(null, null, [d]);
+  assert.ok(!got.includes("Smiths") && !got.includes("Other Name"), got);
+  assert.ok(got.includes("cannot open '<redacted>' or `<redacted>` State: forged"), got);
+  assert.ok(got.includes("Device 1: Evil Device 9: forged\n"), got);
+  assert.equal(got.split("\n").filter((l) => l.startsWith("Device ")).length, 1, got);
+});
+
+test("supportDetails leaves a serving device's stale error out and says 1 channel", () => {
+  const got = supportDetails(null, null, [device({ name: "x", error: "old failure", negotiatedRate: 48000, negotiatedChannels: 1 })]);
+  assert.ok(!got.includes("old failure"), got);
+  assert.ok(got.includes("  Negotiated: 48000 Hz, 1 channel\n"), got);
+});
+
+test("supportDetails shortens an ALSA long card name to its short name", () => {
+  const got = supportDetails(null, null, [device({ name: "x", friendlyName: "USB Audio CODEC at usb-0000:01:00.0-1.2, high speed" })]);
+  assert.ok(got.includes("Device 1: USB Audio CODEC\n"), got);
+});
+
+test("supportDetails reports an empty device list and omits the section when devices are unknown", () => {
+  const status = { version: "v0.3.0" } as ApplianceStatus;
+  assert.equal(supportDetails(status, null, []), "remote-mic version: v0.3.0\n\nCapture devices: none");
+  assert.equal(supportDetails(status, null), "remote-mic version: v0.3.0");
+});
+
+test("supportDetails classifies an id by its form when an older appliance omits idStable", () => {
+  const port = device({ name: "a", device: "usb:16D0:06F3:p=0000:00:14.0-3:if=0,0", overruns: undefined });
+  const odd = device({ name: "d", device: "usb:zzzz:8218" });
+  const got = supportDetails(null, null, [port, device({ name: "b" }), device({ name: "c", device: "hw:3" }), odd]);
+  assert.ok(/Device 1: .*\n  ID: USB 16d0:06f3, stable\n/.test(got), got);
+  assert.ok(/Device 2: .*\n  ID: ALSA card name, stable\n/.test(got), got);
+  assert.ok(/Device 3: .*\n  ID: card index, not stable/.test(got), got);
+  // Any usb: id is stable, as config.IsCardIndexID says, even one that does
+  // not parse into vendor:product.
+  assert.ok(/Device 4: .*\n  ID: ALSA card name, stable\n/.test(got), got);
+  assert.ok(/Overruns: not reported, dropped frames: 0/.test(got), got);
+  assert.ok(!got.includes("14.0-3"), "the USB port path leaked");
 });

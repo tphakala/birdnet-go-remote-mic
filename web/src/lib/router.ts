@@ -1,19 +1,4 @@
-export type ViewName = "dashboard" | "events" | "system" | "about";
-
-// isViewName narrows a hash fragment or a nav item's data-view to a route.
-export function isViewName(v: string | undefined): v is ViewName {
-  return v !== undefined && Object.hasOwn(VIEW_TITLES, v);
-}
-
-// The document title per route, so a browser tab, history entry and a screen
-// reader's page announcement all name the page being shown.
-const APP_TITLE = "BirdNET-Go Remote Mic";
-const VIEW_TITLES: Record<ViewName, string> = {
-  dashboard: "Dashboard",
-  events: "Events",
-  system: "System",
-  about: "About",
-};
+import { documentTitle, isViewName, type ViewName } from "./router-core.js";
 
 export class Router extends EventTarget {
   private currentView: ViewName = "dashboard";
@@ -59,7 +44,7 @@ export class Router extends EventTarget {
   }
 
   private updateDOM(activeView: ViewName): void {
-    const title = `${VIEW_TITLES[activeView]} - ${APP_TITLE}`;
+    const title = documentTitle(activeView);
     if (document.title !== title) document.title = title;
     // Hide all view containers and show the active one
     document.querySelectorAll<HTMLElement>(".view-container").forEach((el) => {

@@ -1,4 +1,5 @@
-import { isViewName, router } from "./lib/router.js";
+import { isViewName } from "./lib/router-core.js";
+import { router } from "./lib/router.js";
 import { store } from "./lib/store.js";
 import { DashboardView } from "./views/dashboard.js";
 import { SystemView } from "./views/system.js";
@@ -9,10 +10,10 @@ import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 import { needsNotificationsFallback } from "./lib/dashboard-core.js";
 import { initTheme, PREFERS_LIGHT_QUERY, type Theme, type ThemeMode } from "./lib/theme.js";
-import { prefSaveNotice } from "./lib/prefs.js";
+import { isLocalStorageEvent, prefSaveNotice } from "./lib/prefs.js";
 import { ERROR_TTL_MS, showToast } from "./components/toast.js";
-import { isLocalStorageEvent } from "./lib/ui.js";
 import { MenuButton } from "./components/menu-button.js";
+import { svgIcon } from "./lib/ui.js";
 import { AboutView } from "./views/about.js";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
@@ -26,9 +27,9 @@ const SAVE_FAILED_TOAST_MS = ERROR_TTL_MS;
 
 // Icons for the theme menu's items (static, trusted markup), matching the
 // header button's icons in index.html.
-const ICON_SYSTEM = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line></svg>`;
-const ICON_SUN = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
-const ICON_MOON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>`;
+const ICON_SYSTEM = svgIcon('<rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line>', 14);
+const ICON_SUN = svgIcon('<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>', 14);
+const ICON_MOON = svgIcon('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>', 14);
 
 const MODE_LABEL: Record<ThemeMode, string> = { system: "System", light: "Light", dark: "Dark" };
 
@@ -94,7 +95,7 @@ class App {
     } catch {
       /* matchMedia unavailable: no live follow */
     }
-    const btn = document.getElementById("theme-toggle-btn");
+    const btn = document.getElementById("theme-menu-btn");
     let menu: MenuButton | null = null;
     // The label spells out the mode and the theme it shows, and the title
     // repeats it word for word, so a screen reader does not read the tooltip
