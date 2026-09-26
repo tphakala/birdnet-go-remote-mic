@@ -5,7 +5,7 @@ import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, e
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
-import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, sentence, UpdateFollow, VersionWatch } from "../lib/update-core.js";
+import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, sentence, UpdateFollow, updateUnderway, VersionWatch } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -223,6 +223,9 @@ export class SystemView {
   private readonly versionWatch = new VersionWatch();
   private versionNoticeFor = "";
   private reloading = false;
+  // Set while the page was hidden during the install wait, until the next
+  // status read after it shows again.
+  private awaitFreshStatus = false;
 
   constructor() {
     this.tilesEl = document.getElementById("sys-tiles");
@@ -269,7 +272,7 @@ export class SystemView {
     });
     store.addEventListener("status", (e: Event) => {
       this.status = (e as CustomEvent<ApplianceStatus>).detail;
-      this.watchVersion(this.status.version);
+      this.watchVersion(this.status.version, this.status.uptimeSeconds);
       this.renderTiles();
       this.renderInfo();
       this.renderOverrides();
@@ -1124,7 +1127,7 @@ export class SystemView {
     const apply = this.updateApplyBtn;
     if (apply) {
       setHidden(apply, view.applyVersion === "" && !view.busy);
-      if (view.busy) setBusy(apply, u.phase === "installing" ? "Installing..." : "Downloading...");
+      if (view.busy) setBusy(apply, u.phase === "installing" ? "Installing..." : u.phase === "downloading" ? "Downloading..." : "Updating...");
       else if (!this.updateApplying && view.applyVersion) clearBusy(apply, `Update to ${view.applyVersion}`);
     }
     this.followStatus(u);
@@ -1167,7 +1170,8 @@ export class SystemView {
   // followStatus feeds each status to the update this tab follows. The store
   // drops reads started before the request, so every status here is current.
   private followStatus(u: UpdateStatus): void {
-    const step = this.follow?.status(u, Date.now());
+    this.awaitFreshStatus = false;
+    const step = this.follow?.status(u);
     if (step === "show") this.showInstallModal(u.latestVersion ?? "the update");
     else if (step === "end") this.endFollow(u);
   }
@@ -1181,10 +1185,20 @@ export class SystemView {
   // A restart holding the modal leaves the follow without one; the version
   // watch still reloads the page.
   private showInstallModal(target: string): void {
+    if (this.updateModal) return;
     this.updateModal = showUpdateModal(target);
     if (!this.updateModal) return;
     const shownAt = Date.now();
+    this.follow?.shown(shownAt);
     this.followTimer = setInterval(() => {
+      // A hidden page's timers are throttled and its polling paused, so a
+      // deadline read there says nothing about the install; nor does one read
+      // on its return before a fresh status has come in.
+      if (document.hidden) {
+        this.awaitFreshStatus = true;
+        return;
+      }
+      if (this.awaitFreshStatus) return;
       const now = Date.now();
       this.updateModal?.elapsed(now - shownAt);
       if (this.follow?.tick(now) === "timeout") {
@@ -1204,11 +1218,12 @@ export class SystemView {
   // notice says why.
   private endFollow(u: UpdateStatus): void {
     const hadModal = this.updateModal !== null;
+    const reachedInstall = this.follow?.reachedInstall ?? false;
     this.stopFollowTimer();
     this.updateModal?.hide();
     this.updateModal = null;
     this.follow = null;
-    const { text, tone } = followEndText(u);
+    const { text, tone } = followEndText(u, reachedInstall);
     showToast(text, tone);
     if (hadModal) {
       const apply = this.updateApplyBtn;
@@ -1217,17 +1232,28 @@ export class SystemView {
   }
 
   // watchVersion notices the appliance running another version than this page
-  // loaded against. A tab following its own update reloads once the new version
-  // is confirmed; any other tab (or one whose follow already ended) is told to
-  // reload, never reloaded under unsaved input.
-  private watchVersion(version: string): void {
-    // Only a version read twice in a row counts: one that answers once and is
-    // then rolled back reloads nothing and announces nothing.
-    if (this.versionWatch.seen(version) !== "confirmed") return;
+  // loaded against. A tab following its own update shows the wait as soon as
+  // the new version answers and reloads once it has settled; any other tab (or
+  // one whose follow already ended) is told to reload once it has settled,
+  // never reloaded under unsaved input.
+  private watchVersion(version: string, uptimeSeconds: number): void {
+    // Only a version that has settled counts: one the updater rolls back
+    // reloads nothing and announces nothing.
+    const change = this.versionWatch.seen(version, uptimeSeconds);
+    if (change === "same") return;
     if (this.follow) {
-      this.reloadOntoNewVersion(version);
+      // The new version answers but has not settled: show the wait, so the
+      // page is not used in the seconds before it reloads.
+      if (change === "changed") {
+        // The install was reached even if its short phase was never read.
+        this.follow.installReached();
+        this.showInstallModal(version);
+      } else {
+        this.reloadOntoNewVersion(version);
+      }
       return;
     }
+    if (change !== "confirmed") return;
     if (version === this.versionNoticeFor) return;
     this.versionNoticeFor = version;
     showToast(`The appliance now runs ${version}. Reload this page to use its web UI.`, "warn", VERSION_NOTICE_MS);
@@ -1260,6 +1286,11 @@ export class SystemView {
     try {
       const res = await api.patchConfig({ updates: { check: want } });
       store.applyConfig(res.config);
+      // The appliance applied the change before answering. Record it in the
+      // update state too, which drops system reads started before it, so
+      // neither such a read nor a failed refresh flips the switch back.
+      const cur = store.getState().system?.update;
+      if (cur) store.applyUpdateStatus({ ...cur, checkEnabled: want });
       showToast(want ? "Daily update check turned on." : "Daily update check turned off.");
     } catch (err: unknown) {
       input.checked = !want;
@@ -1307,16 +1338,18 @@ export class SystemView {
     setBusy(btn, "Starting...");
     try {
       const status = await api.startUpdate();
-      this.startFollow(u.currentVersion);
+      // Follow from the version the answer reports, not the one read before
+      // the confirm: another tab's update may have landed in between.
+      this.startFollow(status.currentVersion);
       store.applyUpdateStatus(status);
     } catch (err: unknown) {
       // The request may have reached the appliance with only the answer lost,
       // or another tab may have started an update: read the state again and
       // follow an update that is under way.
       const now = (await store.refreshSystem()) ? this.system?.update : undefined;
-      if (now && (now.phase === "downloading" || now.phase === "installing")) {
+      if (now && updateUnderway(now.phase)) {
         showToast("An update is already under way; following it here.", "warn");
-        this.startFollow(u.currentVersion);
+        this.startFollow(now.currentVersion);
         this.followStatus(now);
       } else {
         showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");

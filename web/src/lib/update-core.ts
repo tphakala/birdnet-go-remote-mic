@@ -83,9 +83,7 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     view.detail = `This build (${u.currentVersion || "unknown"}) names no release, so it never checks for updates.`;
     return view;
   }
-  // Anything but idle or failed is an update under way, a phase a later
-  // appliance adds included: the server refuses a second one while it runs.
-  if (u.phase !== "idle" && u.phase !== "failed") {
+  if (updateUnderway(u.phase)) {
     const target = latest || "the update";
     view.busy = true;
     view.canCheck = false;
@@ -177,41 +175,52 @@ export function lastCheckText(lastCheck: string | undefined, nowMs: number, rela
 // longer.
 export const INSTALL_WAIT_TIMEOUT_MS = 6 * 60_000;
 
+// VERSION_SETTLE_S is how long a new version must have been up before a page
+// reloads onto it. The root updater confirms a new version only after it has
+// stayed up for its settle period (DefaultHealthSettle, 10 s in
+// internal/update/apply.go), which starts once the new process writes its
+// health file after its devices open; this allows up to about 9 s for that.
+// A version that dies within the settle is rolled back and never reloaded
+// onto. A startup slower than that could see a page reload onto a version
+// that is then rolled back; the page then says the appliance runs the old one
+// again. Only the updater knows exactly; a status field for its confirmation
+// would replace this margin.
+export const VERSION_SETTLE_S = 20;
+
 // VersionChange is what a status read says about the running version: the one
-// this page was loaded against, another one read once, or another one read on
-// two reads in a row.
+// this page was loaded against, another one not yet settled, or another one
+// that has been up for VERSION_SETTLE_S.
 export type VersionChange = "same" | "changed" | "confirmed";
 
 // VersionWatch notices the appliance running another version than the one this
 // page's scripts came from: after an update, from any tab, or after a rollback.
 // The first version read is taken as the page's own, and a tab starting an
-// update rebases on the version it updates from. A tab following its own update
-// reloads once the new version is confirmed (read twice in a row, so a process
-// that answers once and is then rolled back or dies does not strand the page on
-// a reload that fails); any other tab only offers the reload, since it may hold
-// unsaved input.
+// update rebases on the version it updates from. The view acts on it: a tab
+// following its own update reloads on a confirmed version, any other tab only
+// offers the reload, since it may hold unsaved input. It keeps no count: a
+// version's own uptime says whether it has settled.
 export class VersionWatch {
   private base: string | null = null;
-  private streak = 0;
 
-  // rebase makes version the page's own, forgetting any change read so far: a
-  // tab that updates from a version it was told about must not take that
-  // version for its update landing.
+  // rebase makes version the page's own: a tab that updates from a version it
+  // was told about must not take that version for its update landing.
   rebase(version: string): void {
     this.base = version;
-    this.streak = 0;
   }
 
-  seen(version: string | undefined): VersionChange {
+  seen(version: string | undefined, uptimeSeconds: number | undefined): VersionChange {
     if (!version) return "same";
     if (this.base === null) this.base = version;
-    if (version === this.base) {
-      this.streak = 0;
-      return "same";
-    }
-    this.streak += 1;
-    return this.streak >= 2 ? "confirmed" : "changed";
+    if (version === this.base) return "same";
+    return (uptimeSeconds ?? 0) >= VERSION_SETTLE_S ? "confirmed" : "changed";
   }
+}
+
+// updateUnderway reports an update in progress: any phase but idle or failed,
+// a phase a later appliance adds included, since the server refuses a second
+// update while one runs.
+export function updateUnderway(phase: string): boolean {
+  return phase !== "idle" && phase !== "failed";
 }
 
 // FollowStep is what the card does with a status while following its update:
@@ -226,17 +235,20 @@ export type FollowStep = "none" | "show" | "end" | "timeout";
 // from means the attempt ended without a restart. A status on another version
 // is left to VersionWatch, which reloads the page.
 export class UpdateFollow {
-  private shown = false;
+  private modalShown = false;
   private ended = false;
+  private installSeen = false;
   private deadline = 0;
 
   constructor(private readonly fromVersion: string) {}
 
-  get isShown(): boolean {
-    return this.shown && !this.ended;
+  // reachedInstall reports whether the root updater was seen with the release,
+  // after which turning checks off no longer stops the update.
+  get reachedInstall(): boolean {
+    return this.installSeen;
   }
 
-  status(u: UpdateStatus, nowMs: number): FollowStep {
+  status(u: UpdateStatus): FollowStep {
     if (this.ended || u.currentVersion !== this.fromVersion) return "none";
     switch (u.phase) {
       case "idle":
@@ -244,32 +256,48 @@ export class UpdateFollow {
         this.ended = true;
         return "end";
       case "installing":
-        if (this.shown) return "none";
-        this.shown = true;
-        this.deadline = nowMs + INSTALL_WAIT_TIMEOUT_MS;
-        return "show";
+        this.installSeen = true;
+        // Asked again on every installing read until the view has a modal: a
+        // restart can hold it for a while.
+        return this.modalShown ? "none" : "show";
       default:
         // downloading, or a phase a later appliance adds: still under way.
         return "none";
     }
   }
 
+  // installReached records the install as reached when the new version is
+  // seen answering, for a follow that never read the short installing phase.
+  installReached(): void {
+    this.installSeen = true;
+  }
+
+  // shown records that the view now shows the modal, which starts the install
+  // deadline.
+  shown(nowMs: number): void {
+    if (this.modalShown) return;
+    this.modalShown = true;
+    this.deadline = nowMs + INSTALL_WAIT_TIMEOUT_MS;
+  }
+
   // tick reports the install as overdue, once, when the deadline passes while
   // the modal shows.
   tick(nowMs: number): FollowStep {
-    if (!this.shown || this.ended || nowMs < this.deadline) return "none";
+    if (!this.modalShown || this.ended || nowMs < this.deadline) return "none";
     this.ended = true;
     return "timeout";
   }
 }
 
-// followEndText says why a follow ended without a restart, from the status
-// alone: a failure carries its reason (as a sentence), checks turned off (here or in another
-// tab) stop a download, and anything else is left to the notifications.
-export function followEndText(u: UpdateStatus): { text: string; tone: "warn" | "error" } {
+// followEndText says why a follow ended without a restart, from the status and
+// whether the install was reached: a failure carries its reason (as a
+// sentence); checks turned off (here or in another tab) stop a download but
+// not an install already handed over; anything else ended before installing
+// (a restart during the download, say), which not every path notifies about.
+export function followEndText(u: UpdateStatus, reachedInstall: boolean): { text: string; tone: "warn" | "error" } {
   if (u.phase === "failed") return { text: `Update failed: ${sentence(u.phaseMessage) || "The attempt did not finish."}`, tone: "error" };
-  if (!u.checkEnabled) return { text: "The update stopped because update checks were turned off.", tone: "warn" };
-  return { text: `The update did not install; still running ${u.currentVersion}. The notifications say why.`, tone: "warn" };
+  if (!u.checkEnabled && !reachedInstall) return { text: "The update stopped because update checks were turned off.", tone: "warn" };
+  return { text: `The update did not install; still running ${u.currentVersion}.`, tone: "warn" };
 }
 
 // formatElapsed renders a wait as m:ss.

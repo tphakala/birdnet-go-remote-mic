@@ -160,13 +160,13 @@ export function showUpdateModal(target: string): UpdateModal | null {
   const oldText = textEl ? Array.from(textEl.childNodes) : [];
   if (titleEl) titleEl.textContent = "Installing Update";
   if (textEl) {
-    textEl.textContent = `Installing ${target}. The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start. This page reloads once the new version answers.`;
+    textEl.textContent = `Installing ${target}. The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start. This page reloads once the new version is up.`;
   }
   modal.classList.add("open");
   setAppInert(true);
   const release = trapFocus(modal);
   modal.querySelector<HTMLElement>(".modal-card")?.focus();
-  say(`Installing ${target}. This page reloads when the new version answers.`);
+  say(`Installing ${target}. This page reloads when the new version is up.`);
   if (timerEl) timerEl.textContent = `Installing (${formatElapsed(0)})`;
 
   let settled = false;

@@ -14,6 +14,8 @@ import {
   safeNotesUrl,
   sentence,
   UpdateFollow,
+  updateUnderway,
+  VERSION_SETTLE_S,
   VersionWatch,
 } from "../src/lib/update-core.js";
 import type { UpdatePhase, UpdateStatus } from "../src/lib/types.js";
@@ -198,93 +200,114 @@ test("formatElapsed", () => {
 
 test("VersionWatch takes the first version as the page's own", () => {
   const w = new VersionWatch();
-  assert.equal(w.seen("v0.2.0"), "same");
-  assert.equal(w.seen("v0.2.0"), "same");
-  assert.equal(w.seen(undefined), "same");
-  assert.equal(w.seen(""), "same");
+  assert.equal(w.seen("v0.2.0", 100), "same");
+  assert.equal(w.seen("v0.2.0", 5), "same");
+  assert.equal(w.seen(undefined, 100), "same");
+  assert.equal(w.seen("", 100), "same");
 });
 
-test("VersionWatch confirms a new version on the second read in a row", () => {
+test("VersionWatch waits for a new version to settle before confirming it", () => {
   const w = new VersionWatch();
-  w.seen("v0.2.0");
-  assert.equal(w.seen("v0.3.0"), "changed");
-  assert.equal(w.seen("v0.3.0"), "confirmed");
-  assert.equal(w.seen("v0.3.0"), "confirmed");
+  w.seen("v0.2.0", 100);
+  assert.equal(w.seen("v0.3.0", 2), "changed");
+  assert.equal(w.seen("v0.3.0", VERSION_SETTLE_S - 1), "changed");
+  assert.equal(w.seen("v0.3.0", VERSION_SETTLE_S), "confirmed");
+  assert.equal(w.seen("v0.3.0", undefined), "changed", "no uptime is not settled");
 });
 
-test("VersionWatch starts over when the page's own version answers again (a rollback)", () => {
+test("VersionWatch reads the page's own version again as same (a rollback)", () => {
   const w = new VersionWatch();
-  w.seen("v0.2.0");
-  assert.equal(w.seen("v0.3.0"), "changed");
-  assert.equal(w.seen("v0.2.0"), "same");
-  assert.equal(w.seen("v0.3.0"), "changed");
+  w.seen("v0.2.0", 100);
+  assert.equal(w.seen("v0.3.0", 3), "changed");
+  assert.equal(w.seen("v0.2.0", 1), "same");
 });
 
-test("VersionWatch rebase forgets a change read before an update starts", () => {
+test("VersionWatch rebase makes the version updated from the page's own", () => {
   // A tab loaded on v0.2.0 was told about v0.3.0, then updates from v0.3.0.
   const w = new VersionWatch();
-  w.seen("v0.2.0");
-  w.seen("v0.3.0");
-  assert.equal(w.seen("v0.3.0"), "confirmed");
+  w.seen("v0.2.0", 100);
+  assert.equal(w.seen("v0.3.0", 100), "confirmed");
   w.rebase("v0.3.0");
-  assert.equal(w.seen("v0.3.0"), "same", "the version updated from is not the update landing");
-  assert.equal(w.seen("v0.4.0"), "changed");
-  assert.equal(w.seen("v0.4.0"), "confirmed");
-  // A rebase starts the count again, even straight into another version.
-  w.rebase("v0.3.0");
-  assert.equal(w.seen("v0.4.0"), "changed");
+  assert.equal(w.seen("v0.3.0", 100), "same", "the version updated from is not the update landing");
+  assert.equal(w.seen("v0.4.0", 100), "confirmed");
+});
+
+test("updateUnderway is anything but idle or failed", () => {
+  assert.equal(updateUnderway("downloading"), true);
+  assert.equal(updateUnderway("installing"), true);
+  assert.equal(updateUnderway("verifying"), true);
+  assert.equal(updateUnderway("idle"), false);
+  assert.equal(updateUnderway("failed"), false);
 });
 
 test("UpdateFollow keeps following while downloading or in an unknown phase", () => {
   const f = new UpdateFollow("v0.2.0");
-  assert.equal(f.status(status({ phase: "downloading" }), 0), "none");
-  assert.equal(f.status(status({ phase: "verifying" as UpdatePhase }), 0), "none");
-  assert.equal(f.isShown, false);
+  assert.equal(f.status(status({ phase: "downloading" })), "none");
+  assert.equal(f.status(status({ phase: "verifying" as UpdatePhase })), "none");
+  assert.equal(f.reachedInstall, false);
   assert.equal(f.tick(INSTALL_WAIT_TIMEOUT_MS * 10), "none", "no deadline before the modal shows");
 });
 
-test("UpdateFollow shows the modal when installing is first seen", () => {
+test("UpdateFollow asks for the modal until one is shown", () => {
   const f = new UpdateFollow("v0.2.0");
-  assert.equal(f.status(status({ phase: "installing" }), 1000), "show");
-  assert.equal(f.isShown, true);
-  assert.equal(f.status(status({ phase: "installing" }), 5000), "none", "shown once");
+  assert.equal(f.status(status({ phase: "installing" })), "show");
+  assert.equal(f.reachedInstall, true);
+  // A restart held the modal: the next installing read asks again.
+  assert.equal(f.status(status({ phase: "installing" })), "show");
+  f.shown(1000);
+  assert.equal(f.status(status({ phase: "installing" })), "none");
+});
+
+test("UpdateFollow counts the install as reached once the new version is seen", () => {
+  const f = new UpdateFollow("v0.2.0");
+  assert.equal(f.reachedInstall, false);
+  f.installReached();
+  assert.equal(f.reachedInstall, true);
 });
 
 test("UpdateFollow ends on idle or failed on the version it started from", () => {
   for (const phase of ["idle", "failed"] as const) {
     const f = new UpdateFollow("v0.2.0");
-    f.status(status({ phase: "installing" }), 0);
-    assert.equal(f.status(status({ phase }), 1000), "end", phase);
-    assert.equal(f.isShown, false, phase);
+    f.status(status({ phase: "installing" }));
+    f.shown(0);
+    assert.equal(f.status(status({ phase })), "end", phase);
   }
 });
 
 test("UpdateFollow ignores a status from another version", () => {
   const f = new UpdateFollow("v0.2.0");
   // The restarted appliance starts idle; that is VersionWatch's to handle.
-  assert.equal(f.status(status({ currentVersion: "v0.3.0", phase: "idle" }), 0), "none");
-  assert.equal(f.status(status({ phase: "installing" }), 0), "show", "still following");
+  assert.equal(f.status(status({ currentVersion: "v0.3.0", phase: "idle" })), "none");
+  assert.equal(f.status(status({ phase: "installing" })), "show", "still following");
 });
 
 test("UpdateFollow ignores statuses after it ended", () => {
   const f = new UpdateFollow("v0.2.0");
-  assert.equal(f.status(status({ phase: "failed" }), 0), "end");
-  assert.equal(f.status(status({ phase: "installing" }), 0), "none");
-  assert.equal(f.status(status({ phase: "idle" }), 0), "none");
+  assert.equal(f.status(status({ phase: "failed" })), "end");
+  assert.equal(f.status(status({ phase: "installing" })), "none");
+  assert.equal(f.status(status({ phase: "idle" })), "none");
 });
 
 test("UpdateFollow times out once, only after showing, at the install deadline", () => {
   const f = new UpdateFollow("v0.2.0");
-  f.status(status({ phase: "installing" }), 1000);
+  f.status(status({ phase: "installing" }));
+  assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS), "none", "no deadline until shown");
+  f.shown(1000);
+  f.shown(5000);
   assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS - 1), "none");
-  assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS), "timeout");
+  assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS), "timeout", "the deadline runs from the first shown");
   assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS + 1), "none");
-  assert.equal(f.status(status({ phase: "idle" }), 0), "none", "a timed-out follow has ended");
+  assert.equal(f.status(status({ phase: "idle" })), "none", "a timed-out follow has ended");
 });
 
-test("followEndText says why from the status", () => {
-  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" })), { text: "Update failed: Signature.", tone: "error" });
-  assert.equal(followEndText(status({ phase: "failed" })).text, "Update failed: The attempt did not finish.");
-  assert.deepEqual(followEndText(status({ phase: "idle", checkEnabled: false })), { text: "The update stopped because update checks were turned off.", tone: "warn" });
-  assert.equal(followEndText(status({ phase: "idle" })).text, "The update did not install; still running v0.2.0. The notifications say why.");
+test("followEndText says why from the status and the stage reached", () => {
+  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" }), false), { text: "Update failed: Signature.", tone: "error" });
+  assert.equal(followEndText(status({ phase: "failed" }), true).text, "Update failed: The attempt did not finish.");
+  // A failure outranks checks being off.
+  assert.equal(followEndText(status({ phase: "failed", checkEnabled: false, phaseMessage: "x" }), false).tone, "error");
+  assert.deepEqual(followEndText(status({ phase: "idle", checkEnabled: false }), false), { text: "The update stopped because update checks were turned off.", tone: "warn" });
+  // An install already handed over is not stopped by turning checks off.
+  assert.equal(followEndText(status({ phase: "idle", checkEnabled: false }), true).text, "The update did not install; still running v0.2.0.");
+  assert.equal(followEndText(status({ phase: "idle" }), false).text, "The update did not install; still running v0.2.0.");
 });
+
