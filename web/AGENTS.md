@@ -5,7 +5,8 @@ Frontend guidance for AI coding agents. The root `AGENTS.md` still applies
 
 The UI is deliberately framework-free. Do NOT introduce React, Svelte, Vue,
 Lit, a virtual DOM, a bundler, a CSS framework, or any npm runtime dependency.
-The output must stay plain ES modules that `tsc` emits and Go embeds
+The output must stay plain ES modules (plus the one classic script,
+`theme-init.js`) that `tsc` emits and Go embeds
 (`embed.go`; `embed_skipfrontend.go` is the stub for `-tags skipfrontend`).
 
 ## Toolchain and modules
@@ -22,7 +23,8 @@ The output must stay plain ES modules that `tsc` emits and Go embeds
   bundler, and the browser loads the emitted files as is, so an extensionless
   import breaks at runtime.
 - `static/index.html` is the one page: header, nav, one `.view-container` per
-  view, toast regions, and live regions. It loads `app.js` as a module.
+  view, toast regions, and live regions. It loads `app.js` as a module, and
+  `theme-init.js` as a blocking classic script in `<head>`.
   `static/styles.css` is the one stylesheet. Fonts (Inter, JetBrains Mono) are
   self-hosted woff2 in `static/fonts`; icons are inline SVG. Never load
   anything from a CDN: the appliance often runs on a LAN with no internet.
@@ -31,6 +33,8 @@ The output must stay plain ES modules that `tsc` emits and Go embeds
 
 - `src/app.ts`: bootstrap only (theme, nav, views, notification center,
   `store.start()`).
+- `src/theme-init.ts`: the one non-module script; applies the theme before
+  the first paint (see Styling).
 - `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the REST client;
   raises `ApiError` from RFC 9457 problem bodies, handles the Bearer token and
   401; the one deliberate bypass is the restart modal's raw
@@ -152,8 +156,10 @@ reconcile:
   fails contrast, fix the token.
 - Theme is the `data-theme` attribute on `<html>`, persisted per browser.
   `src/theme-init.ts` is a classic (non-module) script loaded in `<head>`
-  that applies it before the first paint (a first visit follows
-  `prefers-color-scheme`); keep it import-free and non-throwing.
+  that applies it before the first paint: the saved choice, else
+  `prefers-color-scheme`, else dark when storage or `matchMedia` throws. Keep
+  it import-free and non-throwing; `test/theme-init.test.ts` runs it as a
+  classic script and pins its `<head>` tag and its key against `THEME_KEY`.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.

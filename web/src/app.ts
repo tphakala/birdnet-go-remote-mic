@@ -56,13 +56,13 @@ class App {
     });
   }
 
-  // theme-init.js already applied the saved (or OS-preferred) theme before the
+  // theme-init.ts already applied the saved (or OS-preferred) theme before the
   // first paint, so initTheme adopts the attribute rather than reading storage
-  // a second time. initTheme runs first in init, so a storage write that throws
-  // (a private window, site data blocked) would abort the whole app before any
-  // view exists; it falls back to a toggle that works but does not persist.
+  // a second time. The toggle's save is wrapped so a storage-blocked browser (a
+  // private window, site data blocked) still switches the theme, just without
+  // persisting it.
   private initTheme(): void {
-    const savedTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    const initialTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
     const themeToggleBtn = document.getElementById("theme-toggle-btn");
     // applyTheme is the one place the theme changes, so the toggle's pressed
     // state (labelled "Dark theme": pressed means dark) never drifts from it.
@@ -74,7 +74,7 @@ class App {
       themeToggleBtn?.setAttribute("aria-pressed", String(dark));
       if (themeToggleBtn) themeToggleBtn.title = dark ? "Dark theme (on)" : "Dark theme (off)";
     };
-    applyTheme(savedTheme);
+    applyTheme(initialTheme);
 
     if (themeToggleBtn) {
       themeToggleBtn.addEventListener("click", () => {
