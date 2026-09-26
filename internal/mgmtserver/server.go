@@ -424,29 +424,17 @@ func mapMode(m config.Mode) mgmtapi.StreamMode {
 	return mgmtapi.Pcm
 }
 
-// flatStream is a device's first stream in the flat path/mode/channels/opus
-// form the wire Device and DeviceConfig both carry, so a client that predates
-// fan-out still reads a usable single-stream device. Every builder of those
-// types derives it here, so a new flat field cannot reach one and miss another.
-type flatStream struct {
-	path     string
-	mode     mgmtapi.StreamMode
-	channels []int
-	opus     *mgmtapi.OpusSettings
-}
-
-// firstStream projects d's first stream, or reports false for a device with no
-// streams.
-func firstStream(d *config.Device) (flatStream, bool) {
+// firstStream maps d's first stream exactly as the streams array carries it,
+// for the flat path/mode/channels/opus fields the wire Device and DeviceConfig
+// keep so a client that predates fan-out still reads a usable single-stream
+// device; it reports false for a device with no streams. Deriving the flat
+// fields from streamConfigToWire keeps them from drifting from the per-stream
+// mapping.
+func firstStream(d *config.Device) (mgmtapi.StreamConfig, bool) {
 	if len(d.Streams) == 0 {
-		return flatStream{}, false
+		return mgmtapi.StreamConfig{}, false
 	}
-	s0 := &d.Streams[0]
-	flat := flatStream{path: s0.Path, mode: mapMode(s0.Mode), channels: s0.Channels}
-	if s0.Mode == config.ModeOpus {
-		flat.opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
-	}
-	return flat, true
+	return streamConfigToWire(&d.Streams[0]), true
 }
 
 // projectFirstStream fills a wire Device's flat single-stream fields from cfg's
@@ -456,7 +444,7 @@ func projectFirstStream(out *mgmtapi.Device, cfg *config.Device) {
 	if !ok {
 		return
 	}
-	out.Path, out.Mode, out.Channels, out.Opus = flat.path, flat.mode, flat.channels, flat.opus
+	out.Path, out.Mode, out.Channels, out.Opus = flat.Path, flat.Mode, flat.Channels, flat.Opus
 	out.StreamedChannels = ptr(cfg.StreamChannelUnion())
 }
 

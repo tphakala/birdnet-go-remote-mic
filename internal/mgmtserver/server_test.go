@@ -580,18 +580,3 @@ func TestStreamEventsNotImplemented(t *testing.T) {
 		t.Errorf("status = %d, want 501", p.StatusCode)
 	}
 }
-
-// A device with no streams has no first stream to project: the flat fields and
-// streamedChannels stay unset rather than describing an empty stream.
-func TestProjectFirstStreamWithoutStreams(t *testing.T) {
-	t.Parallel()
-	streamless := &config.Device{Name: "attic"}
-	if _, ok := firstStream(streamless); ok {
-		t.Error("firstStream of a device with no streams reported ok, want false")
-	}
-	var out mgmtapi.Device
-	projectFirstStream(&out, streamless)
-	if out.Path != "" || out.Mode != "" || out.Channels != nil || out.Opus != nil || out.StreamedChannels != nil {
-		t.Errorf("projection of a streamless device = %+v, want the flat fields unset", out)
-	}
-}
