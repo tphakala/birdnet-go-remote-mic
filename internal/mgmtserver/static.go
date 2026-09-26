@@ -35,10 +35,11 @@ func WithStaticAssets(staticFS fs.FS) Option {
 // does not pay for the encoding header and the CPU.
 const gzipMinSize = 1024
 
-// staticAsset is a fully-precomputed embedded file: its bytes, its content-addressed
-// ETag, and its content type, all derived once at construction. The embedded assets
-// are immutable for the life of the process, so nothing here is recomputed per request.
-// gz is the gzip encoding of a compressible asset, nil for one that is not.
+// staticAsset is a precomputed embedded file: its bytes, its content-addressed
+// ETag, and its content type, derived once at construction. The embedded assets
+// are immutable for the life of the process, so none of this is recomputed per
+// request. gz is the gzip encoding of a compressible asset (nil for one that is
+// not), made on the first request that accepts it rather than at construction.
 type staticAsset struct {
 	data        []byte
 	etag        string
@@ -55,28 +56,48 @@ type gzipped struct {
 	etag string
 }
 
-// get returns the encoding of a and its ETag, compressing on the first call,
-// or nil when the encoding is no smaller.
-func (g *gzipped) get(a *staticAsset) (data []byte, etag string) {
+// get returns the encoding of a and its ETag, compressing with c on the first
+// call, or nil when the encoding is no smaller.
+func (g *gzipped) get(a *staticAsset, c *compressor) (data []byte, etag string) {
 	g.once.Do(func() {
-		var buf bytes.Buffer
-		// Only an invalid level fails, and BestCompression is valid; writes
-		// into a bytes.Buffer do not fail either.
-		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-		_, _ = zw.Write(a.data)
-		if zw.Close() != nil || buf.Len() >= len(a.data) {
-			return
+		if gz := c.compress(a.data); gz != nil {
+			g.data = gz
+			// A different representation needs a different validator.
+			g.etag = strings.TrimSuffix(a.etag, `"`) + `-gz"`
 		}
-		g.data = buf.Bytes()
-		// A different representation needs a different validator.
-		g.etag = strings.TrimSuffix(a.etag, `"`) + `-gz"`
 	})
 	return g.data, g.etag
 }
 
+// compressor gzips assets one at a time. A first page load asks for dozens of
+// assets at once, and a flate writer allocates about a megabyte of tables, so
+// compressing them side by side would spike the heap on a Pi; one at a time,
+// each writer is garbage before the next is made, and nothing is kept once the
+// UI goes quiet. The default level is used: the best level costs twice the CPU
+// for a few percent.
+type compressor struct {
+	mu sync.Mutex
+}
+
+// compress returns data gzipped, or nil when that is no smaller.
+func (c *compressor) compress(data []byte) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var buf bytes.Buffer
+	// Only an invalid level fails, and DefaultCompression is valid; writes
+	// into a bytes.Buffer do not fail either.
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.DefaultCompression)
+	_, _ = zw.Write(data)
+	if zw.Close() != nil || buf.Len() >= len(data) {
+		return nil
+	}
+	// A copy at its own length: the buffer grew in steps and is spare beyond it.
+	return bytes.Clone(buf.Bytes())
+}
+
 // compressible reports whether an asset of this type and size is worth
-// gzipping: text, scripts, JSON and SVG. Fonts and images are compressed
-// already. An asset with no known type is left alone, since ServeContent
+// gzipping: text, scripts, JSON and +xml types such as SVG. Fonts (woff2)
+// and raster images are compressed already. An asset with no known type is left alone, since ServeContent
 // would sniff its type from the compressed bytes.
 func compressible(contentType string, size int) bool {
 	if size < gzipMinSize || contentType == "" {
@@ -88,12 +109,14 @@ func compressible(contentType string, size int) bool {
 }
 
 // staticHandler serves the embedded web UI with SPA fallback (serving index.html
-// for unknown navigation paths) and security headers. All assets are precomputed
-// into assets at construction; ServeHTTP never re-reads or re-hashes the FS.
+// for unknown navigation paths) and security headers. All assets are read and
+// hashed into assets at construction; ServeHTTP never re-reads or re-hashes the
+// FS, and only a compressible asset's first gzip request does any encoding.
 type staticHandler struct {
 	assets  map[string]*staticAsset
 	index   *staticAsset
 	modTime time.Time
+	gz      compressor
 }
 
 func newStaticHandler(staticFS fs.FS) http.Handler {
@@ -139,8 +162,8 @@ func newStaticHandler(staticFS fs.FS) http.Handler {
 }
 
 // serve writes asset a, gzipped when it is compressible and the request
-// accepts that (acceptsGzip in gzip.go). Vary tells a cache the body depends
-// on Accept-Encoding.
+// accepts that (acceptsGzip in gzip.go), leaving the length of a gzipped body
+// to net/http. Vary tells a cache the body depends on Accept-Encoding.
 func (sh *staticHandler) serve(w http.ResponseWriter, r *http.Request, name string, a *staticAsset) {
 	if a.contentType != "" {
 		w.Header().Set("Content-Type", a.contentType)
@@ -149,9 +172,13 @@ func (sh *staticHandler) serve(w http.ResponseWriter, r *http.Request, name stri
 	if a.gz != nil {
 		w.Header().Add("Vary", "Accept-Encoding")
 		if acceptsGzip(r.Header.Get("Accept-Encoding")) {
-			if gz, gzETag := a.gz.get(a); gz != nil {
+			if gz, gzETag := a.gz.get(a, &sh.gz); gz != nil {
 				body, etag = gz, gzETag
 				w.Header().Set("Content-Encoding", "gzip")
+				// No Content-Length: ServeContent leaves it out when a
+				// Content-Encoding is set, and setting it here would also go out
+				// on a 412, which carries no body. net/http sizes a small body
+				// itself and chunks a larger one.
 			}
 		}
 	}

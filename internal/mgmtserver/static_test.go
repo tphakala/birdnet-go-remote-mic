@@ -7,13 +7,17 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
 
 const (
-	testStylesPath = "/styles.css"
+	testStylesPath    = "/styles.css"
+	hdrAcceptEncoding = "Accept-Encoding"
+	typeJSON          = "application/json"
 )
 
 func TestStaticHandlerServesFilesAndFallback(t *testing.T) {
@@ -243,7 +247,7 @@ func gzipGetStatic(t *testing.T, h http.Handler, path, accept, ifNoneMatch strin
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, http.NoBody)
 	if accept != "" {
-		req.Header.Set("Accept-Encoding", accept)
+		req.Header.Set(hdrAcceptEncoding, accept)
 	}
 	if ifNoneMatch != "" {
 		req.Header.Set("If-None-Match", ifNoneMatch)
@@ -272,10 +276,10 @@ func TestStaticHandlerGzipsWhenAccepted(t *testing.T) {
 	if got := rec.Header().Get("Content-Encoding"); got != encGzip {
 		t.Fatalf("Content-Encoding = %q, want gzip", got)
 	}
-	if got := rec.Header().Get("Vary"); got != "Accept-Encoding" {
+	if got := rec.Header().Get("Vary"); got != hdrAcceptEncoding {
 		t.Errorf("Vary = %q, want Accept-Encoding", got)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+	if got := rec.Header().Get("Content-Type"); got != typeJSON {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
 	if rec.Body.Len() >= len(gzipLicenses) {
@@ -297,7 +301,7 @@ func TestStaticHandlerPlainWithoutGzip(t *testing.T) {
 		if rec.Body.String() != gzipLicenses {
 			t.Errorf("Accept-Encoding %q: body differs from the asset", accept)
 		}
-		if got := rec.Header().Get("Vary"); got != "Accept-Encoding" {
+		if got := rec.Header().Get("Vary"); got != hdrAcceptEncoding {
 			t.Errorf("Accept-Encoding %q: Vary = %q, want Accept-Encoding", accept, got)
 		}
 	}
@@ -340,6 +344,10 @@ func TestStaticHandlerSendsIncompressibleAsIs(t *testing.T) {
 	if got := rec.Header().Get("Content-Encoding"); got != "" {
 		t.Errorf("noise: Content-Encoding = %q, want none", got)
 	}
+	// Compressible, so the response still varies; only the encoding lost.
+	if got := rec.Header().Get("Vary"); got != hdrAcceptEncoding {
+		t.Errorf("noise: Vary = %q, want Accept-Encoding", got)
+	}
 	if rec.Body.Len() != 4096 {
 		t.Errorf("noise: body is %d bytes, want the 4096 of the asset", rec.Body.Len())
 	}
@@ -351,6 +359,100 @@ func TestStaticHandlerSendsIncompressibleAsIs(t *testing.T) {
 		}
 		if got := rec.Header().Get("Vary"); got != "" {
 			t.Errorf("%s: Vary = %q, want none", path, got)
+		}
+	}
+}
+
+func TestStaticHandlerGzipHeadAndPreconditions(t *testing.T) {
+	t.Parallel()
+	h := gzipFixture()
+	get := gzipGetStatic(t, h, "/licenses.json", encGzip, "")
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodHead, "/licenses.json", http.NoBody)
+	req.Header.Set(hdrAcceptEncoding, encGzip)
+	head := httptest.NewRecorder()
+	h.ServeHTTP(head, req)
+	if got := head.Header().Get("Content-Encoding"); got != encGzip {
+		t.Errorf("HEAD Content-Encoding = %q, want gzip", got)
+	}
+	if got, want := head.Header().Get("ETag"), get.Header().Get("ETag"); got != want {
+		t.Errorf("HEAD ETag = %q, want %q (as GET)", got, want)
+	}
+	if head.Body.Len() != 0 {
+		t.Errorf("HEAD body is %d bytes, want none", head.Body.Len())
+	}
+	// A failed precondition sends no body, so it must not claim a length.
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/licenses.json", http.NoBody)
+	req.Header.Set(hdrAcceptEncoding, encGzip)
+	req.Header.Set("If-Match", `"nope"`)
+	pre := httptest.NewRecorder()
+	h.ServeHTTP(pre, req)
+	if pre.Code != http.StatusPreconditionFailed {
+		t.Fatalf("If-Match mismatch: status %d, want 412", pre.Code)
+	}
+	if got := pre.Header().Get("Content-Length"); got != "" && got != strconv.Itoa(pre.Body.Len()) {
+		t.Errorf("412 Content-Length = %q for a %d-byte body", got, pre.Body.Len())
+	}
+}
+
+func TestStaticHandlerGzipConcurrentFirstRequests(t *testing.T) {
+	t.Parallel()
+	assets := map[string]string{}
+	memFS := fstest.MapFS{}
+	for i := range 8 {
+		name := "a" + strconv.Itoa(i) + ".json"
+		body := strings.Repeat(`{"asset":`+strconv.Itoa(i)+`},`, 300)
+		assets[name] = body
+		memFS[name] = &fstest.MapFile{Data: []byte(body)}
+	}
+	h := newStaticHandler(memFS)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	etags := map[string]map[string]bool{}
+	for range 4 {
+		for name, body := range assets {
+			wg.Go(func() {
+				rec := gzipGetStatic(t, h, "/"+name, encGzip, "")
+				if got := gunzipBody(t, rec.Body.Bytes()); got != body {
+					t.Errorf("%s: decompressed body differs from the asset", name)
+				}
+				mu.Lock()
+				if etags[name] == nil {
+					etags[name] = map[string]bool{}
+				}
+				etags[name][rec.Header().Get("ETag")] = true
+				mu.Unlock()
+			})
+		}
+	}
+	wg.Wait()
+	for name, seen := range etags {
+		if len(seen) != 1 {
+			t.Errorf("%s: %d different ETags across requests, want 1", name, len(seen))
+		}
+	}
+}
+
+func TestCompressible(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		contentType string
+		size        int
+		want        bool
+	}{
+		{"text/css; charset=utf-8", 2048, true},
+		{"text/javascript; charset=utf-8", 2048, true},
+		{"application/javascript", 2048, true},
+		{typeJSON, 2048, true},
+		{"image/svg+xml", 2048, true},
+		{"font/woff2", 2048, false},
+		{"image/png", 2048, false},
+		{"", 2048, false},
+		{typeJSON, gzipMinSize - 1, false},
+		{typeJSON, gzipMinSize, true},
+	}
+	for _, tt := range tests {
+		if got := compressible(tt.contentType, tt.size); got != tt.want {
+			t.Errorf("compressible(%q, %d) = %v, want %v", tt.contentType, tt.size, got, tt.want)
 		}
 	}
 }
