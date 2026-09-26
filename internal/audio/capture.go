@@ -18,7 +18,8 @@ type captureStream interface {
 	Start() error
 	Read(buf []byte) (int, error)
 	Close() error
-	// Xruns is the count of overruns the stream recovered from inside Read.
+	// Xruns is the count of overruns (and suspends) the stream recovered from
+	// inside Read.
 	Xruns() uint64
 }
 

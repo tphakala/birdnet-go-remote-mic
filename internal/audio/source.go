@@ -40,10 +40,11 @@ type overrunCounter interface {
 }
 
 // Overruns returns src's cumulative count of recovered capture overruns (ALSA
-// xruns). Each one is a gap where the capture buffer filled before it was
-// drained and audio was lost; the capture recovers and keeps reading, so the
-// count is the only trace. A source that cannot count them (a fake, a fan-out
-// consumer) reports zero.
+// xruns). Each one is a gap where audio was lost, usually because the capture
+// buffer filled before it was drained (go-audio-capture also counts a recovered
+// system suspend); the capture recovers and keeps reading, so the count is the
+// capture layer's only trace. A source that cannot count them (a fake, a fan-out consumer)
+// reports zero.
 func Overruns(src Source) uint64 {
 	if c, ok := src.(overrunCounter); ok {
 		return c.Overruns()

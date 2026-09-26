@@ -232,7 +232,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 		t.Errorf("negotiatedFormat = %v, want s24_3le", d.NegotiatedFormat)
 	}
 	if !d.ClientConnected || d.DroppedFrames != 12 || d.Overruns != 9 {
-		t.Errorf("runtime fields wrong: connected=%v dropped=%d overruns=%d", d.ClientConnected, d.DroppedFrames, d.Overruns)
+		t.Errorf("runtime fields: connected=%v dropped=%d overruns=%d, want true/12/9", d.ClientConnected, d.DroppedFrames, d.Overruns)
 	}
 	if d.Opus == nil || d.Opus.Bitrate == nil || *d.Opus.Bitrate != 96000 {
 		t.Errorf("opus settings not mapped: %+v", d.Opus)
@@ -286,7 +286,7 @@ func TestListDevicesMapsSkippedPCM(t *testing.T) {
 		t.Errorf("skipped device must have no negotiated values: %v %v %v", d.NegotiatedRate, d.NegotiatedChannels, d.NegotiatedFormat)
 	}
 	if d.ClientConnected || d.DroppedFrames != 0 || d.Overruns != 0 {
-		t.Errorf("skipped device runtime should be zero: connected=%v dropped=%d overruns=%d", d.ClientConnected, d.DroppedFrames, d.Overruns)
+		t.Errorf("skipped device runtime: connected=%v dropped=%d overruns=%d, want false/0/0", d.ClientConnected, d.DroppedFrames, d.Overruns)
 	}
 	if d.Opus != nil {
 		t.Errorf("pcm device must not carry opus settings, got %+v", d.Opus)

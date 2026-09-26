@@ -169,8 +169,9 @@ type deviceRuntime struct {
 	hwAddr string
 	// gen is a process-unique identity for this runtime instance, assigned at
 	// creation (see runtimeGen). A restart builds a fresh runtime with a fresh gen,
-	// so the host monitor rebaselines the dropped-frame counter on the change even
-	// when the new runtime's counter has already climbed past the old value. Static
+	// so the host monitor treats the change as a restart of its dropped-frame and
+	// overrun counters even when a new runtime's counter has already climbed past
+	// the old value. Static
 	// per run; read without a lock, like dev.Name.
 	gen uint64
 
@@ -219,14 +220,14 @@ func (rt *deviceRuntime) droppedTotal() uint64 {
 }
 
 // overruns is the capture's cumulative count of recovered overruns, the
-// device-level figure the host monitor watches for recurring overruns. A device
-// that never opened (src nil) reports zero.
+// device-level figure the host monitor watches for recurring overruns. A record
+// with no open capture (src nil) reports zero.
 func (rt *deviceRuntime) overruns() uint64 { return audio.Overruns(rt.src) }
 
 // runtimeGen hands out a process-unique generation to each serving deviceRuntime
 // so the host monitor can tell one runtime from its restarted successor. Only
 // openDevice (the sole builder of a serving runtime) draws from it; skipped and
-// disabled records keep gen 0 and never reach the drop monitor.
+// disabled records keep gen 0 and never reach the host monitor's counters.
 var runtimeGen atomic.Uint64
 
 // openDevice opens and starts capture for one configured device at the resolved

@@ -82,7 +82,7 @@ type DeviceStatus struct {
 	ClientConnected  bool
 	DroppedFrames    int64
 	// Overruns is the capture's cumulative count of recovered overruns (ALSA
-	// xruns) since the device was last opened; zero when it never opened.
+	// xruns) since the device was last opened; zero when it has no open capture.
 	Overruns int64
 	Error    string
 	// DownCause classifies why a skipped or failed device is not serving (the

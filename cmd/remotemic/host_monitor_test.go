@@ -106,13 +106,6 @@ func TestDeviceRuntimeAggregatesStreamDrops(t *testing.T) {
 	if ds.DroppedFrames != 7 {
 		t.Errorf("status DroppedFrames = %d, want 7", ds.DroppedFrames)
 	}
-	if ds.Overruns != 0 {
-		t.Errorf("status Overruns with no capture source = %d, want 0", ds.Overruns)
-	}
-	rt.src = overrunSource{n: 6}
-	if got := rt.status().Overruns; got != 6 {
-		t.Errorf("status Overruns = %d, want the capture's 6", got)
-	}
 	if len(ds.Streams) != 2 {
 		t.Fatalf("status Streams = %d, want 2", len(ds.Streams))
 	}
@@ -121,6 +114,19 @@ func TestDeviceRuntimeAggregatesStreamDrops(t *testing.T) {
 	}
 	if ds.Streams[1].Path != "/b" || ds.Streams[1].DroppedFrames != 2 {
 		t.Errorf("status stream[1] = %+v, want /b drops=2", ds.Streams[1])
+	}
+}
+
+func TestDeviceRuntimeStatusReportsOverruns(t *testing.T) {
+	// status() reports the device capture's overrun count, and zero for a record
+	// with no open capture.
+	rt := &deviceRuntime{dev: config.Device{Name: "iface"}, state: mgmtserver.StateServing}
+	if got := rt.status().Overruns; got != 0 {
+		t.Errorf("status Overruns with no capture source = %d, want 0", got)
+	}
+	rt.src = overrunSource{n: 6}
+	if got := rt.status().Overruns; got != 6 {
+		t.Errorf("status Overruns = %d, want the capture's 6", got)
 	}
 }
 

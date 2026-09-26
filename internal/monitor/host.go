@@ -12,11 +12,13 @@ import (
 
 // hostPollInterval is how often the host monitor reads the host and the device
 // counters. Host health moves slowly; ten seconds keeps the Pi Zero cost
-// negligible while every onset dwell below still spans several readings.
+// negligible while every onset dwell below still spans several readings (the
+// overrun condition counts events instead, so a burst can raise it in one).
 const hostPollInterval = 10 * time.Second
 
-// Onset and clear dwell times for the host conditions. Only the value thresholds
-// are configurable; the dwells are constants so alert timing stays predictable.
+// Onset and clear dwell times and fixed thresholds for the host and device
+// counter conditions. Only the host value thresholds are configurable; these are
+// constants so alert timing stays predictable.
 const (
 	cpuEnterAfter   = 60 * time.Second
 	cpuClearAfter   = 60 * time.Second
@@ -96,9 +98,10 @@ type HostReader interface {
 // DeviceCounters is one device's cumulative loss counters as the host monitor
 // polls them, tagged with the identity (Gen) of the runtime the counters belong
 // to. A restart hands the device a fresh runtime whose counters start at zero
-// and a new Gen; the monitor rebaselines when Gen changes, so it never reports a
-// negative rate and never under-reports when a fresh counter has already climbed
-// past the old value between two polls. Gen zero (the source did not supply one)
+// and a new Gen; the monitor treats a Gen change as a restart even when a fresh
+// counter has already climbed past the old value between two polls, so it never
+// diffs two runtimes' counters: drops take the restart poll as a new baseline
+// and overruns count the fresh total. Gen zero (the source did not supply one)
 // disables the Gen check and leaves a counter going backwards as the sole
 // restart signal.
 type DeviceCounters struct {
@@ -107,8 +110,9 @@ type DeviceCounters struct {
 	// Dropped counts the audio frames the device's streams dropped because a
 	// client or encoder was not keeping up.
 	Dropped uint64
-	// Overruns counts the capture overruns (ALSA xruns) the device's capture
-	// recovered from; each one lost audio before any stream saw it.
+	// Overruns counts the capture overruns (ALSA xruns, which include a
+	// recovered system suspend) the device's capture recovered from; each one
+	// lost audio before any stream saw it.
 	Overruns uint64
 }
 
@@ -152,11 +156,11 @@ type counterState struct {
 
 // Host is the host-health condition monitor. A single goroutine polls the
 // HostReader and the CounterSource every hostPollInterval and raises CPU,
-// memory, temperature, disk, undervoltage, and per-device dropped-frame and
-// capture-overrun conditions, with hysteresis on both the value and the
-// duration. Settings are swapped atomically
-// by Apply; the poll goroutine reads them each tick and performs every state
-// change itself, so Apply never races the poll.
+// memory, temperature, disk, undervoltage, and per-device dropped-frame
+// conditions with hysteresis on both the value and the duration, and a
+// per-device capture-overrun condition counted over a sliding window. Settings
+// are swapped atomically by Apply; the poll goroutine reads them each tick and
+// performs every state change itself, so Apply never races the poll.
 type Host struct {
 	pub      notify.Publisher
 	clock    func() time.Time

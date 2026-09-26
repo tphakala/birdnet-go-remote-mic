@@ -792,7 +792,7 @@ export class DashboardView {
       const droppedEl = elem("span", "metric-val mono");
       dropItem.appendChild(droppedEl);
       const overrunItem = elem("div", "metric-item");
-      overrunItem.title = "Capture overruns: times the sound card's buffer filled before it was read, losing audio on every stream. Usually a busy host or an unstable USB connection.";
+      overrunItem.title = "Capture overruns: times the capture fell behind the sound card (or the system suspended), losing audio on every stream. Usually a busy host or an unstable USB connection. Counted since the device was opened.";
       overrunItem.appendChild(elem("span", undefined, "Overruns:"));
       const overrunsEl = elem("span", "metric-val mono");
       overrunItem.appendChild(overrunsEl);

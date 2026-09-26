@@ -84,8 +84,8 @@ func hostSettings() Settings {
 }
 
 //nolint:gocritic // test helper: taking Settings by value keeps call sites terse.
-func newHostT(r HostReader, drops CounterSource, rec *recPub, s Settings, c *clk) *Host {
-	return NewHost(r, drops, rec, &s, WithHostClock(c.now))
+func newHostT(r HostReader, counters CounterSource, rec *recPub, s Settings, c *clk) *Host {
+	return NewHost(r, counters, rec, &s, WithHostClock(c.now))
 }
 
 // pollEvery polls h n times, advancing the clock by step before each poll.
@@ -511,14 +511,14 @@ func TestHostDisabledResolvesAllAndReadsNothing(t *testing.T) {
 	callsAfter := srcCalls
 	mu.Unlock()
 	if callsAfter != callsBefore {
-		t.Errorf("disabled monitor called the drop source %d times", callsAfter-callsBefore)
+		t.Errorf("disabled monitor called the counter source %d times, want 0", callsAfter-callsBefore)
 	}
 	if rec.onsetCount(hostCPUKey) != 1 {
 		t.Error("onset while disabled")
 	}
 
 	// Re-enable starts fresh: the full dwell is needed again, and resolveAll cleared
-	// the device drop state, so the drops condition must re-baseline and re-onset
+	// the device counter state, so the drops condition must re-baseline and re-onset
 	// too rather than staying silently stuck.
 	h.Apply(new(hostSettings()))
 	c.advance(10 * time.Second)
@@ -558,15 +558,15 @@ func TestHostStartsDisabled(t *testing.T) {
 	}
 }
 
-// dropFeed is a mutable CounterSource for the dropped-frame and overrun tests.
-type dropFeed struct {
+// counterFeed is a mutable CounterSource for the dropped-frame and overrun tests.
+type counterFeed struct {
 	devs []DeviceCounters
 }
 
-func (d *dropFeed) source() []DeviceCounters { return append([]DeviceCounters(nil), d.devs...) }
+func (d *counterFeed) source() []DeviceCounters { return append([]DeviceCounters(nil), d.devs...) }
 
 func TestHostDropsOnsetAndClear(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 1000}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 1000}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -621,7 +621,7 @@ func TestHostDropsOnsetAndClear(t *testing.T) {
 // TestHostDropsRateBoundary pins the onset comparison (> dropsPerSecond): a
 // steady exactly 1.0 frames/s never onsets.
 func TestHostDropsRateBoundary(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -640,7 +640,7 @@ func TestHostDropsRateBoundary(t *testing.T) {
 }
 
 func TestHostDropsCounterResetAndDeviceRemoval(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -732,7 +732,7 @@ func TestHostPendingOnsetRunAbandonedByReadingGap(t *testing.T) {
 // restarts with a fresh (smaller) counter on the very poll the clear dwell
 // completes, the clear must still fire at 60 s, not be skipped and pushed to 70 s.
 func TestHostDropsClearRunSurvivesCounterRestartAtCompletion(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 1000}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 1000}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -771,7 +771,7 @@ func TestHostDropsClearRunSurvivesCounterRestartAtCompletion(t *testing.T) {
 // have that run abandoned, so it cannot onset off the stale start time when it
 // returns.
 func TestHostDropsPendingRunAbandonedByAbsentBlip(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -807,7 +807,7 @@ func TestHostDropsPendingRunAbandonedByAbsentBlip(t *testing.T) {
 // present poll: an active condition survives an absent/present/absent sequence
 // without being resolved, because the present poll resets the missed counter.
 func TestHostDropsAbsentPresentAbsentKeepsCondition(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -844,7 +844,7 @@ func TestHostDropsAbsentPresentAbsentKeepsCondition(t *testing.T) {
 // Serving while its drops condition is part way through the clear run: it must end
 // with the grace resolve, not a clear claiming its client caught up.
 func TestHostDropsStopServingMidClearRunResolves(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Dropped: 0}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -882,7 +882,7 @@ func TestHostDropsStopServingMidClearRunResolves(t *testing.T) {
 // see). Crucially the tracker must adopt the new Gen, so a genuinely dropping
 // fresh runtime can still onset instead of rebaselining on every poll forever.
 func TestHostDropsRebaselineOnGenerationChange(t *testing.T) {
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1, Dropped: 0}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1, Dropped: 0}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -977,7 +977,7 @@ func TestRunHostStopsOnCancel(t *testing.T) {
 
 // overrunPoll advances the clock by step, adds n overruns to the first device,
 // and polls.
-func overrunPoll(h *Host, c *clk, feed *dropFeed, step time.Duration, n uint64) {
+func overrunPoll(h *Host, c *clk, feed *counterFeed, step time.Duration, n uint64) {
 	c.advance(step)
 	feed.devs[0].Overruns += n
 	h.poll()
@@ -999,7 +999,7 @@ func pollsIn(d time.Duration) int { return int(d / (10 * time.Second)) }
 
 func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	t.Parallel()
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1, Overruns: 7}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1, Overruns: 7}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1056,7 +1056,7 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 // overrunOnsetCount, so they never onset however long they go on.
 func TestHostOverrunsSporadicNeverOnset(t *testing.T) {
 	t.Parallel()
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1083,7 +1083,7 @@ func TestHostOverrunsWindowBoundary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+			feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
 			rec := newRecPub()
 			c := newClk()
 			h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1118,7 +1118,7 @@ func TestHostOverrunsRestartCountsFreshCounter(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			feed := &dropFeed{devs: []DeviceCounters{tc.first}}
+			feed := &counterFeed{devs: []DeviceCounters{tc.first}}
 			rec := newRecPub()
 			c := newClk()
 			h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1152,7 +1152,7 @@ func TestHostOverrunsRestartCountsFreshCounter(t *testing.T) {
 // condition stays active and clears once, through the normal quiet dwell.
 func TestHostOverrunsRestartWhileActive(t *testing.T) {
 	t.Parallel()
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1185,7 +1185,7 @@ func TestHostOverrunsRestartWhileActive(t *testing.T) {
 // overruns by wall-clock time, so the gap cannot stretch it.
 func TestHostOverrunsPendingWindowSpansAbsentBlip(t *testing.T) {
 	t.Parallel()
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1203,7 +1203,7 @@ func TestHostOverrunsPendingWindowSpansAbsentBlip(t *testing.T) {
 
 func TestHostOverrunsResolvedOnRemovalAndDisable(t *testing.T) {
 	t.Parallel()
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
@@ -1254,7 +1254,7 @@ func TestHostOverrunsResolvedOnRemovalAndDisable(t *testing.T) {
 // rather than carrying a pending onset run across the restart.
 func TestHostDropsRebaselineOnOverrunCounterReset(t *testing.T) {
 	t.Parallel()
-	feed := &dropFeed{devs: []DeviceCounters{{Name: nameGarden, Overruns: 10}}}
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Overruns: 10}}}
 	rec := newRecPub()
 	c := newClk()
 	h := newHostT(nil, feed.source, rec, hostSettings(), c)
