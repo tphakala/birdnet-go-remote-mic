@@ -83,3 +83,20 @@ export function downCauseTitle(cause: string | undefined): string {
       return "Device excluded from streaming";
   }
 }
+
+// FooterMetrics is the text of a serving device card's footer counters.
+export interface FooterMetrics {
+  clients: string;
+  dropped: string;
+  overruns: string;
+}
+
+// footerMetrics formats a serving device's footer counters. An appliance that
+// predates the overrun counter omits it, which reads as zero.
+export function footerMetrics(d: { clientConnected: boolean; droppedFrames: number; overruns?: number }): FooterMetrics {
+  return {
+    clients: d.clientConnected ? "1 connected" : "0 connected",
+    dropped: String(d.droppedFrames),
+    overruns: String(d.overruns ?? 0),
+  };
+}

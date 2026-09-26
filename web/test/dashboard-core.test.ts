@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, needsNotificationsFallback, tallyStates } from "../src/lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, footerMetrics, needsNotificationsFallback, tallyStates } from "../src/lib/dashboard-core.js";
 
 test("needsNotificationsFallback loads when nothing loaded or the stream is down", () => {
   assert.equal(needsNotificationsFallback(true, true), false); // healthy: the connect re-sync loaded it
@@ -85,4 +85,19 @@ test("captureFormatLabel renders bit depth for negotiated formats and falls back
   assert.equal(captureFormatLabel("f32"), "32-bit float");
   // An unrecognised token (a future capture format) shows its uppercased form.
   assert.equal(captureFormatLabel("s20_3le"), "S20_3LE");
+});
+
+test("footerMetrics formats the card footer counters", () => {
+  assert.deepEqual(footerMetrics({ clientConnected: true, droppedFrames: 12, overruns: 3 }), {
+    clients: "1 connected",
+    dropped: "12",
+    overruns: "3",
+  });
+  assert.deepEqual(footerMetrics({ clientConnected: false, droppedFrames: 0, overruns: 0 }), {
+    clients: "0 connected",
+    dropped: "0",
+    overruns: "0",
+  });
+  // An appliance that predates the overrun counter omits it: zero, not "undefined".
+  assert.equal(footerMetrics({ clientConnected: false, droppedFrames: 5 }).overruns, "0");
 });
