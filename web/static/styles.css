@@ -1455,14 +1455,20 @@ textarea.field-input {
   white-space: nowrap;
 }
 
-/* The new-tab mark after an external link's text (lib/ui.ts externalLink). */
+/* The new-tab mark after an external link's text (lib/ui.ts externalLink),
+   kept on one line with the end of the text so it never wraps alone. */
+.external-tail {
+  white-space: nowrap;
+}
 .external-icon {
   display: inline-flex;
   margin-left: 4px;
   vertical-align: -1px;
 }
+/* In a button the icon sits inside the label, out of reach of the button's
+   flex gap, so it takes the same 6px here. */
 .btn .external-icon {
-  margin-left: 0;
+  margin-left: 6px;
 }
 
 .switch-control {

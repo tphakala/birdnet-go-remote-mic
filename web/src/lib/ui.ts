@@ -380,9 +380,22 @@ export function renderLoadError(
   container.appendChild(retry);
 }
 
+// The longest last word kept whole next to the new-tab icon; a longer word
+// keeps only its last TAIL_CHARS characters there.
+const TAIL_WORD_MAX = 12;
+const TAIL_CHARS = 6;
+
+// externalTailStart is where the no-wrap tail of an external link's text
+// starts: the last word, or the end of a long one.
+export function externalTailStart(text: string): number {
+  const word = text.lastIndexOf(" ") + 1;
+  return text.length - word > TAIL_WORD_MAX ? Math.max(word, text.length - TAIL_CHARS) : word;
+}
+
 // externalLink builds a link that opens in a new tab (the appliance UI stays
 // open behind it), with rel="noopener" so the new page cannot reach back into
-// this one, a small external-link icon after the text, and a visually hidden
+// this one, a small external-link icon kept on one line with the end of the
+// text (see externalTailStart), and a visually hidden
 // note so a screen reader says so too. Pass a .btn class and an icon for a
 // button-styled link.
 export function externalLink(href: string, text: string, opts: { className?: string; icon?: string } = {}): HTMLAnchorElement {
@@ -392,8 +405,17 @@ export function externalLink(href: string, text: string, opts: { className?: str
   a.target = "_blank";
   a.rel = "noopener";
   if (opts.icon) a.appendChild(iconSpan(opts.icon, "btn-icon"));
-  a.appendChild(elem("span", undefined, text));
-  a.appendChild(iconSpan(ICON_EXTERNAL, "external-icon"));
+  // The end of the text and the new-tab icon share a no-wrap span, so a
+  // wrapping link never leaves the icon alone on the next line. The span holds
+  // the last word, or only its last few characters when the word is long (a
+  // repository URL), which must still wrap to fit a narrow screen. One label
+  // span holds both parts, so a .btn link's flex gap does not split them.
+  const cut = externalTailStart(text);
+  const tail = elem("span", "external-tail", text.slice(cut));
+  tail.appendChild(iconSpan(ICON_EXTERNAL, "external-icon"));
+  const label = elem("span", undefined, text.slice(0, cut));
+  label.appendChild(tail);
+  a.appendChild(label);
   a.appendChild(elem("span", "visually-hidden", " (opens in a new tab)"));
   return a;
 }

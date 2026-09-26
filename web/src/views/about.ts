@@ -93,6 +93,10 @@ export class AboutView {
   // idle until the first visit; loading while the fetch runs; done once rendered.
   // A failure returns to idle so Retry (or the next visit) tries again.
   private licenses: "idle" | "loading" | "done" = "idle";
+  // Whether the About route is shown. The system details (which sort and
+  // scrub the device list) are rebuilt only then, not on every status tick of
+  // a browser that sits on another page.
+  private visible = false;
 
   constructor() {
     const root = document.getElementById("view-about");
@@ -100,8 +104,9 @@ export class AboutView {
     const { status, system } = store.getState();
     this.status = status;
     this.system = system;
+    // The router's first route event, after every view is built, renders the
+    // live details if About is the page shown.
     root.appendChild(this.build());
-    this.renderLive();
 
     store.addEventListener("status", (e: Event) => {
       this.status = (e as CustomEvent<ApplianceStatus>).detail;
@@ -116,7 +121,10 @@ export class AboutView {
       this.renderLive();
     });
     router.addEventListener("route", (e: Event) => {
-      if ((e as CustomEvent<string>).detail === "about") void this.loadLicenses();
+      this.visible = (e as CustomEvent<string>).detail === "about";
+      if (!this.visible) return;
+      this.renderLive();
+      void this.loadLicenses();
     });
   }
 
@@ -227,8 +235,10 @@ export class AboutView {
   }
 
   // renderLive refreshes what follows the store: the version and the system
-  // details. setText writes only on change, so a status tick costs nothing.
+  // details, while the page is shown; showing it again catches up. setText
+  // writes only on change. The Copy button builds its own text on click.
   private renderLive(): void {
+    if (!this.visible) return;
     if (this.versionEl) setText(this.versionEl, this.status?.version || "-");
     if (this.detailsEl) setText(this.detailsEl, supportDetails(this.status, this.system, this.devices));
   }
