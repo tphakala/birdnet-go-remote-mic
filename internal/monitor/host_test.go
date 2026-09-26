@@ -1181,10 +1181,11 @@ func TestHostOverrunsRestartWhileActive(t *testing.T) {
 	}
 }
 
-// The quiet dwell is judged per poll: overruns counted by the poll that
-// completes it clear the condition and start a fresh window, so a full burst
-// there clears and re-raises it at once, and a smaller one leaves it cleared with
-// a pending window. Either way the clear is published, never skipped.
+// The quiet dwell is judged per poll: the poll that completes it clears the
+// condition before counting its own overruns, which start a fresh window. A
+// full burst there clears and re-raises it at once; a smaller one leaves it
+// cleared with those overruns pending toward the next onset. Either way the
+// clear is published, never skipped.
 func TestHostOverrunsBurstOnQuietBoundary(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1205,8 +1206,9 @@ func TestHostOverrunsBurstOnQuietBoundary(t *testing.T) {
 			h.poll()
 			overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount)
 			pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter)-1)
-			if !rec.isActive(key) || rec.clearCount(key) != 0 {
-				t.Fatal("cleared before the quiet dwell")
+			if !rec.isActive(key) || rec.clearCount(key) != 0 || rec.onsetCount(key) != 1 {
+				t.Fatalf("before the boundary: active=%v clears=%d onsets=%d, want true/0/1",
+					rec.isActive(key), rec.clearCount(key), rec.onsetCount(key))
 			}
 			overrunPoll(h, c, feed, 10*time.Second, tc.burst)
 			wantOnsets := 1
@@ -1214,8 +1216,17 @@ func TestHostOverrunsBurstOnQuietBoundary(t *testing.T) {
 				wantOnsets = 2
 			}
 			if rec.clearCount(key) != 1 || rec.onsetCount(key) != wantOnsets || rec.isActive(key) != tc.wantActive {
-				t.Errorf("boundary poll: clears=%d onsets=%d active=%v, want 1/%d/%v",
+				t.Fatalf("boundary poll: clears=%d onsets=%d active=%v, want 1/%d/%v",
 					rec.clearCount(key), rec.onsetCount(key), rec.isActive(key), wantOnsets, tc.wantActive)
+			}
+			if tc.wantActive {
+				return
+			}
+			// The boundary poll's overruns count toward the next onset: the rest of
+			// a full burst one poll later raises it.
+			overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount-tc.burst)
+			if !rec.isActive(key) || rec.onsetCount(key) != 2 {
+				t.Errorf("after the rest of the burst: active=%v onsets=%d, want true/2", rec.isActive(key), rec.onsetCount(key))
 			}
 		})
 	}

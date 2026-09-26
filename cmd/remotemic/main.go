@@ -220,7 +220,7 @@ func (rt *deviceRuntime) droppedTotal() uint64 {
 
 // overruns is the capture's cumulative count of recovered overruns, the
 // device-level figure the host monitor watches for recurring overruns. A record
-// with no open capture (src nil) reports zero.
+// that holds no capture (src nil) reports zero.
 func (rt *deviceRuntime) overruns() uint64 { return audio.Overruns(rt.src) }
 
 // runtimeGen hands out a process-unique generation to each serving deviceRuntime

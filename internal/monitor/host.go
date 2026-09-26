@@ -539,13 +539,13 @@ func (h *Host) observeDrops(st *counterState, now time.Time, name string, droppe
 // saw its predecessor, so its whole count is new since that poll. Each poll
 // that sees overruns short of the onset logs them; once the condition is
 // raised it speaks for them until it clears. The quiet dwell is judged per
-// poll, as notify.Flap does: overruns counted by the poll that completes the
-// dwell clear the condition and start a fresh window, so a burst of
-// overrunOnsetCount there clears and re-raises it in the same poll. Like every
-// condition monitor this
-// runs only while notifications are enabled (the device's API and dashboard
-// counter keeps counting regardless), and a device's first sighting takes its
-// cumulative count as the baseline, so overruns before that are not logged.
+// poll, as notify.Flap does: the poll that completes the dwell clears the
+// condition before counting its own overruns, which start a fresh window, so a
+// burst of overrunOnsetCount there clears and re-raises it in the same poll.
+// Like every condition monitor this runs only while notifications are enabled
+// (the device's API and dashboard counter keeps counting regardless), and a
+// device's first sighting takes its cumulative count as the baseline, so
+// overruns before that are not logged.
 func (h *Host) observeOverruns(st *counterState, now time.Time, name string, total uint64, restarted bool) {
 	delta := total
 	if !restarted {
