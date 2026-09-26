@@ -151,9 +151,12 @@ export function initTheme(env: ThemeEnv): ThemeController {
         else env.storage().setItem(THEME_KEY, next);
       } catch {
         // The mode still applies for this visit; say once why it will not stick.
-        // A failed removeItem for System loses nothing: storage that cannot be
-        // read back already reads as System, here and in theme-init.
-        if (next !== "system" && !saveWarned) {
+        // A failed removeItem for System loses the choice only when an older
+        // Light or Dark can still be read back (it would win on reload); storage
+        // that cannot be read at all already reads as System, here and in
+        // theme-init.
+        const lost = next !== "system" || savedMode(env.storage) !== "system";
+        if (lost && !saveWarned) {
           saveWarned = true;
           env.onSaveFailed();
         }

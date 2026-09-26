@@ -34,7 +34,8 @@ interface Options {
   saved?: string; // the stored choice, if any
   // "getter" throws on reading localStorage itself (Chromium with site data
   // blocked); "calls" throws from getItem, setItem and removeItem instead.
-  blocked?: "getter" | "calls";
+  // "remove" throws from removeItem only, so an old saved value still reads.
+  blocked?: "getter" | "calls" | "remove";
   // matchMedia missing, or a MediaQueryList without addEventListener.
   media?: "none" | "legacy";
   // The OS preference when initTheme runs (media.matches); false (dark) unless
@@ -73,6 +74,7 @@ function harness(opts: Options = {}): Harness {
     },
     removeItem(key: string): void {
       guard();
+      if (opts.blocked === "remove") throw new Error("remove blocked");
       writes++;
       stored.delete(key);
     },
@@ -319,4 +321,11 @@ test("a storage event from another tab never writes storage here", () => {
   }
   h.otherTab({ key: null, newValue: null });
   assert.equal(h.writes(), 0);
+});
+
+test("choosing System warns when a failed removal leaves an older choice that would win on reload", () => {
+  const h = harness({ initial: "dark", saved: "dark", blocked: "remove" });
+  h.ctl.setMode("system");
+  assert.equal(h.stored.get(THEME_KEY), "dark", "the old choice is still stored");
+  assert.equal(h.saveFailures(), 1);
 });

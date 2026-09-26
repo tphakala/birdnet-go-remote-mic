@@ -259,3 +259,59 @@ func TestReadProject(t *testing.T) {
 		t.Errorf("files = %+v, want LICENSE then NOTICE only", p.files)
 	}
 }
+
+// TestGenerate drives the generator end to end in a temporary tree: a write
+// produces both files, a check of them passes, a changed NOTICE makes the check
+// fail, and an unrecognized project LICENSE is refused. It changes the working
+// directory, so it cannot run in parallel.
+func TestGenerate(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Dir(jsonFile), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, text string) {
+		t.Helper()
+		if err := os.WriteFile(name, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(projectLicense, "Apache License\nVersion 2.0, January 2004")
+	write(projectNotice, "Copyright holder")
+	comps := []component{{name: "example.com/gen", version: "v2.3.4", files: []licenseFile{{name: "LICENCE", text: "Permission is hereby granted, free of charge"}}}}
+
+	if err := generate(comps, false); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	for _, name := range []string{outFile, jsonFile} {
+		if _, err := os.Stat(name); err != nil {
+			t.Errorf("%s not written: %v", name, err)
+		}
+	}
+	if err := generate(comps, true); err != nil {
+		t.Fatalf("check after write: got %v, want nil", err)
+	}
+	write(projectNotice, "A different holder")
+	if err := generate(comps, true); !errors.Is(err, ErrStale) {
+		t.Fatalf("check after a NOTICE change: got %v, want ErrStale", err)
+	}
+	write(projectLicense, "All rights reserved.")
+	if err := generate(comps, false); !errors.Is(err, ErrUnrecognized) {
+		t.Fatalf("unrecognized LICENSE: got %v, want ErrUnrecognized", err)
+	}
+}
+
+// TestSyncOutputsIOErrors pins that a file that cannot be written or read is an
+// error of its own, not a silent pass or a misleading ErrStale.
+func TestSyncOutputsIOErrors(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missingDir := []output{{filepath.Join(dir, "no", "such", "dir", "a.md"), []byte("x")}}
+	if err := syncOutputs(missingDir, false); err == nil {
+		t.Error("write into a missing directory succeeded; want an error")
+	}
+	aDir := []output{{dir, []byte("x")}}
+	if err := syncOutputs(aDir, true); err == nil || errors.Is(err, ErrStale) {
+		t.Errorf("check of a directory: got %v, want a read error that is not ErrStale", err)
+	}
+}

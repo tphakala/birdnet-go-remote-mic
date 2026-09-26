@@ -234,15 +234,18 @@ export class AboutView {
     el.removeAttribute("role");
     el.textContent = LOADING_TEXT;
     let doc: LicenseDoc | null = null;
+    // A deadline, so a stalled request ends in the error and Retry rather than
+    // "Loading" forever. A timer and an AbortController rather than
+    // AbortSignal.timeout, which is missing before Safari 16.
+    const abort = new AbortController();
+    const timer = window.setTimeout(() => abort.abort(), LICENSES_TIMEOUT_MS);
     try {
-      // A deadline, so a stalled request ends in the error and Retry rather
-      // than "Loading" forever.
-      // (AbortSignal.timeout is missing before Safari 16, which then waits.)
-      const signal = typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(LICENSES_TIMEOUT_MS) : undefined;
-      const res = await fetch(LICENSES_PATH, { signal });
+      const res = await fetch(LICENSES_PATH, { signal: abort.signal });
       if (res.ok) doc = parseLicenseDoc(await res.json());
     } catch {
-      /* a network error or a body that is not JSON: reported below */
+      /* a network error, the deadline, or a body that is not JSON: reported below */
+    } finally {
+      window.clearTimeout(timer);
     }
     if (!doc) {
       this.licenses = "idle";

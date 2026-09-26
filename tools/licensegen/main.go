@@ -96,6 +96,13 @@ func run(check bool) error {
 	if err != nil {
 		return err
 	}
+	return generate(comps, check)
+}
+
+// generate writes both generated files for comps, or with check compares them,
+// from the project's LICENSE and NOTICE in the current directory. It is run()
+// without the module listing, so tests can drive it in a temporary directory.
+func generate(comps []component, check bool) error {
 	project, err := readProject(".")
 	if err != nil {
 		return err

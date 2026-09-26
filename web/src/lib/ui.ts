@@ -394,7 +394,17 @@ export function renderLoadError(
     // the screen reader does not read "Loading..." as an alert. A later failure
     // re-adds it when renderLoadError runs again.
     container.removeAttribute("role");
+    // Replacing the content removes the focused Retry button, which would drop
+    // keyboard focus to the page body. Park it on the enclosing view section
+    // (focusable, ringless, and never removed, so focus survives the reload
+    // replacing or hiding this container), else on the container itself.
+    const hadFocus = container.contains(document.activeElement);
     container.textContent = loadingText;
+    if (hadFocus) {
+      const target = container.closest<HTMLElement>(".view-container") ?? container;
+      if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
     onRetry();
   });
   container.appendChild(retry);
