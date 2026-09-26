@@ -34,6 +34,14 @@ func swapResolveOpenChannels(fn func(string, []int) int) func() {
 	return func() { resolveOpenChannels = prev }
 }
 
+// swapOpenCaptureAt substitutes the capture-open seam and returns a restore
+// func, so a test can open a device without hardware.
+func swapOpenCaptureAt(fn func(*config.Device, int) (audio.Source, capture.Format, error)) func() {
+	prev := openCaptureAt
+	openCaptureAt = fn
+	return func() { openCaptureAt = prev }
+}
+
 // TestOpenDeviceRetrySkipsBusyDevice verifies the non-blocking busy gate: a
 // device that stays busy is reported as ErrDeviceInUse without ever attempting
 // the blocking capture open, so a contended device does not stall the
@@ -178,8 +186,16 @@ func TestPermanentOpenError(t *testing.T) {
 }
 
 // overrunCapture is a capture source that ends at once and reports a settable
-// overrun count, standing in for the hardware capture openDevice opens.
+// overrun count, standing in for the hardware capture openDevice opens and for
+// a runtime's capture in the status and counter tests.
 type overrunCapture struct{ n atomic.Uint64 }
+
+// newOverrunCapture returns an overrunCapture reporting n overruns.
+func newOverrunCapture(n uint64) *overrunCapture {
+	c := &overrunCapture{}
+	c.n.Store(n)
+	return c
+}
 
 func (c *overrunCapture) Negotiated() (rate, channels int) { return 48000, 1 }
 func (c *overrunCapture) Read() (audio.Period, error)      { return audio.Period{}, io.EOF }
@@ -190,13 +206,10 @@ func (c *overrunCapture) Overruns() uint64                 { return c.n.Load() }
 // capture's overrun count reaches the API and the host monitor; a runtime
 // pointed at a per-stream source instead would silently report zero.
 func TestOpenDeviceRuntimeReadsCaptureOverruns(t *testing.T) {
-	fake := &overrunCapture{}
-	fake.n.Store(4)
-	prev := openCaptureAt
-	openCaptureAt = func(*config.Device, int) (audio.Source, capture.Format, error) {
+	fake := newOverrunCapture(4)
+	defer swapOpenCaptureAt(func(*config.Device, int) (audio.Source, capture.Format, error) {
 		return fake, capture.FormatS16LE, nil
-	}
-	defer func() { openCaptureAt = prev }()
+	})()
 
 	dev := &config.Device{Name: "yard", Device: devMissing, Rate: 48000, Format: testFmtS16,
 		Streams: []config.Stream{{Path: "/yard", Mode: config.ModePCM, Channels: []int{1}}}}

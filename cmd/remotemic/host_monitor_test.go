@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -44,15 +43,6 @@ func TestBuildMonitorsWiresSignalAndHost(t *testing.T) {
 	}
 }
 
-// overrunSource is an audio.Source whose capture reports a fixed overrun count.
-// Only Overruns is called; the embedded Source is nil.
-type overrunSource struct {
-	audio.Source
-	n uint64
-}
-
-func (s overrunSource) Overruns() uint64 { return s.n }
-
 func TestProviderDeviceCounters(t *testing.T) {
 	p := &provider{}
 	if got := p.deviceCounters(); len(got) != 0 {
@@ -63,7 +53,7 @@ func TestProviderDeviceCounters(t *testing.T) {
 	// fail). The device-level dropped figure is the sum of its streams' counters
 	// (droppedTotal), so each runtime carries one stream holding the drops; the
 	// overrun figure comes from the device's capture source.
-	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}, src: overrunSource{n: 3}}
+	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}, src: newOverrunCapture(3)}
 	a.streams[0].dropped.Store(42)
 	b := &deviceRuntime{dev: config.Device{Name: "bats"}, gen: 8, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
 	// A disabled and a failed device carry (possibly frozen) counters but must be
@@ -125,7 +115,7 @@ func TestDeviceRuntimeStatusReportsOverruns(t *testing.T) {
 	if got := rt.status().Overruns; got != 0 {
 		t.Errorf("status Overruns with no capture source = %d, want 0", got)
 	}
-	rt.src = overrunSource{n: 6}
+	rt.src = newOverrunCapture(6)
 	if got := rt.status().Overruns; got != 6 {
 		t.Errorf("status Overruns = %d, want the capture's 6", got)
 	}
