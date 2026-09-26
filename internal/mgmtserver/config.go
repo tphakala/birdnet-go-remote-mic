@@ -469,14 +469,8 @@ func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 		Format: mgmtapi.DeviceConfigFormat(d.Format),
 		Rate:   d.Rate,
 	}
-	if len(d.Streams) > 0 {
-		s0 := &d.Streams[0]
-		out.Path = s0.Path
-		out.Mode = mapMode(s0.Mode)
-		out.Channels = s0.Channels
-		if s0.Mode == config.ModeOpus {
-			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
-		}
+	if flat, ok := firstStream(d); ok {
+		out.Path, out.Mode, out.Channels, out.Opus = flat.path, flat.mode, flat.channels, flat.opus
 	}
 	streams := make([]mgmtapi.StreamConfig, 0, len(d.Streams))
 	for i := range d.Streams {

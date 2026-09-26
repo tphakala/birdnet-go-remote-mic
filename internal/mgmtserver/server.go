@@ -368,16 +368,7 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		DroppedFrames:   d.DroppedFrames,
 		Overruns:        d.Overruns,
 	}
-	if len(d.Config.Streams) > 0 {
-		s0 := &d.Config.Streams[0]
-		out.Path = s0.Path
-		out.Mode = mapMode(s0.Mode)
-		out.Channels = s0.Channels
-		if s0.Mode == config.ModeOpus {
-			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
-		}
-		out.StreamedChannels = ptr(d.Config.StreamChannelUnion())
-	}
+	projectFirstStream(&out, &d.Config)
 	if len(d.Streams) > 0 {
 		ss := make([]mgmtapi.StreamStatus, 0, len(d.Streams))
 		for i := range d.Streams {
@@ -431,6 +422,42 @@ func mapMode(m config.Mode) mgmtapi.StreamMode {
 		return mgmtapi.Opus
 	}
 	return mgmtapi.Pcm
+}
+
+// flatStream is a device's first stream in the flat path/mode/channels/opus
+// form the wire Device and DeviceConfig both carry, so a client that predates
+// fan-out still reads a usable single-stream device. Every builder of those
+// types derives it here, so a new flat field cannot reach one and miss another.
+type flatStream struct {
+	path     string
+	mode     mgmtapi.StreamMode
+	channels []int
+	opus     *mgmtapi.OpusSettings
+}
+
+// firstStream projects d's first stream, or reports false for a device with no
+// streams.
+func firstStream(d *config.Device) (flatStream, bool) {
+	if len(d.Streams) == 0 {
+		return flatStream{}, false
+	}
+	s0 := &d.Streams[0]
+	flat := flatStream{path: s0.Path, mode: mapMode(s0.Mode), channels: s0.Channels}
+	if s0.Mode == config.ModeOpus {
+		flat.opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
+	}
+	return flat, true
+}
+
+// projectFirstStream fills a wire Device's flat single-stream fields from cfg's
+// first stream, and streamedChannels from the union of every stream's channels.
+func projectFirstStream(out *mgmtapi.Device, cfg *config.Device) {
+	flat, ok := firstStream(cfg)
+	if !ok {
+		return
+	}
+	out.Path, out.Mode, out.Channels, out.Opus = flat.path, flat.mode, flat.channels, flat.opus
+	out.StreamedChannels = ptr(cfg.StreamChannelUnion())
 }
 
 // problem builds an RFC 9457 problem detail.

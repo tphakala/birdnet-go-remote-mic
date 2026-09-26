@@ -55,6 +55,11 @@ var deviceInUse = audio.DeviceInUse
 // so the open retry's per-attempt resolution is testable without hardware.
 var resolveOpenChannels = audio.ResolveOpenChannels
 
+// openCaptureAt opens a device's hardware capture. It is a package var so
+// openDevice's wiring of the capture into the runtime is testable without
+// hardware.
+var openCaptureAt = audio.OpenCaptureAt
+
 // startPprof serves net/http/pprof diagnostics on addr until ctx is cancelled. It
 // is only reached when the operator passes --pprof: the endpoints expose CPU/heap
 // profiles, a live goroutine dump, and the command line with no authentication, so
@@ -237,7 +242,7 @@ var runtimeGen atomic.Uint64
 // client is playing. Each stream extracts its own channels from the shared
 // capture with a selecting source, so the device opens the hardware exactly once.
 func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
-	base, capFormat, err := audio.OpenCaptureAt(dev, openCh)
+	base, capFormat, err := openCaptureAt(dev, openCh)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}

@@ -4,10 +4,13 @@ package main
 
 import (
 	"errors"
+	"io"
+	"sync/atomic"
 	"testing"
 
 	capture "github.com/tphakala/go-audio-capture"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 )
@@ -171,5 +174,42 @@ func TestPermanentOpenError(t *testing.T) {
 		if got := permanentOpenError(c.err); got != c.want {
 			t.Errorf("permanentOpenError(%v) = %v, want %v", c.err, got, c.want)
 		}
+	}
+}
+
+// overrunCapture is a capture source that ends at once and reports a settable
+// overrun count, standing in for the hardware capture openDevice opens.
+type overrunCapture struct{ n atomic.Uint64 }
+
+func (c *overrunCapture) Negotiated() (rate, channels int) { return 48000, 1 }
+func (c *overrunCapture) Read() (audio.Period, error)      { return audio.Period{}, io.EOF }
+func (c *overrunCapture) Close() error                     { return nil }
+func (c *overrunCapture) Overruns() uint64                 { return c.n.Load() }
+
+// openDevice keeps the (metered) base capture as the runtime's source, so the
+// capture's overrun count reaches the API and the host monitor; a runtime
+// pointed at a per-stream source instead would silently report zero.
+func TestOpenDeviceRuntimeReadsCaptureOverruns(t *testing.T) {
+	fake := &overrunCapture{}
+	fake.n.Store(4)
+	prev := openCaptureAt
+	openCaptureAt = func(*config.Device, int) (audio.Source, capture.Format, error) {
+		return fake, capture.FormatS16LE, nil
+	}
+	defer func() { openCaptureAt = prev }()
+
+	dev := &config.Device{Name: "yard", Device: devMissing, Rate: 48000, Format: testFmtS16,
+		Streams: []config.Stream{{Path: "/yard", Mode: config.ModePCM, Channels: []int{1}}}}
+	rt, err := openDevice(dev, 1, levels.NewHub())
+	if err != nil {
+		t.Fatalf("openDevice: %v", err)
+	}
+	defer func() { _ = rt.fanout.Close() }()
+	if got := rt.overruns(); got != 4 {
+		t.Errorf("runtime overruns = %d, want the capture's 4", got)
+	}
+	fake.n.Store(9)
+	if got := rt.status().Overruns; got != 9 {
+		t.Errorf("status Overruns = %d, want the capture's live 9", got)
 	}
 }
