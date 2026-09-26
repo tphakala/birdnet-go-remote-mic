@@ -34,13 +34,13 @@ const MODE_LABEL: Record<ThemeMode, string> = { system: "System", light: "Light"
 
 class App {
   public init(): void {
-    // One notice for every display preference the operator chose that cannot
-    // be saved (the theme, hidden channels, read marks after Mark all read or
-    // Clear all): a warning, held long enough to read, since it explains why
-    // choices appear to reset on reload.
+    // One notice for every browser preference the operator chose that cannot
+    // be saved (a Light or Dark theme, hidden channels, the Events / shortcut,
+    // read marks after Mark all read or Clear all): a warning, held long enough
+    // to read, since it explains why choices appear to reset on reload.
     prefSaveNotice.setHandler(() =>
       showToast(
-        "This browser could not save your display preferences, so they reset on reload. It blocks site data here or its storage is full; allow site data for this address in the browser settings to keep them.",
+        "This browser could not save your preferences, so they reset on reload. Allow site data for this address in the browser settings, or free up browser storage, to keep them.",
         "warn",
         SAVE_FAILED_TOAST_MS,
       ),

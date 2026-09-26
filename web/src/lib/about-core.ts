@@ -75,9 +75,10 @@ export function componentTitle(e: LicenseEntry): string {
 
 // supportDetails is the plain text the "Copy System Details" button puts on the
 // clipboard for a bug report: the build and the host, and nothing identifying
-// (no hostname, addresses, or token), since the report is public. A field the
-// host does not report is left out, or reads "unknown" where the line always
-// appears (version, platform).
+// (no hostname, addresses, or token), since the report is public. The version
+// line always appears and the Platform line whenever host details are known,
+// each reading "unknown" when empty; any other field the host does not report
+// is left out.
 export function supportDetails(status: ApplianceStatus | null, system: SystemInfo | null): string {
   const lines = [`remote-mic version: ${status?.version || "unknown"}`];
   if (system) {

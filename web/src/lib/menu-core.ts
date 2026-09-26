@@ -43,10 +43,10 @@ export function menuKeyAction(key: string, current: number, count: number): Menu
   }
 }
 
-// openIndex picks the item opening focuses: the last for ArrowUp, else the
-// checked one (checked is -1 when none is), else the first.
-export function openIndex(key: string, checked: number, count: number): number {
-  if (key === "ArrowUp") return Math.max(0, count - 1);
+// openIndex picks the item opening focuses: the last when fromEnd (ArrowUp),
+// else the checked one (checked is -1 when none is), else the first.
+export function openIndex(fromEnd: boolean, checked: number, count: number): number {
+  if (fromEnd) return Math.max(0, count - 1);
   return Math.max(0, checked);
 }
 

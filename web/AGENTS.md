@@ -139,7 +139,7 @@ reconcile:
   hidden meter channels, the Events `/` shortcut, read and dismissed
   notifications). Wrap access so a storage-blocked browser still works
   (`readBoolPref`/`writeBoolPref`, the try/catch in `auth.ts`,
-  `notifications.ts`, `theme-init.ts`, and `lib/theme.ts`). When a display
+  `notifications.ts`, `theme-init.ts`, and `lib/theme.ts`). When a
   preference the operator just chose cannot be saved, call
   `prefSaveNotice.report()` (`lib/prefs.ts`), which warns once per page; an
   automatic write (a snapshot or a live event) and the access token stay

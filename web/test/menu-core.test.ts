@@ -41,10 +41,10 @@ test("other keys, Enter and Space included, are left to the focused item", () =>
 });
 
 test("opening starts on the checked item, the first when none, the last for ArrowUp", () => {
-  assert.equal(openIndex("ArrowDown", 1, 3), 1);
-  assert.equal(openIndex("click", -1, 3), 0);
-  assert.equal(openIndex("ArrowUp", 0, 3), 2);
-  assert.equal(openIndex("ArrowUp", -1, 0), 0);
+  assert.equal(openIndex(false, 1, 3), 1);
+  assert.equal(openIndex(false, -1, 3), 0);
+  assert.equal(openIndex(true, 0, 3), 2);
+  assert.equal(openIndex(true, -1, 0), 0);
 });
 
 test("focus moving elsewhere on the page closes an open menu", () => {

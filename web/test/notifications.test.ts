@@ -194,20 +194,29 @@ test("a load failing after the stream went down arms no retry until it is back",
   assert.equal(h.ns.hasLoaded(), true);
 });
 
-// node has no localStorage, so every persist here fails the way a
-// storage-blocked browser does. This test sets the page-wide notice handler, so
-// it must stay the last in the file that can report.
+// This test sets the page-wide notice handler, so it must stay the last in the
+// file that can report (web/test/notifications-clear.test.ts covers clear-all in
+// a fresh process).
 test("a failed automatic save stays silent; a failed mark-all-read reports once", async () => {
-  let shown = 0;
-  prefSaveNotice.setHandler(() => shown++);
-  const h = harness();
-  h.push(snap([notif({ id: 1 }), notif({ id: 2 })]));
-  h.connect();
-  await settle();
-  // The snapshot's write (it records the boot id) fails, unprompted.
-  assert.equal(shown, 0, "a snapshot write is not the operator's choice");
-  h.ns.markAllRead();
-  assert.equal(shown, 1);
-  h.ns.clearAll();
-  assert.equal(shown, 1, "the notice shows once per page");
+  // Every write fails, as in a browser with site data blocked (set here rather
+  // than relying on node having no localStorage).
+  const g = globalThis as unknown as { localStorage?: unknown };
+  const saved = g.localStorage;
+  g.localStorage = { getItem: () => null, setItem: () => { throw new Error("blocked"); } };
+  try {
+    let shown = 0;
+    prefSaveNotice.setHandler(() => shown++);
+    const h = harness();
+    h.push(snap([notif({ id: 1 }), notif({ id: 2 })]));
+    h.connect();
+    await settle();
+    // The snapshot's write (it records the boot id) fails, unprompted.
+    assert.equal(shown, 0, "a snapshot write is not the operator's choice");
+    h.ns.markAllRead();
+    assert.equal(shown, 1);
+    h.ns.clearAll();
+    assert.equal(shown, 1, "the notice shows once per page");
+  } finally {
+    g.localStorage = saved;
+  }
 });

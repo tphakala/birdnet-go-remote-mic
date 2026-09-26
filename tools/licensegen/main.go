@@ -106,7 +106,13 @@ func run(check bool) error {
 	if err != nil {
 		return err
 	}
-	return syncOutputs([]output{{outFile, render(comps)}, {jsonFile, js}}, check)
+	return syncOutputs(generatedOutputs(render(comps), js), check)
+}
+
+// generatedOutputs is every file the tool maintains, in write order: the
+// markdown document and the About page's JSON copy.
+func generatedOutputs(doc, js []byte) []output {
+	return []output{{outFile, doc}, {jsonFile, js}}
 }
 
 // output is one generated file and the bytes it must hold.

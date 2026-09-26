@@ -65,12 +65,12 @@ export class MenuButton {
 
     button.addEventListener("click", () => {
       if (this.isOpen()) this.close(false);
-      else this.open(openIndex("click", this.checkedIndex(), this.items.length));
+      else this.open(openIndex(false, this.checkedIndex(), this.items.length));
     });
     button.addEventListener("keydown", (e) => {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        this.open(openIndex(e.key, this.checkedIndex(), this.items.length));
+        this.open(openIndex(e.key === "ArrowUp", this.checkedIndex(), this.items.length));
       }
     });
     this.menu.addEventListener("keydown", (e) => this.onMenuKey(e));
@@ -110,6 +110,12 @@ export class MenuButton {
     if (t instanceof Node && !this.menu.contains(t) && !this.button.contains(t)) this.close(false);
   };
   private readonly onHashChange = (): void => this.close(false);
+  // A dialog inerts the page before it takes focus, so the menu item blurs with
+  // no relatedTarget and focusout alone would leave the menu open behind it;
+  // focus arriving anywhere outside the menu and its button closes it too.
+  private readonly onFocusIn = (e: FocusEvent): void => {
+    if (closesOnFocusOut(this.isOpen(), this.focusTarget(e.target))) this.close(false);
+  };
 
   private open(focusIndex: number): void {
     this.menu.hidden = false;
@@ -117,6 +123,7 @@ export class MenuButton {
     // Capture phase, so a click that another handler stops still closes the menu.
     document.addEventListener("click", this.onDocClick, true);
     window.addEventListener("hashchange", this.onHashChange);
+    document.addEventListener("focusin", this.onFocusIn);
     this.focusItem(focusIndex);
   }
 
@@ -130,6 +137,7 @@ export class MenuButton {
     this.button.setAttribute("aria-expanded", "false");
     document.removeEventListener("click", this.onDocClick, true);
     window.removeEventListener("hashchange", this.onHashChange);
+    document.removeEventListener("focusin", this.onFocusIn);
     if (returnFocus) this.button.focus();
   }
 

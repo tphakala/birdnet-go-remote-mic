@@ -206,3 +206,17 @@ func TestSyncOutputs(t *testing.T) {
 		t.Fatalf("check with the second file stale: got %v, want ErrStale naming %s", err, js)
 	}
 }
+
+// TestGeneratedOutputs pins that both generated files are maintained, so
+// dropping one from the list cannot pass unnoticed (-check would then stop
+// comparing it).
+func TestGeneratedOutputs(t *testing.T) {
+	t.Parallel()
+	outs := generatedOutputs([]byte("doc"), []byte("js"))
+	if len(outs) != 2 || outs[0].path != outFile || outs[1].path != jsonFile {
+		t.Fatalf("got %+v, want %s then %s", outs, outFile, jsonFile)
+	}
+	if string(outs[0].data) != "doc" || string(outs[1].data) != "js" {
+		t.Errorf("got data %q, %q; want doc, js", outs[0].data, outs[1].data)
+	}
+}

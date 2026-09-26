@@ -172,8 +172,9 @@
 
       <h2 class="visually-hidden">Streaming Devices</h2>
       <!-- Announces a keyboard focus move the operator did not make: a control
-           holding focus hid because its channel stopped streaming or access
-           control was turned off. Present from load so the first message is read. -->
+           holding focus hid (its channel left the stream, another tab turned on
+           hiding inactive channels, or access control was turned off). Present
+           from load so the first message is read. -->
       <span class="visually-hidden" id="dashboard-announce" role="status" aria-live="polite"></span>
       <div class="channel-rack" id="channel-rack">
         <p class="rack-empty" id="rack-empty">Loading devices...</p>

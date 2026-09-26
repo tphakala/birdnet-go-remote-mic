@@ -62,8 +62,9 @@ export interface ThemeEnv {
   // Called on every applied change (and once at load), so a control can show
   // the mode and the theme it resolves to.
   onApply?: (mode: ThemeMode, theme: Theme) => void;
-  // Called once per page when a chosen mode cannot be saved, so the operator
-  // learns why the choice will not survive a reload.
+  // Called once per page when a Light or Dark choice cannot be saved, so the
+  // operator learns why it will not survive a reload. (A failed System choice
+  // is not reported: unreadable storage reads back as System anyway.)
   onSaveFailed: () => void;
 }
 
