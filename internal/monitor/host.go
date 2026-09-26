@@ -152,11 +152,14 @@ type counterState struct {
 	// into the sliding window and holds whether the condition is raised.
 	// ovLogAt is when the last overrun line short of the onset was written (zero
 	// before the first, and again after an onset), and ovUnlogged how many
-	// overruns have not been reported in a line since.
+	// overruns have not been reported in a line since. ovEpisode counts the
+	// overruns since the warning was raised, starting with the poll that raised
+	// it, for the line that ends the warning.
 	ovPrev     uint64
 	ov         *notify.Flap
 	ovLogAt    time.Time
 	ovUnlogged uint64
+	ovEpisode  uint64
 }
 
 // Host is the host-health condition monitor. A single goroutine polls the
@@ -291,6 +294,7 @@ func (h *Host) poll() {
 
 // resolveAll clears every active condition this monitor owns and resets state,
 // so a re-enable starts fresh (device counters rebaseline on the next poll).
+// Each device's overrun state writes the line it owes first (endOverruns).
 func (h *Host) resolveAll(reason string) {
 	for _, c := range [...]*hostCond{h.cpu, h.mem, h.temp, h.disk, h.vt} {
 		if c.h.Active() {
@@ -303,6 +307,7 @@ func (h *Host) resolveAll(reason string) {
 		if st.h.Active() {
 			h.pub.Resolve(streamDropsKey(name), reason)
 		}
+		h.endOverruns(st, name, reason)
 		if st.ov.Active() {
 			h.pub.Resolve(deviceOverrunsKey(name), reason)
 		}
@@ -471,8 +476,9 @@ func (h *Host) evaluateCounters(now time.Time) {
 			// presence grace, or a re-enable): baseline only. A cumulative counter
 			// cannot say how much of its count is recent, so nothing is counted
 			// toward a condition until the next poll shows what changed. A nonzero
-			// overrun count is still logged once, so overruns since the capture
-			// opened leave a trace (a re-enable repeats a count already logged).
+			// overrun count is still logged once, as the capture's running total,
+			// so overruns since it opened leave a trace; a re-enable repeats a
+			// total already logged, which the wording does not present as new.
 			st = &counterState{
 				h:    notify.NewHysteresis(dropsEnterAfter, dropsClearAfter),
 				prev: d.Dropped, prevAt: now, gen: d.Gen, seen: true,
@@ -480,7 +486,7 @@ func (h *Host) evaluateCounters(now time.Time) {
 				ov:     notify.NewFlap(overrunOnsetCount-1, overrunWindow, overrunClearAfter),
 			}
 			if d.Overruns > 0 {
-				h.logf("device %q: %d capture overrun(s) since the device opened, audio lost", d.Name, d.Overruns)
+				h.logf("device %q: capture has recovered from %d overrun(s) since it opened", d.Name, d.Overruns)
 				st.ovLogAt = now
 			}
 			h.devs[d.Name] = st
@@ -518,6 +524,7 @@ func (h *Host) evaluateCounters(now time.Time) {
 		if st.h.Active() {
 			h.pub.Resolve(streamDropsKey(name), "device stopped")
 		}
+		h.endOverruns(st, name, "device stopped")
 		if st.ov.Active() {
 			h.pub.Resolve(deviceOverrunsKey(name), "device stopped")
 		}
@@ -563,7 +570,8 @@ func (h *Host) observeDrops(st *counterState, now time.Time, name string, droppe
 // none. A restarted runtime's counter started at zero after the poll that last
 // saw its predecessor, so its whole count is new since that poll. Overruns short
 // of the onset are logged (see logOverruns); once the condition is raised its
-// onset line speaks for them until it clears. The quiet dwell is judged per
+// onset line speaks for them, and the line that ends it (the clear here, or a
+// resolve in endOverruns) reports how many there were while it was raised. The quiet dwell is judged per
 // poll, as notify.Flap does: the poll that completes the dwell clears the
 // condition before counting its own overruns, which start a fresh window, so a
 // burst of overrunOnsetCount there clears and re-raises it in the same poll.
@@ -576,7 +584,9 @@ func (h *Host) observeOverruns(st *counterState, now time.Time, name string, tot
 	}
 	st.ovPrev = total
 	if st.ov.Sweep(now) == notify.TransitionClear {
-		h.logf("device %q: no capture overruns for %s, overrun warning cleared", name, humanDuration(int(overrunClearAfter/time.Second)))
+		h.logf("device %q: no capture overruns at any check for %s, overrun warning cleared (%d overrun(s) while it was raised)",
+			name, humanDuration(int(overrunClearAfter/time.Second)), st.ovEpisode)
+		st.ovEpisode = 0
 		h.pub.Clear(deviceOverrunsKey(name), overrunsClearFor(name))
 	}
 	// One Event per overrun, capped at the onset count: past it a burst changes
@@ -588,21 +598,25 @@ func (h *Host) observeOverruns(st *counterState, now time.Time, name string, tot
 			h.logf("device %q: at least %d capture overruns within %s, audio lost; raising an overrun warning", name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)))
 			h.pub.Onset(overrunsOnset(name))
 			// The onset line speaks for any overruns not yet logged, and after the
-			// clear the first overrun is logged at once again.
-			st.ovUnlogged, st.ovLogAt = 0, time.Time{}
+			// clear the first overrun is logged at once again. The episode starts
+			// with this poll's overruns.
+			st.ovUnlogged, st.ovLogAt, st.ovEpisode = 0, time.Time{}, delta
 			return
 		}
 	}
-	if !st.ov.Active() {
-		h.logOverruns(st, now, name, delta)
+	if st.ov.Active() {
+		st.ovEpisode += delta
+		return
 	}
+	h.logOverruns(st, now, name, delta)
 }
 
 // logOverruns logs overruns short of the onset at most once per overrunWindow
 // per device, so a device that keeps overrunning just below the threshold does
-// not write a line every poll for as long as it runs. The first overrun after a
-// quiet stretch is logged at once; later ones accumulate and are reported as
-// one line with their count at the first poll after the window has passed,
+// not write a line every poll for as long as it runs. An overrun is logged at
+// once when no overrun line (or first-sighting line) was written in the last
+// overrunWindow, or since an onset; otherwise it accumulates and is reported
+// in one line with the others at the first poll after the window has passed,
 // even a quiet one, so no count is held back while the device keeps serving.
 func (h *Host) logOverruns(st *counterState, now time.Time, name string, delta uint64) {
 	st.ovUnlogged += delta
@@ -618,6 +632,19 @@ func (h *Host) logOverruns(st *counterState, now time.Time, name string, delta u
 		return
 	}
 	st.ovUnlogged, st.ovLogAt = 0, now
+}
+
+// endOverruns writes the line a device's overrun state owes before it is
+// dropped (the device stopped serving, or notifications were turned off):
+// the raised warning's overrun count, or the overruns still held back by the
+// log rate limit, so neither is lost from the journal.
+func (h *Host) endOverruns(st *counterState, name, reason string) {
+	switch {
+	case st.ov.Active():
+		h.logf("device %q: overrun warning resolved (%s) after %d overrun(s) while it was raised", name, reason, st.ovEpisode)
+	case st.ovUnlogged > 0:
+		h.logf("device %q: %d capture overrun(s) since the last overrun report, audio lost (%s)", name, st.ovUnlogged, reason)
+	}
 }
 
 func hostOnset(key, title, msg string, sev notify.Severity) notify.Notification {

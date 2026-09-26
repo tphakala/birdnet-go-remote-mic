@@ -1371,9 +1371,9 @@ func newHostLogT(counters CounterSource, rec *recPub, s Settings, c *clk) (*Host
 	return NewHost(nil, counters, rec, &s, WithHostClock(c.now), WithHostLogf(lr.logf)), lr
 }
 
-// Sub-threshold overruns log at once after a quiet stretch, then at most one
-// line per overrunWindow carrying what accumulated, flushed even by a quiet
-// poll; a device with no overruns logs nothing.
+// Sub-threshold overruns log at once when no line was written in the last
+// window, then at most one line per overrunWindow carrying what accumulated,
+// flushed even by a quiet poll; a device with no overruns logs nothing.
 func TestHostOverrunLogRateLimited(t *testing.T) {
 	t.Parallel()
 	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
@@ -1384,27 +1384,31 @@ func TestHostOverrunLogRateLimited(t *testing.T) {
 	if got := lr.all(); len(got) != 1 || got[0] != gardenOneOverrunLine {
 		t.Fatalf("after the first overrun: lines = %q, want one immediate line", got)
 	}
-	overrunPoll(h, c, feed, 10*time.Second, 1) // t=20
+	overrunPoll(h, c, feed, 10*time.Second, 2) // t=20
 	overrunPoll(h, c, feed, 10*time.Second, 1) // t=30
 	pollEvery(h, c, 10*time.Second, pollsIn(overrunWindow)-3)
 	if got := lr.all(); len(got) != 1 {
 		t.Fatalf("inside the window: lines = %q, want still one", got)
 	}
 	pollEvery(h, c, 10*time.Second, 1) // t=310: the window since t=10 has passed
-	if got := lr.all(); len(got) != 2 || got[1] != `device "garden": 2 capture overrun(s) since the last overrun report, audio lost` {
-		t.Fatalf("after the window: lines = %q, want the 2 held back reported by the quiet poll", got)
+	if got := lr.all(); len(got) != 2 || got[1] != `device "garden": 3 capture overrun(s) since the last overrun report, audio lost` {
+		t.Fatalf("after the window: lines = %q, want the 3 held back reported by the quiet poll", got)
 	}
 	pollEvery(h, c, 10*time.Second, 2*pollsIn(overrunWindow))
 	if got := lr.all(); len(got) != 2 {
 		t.Fatalf("quiet device: lines = %q, want no new line", got)
 	}
 
-	// A steady stream just under the threshold (one every 80 s, at most four in
-	// any window) for an hour writes about one line per window and loses no count.
+	// A steady stream just under the threshold (two every 160 s, at most four in
+	// any window) for two hours writes about one line per window and loses no
+	// count.
 	before := len(lr.all())
-	const steady = 45
-	for range steady {
-		overrunPoll(h, c, feed, 80*time.Second, 1)
+	const (
+		gap    = 160 * time.Second
+		bursts = 45
+	)
+	for range bursts {
+		overrunPoll(h, c, feed, gap, 2)
 	}
 	pollEvery(h, c, 10*time.Second, pollsIn(overrunWindow)) // flush the tail
 	lines := lr.all()[before:]
@@ -1416,15 +1420,16 @@ func TestHostOverrunLogRateLimited(t *testing.T) {
 		}
 		sum += n
 	}
-	if maxLines := steady*80/int(overrunWindow/time.Second) + 2; len(lines) > maxLines {
+	if maxLines := bursts*int(gap/time.Second)/int(overrunWindow/time.Second) + 2; len(lines) > maxLines {
 		t.Errorf("steady stream wrote %d lines, want at most %d", len(lines), maxLines)
 	}
-	if sum != steady {
-		t.Errorf("steady stream lines report %d overruns, want %d", sum, steady)
+	if sum != 2*bursts {
+		t.Errorf("steady stream lines report %d overruns, want %d", sum, 2*bursts)
 	}
 }
 
-// The onset line speaks for overruns not yet reported, and after the clear the
+// The onset line speaks for overruns not yet reported, overruns while raised
+// write no line but are counted into the clear line, and after the clear the
 // next overrun is logged at once rather than held for the window.
 func TestHostOverrunLogOnsetAndClear(t *testing.T) {
 	t.Parallel()
@@ -1433,14 +1438,20 @@ func TestHostOverrunLogOnsetAndClear(t *testing.T) {
 	h, lr := newHostLogT(feed.source, newRecPub(), hostSettings(), c)
 	h.poll()
 	overrunPoll(h, c, feed, 10*time.Second, 1)                   // t=10: logged at once
-	overrunPoll(h, c, feed, 10*time.Second, 1)                   // t=20: held back
-	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount-2) // t=30: onset
-	pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter))  // t=330: clear
-	overrunPoll(h, c, feed, 10*time.Second, 1)                   // t=340
+	overrunPoll(h, c, feed, 10*time.Second, 2)                   // t=20: held back
+	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount-3) // t=30: onset
+	overrunPoll(h, c, feed, 10*time.Second, 2)                   // t=40: while raised
+	pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter))  // t=340: clear
+	if got := lr.all(); len(got) != 3 {
+		t.Fatalf("after the clear: lines = %q, want onset and clear after the first line only", got)
+	}
+	overrunPoll(h, c, feed, 10*time.Second, 1) // t=350
+	episode := uint64(overrunOnsetCount-3) + 2
 	want := []string{
 		gardenOneOverrunLine,
 		`device "garden": ` + overrunOnsetText() + `, audio lost; raising an overrun warning`,
-		`device "garden": ` + overrunClearText() + `, overrun warning cleared`,
+		fmt.Sprintf(`device "garden": no capture overruns at any check for %s, overrun warning cleared (%d overrun(s) while it was raised)`,
+			humanDuration(int(overrunClearAfter/time.Second)), episode),
 		gardenOneOverrunLine,
 	}
 	if got := lr.all(); !slices.Equal(got, want) {
@@ -1448,8 +1459,9 @@ func TestHostOverrunLogOnsetAndClear(t *testing.T) {
 	}
 }
 
-// A device first seen with overruns already counted logs them once; one first
-// seen with none logs nothing.
+// A device first seen with overruns already counted logs its running total
+// once, and that line starts the rate-limit window; one first seen with none
+// logs nothing and its first overrun is logged at once.
 func TestHostOverrunLogFirstSighting(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1457,8 +1469,9 @@ func TestHostOverrunLogFirstSighting(t *testing.T) {
 		count uint64
 		want  []string
 	}{
-		{"with overruns", 7, []string{`device "garden": 7 capture overrun(s) since the device opened, audio lost`}},
-		{"without overruns", 0, nil},
+		{"with overruns", 7, []string{`device "garden": capture has recovered from 7 overrun(s) since it opened`}},
+		{"with one overrun", 1, []string{`device "garden": capture has recovered from 1 overrun(s) since it opened`}},
+		{"without overruns", 0, []string{gardenOneOverrunLine}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1466,9 +1479,55 @@ func TestHostOverrunLogFirstSighting(t *testing.T) {
 			c := newClk()
 			h, lr := newHostLogT(feed.source, newRecPub(), hostSettings(), c)
 			h.poll()
-			pollEvery(h, c, 10*time.Second, 1)
+			overrunPoll(h, c, feed, 10*time.Second, 1)
 			if got := lr.all(); !slices.Equal(got, tc.want) {
 				t.Errorf("lines = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// When a device stops serving or notifications are turned off, the overrun
+// state owes a line before it goes: the raised warning's count, or the
+// overruns the rate limit still held back.
+func TestHostOverrunLogFlushOnStop(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		bursts  []uint64
+		disable bool
+		want    string
+	}{
+		{"held back, device stops", []uint64{1, 2}, false,
+			`device "garden": 2 capture overrun(s) since the last overrun report, audio lost (device stopped)`},
+		{"held back, notifications disabled", []uint64{1, 2}, true,
+			`device "garden": 2 capture overrun(s) since the last overrun report, audio lost (notifications disabled)`},
+		{"raised, device stops", []uint64{overrunOnsetCount, 2}, false,
+			fmt.Sprintf(`device "garden": overrun warning resolved (device stopped) after %d overrun(s) while it was raised`, overrunOnsetCount+2)},
+		{"raised, notifications disabled", []uint64{overrunOnsetCount, 2}, true,
+			fmt.Sprintf(`device "garden": overrun warning resolved (notifications disabled) after %d overrun(s) while it was raised`, overrunOnsetCount+2)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+			c := newClk()
+			h, lr := newHostLogT(feed.source, newRecPub(), hostSettings(), c)
+			h.poll()
+			for _, n := range tc.bursts {
+				overrunPoll(h, c, feed, 10*time.Second, n)
+			}
+			if tc.disable {
+				s := hostSettings()
+				s.Enabled = false
+				h.Apply(&s)
+				pollEvery(h, c, 10*time.Second, 1)
+			} else {
+				feed.devs = nil
+				pollEvery(h, c, 10*time.Second, devicePresenceGrace)
+			}
+			got := lr.all()
+			if len(got) == 0 || got[len(got)-1] != tc.want {
+				t.Errorf("lines = %q, want the last to be %q", got, tc.want)
 			}
 		})
 	}
