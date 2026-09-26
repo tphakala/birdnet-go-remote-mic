@@ -12,8 +12,8 @@
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.js";
-import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, switchControl } from "../lib/ui.js";
-import { isLocalStorageEvent, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
+import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.js";
+import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
 import { showToast } from "../components/toast.js";
 import { FilterChips } from "../components/filter-chips.js";
 import { StatTile } from "../components/stat-tile.js";
@@ -40,17 +40,17 @@ import type { NotificationStore } from "../lib/notifications.js";
 import type { Notification, NotificationSeverity } from "../lib/types.js";
 
 const ICON_ALERT =
-  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>';
+  svgIcon('<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>');
 const ICON_LOG =
-  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path></svg>';
+  svgIcon('<path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path>');
 const ICON_SEARCH =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>';
+  svgIcon('<circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>', 14);
 const ICON_DOWNLOAD =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
+  svgIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>', 12);
 const ICON_CHECK =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>';
+  svgIcon('<path d="M20 6 9 17l-5-5"></path>', 12);
 const ICON_X =
-  '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+  svgIcon('<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>', 10, 2.5);
 
 // Per-browser opt-out for the "/" search shortcut. A single-character shortcut
 // must be possible to turn off (WCAG 2.1.4): it can fire from speech input or a
@@ -210,9 +210,8 @@ export class EventsView {
     // A "/" shortcut change saved in another tab applies here at once (the
     // storage event fires only in the other tabs); a cleared storage (key
     // null) means the default, on.
-    window.addEventListener("storage", (e: StorageEvent) => {
-      if (!isLocalStorageEvent(e) || (e.key !== null && e.key !== SLASH_PREF_KEY)) return;
-      const on = parseBoolPref(e.newValue, true);
+    onPrefChange((key) => key === SLASH_PREF_KEY, ({ newValue }) => {
+      const on = parseBoolPref(newValue, true);
       if (on === this.slashShortcut) return;
       this.slashShortcut = on;
       this.slashInput.checked = on;

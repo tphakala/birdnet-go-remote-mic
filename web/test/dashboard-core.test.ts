@@ -12,12 +12,16 @@ import {
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
+  clientSummary,
+  controlGoneMessage,
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
   hiddenRows,
   needsNotificationsFallback,
+  streamSummary,
   tallyStates,
+  tokenHiddenMessage,
 } from "../src/lib/dashboard-core.js";
 import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.js";
 
@@ -151,4 +155,52 @@ test("parseBoolPref reads 1 and 0, and falls back for anything else", () => {
   // An unrecognized value reads as the default, not as off.
   assert.equal(parseBoolPref("yes", true), true);
   assert.equal(parseBoolPref("", true), true);
+});
+
+test("streamSummary lists every configured stream, even while the device is down", () => {
+  const flat = { path: "/a", mode: "opus" as const, clientConnected: false };
+  const cfg = { streams: [
+    { path: "/a", mode: "opus" as const, channels: [1] },
+    { path: "/b", mode: "pcm" as const, channels: [1, 2] },
+    { path: "/c", mode: "opus" as const, channels: [2] },
+  ] };
+  const down = streamSummary(flat, cfg);
+  assert.deepEqual(down, { paths: ["/a", "/b", "/c"], modes: ["opus", "pcm"], connected: 0 });
+  assert.equal(clientSummary(down), "0 of 3 connected");
+
+  const serving = streamSummary({ ...flat, clientConnected: true, streams: [
+    { path: "/a", clientConnected: true, droppedFrames: 0 },
+    { path: "/b", clientConnected: true, droppedFrames: 0 },
+    { path: "/c", clientConnected: false, droppedFrames: 0 },
+  ] }, cfg);
+  assert.equal(clientSummary(serving), "2 of 3 connected");
+});
+
+test("streamSummary falls back to the record without a config", () => {
+  const s = streamSummary({ path: "/a", mode: "pcm", clientConnected: true });
+  assert.deepEqual(s, { paths: ["/a"], modes: ["pcm"], connected: 1 });
+  assert.equal(clientSummary(s), "Connected");
+  assert.equal(clientSummary(streamSummary({ path: "/a", mode: "pcm", clientConnected: false })), "-");
+  // A serving record lists its runtime streams when the config has not loaded.
+  const live = streamSummary({ path: "/a", mode: "pcm", clientConnected: false, streams: [
+    { path: "/a", clientConnected: false, droppedFrames: 0 },
+    { path: "/b", clientConnected: false, droppedFrames: 0 },
+  ] }, { streams: [] });
+  assert.deepEqual(live.paths, ["/a", "/b"]);
+  assert.deepEqual(live.modes, ["pcm"], "runtime streams carry no mode; the record's is the first stream's");
+  assert.equal(clientSummary(live), "0 of 2 connected");
+});
+
+test("focus messages name the device, the control and why it went", () => {
+  assert.equal(
+    controlGoneMessage("Garden", "clip-1", false),
+    "Garden: the channel 2 clip button went away because the device stopped streaming. Focus moved to its device settings.",
+  );
+  assert.equal(controlGoneMessage("Garden", "copy", true), "Garden: the Copy URL button is no longer shown. Focus moved to its device settings.");
+  assert.equal(
+    controlGoneMessage("Garden", "token", false),
+    "Garden: the Token tag went away because the device stopped streaming. Focus moved to its device settings.",
+  );
+  assert.equal(controlGoneMessage("Garden", "other", true), "Garden: the control is no longer shown. Focus moved to its device settings.");
+  assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
 });

@@ -66,8 +66,10 @@ golangci-lint run ./...          # .golangci.yaml already sets skipfrontend
 ```
 
 Other tasks: `task test`, `task lint`, `task fmt`, `task web:test`,
-`task api:generate`. The web toolchain is pinned in `Taskfile.yml` and run via
-`npx -p`; there is no `package.json` or `node_modules`.
+`task api:generate`, and `task web:sweep` (optional, not in `check`: renders
+the UI in Chromium against a mock API; see `web/AGENTS.md`). The web
+toolchain is pinned in `Taskfile.yml` and run via `npx -p`; there is no
+`package.json` or `node_modules`.
 
 ## Code style and workflow
 

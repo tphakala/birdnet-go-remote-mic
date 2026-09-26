@@ -9,8 +9,8 @@ import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 import { needsNotificationsFallback } from "./lib/dashboard-core.js";
-import { initTheme, PREFERS_LIGHT_QUERY, type Theme, type ThemeMode } from "./lib/theme.js";
-import { isLocalStorageEvent, prefSaveNotice } from "./lib/prefs.js";
+import { initTheme, PREFERS_LIGHT_QUERY, THEME_KEY, type Theme, type ThemeMode } from "./lib/theme.js";
+import { onPrefChange, prefSaveNotice } from "./lib/prefs.js";
 import { ERROR_TTL_MS, showToast } from "./components/toast.js";
 import { MenuButton } from "./components/menu-button.js";
 import { svgIcon } from "./lib/ui.js";
@@ -113,10 +113,7 @@ class App {
       storage: () => window.localStorage,
       media,
       // Only localStorage holds the theme; a sessionStorage change is not ours.
-      onStorage: (listener) =>
-        window.addEventListener("storage", (e) => {
-          if (isLocalStorageEvent(e)) listener({ key: e.key, newValue: e.newValue });
-        }),
+      onStorage: (listener) => onPrefChange((key) => key === THEME_KEY, listener),
       onApply: show,
       onSaveFailed: () => prefSaveNotice.report(),
     });

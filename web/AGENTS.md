@@ -40,14 +40,20 @@ The output must stay plain ES modules (plus the one classic script,
   401; the one deliberate bypass is the restart modal's raw
   `fetch("/api/v1/healthz")` probe), `sse.ts` (`sse`, fetch-streaming SSE
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
-  state), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`,
+  state; `applyUpdateStatus` merges an update check or request response and
+  drops older system reads), `router.ts` (hash routes `#/dashboard`,
+  `#/events`, `#/system`,
   `#/about`; the pure route decisions are in `router-core.ts`),
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
   formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow
   and cross-tab sync, with the browser objects injected so `node:test` covers
   it), `prefs.ts` (per-browser boolean preferences, `readBoolPref`/`writeBoolPref`,
-  `isLocalStorageEvent`, the hide-inactive keys, and the once-per-page
-  "preferences not saved" notice),
+  `onPrefChange` (every cross-tab preference listener), the hide-inactive
+  keys, and the once-per-page "preferences not saved" notice),
+  `update-core.ts` (the update status text in System Information,
+  `UpdateFollow` for an update this tab started, and `VersionWatch`, which
+  notices the appliance running another version than the page loaded
+  against: the following tab reloads, any other tab is told to),
   `types.ts` (API types).
 - `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
   `CustomDropdown`, `MenuButton`, `VUMeter`, `DeviceSettingsForm`,
@@ -61,6 +67,14 @@ The output must stay plain ES modules (plus the one classic script,
   Every non-trivial decision (filtering, grouping, formatting, diffing,
   validation) belongs here, with a matching `test/*.test.ts` run by
   `node:test`.
+- `e2e/`: the rendered sweep (`task web:sweep`, about 90 s, not in `check`).
+  `mock-server.ts` serves a compiled UI with fixture data for every endpoint
+  (run it alone to look at the UI: `node web/e2e/mock-server.ts <dir> [port]`);
+  `sweep.ts` drives Playwright's Chromium over every view in both themes at
+  320 and 1280 px and 16, 20 and 24 px browser font sizes, checking composited
+  contrast, that text scales, horizontal overflow, and steady meter rows. Run
+  it after layout, colour or type changes; keep the fixtures in step with
+  `types.ts`.
 
 ## State and reactivity
 
@@ -128,12 +142,15 @@ reconcile:
   live-region message), `MenuButton` (a single-choice header menu),
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
   switch; the static ones in `index.html` copy its markup, `role="switch"`
-  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size), and
-  icon constants such as `ICON_COPY` and `TOAST_ICONS`.
+  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size and
+  stroke width; every stroked icon uses it, from `lib/svg.ts`, a leaf module
+  `ui.ts` re-exports), `focusTarget` (where focus or a click went relative to
+  a popup and its opener), and icon constants such as `ICON_COPY` and
+  `TOAST_ICONS`.
 - A component with non-trivial event wiring keeps its state and sequencing in
   a DOM-free controller in `lib/*-core.ts` that drives injected ports (see
-  `MenuController` in `lib/menu-core.ts`), so node:test pins the wiring, not
-  only the decisions.
+  `MenuController` and `PopoverController` in `lib/menu-core.ts`), so
+  node:test pins the wiring, not only the decisions.
 
 ## DOM safety
 
@@ -165,8 +182,9 @@ reconcile:
   describe them. Secondary and muted text must reach `SMALL_TEXT` (5.5:1),
   not just AA.
 - Type scale and floor (`test/legibility.test.ts`): every `font-size` is a
-  `var(--font-size-*)` role token (px, defined on `:root`), never a literal,
-  and a `font:` shorthand may only reset (`font: inherit`). No text below
+  `var(--font-size-*)` role token (rem, defined on `:root`), never a literal,
+  and a `font:` shorthand may only reset (`font: inherit`). Sizes below are
+  at the default 16px root. No text below
   12px, and text below the 13px body size needs weight 500 or more. Sentences
   (subtitles, hints, notes, messages) use body (13px) at regular weight;
   caption (12px) is for short labels, badges and data at 500+. Declare the
@@ -210,6 +228,13 @@ reconcile:
   `#main-content` (device removal, login close) leaves the page where the
   operator was, while the router focuses the new view section and then scrolls
   to the top on purpose, so the header stays in view.
+- The UI follows the browser's font size setting: font sizes are rem
+  tokens, a box sized to fit its text (a badge or pill height, a line height,
+  the meter columns) is rem or em, and breakpoints are em. Layout widths
+  that do not fit text (grid minimums, flex bases, container and modal
+  maximums) may stay px. `task web:sweep` renders every view at
+  16, 20 and 24px browser font sizes and fails on text that does not grow or
+  a page that scrolls sideways.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.

@@ -33,6 +33,9 @@ export class VUMeter {
   private peakHoldVal: number = -60;
   private peakHoldTimer: number = 0;
   private isClipped: boolean = false;
+  // The latch state last written to the clip button, so the ~60fps render
+  // touches the DOM only when it changes.
+  private shownClip: boolean | null = null;
 
   private animFrameId: number | null = null;
   private paused: boolean = false;
@@ -59,6 +62,7 @@ export class VUMeter {
 
     if (this.clipEl) {
       this.clipEl.addEventListener("click", () => this.clearClip());
+      this.syncClip();
     }
 
     if (this.reducedMotion) {
@@ -97,9 +101,18 @@ export class VUMeter {
 
   public clearClip(): void {
     this.isClipped = false;
-    if (this.clipEl) {
-      this.clipEl.classList.remove("clipped");
-    }
+    this.syncClip();
+  }
+
+  // syncClip shows the latch on the clip button: the lit style, and
+  // aria-pressed so a screen reader hears whether it is latched (pressing it
+  // clears the latch, which releases the button).
+  private syncClip(): void {
+    const el = this.clipEl;
+    if (!el || this.shownClip === this.isClipped) return;
+    this.shownClip = this.isClipped;
+    el.classList.toggle("clipped", this.isClipped);
+    el.setAttribute("aria-pressed", String(this.isClipped));
   }
 
   public pause(): void {
@@ -219,12 +232,6 @@ export class VUMeter {
       this.peakValEl.textContent = formatted;
     }
 
-    if (this.clipEl) {
-      if (this.isClipped) {
-        this.clipEl.classList.add("clipped");
-      } else {
-        this.clipEl.classList.remove("clipped");
-      }
-    }
+    this.syncClip();
   }
 }

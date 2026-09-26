@@ -1,6 +1,8 @@
 // Pure, DOM-free helpers for the device settings form, split out so they can be
 // unit tested with node:test (see web/test/device-settings-core.test.ts).
 
+import type { DeviceConfig, StreamConfig } from "./types.js";
+
 // Opus bitrate default: 128 kbps for each channel carried, capped at the top of
 // the bitrate range Opus supports (510 kbps). Keep in sync with
 // config.OpusDefaultBitrate.
@@ -53,4 +55,37 @@ export function defaultOpusBitrate(channels: number): number {
 export function bitrateFollowsDefault(savedBitrate: number | undefined, channelCount: number): boolean {
   const def = defaultOpusBitrate(Math.min(2, channelCount));
   return (savedBitrate || def) === def;
+}
+
+// withFirstStream carries a multi-stream device's other streams through a save
+// from the settings form, which edits only the first stream (the flat path,
+// mode, channels and opus fields). The appliance rejects a patch without
+// streams that would collapse a multi-stream device, and with streams present
+// it ignores the flat fields, so the edited first stream goes in streams[0]. A
+// single-stream device is sent flat, as before, without any streams field the
+// edit carried.
+export function withFirstStream(edited: DeviceConfig, saved: readonly StreamConfig[] | undefined): DeviceConfig {
+  if (!saved || saved.length < 2) {
+    // Flat: a streams field the edit carries would be authoritative and stale.
+    const { streams: _stale, ...flat } = edited;
+    return flat;
+  }
+  const first: StreamConfig = { path: edited.path, mode: edited.mode, channels: edited.channels };
+  if (edited.opus) first.opus = edited.opus;
+  return { ...edited, streams: [first, ...saved.slice(1)] };
+}
+
+// otherOpusStream reports whether a stream after the first (which the form
+// does not edit) is Opus. The capture rate is shared, and Opus runs at 48000 Hz
+// only, so such a stream pins the rate whatever the first stream's mode.
+export function otherOpusStream(streams: readonly StreamConfig[] | undefined): boolean {
+  return (streams ?? []).slice(1).some((s) => s.mode === "opus");
+}
+
+// extraStreamsNote tells the operator the form edits only the first of several
+// streams, or returns "" for a single-stream device.
+export function extraStreamsNote(streams: readonly StreamConfig[] | undefined): string {
+  const n = streams?.length ?? 0;
+  if (n < 2) return "";
+  return `This device serves ${n} streams from one capture. The path, codec mode, channels and Opus bitrate here are the first stream's; the other streams keep theirs, and the sample rate applies to all of them.`;
 }

@@ -1,9 +1,11 @@
-// Pure decisions for the MenuButton component (components/menu-button.ts):
-// where a key moves focus in an open menu, which item opening starts on,
-// whether focus leaving the menu closes it, and the MenuController that
-// sequences them. No DOM here: the component hands the controller a small set
-// of ports, so node:test covers the wiring (what opens and closes the menu,
-// and where focus goes) as well as the rules.
+// Pure decisions for the header menus and popovers: where a key moves focus
+// in an open MenuButton menu (components/menu-button.ts), which item opening
+// starts on, and when focus leaving closes a popup (closesOnFocusOut, shared
+// with components/custom-dropdown.ts). MenuController sequences a menu and
+// PopoverController the notification panel (components/notification-center.ts).
+// No DOM here: each component hands its controller a small set of ports, so
+// node:test covers the wiring (what opens and closes, and where focus goes) as
+// well as the rules.
 
 export type MenuKeyAction =
   | { kind: "focus"; index: number }
@@ -204,5 +206,71 @@ export class MenuController {
     this.open = false;
     this.ports.setOpen(false);
     if (returnFocus) this.ports.focusButton();
+  }
+}
+
+// PopoverPorts is the DOM side of a popover panel opened from a button (the
+// notification panel from the bell).
+export interface PopoverPorts {
+  // setOpen shows or hides the panel, sets the button's aria-expanded, and
+  // starts or stops what lives only while it is open (page-wide listeners, a
+  // timer). Showing it also renders it.
+  setOpen(open: boolean): void;
+  focusPanel(): void;
+  focusButton(): void;
+}
+
+// PopoverController owns a popover panel's open state and when it closes. A
+// deliberate dismissal (the button, the close button, Escape from inside the
+// panel) returns focus to the button; a click or focus landing elsewhere on
+// the page, or a route change, closes it without moving focus, which would
+// fight whatever the operator just picked. As with a menu, focus leaving for
+// nowhere (the window blurred) keeps it open.
+export class PopoverController {
+  private open = false;
+
+  constructor(private readonly ports: PopoverPorts) {}
+
+  public isOpen(): boolean {
+    return this.open;
+  }
+
+  // toggle is the button's click: open and focus the panel, or close it.
+  public toggle(): void {
+    if (this.open) {
+      this.close(true);
+      return;
+    }
+    this.open = true;
+    this.ports.setOpen(true);
+    this.ports.focusPanel();
+  }
+
+  // close hides the panel; returnFocus puts focus back on the button. The
+  // state flips first, so the focusout the hide causes sees a closed panel.
+  public close(returnFocus: boolean): void {
+    if (!this.open) return;
+    this.open = false;
+    this.ports.setOpen(false);
+    if (returnFocus) this.ports.focusButton();
+  }
+
+  // escape reports Escape pressed anywhere while the panel is open. Focus goes
+  // back to the button only when it was inside the panel. It returns whether
+  // the key was used.
+  public escape(focusInPanel: boolean): boolean {
+    if (!this.open) return false;
+    this.close(focusInPanel);
+    return true;
+  }
+
+  // focusMoved reports focus or a click arriving somewhere (see
+  // closesOnFocusOut); only a target outside the panel and the button closes.
+  public focusMoved(target: FocusTarget): void {
+    if (closesOnFocusOut(this.open, target)) this.close(false);
+  }
+
+  public routeChange(): void {
+    this.close(false);
   }
 }

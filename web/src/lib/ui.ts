@@ -4,6 +4,10 @@
 // label maps live in exactly one place.
 import { ApiError } from "./api.js";
 import { showToast } from "../components/toast.js";
+import type { FocusTarget } from "./menu-core.js";
+import { svgIcon } from "./svg.js";
+
+export { svgIcon };
 
 // elem creates an element with an optional class and text content.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
@@ -13,14 +17,6 @@ export function elem(tag: string, className?: string, text?: string): HTMLElemen
   return e;
 }
 
-// setBusy marks a control in-progress WITHOUT removing it from the tab order:
-// aria-disabled (not the disabled property) keeps it focusable, so a keyboard
-// user is not dumped to <body> when the focused control goes busy. Because
-// aria-disabled does not block activation, the caller must guard re-entry (a
-// boolean flag, or checking aria-disabled). aria-busy announces the state and
-// the .is-busy class dims the control and shows a progress cursor. This is the
-// canonical busy affordance; prefer it over toggling `disabled` on a focused
-// control, which steals focus.
 // ICON_COPY is the shared copy glyph for every copy-to-clipboard control, so the
 // affordance reads the same on the dashboard, the system view, and the device
 // settings form. It lived in dashboard.ts, where only the dashboard's own copy
@@ -31,13 +27,6 @@ export const ICON_COPY = svgIcon('<rect width="14" height="14" x="8" y="8" rx="2
 // ICON_VERSION is the build-version tag glyph, shared by the System Information
 // card and the About page so the same fact carries the same icon.
 export const ICON_VERSION = svgIcon('<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" x2="7.01" y1="7" y2="7"></line>', 14);
-
-// svgIcon wraps the body of a 24x24 stroked (Lucide style) glyph in its <svg>
-// element at the given pixel size, so an icon constant carries only its paths.
-// The body must be static, trusted markup: the result goes through innerHTML.
-export function svgIcon(body: string, size = 16): string {
-  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-}
 
 // ICON_EXTERNAL marks a link that opens in a new tab, for sighted users; the
 // visually hidden note in externalLink tells screen reader users.
@@ -152,7 +141,8 @@ export function switchControl(opts: SwitchOptions): { el: HTMLLabelElement; inpu
 
 // setButtonLabel updates a button's visible text without disturbing a leading
 // icon: it writes into the .btn-label span the factory adds, and falls back to
-// the element's own text for a plain button that has no such span.
+// the element's own text for a plain button that has no such span. It writes
+// only when the text changed.
 export function setButtonLabel(el: HTMLElement, text: string): void {
   let label = el.querySelector<HTMLElement>(".btn-label");
   // An icon-only button has a .btn-icon but no label span; add one rather than
@@ -161,10 +151,18 @@ export function setButtonLabel(el: HTMLElement, text: string): void {
     label = elem("span", "btn-label");
     el.appendChild(label);
   }
-  if (label) label.textContent = text;
-  else el.textContent = text;
+  // A render may re-apply the same busy label on every poll.
+  setText(label ?? el, text);
 }
 
+// setBusy marks a control in-progress WITHOUT removing it from the tab order:
+// aria-disabled (not the disabled property) keeps it focusable, so a keyboard
+// user is not dumped to <body> when the focused control goes busy. Because
+// aria-disabled does not block activation, the caller must guard re-entry (a
+// boolean flag, or checking aria-disabled). aria-busy announces the state and
+// the .is-busy class dims the control and shows a progress cursor. This is the
+// canonical busy affordance; prefer it over toggling `disabled` on a focused
+// control, which steals focus.
 export function setBusy(el: HTMLElement, label?: string): void {
   if (label !== undefined) setButtonLabel(el, label);
   el.setAttribute("aria-disabled", "true");
@@ -287,6 +285,16 @@ export function announce(region: HTMLElement | null, message: string): void {
   requestAnimationFrame(() => {
     region.textContent = message;
   });
+}
+
+// focusTarget classifies where focus (or a click) went relative to a popup and
+// the control that opens it, for closesOnFocusOut: nowhere (the window blurred),
+// into the popup, onto the opener, or elsewhere on the page.
+export function focusTarget(t: EventTarget | null, popup: Node, opener: Node): FocusTarget {
+  if (!(t instanceof Node)) return "none";
+  if (popup.contains(t)) return "menu";
+  if (opener.contains(t)) return "button";
+  return "outside";
 }
 
 export function setHidden(el: HTMLElement, hidden: boolean): void {

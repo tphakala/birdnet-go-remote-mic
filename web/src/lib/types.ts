@@ -22,6 +22,26 @@ export interface OpusSettings {
   bitrate?: number;
 }
 
+// StreamConfig is one stream fanned out from a device's shared capture: a
+// subset of the device's channels, encoded in one mode, served at one path.
+export interface StreamConfig {
+  path: string;
+  mode: StreamMode;
+  channels: number[];
+  opus?: OpusSettings;
+}
+
+// StreamStatus is one stream's runtime state within a serving device.
+export interface StreamStatus {
+  path: string;
+  clientConnected: boolean;
+  droppedFrames: number;
+}
+
+// The flat path, mode, channels and opus fields mirror the first stream, for
+// clients that predate fan-out; streams holds the full set. On a PATCH a body
+// carrying streams is authoritative and the flat fields are ignored, and a body
+// without streams that would collapse a multi-stream device is rejected.
 export interface DeviceConfig {
   name: string;
   device: string;
@@ -41,6 +61,8 @@ export interface DeviceConfig {
   // when absent. Set false for a device expected to be silent for long stretches
   // (a bat microphone by day). Stuck-at-zero and clipping are unaffected.
   quietAlert?: boolean;
+  // Every stream, first one first. Absent from an older appliance.
+  streams?: StreamConfig[];
 }
 
 export interface DiscoverySettings {
@@ -233,6 +255,9 @@ export interface Device {
   idStable?: boolean;
   supportedRates?: number[];
   supportedChannels?: number[];
+  // Per-stream runtime state, present only while serving; the device-level
+  // clientConnected and droppedFrames aggregate it.
+  streams?: StreamStatus[];
 }
 
 // AvailableDevice is a capture device the host exposes that the configuration

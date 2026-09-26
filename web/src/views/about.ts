@@ -20,7 +20,7 @@ import {
 } from "../lib/about-core.js";
 import { router } from "../lib/router.js";
 import { store } from "../lib/store.js";
-import type { ApplianceStatus, Device, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, Config, Device, DeviceConfig, SystemInfo } from "../lib/types.js";
 import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.js";
 
 // Section and link icons: static, trusted markup.
@@ -90,6 +90,8 @@ export class AboutView {
   // announces the first applied list even when empty, and the view is built
   // before the store starts, so the event is the only feed needed.
   private devices: readonly Device[] | undefined;
+  // Device configs carry every stream; undefined until GET /config loads.
+  private configs: readonly DeviceConfig[] | undefined;
   // idle until the first visit; loading while the fetch runs; done once rendered.
   // A failure returns to idle so Retry (or the next visit) tries again.
   private licenses: "idle" | "loading" | "done" = "idle";
@@ -101,9 +103,10 @@ export class AboutView {
   constructor() {
     const root = document.getElementById("view-about");
     if (!root) return;
-    const { status, system } = store.getState();
+    const { status, system, config } = store.getState();
     this.status = status;
     this.system = system;
+    this.configs = config?.devices;
     // The router's first route event, after every view is built, renders the
     // live details if About is the page shown.
     root.appendChild(this.build());
@@ -118,6 +121,12 @@ export class AboutView {
     });
     store.addEventListener("devices", (e: Event) => {
       this.devices = (e as CustomEvent<Device[]>).detail;
+      this.renderLive();
+    });
+    // config fires on every poll; renderLive rebuilds only while About shows,
+    // and setText writes only on change.
+    store.addEventListener("config", (e: Event) => {
+      this.configs = (e as CustomEvent<Config | null>).detail?.devices;
       this.renderLive();
     });
     router.addEventListener("route", (e: Event) => {
@@ -188,7 +197,7 @@ export class AboutView {
     const detailsHead = elem("h3", "about-subtitle", "System Details");
     this.detailsEl = elem("pre", "about-details mono");
     const copy = button({ variant: "secondary", label: "Copy System Details", icon: ICON_COPY });
-    copy.addEventListener("click", () => copyText(supportDetails(this.status, this.system, this.devices), "System details copied"));
+    copy.addEventListener("click", () => copyText(supportDetails(this.status, this.system, this.devices, this.configs), "System details copied"));
     const actions = elem("div", "network-actions");
     actions.append(elem("span", "network-actions-spacer"), copy);
     body.append(detailsHead, this.detailsEl, actions);
@@ -240,7 +249,7 @@ export class AboutView {
   private renderLive(): void {
     if (!this.visible) return;
     if (this.versionEl) setText(this.versionEl, this.status?.version || "-");
-    if (this.detailsEl) setText(this.detailsEl, supportDetails(this.status, this.system, this.devices));
+    if (this.detailsEl) setText(this.detailsEl, supportDetails(this.status, this.system, this.devices, this.configs));
   }
 
   private async loadLicenses(): Promise<void> {

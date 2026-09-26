@@ -206,7 +206,7 @@ const PAIRS: Pair[] = [
   // same hue.
   { what: "ok badge label", fg: "--signal-ok-text", bg: ["--bg-surface", "--signal-ok-bg"], min: AA },
   { what: "ok label on the app ground", fg: "--signal-ok-text", bg: ["--bg-app"], min: AA },
-  { what: "ok label on a card", fg: "--signal-ok-text", bg: ["--bg-surface"], min: AA },
+  { what: "ok label on a card (and the update headline)", fg: "--signal-ok-text", bg: ["--bg-surface"], min: AA },
   { what: "warn badge label", fg: "--signal-warn-text", bg: ["--bg-surface", "--signal-warn-bg"], min: AA },
   { what: "warn label on the app ground", fg: "--signal-warn-text", bg: ["--bg-app"], min: AA },
   { what: "crit badge label", fg: "--signal-crit-text", bg: ["--bg-surface", "--signal-crit-bg"], min: AA },
@@ -217,7 +217,7 @@ const PAIRS: Pair[] = [
   // The login/confirm modal status line is the same pair.
   { what: "accent tag label (and modal status text)", fg: "--accent-cyan-text", bg: ["--bg-surface", "--accent-cyan-bg"], min: AA },
   { what: "accent tag label on a raised card", fg: "--accent-cyan-text", bg: ["--bg-surface-raised", "--accent-cyan-bg"], min: AA },
-  { what: "accent label on a card (license disclosure link)", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
+  { what: "accent label on a card (license disclosure link, update headline)", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
 
   // The ultrasonic (PCM L16) tag, same shape as the accent tag.
   { what: "ultrasonic tag label", fg: "--ultrasonic-text", bg: ["--bg-surface", "--ultrasonic-bg"], min: AA },
@@ -225,7 +225,7 @@ const PAIRS: Pair[] = [
 
   // Signal label on a plain card, with no tint under it: the access-token state
   // line, the settings-drift notice and its inline Reload link.
-  { what: "warn label on a card", fg: "--signal-warn-text", bg: ["--bg-surface"], min: AA },
+  { what: "warn label on a card (and the update headline)", fg: "--signal-warn-text", bg: ["--bg-surface"], min: AA },
 
   // The open-access banner sits on the app ground under a warn tint, and puts
   // both an icon and a link on it.
@@ -244,7 +244,7 @@ const PAIRS: Pair[] = [
   { what: "notification row title", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
   // Panel furniture that sits on its own grounds rather than on a row.
   { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: SMALL_TEXT },
-  { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
+  { what: "active-issues group heading (and the failed update headline)", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
   // The unread count on the header bell and the latched CLIP label: the
   // smallest text in the UI (11-12px bold) on a solid crit fill, so it takes
   // the small-text bar.

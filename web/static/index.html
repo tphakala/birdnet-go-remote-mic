@@ -215,8 +215,14 @@
                 </svg>
                 <span>System Information</span>
               </h2>
-              <span class="section-desc">Host platform and appliance build details.</span>
+              <span class="section-desc">Host platform, appliance build and software updates.</span>
             </div>
+          </div>
+          <div class="update-state" hidden id="sys-update-state" role="status">
+            <p class="update-headline" id="sys-update-headline"></p>
+            <p class="update-detail" id="sys-update-detail"></p>
+            <p class="update-hint" id="sys-update-hint" hidden></p>
+            <p class="update-detail" id="sys-update-note" hidden></p>
           </div>
           <div class="sysinfo-cols">
             <div class="sysinfo-group">
@@ -227,6 +233,19 @@
               <h3 class="sysinfo-group-title">Software</h3>
               <dl class="info-grid" id="sys-info-sw"></dl>
             </div>
+          </div>
+          <!-- Software updates: the daily release check and the one-button update (from live /system) -->
+          <div class="network-actions" id="sys-update-actions" hidden>
+            <label class="switch-control">
+              <input type="checkbox" id="sys-update-check" class="visually-hidden" role="switch" aria-describedby="sys-update-check-hint">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span class="switch-label">Check for new releases daily</span>
+            </label>
+            <span class="network-actions-spacer"></span>
+            <span id="sys-update-notes"></span>
+            <button type="button" class="btn btn-secondary" id="btn-update-check"><span class="btn-icon" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg></span><span class="btn-label">Check Now</span></button>
+            <button type="button" class="btn btn-primary" id="btn-update-apply" hidden>Update</button>
+            <span class="field-hint update-check-hint" id="sys-update-check-hint" hidden></span>
           </div>
         </div>
 
@@ -448,12 +467,12 @@
 </div>
 
 <!-- ================= RESTARTING MODAL OVERLAY ================= -->
-<div class="modal-overlay" id="restart-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+<div class="modal-overlay" id="restart-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-text">
   <div class="modal-card" tabindex="-1">
     <div class="spinner-ring" aria-hidden="true"></div>
     <div>
       <h3 id="modal-title" class="modal-title">Restarting Appliance</h3>
-      <p class="modal-text">
+      <p class="modal-text" id="modal-text">
         The appliance service is performing a graceful shutdown and restart. Polling <span class="mono">/healthz</span> for recovery.
       </p>
     </div>

@@ -25,11 +25,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // outFile is the generated document, relative to the repository root.
@@ -178,23 +180,29 @@ func syncOutputs(outs []output, check bool) error {
 	return nil
 }
 
-// collect gathers every component: the linked modules (sorted by path), then
-// the Go standard library, then the bundled assets. It fails on a component
-// with no license file or with one the classifier cannot name.
+// collect gathers every component: the modules linked into any release target
+// (listed for all targets at once, then sorted by path), then the Go standard
+// library, then the bundled assets. It fails when any target's listing fails,
+// and on a component with no license file or with one the classifier cannot
+// name.
 func collect() ([]component, error) {
-	mods := map[string]module{}
-	for _, t := range targets {
-		if err := listModules(t, mods); err != nil {
-			return nil, err
-		}
+	// One go list per release target, run side by side: each takes seconds
+	// and they share nothing. The merge runs in target order afterwards.
+	lists := make([]map[string]module, len(targets))
+	errs := make([]error, len(targets))
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Go(func() { lists[i], errs[i] = listModules(t) })
 	}
-	paths := slices.Sorted(func(yield func(string) bool) {
-		for p := range mods {
-			if !yield(p) {
-				return
-			}
-		}
-	})
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	mods := map[string]module{}
+	for _, l := range lists {
+		maps.Copy(mods, l)
+	}
+	paths := slices.Sorted(maps.Keys(mods))
 	comps := make([]component, 0, len(paths)+1+len(assets))
 	for _, p := range paths {
 		m := mods[p]
@@ -241,8 +249,9 @@ type module struct {
 	Replace            *module
 }
 
-// listModules adds the non-main modules linked into mainPackage for t to mods.
-func listModules(t target, mods map[string]module) error {
+// listModules returns the non-main modules linked into mainPackage for t,
+// keyed by module path.
+func listModules(t target) (map[string]module, error) {
 	// skipfrontend selects the web embed stub, so listing needs no built web/dist;
 	// it does not change which modules are linked.
 	cmd := exec.Command("go", "list", "-deps", "-json=Module", "-tags", "skipfrontend", mainPackage)
@@ -252,15 +261,16 @@ func listModules(t target, mods map[string]module) error {
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("go list for linux/%s: %w", t.goarch, err)
+		return nil, fmt.Errorf("go list for linux/%s: %w", t.goarch, err)
 	}
+	mods := map[string]module{}
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for {
 		var pkg struct{ Module *module }
 		if err := dec.Decode(&pkg); errors.Is(err, io.EOF) {
-			return nil
+			return mods, nil
 		} else if err != nil {
-			return fmt.Errorf("decode go list output: %w", err)
+			return nil, fmt.Errorf("decode go list output: %w", err)
 		}
 		m := pkg.Module
 		if m == nil || m.Main { // the standard library has no module

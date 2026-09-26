@@ -1,19 +1,22 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { button, copyText, elem, ICON_COPY, switchControl } from "../lib/ui.js";
+import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.js";
 import {
   MAX_NAME_LEN,
   MAX_PATH_LEN,
   bitrateFollowsDefault,
   defaultOpusBitrate,
+  extraStreamsNote,
   inputMaxLength,
   lengthError,
+  otherOpusStream,
 } from "../lib/device-settings-core.js";
+import { store } from "../lib/store.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
 const CHEVRON =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
+  svgIcon('<path d="m6 9 6 6 6-6"></path>', 14);
 const CHECK =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  svgIcon('<polyline points="20 6 9 17 4 12"></polyline>', 14, 2.5);
 
 // Standard ALSA capture rates offered for PCM when the device's own supported
 // set is unknown (device unavailable at startup). Opus is always locked to
@@ -128,6 +131,17 @@ export class DeviceSettingsForm {
     const uid = ++formSeq;
 
     const grid = elem("div", "form-grid-2col");
+
+    // A device with several streams: say first, before any field, which fields
+    // are the first stream's. The first-stream fields point at the note too
+    // (aria-describedby), so a screen reader can read it from each of them.
+    const streamsNote = extraStreamsNote(d.streams);
+    const noteId = streamsNote ? `set-${uid}-streams-note` : "";
+    if (streamsNote) {
+      const note = elem("p", "field-hint form-grid-note", streamsNote);
+      note.id = noteId;
+      grid.appendChild(note);
+    }
 
     // Resolve the codec mode the form actually opens on BEFORE building the
     // channel field. modeOptions() may not offer the saved mode (Opus on
@@ -347,6 +361,17 @@ export class DeviceSettingsForm {
     this.rateHidden.addEventListener("change", () => {
       if (this.ready) this.validate();
     });
+
+    if (noteId) {
+      for (const el of [
+        this.pathEl,
+        this.channelsGroup,
+        mode.container.querySelector(".dropdown-trigger"),
+        bitrate.container.querySelector(".dropdown-trigger"),
+      ]) {
+        if (el) el.setAttribute("aria-describedby", `${el.getAttribute("aria-describedby") ?? ""} ${noteId}`.trim());
+      }
+    }
   }
 
   // buildIdentity renders the read-only "Device id" row (a focusable, selectable
@@ -465,15 +490,19 @@ export class DeviceSettingsForm {
     let rateOk = rate >= 8000 && rate <= 384000;
     let chOk = channels.length >= 1;
     let chMsg = "Select at least one channel.";
+    let rateMsg = "Rate must be 8000-384000 Hz.";
     if (mode === "opus") {
       rateOk = rate === 48000;
+      rateMsg = `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`;
       chOk = channels.length >= 1 && channels.length <= 2;
       chMsg = "Opus requires one or two channels.";
+    } else if (otherOpusStream(store.getState().config?.devices.find((c) => c.device === this.device.device)?.streams ?? this.device.streams)) {
+      // The rate applies to every stream, and another one is Opus. The save
+      // keeps the current config's other streams, so check those.
+      rateOk = rate === 48000;
+      rateMsg = "Another stream of this device is Opus, which runs at 48000 Hz only, and the sample rate applies to every stream.";
     }
-    ok = this.markControl(this.rateErr, rateOk,
-      mode === "opus"
-        ? `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`
-        : "Rate must be 8000-384000 Hz.") && ok;
+    ok = this.markControl(this.rateErr, rateOk, rateMsg) && ok;
     ok = this.markControl(this.chErr, chOk, chMsg) && ok;
     this.channelsGroup.setAttribute("aria-invalid", String(!chOk));
     return ok;
@@ -518,6 +547,8 @@ export class DeviceSettingsForm {
       // mode change does not silently discard the operator's bitrate.
       dev.opus = this.device.opus;
     }
+    // Flat: the save adds the device's other streams from the config current
+    // at that moment (withFirstStream), not from when this form opened.
     return dev;
   }
 

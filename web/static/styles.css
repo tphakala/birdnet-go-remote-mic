@@ -102,21 +102,21 @@
 
   /* Type scale. Every font-size in this file names one of these roles, so a
      new view picks a role instead of a pixel value and the scale cannot drift
-     (test/legibility.test.ts enforces it). The sizes are px on purpose: the
-     layout around the text (meter columns, badge boxes, breakpoints) is px,
-     so rem text would outgrow it at a larger browser font setting. Browser
-     zoom still scales both. Sentences use body; caption is for short labels,
+     (test/legibility.test.ts enforces it). The sizes are rem, so a larger
+     browser font setting scales the text; the layout that holds text (meter
+     columns, badge boxes, pills) is rem too and the breakpoints are em, so it
+     grows with it. The px values named in the comments and the legibility
+     test are at the default 16px root. Sentences use body; caption is for short labels,
      badges and data at weight 500 or more. Micro is only for the two
      allowances listed in the legibility test. */
-  --font-size-micro: 11px;
-  --font-size-caption: 12px;
-  --font-size-body: 13px;
-  --font-size-label: 14px;
-  --font-size-title: 15px;
-  --font-size-value: 16px;
-  --font-size-heading: 20px;
-  --font-size-stat: 22px;
-  --font-size-display: 24px;
+  --font-size-micro: 0.6875rem;
+  --font-size-caption: 0.75rem;
+  --font-size-body: 0.8125rem;
+  --font-size-label: 0.875rem;
+  --font-size-title: 0.9375rem;
+  --font-size-value: 1rem;
+  --font-size-heading: 1.25rem;
+  --font-size-stat: 1.375rem;
   /* Inline code inside running text, relative to that text. Every host is
      body size or larger (the legibility test checks), so 0.93em keeps code at
      or above the 12px floor. */
@@ -170,6 +170,13 @@
      border and glow keep --signal-crit. Shared by both themes. */
   --crit-fill-bg: #b91c1c;
   --crit-fill-fg: #ffffff;
+  /* The thumb of a switch that is on, over the accent track. Shared by both
+     themes. */
+  --switch-thumb-on: #ffffff;
+  /* The scrim behind a modal. Dark in both themes: it dims the page either way. */
+  --modal-scrim: rgba(4, 7, 12, 0.82);
+  /* The wash under the meter canvas: light on the dark meter ground. */
+  --meter-wash: rgba(255, 255, 255, 0.03);
 }
 
 /* Light Theme (Laboratory Instrument) */
@@ -235,6 +242,8 @@
 
   --meter-bg: #e2e8f0;
   --meter-peak: #0284c7;
+  /* A light wash is invisible on the light meter ground; darken it here. */
+  --meter-wash: rgba(0, 0, 0, 0.04);
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -332,6 +341,7 @@ textarea {
 
 .brand-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -362,6 +372,7 @@ textarea {
 
 .brand-sub {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: var(--font-size-caption);
@@ -404,6 +415,8 @@ textarea {
 /* Nav Tabs */
 .nav-group {
   display: flex;
+  /* At a large browser font on a phone the four tabs can outgrow one row. */
+  flex-wrap: wrap;
   align-items: center;
   background: var(--bg-page);
   border: 1px solid var(--border-subtle);
@@ -995,7 +1008,7 @@ textarea {
      both off one variable keeps the scale aligned with the meter track. The
      stats column holds the widest readout ("-59.9 dBFS"), the gap and the CLIP
      button on one line, so a changing level never reflows the row. */
-  --meter-cols: 42px 1fr 144px;
+  --meter-cols: 2.625rem 1fr 9rem;
 }
 
 /* A high-channel interface (6-8 channels) would stack that many meter rows and
@@ -1044,12 +1057,8 @@ textarea {
   position: relative;
   border-radius: var(--radius-xs);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.03);
-}
-/* The dark wash is invisible on the light meter ground; darken it there so the
-   canvas track reads (the segments themselves are drawn theme-aware in script). */
-:root[data-theme="light"] .meter-canvas-container {
-  background: rgba(0, 0, 0, 0.04);
+  /* The segments themselves are drawn theme-aware in script. */
+  background: var(--meter-wash);
 }
 
 .meter-canvas {
@@ -1253,6 +1262,12 @@ textarea {
   margin-top: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--border-base);
+}
+
+/* A note under a group title that spans both columns of the settings grid. */
+.form-grid-note {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 /* The device id row spans both columns of the settings grid: the id is long
@@ -1498,6 +1513,8 @@ textarea.field-input {
 }
 
 .switch-track {
+  /* A wrapping label must not squeeze the track. */
+  flex-shrink: 0;
   width: 36px;
   height: 20px;
   background: var(--bg-surface-active);
@@ -1526,7 +1543,7 @@ input[type="checkbox"]:checked + .switch-track {
 }
 
 input[type="checkbox"]:checked + .switch-track .switch-thumb {
-  background: #ffffff;
+  background: var(--switch-thumb-on);
   transform: translateX(16px);
 }
 
@@ -1536,11 +1553,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 /* In-flight state: the input is disabled while its PATCH runs, so dim the
    track and show a progress cursor rather than a frozen-looking switch. */
-.switch-control input:disabled + .switch-track {
+.switch-control input:disabled + .switch-track,
+.switch-control input[aria-disabled="true"] + .switch-track {
   opacity: 0.55;
   cursor: progress;
 }
-.switch-control:has(input:disabled) {
+.switch-control:has(input:disabled),
+.switch-control:has(input[aria-disabled="true"]) {
   cursor: progress;
 }
 
@@ -1694,11 +1713,27 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   border-radius: var(--radius-full);
   font-size: var(--font-size-caption);
   font-weight: 600;
+}
+/* The pulse is on a dot, not the label: fading the text dropped it below the
+   contrast floor for half of every cycle. */
+.staged-badge::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
   animation: pulse-warn 1.8s infinite ease-in-out;
 }
 @keyframes pulse-warn {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.65; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .staged-badge::before {
+    animation: none;
+  }
 }
 
 /* The serve-overrides indicator on the Network card. Layout only, with no color
@@ -2013,11 +2048,16 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   border-bottom: none;
 }
 
+/* A device with several streams lists one path per line. */
+.client-table td.stream-paths {
+  white-space: pre-line;
+}
+
 /* Modal Overlay (Restarting & Confirm) */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(4, 7, 12, 0.82);
+  background: var(--modal-scrim);
   backdrop-filter: blur(6px);
   display: none;
   align-items: center;
@@ -2276,15 +2316,15 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   position: absolute;
   top: -4px;
   right: -4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
   border-radius: var(--radius-full);
   background: var(--crit-fill-bg);
   color: var(--crit-fill-fg);
   font-size: var(--font-size-micro);
   font-weight: 700;
-  line-height: 16px;
+  line-height: 1rem;
   text-align: center;
   box-shadow: 0 0 0 2px var(--bg-page);
   pointer-events: none;
@@ -2437,7 +2477,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-caption);
   font-weight: 600;
   padding: 0 6px;
-  line-height: 16px;
+  line-height: 1rem;
   border-radius: var(--radius-full);
   background: var(--bg-surface-active);
   color: var(--text-secondary);
@@ -2551,7 +2591,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 .stat-tile-value {
-  font-size: var(--font-size-display);
+  font-size: var(--font-size-stat);
   font-weight: 700;
   line-height: 1.1;
   color: var(--text-primary);
@@ -2583,7 +2623,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-caption);
   font-weight: 600;
   padding: 0 8px;
-  line-height: 18px;
+  line-height: 1.125rem;
   border-radius: var(--radius-full);
   background: var(--accent-cyan-bg);
   color: var(--accent-cyan-text);
@@ -2622,7 +2662,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   font-weight: 500;
-  line-height: 18px;
+  line-height: 1.125rem;
   padding: 0 6px;
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xs);
@@ -2878,7 +2918,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-caption);
   font-weight: 600;
   padding: 0 6px;
-  line-height: 16px;
+  line-height: 1rem;
   border-radius: var(--radius-full);
   border: 1px solid currentColor;
 }
@@ -2982,7 +3022,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 48em) {
   .ev-row .notif-row-top {
     flex-direction: column;
     align-items: flex-start;
@@ -2999,7 +3039,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 /* On a phone-width header the four nav tabs with their icons are wider than
    the header, so they spilled out of it at 320 px. Drop the decorative icons
    (the labels carry the meaning) and tighten the padding and the type. */
-@media (max-width: 400px) {
+@media (max-width: 25em) {
   .nav-item {
     padding: 0 5px;
     font-size: var(--font-size-caption);
@@ -3011,7 +3051,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* Responsive Rules */
-@media (max-width: 768px) {
+@media (max-width: 48em) {
   .instrument-header {
     flex-direction: column;
     align-items: stretch;
@@ -3243,6 +3283,7 @@ select.field-input {
 }
 .network-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 16px;
@@ -3295,6 +3336,18 @@ select.field-input {
 .available-enable {
   flex: 0 0 auto;
 }
+/* A control that cannot act now (aria-disabled keeps it focusable) looks it,
+   unless it is busy, which has its own look below. */
+.btn[aria-disabled="true"]:not(.is-busy),
+.btn[aria-disabled="true"]:not(.is-busy):hover,
+.btn[aria-disabled="true"]:not(.is-busy):active {
+  opacity: 0.55;
+  cursor: not-allowed;
+  /* No hover or press feedback on a control that will not act. */
+  box-shadow: none;
+  transform: none;
+}
+
 /* Busy affordance for a control kept focusable (aria-disabled, not disabled). */
 .is-busy {
   opacity: 0.65;
@@ -3338,6 +3391,54 @@ select.field-input {
 }
 .auth-state.open {
   color: var(--signal-warn-text);
+}
+/* Update status in System Information: a headline coloured by the state and
+   the sentences under it, above the columns. */
+.update-state {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The card's own gap spaces its sections. An empty status (before the first
+   check) leaves the flow so it adds no gap, but stays in the page as the live
+   region that announces the next status. */
+.update-state.is-empty {
+  position: absolute;
+}
+.update-state p {
+  margin: 0;
+}
+.update-headline {
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.update-headline.tone-ok {
+  color: var(--signal-ok-text);
+}
+.update-headline.tone-accent {
+  color: var(--accent-cyan-text);
+}
+.update-headline.tone-warn {
+  color: var(--signal-warn-text);
+}
+.update-headline.tone-error {
+  color: var(--signal-crit-text);
+}
+.update-detail,
+.update-hint {
+  font-size: var(--font-size-body);
+  color: var(--text-secondary);
+}
+.update-hint {
+  color: var(--text-primary);
+  /* A hint can end in a long command or path. */
+  overflow-wrap: anywhere;
+}
+/* The switch's warning while a download runs takes its own line at the end
+   of the update footer. */
+.update-check-hint {
+  flex-basis: 100%;
 }
 /* Certificate card: the two PEM textareas. .field-input supplies the chrome;
    this keeps them monospace, vertically resizable only (a width resize would
@@ -3463,6 +3564,9 @@ select.field-input {
   font-size: var(--font-size-body);
   line-height: 1.6;
   color: var(--text-secondary);
+  /* A repository address has no break point, and at a large font on a phone
+     it is wider than the card. */
+  overflow-wrap: break-word;
 }
 .about-text a,
 .about-card .info-val a {

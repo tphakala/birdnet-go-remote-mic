@@ -10,7 +10,7 @@
 // element (.menu-wrap) the popover anchors to. The state, key and focus rules
 // live in lib/menu-core.ts (MenuController); this file is the DOM side.
 import { MenuController, type FocusTarget, type MenuItem } from "../lib/menu-core.js";
-import { elem, iconSpan } from "../lib/ui.js";
+import { elem, focusTarget, iconSpan, svgIcon } from "../lib/ui.js";
 
 export interface MenuChoice extends MenuItem {
   // Static, trusted inline SVG markup (an ICON_* constant), shown before the label.
@@ -26,7 +26,7 @@ export interface MenuButtonOptions {
 
 // A check mark for the chosen item; aria-checked carries the state, so it is
 // decorative.
-const ICON_CHECK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>`;
+const ICON_CHECK = svgIcon('<path d="M20 6 9 17l-5-5"></path>', 13, 2.5);
 
 let menuSeq = 0;
 
@@ -93,16 +93,12 @@ export class MenuButton {
   }
 
   private focusTarget(t: EventTarget | null): FocusTarget {
-    if (!(t instanceof Node)) return "none";
-    if (this.menu.contains(t)) return "menu";
-    if (this.button.contains(t)) return "button";
-    return "outside";
+    return focusTarget(t, this.menu, this.button);
   }
 
   // The page-wide listeners live only while the menu is open.
   private readonly onDocClick = (e: MouseEvent): void => {
-    const t = e.target;
-    if (t instanceof Node && !this.menu.contains(t) && !this.button.contains(t)) this.ctl.outsideClick();
+    if (this.focusTarget(e.target) === "outside") this.ctl.outsideClick();
   };
   private readonly onHashChange = (): void => this.ctl.routeChange();
   private readonly onFocusIn = (e: FocusEvent): void => this.ctl.focusMoved(this.focusTarget(e.target));

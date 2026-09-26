@@ -1,4 +1,10 @@
+import { closesOnFocusOut } from "../lib/menu-core.js";
+import { focusTarget } from "../lib/ui.js";
+
 let dropdownSeq = 0;
+// Each container's dropdown, so opening one closes the others through close(),
+// which also drops their page-wide listeners.
+const dropdowns = new WeakMap<HTMLElement, CustomDropdown>();
 
 export class CustomDropdown {
   private container: HTMLElement;
@@ -8,6 +14,13 @@ export class CustomDropdown {
   private hiddenInput: HTMLInputElement | null;
   private onChange?: (val: string) => void;
   private docClickHandler!: (e: MouseEvent) => void;
+  // Page-wide listeners that live only while the list is open: focus arriving
+  // outside it (a dialog taking focus, which blurs nothing inside with a
+  // relatedTarget) and a route change both close it.
+  private readonly onFocusIn = (e: FocusEvent): void => {
+    if (closesOnFocusOut(this.isOpen(), focusTarget(e.target, this.menu, this.trigger))) this.close();
+  };
+  private readonly onHashChange = (): void => this.close();
   private activeIndex = -1;
 
   constructor(containerIdOrEl: string | HTMLElement, onChange?: (val: string) => void) {
@@ -28,6 +41,7 @@ export class CustomDropdown {
     this.hiddenInput = this.container.querySelector<HTMLInputElement>("input[type='hidden']");
     this.onChange = onChange;
     this.items = Array.from(this.container.querySelectorAll<HTMLElement>(".dropdown-item"));
+    dropdowns.set(this.container, this);
 
     this.wireAria();
     this.bindEvents();
@@ -56,6 +70,17 @@ export class CustomDropdown {
     });
 
     this.trigger.addEventListener("keydown", (e) => this.onKeydown(e));
+    // The options cannot take focus, so a mousedown on one would move focus to
+    // the nearest focusable ancestor (the view section), and the focusout
+    // below (or the page-wide focusin listener) would close the list before the
+    // click picked the option. Keeping focus on the trigger is the usual
+    // listbox pattern.
+    this.menu.addEventListener("mousedown", (e) => e.preventDefault());
+    // Focus leaving the dropdown for elsewhere on the page closes it; a window
+    // blur (no relatedTarget) keeps it open, as the header menus do.
+    this.container.addEventListener("focusout", (e) => {
+      if (closesOnFocusOut(this.isOpen(), focusTarget(e.relatedTarget, this.container, this.trigger))) this.close();
+    });
 
     this.items.forEach((item) => {
       item.addEventListener("click", (e) => {
@@ -136,6 +161,21 @@ export class CustomDropdown {
 
   public destroy(): void {
     document.removeEventListener("click", this.docClickHandler);
+    this.setPageListeners(false);
+  }
+
+  private isOpen(): boolean {
+    return this.container.classList.contains("open");
+  }
+
+  private setPageListeners(on: boolean): void {
+    if (on) {
+      document.addEventListener("focusin", this.onFocusIn);
+      window.addEventListener("hashchange", this.onHashChange);
+    } else {
+      document.removeEventListener("focusin", this.onFocusIn);
+      window.removeEventListener("hashchange", this.onHashChange);
+    }
   }
 
   public toggle(): void {
@@ -148,25 +188,31 @@ export class CustomDropdown {
 
   public open(): void {
     // Close other dropdowns
-    document.querySelectorAll(".custom-dropdown.open").forEach((el) => {
-      if (el !== this.container) {
-        el.classList.remove("open");
-        const trigger = el.querySelector(".dropdown-trigger");
-        trigger?.setAttribute("aria-expanded", "false");
-        // Clear the other dropdown's roving-highlight state too, so it does not
-        // leave aria-activedescendant pointing at a now-hidden option.
-        trigger?.removeAttribute("aria-activedescendant");
-        el.querySelectorAll(".dropdown-item.active").forEach((item) => item.classList.remove("active"));
+    document.querySelectorAll<HTMLElement>(".custom-dropdown.open").forEach((el) => {
+      if (el === this.container) return;
+      const other = dropdowns.get(el);
+      if (other) {
+        other.close();
+        return;
       }
+      // Markup no instance owns: undo the open state by hand, including the
+      // roving highlight, so no aria-activedescendant points at a hidden option.
+      el.classList.remove("open");
+      const trigger = el.querySelector(".dropdown-trigger");
+      trigger?.setAttribute("aria-expanded", "false");
+      trigger?.removeAttribute("aria-activedescendant");
+      el.querySelectorAll(".dropdown-item.active").forEach((item) => item.classList.remove("active"));
     });
     this.container.classList.add("open");
     this.trigger.setAttribute("aria-expanded", "true");
+    this.setPageListeners(true);
     // Start the roving highlight on the selected option.
     const selected = this.items.findIndex((item) => item.classList.contains("selected"));
     this.setActive(selected >= 0 ? selected : 0);
   }
 
   public close(): void {
+    this.setPageListeners(false);
     this.container.classList.remove("open");
     this.trigger.setAttribute("aria-expanded", "false");
     this.trigger.removeAttribute("aria-activedescendant");

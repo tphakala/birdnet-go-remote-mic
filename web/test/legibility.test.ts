@@ -55,14 +55,25 @@ interface Rule {
 const TOKEN_DECL = /(--font-size-[\w-]+)\s*:\s*([\d.]+)(px|rem|em)\s*;/g;
 const GLOBAL_KEYWORDS = new Set(["inherit", "initial", "unset", "revert", "revert-layer"]);
 
-// The type scale tokens: name to px, or null for a relative (em or rem) token,
-// which the scale test below refuses outside the one code token.
+// ROOT_PX is the browser's default root font size, at which a rem token is
+// resolved for the floor checks. A larger browser setting scales every token
+// alike, so a token that clears the floor here clears it there too.
+const ROOT_PX = 16;
+
+// The type scale tokens: name to px at the default root, or null for a token
+// relative to its element (em), which the floor checks cannot resolve.
 function scaleTokens(css: string): Map<string, number | null> {
   const tokens = new Map<string, number | null>();
   for (const m of css.matchAll(TOKEN_DECL)) {
-    tokens.set(m[1], m[3] === "px" ? Number(m[2]) : null);
+    const v = Number(m[2]);
+    tokens.set(m[1], m[3] === "px" ? v : m[3] === "rem" ? v * ROOT_PX : null);
   }
   return tokens;
+}
+
+// scaleUnits maps each type scale token to the unit it is declared in.
+function scaleUnits(css: string): Map<string, string> {
+  return new Map([...css.matchAll(TOKEN_DECL)].map((m) => [m[1], m[3]]));
 }
 
 function blankComments(source: string): string {
@@ -216,14 +227,16 @@ test("inline code sits only in body-size or larger text, so it stays above the f
   assert.deepEqual([...sample], [[".note code", 12], [".para code", 13], [".orphan code", null], [".direct", null]]);
 });
 
-test("the type scale is px, apart from the one relative code token", () => {
-  const tokens = scaleTokens(blankComments(css));
+test("the type scale is rem, apart from the one em code token", () => {
+  const source = blankComments(css);
+  const tokens = scaleTokens(source);
   assert.ok(tokens.size >= 5, `found only ${tokens.size} --font-size-* tokens`);
-  // rem text would outgrow the px layout around it (see the scale comment in
-  // styles.css), and any relative token escapes the floor check, which cannot
-  // resolve it.
-  const relative = [...tokens].filter(([, px]) => px === null).map(([name]) => name);
-  assert.deepEqual(relative, ["--font-size-code"]);
+  // rem scales with the browser's font setting, which px would ignore; an em
+  // token follows its host instead, so only inline code may use one (the
+  // host check above keeps it at body size or larger).
+  const units = [...scaleUnits(source)];
+  assert.deepEqual(units.filter(([, unit]) => unit !== "rem").map(([name]) => name), ["--font-size-code"]);
+  assert.equal(units.find(([name]) => name === "--font-size-code")?.[1], "em");
   assert.equal(tokens.get("--font-size-caption"), MIN_PX);
   assert.equal(tokens.get("--font-size-body"), BODY_PX);
 });

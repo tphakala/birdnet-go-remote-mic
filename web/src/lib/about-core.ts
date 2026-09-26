@@ -2,7 +2,7 @@
 // of licenses.json (written by tools/licensegen from the build's module graph,
 // so the page never drifts from what the binary links), and the plain-text
 // system details a bug report asks for. No DOM, network, or storage here.
-import type { ApplianceStatus, Device, SystemInfo } from "./types.js";
+import type { ApplianceStatus, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.js";
 
 export const REPO_URL = "https://github.com/tphakala/birdnet-go-remote-mic";
 export const ISSUES_URL = `${REPO_URL}/issues`;
@@ -80,8 +80,14 @@ export function componentTitle(e: LicenseEntry): string {
 // and the Platform line whenever host details are known, each reading "unknown"
 // when empty; any other field the host does not report is left out. The device
 // section appears whenever devices is given, even empty, so a report shows that
-// no device was configured.
-export function supportDetails(status: ApplianceStatus | null, system: SystemInfo | null, devices?: readonly Device[]): string {
+// no device was configured. configs, when loaded, adds every stream's mode and
+// channels (the device record carries only the first stream's).
+export function supportDetails(
+  status: ApplianceStatus | null,
+  system: SystemInfo | null,
+  devices?: readonly Device[],
+  configs?: readonly DeviceConfig[],
+): string {
   const lines = [`remote-mic version: ${status?.version || "unknown"}`];
   if (system) {
     lines.push(`Platform: ${system.platform || "unknown"}`);
@@ -89,7 +95,7 @@ export function supportDetails(status: ApplianceStatus | null, system: SystemInf
     if (system.kernel) lines.push(`Kernel: ${system.kernel}`);
     if (system.cpuModel) lines.push(system.cpuCores > 0 ? `CPU: ${system.cpuModel} (${system.cpuCores} cores)` : `CPU: ${system.cpuModel}`);
   }
-  if (devices) lines.push("", ...deviceDetails(devices));
+  if (devices) lines.push("", ...deviceDetails(devices, configs ?? []));
   return lines.join("\n");
 }
 
@@ -100,13 +106,15 @@ export function supportDetails(status: ApplianceStatus | null, system: SystemInf
 // independent of the browser's locale. Every device's configured id feeds
 // each block's error scrub, since one device's error can quote another's, and
 // a note above the blocks explains the placeholders whenever an error shows.
-function deviceDetails(devices: readonly Device[]): string[] {
+// Each block takes its streams from the config of the same device id (a rename
+// does not change it), if any.
+function deviceDetails(devices: readonly Device[], configs: readonly DeviceConfig[]): string[] {
   if (devices.length === 0) return ["Capture devices: none"];
   const sorted = [...devices].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const known = knownValues(devices);
   const lines = [`Capture devices: ${sorted.length}`];
   if (sorted.some((d) => d.state !== "serving" && d.error)) lines.push(PRIVACY_NOTE);
-  sorted.forEach((d, i) => lines.push("", ...deviceBlock(d, i + 1, known)));
+  sorted.forEach((d, i) => lines.push("", ...deviceBlock(d, i + 1, known, configs.find((c) => c.device === d.device))));
   return lines;
 }
 
@@ -226,7 +234,13 @@ const shortCardName = (name: string): string => name.replace(/\s+at\s+usb-.*$/, 
 
 const channelList = (ch: readonly number[]): string => (ch.length > 0 ? ch.join(",") : "none");
 
-function deviceBlock(d: Device, n: number, known: readonly Known[]): string[] {
+// streamLine describes one stream in plain words rather than the UI's modeLabel
+// badges ("OPUS", "PCM L16"), since this is prose for a bug report. The path is
+// left out: it is usually derived from the device name.
+const streamLine = (mode: StreamMode, channels: readonly number[]): string =>
+  `${mode === "opus" ? "Opus" : "PCM"}, channels ${channelList(channels)}`;
+
+function deviceBlock(d: Device, n: number, known: readonly Known[], cfg: DeviceConfig | undefined): string[] {
   const lines = [`Device ${n}: ${(d.friendlyName && shortCardName(oneLine(d.friendlyName))) || "(no name reported)"}`];
   lines.push(`  ID: ${deviceIdKind(d)}`);
   let state: string = d.state;
@@ -243,9 +257,20 @@ function deviceBlock(d: Device, n: number, known: readonly Known[]): string[] {
   if (d.negotiatedChannels) neg.push(`${d.negotiatedChannels} ${d.negotiatedChannels === 1 ? "channel" : "channels"}`);
   if (d.negotiatedFormat) neg.push(d.negotiatedFormat);
   if (neg.length > 0) lines.push(`  Negotiated: ${neg.join(", ")}`);
-  // Plain words rather than the UI's modeLabel badges ("OPUS", "PCM L16"):
-  // this is prose for a bug report.
-  lines.push(`  First stream: ${d.mode === "opus" ? "Opus" : "PCM"}, channels ${channelList(d.channels)}`);
+  const streams = cfg?.streams ?? [];
+  if (streams.length > 0) {
+    lines.push(`  Streams: ${streams.length}`);
+    streams.forEach((s, i) => {
+      // Runtime state matches its config by path, which only the lookup sees.
+      const live = d.streams?.find((r) => r.path === s.path);
+      const drops = live ? `, dropped frames ${live.droppedFrames}` : "";
+      lines.push(`    Stream ${i + 1}: ${streamLine(s.mode, s.channels)}${drops}`);
+    });
+  } else {
+    // No config yet, or an appliance that predates streams: the record's flat
+    // fields describe the first stream only.
+    lines.push(`  First stream: ${streamLine(d.mode, d.channels)}`);
+  }
   lines.push(`  Overruns: ${d.overruns ?? "not reported"}, dropped frames: ${d.droppedFrames}`);
   return lines;
 }

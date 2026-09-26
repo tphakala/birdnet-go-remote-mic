@@ -17,7 +17,11 @@ import {
   runeLength,
   bitrateFollowsDefault,
   defaultOpusBitrate,
+  extraStreamsNote,
+  otherOpusStream,
+  withFirstStream,
 } from "../src/lib/device-settings-core.js";
+import type { DeviceConfig } from "../src/lib/types.js";
 
 test("defaultOpusBitrate scales per channel, floors at one, and caps at the Opus ceiling", () => {
   assert.equal(defaultOpusBitrate(1), OPUS_BITRATE_PER_CHANNEL); // 128000
@@ -95,4 +99,59 @@ test("the name and path limits match internal/config MaxNameLen and MaxPathLen",
   const src = readFileSync(CONFIG_GO, "utf8");
   assert.equal(MAX_NAME_LEN, goConst(src, "MaxNameLen"));
   assert.equal(MAX_PATH_LEN, goConst(src, "MaxPathLen"));
+});
+
+test("withFirstStream sends a single-stream device flat", () => {
+  const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16" };
+  assert.deepEqual(withFirstStream(edited, undefined), edited);
+  assert.deepEqual(withFirstStream(edited, [{ path: "/old", mode: "opus", channels: [1] }]), edited);
+});
+
+test("withFirstStream puts the edit in streams[0] and keeps the others", () => {
+  const edited: DeviceConfig = {
+    name: "a", device: "hw:1,0", path: "/new", mode: "opus", rate: 48000, channels: [2], format: "s16", opus: { bitrate: 0 },
+  };
+  const second = { path: "/b", mode: "pcm" as const, channels: [1, 2] };
+  const got = withFirstStream(edited, [{ path: "/old", mode: "pcm", channels: [1] }, second]);
+  assert.deepEqual(got.streams, [{ path: "/new", mode: "opus", channels: [2], opus: { bitrate: 0 } }, second]);
+  // The flat fields stay too, mirroring streams[0] as the API does.
+  assert.equal(got.path, "/new");
+});
+
+test("withFirstStream keeps every other stream exactly, and an edit without opus adds none", () => {
+  const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1, 2], format: "s16" };
+  const second = { path: "/b", mode: "opus" as const, channels: [1], opus: { bitrate: 64000 } };
+  const third = { path: "/c", mode: "pcm" as const, channels: [2] };
+  const got = withFirstStream(edited, [{ path: "/a", mode: "opus", channels: [1], opus: { bitrate: 96000 } }, second, third]);
+  assert.deepEqual(got.streams, [{ path: "/a", mode: "pcm", channels: [1, 2] }, second, third]);
+});
+
+test("withFirstStream takes the other streams from the list it is given, not the edit", () => {
+  // The save passes the config current at save time; a stream added there
+  // since the form opened is kept, and one removed there stays removed.
+  // The edit carries a stale streams list, which must not win.
+  const edited: DeviceConfig = {
+    name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16",
+    streams: [{ path: "/a", mode: "pcm", channels: [1] }, { path: "/stale", mode: "pcm", channels: [2] }],
+  };
+  const now = [{ path: "/a", mode: "pcm" as const, channels: [1] }, { path: "/new", mode: "pcm" as const, channels: [2] }];
+  assert.deepEqual(withFirstStream(edited, now).streams?.map((st) => st.path), ["/a", "/new"]);
+  assert.equal(withFirstStream(edited, [now[0]]).streams, undefined, "down to one stream, the edit goes flat");
+});
+
+test("otherOpusStream looks only past the first stream", () => {
+  const pcm = { path: "/a", mode: "pcm" as const, channels: [1] };
+  const opus = { path: "/b", mode: "opus" as const, channels: [1] };
+  assert.equal(otherOpusStream(undefined), false);
+  assert.equal(otherOpusStream([opus]), false, "the first stream is the form's own");
+  assert.equal(otherOpusStream([opus, pcm]), false);
+  assert.equal(otherOpusStream([pcm, pcm, opus]), true);
+});
+
+test("extraStreamsNote speaks only for a multi-stream device", () => {
+  assert.equal(extraStreamsNote(undefined), "");
+  assert.equal(extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }]), "");
+  const note = extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }, { path: "/b", mode: "pcm", channels: [2] }]);
+  assert.ok(note.includes("serves 2 streams"), note);
+  assert.ok(note.includes("Opus bitrate"), note);
 });
