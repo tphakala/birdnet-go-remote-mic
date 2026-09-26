@@ -577,6 +577,14 @@ textarea {
   border: 1px solid var(--signal-crit);
 }
 
+/* The dot takes the badge's state, like the offline connection indicator: a
+   green pulse inside a red "No Devices" badge contradicts the label. */
+.status-badge.crit .pulse-dot {
+  background-color: var(--signal-crit);
+  box-shadow: 0 0 8px var(--signal-crit-glow);
+  animation: none;
+}
+
 /* Views Management */
 .view-panel {
   display: none;
