@@ -73,7 +73,12 @@ func (s *Server) GetSystem(_ context.Context, _ mgmtapi.GetSystemRequestObject) 
 		}, nil
 	}
 	si := s.system.System()
-	return mgmtapi.GetSystem200JSONResponse(systemToWire(&si)), nil
+	out := systemToWire(&si)
+	if s.updates != nil {
+		st := s.updates.Status()
+		out.Update = new(updateToWire(&st))
+	}
+	return mgmtapi.GetSystem200JSONResponse(out), nil
 }
 
 // PostSystemRestart handles POST /system/restart. Without a restart function it reports 501.

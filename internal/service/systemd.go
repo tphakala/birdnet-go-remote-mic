@@ -4,6 +4,7 @@ package service
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,8 @@ type InitSystem interface {
 	Disable(unit string) error
 	// Stop stops a running unit.
 	Stop(unit string) error
+	// ResetFailed clears a unit's failed state and start-limit counter.
+	ResetFailed(unit string) error
 }
 
 // Systemd drives systemctl through the Runner seam.
@@ -62,6 +65,31 @@ func (s *Systemd) Disable(unit string) error {
 func (s *Systemd) Stop(unit string) error {
 	_, err := s.Run("systemctl", "stop", unit)
 	return err
+}
+
+// ResetFailed runs systemctl reset-failed.
+func (s *Systemd) ResetFailed(unit string) error {
+	_, err := s.Run("systemctl", "reset-failed", unit)
+	return err
+}
+
+// Restart runs systemctl restart.
+func (s *Systemd) Restart(unit string) error {
+	_, err := s.Run("systemctl", "restart", unit)
+	return err
+}
+
+// MainPID returns the unit's main process ID, 0 when it is not running.
+func (s *Systemd) MainPID(unit string) (int, error) {
+	out, err := s.Run("systemctl", "show", "--property=MainPID", "--value", unit)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("systemctl show MainPID %s: %q: %w", unit, strings.TrimSpace(string(out)), err)
+	}
+	return pid, nil
 }
 
 // IsEnabled reports whether unit is enabled at boot.

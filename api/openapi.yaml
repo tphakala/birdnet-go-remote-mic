@@ -420,6 +420,69 @@ paths:
         default:
           $ref: "#/components/responses/Problem"
 
+  /system/update:
+    post:
+      operationId: postSystemUpdate
+      tags: [system]
+      summary: Install the available update
+      description: >
+        Starts a one-button update to the newest release the last check
+        found. The appliance downloads the release for its platform, checks
+        its size and SHA-256 against the signed manifest, and hands it to the
+        root updater, which verifies it again, installs it, and restarts the
+        appliance (dropping connected RTSP clients briefly). A new version
+        that does not come up is rolled back automatically. The response
+        returns at once with the update in the downloading phase; progress
+        and the outcome arrive as notifications and in `GET /system`. Only a
+        `remote-mic service install` installation with the root updater
+        units can update itself (`update.canApply`).
+      responses:
+        "202":
+          description: The update started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateStatus"
+        "409":
+          description: >
+            No update is available, this installation cannot update itself,
+            update checks are turned off, or an update is already in
+            progress.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+
+  /system/update/check:
+    post:
+      operationId: postSystemUpdateCheck
+      tags: [system]
+      summary: Check for an update now
+      description: >
+        Checks for a newer release immediately instead of waiting for the
+        daily check, and returns the result. A check that finished in the
+        last few seconds is returned without asking again. A failed check is
+        not an error response: it is reported in `lastError`.
+      responses:
+        "200":
+          description: The update state after the check.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateStatus"
+        "409":
+          description: >
+            Update checks are turned off (`updates.check`), or the running
+            build is not a release.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+
   /system/certificate:
     get:
       operationId: getSystemCertificate
@@ -1301,7 +1364,7 @@ components:
     Config:
       type: object
       description: The appliance configuration (defaults applied).
-      required: [listen, discovery, management, auth, notifications, devices]
+      required: [listen, discovery, management, auth, notifications, updates, devices]
       properties:
         listen:
           type: string
@@ -1314,6 +1377,8 @@ components:
           $ref: "#/components/schemas/AuthSettings"
         notifications:
           $ref: "#/components/schemas/NotificationSettings"
+        updates:
+          $ref: "#/components/schemas/UpdateSettings"
         devices:
           type: array
           maxItems: 32
@@ -1486,6 +1551,18 @@ components:
         host:
           $ref: "#/components/schemas/HostAlertSettings"
 
+    UpdateSettings:
+      type: object
+      description: Release update check settings.
+      properties:
+        check:
+          type: boolean
+          description: >
+            Whether the appliance checks daily for a newer release; defaults
+            to true when absent. With it off the appliance makes no outbound
+            update request at all. In a patch, an absent field leaves the
+            setting unchanged.
+
     AudioAlertSettings:
       type: object
       description: Audio-signal condition thresholds.
@@ -1576,6 +1653,8 @@ components:
           $ref: "#/components/schemas/AuthSettings"
         notifications:
           $ref: "#/components/schemas/NotificationSettings"
+        updates:
+          $ref: "#/components/schemas/UpdateSettings"
         devices:
           type: array
           description: >
@@ -1730,6 +1809,75 @@ components:
           description: Non-loopback network interfaces.
           items:
             $ref: "#/components/schemas/NetworkInterface"
+        update:
+          $ref: "#/components/schemas/UpdateStatus"
+
+    UpdateStatus:
+      type: object
+      description: >
+        The release update state: the running and newest known versions,
+        the last check, how this appliance was installed (which decides
+        whether it can update itself), and a one-button update in progress.
+      required: [currentVersion, checkEnabled, supported, available, installMethod, canApply, phase]
+      properties:
+        currentVersion:
+          type: string
+          description: The running version.
+          examples: ["v0.2.0"]
+        supported:
+          type: boolean
+          description: >
+            False for a build that names no release (such as one built as
+            "dev"), which never checks for updates.
+        checkEnabled:
+          type: boolean
+          description: Whether the daily check is on (`updates.check`).
+        latestVersion:
+          type: string
+          description: The newest stable release found; absent before a successful check.
+          examples: ["v0.3.0"]
+        notesUrl:
+          type: string
+          format: uri
+          description: The newest release's release notes; absent before a successful check.
+        available:
+          type: boolean
+          description: Whether latestVersion is newer than the running version.
+        lastCheck:
+          type: string
+          format: date-time
+          description: >
+            When the last check finished (appliance wall clock); absent
+            before the first check.
+        lastError:
+          type: string
+          description: Why the last check failed; absent after a success.
+        installMethod:
+          type: string
+          enum: [service, deb, homebrew, manual]
+          description: >
+            How the running binary was installed. `service` is `remote-mic
+            service install`; `deb` and `homebrew` belong to a package
+            manager, which is never bypassed; `manual` is a binary run from
+            where it was unpacked.
+        canApply:
+          type: boolean
+          description: >
+            Whether `POST /system/update` can install an update here: a
+            service installation whose root updater units are installed.
+        upgradeHint:
+          type: string
+          description: How to update by hand when canApply is false.
+        phase:
+          type: string
+          enum: [idle, downloading, installing, failed]
+          description: >
+            Where a one-button update stands. `installing` means the root
+            updater has the release and restarts the appliance when it is
+            done; `failed` means the last attempt failed (see phaseMessage).
+        phaseMessage:
+          type: string
+          description: A human-readable detail for the phase.
 
     NetworkInterface:
       type: object

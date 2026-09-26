@@ -27,6 +27,17 @@ func TestSettingsFromMapsEveryField(t *testing.T) {
 	if !s.Enabled {
 		t.Error("Enabled = false, want true (absent flag defaults on)")
 	}
+	if !s.UpdateCheck {
+		t.Error("UpdateCheck = false, want true (absent updates.check defaults on)")
+	}
+	cfg.Updates.Check = new(false)
+	if SettingsFrom(&cfg).UpdateCheck {
+		t.Error("UpdateCheck = true with updates.check false")
+	}
+	cfg.Updates.Check = new(true)
+	if !SettingsFrom(&cfg).UpdateCheck {
+		t.Error("UpdateCheck = false with updates.check true")
+	}
 	// Every threshold is carried through. SettingsFrom is called with a defaulted
 	// config, so each pointer is non-nil; here they are all set explicitly.
 	if *s.Audio.QuietDbfs != -50 || *s.Audio.QuietSeconds != 1200 || *s.Audio.ZeroSeconds != 45 ||

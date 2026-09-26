@@ -90,3 +90,49 @@ func TestRenderRejectsBadSpec(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderUpdaterDefaults(t *testing.T) {
+	pathUnit, serviceUnit, err := RenderUpdater(ServiceSpec{})
+	if err != nil {
+		t.Fatalf("RenderUpdater: %v", err)
+	}
+	wantLines(t, string(pathUnit),
+		"[Path]",
+		"PathExists=/var/lib/remote-mic/update/request.json",
+		"PathExists=/usr/local/bin/remote-mic.pending",
+		"Unit=remote-mic-update.service",
+		"WantedBy=multi-user.target",
+	)
+	svc := string(serviceUnit)
+	wantLines(t, svc,
+		"Type=oneshot",
+		"ExecStart=/usr/local/bin/remote-mic service apply-update --bin-path=/usr/local/bin/remote-mic --state-dir=/var/lib/remote-mic",
+		"NoNewPrivileges=true",
+		"ProtectSystem=strict",
+		"PrivateNetwork=true",
+		"ReadWritePaths=/usr/local/bin /var/lib/remote-mic",
+		"StartLimitBurst=10",
+		"StartLimitIntervalSec=10min",
+		"TimeoutStartSec=10min",
+	)
+	// The updater must run as root to replace a root-owned binary; a User=
+	// line would silently make every update fail.
+	if strings.Contains(svc, "User=") {
+		t.Errorf("updater unit sets a user:\n%s", svc)
+	}
+}
+
+func TestRenderUpdaterCustom(t *testing.T) {
+	pathUnit, serviceUnit, err := RenderUpdater(ServiceSpec{BinPath: "/opt/remote-mic/bin/remote-mic", StateDir: "/srv/remote-mic"})
+	if err != nil {
+		t.Fatalf("RenderUpdater: %v", err)
+	}
+	wantLines(t, string(pathUnit), "PathExists=/srv/remote-mic/update/request.json", "PathExists=/opt/remote-mic/bin/remote-mic.pending")
+	wantLines(t, string(serviceUnit),
+		"ExecStart=/opt/remote-mic/bin/remote-mic service apply-update --bin-path=/opt/remote-mic/bin/remote-mic --state-dir=/srv/remote-mic",
+		"ReadWritePaths=/opt/remote-mic/bin /srv/remote-mic",
+	)
+	if _, _, err := RenderUpdater(ServiceSpec{StateDir: "/var/lib"}); err == nil {
+		t.Error("RenderUpdater accepted a shared state directory")
+	}
+}

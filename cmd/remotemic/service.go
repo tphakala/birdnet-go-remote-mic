@@ -63,6 +63,8 @@ func runService(args []string, stdout, stderr io.Writer) int {
 		return toExit(runServiceUninstall(rest[1:], escalated, stderr), stderr)
 	case "status":
 		return toExit(runServiceStatus(rest[1:], stdout, stderr), stderr)
+	case "apply-update":
+		return toExit(runServiceApplyUpdate(rest[1:], stderr), stderr)
 	}
 	if isHelp(rest[0]) {
 		serviceUsage(stdout)

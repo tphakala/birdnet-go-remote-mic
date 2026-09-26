@@ -171,7 +171,7 @@ them; new code MUST use them and existing code migrates when touched:
   fields). The `ptr[T]` (`internal/mgmtserver`) and `ptrInt` (config tests)
   helpers predate this; do not add more.
 - Errors: wrap with `fmt.Errorf("...: %w", err)`, compare with `errors.Is`,
-  (new) extract with `errors.AsType`. Sentinels are `ErrXxx`, types are
+  extract with `errors.AsType`. Sentinels are `ErrXxx`, types are
   `XxxError` (errname). `errors.New` for constant messages.
 - Logging is the standard `log` package, lowercase messages that lead with the
   subsystem (`pprof: ...`) or device (`device %q disconnected: ...`). No
@@ -271,10 +271,22 @@ thelper, and testifylint. `unused` is disabled.
 - `internal/sysinfo`: `/proc`, `/sys`, statfs readers for `GET /system` and the
   host monitor. Parsers are platform-neutral; readers are Linux-only.
 - `internal/service`: installs a systemd unit running as a least-privilege
-  system user.
+  system user, plus the root updater's path and oneshot units
+  (`remote-mic-update.path`/`.service`), left out (with a warning) when
+  anyone but root can write the bin path.
 - `internal/runlock`: advisory lock at `<config path>.lock` marking a live
   appliance, so token commands use its API instead of editing its config.
 - `internal/atomicfile`: atomic durable file replace (config, certs).
+- `internal/update`: the appliance side of updates. `Manager` is a
+  `monitor.Monitors` member (daily check gated on `updates.check`, the
+  available notification, one-button apply); `Fetcher` resolves the latest
+  tag once and verifies the manifest pair; `Stager` stages the release in
+  `<cert dir>/update/`; `Applier` is the root updater
+  (`service apply-update`, started by `remote-mic-update.path`), which
+  re-verifies everything through an `os.Root`, swaps the binary, and rolls
+  back unless the new version writes its health file from the unit's main
+  process and stays up for a settle period; `Boot` reports the
+  outcome and writes that file.
 - `internal/releasemanifest`: the signed release manifest schema, Ed25519
   signing and verification, and the trusted release keys. Platform-neutral,
   standard library only, shared by the release tool and update code.
@@ -304,6 +316,20 @@ field old readers must not ignore goes in `requires`. A `Schema` bump ships
 under a new file name beside `manifest.json`, since installed appliances keep
 fetching that one. Rotate the key by shipping the new public key in `keys.go`
 first, then switching the secret.
+
+Self-updated appliances keep the units their original install wrote, the
+installed (older) binary is the updater that checks the new one, and
+recovery after a power loss runs in the new, unconfirmed binary. So these
+are contracts between versions: add, never rename or repurpose, or every
+later update is refused or rolled back for good:
+- the `service apply-update --bin-path --state-dir` invocation, and the
+  appliance unit's `serve --cert-dir` and `serve --check` lines (the
+  staging directory derives from `--cert-dir`);
+- the first line of `remote-mic version`, exactly `remote-mic <version>`,
+  which the old updater compares with the manifest;
+- the staging file names in `internal/update/files.go` and the JSON fields
+  of `health.json`, `status.json` and `request.json`;
+- the install journal (`<bin>.pending`) and its fields.
 
 ## Gotchas
 

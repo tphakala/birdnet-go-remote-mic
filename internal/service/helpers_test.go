@@ -10,8 +10,16 @@ import (
 // Repeated fixture strings, factored out to satisfy goconst and keep the
 // expected event sequences readable.
 const (
-	evReload    = "reload"
-	nologinPath = "/usr/sbin/nologin"
+	evReload       = "reload"
+	nologinPath    = "/usr/sbin/nologin"
+	evGroupadd     = "run groupadd --system --force remote-mic"
+	evChownConfig  = "chown /etc/remote-mic 990:990"
+	evEnableNowApp = "enable --now remote-mic.service"
+	evStopPath     = "stop remote-mic-update.path"
+	evDisablePath  = "disable remote-mic-update.path"
+	evStopUpdater  = "stop remote-mic-update.service"
+	evResetPath    = "reset-failed remote-mic-update.path"
+	evResetUpdater = "reset-failed remote-mic-update.service"
 )
 
 // call records one Runner invocation for assertions.
@@ -70,10 +78,11 @@ func wantSeq(t *testing.T, got, want []string) {
 // shared event slice, so a test can assert the ordering of systemd actions
 // relative to filesystem and user operations.
 type fakeInit struct {
-	events  *[]string
-	present bool
-	enabled bool
-	active  bool
+	events   *[]string
+	present  bool
+	enabled  bool
+	resetErr error
+	active   bool
 }
 
 func (f *fakeInit) log(s string)  { *f.events = append(*f.events, s) }
@@ -100,6 +109,11 @@ func (f *fakeInit) Disable(unit string) error {
 func (f *fakeInit) Stop(unit string) error {
 	f.log("stop " + unit)
 	return nil
+}
+
+func (f *fakeInit) ResetFailed(unit string) error {
+	f.log("reset-failed " + unit)
+	return f.resetErr
 }
 
 func (f *fakeInit) IsEnabled(string) (bool, error) { return f.enabled, nil }

@@ -33,8 +33,10 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 	}
 }
 
-// Uninstall stops and disables the unit, removes the unit file, and reloads
-// systemd. With purge it also removes the binary, the config and state
+// Uninstall stops and disables the unit and the root updater's units, clears
+// the updater units' failed state, removes their unit files, and reloads
+// systemd. With purge it also removes the
+// binary (with the copies the updater keeps beside it), the config and state
 // directories, and the service user.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
@@ -48,11 +50,21 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 		return err
 	}
 
+	// The path unit goes first, so it cannot start the updater while the
+	// appliance is being torn down.
+	_ = un.Init.Stop(UpdatePathUnit)
+	_ = un.Init.Disable(UpdatePathUnit)
+	_ = un.Init.Stop(UpdateServiceUnit)
+	// A unit that failed stays listed as failed, file or not, until reset.
+	_ = un.Init.ResetFailed(UpdatePathUnit)
+	_ = un.Init.ResetFailed(UpdateServiceUnit)
 	_ = un.Init.Stop(DefaultUnitName)
 	_ = un.Init.Disable(DefaultUnitName)
 
-	if err := un.removeFile(s.UnitPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service: remove unit %s: %w", s.UnitPath(), err)
+	for _, p := range []string{s.UpdatePathUnitPath(), s.UpdateServiceUnitPath(), s.UnitPath()} {
+		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("service: remove unit %s: %w", p, err)
+		}
 	}
 	if err := un.Init.DaemonReload(); err != nil {
 		return fmt.Errorf("service: daemon-reload: %w", err)
@@ -61,8 +73,12 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 	if !purge {
 		return nil
 	}
-	if err := un.removeFile(s.BinPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service: remove binary %s: %w", s.BinPath, err)
+	// The root updater leaves the previous binary beside the installed one,
+	// and a cut-off update can leave its staged copy and journal.
+	for _, p := range []string{s.BinPath, s.BinPath + ".prev", s.BinPath + ".new", s.BinPath + ".pending"} {
+		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("service: remove binary %s: %w", p, err)
+		}
 	}
 	for _, dir := range []string{s.ConfigDir(), s.StateDir} {
 		if err := un.removeAll(dir); err != nil {

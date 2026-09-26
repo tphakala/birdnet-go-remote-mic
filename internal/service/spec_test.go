@@ -5,6 +5,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +82,28 @@ func TestValidateRejectsBadPaths(t *testing.T) {
 				t.Fatalf("Validate accepted a malformed path: %+v", spec)
 			}
 		})
+	}
+}
+
+// TestValidateRejectsBinInsideDataDirs pins that the binary the root updater
+// runs cannot live where the service user can write.
+func TestValidateRejectsBinInsideDataDirs(t *testing.T) {
+	t.Parallel()
+	for _, bin := range []string{"/var/lib/remote-mic/remote-mic", "/var/lib/remote-mic/bin/remote-mic", "/etc/remote-mic/remote-mic"} {
+		s := ServiceSpec{BinPath: bin}.withDefaults()
+		if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "service user can write") {
+			t.Errorf("bin path %s: got %v", bin, err)
+		}
+	}
+	// A sibling whose name merely shares the prefix is fine, and so is a
+	// bin directory above the state directory.
+	for _, s := range []ServiceSpec{
+		{BinPath: "/var/lib/remote-mic-bin/remote-mic"},
+		{BinPath: "/srv/appliance/remote-mic", StateDir: "/srv/appliance/state"},
+	} {
+		s = s.withDefaults()
+		if err := s.Validate(); err != nil {
+			t.Errorf("bin path %s, state dir %s: %v", s.BinPath, s.StateDir, err)
+		}
 	}
 }

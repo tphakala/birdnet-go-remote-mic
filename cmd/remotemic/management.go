@@ -25,6 +25,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 	"github.com/tphakala/birdnet-go-remote-mic/web"
 )
 
@@ -770,6 +771,8 @@ type mgmtParams struct {
 	// runLock publishes where the API listens, or that none serves; nil
 	// publishes nothing.
 	runLock *runLockPublisher
+	// updates is the release update subsystem; nil mounts no update routes.
+	updates *update.Manager
 	// drainTimeout bounds each of a stopping API's two waits: for its
 	// connections to go idle before it closes them, and then for handlers
 	// still running after the close. Zero means mgmtDrainTimeout. Tests
@@ -928,7 +931,8 @@ func (p *mgmtParams) prepareCertificate() (mounted bool, err error) {
 
 // serveManagement makes one attempt to bring the API up: prepare the
 // certificate, bind the listener, and serve until ctx is cancelled or the
-// listener fails, which the returned server's wait reports.
+// listener fails, which the returned server's wait reports. The update routes
+// are mounted only when p.updates is set.
 //
 // An installed (pinned) certificate that exists but cannot be read comes back as
 // *mgmtcert.PinnedReadError and fails the attempt: the API stays off rather than
@@ -977,6 +981,10 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 	// auth change) write to, so wire both faces from the one object.
 	if p.center != nil {
 		opts = append(opts, mgmtserver.WithNotifications(p.center), mgmtserver.WithNotifier(p.center))
+	}
+	// A nil *update.Manager must not become a non-nil interface.
+	if p.updates != nil {
+		opts = append(opts, mgmtserver.WithUpdates(p.updates))
 	}
 
 	var handlers inflight
