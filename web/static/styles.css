@@ -2855,6 +2855,18 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   }
 }
 
+/* On a phone-width header the three nav tabs with their icons are wider than
+   the header, so the page scrolled sideways at 320 px. Drop the decorative
+   icons (the labels carry the meaning) and tighten the padding. */
+@media (max-width: 400px) {
+  .nav-item {
+    padding: 0 8px;
+  }
+  .nav-item svg {
+    display: none;
+  }
+}
+
 /* Responsive Rules */
 @media (max-width: 768px) {
   .instrument-header {

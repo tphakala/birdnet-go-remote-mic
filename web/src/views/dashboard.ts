@@ -197,8 +197,8 @@ function nonServingFooterText(state: string, configEnabled: boolean): string {
 // OVERRUNS_DESCRIPTION explains the capture-overrun counter, which the label
 // alone cannot for an operator who has not met the term.
 const OVERRUNS_DESCRIPTION =
-  "Times the capture fell behind the sound card (or the system suspended), losing audio on every stream; " +
-  "usually a busy host or an unstable USB connection. Counted since the device was opened.";
+  "Times capture fell behind the sound card (or the system suspended) and lost audio, since the device opened; " +
+  "usually a busy host or unstable USB.";
 
 // metricItem builds one footer metric: its label and the value element syncCard
 // fills. A description is read after the value by a screen reader from a
