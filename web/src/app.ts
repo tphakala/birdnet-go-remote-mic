@@ -9,6 +9,7 @@ import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 import { needsNotificationsFallback } from "./lib/dashboard-core.js";
 
+// theme-init.ts reads the same key before the first paint.
 const THEME_KEY = "remote-mic-theme";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
@@ -55,17 +56,13 @@ class App {
     });
   }
 
-  // initTheme runs first in init, so a storage access that throws (a private
-  // window, site data blocked) would abort the whole app before any view
-  // exists. Both accesses fall back instead: dark theme, and a toggle that
-  // works but does not persist.
+  // theme-init.js already applied the saved (or OS-preferred) theme before the
+  // first paint, so initTheme adopts the attribute rather than reading storage
+  // a second time. initTheme runs first in init, so a storage write that throws
+  // (a private window, site data blocked) would abort the whole app before any
+  // view exists; it falls back to a toggle that works but does not persist.
   private initTheme(): void {
-    let savedTheme = "dark";
-    try {
-      if (localStorage.getItem(THEME_KEY) === "light") savedTheme = "light";
-    } catch {
-      /* storage unavailable: keep the default theme */
-    }
+    const savedTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
     const themeToggleBtn = document.getElementById("theme-toggle-btn");
     // applyTheme is the one place the theme changes, so the toggle's pressed
     // state (labelled "Dark theme": pressed means dark) never drifts from it.

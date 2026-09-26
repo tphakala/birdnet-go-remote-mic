@@ -125,7 +125,8 @@ reconcile:
 - `localStorage` holds only per-browser preferences (theme, access token,
   collapsed sections, dismissed notifications). Wrap access so a
   storage-blocked browser still works (`readBoolPref`/`writeBoolPref`, the
-  try/catch in `auth.ts`, `notifications.ts`, and the theme code in `app.ts`).
+  try/catch in `auth.ts`, `notifications.ts`, `theme-init.ts`, and the theme
+  code in `app.ts`).
 
 ## Accessibility (a CI gate, not a nicety)
 
@@ -150,6 +151,9 @@ reconcile:
   tokens; no hard-coded colors or one-off per-theme overrides. If a token pair
   fails contrast, fix the token.
 - Theme is the `data-theme` attribute on `<html>`, persisted per browser.
+  `src/theme-init.ts` is a classic (non-module) script loaded in `<head>`
+  that applies it before the first paint (a first visit follows
+  `prefers-color-scheme`); keep it import-free and non-throwing.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.

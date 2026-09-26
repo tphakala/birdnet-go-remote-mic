@@ -47,8 +47,13 @@ export class Router extends EventTarget {
     // reader user would otherwise be left on the nav link with no cue that the
     // page changed. Move focus to the active view's section (tabindex=-1), whose
     // own label says where they landed (the main landmark reads the same on
-    // every page), but only on an actual view change.
-    if (moveFocus && changed) document.getElementById(`view-${view}`)?.focus();
+    // every page), but only on an actual view change. A plain focus() would
+    // scroll a view taller than the window so its top meets the viewport,
+    // pushing the header out of sight, so every view opens at the top instead.
+    if (moveFocus && changed) {
+      document.getElementById(`view-${view}`)?.focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    }
   }
 
   private updateDOM(activeView: ViewName): void {
