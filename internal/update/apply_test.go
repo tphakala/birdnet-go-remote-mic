@@ -937,3 +937,145 @@ func TestApplyBadRequest(t *testing.T) {
 		})
 	}
 }
+
+// rootExcept is an owner seam that reports root for everything except the
+// files the test names, which it reports as owned by uid 1000.
+func rootExcept(t *testing.T, paths ...string) func(os.FileInfo) (uint32, uint32, bool) {
+	t.Helper()
+	user := make([]os.FileInfo, 0, len(paths))
+	for _, p := range paths {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		user = append(user, fi)
+	}
+	return func(fi os.FileInfo) (uint32, uint32, bool) {
+		for _, u := range user {
+			if os.SameFile(fi, u) {
+				return 1000, 1000, true
+			}
+		}
+		return 0, 0, true
+	}
+}
+
+// TestCheckRootOnlyResolvesEveryHop pins the resolver: a sticky directory is
+// accepted above the bin directory but not as the bin directory; a symlink
+// chain is followed hop by hop, so a user-owned directory in the middle of it
+// is caught, as is a user-owned symlink and a link loop.
+func TestCheckRootOnlyResolvesEveryHop(t *testing.T) {
+	t.Parallel()
+	allRoot := func(os.FileInfo) (uint32, uint32, bool) { return 0, 0, true }
+
+	base := t.TempDir()
+	sticky := filepath.Join(base, "sticky")
+	if err := os.Mkdir(sticky, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sticky, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	below := filepath.Join(sticky, "bin")
+	if err := os.Mkdir(below, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRootOnly(below, allRoot); err != nil {
+		t.Errorf("sticky ancestor: %v", err)
+	}
+	if err := checkRootOnly(sticky, allRoot); err == nil || !strings.Contains(err.Error(), "writable by everyone") {
+		t.Errorf("sticky bin directory: got %v", err)
+	}
+
+	// base/entry -> mid/link (relative), mid is the user's; mid/link -> ../real/bin.
+	for _, d := range []string{"mid", "real/bin"} {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../real/bin", filepath.Join(base, "mid", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("mid/link", filepath.Join(base, "entry")); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(base, "entry")
+	if err := checkRootOnly(entry, allRoot); err != nil {
+		t.Errorf("all-root chain: %v", err)
+	}
+	if err := checkRootOnly(entry, rootExcept(t, filepath.Join(base, "mid"))); err == nil || !strings.Contains(err.Error(), "mid is owned by uid 1000") {
+		t.Errorf("user directory in the middle of the chain: got %v", err)
+	}
+	if err := checkRootOnly(entry, rootExcept(t, filepath.Join(base, "mid", "link"))); err == nil || !strings.Contains(err.Error(), "symlink not owned by root") {
+		t.Errorf("user-owned symlink: got %v", err)
+	}
+
+	loop := filepath.Join(base, "loop")
+	if err := os.Symlink("loop", loop); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRootOnly(loop, allRoot); err == nil || !strings.Contains(err.Error(), "too many levels") {
+		t.Errorf("link loop: got %v", err)
+	}
+
+	// A link ending in "." or ".." still lands on the sticky directory,
+	// which is then the bin directory.
+	for name, target := range map[string]string{"dot": "sticky/.", "dotdot": "sticky/bin/.."} {
+		link := filepath.Join(base, name)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkRootOnly(link, allRoot); err == nil || !strings.Contains(err.Error(), "writable by everyone") {
+			t.Errorf("link to %s: got %v, want the sticky bin directory refused", target, err)
+		}
+	}
+
+	// ".." after a link leaves the link's target, not the link's directory:
+	// away/../x is elsewhere/x (base/x does not exist).
+	if err := os.MkdirAll(filepath.Join(base, "elsewhere", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(base, "elsewhere", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("elsewhere/deep", filepath.Join(base, "away")); err != nil {
+		t.Fatal(err)
+	}
+	viaDotDot := base + "/away/../x"
+	if err := checkRootOnly(viaDotDot, allRoot); err != nil {
+		t.Errorf("dot-dot after a link: %v", err)
+	}
+	if err := checkRootOnly(viaDotDot, rootExcept(t, filepath.Join(base, "elsewhere"))); err == nil || !strings.Contains(err.Error(), "elsewhere is owned by uid 1000") {
+		t.Errorf("dot-dot after a link through a user directory: got %v", err)
+	}
+}
+
+// TestCheckRootOnlyRefusesBadInput pins the resolver's other refusals: a
+// relative path, a root directory that is not root's, and a file where a
+// directory belongs (as the last component or in the middle).
+func TestCheckRootOnlyRefusesBadInput(t *testing.T) {
+	t.Parallel()
+	allRoot := func(os.FileInfo) (uint32, uint32, bool) { return 0, 0, true }
+	base := t.TempDir()
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		dir   string
+		owner func(os.FileInfo) (uint32, uint32, bool)
+		want  string
+	}{
+		{"relative", "usr/local/bin", allRoot, "not an absolute path"},
+		{"root not root's", base, rootExcept(t, "/"), "/ is owned by uid 1000"},
+		{"file as the directory", file, allRoot, "file is not a directory"},
+		{"file in the middle", filepath.Join(file, "bin"), allRoot, "not a directory"},
+	}
+	for _, tt := range tests {
+		err := checkRootOnly(tt.dir, tt.owner)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: got %v, want an error containing %q", tt.name, err, tt.want)
+		}
+	}
+}

@@ -361,9 +361,10 @@ func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 	return res
 }
 
-// checkBinDir refuses a binary, or a directory above it, that anyone but
-// root could write (see CheckRootOnly), and a binary that is not a regular
-// file. The updater installs and runs what is there as root, so such a path
+// checkBinDir refuses a binary that anyone but root could write (sticky
+// exemption or not), a bin directory or a directory above it that anyone but
+// root could write or redirect (see CheckRootOnly), and a binary that is not
+// a regular file. The updater installs and runs what is there as root, so such a path
 // would hand root to that user or group. It is defence in depth: this runs
 // inside the very binary it protects, so service install makes the same
 // check before it enables the updater.
@@ -379,46 +380,107 @@ func (a *Applier) checkBinDir() error {
 	if owner == nil {
 		owner = fileOwner
 	}
-	if err := rootOnly(a.BinPath, fi, owner); err != nil {
+	if err := rootOnly(a.BinPath, fi, owner, false); err != nil {
 		return err
 	}
 	return checkRootOnly(filepath.Dir(a.BinPath), owner)
 }
 
-// CheckRootOnly refuses dir when it, or any directory above it (after
-// resolving symlinks), is not owned by root, is writable by everyone, or is
-// writable by a group other than root's: whoever could write there could
-// replace what root later runs from it.
+// CheckRootOnly refuses dir when anyone but root could change what it
+// resolves to: when any directory it passes through on the way (every
+// ancestor, every directory a symlink leads through) is not owned by root, is
+// writable by everyone, or is writable by a group other than root's; when a
+// symlink on the way is not owned by root; or when dir itself is writable by
+// others, sticky or not. Whoever could write there could replace what root
+// later runs from it.
 func CheckRootOnly(dir string) error {
 	return checkRootOnly(dir, fileOwner)
 }
 
+// maxSymlinkHops bounds the resolution, like the kernel's ELOOP limit.
+const maxSymlinkHops = 40
+
+// checkRootOnly resolves dir one component at a time, the way the kernel
+// does, and checks everything it passes. Text-only cleaning would get ".."
+// wrong after a symlink, and checking only the literal and the final paths
+// would skip the directories a chain of links passes through.
 func checkRootOnly(dir string, owner func(os.FileInfo) (uint32, uint32, bool)) error {
-	resolved, err := filepath.EvalSymlinks(dir)
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("%s is not an absolute path", dir)
+	}
+	fi, err := os.Lstat("/")
 	if err != nil {
 		return err
 	}
-	for p := filepath.Clean(resolved); ; p = filepath.Dir(p) {
-		fi, err := os.Lstat(p)
+	if err := rootOnly("/", fi, owner, true); err != nil {
+		return err
+	}
+	// Not cleaned: the walk resolves "." and ".." itself.
+	pending := strings.Split(strings.Trim(dir, "/"), "/")
+	cur, hops := "/", 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur) // cur is a real, checked directory
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
 		if err != nil {
 			return err
 		}
-		if err := rootOnly(p, fi, owner); err != nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			// A link's own mode means nothing; who owns it (and its
+			// directory, checked already) decides who can repoint it.
+			if uid, _, ok := owner(fi); !ok || uid != 0 {
+				return fmt.Errorf("%s is a symlink not owned by root", next)
+			}
+			hops++
+			if hops > maxSymlinkHops {
+				return fmt.Errorf("%s: too many levels of symbolic links", dir)
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return err
+			}
+			if filepath.IsAbs(target) {
+				cur = "/"
+			}
+			pending = append(strings.Split(strings.Trim(target, "/"), "/"), pending...)
+			continue
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("%s is not a directory", next)
+		}
+		// Only a directory above dir may be sticky: others can add entries to
+		// dir itself, including links where root later writes.
+		if err := rootOnly(next, fi, owner, len(pending) > 0); err != nil {
 			return err
 		}
-		if p == filepath.Dir(p) {
-			return nil
-		}
+		cur = next
 	}
+	// Check where the walk ended as dir itself, however it got there: a link
+	// ending in "." or ".." leaves components pending past the last
+	// directory, which was then checked as an ancestor, sticky allowed.
+	fi, err = os.Lstat(cur)
+	if err != nil {
+		return err
+	}
+	return rootOnly(cur, fi, owner, false)
 }
 
 // rootOnly checks one path's owner and mode. A sticky directory (such as
 // /tmp) is writable by others, but they cannot rename or remove what they do
-// not own in it, so it does not let them replace anything below.
-func rootOnly(p string, fi os.FileInfo, owner func(os.FileInfo) (uint32, uint32, bool)) error {
+// not own in it, so when allowSticky it does not let them replace anything
+// below.
+func rootOnly(p string, fi os.FileInfo, owner func(os.FileInfo) (uint32, uint32, bool), allowSticky bool) error {
 	uid, gid, ok := owner(fi)
 	perm := fi.Mode().Perm()
-	sticky := fi.IsDir() && fi.Mode()&os.ModeSticky != 0
+	sticky := allowSticky && fi.IsDir() && fi.Mode()&os.ModeSticky != 0
 	switch {
 	case !ok:
 		return fmt.Errorf("cannot tell who owns %s", p)
@@ -567,8 +629,28 @@ func (a *Applier) logf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-// readFileIn reads name inside root, refusing anything but a regular file and
-// a file longer than limit.
+// openRegular opens name in root for reading and refuses anything but a
+// regular file. The open is non-blocking, so a FIFO cannot hang it (it fails
+// the check instead); regular-file reads are the same either way.
+func openRegular(root *os.Root, name string) (*os.File, error) {
+	f, err := root.OpenFile(name, os.O_RDONLY|openNonblock, 0)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err == nil {
+		err = regularFile(name, fi)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// readFileIn reads name inside root, refusing a link, FIFO or anything else
+// but a regular file (before and after opening it, see openRegular) and a
+// file longer than limit.
 func readFileIn(root *os.Root, name string, limit int64) ([]byte, error) {
 	fi, err := root.Lstat(name)
 	if err != nil {
@@ -577,18 +659,13 @@ func readFileIn(root *os.Root, name string, limit int64) ([]byte, error) {
 	if err := regularFile(name, fi); err != nil {
 		return nil, err
 	}
-	f, err := root.Open(name)
+	// Check the opened file too: the entry could be swapped between the
+	// Lstat and the Open.
+	f, err := openRegular(root, name)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	// Check the opened file too: the entry could be swapped between the
-	// Lstat and the Open.
-	if fi, err := f.Stat(); err != nil {
-		return nil, err
-	} else if err := regularFile(name, fi); err != nil {
-		return nil, err
-	}
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, io.LimitReader(f, limit+1))
 	if err != nil {

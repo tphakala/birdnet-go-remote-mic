@@ -15,3 +15,6 @@ func fileOwner(fi os.FileInfo) (uid, gid uint32, ok bool) {
 	}
 	return st.Uid, st.Gid, true
 }
+
+// openNonblock opens without blocking on a FIFO.
+const openNonblock = syscall.O_NONBLOCK
