@@ -147,6 +147,7 @@ test("supportDetails lists each capture device, ordered by name, without identif
       "remote-mic version: v0.3.0",
       "",
       "Capture devices: 2",
+      "Values in <angle brackets> and after usb:vendor:product were removed for privacy.",
       "",
       "Device 1: (no name reported)",
       "  ID: card index, not stable (can change after a reboot or replug)",
@@ -217,8 +218,9 @@ for (const c of realErrors) {
 }
 
 test("supportDetails never includes a USB serial, stream path, card name or device name", () => {
-  // Another device's name inside this device's error, and a name that is also
-  // an ordinary word, which must be replaced only as a whole token.
+  // Another device's name inside this device's error, and an unquoted name that
+  // is an ordinary word, which is left alone: names are removed only when
+  // quoted, as the appliance always quotes them.
   const owner = device({ name: "Backyard Mic at Smiths", device: "usb:1235:8218:s=OWNSERIAL:if=0,0" });
   const audio = device({ name: "audio", device: "hw:4,0", path: "/audio-path", state: "failed", downCause: "open-failed", error: "open capture: audio: device busy on /audio-path" });
   const got = supportDetails(null, null, [usbMic, downCard, owner, audio, ...realErrors.map((c) => c.d)]);
@@ -230,6 +232,71 @@ test("supportDetails never includes a USB serial, stream path, card name or devi
   // the literal pass still catches it.
   const glued = supportDetails(null, null, [device({ name: "g", path: "/glued-SECRET", state: "failed", error: "rtsp path:/glued-SECRET taken" })]);
   assert.ok(!glued.includes("glued-SECRET"), glued);
+});
+
+// Hostile or unlucky values: every entry's secret must be gone from the output.
+const hostile: { what: string; devices: Device[]; secret: string; keep?: string }[] = [
+  {
+    what: "a second stream's path extending the first",
+    devices: [device({ name: "g", path: "/garden", state: "failed", error: "build sdp for /garden/night-SECRET: bad" })],
+    secret: "night-SECRET",
+    keep: "build sdp for <path>: bad",
+  },
+  {
+    what: "a path glued to a colon and one to a parenthesis",
+    devices: [device({ name: "g", state: "failed", error: "rtsp path:/glued-SECRET taken (/paren-SECRET)" })],
+    secret: "SECRET",
+    keep: "rtsp path:<path> taken (<path>)",
+  },
+  {
+    what: "another device's path in this device's error",
+    devices: [device({ name: "a", state: "failed", error: "path=/other-SECRET in use" }), device({ name: "b", path: "/other-SECRET" })],
+    secret: "other-SECRET",
+  },
+  {
+    what: "a path that starts like a kernel interface",
+    devices: [device({ name: "g", state: "failed", error: "build sdp for /production-SECRET: bad; /dev/garden-SECRET" })],
+    secret: "SECRET",
+  },
+  {
+    what: "a name with an escaped quote",
+    devices: [device({ name: "g", state: "skipped", error: 'Same hardware as "Bob \\"Smith\\" Jones": hw:3,0' })],
+    secret: "Smith",
+  },
+  {
+    what: "a name that looks like a placeholder",
+    devices: [device({ name: "g", state: "skipped", error: 'Same hardware as "<smith house>": hw:3,0' })],
+    secret: "smith",
+  },
+  {
+    what: "a quoted name holding a path",
+    devices: [device({ name: "g", state: "skipped", error: 'Same hardware as "Mic /garden SECRET": hw:3,0' })],
+    secret: "SECRET",
+  },
+  {
+    what: "upper-case id prefixes",
+    devices: [device({ name: "g", state: "failed", error: "open USB:1235:8218:s=UPSECRET and HW:card=CARDSECRET" })],
+    secret: "SECRET",
+  },
+];
+
+for (const c of hostile) {
+  test(`supportDetails scrubs ${c.what}`, () => {
+    const got = supportDetails(null, null, c.devices);
+    assert.ok(!got.includes(c.secret), got);
+    if (c.keep) assert.ok(got.includes(c.keep), got);
+  });
+}
+
+test("supportDetails keeps apostrophes inside words", () => {
+  const got = supportDetails(null, null, [device({ name: "g", state: "failed", error: "can't open usb:1235:8218:s=X, don't retry" })]);
+  assert.ok(got.includes("can't open usb:1235:8218, don't retry"), got);
+});
+
+test("supportDetails folds line separators and bidi controls into spaces", () => {
+  const got = supportDetails(null, null, [device({ name: "g", friendlyName: "Mic\r\u2028Device 9\u202Eforged", state: "failed", error: "a\u2029b" })]);
+  assert.ok(got.includes("Device 1: Mic Device 9 forged\n"), got);
+  assert.ok(got.includes(": a b"), got);
 });
 
 test("supportDetails redacts other quoting styles and keeps each device on its own lines", () => {
