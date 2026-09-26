@@ -36,6 +36,7 @@ const ICON_CHAT = svg('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path>', 12);
 const ICON_HEART_SM = svg('<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>', 12);
 
 const LOADING_TEXT = "Loading license texts...";
+const LICENSES_TIMEOUT_MS = 15_000;
 
 // section builds a card in the System view's style: an icon heading, a one-line
 // description, and a body the caller fills.
@@ -53,12 +54,24 @@ function section(icon: string, title: string, desc: string): { card: HTMLElement
   return { card, body };
 }
 
-// licenseText renders one license file as a disclosure, closed by default:
-// the texts run to thousands of lines together.
-function licenseText(summary: string, text: string): HTMLElement {
+// licenseTextBlock renders one license file's text as a scrolling block. It is
+// a focusable, labelled region so a keyboard user can scroll it in every
+// browser (Safari does not make an overflowing element focusable by itself).
+function licenseTextBlock(label: string, text: string): HTMLElement {
+  const pre = elem("pre", "license-text mono", text);
+  pre.tabIndex = 0;
+  pre.setAttribute("role", "region");
+  pre.setAttribute("aria-label", label);
+  return pre;
+}
+
+// licenseText renders one license file as a disclosure, closed by default
+// (the texts run to thousands of lines together): summary is its visible line,
+// label names the text region for assistive tech.
+function licenseText(summary: string, label: string, text: string): HTMLElement {
   const d = elem("details", "license-text-details");
   d.appendChild(elem("summary", "license-text-summary", summary));
-  d.appendChild(elem("pre", "license-text mono", text));
+  d.appendChild(licenseTextBlock(label, text));
   return d;
 }
 
@@ -102,7 +115,7 @@ export class AboutView {
   }
 
   private buildProject(): HTMLElement {
-    const { card, body } = section(ICON_INFO, "BirdNET-Go Remote Mic", "A network microphone appliance for BirdNET-Go.");
+    const { card, body } = section(ICON_INFO, "About Remote Mic", "A network microphone appliance for BirdNET-Go.");
     body.appendChild(elem(
       "p",
       "about-text",
@@ -210,9 +223,17 @@ export class AboutView {
     const el = this.thirdPartyEl;
     if (!el || this.licenses !== "idle") return;
     this.licenses = "loading";
+    // A visit after a failed load starts from the loading text, not the old
+    // error and its Retry button (as Retry itself does).
+    el.removeAttribute("role");
+    el.textContent = LOADING_TEXT;
     let doc: LicenseDoc | null = null;
     try {
-      const res = await fetch(LICENSES_PATH);
+      // A deadline, so a stalled request ends in the error and Retry rather
+      // than "Loading" forever.
+      // (AbortSignal.timeout is missing before Safari 16, which then waits.)
+      const signal = typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(LICENSES_TIMEOUT_MS) : undefined;
+      const res = await fetch(LICENSES_PATH, { signal });
       if (res.ok) doc = parseLicenseDoc(await res.json());
     } catch {
       /* a network error or a body that is not JSON: reported below */
@@ -228,7 +249,7 @@ export class AboutView {
 
   private renderLicenses(doc: LicenseDoc): void {
     if (this.projectLicenseEl) {
-      this.projectLicenseEl.replaceChildren(...doc.project.files.map((f) => licenseText(`Show the ${f.name} text`, f.text)));
+      this.projectLicenseEl.replaceChildren(...doc.project.files.map((f) => licenseText(`Full ${f.name} text`, `Remote Mic ${f.name}`, f.text)));
     }
     const el = this.thirdPartyEl;
     if (!el) return;
@@ -250,7 +271,7 @@ export class AboutView {
     for (const f of c.files) {
       const file = elem("div", "license-file");
       file.appendChild(elem("p", "license-file-name mono", f.name));
-      file.appendChild(elem("pre", "license-text mono", f.text));
+      file.appendChild(licenseTextBlock(`${componentTitle(c)} ${f.name}`, f.text));
       d.appendChild(file);
     }
     li.appendChild(d);

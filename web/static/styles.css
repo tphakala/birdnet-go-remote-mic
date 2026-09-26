@@ -1704,7 +1704,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .clip-latch-btn:focus-visible,
 .menu-item:focus-visible,
 .license-summary:focus-visible,
-.license-text-summary:focus-visible {
+.license-text-summary:focus-visible,
+.license-text:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
@@ -2876,12 +2877,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   }
 }
 
-/* On a phone-width header the three nav tabs with their icons are wider than
-   the header, so the page scrolled sideways at 320 px. Drop the decorative
-   icons (the labels carry the meaning) and tighten the padding. */
+/* On a phone-width header the four nav tabs with their icons are wider than
+   the header, so they spilled out of it at 320 px. Drop the decorative icons
+   (the labels carry the meaning) and tighten the padding and the type. */
 @media (max-width: 400px) {
   .nav-item {
-    padding: 0 8px;
+    padding: 0 5px;
+    font-size: 11px;
   }
   .nav-item svg {
     display: none;
@@ -3376,7 +3378,7 @@ select.field-input {
 }
 .about-help-cols {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 18px 32px;
 }
 .about-help-col {
@@ -3454,14 +3456,15 @@ select.field-input {
   cursor: pointer;
   border-radius: var(--radius-xs);
 }
+/* The summary keeps its default list-item display: that is what draws the
+   disclosure triangle, the cue that a row opens. */
 .license-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
   padding: 8px 12px;
   font-size: 12px;
   color: var(--text-primary);
+}
+.license-summary .license-tag {
+  margin-left: 8px;
 }
 .license-name {
   overflow-wrap: anywhere;
