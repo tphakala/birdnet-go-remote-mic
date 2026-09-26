@@ -127,14 +127,6 @@ export class DeviceSettingsForm {
     const d = this.device;
     const uid = ++formSeq;
 
-    // Read-only device identity, shown first: the persisted id that pins this
-    // entry to its hardware, reachable as focusable, selectable text with a Copy
-    // button. A title tooltip alone (the old treatment) does not reach keyboard,
-    // touch, or screen-reader users, which matters for telling two identical
-    // units apart. It is fixed metadata: no change listener, never marks the
-    // form dirty, and not part of collect().
-    this.buildIdentity(uid);
-
     const grid = elem("div", "form-grid-2col");
 
     // Resolve the codec mode the form actually opens on BEFORE building the
@@ -149,8 +141,16 @@ export class DeviceSettingsForm {
     // a valid StreamMode.
     const modeInitial = this.pick(modeOpts, d.mode) as StreamMode;
 
-    // Capture group: what the hardware delivers.
-    this.groupTitle(grid, "Capture");
+    // Device group: which hardware this is and what it delivers.
+    this.groupTitle(grid, "Device");
+
+    // Read-only device identity, shown first: the persisted id that pins this
+    // entry to its hardware, reachable as focusable, selectable text with a Copy
+    // button. A title tooltip alone (the old treatment) does not reach keyboard,
+    // touch, or screen-reader users, which matters for telling two identical
+    // units apart. It is fixed metadata: no change listener, never marks the
+    // form dirty, and not part of collect().
+    this.buildIdentity(grid, uid);
 
     // Rate
     const rateField = elem("div", "form-field");
@@ -192,6 +192,35 @@ export class DeviceSettingsForm {
     chGroup.setAttribute("aria-describedby", `${this.chErr.id} ${this.chHint.id}`);
     this.applyChannelMode(modeInitial);
     grid.appendChild(chField);
+
+    // Meter display preference (not appliance config): hide the channels no
+    // stream carries from the VU meter. On by default. Stored client-side and
+    // applied at once through the DisplayPrefs callback (the dashboard saves
+    // it), so it stays outside collect() and the save/dirty flow. Only
+    // meaningful when the device has more than one channel.
+    if (this.maxChannels() > 1) {
+      const hideField = elem("div", "form-field");
+      const hideId = `set-${uid}-hideinactive`;
+      const hideLabel = this.label("Hide Inactive Channels");
+      hideLabel.setAttribute("for", hideId);
+      hideField.appendChild(hideLabel);
+      const hideHintId = `${hideId}-hint`;
+      const { el: hideSwitch, input: hideInput } = switchControl({
+        id: hideId,
+        label: "Hide channels no stream carries",
+        checked: this.display.hideInactive,
+        describedBy: hideHintId,
+      });
+      // The dashboard owns the stored value; the form only reports the change.
+      hideInput.addEventListener("change", () => this.display.onHideInactiveChange(hideInput.checked));
+      this.hideInput = hideInput;
+      hideField.appendChild(hideSwitch);
+      hideField.appendChild(this.hint(
+        "On by default. Shows only the channels the current selection streams; turn off to see every captured channel, dimmed when inactive.",
+        hideHintId,
+      ));
+      grid.appendChild(hideField);
+    }
 
     // Stream group: how the capture is named, addressed, and encoded.
     this.groupTitle(grid, "Stream");
@@ -295,35 +324,6 @@ export class DeviceSettingsForm {
     ));
     grid.appendChild(quietField);
 
-    // Meter display preference (not appliance config): hide the channels no
-    // stream carries from the VU meter. On by default. Stored client-side and
-    // applied at once through the DisplayPrefs callback (the dashboard saves
-    // it), so it stays outside collect() and the save/dirty flow. Only
-    // meaningful when the device has more than one channel.
-    if (this.maxChannels() > 1) {
-      const hideField = elem("div", "form-field");
-      const hideId = `set-${uid}-hideinactive`;
-      const hideLabel = this.label("Hide Inactive Channels");
-      hideLabel.setAttribute("for", hideId);
-      hideField.appendChild(hideLabel);
-      const hideHintId = `${hideId}-hint`;
-      const { el: hideSwitch, input: hideInput } = switchControl({
-        id: hideId,
-        label: "Hide channels no stream carries",
-        checked: this.display.hideInactive,
-        describedBy: hideHintId,
-      });
-      // The dashboard owns the stored value; the form only reports the change.
-      hideInput.addEventListener("change", () => this.display.onHideInactiveChange(hideInput.checked));
-      this.hideInput = hideInput;
-      hideField.appendChild(hideSwitch);
-      hideField.appendChild(this.hint(
-        "On by default. Shows only the channels the current selection streams; turn off to see every captured channel, dimmed when inactive.",
-        hideHintId,
-      ));
-      grid.appendChild(hideField);
-    }
-
     this.element.appendChild(grid);
 
     this.modeHidden.addEventListener("change", () => {
@@ -353,8 +353,8 @@ export class DeviceSettingsForm {
   // mono input plus a Copy button) and a hint that explains the id's stability
   // and, for a card-index id, the remedy (remove and re-add to pin by identity).
   // Read-only: it carries no change listener and is never read by collect().
-  private buildIdentity(uid: number): void {
-    const field = elem("div", "form-field");
+  private buildIdentity(grid: HTMLElement, uid: number): void {
+    const field = elem("div", "form-field device-identity");
     const inputId = `set-${uid}-devid`;
     const label = this.label("Device id");
     label.setAttribute("for", inputId);
@@ -381,7 +381,7 @@ export class DeviceSettingsForm {
     field.appendChild(row);
 
     field.appendChild(this.hint(this.identityHint(), hintId));
-    this.element.appendChild(field);
+    grid.appendChild(field);
   }
 
   // identityHint explains the persisted id: for a card-index id (idStable false)

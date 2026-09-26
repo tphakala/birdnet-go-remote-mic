@@ -40,6 +40,12 @@ interface RGBA {
 const AA = 4.5;
 // SC 1.4.11 non-text contrast, for a glyph or control boundary carrying meaning.
 const AA_NON_TEXT = 3;
+// Secondary and muted text is the UI's small print: 12-13px labels, hints,
+// subtitles and the 11px meter scale. AA's 4.5:1 is a floor for text of any
+// size, and text this small and this thin read as faint at exactly that ratio,
+// so these tokens keep a margin above it. test/legibility.test.ts holds the
+// matching size and weight floor.
+const SMALL_TEXT = 5.5;
 
 function parseColor(raw: string): RGBA | null {
   const v = raw.trim();
@@ -181,17 +187,17 @@ const PAIRS: Pair[] = [
   { what: "primary text on a card", fg: "--text-primary", bg: ["--bg-surface"], min: AA },
   { what: "primary text on the page", fg: "--text-primary", bg: ["--bg-page"], min: AA },
   { what: "primary text on the app ground", fg: "--text-primary", bg: ["--bg-app"], min: AA },
-  { what: "secondary text on a card", fg: "--text-secondary", bg: ["--bg-surface"], min: AA },
-  { what: "secondary text on a raised card", fg: "--text-secondary", bg: ["--bg-surface-raised"], min: AA },
-  { what: "secondary text on the app ground", fg: "--text-secondary", bg: ["--bg-app"], min: AA },
+  { what: "secondary text on a card", fg: "--text-secondary", bg: ["--bg-surface"], min: SMALL_TEXT },
+  { what: "secondary text on a raised card", fg: "--text-secondary", bg: ["--bg-surface-raised"], min: SMALL_TEXT },
+  { what: "secondary text on the app ground", fg: "--text-secondary", bg: ["--bg-app"], min: SMALL_TEXT },
 
-  // Muted text is the 10-11px hint and meter-scale size, so it is the most
-  // fragile. --meter-bg is a distinctly different ground from the cards and was
-  // the one --text-muted had never been checked against.
-  { what: "muted text on a card", fg: "--text-muted", bg: ["--bg-surface"], min: AA },
-  { what: "muted text on a raised card", fg: "--text-muted", bg: ["--bg-surface-raised"], min: AA },
-  { what: "muted text on the page", fg: "--text-muted", bg: ["--bg-page"], min: AA },
-  { what: "meter scale labels on the meter trough", fg: "--text-muted", bg: ["--meter-bg"], min: AA },
+  // Muted text is the 12px label size and the 11px meter scale, so it is the
+  // most fragile. --meter-bg is a distinctly different ground from the cards
+  // and was the one --text-muted had never been checked against.
+  { what: "muted text on a card", fg: "--text-muted", bg: ["--bg-surface"], min: SMALL_TEXT },
+  { what: "muted text on a raised card", fg: "--text-muted", bg: ["--bg-surface-raised"], min: SMALL_TEXT },
+  { what: "muted text on the page", fg: "--text-muted", bg: ["--bg-page"], min: SMALL_TEXT },
+  { what: "meter scale labels on the meter trough", fg: "--text-muted", bg: ["--meter-bg"], min: SMALL_TEXT },
 
   // Signal colours used as TEXT on their own tint: status badges, the live
   // indicator, tech tags. These are the *-text tokens rather than the base
@@ -235,11 +241,11 @@ const PAIRS: Pair[] = [
   // by a tint), so one set of pairs covers them all. It still needs asserting:
   // it is a different ground from any plain card, and it is the one every row
   // in the panel uses.
-  { what: "notification row timestamp", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
-  { what: "notification row message", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
+  { what: "notification row timestamp", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: SMALL_TEXT },
+  { what: "notification row message", fg: "--text-secondary", bg: ["--bg-surface", "--bg-surface-subtle"], min: SMALL_TEXT },
   { what: "notification row title", fg: "--text-primary", bg: ["--bg-surface", "--bg-surface-subtle"], min: AA },
   // Panel furniture that sits on its own grounds rather than on a row.
-  { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: AA },
+  { what: "notification category chip", fg: "--text-secondary", bg: ["--bg-surface-active"], min: SMALL_TEXT },
   { what: "active-issues group heading", fg: "--signal-crit-text", bg: ["--bg-surface"], min: AA },
 
   // Menu button popover (the header theme menu): items on the card surface,
@@ -251,9 +257,9 @@ const PAIRS: Pair[] = [
 
   // About page: license texts and the system details sit on the page ground
   // inside a card; the log command is inline code on the raised surface.
-  { what: "license text", fg: "--text-secondary", bg: ["--bg-page"], min: AA },
+  { what: "license text", fg: "--text-secondary", bg: ["--bg-page"], min: SMALL_TEXT },
   { what: "system details text", fg: "--text-primary", bg: ["--bg-page"], min: AA },
-  { what: "license file name", fg: "--text-muted", bg: ["--bg-surface"], min: AA },
+  { what: "license file name", fg: "--text-muted", bg: ["--bg-surface"], min: SMALL_TEXT },
   { what: "about inline code", fg: "--text-primary", bg: ["--bg-surface-raised"], min: AA },
   { what: "license disclosure link", fg: "--accent-cyan-text", bg: ["--bg-surface"], min: AA },
 
