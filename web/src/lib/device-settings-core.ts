@@ -75,6 +75,13 @@ export function withFirstStream(edited: DeviceConfig, saved: readonly StreamConf
   return { ...edited, streams: [first, ...saved.slice(1)] };
 }
 
+// otherOpusStream reports whether a stream after the first (which the form
+// does not edit) is Opus. The capture rate is shared, and Opus runs at 48000 Hz
+// only, so such a stream pins the rate whatever the first stream's mode.
+export function otherOpusStream(streams: readonly StreamConfig[] | undefined): boolean {
+  return (streams ?? []).slice(1).some((s) => s.mode === "opus");
+}
+
 // extraStreamsNote tells the operator the form edits only the first of several
 // streams, or returns "" for a single-stream device.
 export function extraStreamsNote(streams: readonly StreamConfig[] | undefined): string {

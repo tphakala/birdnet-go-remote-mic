@@ -3,6 +3,7 @@ package mgmtserver
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -259,15 +260,25 @@ func gzipGetStatic(t *testing.T, h http.Handler, path, accept, ifNoneMatch strin
 
 func gunzipBody(t *testing.T, b []byte) string {
 	t.Helper()
+	out, err := gunzip(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// gunzip decodes a gzip body without a *testing.T, for goroutines that may
+// only report with Errorf.
+func gunzip(b []byte) (string, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
-		t.Fatalf("gzip.NewReader: %v", err)
+		return "", fmt.Errorf("gzip.NewReader: %w", err)
 	}
 	out, err := io.ReadAll(zr)
 	if err != nil {
-		t.Fatalf("read gzip body: %v", err)
+		return "", fmt.Errorf("read gzip body: %w", err)
 	}
-	return string(out)
+	return string(out), nil
 }
 
 func TestStaticHandlerGzipsWhenAccepted(t *testing.T) {
@@ -412,8 +423,9 @@ func TestStaticHandlerGzipConcurrentFirstRequests(t *testing.T) {
 		for name, body := range assets {
 			wg.Go(func() {
 				rec := gzipGetStatic(t, h, "/"+name, encGzip, "")
-				if got := gunzipBody(t, rec.Body.Bytes()); got != body {
-					t.Errorf("%s: decompressed body differs from the asset", name)
+				// Not gunzipBody: FailNow must not run off the test goroutine.
+				if got, err := gunzip(rec.Body.Bytes()); err != nil || got != body {
+					t.Errorf("%s: decompressed body differs from the asset (err %v)", name, err)
 				}
 				mu.Lock()
 				if etags[name] == nil {

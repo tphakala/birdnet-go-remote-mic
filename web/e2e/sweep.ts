@@ -31,7 +31,9 @@
 // content, placeholders and canvas is not checked; a background is resolved
 // through the element's ancestors only, so translucent text positioned over an
 // unrelated sibling is measured against its ancestors' ground; url() background
-// images are treated as transparent and counted.
+// images are treated as transparent and counted; text under a filter, a blend
+// mode or a backdrop filter showing through a translucent background is not
+// modelled, and is skipped and counted.
 
 import { existsSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -370,6 +372,25 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
     const path: HTMLElement[] = [];
     for (let cur: HTMLElement | null = el; cur; cur = cur.parentElement) path.unshift(cur);
     const styles = path.map((e) => getComputedStyle(e));
+    // A filter or blend mode on the text or anything under it, or a backdrop
+    // filter with no opaque background between it and the text, changes the
+    // colours this model composites; such text is skipped and counted, never
+    // passed. A backdrop filter under an opaque layer (the modal card over the
+    // blurred scrim, the action bar's own background) cannot change the text's
+    // contrast.
+    let unmodelled = false;
+    let opaqueAbove = false;
+    for (let i = styles.length - 1; i >= 0 && !unmodelled; i--) {
+      const s = styles[i];
+      const opaque = (parse(s.backgroundColor)?.a ?? 0) >= 1 && Number(s.opacity) >= 1;
+      if (s.filter !== "none" || s.mixBlendMode !== "normal") unmodelled = true;
+      else if (s.backdropFilter && s.backdropFilter !== "none" && !opaqueAbove && !opaque) unmodelled = true;
+      opaqueAbove ||= opaque;
+    }
+    if (unmodelled) {
+      skip("filter, blend mode or translucent backdrop filter (not modelled)");
+      continue;
+    }
     const paint = styles.map(paintLayers);
     const opacity = styles.map((s, i) => lowestOpacity(path[i], Number(s.opacity)));
 

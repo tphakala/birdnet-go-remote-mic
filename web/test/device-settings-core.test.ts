@@ -18,6 +18,7 @@ import {
   bitrateFollowsDefault,
   defaultOpusBitrate,
   extraStreamsNote,
+  otherOpusStream,
   withFirstStream,
 } from "../src/lib/device-settings-core.js";
 import type { DeviceConfig } from "../src/lib/types.js";
@@ -136,6 +137,15 @@ test("withFirstStream takes the other streams from the list it is given, not the
   const now = [{ path: "/a", mode: "pcm" as const, channels: [1] }, { path: "/new", mode: "pcm" as const, channels: [2] }];
   assert.deepEqual(withFirstStream(edited, now).streams?.map((st) => st.path), ["/a", "/new"]);
   assert.equal(withFirstStream(edited, [now[0]]).streams, undefined, "down to one stream, the edit goes flat");
+});
+
+test("otherOpusStream looks only past the first stream", () => {
+  const pcm = { path: "/a", mode: "pcm" as const, channels: [1] };
+  const opus = { path: "/b", mode: "opus" as const, channels: [1] };
+  assert.equal(otherOpusStream(undefined), false);
+  assert.equal(otherOpusStream([opus]), false, "the first stream is the form's own");
+  assert.equal(otherOpusStream([opus, pcm]), false);
+  assert.equal(otherOpusStream([pcm, pcm, opus]), true);
 });
 
 test("extraStreamsNote speaks only for a multi-stream device", () => {

@@ -2,6 +2,9 @@ import { closesOnFocusOut } from "../lib/menu-core.js";
 import { focusTarget } from "../lib/ui.js";
 
 let dropdownSeq = 0;
+// Each container's dropdown, so opening one closes the others through close(),
+// which also drops their page-wide listeners.
+const dropdowns = new WeakMap<HTMLElement, CustomDropdown>();
 
 export class CustomDropdown {
   private container: HTMLElement;
@@ -38,6 +41,7 @@ export class CustomDropdown {
     this.hiddenInput = this.container.querySelector<HTMLInputElement>("input[type='hidden']");
     this.onChange = onChange;
     this.items = Array.from(this.container.querySelectorAll<HTMLElement>(".dropdown-item"));
+    dropdowns.set(this.container, this);
 
     this.wireAria();
     this.bindEvents();
@@ -184,16 +188,20 @@ export class CustomDropdown {
 
   public open(): void {
     // Close other dropdowns
-    document.querySelectorAll(".custom-dropdown.open").forEach((el) => {
-      if (el !== this.container) {
-        el.classList.remove("open");
-        const trigger = el.querySelector(".dropdown-trigger");
-        trigger?.setAttribute("aria-expanded", "false");
-        // Clear the other dropdown's roving-highlight state too, so it does not
-        // leave aria-activedescendant pointing at a now-hidden option.
-        trigger?.removeAttribute("aria-activedescendant");
-        el.querySelectorAll(".dropdown-item.active").forEach((item) => item.classList.remove("active"));
+    document.querySelectorAll<HTMLElement>(".custom-dropdown.open").forEach((el) => {
+      if (el === this.container) return;
+      const other = dropdowns.get(el);
+      if (other) {
+        other.close();
+        return;
       }
+      // Markup no instance owns: undo the open state by hand, including the
+      // roving highlight, so no aria-activedescendant points at a hidden option.
+      el.classList.remove("open");
+      const trigger = el.querySelector(".dropdown-trigger");
+      trigger?.setAttribute("aria-expanded", "false");
+      trigger?.removeAttribute("aria-activedescendant");
+      el.querySelectorAll(".dropdown-item.active").forEach((item) => item.classList.remove("active"));
     });
     this.container.classList.add("open");
     this.trigger.setAttribute("aria-expanded", "true");

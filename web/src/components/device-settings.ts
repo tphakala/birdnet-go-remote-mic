@@ -8,7 +8,9 @@ import {
   extraStreamsNote,
   inputMaxLength,
   lengthError,
+  otherOpusStream,
 } from "../lib/device-settings-core.js";
+import { store } from "../lib/store.js";
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
 const CHEVRON =
@@ -488,15 +490,19 @@ export class DeviceSettingsForm {
     let rateOk = rate >= 8000 && rate <= 384000;
     let chOk = channels.length >= 1;
     let chMsg = "Select at least one channel.";
+    let rateMsg = "Rate must be 8000-384000 Hz.";
     if (mode === "opus") {
       rateOk = rate === 48000;
+      rateMsg = `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`;
       chOk = channels.length >= 1 && channels.length <= 2;
       chMsg = "Opus requires one or two channels.";
+    } else if (otherOpusStream(store.getState().config?.devices.find((c) => c.device === this.device.device)?.streams ?? this.device.streams)) {
+      // The rate applies to every stream, and another one is Opus. The save
+      // keeps the current config's other streams, so check those.
+      rateOk = rate === 48000;
+      rateMsg = "Another stream of this device is Opus, which runs at 48000 Hz only, and the sample rate applies to every stream.";
     }
-    ok = this.markControl(this.rateErr, rateOk,
-      mode === "opus"
-        ? `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`
-        : "Rate must be 8000-384000 Hz.") && ok;
+    ok = this.markControl(this.rateErr, rateOk, rateMsg) && ok;
     ok = this.markControl(this.chErr, chOk, chMsg) && ok;
     this.channelsGroup.setAttribute("aria-invalid", String(!chOk));
     return ok;
