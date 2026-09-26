@@ -3399,10 +3399,12 @@ select.field-input {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 0 0 14px;
 }
+/* The card's own gap spaces its sections. An empty status (before the first
+   check) leaves the flow so it adds no gap, but stays in the page as the live
+   region that announces the next status. */
 .update-state.is-empty {
-  margin: 0;
+  position: absolute;
 }
 .update-state p {
   margin: 0;
@@ -3433,10 +3435,6 @@ select.field-input {
   color: var(--text-primary);
   /* A hint can end in a long command or path. */
   overflow-wrap: anywhere;
-}
-/* The status sits above the two columns. */
-.update-cols {
-  margin-top: 4px;
 }
 /* On a narrow card (a phone, or a large browser font) the label column would
    squeeze the values to a few characters a line; stack each label over its
