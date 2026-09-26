@@ -1,5 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { button, copyText, elem, ICON_COPY, switchControl } from "../lib/ui.js";
+import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.js";
 import {
   MAX_NAME_LEN,
   MAX_PATH_LEN,
@@ -13,9 +13,9 @@ import {
 import type { DeviceConfig, StreamMode } from "../lib/types.js";
 
 const CHEVRON =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
+  svgIcon('<path d="m6 9 6 6 6-6"></path>', 14);
 const CHECK =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  svgIcon('<polyline points="20 6 9 17 4 12"></polyline>', 14, 2.5);
 
 // Standard ALSA capture rates offered for PCM when the device's own supported
 // set is unknown (device unavailable at startup). Opus is always locked to

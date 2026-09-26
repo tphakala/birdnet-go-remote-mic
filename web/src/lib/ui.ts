@@ -5,6 +5,9 @@
 import { ApiError } from "./api.js";
 import { showToast } from "../components/toast.js";
 import type { FocusTarget } from "./menu-core.js";
+import { svgIcon } from "./svg.js";
+
+export { svgIcon };
 
 // elem creates an element with an optional class and text content.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
@@ -33,12 +36,6 @@ export const ICON_COPY = svgIcon('<rect width="14" height="14" x="8" y="8" rx="2
 // card and the About page so the same fact carries the same icon.
 export const ICON_VERSION = svgIcon('<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" x2="7.01" y1="7" y2="7"></line>', 14);
 
-// svgIcon wraps the body of a 24x24 stroked (Lucide style) glyph in its <svg>
-// element at the given pixel size, so an icon constant carries only its paths.
-// The body must be static, trusted markup: the result goes through innerHTML.
-export function svgIcon(body: string, size = 16): string {
-  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-}
 
 // ICON_EXTERNAL marks a link that opens in a new tab, for sighted users; the
 // visually hidden note in externalLink tells screen reader users.
