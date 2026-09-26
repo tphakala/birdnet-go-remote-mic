@@ -211,6 +211,10 @@ export class SystemView {
   // The wait for an update this tab started, from the request until the
   // appliance answers again or the attempt fails.
   private installWait: InstallWaitHandle | null = null;
+  // Whether a status fetched after the update request has arrived. A poll
+  // that started before the request can land after it still reading idle,
+  // which must not end the wait.
+  private installFresh = false;
 
   constructor() {
     this.tilesEl = document.getElementById("sys-tiles");
@@ -1152,8 +1156,11 @@ export class SystemView {
     const wait = this.installWait;
     if (!wait) return;
     if (u.phase === "installing") wait.installing();
-    else if (u.phase !== "downloading" && wait.close()) {
+    else if (u.phase !== "downloading" && this.installFresh && wait.close()) {
       this.installWait = null;
+      // Back on the card, on the control that retries when there is one.
+      const apply = this.updateApplyBtn;
+      (apply && !apply.hidden ? apply : this.updateCheckBtn)?.focus({ preventScroll: true });
       if (u.phase === "failed") showToast(`Update failed: ${u.phaseMessage || "the attempt did not finish"}`, "error");
     }
   }
@@ -1216,6 +1223,7 @@ export class SystemView {
     setBusy(btn, "Starting...");
     try {
       const status = await api.startUpdate();
+      this.installFresh = false;
       this.installWait = awaitUpdateInstall(target);
       this.renderUpdate(status);
     } catch (err: unknown) {
@@ -1223,7 +1231,10 @@ export class SystemView {
     } finally {
       this.updateApplying = false;
     }
+    // This read starts after the request, so the store's gate keeps any older
+    // poll from overwriting it; from here a status can end the wait.
     await store.refreshSystem();
+    this.installFresh = true;
     this.renderUpdate();
   }
 

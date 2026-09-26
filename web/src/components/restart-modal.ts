@@ -137,9 +137,9 @@ export interface InstallWaitHandle {
   // updater), which starts the install allowance.
   installing(): void;
   // close ends the wait and hides the modal when the attempt failed or was
-  // abandoned without a restart. Once the appliance has gone down for the
-  // restart it does nothing, since only a probe can end the wait then. It
-  // returns whether it closed.
+  // abandoned without a restart; the caller then places focus. Once the
+  // appliance has gone down for the restart it does nothing, since only a
+  // probe can end the wait then. It returns whether it closed.
   close(): boolean;
 }
 
@@ -160,7 +160,9 @@ async function probeVersion(): Promise<string | null> {
 // awaitUpdateInstall shows the restart modal from the moment an update to
 // target starts until the appliance answers again, then reloads the page (see
 // InstallWait). It returns null when a restart or another wait already holds
-// the modal.
+// the modal. The page behind stays inert until then; when the handle closes
+// the wait early, placing focus is left to the caller, which knows which
+// control is still shown.
 export function awaitUpdateInstall(target: string): InstallWaitHandle | null {
   const modal = document.getElementById("restart-modal");
   const titleEl = document.getElementById("modal-title");
@@ -175,7 +177,6 @@ export function awaitUpdateInstall(target: string): InstallWaitHandle | null {
   if (textEl) {
     textEl.textContent = `Updating to ${target}. The appliance downloads and verifies the release, then restarts to install it, and goes back to the running version on its own if the new one does not start. This page reloads once it answers again.`;
   }
-  const prevFocus = document.activeElement as HTMLElement | null;
   modal.classList.add("open");
   setAppInert(true);
   const release = trapFocus(modal);
@@ -238,7 +239,6 @@ export function awaitUpdateInstall(target: string): InstallWaitHandle | null {
       if (titleEl) titleEl.textContent = oldTitle;
       if (textEl) textEl.textContent = oldText;
       restarting = false;
-      prevFocus?.focus({ preventScroll: true });
       return true;
     },
   };
