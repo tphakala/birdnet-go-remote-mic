@@ -33,8 +33,9 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 	}
 }
 
-// Uninstall stops and disables the unit and the root updater's units, removes
-// their unit files, and reloads systemd. With purge it also removes the
+// Uninstall stops and disables the unit and the root updater's units, clears
+// the updater units' failed state, removes their unit files, and reloads
+// systemd. With purge it also removes the
 // binary (with the copies the updater keeps beside it), the config and state
 // directories, and the service user.
 //
@@ -54,6 +55,9 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 	_ = un.Init.Stop(UpdatePathUnit)
 	_ = un.Init.Disable(UpdatePathUnit)
 	_ = un.Init.Stop(UpdateServiceUnit)
+	// A unit that failed stays listed as failed, file or not, until reset.
+	_ = un.Init.ResetFailed(UpdatePathUnit)
+	_ = un.Init.ResetFailed(UpdateServiceUnit)
 	_ = un.Init.Stop(DefaultUnitName)
 	_ = un.Init.Disable(DefaultUnitName)
 

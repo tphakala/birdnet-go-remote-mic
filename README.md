@@ -323,8 +323,9 @@ the updater is stopped before it has, the updater puts the previous binary
 back and restarts it, and the appliance reports the rollback in the
 notification bell. An update cut off by a power loss is rolled back the same
 way when the updater next starts, even after a reboot. The appliance itself
-never gets write access to its own binary. When the binary's directory, or
-any directory above it, can be written by anyone but root, `service install`
+never gets write access to its own binary. When the binary is a symlink, or
+it, its directory or any directory above it can be written by anyone but
+root, `service install`
 warns and installs the service without the updater, and the updater checks
 again before it acts. After fixing the permissions, re-run
 `sudo remote-mic service install` (without `--no-start`, or the updater waits

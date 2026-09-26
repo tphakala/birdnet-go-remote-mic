@@ -382,29 +382,38 @@ func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 	return res
 }
 
-// checkBinDir refuses a binary that anyone but root could write (sticky
-// exemption or not), a bin directory or a directory above it that anyone but
-// root could write or redirect (see CheckRootOnly), and a binary that is not
-// a regular file. The updater installs and runs what is there as root, so such a path
-// would hand root to that user or group. It is defence in depth: this runs
-// inside the very binary it protects, so service install makes the same
-// check before it enables the updater.
+// checkBinDir refuses what CheckRootOnlyFile refuses for BinPath. The
+// updater installs and runs what is there as root, so a path anyone else
+// could change would hand root to that user or group. It is defence in
+// depth: this runs inside the very binary it protects, so service install
+// makes the same check before it enables the updater.
 func (a *Applier) checkBinDir() error {
-	fi, err := os.Lstat(a.BinPath)
-	if err != nil {
-		return err
-	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file (%s)", a.BinPath, fi.Mode().Type())
-	}
 	owner := a.Owner
 	if owner == nil {
 		owner = fileOwner
 	}
-	if err := rootOnly(a.BinPath, fi, owner, false); err != nil {
+	return checkRootOnlyFile(a.BinPath, owner)
+}
+
+// CheckRootOnlyFile refuses file unless it is a regular file (not a link)
+// that only root owns and can write, sticky directory or not, in a directory
+// that passes CheckRootOnly.
+func CheckRootOnlyFile(file string) error {
+	return checkRootOnlyFile(file, fileOwner)
+}
+
+func checkRootOnlyFile(file string, owner func(os.FileInfo) (uint32, uint32, bool)) error {
+	fi, err := os.Lstat(file)
+	if err != nil {
 		return err
 	}
-	return checkRootOnly(filepath.Dir(a.BinPath), owner)
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (%s)", file, fi.Mode().Type())
+	}
+	if err := rootOnly(file, fi, owner, false); err != nil {
+		return err
+	}
+	return checkRootOnly(filepath.Dir(file), owner)
 }
 
 // CheckRootOnly refuses dir when anyone but root could change what it

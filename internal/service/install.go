@@ -37,9 +37,10 @@ type Installer struct {
 	// stagingDir creates the update staging directory inside the state
 	// directory and hands it to the service user.
 	stagingDir func(stateDir string, uid, gid int) error
-	// rootOnly refuses a directory that it or a directory above it lets
-	// anyone but root write (update.CheckRootOnly).
-	rootOnly   func(dir string) error
+	// rootOnly refuses an installed binary that is not a regular file only
+	// root can write, in directories only root can write
+	// (update.CheckRootOnlyFile).
+	rootOnly   func(path string) error
 	removeFile func(path string) error
 	// warn receives a warning that does not fail the install.
 	warn io.Writer
@@ -61,7 +62,7 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		copyFile:   copyFile,
 		writeFile:  atomicfile.Write,
 		stagingDir: ensureStagingDir,
-		rootOnly:   update.CheckRootOnly,
+		rootOnly:   update.CheckRootOnlyFile,
 		removeFile: os.Remove,
 		warn:       os.Stderr,
 	}
@@ -71,8 +72,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // updater's path and service units, hands the config, state and update staging
 // directories to the service user, then reloads systemd and enables the unit
 // and the updater's path unit (starting both too when now is true). Since the
-// root updater runs the installed binary, a bin directory that it or a
-// directory above it lets anyone but root write gets no updater: install
+// root updater runs the installed binary, a binary or bin directory (or a
+// directory above it) that anyone but root can write gets no updater: install
 // warns, removes updater units an earlier install left, and installs the
 // appliance alone.
 //
@@ -105,15 +106,17 @@ func (in *Installer) Install(now bool) error {
 	if err := in.ensureDir(filepath.Dir(s.BinPath), 0o755); err != nil {
 		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
 	}
-	// The root updater runs this binary, so nobody but root may be able to
-	// replace it; otherwise the appliance is installed without the updater.
-	updater := true
-	if err := in.rootOnly(filepath.Dir(s.BinPath)); err != nil {
-		updater = false
-		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the directory writable only by root (or install the binary somewhere only root can write) and re-run sudo remote-mic service install\n", s.BinPath, err)
-	}
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
 		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
+	}
+	// The root updater runs this binary, so nobody but root may be able to
+	// replace it; otherwise the appliance is installed without the updater.
+	// The installed file is checked, not just its directory: the copy keeps
+	// an existing file's owner and writes through an existing link.
+	updater := true
+	if err := in.rootOnly(s.BinPath); err != nil {
+		updater = false
+		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the binary and its directories writable only by root (or install it somewhere only root can write) and re-run sudo remote-mic service install\n", s.BinPath, err)
 	}
 
 	unit, err := Render(s)

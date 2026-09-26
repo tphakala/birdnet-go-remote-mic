@@ -66,8 +66,8 @@ func TestInstallSequence(t *testing.T) {
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
 		"mkdir /usr/local/bin",
-		"rootonly /usr/local/bin",
 		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
+		"rootonly /usr/local/bin/remote-mic",
 		"write /etc/systemd/system/remote-mic.service",
 		"write /etc/systemd/system/remote-mic-update.service",
 		"write /etc/systemd/system/remote-mic-update.path",
@@ -250,11 +250,11 @@ func TestEnsureStagingDir(t *testing.T) {
 	}
 }
 
-// TestInstallWithoutUpdaterOnUntrustedBinDir pins that a bin directory that
-// is not root-only still gets the appliance, with a warning, but no updater:
+// TestInstallWithoutUpdaterOnUntrustedBin pins that a binary or bin directory
+// that is not root-only still gets the appliance, with a warning, but no updater:
 // updater units an earlier install left are stopped and removed, and no
 // staging directory is made.
-func TestInstallWithoutUpdaterOnUntrustedBinDir(t *testing.T) {
+func TestInstallWithoutUpdaterOnUntrustedBin(t *testing.T) {
 	var events []string
 	init := &fakeInit{events: &events, present: true}
 	userThere := true
