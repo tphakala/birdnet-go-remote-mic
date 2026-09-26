@@ -220,3 +220,15 @@ func TestGeneratedOutputs(t *testing.T) {
 		t.Errorf("got data %q, %q; want doc, js", outs[0].data, outs[1].data)
 	}
 }
+
+// TestRenderNamesProjectLicense pins that the document names remote-mic's own
+// license from its LICENSE text rather than a hardcoded one.
+func TestRenderNamesProjectLicense(t *testing.T) {
+	t.Parallel()
+	// render takes the license from the files; the name is not printed.
+	project := component{files: []licenseFile{{name: projectLicense, text: "Apache License\nVersion 2.0, January 2004"}}}
+	doc := string(render(project, nil))
+	if want := "remote-mic itself is licensed under Apache-2.0; see LICENSE and NOTICE."; !strings.Contains(doc, want) {
+		t.Errorf("document lacks %q", want)
+	}
+}

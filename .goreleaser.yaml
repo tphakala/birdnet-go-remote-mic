@@ -59,13 +59,14 @@ builds:
 
 archives:
   # e.g. birdnet-go-remote-mic_1.0.0_linux_amd64.tar.gz, containing the
-  # remote-mic binary plus the README, its license, and the licenses of the
+  # remote-mic binary plus the README, its license and notice, and the licenses of the
   # third-party code linked into it (their terms require the notices to travel
   # with the binary).
   - formats: [tar.gz]
     files:
       - README.md
       - LICENSE
+      - NOTICE
       - THIRD_PARTY_LICENSES.md
 
 # checksums.txt is also the cross-check for the signed release manifest:
@@ -108,7 +109,7 @@ nfpms:
       Remote microphone appliance for BirdNET-Go.
       Captures local ALSA audio and serves it over RTSP/RTP for BirdNET-Go to pull.
       After install, run `sudo remote-mic service install` to run it at boot.
-    license: MIT
+    license: Apache-2.0
     formats:
       - deb
     bindir: /usr/bin
@@ -119,6 +120,8 @@ nfpms:
       - src: LICENSE
         # Debian convention (and lintian) expect the license file at .../copyright.
         dst: /usr/share/doc/birdnet-go-remote-mic/copyright
+      - src: NOTICE
+        dst: /usr/share/doc/birdnet-go-remote-mic/NOTICE
       - src: THIRD_PARTY_LICENSES.md
         dst: /usr/share/doc/birdnet-go-remote-mic/THIRD_PARTY_LICENSES.md
 
@@ -145,7 +148,7 @@ brews:
     skip_upload: auto
     homepage: "https://github.com/tphakala/birdnet-go-remote-mic"
     description: "Remote microphone appliance for BirdNET-Go (ALSA capture served over RTSP)"
-    license: MIT
+    license: Apache-2.0
     caveats: |
       This installs the `remote-mic` command. To run it at boot as a hardened
       systemd service (creates a dedicated user, unit, and state directories):

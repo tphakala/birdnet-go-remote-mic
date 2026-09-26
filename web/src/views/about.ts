@@ -131,7 +131,7 @@ export class AboutView {
     row("Version", this.versionEl);
     row("Author", externalLink(AUTHOR_URL, "Tomi P. Hakala"));
     row("Source Code", externalLink(REPO_URL, "github.com/tphakala/birdnet-go-remote-mic"));
-    row("License", elem("span", undefined, "MIT"));
+    row("License", elem("span", undefined, "Apache 2.0"));
     body.appendChild(dl);
     return card;
   }
@@ -189,15 +189,15 @@ export class AboutView {
     return card;
   }
 
-  // buildLicense is one card for every license: remote-mic's own MIT license,
+  // buildLicense is one card for every license: remote-mic's own Apache 2.0 license,
   // then the third-party components the build links, each with its full text.
   private buildLicense(): HTMLElement {
     const { card, body } = section(
       ICON_SCALE,
       "Licenses",
-      "Remote Mic is open source under the MIT License, and built on open source components under their own licenses.",
+      "Remote Mic is open source under the Apache License 2.0, and built on open source components under their own licenses.",
     );
-    const p = elem("p", "about-text", "You may use, copy, modify, and distribute Remote Mic under the MIT License's terms. ");
+    const p = elem("p", "about-text", "You may use, modify, and distribute Remote Mic under the terms of the Apache License 2.0. ");
     p.appendChild(externalLink(`${REPO_URL}/blob/main/LICENSE`, "Read it on GitHub"));
     body.appendChild(p);
     // The full text arrives with licenses.json; until then the link above covers it.

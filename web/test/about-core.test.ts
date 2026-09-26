@@ -26,7 +26,7 @@ test("the committed licenses.json parses, with remote-mic first and every compon
   const doc = parseLicenseDoc(JSON.parse(readFileSync(LICENSES_JSON, "utf8")));
   assert.ok(doc, "licenses.json does not match the shape the About page reads; run task licenses:generate");
   assert.equal(doc.project.name, "remote-mic");
-  assert.equal(doc.project.license, "MIT");
+  assert.equal(doc.project.license, "Apache-2.0");
   assert.ok(doc.components.length > 0);
   for (const c of doc.components) {
     assert.notEqual(c.license, "", `${c.name} has no license name`);

@@ -27,8 +27,8 @@ info:
     Evolution policy: additive changes only within v1. Fields may be added
     to responses at any time; consumers must ignore unknown fields.
   license:
-    name: MIT
-    identifier: MIT
+    name: Apache 2.0
+    identifier: Apache-2.0
   contact:
     name: Tomi P. Hakala
     url: https://github.com/tphakala/birdnet-go-remote-mic

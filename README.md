@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/tphakala/birdnet-go-remote-mic/branch/main/graph/badge.svg)](https://codecov.io/gh/tphakala/birdnet-go-remote-mic)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/tphakala/birdnet-go-remote-mic)](go.mod)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tphakala/birdnet-go-remote-mic/badge)](https://scorecard.dev/viewer/?uri=github.com/tphakala/birdnet-go-remote-mic)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/github/sponsors/tphakala?logo=githubsponsors&color=ea4aaa&label=Sponsor)](https://github.com/sponsors/tphakala)
 
 **Stream a local microphone to [BirdNET-Go](https://github.com/tphakala/birdnet-go)
@@ -532,9 +532,10 @@ against the public keys in `internal/releasemanifest/keys.go`.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The licenses of the third-party components built
-into the binary are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and
-on the web UI's About tab.
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The licenses
+of the third-party components built into the binary are in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and on the web UI's About
+tab.
 
 ## Support
 
