@@ -87,8 +87,10 @@ test("an unrecognized saved value falls back to the OS preference", () => {
   assert.equal(runThemeInit({ stored: "", prefersLight: false }), "dark");
 });
 
-test("blocked storage keeps the dark default without throwing", () => {
-  assert.equal(runThemeInit({ stored: undefined, prefersLight: true }), "dark");
+test("blocked storage still follows the OS preference without throwing", () => {
+  assert.equal(runThemeInit({ stored: undefined, prefersLight: true }), "light");
+  assert.equal(runThemeInit({ stored: undefined, prefersLight: false }), "dark");
+  assert.equal(runThemeInit({ stored: undefined, prefersLight: undefined }), "dark");
 });
 
 test("a missing matchMedia keeps the dark default without throwing", () => {

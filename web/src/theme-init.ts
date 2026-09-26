@@ -8,14 +8,22 @@
 // app.ts initTheme reads the attribute set here and owns the toggle, which
 // saves the choice under the same key (app.ts THEME_KEY; a test pins the two).
 (() => {
-  let theme = "dark";
+  let saved: string | null = null;
   try {
-    const saved = localStorage.getItem("remote-mic-theme");
-    if (saved === "light" || saved === "dark") theme = saved;
-    // No saved choice yet: follow the OS preference.
-    else if (window.matchMedia("(prefers-color-scheme: light)").matches) theme = "light";
+    saved = localStorage.getItem("remote-mic-theme");
   } catch {
-    /* storage or matchMedia unavailable: keep the dark default */
+    /* storage blocked: no saved choice, so the OS preference decides */
+  }
+  let theme = "dark";
+  if (saved === "light" || saved === "dark") {
+    theme = saved;
+  } else {
+    // No saved choice (or none readable): follow the OS preference.
+    try {
+      if (window.matchMedia("(prefers-color-scheme: light)").matches) theme = "light";
+    } catch {
+      /* matchMedia unavailable: keep the dark default */
+    }
   }
   document.documentElement.setAttribute("data-theme", theme);
 })();
