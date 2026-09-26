@@ -14,9 +14,18 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
-// staleRequestAge is how old a request found at boot may be before it is
-// treated as abandoned (the updater units were removed, or never ran).
-const staleRequestAge = time.Hour
+// An attempt is in flight while its root updater may still be running: a
+// request not yet picked up, for updaterStartTimeout (after which the
+// appliance withdraws it) plus a margin, or the updater's claim, which it
+// touches on taking it, for the updater unit's 10 min start timeout plus a
+// margin. Anything older is abandoned: the updater units were removed, never
+// ran, or were stopped. A file dated in the future (the clock stepped back)
+// gets the same allowance the other way, so a small correction does not
+// drop a live attempt and a big one does not keep a dead one forever.
+const (
+	requestMaxAge = updaterStartTimeout + time.Minute
+	claimMaxAge   = 15 * time.Minute
+)
 
 // notifySource is the source chip on update notifications.
 const notifySource = "update"
@@ -31,9 +40,9 @@ const resultPoll = 2 * time.Second
 //
 // It writes the health file the updater waits for, reports the outcome of
 // an update addressed to this version, and clears leftovers of an abandoned
-// attempt. While an attempt is in flight (a fresh request, or one the
-// updater has taken: this process may be the new version the updater is
-// watching), it keeps looking for the result in the background until ctx
+// attempt, logging each abandoned request. While an attempt is in flight
+// (a request or claim within its age limit, see attempts: this process may
+// be the new version the updater is watching), it keeps looking for the result in the background until ctx
 // ends or the updater's health wait has passed, and leaves results addressed
 // to another version for the process they belong to.
 func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf func(string, ...any)) {
@@ -50,9 +59,13 @@ func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf f
 	if err != nil {
 		logf("update: write the health file: %v", err)
 	}
-	if inFlight(dir, logf) {
+	live, abandoned := attempts(dir)
+	if live {
 		go watchResult(ctx, dir, version, pub, logf, DefaultHealthTimeout+time.Minute)
 		return
+	}
+	for _, since := range abandoned {
+		logf("update: removing an update request abandoned since %s", since.UTC().Format(time.RFC3339))
 	}
 	// Nothing is in flight, so a result not addressed to this version will
 	// never be reported by anyone: drop it.
@@ -65,24 +78,30 @@ func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf f
 	(&Stager{Dir: dir}).clean()
 }
 
-// inFlight reports whether an update attempt may still be running: a request
-// file, or the updater's claim on one, younger than staleRequestAge.
-func inFlight(dir string, logf func(string, ...any)) bool {
-	var abandoned []string
-	for _, name := range []string{RequestFile, TakenFile} {
-		fi, err := os.Stat(filepath.Join(dir, name))
+// inFlight reports whether an update attempt may still be running in dir.
+func inFlight(dir string) bool {
+	live, _ := attempts(dir)
+	return live
+}
+
+// attempts reports whether an update attempt may still be running in dir (a
+// request or the updater's claim on one, within its age limit) and, when
+// none is, the times of the files abandoned attempts left.
+func attempts(dir string) (live bool, abandoned []time.Time) {
+	for _, f := range []struct {
+		name   string
+		maxAge time.Duration
+	}{{RequestFile, requestMaxAge}, {TakenFile, claimMaxAge}} {
+		fi, err := os.Stat(filepath.Join(dir, f.name))
 		if err != nil {
 			continue
 		}
-		if time.Since(fi.ModTime()) < staleRequestAge {
-			return true
+		if age := time.Since(fi.ModTime()); age > -f.maxAge && age < f.maxAge {
+			return true, nil
 		}
-		abandoned = append(abandoned, fi.ModTime().UTC().Format(time.RFC3339))
+		abandoned = append(abandoned, fi.ModTime())
 	}
-	for _, since := range abandoned {
-		logf("update: removing an update request abandoned since %s", since)
-	}
-	return false
+	return false, abandoned
 }
 
 // watchResult polls for the updater's result addressed to version until one

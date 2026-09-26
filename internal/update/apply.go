@@ -103,8 +103,9 @@ type Applier struct {
 
 // Apply claims the pending request and installs the staged release, or does
 // nothing when no request is pending. It claims the request by renaming it to
-// TakenFile, so the path unit does not start it again, and removes the claim
-// at exit; it writes the outcome to the status file for the appliance to
+// TakenFile, dated now so the appliance can tell how long this run has had,
+// so the path unit does not start it again, and removes the claim at exit;
+// it writes the outcome to the status file for the appliance to
 // report. It first refuses a binary or bin directory that anyone but root
 // could write (checkBinDir). When an install journal is found, a previous run
 // was cut off mid-install, and Apply rolls that back (recoverInterrupted)
@@ -155,6 +156,10 @@ func (a *Applier) Apply(ctx context.Context) error {
 		}
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
 	}
+	// The rename keeps the request's time; the appliance judges whether this
+	// attempt is still running by the claim's age, so date it now.
+	now := time.Now()
+	_ = root.Chtimes(takenPath, now, now)
 	reqBytes, err := readFileIn(root, takenPath, maxSmallFile)
 	if err != nil {
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
@@ -318,9 +323,9 @@ func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 // recoverInterrupted finishes a run that was cut off after the swap, from
 // the journal: the installed binary was never confirmed healthy, so the
 // previous one goes back. The installed binary's hash says where the cut
-// fell: still the new binary (rename the kept copy back), already the old
-// one (a rollback that finished its rename), or neither (nothing safe to do
-// but report it, addressed to this updater's own version, which is what the
+// fell: still the new binary (rename the kept copy back, or report that it
+// is gone), already the old one (a rollback that finished its rename), or
+// neither (nothing safe to do but report it, addressed to this updater's own version, which is what the
 // restarted appliance runs). The journal and any stale .new copy are removed
 // and the unit restarted whatever the outcome, so a failure here cannot
 // repeat on every start.
@@ -365,6 +370,9 @@ func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 		atomicfile.SyncDir(filepath.Dir(a.BinPath))
 		a.logf("apply-update: restored %s", j.From)
 		res.Outcome, res.Installed = OutcomeRolledBack, j.From
+	case installed == j.NewSHA256:
+		res.Installed = a.Running // see below
+		res.Reason += fmt.Sprintf("; the kept copy of %s (%s.prev) is missing or changed, so %s stays installed", j.From, a.BinPath, j.To)
 	default:
 		// This updater runs as the binary at BinPath (ExecStart), so its own
 		// version is what the restarted appliance runs: address it there.

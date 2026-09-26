@@ -572,6 +572,7 @@ func TestApplyRecoversInterruptedInstall(t *testing.T) {
 		outcome   Outcome
 		installed string
 		binary    string
+		reason    string // also expected in the reason, when set
 	}{
 		{name: "new binary installed", outcome: OutcomeRolledBack, installed: vOld, binary: oldBinary},
 		{
@@ -590,7 +591,7 @@ func TestApplyRecoversInterruptedInstall(t *testing.T) {
 				t.Helper()
 				_ = os.Remove(env.binPath + ".prev")
 			},
-			outcome: OutcomeFailed, installed: vNew, binary: newBinary,
+			outcome: OutcomeFailed, installed: vNew, binary: newBinary, reason: "kept copy",
 		},
 		{
 			name: "installed binary is neither version",
@@ -635,7 +636,7 @@ func TestApplyRecoversInterruptedInstall(t *testing.T) {
 				t.Errorf("installed %q, want %q", got, tt.binary)
 			}
 			r := env.result(t)
-			if r.Outcome != tt.outcome || r.Installed != tt.installed || !strings.Contains(r.Reason, "interrupted") {
+			if r.Outcome != tt.outcome || r.Installed != tt.installed || !strings.Contains(r.Reason, "interrupted") || !strings.Contains(r.Reason, tt.reason) {
 				t.Errorf("result %+v, want %s with %q installed", r, tt.outcome, tt.installed)
 			}
 			if !strings.Contains(tt.name, "journal") && (r.From != vOld || r.To != vNew) {
@@ -1099,5 +1100,30 @@ func TestApplyRecoversWithoutStateDir(t *testing.T) {
 	}
 	if env.restarts != 1 {
 		t.Errorf("restarts = %d, want 1", env.restarts)
+	}
+}
+
+// TestApplyDatesTheClaim pins that the updater dates its claim when it takes
+// a request, so the appliance measures the attempt from then, not from when
+// the request was written.
+func TestApplyDatesTheClaim(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(env.stateDir, DirName, RequestFile), old, old); err != nil {
+		t.Fatal(err)
+	}
+	var claimed time.Time
+	env.onRestart = func(env *applyEnv, _ int) {
+		if fi, err := os.Stat(filepath.Join(env.stateDir, DirName, TakenFile)); err == nil {
+			claimed = fi.ModTime()
+		}
+		env.bootInstalled(t)
+	}
+	if err := env.a.Apply(t.Context()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if age := time.Since(claimed); claimed.IsZero() || age > time.Minute {
+		t.Errorf("claim dated %v ago, want just now", age)
 	}
 }

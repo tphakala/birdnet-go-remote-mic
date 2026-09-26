@@ -28,7 +28,9 @@ const (
 	checkInterval    = 24 * time.Hour
 	checkJitter      = time.Hour
 	retryFirst       = time.Hour
-	checkTimeout     = time.Minute
+	// checkTimeout bounds a check, and stays under the management server's
+	// 30 s WriteTimeout so a manual check still gets its answer written.
+	checkTimeout = 20 * time.Second
 	// manualThrottle is how recent a check may be before a manual check
 	// returns it instead of asking again.
 	manualThrottle = 10 * time.Second
@@ -386,13 +388,19 @@ func (m *Manager) Status() Status {
 // StartApply begins a one-button update to the newest release found: it
 // stages the release in the background and hands it to the root updater,
 // which restarts the appliance. It returns at once with the new phase. It
-// refuses while checks are off, since staging downloads the release.
+// refuses while checks are off, since staging downloads the release, and
+// while an attempt is in flight, here or on disk.
 func (m *Manager) StartApply() (Status, error) {
 	if !m.cfg.Install.CanApply {
 		return m.Status(), ErrCannotApply
 	}
 	if !m.enabled.Load() {
 		return m.Status(), ErrChecksDisabled
+	}
+	// An attempt on disk counts too: one started before this process (which
+	// may be the new version the updater is still watching) has not ended.
+	if inFlight(m.cfg.Dir) {
+		return m.Status(), ErrBusy
 	}
 	m.mu.Lock()
 	switch {
@@ -415,8 +423,8 @@ func (m *Manager) StartApply() (Status, error) {
 	return m.Status(), nil
 }
 
-// apply stages rel on ctx, which turning checks off cancels (the attempt
-// then goes back to idle), and watches for the updater to take it. stop
+// apply stages rel on ctx, which turning checks off or the appliance shutting
+// down cancels (the attempt then goes back to idle), and watches for the updater to take it. stop
 // releases ctx once staging ends. A panic here would end the appliance, so
 // it is recovered and reported as a failure.
 func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *Release) {
@@ -435,9 +443,15 @@ func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *
 	m.mu.Unlock()
 	stop(nil)
 	if err != nil {
-		// Turning checks off is the operator's choice, not a failed update.
+		// Turning checks off is the operator's choice, and shutting down
+		// the appliance's; neither is a failed update.
 		if errors.Is(context.Cause(ctx), ErrChecksDisabled) {
 			m.cfg.Logf("update: stopped downloading %s: update checks were turned off", v)
+			m.setPhase(PhaseIdle, "")
+			return
+		}
+		if m.ctx.Err() != nil {
+			m.cfg.Logf("update: stopped downloading %s: shutting down", v)
 			m.setPhase(PhaseIdle, "")
 			return
 		}

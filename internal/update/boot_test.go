@@ -83,7 +83,7 @@ func TestBootReportsResultAndWritesHealth(t *testing.T) {
 }
 
 // TestBootCleansAbandonedAttempt pins that staged files with no pending
-// request, or with a request older than an hour, are removed at boot.
+// request, or with an abandoned one, are removed at boot.
 func TestBootCleansAbandonedAttempt(t *testing.T) {
 	t.Parallel()
 	for _, stale := range []bool{false, true} {
@@ -103,7 +103,11 @@ func TestBootCleansAbandonedAttempt(t *testing.T) {
 				}
 			}
 		}
-		Boot(t.Context(), dir, vOld, nil, t.Logf)
+		logs := &logSink{}
+		Boot(t.Context(), dir, vOld, nil, logs.logf)
+		if n, want := logs.count("abandoned since"), map[bool]int{false: 0, true: 2}[stale]; n != want {
+			t.Errorf("stale request %t: %d abandoned requests logged, want %d", stale, n, want)
+		}
 		for _, name := range []string{BinaryFile, ManifestFile, SignatureFile, downloadFile, RequestFile, TakenFile} {
 			if exists(filepath.Join(dir, name)) {
 				t.Errorf("stale request %t: %s left behind", stale, name)
@@ -123,7 +127,7 @@ func TestBootWatchesPendingUpdate(t *testing.T) {
 		dir := t.TempDir()
 		req := filepath.Join(dir, RequestFile)
 		writeJSON(t, req, Request{Version: vNew})
-		staged := time.Now().Add(-5 * time.Minute) // staged a while ago
+		staged := time.Now().Add(-time.Minute) // staged a moment ago
 		if err := os.Chtimes(req, staged, staged); err != nil {
 			t.Fatal(err)
 		}
@@ -265,4 +269,44 @@ func TestBootWatchesClaimedRequest(t *testing.T) {
 			t.Errorf("notifications %+v", snap.Notifications)
 		}
 	})
+}
+
+// TestAttemptsAges pins how long a request and the updater's claim count as
+// in flight: the request until the appliance would have withdrawn it (plus a
+// margin), the claim for the updater unit's lifetime (plus a margin), and
+// neither when dated in the future.
+func TestAttemptsAges(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		file string
+		age  time.Duration
+		live bool
+	}{
+		{"fresh request", RequestFile, 110 * time.Second, true},
+		{"request past its withdrawal", RequestFile, 130 * time.Second, false},
+		{"claim mid-install", TakenFile, 14 * time.Minute, true},
+		{"claim past the updater's lifetime", TakenFile, 16 * time.Minute, false},
+		{"request from the future", RequestFile, -time.Hour, false},
+		{"claim from the future", TakenFile, -time.Hour, false},
+		{"request after a small clock step back", RequestFile, -10 * time.Second, true},
+		{"claim after a small clock step back", TakenFile, -10 * time.Second, true},
+		{"claim after a big clock step back", TakenFile, -16 * time.Minute, false},
+	}
+	for _, tt := range tests {
+		dir := t.TempDir()
+		p := filepath.Join(dir, tt.file)
+		writeJSON(t, p, Request{Version: vNew})
+		mt := time.Now().Add(-tt.age)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+		live, abandoned := attempts(dir)
+		if live != tt.live || len(abandoned) != map[bool]int{true: 0, false: 1}[tt.live] {
+			t.Errorf("%s: live %t with %d abandoned, want live %t", tt.name, live, len(abandoned), tt.live)
+		}
+		if got := inFlight(dir); got != tt.live {
+			t.Errorf("%s: inFlight %t, want %t", tt.name, got, tt.live)
+		}
+	}
 }

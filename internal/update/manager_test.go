@@ -659,3 +659,95 @@ func TestManagerCheckNowIgnoresCallerContext(t *testing.T) {
 		t.Errorf("CheckNow with a gone caller: %+v, %v (fetch saw a cancelled context: %t)", st, err, sawCancelled)
 	}
 }
+
+// TestManagerCheckBudget pins that a check gets 20 s, under the management
+// server's 30 s WriteTimeout, so a manual check's answer is still written.
+func TestManagerCheckBudget(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var budget time.Duration
+		m := NewManager(t.Context(), &Config{
+			Running: vOld,
+			Fetch: func(ctx context.Context) (*Release, error) {
+				d, _ := ctx.Deadline()
+				budget = time.Until(d)
+				return fakeRelease(vOld), nil
+			},
+			Logf: (&logSink{}).logf,
+		})
+		m.Apply(on())
+		if _, err := m.CheckNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if budget != 20*time.Second {
+			t.Errorf("check budget %v, want 20s", budget)
+		}
+	})
+}
+
+// TestStartApplyBusyOnDisk pins that an attempt found on disk (started before
+// this process, which may be the version the updater is watching) refuses a
+// new one, and an abandoned one does not.
+func TestStartApplyBusyOnDisk(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		m, _, dir := applyManager(t, nil)
+		taken := filepath.Join(dir, TakenFile)
+		if err := os.WriteFile(taken, []byte(`{"version":"v0.3.0"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if err := os.Chtimes(taken, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.StartApply(); !errors.Is(err, ErrBusy) {
+			t.Errorf("claim on disk: got %v, want ErrBusy", err)
+		}
+		old := now.Add(-time.Hour)
+		if err := os.Chtimes(taken, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.StartApply(); err != nil {
+			t.Errorf("abandoned claim on disk: %v", err)
+		}
+		synctest.Wait()
+	})
+}
+
+// TestStartApplyShutdownQuiet pins that the appliance shutting down during a
+// download is not reported as a failed update.
+func TestStartApplyShutdownQuiet(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		c := notify.NewCenter()
+		m := NewManager(ctx, &Config{
+			Running: vOld,
+			Fetch:   (&fakeFetch{rel: fakeRelease(vNew)}).fetch,
+			Stage: func(ctx context.Context, _ *Release) error {
+				<-ctx.Done() // a slow download
+				return ctx.Err()
+			},
+			Dir:       t.TempDir(),
+			Install:   Install{Method: MethodService, CanApply: true},
+			Publisher: c,
+			Logf:      (&logSink{}).logf,
+		})
+		m.Apply(on())
+		if _, err := m.CheckNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.StartApply(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		if st := m.Status(); st.Phase != PhaseIdle {
+			t.Errorf("status %+v, want idle", st)
+		}
+		if slices.Contains(titles(c), "Update failed") {
+			t.Error("shutting down was reported as a failed update")
+		}
+	})
+}
