@@ -205,6 +205,9 @@ export interface Device {
   negotiatedFormat?: string;
   clientConnected: boolean;
   droppedFrames: number;
+  // Capture overruns (ALSA xruns) recovered since the device was last opened;
+  // each lost audio for every stream. Absent from an older appliance.
+  overruns?: number;
   opus?: OpusSettings;
   error?: string;
   // Class of why a skipped or failed device is not serving. Absent while

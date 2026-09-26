@@ -524,6 +524,9 @@ type Device struct {
 	// Opus Opus encoder settings, used only when mode is opus.
 	Opus *OpusSettings `json:"opus,omitempty"`
 
+	// Overruns Capture overruns (ALSA xruns) the device's capture has recovered from since it was last opened. Each one lost audio for every stream on the device, before any client saw it, and usually means the host was too busy or the USB connection is unstable. Zero for devices that never opened; the count restarts when the device is reopened.
+	Overruns int64 `json:"overruns"`
+
 	// Path RTSP path serving this device.
 	//
 	// Examples: /garden

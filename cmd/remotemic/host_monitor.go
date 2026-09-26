@@ -18,10 +18,10 @@ import (
 // host-health Host monitor (which gets its own /proc/stat-diffing CPU reader). It
 // is a seam so a test can assert both are present, since silently dropping one
 // from the group would otherwise still build and pass CI.
-func buildMonitors(ctx context.Context, hub *levels.Hub, dataPath string, drops monitor.DropSource, center notify.Publisher, s *monitor.Settings) monitor.Group {
+func buildMonitors(ctx context.Context, hub *levels.Hub, dataPath string, counters monitor.CounterSource, center notify.Publisher, s *monitor.Settings) monitor.Group {
 	return monitor.Group{
 		monitor.RunSignal(ctx, hub, center, s),
-		monitor.RunHost(ctx, hostReader{cpu: sysinfo.NewHostCPU(), dataPath: dataPath}, drops, center, s),
+		monitor.RunHost(ctx, hostReader{cpu: sysinfo.NewHostCPU(), dataPath: dataPath}, counters, center, s),
 	}
 }
 
@@ -51,22 +51,23 @@ func (r hostReader) Disk() (total, used, avail int64, ok bool) {
 	return sysinfo.DiskUsageDetail(r.dataPath)
 }
 
-// dropCounters returns the cumulative dropped-frame count of every SERVING device
-// for the host monitor, tagged with the runtime's Gen so the monitor can tell a
-// restarted runtime from its predecessor. A device that is disabled, skipped, or
-// failed is omitted, so the monitor sees it go absent and resolves any active drops
-// condition after the presence grace ("device stopped") rather than clearing it
-// with a misleading "client keeping up" message. A restarted device gets a fresh
-// runtime with a new Gen and a counter that starts at zero; the monitor rebaselines
-// when the Gen changes, falling back to a counter that goes backwards.
-func (p *provider) dropCounters() []monitor.DeviceDrops {
+// deviceCounters returns the cumulative dropped-frame and capture-overrun counts
+// of every SERVING device for the host monitor, tagged with the runtime's Gen so
+// the monitor can tell a restarted runtime from its predecessor. A device that is
+// disabled, skipped, or failed is omitted, so the monitor sees it go absent and
+// resolves any active counter condition after the presence grace ("device
+// stopped") rather than clearing it with a misleading recovery message. A
+// restarted device gets a fresh runtime with a new Gen and counters that start at
+// zero; the monitor rebaselines when the Gen changes, falling back to a counter
+// that goes backwards.
+func (p *provider) deviceCounters() []monitor.DeviceCounters {
 	recs := p.deviceList()
-	out := make([]monitor.DeviceDrops, 0, len(recs))
+	out := make([]monitor.DeviceCounters, 0, len(recs))
 	for _, rt := range recs {
 		if rt.currentState() != mgmtserver.StateServing {
 			continue
 		}
-		out = append(out, monitor.DeviceDrops{Name: rt.dev.Name, Gen: rt.gen, Dropped: rt.droppedTotal()})
+		out = append(out, monitor.DeviceCounters{Name: rt.dev.Name, Gen: rt.gen, Dropped: rt.droppedTotal(), Overruns: rt.overruns()})
 	}
 	return out
 }

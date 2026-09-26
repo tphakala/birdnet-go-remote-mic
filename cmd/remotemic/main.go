@@ -218,6 +218,11 @@ func (rt *deviceRuntime) droppedTotal() uint64 {
 	return n
 }
 
+// overruns is the capture's cumulative count of recovered overruns, the
+// device-level figure the host monitor watches for recurring overruns. A device
+// that never opened (src nil) reports zero.
+func (rt *deviceRuntime) overruns() uint64 { return audio.Overruns(rt.src) }
+
 // runtimeGen hands out a process-unique generation to each serving deviceRuntime
 // so the host monitor can tell one runtime from its restarted successor. Only
 // openDevice (the sole builder of a serving runtime) draws from it; skipped and
@@ -724,7 +729,7 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	if monSettings.Enabled {
 		logUndervoltageSupport()
 	}
-	app.monitors = buildMonitors(ctx, hub, prov.dataPath, prov.dropCounters, center, &monSettings)
+	app.monitors = buildMonitors(ctx, hub, prov.dataPath, prov.deviceCounters, center, &monSettings)
 
 	// Sweep stale client-flap warnings: the connect-driven detector only clears on
 	// the next connect after the quiet window, which a client that settles into a

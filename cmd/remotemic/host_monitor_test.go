@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
@@ -24,7 +25,7 @@ func TestBuildMonitorsWiresSignalAndHost(t *testing.T) {
 	var cfg config.Config
 	cfg.ApplyDefaults()
 	s := monitor.SettingsFrom(&cfg)
-	g := buildMonitors(ctx, levels.NewHub(), t.TempDir(), func() []monitor.DeviceDrops { return nil }, nil, &s)
+	g := buildMonitors(ctx, levels.NewHub(), t.TempDir(), func() []monitor.DeviceCounters { return nil }, nil, &s)
 	cancel() // stop the goroutines the monitor constructors started
 	var hasSignal, hasHost bool
 	for _, m := range g {
@@ -43,16 +44,26 @@ func TestBuildMonitorsWiresSignalAndHost(t *testing.T) {
 	}
 }
 
-func TestProviderDropCounters(t *testing.T) {
+// overrunSource is an audio.Source whose capture reports a fixed overrun count.
+// Only Overruns is called; the embedded Source is nil.
+type overrunSource struct {
+	audio.Source
+	n uint64
+}
+
+func (s overrunSource) Overruns() uint64 { return s.n }
+
+func TestProviderDeviceCounters(t *testing.T) {
 	p := &provider{}
-	if got := p.dropCounters(); len(got) != 0 {
-		t.Fatalf("dropCounters before setDevices = %v, want empty", got)
+	if got := p.deviceCounters(); len(got) != 0 {
+		t.Fatalf("deviceCounters before setDevices = %v, want empty", got)
 	}
-	// Distinct gens on the serving runtimes so the test pins that dropCounters
-	// carries rt.gen into DeviceDrops.Gen (a regression hardcoding Gen 0 would fail).
-	// The device-level dropped figure is the sum of its streams' counters
-	// (droppedTotal), so each runtime carries one stream holding the drops.
-	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
+	// Distinct gens on the serving runtimes so the test pins that deviceCounters
+	// carries rt.gen into DeviceCounters.Gen (a regression hardcoding Gen 0 would
+	// fail). The device-level dropped figure is the sum of its streams' counters
+	// (droppedTotal), so each runtime carries one stream holding the drops; the
+	// overrun figure comes from the device's capture source.
+	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}, src: overrunSource{n: 3}}
 	a.streams[0].dropped.Store(42)
 	b := &deviceRuntime{dev: config.Device{Name: "bats"}, gen: 8, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
 	// A disabled and a failed device carry (possibly frozen) counters but must be
@@ -63,11 +74,11 @@ func TestProviderDropCounters(t *testing.T) {
 	failed := &deviceRuntime{dev: config.Device{Name: "cellar"}, state: mgmtserver.StateFailed, streams: []*streamRuntime{{}}}
 	failed.streams[0].dropped.Store(7)
 	p.setDevices([]*deviceRuntime{a, disabled, b, failed})
-	got := p.dropCounters()
+	got := p.deviceCounters()
 	if len(got) != 2 ||
-		got[0].Name != "orchard" || got[0].Gen != 5 || got[0].Dropped != 42 ||
-		got[1].Name != "bats" || got[1].Gen != 8 || got[1].Dropped != 0 {
-		t.Errorf("dropCounters = %+v, want only the two serving devices with their gens", got)
+		got[0].Name != "orchard" || got[0].Gen != 5 || got[0].Dropped != 42 || got[0].Overruns != 3 ||
+		got[1].Name != "bats" || got[1].Gen != 8 || got[1].Dropped != 0 || got[1].Overruns != 0 {
+		t.Errorf("deviceCounters = %+v, want only the two serving devices with their gens and counters", got)
 	}
 }
 
@@ -94,6 +105,13 @@ func TestDeviceRuntimeAggregatesStreamDrops(t *testing.T) {
 	ds := rt.status()
 	if ds.DroppedFrames != 7 {
 		t.Errorf("status DroppedFrames = %d, want 7", ds.DroppedFrames)
+	}
+	if ds.Overruns != 0 {
+		t.Errorf("status Overruns with no capture source = %d, want 0", ds.Overruns)
+	}
+	rt.src = overrunSource{n: 6}
+	if got := rt.status().Overruns; got != 6 {
+		t.Errorf("status Overruns = %d, want the capture's 6", got)
 	}
 	if len(ds.Streams) != 2 {
 		t.Fatalf("status Streams = %d, want 2", len(ds.Streams))

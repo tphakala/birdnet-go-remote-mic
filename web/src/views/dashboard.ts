@@ -54,6 +54,7 @@ interface LiveBody {
   urlEl: HTMLElement;
   clientsEl: HTMLElement;
   droppedEl: HTMLElement;
+  overrunsEl: HTMLElement;
   negotiatedEl: HTMLElement;
   // One VU meter per captured hardware channel, indexed by zero-based channel.
   meters: VUMeter[];
@@ -790,8 +791,14 @@ export class DashboardView {
       dropItem.appendChild(elem("span", undefined, "Dropped Frames:"));
       const droppedEl = elem("span", "metric-val mono");
       dropItem.appendChild(droppedEl);
+      const overrunItem = elem("div", "metric-item");
+      overrunItem.title = "Capture overruns: times the sound card's buffer filled before it was read, losing audio on every stream. Usually a busy host or an unstable USB connection.";
+      overrunItem.appendChild(elem("span", undefined, "Overruns:"));
+      const overrunsEl = elem("span", "metric-val mono");
+      overrunItem.appendChild(overrunsEl);
       metrics.appendChild(clientItem);
       metrics.appendChild(dropItem);
+      metrics.appendChild(overrunItem);
       footer.appendChild(metrics);
       const negotiated = elem("div");
       const negotiatedEl = elem("span");
@@ -802,7 +809,7 @@ export class DashboardView {
       footer.appendChild(footerEnd);
       article.appendChild(footer);
 
-      live = { urlEl, clientsEl, droppedEl, negotiatedEl, meters: built.meters, rows: built.rows };
+      live = { urlEl, clientsEl, droppedEl, overrunsEl, negotiatedEl, meters: built.meters, rows: built.rows };
     } else {
       // Error / skipped / disabled body. The banner is always present and hidden
       // by syncCard when the device has no error, so an error whose text changes
@@ -991,6 +998,7 @@ export class DashboardView {
       if (entry.live.urlEl.title !== url) entry.live.urlEl.title = url;
       setText(entry.live.clientsEl, d.clientConnected ? "1 connected" : "0 connected");
       setText(entry.live.droppedEl, String(d.droppedFrames));
+      setText(entry.live.overrunsEl, String(d.overruns ?? 0));
       const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
       setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}`);
       // The label is the hardware capture format; the RTSP stream is always 16-bit,

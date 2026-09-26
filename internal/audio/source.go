@@ -33,6 +33,24 @@ type Source interface {
 	Close() error
 }
 
+// overrunCounter is implemented by a Source that can report the capture
+// overruns it has recovered from, and by a wrapper that forwards the count.
+type overrunCounter interface {
+	Overruns() uint64
+}
+
+// Overruns returns src's cumulative count of recovered capture overruns (ALSA
+// xruns). Each one is a gap where the capture buffer filled before it was
+// drained and audio was lost; the capture recovers and keeps reading, so the
+// count is the only trace. A source that cannot count them (a fake, a fan-out
+// consumer) reports zero.
+func Overruns(src Source) uint64 {
+	if c, ok := src.(overrunCounter); ok {
+		return c.Overruns()
+	}
+	return 0
+}
+
 // NewFakeSource returns a Source that replays periods (each a slice of S16LE
 // bytes) in order, then returns io.EOF. It is used by the pipeline and server
 // tests to drive the send path without hardware.

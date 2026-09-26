@@ -547,6 +547,7 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		Error:             errMsg,
 		DownCause:         downCause,
 		DroppedFrames:     int64(rt.droppedTotal()),
+		Overruns:          int64(rt.overruns()),
 		FriendlyName:      rt.friendlyName,
 		HWAddr:            hwAddr,
 		IDStable:          !config.IsCardIndexID(rt.dev.Device),

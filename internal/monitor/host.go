@@ -3,6 +3,8 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"log"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -10,7 +12,7 @@ import (
 )
 
 // hostPollInterval is how often the host monitor reads the host and the device
-// drop counters. Host health moves slowly; ten seconds keeps the Pi Zero cost
+// counters. Host health moves slowly; ten seconds keeps the Pi Zero cost
 // negligible while every onset dwell below still spans several readings.
 const hostPollInterval = 10 * time.Second
 
@@ -43,6 +45,15 @@ const (
 	// dropsPerSecond is the dropped-frame rate above which a device's client is
 	// judged not to be keeping up.
 	dropsPerSecond = 1.0
+
+	// Capture overruns are sporadic events rather than a steady rate, so their
+	// condition counts them over a sliding window: overrunOnsetCount within
+	// overrunWindow raises it, and overrunClearAfter with none clears it. One
+	// isolated overrun (a scheduling hiccup at startup, say) is only logged; a
+	// recurring pattern means the host is too busy or the USB link is unstable.
+	overrunWindow     = 5 * time.Minute
+	overrunOnsetCount = 5
+	overrunClearAfter = 5 * time.Minute
 )
 
 // Host condition keys. There is one host, so the keys carry no subject.
@@ -55,6 +66,8 @@ const (
 )
 
 func streamDropsKey(name string) string { return "stream:" + name + ":drops" }
+
+func deviceOverrunsKey(name string) string { return "device:" + name + ":overruns" }
 
 // HostReader supplies the host readings the monitor judges. Each method reports
 // ok=false when its figure is unavailable (no thermal zone, no rpi_volt hwmon, a
@@ -81,25 +94,30 @@ type HostReader interface {
 	Undervoltage() (now, ok bool)
 }
 
-// DeviceDrops is one device's cumulative dropped-frame counter as the host
-// monitor polls it, tagged with the identity (Gen) of the runtime the counter
-// belongs to. A restart hands the device a fresh runtime whose counter starts at
-// zero and a new Gen; the monitor rebaselines when Gen changes, so it never
-// reports a negative rate and never under-reports when the fresh counter has
-// already climbed past the old value between two polls. Gen zero (the source did
-// not supply one) disables the Gen check and leaves the counter-went-backwards
-// heuristic as the sole restart signal.
-type DeviceDrops struct {
-	Name    string
-	Gen     uint64
+// DeviceCounters is one device's cumulative loss counters as the host monitor
+// polls them, tagged with the identity (Gen) of the runtime the counters belong
+// to. A restart hands the device a fresh runtime whose counters start at zero
+// and a new Gen; the monitor rebaselines when Gen changes, so it never reports a
+// negative rate and never under-reports when a fresh counter has already climbed
+// past the old value between two polls. Gen zero (the source did not supply one)
+// disables the Gen check and leaves a counter going backwards as the sole
+// restart signal.
+type DeviceCounters struct {
+	Name string
+	Gen  uint64
+	// Dropped counts the audio frames the device's streams dropped because a
+	// client or encoder was not keeping up.
 	Dropped uint64
+	// Overruns counts the capture overruns (ALSA xruns) the device's capture
+	// recovered from; each one lost audio before any stream saw it.
+	Overruns uint64
 }
 
-// DropSource returns the current per-device dropped-frame counters. A device
-// absent from the result is treated as stopped: the appliance lists only serving
-// devices, so a device that stops serving (disabled, failed, or removed) drops out
-// and its drops condition is resolved after the presence grace.
-type DropSource func() []DeviceDrops
+// CounterSource returns the current per-device counters. A device absent from
+// the result is treated as stopped: the appliance lists only serving devices, so
+// a device that stops serving (disabled, failed, or removed) drops out and its
+// counter conditions are resolved after the presence grace.
+type CounterSource func() []DeviceCounters
 
 // hostCond is one host condition's state: its hysteresis machine, the time its
 // reading was last available, and its clear dwell (which also bounds how long an
@@ -115,35 +133,52 @@ func newHostCond(key string, enterAfter, clearAfter time.Duration) *hostCond {
 	return &hostCond{key: key, h: notify.NewHysteresis(enterAfter, clearAfter), clearAfter: clearAfter}
 }
 
-// dropState is one device's dropped-frame rate state. gen is the identity of the
-// runtime prev belongs to, so a restart (a new gen) rebaselines instead of
-// diffing two runtimes' counters.
-type dropState struct {
+// counterState is one device's counter-condition state: the dropped-frame rate
+// and the capture-overrun window. gen is the identity of the runtime prev and
+// ovPrev belong to, so a restart (a new gen) rebaselines instead of diffing two
+// runtimes' counters.
+type counterState struct {
 	h      *notify.Hysteresis
 	prev   uint64
 	prevAt time.Time
 	gen    uint64
 	missed int
 	seen   bool
+
+	// ovPrev is the last overrun count seen; ovRecent holds the overruns seen
+	// within the last overrunWindow, one entry per poll that saw any; ovLast is
+	// when the most recent one was seen; ovActive is whether the condition is
+	// raised.
+	ovPrev   uint64
+	ovRecent []overrunSample
+	ovLast   time.Time
+	ovActive bool
+}
+
+// overrunSample is the number of overruns one poll saw, with its time.
+type overrunSample struct {
+	at time.Time
+	n  uint64
 }
 
 // Host is the host-health condition monitor. A single goroutine polls the
-// HostReader and the DropSource every hostPollInterval and raises CPU, memory,
-// temperature, disk, undervoltage, and per-device dropped-frame conditions with
-// hysteresis on both the value and the duration. Settings are swapped atomically
+// HostReader and the CounterSource every hostPollInterval and raises CPU,
+// memory, temperature, disk, undervoltage, and per-device dropped-frame and
+// capture-overrun conditions, with hysteresis on both the value and the
+// duration. Settings are swapped atomically
 // by Apply; the poll goroutine reads them each tick and performs every state
 // change itself, so Apply never races the poll.
 type Host struct {
-	pub    notify.Publisher
-	clock  func() time.Time
-	reader HostReader
-	drops  DropSource
-	set    atomic.Pointer[Settings]
+	pub      notify.Publisher
+	clock    func() time.Time
+	reader   HostReader
+	counters CounterSource
+	set      atomic.Pointer[Settings]
 
 	// Owned by the poll goroutine.
 	applied                  *Settings
 	cpu, mem, temp, disk, vt *hostCond
-	devs                     map[string]*dropState
+	devs                     map[string]*counterState
 }
 
 // Host implements the appliance's Monitors handle.
@@ -162,25 +197,25 @@ func WithHostClock(fn func() time.Time) HostOption {
 	}
 }
 
-// NewHost builds a host monitor publishing to center. A nil reader or drops
+// NewHost builds a host monitor publishing to center. A nil reader or counter
 // source disables that half of the monitor. A nil center becomes a typed-nil
 // *notify.Center (a no-op Publisher), matching NewSignal. Call poll on a ticker
 // (RunHost does this) to drive it.
-func NewHost(reader HostReader, drops DropSource, center notify.Publisher, s *Settings, opts ...HostOption) *Host {
+func NewHost(reader HostReader, counters CounterSource, center notify.Publisher, s *Settings, opts ...HostOption) *Host {
 	if center == nil {
 		center = (*notify.Center)(nil)
 	}
 	h := &Host{
-		pub:    center,
-		clock:  time.Now,
-		reader: reader,
-		drops:  drops,
-		cpu:    newHostCond(hostCPUKey, cpuEnterAfter, cpuClearAfter),
-		mem:    newHostCond(hostMemKey, memEnterAfter, memClearAfter),
-		temp:   newHostCond(hostTempKey, tempEnterAfter, tempClearAfter),
-		disk:   newHostCond(hostDiskKey, diskEnterAfter, diskClearAfter),
-		vt:     newHostCond(hostVoltKey, voltEnterAfter, voltClearAfter),
-		devs:   map[string]*dropState{},
+		pub:      center,
+		clock:    time.Now,
+		reader:   reader,
+		counters: counters,
+		cpu:      newHostCond(hostCPUKey, cpuEnterAfter, cpuClearAfter),
+		mem:      newHostCond(hostMemKey, memEnterAfter, memClearAfter),
+		temp:     newHostCond(hostTempKey, tempEnterAfter, tempClearAfter),
+		disk:     newHostCond(hostDiskKey, diskEnterAfter, diskClearAfter),
+		vt:       newHostCond(hostVoltKey, voltEnterAfter, voltClearAfter),
+		devs:     map[string]*counterState{},
 	}
 	for _, o := range opts {
 		o(h)
@@ -200,8 +235,8 @@ func (h *Host) Apply(set *Settings) {
 // RunHost builds the monitor and polls it every hostPollInterval until ctx is
 // done. It returns the monitor so the caller can hand it to the appliance as one
 // of its Monitors.
-func RunHost(ctx context.Context, reader HostReader, drops DropSource, center notify.Publisher, s *Settings) *Host {
-	h := NewHost(reader, drops, center, s)
+func RunHost(ctx context.Context, reader HostReader, counters CounterSource, center notify.Publisher, s *Settings) *Host {
+	h := NewHost(reader, counters, center, s)
 	go func() {
 		t := time.NewTicker(hostPollInterval)
 		defer t.Stop()
@@ -238,13 +273,13 @@ func (h *Host) poll() {
 	if h.reader != nil {
 		h.evaluateHost(now, set)
 	}
-	if h.drops != nil {
-		h.evaluateDrops(now)
+	if h.counters != nil {
+		h.evaluateCounters(now)
 	}
 }
 
 // resolveAll clears every active condition this monitor owns and resets state,
-// so a re-enable starts fresh (drop counters rebaseline on the next poll).
+// so a re-enable starts fresh (device counters rebaseline on the next poll).
 func (h *Host) resolveAll(reason string) {
 	for _, c := range [...]*hostCond{h.cpu, h.mem, h.temp, h.disk, h.vt} {
 		if c.h.Active() {
@@ -256,6 +291,9 @@ func (h *Host) resolveAll(reason string) {
 	for name, st := range h.devs {
 		if st.h.Active() {
 			h.pub.Resolve(streamDropsKey(name), reason)
+		}
+		if st.ovActive {
+			h.pub.Resolve(deviceOverrunsKey(name), reason)
 		}
 	}
 	clear(h.devs)
@@ -408,58 +446,34 @@ func (h *Host) transition(tr notify.Transition, key string, mkOnset, mkClear fun
 	}
 }
 
-// evaluateDrops turns each device's cumulative dropped-frame counter into a rate
-// over the poll interval and drives its condition. The onset needs the rate over
-// dropsPerSecond; once active, any drop at all holds the condition, so it clears
-// only after dropsClearAfter with no drops.
-func (h *Host) evaluateDrops(now time.Time) {
+// evaluateCounters drives each serving device's counter conditions (dropped
+// frames and capture overruns) from its cumulative counters, and resolves them
+// for a device that has stopped serving.
+func (h *Host) evaluateCounters(now time.Time) {
 	for _, st := range h.devs {
 		st.seen = false
 	}
-	for _, d := range h.drops() {
+	for _, d := range h.counters() {
 		st := h.devs[d.Name]
 		if st == nil {
 			// First sighting: baseline only, since a cumulative counter says nothing
-			// about the current rate.
-			h.devs[d.Name] = &dropState{
+			// about what happened since the last poll.
+			h.devs[d.Name] = &counterState{
 				h:    notify.NewHysteresis(dropsEnterAfter, dropsClearAfter),
-				prev: d.Dropped, prevAt: now, gen: d.Gen, seen: true,
+				prev: d.Dropped, prevAt: now, gen: d.Gen, ovPrev: d.Overruns, seen: true,
 			}
 			continue
 		}
 		st.seen, st.missed = true, 0
-		if d.Gen != st.gen || d.Dropped < st.prev {
-			// A fresh runtime: either its identity changed (a restart the counter did
-			// not have to reveal, e.g. the new counter already passed the old value
-			// between polls) or, absent a Gen, the counter went backwards. Rebaseline
-			// prev AND gen, then observe no drops for this poll: a fresh runtime has no
-			// evidence of drops yet, so an active condition's clear run keeps
-			// advancing and a pending onset run is abandoned, instead of skipping the
-			// observation and letting a run survive the restart. Rebaselining gen here
-			// is essential: without it a restarted device would rebaseline on every
-			// subsequent poll and its drop condition would never fire again.
-			st.prev, st.prevAt, st.gen = d.Dropped, now, d.Gen
-			name := d.Name
-			h.transition(st.h.Observe(now, false), streamDropsKey(name),
-				func() notify.Notification { return dropsOnset(name, 0) },
-				func() notify.Notification { return dropsClearFor(name) })
-			continue
-		}
-		delta := d.Dropped - st.prev
-		elapsed := now.Sub(st.prevAt).Seconds()
-		st.prev, st.prevAt = d.Dropped, now
-		if elapsed <= 0 {
-			continue
-		}
-		rate := float64(delta) / elapsed
-		over := rate > dropsPerSecond
-		if st.h.Active() {
-			over = delta > 0
-		}
-		name := d.Name
-		h.transition(st.h.Observe(now, over), streamDropsKey(name),
-			func() notify.Notification { return dropsOnset(name, rate) },
-			func() notify.Notification { return dropsClearFor(name) })
+		// A fresh runtime: either its identity changed (a restart the counters did
+		// not have to reveal, e.g. a new counter already passed the old value
+		// between polls) or, absent a Gen, a counter went backwards. Adopting the
+		// new gen here is essential: without it a restarted device would read as
+		// restarted on every later poll and its conditions would never fire again.
+		restarted := d.Gen != st.gen || d.Dropped < st.prev || d.Overruns < st.ovPrev
+		st.gen = d.Gen
+		h.observeDrops(st, now, d.Name, d.Dropped, restarted)
+		h.observeOverruns(st, now, d.Name, d.Overruns, restarted)
 	}
 	for name, st := range h.devs {
 		if st.seen {
@@ -467,11 +481,10 @@ func (h *Host) evaluateDrops(now time.Time) {
 		}
 		st.missed++
 		if st.missed < devicePresenceGrace {
-			// Absent but within the presence grace: abandon a pending onset run so a
-			// blip cannot carry it across the gap, but leave an active condition
+			// Absent but within the presence grace: abandon a pending drops onset run
+			// so a blip cannot carry it across the gap, but leave an active condition
 			// untouched. A device that stopped serving must end with the grace
-			// resolve ("device stopped"), never with a clear claiming its client
-			// caught up.
+			// resolve ("device stopped"), never with a clear claiming it recovered.
 			if !st.h.Active() {
 				st.h.Reset()
 			}
@@ -480,7 +493,88 @@ func (h *Host) evaluateDrops(now time.Time) {
 		if st.h.Active() {
 			h.pub.Resolve(streamDropsKey(name), "device stopped")
 		}
+		if st.ovActive {
+			h.pub.Resolve(deviceOverrunsKey(name), "device stopped")
+		}
 		delete(h.devs, name)
+	}
+}
+
+// observeDrops turns one device's cumulative dropped-frame counter into a rate
+// over the poll interval and drives its condition. The onset needs the rate
+// over dropsPerSecond; once active, any drop at all holds the condition, so it
+// clears only after dropsClearAfter with no drops.
+func (h *Host) observeDrops(st *counterState, now time.Time, name string, dropped uint64, restarted bool) {
+	if restarted {
+		// Rebaseline, then observe no drops for this poll: a fresh runtime has no
+		// evidence of drops yet, so an active condition's clear run keeps advancing
+		// and a pending onset run is abandoned, instead of skipping the observation
+		// and letting a run survive the restart.
+		st.prev, st.prevAt = dropped, now
+		h.transition(st.h.Observe(now, false), streamDropsKey(name),
+			func() notify.Notification { return dropsOnset(name, 0) },
+			func() notify.Notification { return dropsClearFor(name) })
+		return
+	}
+	delta := dropped - st.prev
+	elapsed := now.Sub(st.prevAt).Seconds()
+	st.prev, st.prevAt = dropped, now
+	if elapsed <= 0 {
+		return
+	}
+	rate := float64(delta) / elapsed
+	over := rate > dropsPerSecond
+	if st.h.Active() {
+		over = delta > 0
+	}
+	h.transition(st.h.Observe(now, over), streamDropsKey(name),
+		func() notify.Notification { return dropsOnset(name, rate) },
+		func() notify.Notification { return dropsClearFor(name) })
+}
+
+// observeOverruns counts one device's new capture overruns into its sliding
+// window and drives the overrun condition: the onset needs overrunOnsetCount
+// within overrunWindow, and an active condition clears after overrunClearAfter
+// with none. A restarted runtime's counter started at zero after the poll that
+// last saw its predecessor, so its whole count is new since that poll. Every
+// overrun short of the onset is logged, so an isolated one still leaves a
+// trace; once the condition is raised it speaks for them until it clears.
+func (h *Host) observeOverruns(st *counterState, now time.Time, name string, total uint64, restarted bool) {
+	delta := total
+	if !restarted {
+		delta = total - st.ovPrev
+	}
+	st.ovPrev = total
+	if delta > 0 {
+		st.ovRecent = append(st.ovRecent, overrunSample{at: now, n: delta})
+		st.ovLast = now
+	}
+	cutoff := now.Add(-overrunWindow)
+	st.ovRecent = slices.DeleteFunc(st.ovRecent, func(s overrunSample) bool { return !s.at.After(cutoff) })
+
+	if st.ovActive {
+		if now.Sub(st.ovLast) >= overrunClearAfter {
+			st.ovActive = false
+			// Start the next onset from an empty window, so the overruns that raised
+			// this condition cannot count toward raising it again.
+			st.ovRecent = st.ovRecent[:0]
+			log.Printf("device %q: no capture overruns for %s, overrun warning cleared", name, humanDuration(int(overrunClearAfter/time.Second)))
+			h.pub.Clear(deviceOverrunsKey(name), overrunsClearFor(name))
+		}
+		return
+	}
+	var recent uint64
+	for _, s := range st.ovRecent {
+		recent += s.n
+	}
+	if recent >= overrunOnsetCount {
+		st.ovActive = true
+		log.Printf("device %q: %d capture overruns in the last %s, audio lost; raising an overrun warning", name, recent, humanDuration(int(overrunWindow/time.Second)))
+		h.pub.Onset(overrunsOnset(name, recent))
+		return
+	}
+	if delta > 0 {
+		log.Printf("device %q: %d capture overrun(s) since the last check, audio lost (%d in the last %s)", name, delta, recent, humanDuration(int(overrunWindow/time.Second)))
 	}
 }
 
@@ -521,8 +615,25 @@ func dropsOnset(name string, rate float64) notify.Notification {
 }
 
 // dropsClearFor builds the clear body for a device's dropped-frame condition,
-// shared by the counter-restart and normal-rate paths in evaluateDrops. It is
+// shared by the counter-restart and normal-rate paths in observeDrops. It is
 // symmetric with dropsOnset.
 func dropsClearFor(name string) notify.Notification {
 	return conditionClear("Client keeping up", name+" is no longer dropping frames")
+}
+
+func overrunsOnset(name string, count uint64) notify.Notification {
+	return notify.Notification{
+		Severity: notify.SeverityWarning,
+		Category: notify.CategoryDevice,
+		Key:      deviceOverrunsKey(name),
+		Source:   name,
+		Title:    "Capture overruns",
+		Message: fmt.Sprintf("%s lost audio to %d capture overruns in the last %s; the host may be too busy or the USB connection unstable",
+			name, count, humanDuration(int(overrunWindow/time.Second))),
+	}
+}
+
+func overrunsClearFor(name string) notify.Notification {
+	return conditionClear("Capture overruns stopped",
+		fmt.Sprintf("%s has had no capture overruns for %s", name, humanDuration(int(overrunClearAfter/time.Second))))
 }

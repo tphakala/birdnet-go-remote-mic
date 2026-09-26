@@ -81,7 +81,10 @@ type DeviceStatus struct {
 	NegotiatedFormat string
 	ClientConnected  bool
 	DroppedFrames    int64
-	Error            string
+	// Overruns is the capture's cumulative count of recovered overruns (ALSA
+	// xruns) since the device was last opened; zero when it never opened.
+	Overruns int64
+	Error    string
 	// DownCause classifies why a skipped or failed device is not serving (the
 	// wire downCause enum: not-connected, ambiguous, malformed, resolve-failed,
 	// same-hardware, open-failed, disconnected, failed); empty when there is no
@@ -361,6 +364,7 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		State:           mgmtapi.DeviceState(d.State),
 		ClientConnected: d.ClientConnected,
 		DroppedFrames:   d.DroppedFrames,
+		Overruns:        d.Overruns,
 	}
 	if len(d.Config.Streams) > 0 {
 		s0 := &d.Config.Streams[0]
