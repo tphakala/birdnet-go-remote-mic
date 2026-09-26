@@ -93,6 +93,9 @@ test("blocked storage keeps the dark default without throwing", () => {
 
 test("a missing matchMedia keeps the dark default without throwing", () => {
   assert.equal(runThemeInit({ stored: null, prefersLight: undefined }), "dark");
+  // Pins that the counter sees a call whose throw was swallowed, which the
+  // saved-choice test below relies on.
+  assert.equal(mediaCalls, 1);
 });
 
 test("a saved choice applies without consulting matchMedia", () => {
@@ -106,16 +109,16 @@ test("index.html loads theme-init.js as a blocking classic script in <head>", ()
   assert.ok(head, "no <head> in index.html");
   // A commented-out tag loads nothing.
   const live = head[1].replace(/<!--[\s\S]*?-->/g, "");
-  const tag = /<script\b([^>]*)\ssrc\s*=\s*["']?(?:\.?\/)?theme-init\.js["']?([^>]*)>/i.exec(live);
+  const tag = /<script\b([^>]*)\ssrc\s*=\s*["']?(?:\.?\/)?theme-init\.js(?=[?#"'\s>])["']?([^>]*)>/i.exec(live);
   assert.ok(tag, "theme-init.js is not loaded in <head>");
   const attrs = ` ${tag[1]} ${tag[2]} `;
-  // A module, deferred or async script runs after the first paint, which is
-  // the flash this script exists to prevent, and a non-JavaScript type never
-  // runs at all.
+  // A module, deferred or async script may run after the first paint, which
+  // is the flash this script exists to prevent; a non-JavaScript type, or
+  // nomodule in any browser that supports modules, never runs it at all.
   const type = /\stype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
   assert.ok(
     type === null || ["text/javascript", "application/javascript"].includes(type[1].toLowerCase()),
     `theme-init.js tag has type ${type?.[1]}`,
   );
-  assert.ok(!/\s(defer|async)(?=[\s=/]|$)/i.test(attrs), "theme-init.js tag is deferred or async");
+  assert.ok(!/\s(defer|async|nomodule)(?=[\s=/]|$)/i.test(attrs), "theme-init.js tag is deferred, async or nomodule");
 });
