@@ -42,9 +42,11 @@ export function initLoginModal(): void {
     // Only pull focus into the workspace when the background is actually
     // interactive again. If another modal still holds .app-container inert
     // (depth > 0), focusing an inert descendant would silently fail and strand
-    // focus, so leave it for that modal to place.
+    // focus, so leave it for that modal to place. preventScroll keeps the page
+    // where the operator left it: a plain focus() on the tall landmark would jump
+    // to the top of <main>.
     const app = document.querySelector<HTMLElement>(".app-container");
-    if (!app?.hasAttribute("inert")) document.getElementById("main-content")?.focus();
+    if (!app?.hasAttribute("inert")) document.getElementById("main-content")?.focus({ preventScroll: true });
   };
 
   form.addEventListener("submit", (e) => {

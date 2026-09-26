@@ -11,22 +11,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Script } from "node:vm";
 
+import { PREFERS_LIGHT_QUERY, THEME_KEY } from "../src/lib/theme.js";
+
 // Compiled tests live in web/.test-out/test/, the compiled script in
 // web/.test-out/src/, and the sources two levels up; resolve from
 // import.meta.url rather than process.cwd().
 const THEME_INIT_JS = fileURLToPath(new URL("../src/theme-init.js", import.meta.url).href);
 const INDEX_HTML = fileURLToPath(new URL("../../static/index.html", import.meta.url).href);
-const APP_TS = fileURLToPath(new URL("../../src/app.ts", import.meta.url).href);
 
 const script = new Script(readFileSync(THEME_INIT_JS, "utf8"), { filename: "theme-init.js" });
-
-// The key app.ts saves the toggle's choice under, read from its source so the
-// two files cannot drift apart unnoticed (theme-init cannot import it).
-function appThemeKey(): string {
-  const m = /const THEME_KEY\s*=\s*(["'])([^"']+)\1/.exec(readFileSync(APP_TS, "utf8"));
-  assert.ok(m, "THEME_KEY not found in web/src/app.ts");
-  return m[2];
-}
 
 interface Env {
   // The stored preference; undefined blocks storage the way Chromium does
@@ -47,7 +40,6 @@ let mediaCalls = 0;
 // runThemeInit executes theme-init.js against stubbed globals and returns the
 // data-theme it set, or null when it set none.
 function runThemeInit(env: Env): string | null {
-  const key = appThemeKey();
   let theme: string | null = null;
   mediaCalls = 0;
   // The context is the script's global object; window refers back to it, as
@@ -73,7 +65,9 @@ function runThemeInit(env: Env): string | null {
     context.localStorage = {
       getItem(k: string): string | null {
         if (env.getItemThrows) throw new Error("storage blocked");
-        return k === key ? stored : null;
+        // Only the key lib/theme.ts saves the toggle's choice under reads back,
+        // so the two cannot drift apart unnoticed (theme-init cannot import it).
+        return k === THEME_KEY ? stored : null;
       },
     };
   }
@@ -86,7 +80,8 @@ function runThemeInit(env: Env): string | null {
     context.matchMedia = (query: string): { matches: boolean } => {
       mediaCalls++;
       if (env.prefersLight === undefined) throw new Error("no matchMedia");
-      return { matches: query === "(prefers-color-scheme: light)" && env.prefersLight };
+      // Likewise only the query the live follow in lib/theme.ts listens on.
+      return { matches: query === PREFERS_LIGHT_QUERY && env.prefersLight };
     };
   }
   script.runInNewContext(context);

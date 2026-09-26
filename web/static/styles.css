@@ -13,6 +13,10 @@
 @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/jetbrains-mono-700.woff2") format("woff2"); }
 
 :root {
+  /* Native scrollbars, form-control internals, autofill and the overscroll
+     canvas follow the app theme rather than the browser default. */
+  color-scheme: dark;
+
   /* Color Palette - Dark Obsidian Theme (Default) */
   --bg-app: #090d14;
   --bg-page: #0d131d;
@@ -138,6 +142,7 @@
 
 /* Light Theme (Laboratory Instrument) */
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg-app: #eef2f6;
   --bg-page: #f8fafc;
   --bg-surface: #ffffff;
@@ -1686,15 +1691,19 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .stat-tile.is-action:focus-visible,
 .notif-chip-btn:focus-visible,
 .ev-source-pill:focus-visible,
-.notif-panel-all:focus-visible {
+.notif-panel-all:focus-visible,
+.clip-latch-btn:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
 
 /* A route change moves focus to the view's section (tabindex=-1) only so a
-   screen reader announces the page; it is not an interactive control, and a
-   ring around the whole page would be noise. */
-.view-container:focus {
+   screen reader announces the page, and a device removal or a closed login
+   prompt parks focus on the workspace (#main-content) so it does not drop to the
+   body. Neither is an interactive control, and a ring around the whole page
+   would be noise. */
+.view-container:focus,
+.app-main:focus {
   outline: none;
 }
 

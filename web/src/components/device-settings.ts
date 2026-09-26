@@ -1,5 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.js";
-import { button, copyText, elem, hideInactiveKey, ICON_COPY, readBoolPref, switchControl, writeBoolPref } from "../lib/ui.js";
+import { button, copyText, elem, hideInactiveKey, ICON_COPY, switchControl, writeBoolPref } from "../lib/ui.js";
 import {
   MAX_NAME_LEN,
   MAX_PATH_LEN,
@@ -51,6 +51,16 @@ export interface DeviceHardware {
   idStable?: boolean;
 }
 
+// Display-only preferences the dashboard owns (hide inactive channels): the
+// value the form shows, and a callback applied at once when the operator
+// changes it. Not appliance config, so outside collect() and the save/dirty
+// flow. The dashboard holds the value rather than the form re-reading storage,
+// so a browser that cannot persist it still shows and applies the choice.
+export interface DisplayPrefs {
+  hideInactive: boolean;
+  onHideInactiveChange: (hide: boolean) => void;
+}
+
 // Per-form counter so element ids are valid and unique regardless of the
 // device name (which may contain spaces or other id-invalid characters).
 let formSeq = 0;
@@ -94,20 +104,18 @@ export class DeviceSettingsForm {
   private device: DeviceConfig;
   private hardware: DeviceHardware;
   private onDirty: () => void;
-  // Applied when a display-only preference (hide inactive channels) changes, so
-  // the dashboard re-renders the meter at once. Not part of the save/dirty flow.
-  private onDisplayChange: () => void;
+  private display: DisplayPrefs;
   private ready = false;
   // loadCoercion is set when opening the form silently downgraded the saved codec
   // because the hardware no longer supports it, so the caller can tell the
   // operator instead of the change appearing to happen on its own.
   private loadCoercion: string | null = null;
 
-  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware = {}, onDisplayChange: () => void = () => {}) {
+  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware, display: DisplayPrefs) {
     this.device = device;
     this.hardware = hardware;
     this.onDirty = onDirty;
-    this.onDisplayChange = onDisplayChange;
+    this.display = display;
     this.element = elem("div", "device-settings");
     this.build();
     this.ready = true;
@@ -287,8 +295,9 @@ export class DeviceSettingsForm {
 
     // Meter display preference (not appliance config): hide the channels no
     // stream carries from the VU meter. On by default. Stored client-side and
-    // applied at once via onDisplayChange, so it stays outside collect() and the
-    // save/dirty flow. Only meaningful when the device has more than one channel.
+    // applied at once through the DisplayPrefs callback, so it stays outside
+    // collect() and the save/dirty flow. Only meaningful when the device has more
+    // than one channel.
     if (this.maxChannels() > 1) {
       const hideField = elem("div", "form-field");
       const hideId = `set-${uid}-hideinactive`;
@@ -299,12 +308,12 @@ export class DeviceSettingsForm {
       const { el: hideSwitch, input: hideInput } = switchControl({
         id: hideId,
         label: "Hide channels no stream carries",
-        checked: readBoolPref(hideInactiveKey(this.device.device), true),
+        checked: this.display.hideInactive,
         describedBy: hideHintId,
       });
       hideInput.addEventListener("change", () => {
         writeBoolPref(hideInactiveKey(this.device.device), hideInput.checked);
-        this.onDisplayChange();
+        this.display.onHideInactiveChange(hideInput.checked);
       });
       hideField.appendChild(hideSwitch);
       hideField.appendChild(this.hint(
