@@ -4,7 +4,7 @@
 // its pure core.
 
 import { button, elem, focusTarget, setHidden, setText } from "../lib/ui.js";
-import { closesOnFocusOut } from "../lib/menu-core.js";
+import { PopoverController, type FocusTarget } from "../lib/menu-core.js";
 import { ICON_CLOSE } from "./toast.js";
 import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.js";
 import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
@@ -28,7 +28,11 @@ export class NotificationCenter {
   // "Showing 50 of N events" beside the Events link, shown only when history is capped,
   // so a badge counting more unread entries than the list shows is explained.
   private countEl!: HTMLElement;
-  private isOpen = false;
+  private readonly ctl = new PopoverController({
+    setOpen: (open) => this.setOpen(open),
+    focusPanel: () => this.panel.focus(),
+    focusButton: () => this.bell.focus(),
+  });
   // Handle for the interval that refreshes relative times while the panel is
   // open; null when the panel is closed.
   private timeTimer: ReturnType<typeof setInterval> | null = null;
@@ -48,7 +52,7 @@ export class NotificationCenter {
     this.panel = this.buildPanel();
     (bell.parentElement ?? document.body).appendChild(this.panel);
 
-    bell.addEventListener("click", () => this.toggle());
+    bell.addEventListener("click", () => this.ctl.toggle());
     this.store.addEventListener("change", () => this.onChange());
     this.onChange();
   }
@@ -73,7 +77,7 @@ export class NotificationCenter {
     closeBtn.setAttribute("type", "button");
     closeBtn.setAttribute("aria-label", "Close notifications");
     closeBtn.innerHTML = ICON_CLOSE; // static, trusted markup
-    closeBtn.addEventListener("click", () => this.close(true));
+    closeBtn.addEventListener("click", () => this.ctl.close(true));
 
     actions.append(readBtn, clearBtn, closeBtn);
     head.append(title, actions);
@@ -91,7 +95,7 @@ export class NotificationCenter {
     all.setAttribute("href", "#/events");
     // Already on #/events the hash does not change, so close explicitly too.
     all.addEventListener("click", () => {
-      this.close();
+      this.ctl.close(false);
       // Closing the panel would drop focus to the body. The router moves focus to
       // the Events view section on a view change, but already on #/events the
       // hash does not change, so focus that same section here too (a harmless
@@ -122,7 +126,7 @@ export class NotificationCenter {
     if (this.live) {
       setText(this.live, count > 0 ? `${count} unread notification${count === 1 ? "" : "s"}` : "");
     }
-    if (this.isOpen) this.renderPanel(state);
+    if (this.ctl.isOpen()) this.renderPanel(state);
   }
 
   private renderPanel(state: CoreState): void {
@@ -158,45 +162,32 @@ export class NotificationCenter {
     restampRows(this.panel, (u) => uptimeToMs(state, u));
   }
 
-  private toggle(): void {
-    if (this.isOpen) this.close(true);
-    else this.open();
-  }
-
-  private open(): void {
-    if (this.isOpen) return;
-    this.isOpen = true;
-    this.renderPanel(this.store.getState());
-    this.panel.hidden = false;
-    this.bell.setAttribute("aria-expanded", "true");
-    // Capture phase so an outside click closes the panel before it activates
-    // whatever it landed on; the bell and panel are excluded.
-    document.addEventListener("click", this.onDocClick, true);
-    document.addEventListener("keydown", this.onKeydown);
-    window.addEventListener("hashchange", this.onHashChange);
-    // Close when a keyboard user Tabs focus off the panel onto page content
-    // behind it; the capture-phase click handler only covers pointer users.
-    this.panel.addEventListener("focusout", this.onFocusOut);
-    // The login prompt inerts the page before it takes focus, so the panel's
-    // focused control blurs with no relatedTarget and focusout alone would
-    // leave the panel open behind the dialog; focus arriving anywhere outside
-    // the panel and the bell closes it too.
-    document.addEventListener("focusin", this.onFocusIn);
-    // Keep the relative "N ago" times from freezing while the panel sits open
-    // with no store change to drive a re-render.
-    this.timeTimer = setInterval(() => this.restampTimes(), RESTAMP_MS);
-    this.panel.focus();
-  }
-
-  // restoreFocus returns focus to the bell; pass it only for deliberate
-  // dismissals (Escape, the close button, the bell toggle). An outside click or
-  // a route change must NOT pull focus to the bell, or it would steal focus from
-  // whatever the user just clicked (e.g. an input elsewhere on the page).
-  private close(restoreFocus = false): void {
-    if (!this.isOpen) return;
-    this.isOpen = false;
+  // setOpen is the controller's port: it shows or hides the panel and adds or
+  // removes everything that lives only while it is open.
+  private setOpen(open: boolean): void {
+    this.bell.setAttribute("aria-expanded", String(open));
+    if (open) {
+      this.renderPanel(this.store.getState());
+      this.panel.hidden = false;
+      // Capture phase so an outside click closes the panel before it activates
+      // whatever it landed on; the bell and panel are excluded.
+      document.addEventListener("click", this.onDocClick, true);
+      document.addEventListener("keydown", this.onKeydown);
+      window.addEventListener("hashchange", this.onHashChange);
+      // Close when a keyboard user Tabs focus off the panel onto page content
+      // behind it; the capture-phase click handler only covers pointer users.
+      this.panel.addEventListener("focusout", this.onFocusOut);
+      // The login prompt inerts the page before it takes focus, so the panel's
+      // focused control blurs with no relatedTarget and focusout alone would
+      // leave the panel open behind the dialog; focus arriving anywhere outside
+      // the panel and the bell closes it too.
+      document.addEventListener("focusin", this.onFocusIn);
+      // Keep the relative "N ago" times from freezing while the panel sits open
+      // with no store change to drive a re-render.
+      this.timeTimer = setInterval(() => this.restampTimes(), RESTAMP_MS);
+      return;
+    }
     this.panel.hidden = true;
-    this.bell.setAttribute("aria-expanded", "false");
     document.removeEventListener("click", this.onDocClick, true);
     document.removeEventListener("keydown", this.onKeydown);
     window.removeEventListener("hashchange", this.onHashChange);
@@ -206,44 +197,29 @@ export class NotificationCenter {
       clearInterval(this.timeTimer);
       this.timeTimer = null;
     }
-    if (restoreFocus) this.bell.focus();
   }
 
-  // outside reports focus or a click landing on page content outside the
-  // panel and the bell, which closes the panel.
-  private outside(t: EventTarget | null): boolean {
-    return closesOnFocusOut(this.isOpen, focusTarget(t, this.panel, this.bell));
+  private target(t: EventTarget | null): FocusTarget {
+    return focusTarget(t, this.panel, this.bell);
   }
 
-  private readonly onDocClick = (e: MouseEvent): void => {
-    if (this.outside(e.target)) this.close();
-  };
+  private readonly onDocClick = (e: MouseEvent): void => this.ctl.focusMoved(this.target(e.target));
 
+  // The handler is on document and the panel has no focus trap, so Escape can
+  // fire while focus is elsewhere on the page; the controller returns focus to
+  // the bell only when it was inside the panel.
   private readonly onKeydown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      // The handler is on document and the panel has no focus trap, so Escape
-      // can fire while focus is elsewhere on the page. Return focus to the bell
-      // only when focus is actually inside the panel; otherwise leave it be.
-      this.close(this.panel.contains(document.activeElement));
-    }
+    if (e.key === "Escape" && this.ctl.escape(this.panel.contains(document.activeElement))) e.stopPropagation();
   };
 
-  private readonly onFocusOut = (e: FocusEvent): void => {
-    // Keep the panel open when focus stays inside it or moves to the bell, and
-    // when focus leaves the document entirely (relatedTarget null, e.g. the
-    // window blurred) so alt-tabbing away does not dismiss it. Close only when
-    // focus lands on page content behind the panel, mirroring the outside-click
-    // close for keyboard users who Tab past the last control. No restoreFocus:
-    // focus has already moved on, so pulling it back to the bell would fight it.
-    if (this.outside(e.relatedTarget)) this.close();
-  };
+  // Focus staying inside the panel, moving to the bell, or leaving the document
+  // (relatedTarget null, e.g. the window blurred, so alt-tabbing away does not
+  // dismiss it) keeps the panel open; focus landing on page content behind it
+  // closes it, mirroring the outside-click close for keyboard users who Tab
+  // past the last control. Focus has already moved on, so it is not pulled back.
+  private readonly onFocusOut = (e: FocusEvent): void => this.ctl.focusMoved(this.target(e.relatedTarget));
 
-  private readonly onFocusIn = (e: FocusEvent): void => {
-    if (this.outside(e.target)) this.close();
-  };
+  private readonly onFocusIn = (e: FocusEvent): void => this.ctl.focusMoved(this.target(e.target));
 
-  private readonly onHashChange = (): void => {
-    this.close();
-  };
+  private readonly onHashChange = (): void => this.ctl.routeChange();
 }

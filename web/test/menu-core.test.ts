@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { closesOnFocusOut, MenuController, menuKeyAction, openIndex, typeaheadIndex } from "../src/lib/menu-core.js";
+import { closesOnFocusOut, MenuController, menuKeyAction, openIndex, PopoverController, typeaheadIndex } from "../src/lib/menu-core.js";
 
 test("arrows move focus and wrap at both ends", () => {
   assert.deepEqual(menuKeyAction("ArrowDown", 0, 3), { kind: "focus", index: 1 });
@@ -248,4 +248,49 @@ test("MenuController ignores the focus move its own hide causes", () => {
   calls.length = 0;
   ctl.pick("dark");
   assert.deepEqual(calls, ["open:false", "button"]);
+});
+
+// popover builds a PopoverController over ports that log what they were asked.
+function popover(): { ctl: PopoverController; log: string[] } {
+  const log: string[] = [];
+  const ctl = new PopoverController({
+    setOpen: (open) => log.push(open ? "open" : "hide"),
+    focusPanel: () => log.push("focus panel"),
+    focusButton: () => log.push("focus button"),
+  });
+  return { ctl, log };
+}
+
+test("PopoverController: the button opens and focuses the panel, and closes it back onto itself", () => {
+  const { ctl, log } = popover();
+  ctl.toggle();
+  assert.equal(ctl.isOpen(), true);
+  ctl.toggle();
+  assert.equal(ctl.isOpen(), false);
+  assert.deepEqual(log, ["open", "focus panel", "hide", "focus button"]);
+});
+
+test("PopoverController: Escape returns focus only from inside the panel", () => {
+  const { ctl, log } = popover();
+  assert.equal(ctl.escape(true), false, "closed: the key is not used");
+  ctl.toggle();
+  assert.equal(ctl.escape(false), true);
+  ctl.toggle();
+  assert.equal(ctl.escape(true), true);
+  assert.deepEqual(log, ["open", "focus panel", "hide", "open", "focus panel", "hide", "focus button"]);
+});
+
+test("PopoverController: focus or a click elsewhere, or a route change, closes without moving focus", () => {
+  const { ctl, log } = popover();
+  ctl.toggle();
+  ctl.focusMoved("none");
+  ctl.focusMoved("menu");
+  ctl.focusMoved("button");
+  assert.equal(ctl.isOpen(), true, "the window blurring, or focus inside, keeps it open");
+  ctl.focusMoved("outside");
+  assert.equal(ctl.isOpen(), false);
+  ctl.toggle();
+  ctl.routeChange();
+  ctl.routeChange();
+  assert.deepEqual(log, ["open", "focus panel", "hide", "open", "focus panel", "hide"]);
 });
