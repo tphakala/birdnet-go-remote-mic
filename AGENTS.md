@@ -317,12 +317,19 @@ under a new file name beside `manifest.json`, since installed appliances keep
 fetching that one. Rotate the key by shipping the new public key in `keys.go`
 first, then switching the secret.
 
-Self-updated appliances keep the updater units their original install wrote,
-and recovery after a power loss runs in the new, unconfirmed binary. So the
-`service apply-update --bin-path --state-dir` invocation, the staging file
-names in `internal/update/files.go` and the install journal
-(`<bin>.pending`) are contracts between versions: add, never rename or
-repurpose.
+Self-updated appliances keep the units their original install wrote, the
+installed (older) binary is the updater that checks the new one, and
+recovery after a power loss runs in the new, unconfirmed binary. So these
+are contracts between versions: add, never rename or repurpose, or every
+later update is refused or rolled back for good:
+- the `service apply-update --bin-path --state-dir` invocation, and the
+  appliance unit's `serve --cert-dir` and `serve --check` lines (the
+  staging directory derives from `--cert-dir`);
+- the first line of `remote-mic version`, exactly `remote-mic <version>`,
+  which the old updater compares with the manifest;
+- the staging file names in `internal/update/files.go` and the JSON fields
+  of `health.json`, `status.json` and `request.json`;
+- the install journal (`<bin>.pending`) and its fields.
 
 ## Gotchas
 
