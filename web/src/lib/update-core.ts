@@ -41,12 +41,25 @@ export function installMethodLabel(method: string): string {
   return (INSTALL_METHOD_LABELS as Record<string, string>)[method] ?? method;
 }
 
+// sentence turns a backend message (a Go error string: lowercase, often no
+// final stop) into a sentence for the card: first letter capitalised, and a
+// period added unless it already ends in one (a trailing colon becomes the
+// period). Empty stays empty. Hints are left as sent: they end in commands
+// and paths an operator copies.
+export function sentence(msg: string | undefined): string {
+  const t = (msg ?? "").trim().replace(/:$/, "");
+  if (!t) return "";
+  const s = t[0].toUpperCase() + t.slice(1);
+  return /[.!?]$/.test(s) ? s : `${s}.`;
+}
+
 const RESTART_NOTE =
   "The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start.";
 
 // describeUpdate decides the card's text and actions. The order matters: an
-// update in progress outranks everything, a failed update outranks the check
-// result it came from, and a build that names no release never checks at all.
+// update in progress (any phase but idle or failed) outranks everything, a
+// failed update outranks the check result it came from, and a build that names
+// no release never checks at all. Backend messages go through sentence().
 export function describeUpdate(u: UpdateStatus): UpdateView {
   const latest = u.latestVersion ?? "";
   const view: UpdateView = {
@@ -62,7 +75,7 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
   const offer = (): void => {
     if (!u.available || !latest) return;
     if (u.canApply) view.applyVersion = latest;
-    else view.hint = u.upgradeHint ?? "";
+    else view.hint = u.upgradeHint?.trim() || "Update it the way it was installed.";
   };
 
   if (!u.supported) {
@@ -70,20 +83,28 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     view.detail = `This build (${u.currentVersion || "unknown"}) names no release, so it never checks for updates.`;
     return view;
   }
-  if (u.phase === "downloading" || u.phase === "installing") {
+  // Anything but idle or failed is an update under way, a phase a later
+  // appliance adds included: the server refuses a second one while it runs.
+  if (u.phase !== "idle" && u.phase !== "failed") {
     const target = latest || "the update";
     view.busy = true;
     view.canCheck = false;
-    view.headline = u.phase === "downloading" ? `Downloading ${target}` : `Installing ${target}`;
-    view.detail = u.phase === "downloading"
-      ? "The release is downloaded and checked against its signature before anything is installed."
-      : RESTART_NOTE;
+    if (u.phase === "downloading") {
+      view.headline = `Downloading ${target}`;
+      view.detail = "The release is downloaded and checked against its signature before anything is installed.";
+    } else if (u.phase === "installing") {
+      view.headline = `Installing ${target}`;
+      view.detail = RESTART_NOTE;
+    } else {
+      view.headline = `Updating to ${target}`;
+      view.detail = "An update is under way.";
+    }
     return view;
   }
   if (u.phase === "failed") {
     view.tone = "error";
     view.headline = "Update failed";
-    view.detail = u.phaseMessage || "The last update attempt did not finish.";
+    view.detail = sentence(u.phaseMessage) || "The last update attempt did not finish.";
     view.note = `Still running ${u.currentVersion}.`;
     if (u.checkEnabled) offer();
     return view;
@@ -98,21 +119,28 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     view.headline = `${latest} is available`;
     view.detail = u.canApply
       ? `Running ${u.currentVersion}. ${RESTART_NOTE}`
-      : `Running ${u.currentVersion}. This installation cannot update itself:`;
-    if (u.lastError) view.note = `The latest check failed: ${u.lastError}`;
+      : `Running ${u.currentVersion}. This installation cannot update itself.`;
+    if (u.lastError) view.note = `The latest check failed: ${sentence(u.lastError)}`;
     offer();
     return view;
   }
   if (u.lastError) {
     view.tone = "warn";
     view.headline = "Update check failed";
-    view.detail = u.lastError;
-    view.note = `Running ${u.currentVersion}. The appliance tries again on its own.`;
+    view.detail = sentence(u.lastError);
+    view.note = `Running ${u.currentVersion}. The appliance tries again on its own, within the hour at first.`;
     return view;
   }
   if (!u.lastCheck) {
     view.headline = "Not checked yet";
     view.detail = `Running ${u.currentVersion}. The first check runs a few minutes after the appliance starts; Check Now asks at once.`;
+    return view;
+  }
+  // Up to date needs a known newest release: turning checks off forgets it
+  // while keeping the time of the last check.
+  if (!latest) {
+    view.headline = "Checking again";
+    view.detail = `Running ${u.currentVersion}. The newest release is looked up again a few minutes after checks are turned on; Check Now asks at once.`;
     return view;
   }
   view.tone = "ok";
@@ -235,10 +263,10 @@ export class UpdateFollow {
 }
 
 // followEndText says why a follow ended without a restart, from the status
-// alone: a failure carries its reason, checks turned off (here or in another
+// alone: a failure carries its reason (as a sentence), checks turned off (here or in another
 // tab) stop a download, and anything else is left to the notifications.
 export function followEndText(u: UpdateStatus): { text: string; tone: "warn" | "error" } {
-  if (u.phase === "failed") return { text: `Update failed: ${u.phaseMessage || "the attempt did not finish"}`, tone: "error" };
+  if (u.phase === "failed") return { text: `Update failed: ${sentence(u.phaseMessage) || "The attempt did not finish."}`, tone: "error" };
   if (!u.checkEnabled) return { text: "The update stopped because update checks were turned off.", tone: "warn" };
   return { text: `The update did not install; still running ${u.currentVersion}. The notifications say why.`, tone: "warn" };
 }

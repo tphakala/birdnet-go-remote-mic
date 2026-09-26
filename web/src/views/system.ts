@@ -5,7 +5,7 @@ import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, e
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
-import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, UpdateFollow, VersionWatch } from "../lib/update-core.js";
+import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, sentence, UpdateFollow, VersionWatch } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -205,8 +205,9 @@ export class SystemView {
   private updateCheckEl: HTMLInputElement | null;
   private updateCheckBtn: HTMLElement | null;
   private updateApplyBtn: HTMLElement | null;
-  // The info rows (Installed, Latest, Last Check, Installed With), built once.
-  private updateInfo = new Map<string, HTMLElement>();
+  // The info rows (Installed Version, Latest Release, Last Check, Installed
+  // With), built once.
+  private updateInfo = new Map<string, { dt: HTMLElement; dd: HTMLElement }>();
   private updateNotesUrl = "";
   // Requests in flight from this card; a render never undoes their busy state.
   private updateChecking = false;
@@ -1104,6 +1105,12 @@ export class SystemView {
     }
     this.renderUpdateInfo(u);
 
+    // A build that names no release never checks, so the check switch and the
+    // actions would only contradict the headline.
+    const checkField = this.updateCheckEl?.closest<HTMLElement>(".form-field");
+    if (checkField) setHidden(checkField, !u.supported);
+    const actions = document.getElementById("sys-update-actions");
+    if (actions) setHidden(actions, !u.supported);
     if (this.updateCheckEl && !this.updateToggling) this.updateCheckEl.checked = u.checkEnabled;
     this.renderUpdateNotes(u.available ? safeNotesUrl(u.notesUrl) : "");
 
@@ -1111,7 +1118,6 @@ export class SystemView {
     // shows as unavailable while it cannot run.
     const check = this.updateCheckBtn;
     if (check) {
-      setHidden(check, !u.supported);
       if (!this.updateChecking) {
         if (view.canCheck) check.removeAttribute("aria-disabled");
         else check.setAttribute("aria-disabled", "true");
@@ -1120,8 +1126,8 @@ export class SystemView {
     const apply = this.updateApplyBtn;
     if (apply) {
       setHidden(apply, view.applyVersion === "" && !view.busy);
-      if (view.busy) setBusy(apply, u.phase === "downloading" ? "Downloading..." : "Installing...");
-      else if (!this.updateApplying) clearBusy(apply, `Update to ${view.applyVersion}`);
+      if (view.busy) setBusy(apply, u.phase === "installing" ? "Installing..." : "Downloading...");
+      else if (!this.updateApplying && view.applyVersion) clearBusy(apply, `Update to ${view.applyVersion}`);
     }
     this.followStatus(u);
   }
@@ -1130,20 +1136,24 @@ export class SystemView {
   private renderUpdateInfo(u: UpdateStatus): void {
     const grid = document.getElementById("sys-update-info");
     if (!grid) return;
-    const rows: [string, string][] = [
-      ["Installed Version", u.currentVersion || "-"],
-      ["Latest Release", u.latestVersion ?? "-"],
-      ["Last Check", lastCheckText(u.lastCheck, Date.now(), formatRelative)],
-      ["Installed With", installMethodLabel(u.installMethod)],
+    // Versions are code-like, so mono; the others are words. A build that
+    // names no release never checks, so its Last Check row stays hidden.
+    const rows: [string, string, boolean, boolean][] = [
+      ["Installed Version", u.currentVersion || "-", true, true],
+      ["Latest Release", u.latestVersion ?? "-", true, u.supported],
+      ["Last Check", lastCheckText(u.lastCheck, Date.now(), formatRelative), false, u.supported],
+      ["Installed With", installMethodLabel(u.installMethod), false, true],
     ];
-    for (const [label, value] of rows) {
-      let dd = this.updateInfo.get(label);
-      if (!dd) {
-        dd = elem("dd", "info-val mono");
-        grid.append(elem("dt", "info-key", label), dd);
-        this.updateInfo.set(label, dd);
+    for (const [label, value, mono, shown] of rows) {
+      let row = this.updateInfo.get(label);
+      if (!row) {
+        row = { dt: elem("dt", "info-key", label), dd: elem("dd", mono ? "info-val mono" : "info-val") };
+        grid.append(row.dt, row.dd);
+        this.updateInfo.set(label, row);
       }
-      setText(dd, value);
+      setText(row.dd, value);
+      setHidden(row.dt, !shown);
+      setHidden(row.dd, !shown);
     }
   }
 
@@ -1236,10 +1246,19 @@ export class SystemView {
 
   private async saveUpdateCheck(): Promise<void> {
     const input = this.updateCheckEl;
-    if (!input || this.updateToggling) return;
+    if (!input) return;
+    // A flip while the last one is still saving is undone at once rather than
+    // left showing a state that was never sent.
+    if (this.updateToggling) {
+      input.checked = !input.checked;
+      return;
+    }
     const want = input.checked;
     this.updateToggling = true;
+    // aria-disabled too: screen readers ignore aria-busy on a checkbox, and a
+    // flip made now is undone (see above).
     input.setAttribute("aria-busy", "true");
+    input.setAttribute("aria-disabled", "true");
     try {
       const res = await api.patchConfig({ updates: { check: want } });
       store.applyConfig(res.config);
@@ -1250,6 +1269,7 @@ export class SystemView {
     } finally {
       this.updateToggling = false;
       input.removeAttribute("aria-busy");
+      input.removeAttribute("aria-disabled");
     }
     await store.refreshSystem();
     this.renderUpdate();
@@ -1263,7 +1283,7 @@ export class SystemView {
     try {
       const status = await api.checkForUpdate();
       store.applyUpdateStatus(status);
-      if (status.lastError) showToast(`Update check failed: ${status.lastError}`, "warn");
+      if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
       else if (!status.available) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
       showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");

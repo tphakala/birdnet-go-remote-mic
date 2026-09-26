@@ -12,6 +12,7 @@ import {
   installMethodLabel,
   lastCheckText,
   safeNotesUrl,
+  sentence,
   UpdateFollow,
   VersionWatch,
 } from "../src/lib/update-core.js";
@@ -54,21 +55,22 @@ test("describeUpdate: an update a package manager installs gets the hint, not th
   const hint = "Run brew upgrade birdnet-go-remote-mic";
   const v = describeUpdate(status({ latestVersion: "v0.3.0", available: true, installMethod: "homebrew", canApply: false, upgradeHint: hint }));
   assert.equal(v.applyVersion, "");
-  assert.equal(v.hint, hint);
-  assert.ok(v.detail.includes("cannot update itself"), v.detail);
+  assert.equal(v.hint, hint, "a hint is left as sent: it ends in a command");
+  assert.equal(v.detail, "Running v0.2.0. This installation cannot update itself.");
 });
 
 test("describeUpdate: a failed check behind an offered update is a note", () => {
   const v = describeUpdate(status({ latestVersion: "v0.3.0", available: true, lastError: "timeout" }));
   assert.equal(v.applyVersion, "v0.3.0");
-  assert.equal(v.note, "The latest check failed: timeout");
+  assert.equal(v.note, "The latest check failed: Timeout.");
 });
 
 test("describeUpdate: a failed check with nothing on offer", () => {
   const v = describeUpdate(status({ lastError: "signature" }));
   assert.equal(v.headline, "Update check failed");
   assert.equal(v.tone, "warn");
-  assert.equal(v.detail, "signature");
+  assert.equal(v.detail, "Signature.");
+  assert.equal(v.note, "Running v0.2.0. The appliance tries again on its own, within the hour at first.");
 });
 
 test("describeUpdate: never checked", () => {
@@ -106,10 +108,66 @@ test("describeUpdate: a failed update says why and offers a retry", () => {
   const v = describeUpdate(status({ latestVersion: "v0.3.0", available: true, phase: "failed", phaseMessage: "the root updater did not start" }));
   assert.equal(v.headline, "Update failed");
   assert.equal(v.tone, "error");
-  assert.equal(v.detail, "the root updater did not start");
+  assert.equal(v.detail, "The root updater did not start.");
+  assert.equal(v.note, "Still running v0.2.0.");
   assert.equal(v.applyVersion, "v0.3.0");
   // No retry while checks are off: the appliance would refuse it.
   assert.equal(describeUpdate(status({ latestVersion: "v0.3.0", available: true, phase: "failed", checkEnabled: false })).applyVersion, "");
+});
+
+test("describeUpdate: each phase under way names its own stage", () => {
+  const dl = describeUpdate(status({ latestVersion: "v0.3.0", available: true, phase: "downloading" }));
+  assert.equal(dl.headline, "Downloading v0.3.0");
+  assert.ok(dl.detail.includes("signature"), dl.detail);
+  const inst = describeUpdate(status({ latestVersion: "v0.3.0", available: true, phase: "installing" }));
+  assert.equal(inst.headline, "Installing v0.3.0");
+  assert.ok(inst.detail.includes("restarts"), inst.detail);
+  assert.equal(describeUpdate(status({ latestVersion: undefined, phase: "downloading" })).headline, "Downloading the update");
+});
+
+test("describeUpdate: a phase a later appliance adds counts as under way", () => {
+  const v = describeUpdate(status({ latestVersion: "v0.3.0", available: true, phase: "verifying" as UpdatePhase }));
+  assert.equal(v.headline, "Updating to v0.3.0", "not named as a stage it may not be");
+  assert.equal(v.busy, true);
+  assert.equal(v.canCheck, false);
+  assert.equal(v.applyVersion, "");
+});
+
+test("describeUpdate: a failed update with nothing newer offers no update", () => {
+  const v = describeUpdate(status({ phase: "failed", available: false }));
+  assert.equal(v.applyVersion, "");
+  assert.equal(v.detail, "The last update attempt did not finish.");
+  const hinted = describeUpdate(status({ phase: "failed", latestVersion: "v0.3.0", available: true, canApply: false, upgradeHint: "run it by hand" }));
+  assert.equal(hinted.applyVersion, "");
+  assert.equal(hinted.hint, "run it by hand");
+});
+
+test("describeUpdate: up to date only when the newest release is known", () => {
+  // Checks turned off and on again forget the latest release but keep lastCheck.
+  const v = describeUpdate(status({ latestVersion: undefined }));
+  assert.equal(v.headline, "Checking again");
+  assert.ok(v.detail.includes("checks are turned on"), v.detail);
+  assert.equal(describeUpdate(status({ latestVersion: undefined, lastCheck: undefined })).headline, "Not checked yet");
+});
+
+test("describeUpdate: no upgrade hint still ends in a sentence and says where to look", () => {
+  const v = describeUpdate(status({ latestVersion: "v0.3.0", available: true, canApply: false, upgradeHint: undefined }));
+  assert.equal(v.hint, "Update it the way it was installed.");
+});
+
+test("describeUpdate: neutral states are info toned", () => {
+  assert.equal(describeUpdate(status({ supported: false })).tone, "info");
+  assert.equal(describeUpdate(status({ checkEnabled: false })).tone, "info");
+  assert.equal(describeUpdate(status({ lastCheck: undefined })).tone, "info");
+});
+
+test("sentence capitalises and ends a backend message once", () => {
+  assert.equal(sentence("timeout"), "Timeout.");
+  assert.equal(sentence("already ends."), "Already ends.");
+  assert.equal(sentence("asks?"), "Asks?");
+  assert.equal(sentence("dangles:"), "Dangles.");
+  assert.equal(sentence("  "), "");
+  assert.equal(sentence(undefined), "");
 });
 
 test("installMethodLabel names each method and passes an unknown one through", () => {
@@ -225,8 +283,8 @@ test("UpdateFollow times out once, only after showing, at the install deadline",
 });
 
 test("followEndText says why from the status", () => {
-  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" })), { text: "Update failed: signature", tone: "error" });
-  assert.equal(followEndText(status({ phase: "failed" })).text, "Update failed: the attempt did not finish");
+  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" })), { text: "Update failed: Signature.", tone: "error" });
+  assert.equal(followEndText(status({ phase: "failed" })).text, "Update failed: The attempt did not finish.");
   assert.deepEqual(followEndText(status({ phase: "idle", checkEnabled: false })), { text: "The update stopped because update checks were turned off.", tone: "warn" });
   assert.equal(followEndText(status({ phase: "idle" })).text, "The update did not install; still running v0.2.0. The notifications say why.");
 });

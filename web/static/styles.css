@@ -3415,6 +3415,18 @@ select.field-input {
 #sys-update-info {
   margin-bottom: 14px;
 }
+/* On a narrow card (a phone, or a large browser font) the label column would
+   squeeze the values to a few characters a line; stack each label over its
+   value instead. */
+@media (max-width: 30em) {
+  #sys-update-info {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  #sys-update-info .info-val {
+    margin-bottom: 8px;
+  }
+}
 /* Certificate card: the two PEM textareas. .field-input supplies the chrome;
    this keeps them monospace, vertically resizable only (a width resize would
    break the card layout) and tall enough to show a PEM header plus a few lines. */
