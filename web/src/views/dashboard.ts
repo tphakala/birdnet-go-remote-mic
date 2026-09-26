@@ -697,7 +697,7 @@ export class DashboardView {
     // Swap in place if the card was already mounted in the rack; otherwise the
     // ordering pass in reconcile() inserts it.
     if (oldArticle.parentNode) oldArticle.replaceWith(entry.article);
-    this.restoreFocus(entry, saved);
+    this.restoreFocus(entry, saved, d.state === "serving");
   }
 
   // syncSettingsButton reflects whether the settings panel is open on the
@@ -1151,7 +1151,9 @@ export class DashboardView {
     return key ? { key } : null;
   }
 
-  private restoreFocus(entry: CardEntry, saved: { el?: HTMLElement; key?: string } | null): void {
+  // serving is the device's state in the rebuilt shape (mount runs before
+  // syncCard updates entry.device).
+  private restoreFocus(entry: CardEntry, saved: { el?: HTMLElement; key?: string } | null, serving: boolean): void {
     if (!saved) return;
     if (saved.el) {
       // The panel node was moved into the new article and is connected again.
@@ -1168,7 +1170,11 @@ export class DashboardView {
         node.focus();
       } else {
         entry.settingsBtn.focus();
-        announce(this.announceEl, saved.key === "token" ? TOKEN_HIDDEN_MESSAGE : CONTROL_GONE_MESSAGE);
+        // The token message only when the tag went because the token is no
+        // longer needed; a device that stopped serving loses it too, and there
+        // the token is still required.
+        const tokenDropped = saved.key === "token" && serving && !this.status?.authRequired;
+        announce(this.announceEl, tokenDropped ? TOKEN_HIDDEN_MESSAGE : CONTROL_GONE_MESSAGE);
       }
     }
   }

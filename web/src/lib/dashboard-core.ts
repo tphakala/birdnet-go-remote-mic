@@ -129,8 +129,9 @@ export function channelHiddenMessage(hidden: number, target: number | null): str
 }
 export const TOKEN_HIDDEN_MESSAGE = "This stream no longer needs the access token. Focus moved to the device settings.";
 // Said when a card rebuilds into a shape without the control that held focus
-// (a copy or clip button after a flip from serving to idle); the token tag
-// gets TOKEN_HIDDEN_MESSAGE instead.
+// (a copy or clip button, or the token tag, after a flip from serving to
+// idle); a token tag hidden because the token is no longer required gets
+// TOKEN_HIDDEN_MESSAGE instead.
 export const CONTROL_GONE_MESSAGE = "That control is no longer shown. Focus moved to the device settings.";
 
 // Said after a device is removed, following the "Removed" toast: its card and
