@@ -229,7 +229,9 @@ func (a *Applier) verifyStaged(root *os.Root) (*releasemanifest.Manifest, []byte
 // install swaps in bin, restarts the unit and waits for the new version to
 // report healthy, restoring the previous binary when it does not, including
 // when ctx is cancelled (the updater being stopped) during the wait. The
-// install journal covers the span from the swap to the final outcome.
+// install journal covers the span from the swap to the final outcome. The
+// .new, .prev and journal files are written fresh (writeFresh), never
+// through whatever an earlier run or anyone else left at those paths.
 func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest.Manifest, bin []byte) *Result {
 	res := &Result{From: a.Running, To: m.Version, Installed: a.Running}
 	fail := func(err error) *Result {
@@ -237,7 +239,7 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 		return res
 	}
 	newPath := a.BinPath + ".new"
-	if err := atomicfile.Write(newPath, bin, 0o755); err != nil {
+	if err := writeFresh(newPath, bin, 0o755); err != nil {
 		return fail(err)
 	}
 	defer func() { _ = os.Remove(newPath) }()
@@ -257,12 +259,12 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 	if err != nil {
 		return fail(fmt.Errorf("read the installed binary: %w", err))
 	}
-	if err := atomicfile.Write(a.BinPath+".prev", prev, 0o755); err != nil {
+	if err := writeFresh(a.BinPath+".prev", prev, 0o755); err != nil {
 		return fail(fmt.Errorf("keep the installed binary: %w", err))
 	}
 	j, err := json.Marshal(journal{From: a.Running, To: m.Version, PrevSHA256: sha256Hex(prev), NewSHA256: sha256Hex(bin)})
 	if err == nil {
-		err = atomicfile.Write(a.journalPath(), j, 0o600)
+		err = writeFresh(a.journalPath(), j, 0o600)
 	}
 	if err != nil {
 		return fail(fmt.Errorf("write the install journal: %w", err))
@@ -527,6 +529,17 @@ func rootOnly(p string, fi os.FileInfo, owner func(os.FileInfo) (uint32, uint32,
 		return fmt.Errorf("%s is writable by group %d (%v)", p, gid, perm)
 	}
 	return nil
+}
+
+// writeFresh writes a new root-owned file at name, removing whatever is there
+// first: atomicfile.Write keeps an existing file's owner and writes through
+// an existing link, and a stale sidecar left by someone else must not decide
+// either.
+func writeFresh(name string, data []byte, perm os.FileMode) error {
+	if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return atomicfile.Write(name, data, perm)
 }
 
 func (a *Applier) journalPath() string { return a.BinPath + ".pending" }

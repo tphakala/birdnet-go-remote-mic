@@ -741,8 +741,8 @@ func TestApplyHealthNeedsStablePID(t *testing.T) {
 
 // TestApplyRefusesUntrustedBinDir pins that the updater installs nothing, and
 // does not even run a pending recovery, when the bin directory or binary is
-// writable by anyone but root; a group-writable directory owned by root's
-// group is accepted.
+// writable by anyone but root, its group included (root's group too); a
+// directory owned by another group that cannot write it is accepted.
 func TestApplyRefusesUntrustedBinDir(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1139,5 +1139,32 @@ func TestApplyWithoutStateDirOrJournal(t *testing.T) {
 	}
 	if got := env.installed(t); got != oldBinary || env.restarts != 0 {
 		t.Errorf("installed %q with %d restarts, want nothing touched", got, env.restarts)
+	}
+}
+
+// TestApplyReplacesStaleSidecars pins that links left at the updater's
+// sidecar paths (.new, .prev) are replaced with fresh files rather than
+// written through. (A leftover journal starts a recovery instead.)
+func TestApplyReplacesStaleSidecars(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	outside := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(outside, []byte("untouched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".new", ".prev"} {
+		if err := os.Symlink(outside, env.binPath+suffix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.a.Apply(t.Context()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if b, err := os.ReadFile(outside); err != nil || string(b) != "untouched" {
+		t.Errorf("link target now %q (%v), want it untouched", b, err)
+	}
+	fi, err := os.Lstat(env.binPath + ".prev")
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Errorf(".prev: %v, %v, want a regular file", fi, err)
 	}
 }
