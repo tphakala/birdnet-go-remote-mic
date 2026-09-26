@@ -75,7 +75,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // root updater runs the installed binary, a binary or bin directory (or a
 // directory above it) that anyone but root can write gets no updater: install
 // warns, removes updater units an earlier install left, and installs the
-// appliance alone.
+// appliance alone. That check runs on the installed binary after the config
+// and state directories are handed over, so neither can hand it over too.
 //
 // The order is deliberate: ownership is handed over BEFORE the unit starts, so
 // the appliance can write config.yaml on first provision and take its run lock
@@ -109,16 +110,6 @@ func (in *Installer) Install(now bool) error {
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
 		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
 	}
-	// The root updater runs this binary, so nobody but root may be able to
-	// replace it; otherwise the appliance is installed without the updater.
-	// The installed file is checked, not just its directory: the copy keeps
-	// an existing file's owner and writes through an existing link.
-	updater := true
-	if err := in.rootOnly(s.BinPath); err != nil {
-		updater = false
-		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the binary and its directories writable only by root (or install it somewhere only root can write) and re-run sudo remote-mic service install\n", s.BinPath, err)
-	}
-
 	unit, err := Render(s)
 	if err != nil {
 		return err
@@ -126,14 +117,6 @@ func (in *Installer) Install(now bool) error {
 	if err := in.writeFile(s.UnitPath(), unit, 0o644); err != nil {
 		return fmt.Errorf("service: write unit %s: %w", s.UnitPath(), err)
 	}
-	if updater {
-		if err := in.writeUpdaterUnits(s); err != nil {
-			return err
-		}
-	} else if err := in.removeUpdaterUnits(s); err != nil {
-		return err
-	}
-
 	// Create the config and state directories and hand them to the service user
 	// recursively, so a pre-existing root-owned config.yaml or config.yaml.lock
 	// (left by an earlier hand-run `sudo remote-mic serve`) is handed over too.
@@ -151,6 +134,27 @@ func (in *Installer) Install(now bool) error {
 		if err := in.chownTree(d.path, uid, gid); err != nil {
 			return fmt.Errorf("service: chown %s to %s: %w", d.path, s.User, err)
 		}
+	}
+
+	// The root updater runs this binary, so nobody but root may be able to
+	// replace it; otherwise the appliance is installed without the updater.
+	// The installed file is checked, not just its directory (the copy keeps
+	// an existing file's owner and writes through an existing link), and only
+	// after the ownership handover, which a config or state path aliased
+	// onto the bin directory through a link would otherwise slip past. An
+	// install that fails before here leaves an earlier install's updater
+	// units in place; the updater makes this same check before it acts.
+	updater := true
+	if err := in.rootOnly(s.BinPath); err != nil {
+		updater = false
+		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the binary and its directories writable only by root (or install it somewhere only root can write) and re-run sudo remote-mic service install\n", s.BinPath, err)
+	}
+	if updater {
+		if err := in.writeUpdaterUnits(s); err != nil {
+			return err
+		}
+	} else if err := in.removeUpdaterUnits(s); err != nil {
+		return err
 	}
 
 	// The staging directory sits in the state directory the service user

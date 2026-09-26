@@ -754,7 +754,7 @@ func TestApplyRefusesUntrustedBinDir(t *testing.T) {
 		{name: "owned by a user", uid: 1000, dirMode: 0o755, want: "not root"},
 		{name: "world-writable", dirMode: 0o757, want: "writable by everyone"},
 		{name: "group-writable by staff", gid: 50, dirMode: 0o775, want: "writable by group 50"},
-		{name: "group-writable by root", gid: 0, dirMode: 0o775},
+		{name: "group-writable by root's group", gid: 0, dirMode: 0o775, want: "writable by group 0"},
 		{name: "another group, not writable by it", gid: 50, dirMode: 0o755},
 	}
 	for _, tt := range tests {

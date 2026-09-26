@@ -419,7 +419,7 @@ func checkRootOnlyFile(file string, owner func(os.FileInfo) (uint32, uint32, boo
 // CheckRootOnly refuses dir when anyone but root could change what it
 // resolves to: when any directory it passes through on the way (every
 // ancestor, every directory a symlink leads through) is not owned by root, is
-// writable by everyone, or is writable by a group other than root's; when a
+// writable by everyone, or is writable by its group (root's included); when a
 // symlink on the way is not owned by root; or when dir itself is writable by
 // others, sticky or not. Whoever could write there could replace what root
 // later runs from it.
@@ -503,7 +503,8 @@ func checkRootOnly(dir string, owner func(os.FileInfo) (uint32, uint32, bool)) e
 	return rootOnly(cur, fi, owner, false)
 }
 
-// rootOnly checks one path's owner and mode. A sticky directory (such as
+// rootOnly checks one path's owner and mode: owned by root, and writable by
+// neither everyone nor its group (root's included). A sticky directory (such as
 // /tmp) is writable by others, but they cannot rename or remove what they do
 // not own in it, so when allowSticky it does not let them replace anything
 // below.
@@ -520,7 +521,9 @@ func rootOnly(p string, fi os.FileInfo, owner func(os.FileInfo) (uint32, uint32,
 		return nil
 	case perm&0o002 != 0:
 		return fmt.Errorf("%s is writable by everyone (%v)", p, perm)
-	case perm&0o020 != 0 && gid != 0:
+	case perm&0o020 != 0:
+		// Even root's group: accounts other than root can be in it, and
+		// the group bits are also the mask for named ACL entries.
 		return fmt.Errorf("%s is writable by group %d (%v)", p, gid, perm)
 	}
 	return nil
