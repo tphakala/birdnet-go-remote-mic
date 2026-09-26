@@ -193,3 +193,18 @@ test("MenuController close events on a closed menu do nothing", () => {
   assert.equal(ctl.menuKey("Escape", -1), true);
   assert.deepEqual(calls, []);
 });
+
+test("MenuController skips typeahead for a modified key but keeps navigation", () => {
+  const { ctl, calls } = harness();
+  ctl.buttonClick();
+  calls.length = 0;
+  // Ctrl+D (or an AltGr character) is a shortcut, not typeahead.
+  assert.equal(ctl.menuKey("d", 0, true), false);
+  assert.deepEqual(calls, []);
+  assert.equal(ctl.menuKey("ArrowDown", 0, true), true);
+  assert.deepEqual(calls, ["item:1"]);
+  // A modified Tab still closes without preventing the browser's move.
+  calls.length = 0;
+  assert.equal(ctl.menuKey("Tab", 1, true), false);
+  assert.deepEqual(calls, ["open:false"]);
+});

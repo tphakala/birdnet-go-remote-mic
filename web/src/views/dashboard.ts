@@ -625,10 +625,13 @@ export class DashboardView {
         // region first so a keyboard user keeps a sensible place. preventScroll,
         // as in the login modal: a plain focus() would jump the page to the top
         // of <main>, away from where the removed card was.
-        document.getElementById("main-content")?.focus({ preventScroll: true });
+        const main = document.getElementById("main-content");
+        main?.focus({ preventScroll: true });
         await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         showToast(`Removed ${entry.device.name}.`);
-        announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
+        // Only while focus is still where it was put: the refresh can take a
+        // while on a slow link, and the operator may have moved on.
+        if (main && document.activeElement === main) announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Remove failed");
@@ -1165,7 +1168,7 @@ export class DashboardView {
         node.focus();
       } else {
         entry.settingsBtn.focus();
-        announce(this.announceEl, CONTROL_GONE_MESSAGE);
+        announce(this.announceEl, saved.key === "token" ? TOKEN_HIDDEN_MESSAGE : CONTROL_GONE_MESSAGE);
       }
     }
   }

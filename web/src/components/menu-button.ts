@@ -81,8 +81,8 @@ export class MenuButton {
       if (this.ctl.buttonKey(e.key)) e.preventDefault();
     });
     this.menu.addEventListener("keydown", (e) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (this.ctl.menuKey(e.key, this.items.indexOf(document.activeElement as HTMLElement))) e.preventDefault();
+      const modified = e.ctrlKey || e.metaKey || e.altKey;
+      if (this.ctl.menuKey(e.key, this.items.indexOf(document.activeElement as HTMLElement), modified)) e.preventDefault();
     });
     this.menu.addEventListener("focusout", (e) => this.ctl.focusMoved(this.focusTarget(e.relatedTarget)));
   }

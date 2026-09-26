@@ -139,9 +139,11 @@ export class MenuController {
 
   // menuKey handles a key with focus on item current (-1 when on none) and
   // reports whether to prevent the default. Tab closes without preventing it,
-  // so the browser moves focus on from the item.
-  public menuKey(key: string, current: number): boolean {
-    const action = menuKeyAction(key, current, this.items.length, this.labels);
+  // so the browser moves focus on from the item. modified is Ctrl, Meta or Alt
+  // held (not Shift): such a character is a shortcut, not typeahead, while
+  // navigation keys work as without it.
+  public menuKey(key: string, current: number, modified = false): boolean {
+    const action = menuKeyAction(key, current, this.items.length, modified ? [] : this.labels);
     if (action.kind === "focus") {
       this.ports.focusItem(action.index);
       return true;
