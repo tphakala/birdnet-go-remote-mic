@@ -277,7 +277,8 @@ thelper, and testifylint. `unused` is disabled.
   signing and verification, and the trusted release keys. Platform-neutral,
   standard library only, shared by the release tool and update code.
 - `tools/releasemanifest`: writes, signs and verifies the release manifest
-  (`keygen`, `check-key`, `generate`, `verify`).
+  (`keygen`, `check-key`, `generate`, `verify`), and decides whether a
+  release becomes "latest" (`make-latest`).
 - `web/`: vanilla TypeScript UI embedded with `go:embed`. See `web/AGENTS.md`.
 - `api/openapi.yaml`: the OpenAPI 3.1 contract, committed as source.
 - `rules/rules.go`: gocritic ruleguard rules.
