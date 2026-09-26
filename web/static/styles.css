@@ -3165,15 +3165,14 @@ select.field-input {
 }
 /* Each row label carries a leading glyph. Centre the key against its value so
    the icon does not drag the row off the value's line, and scope it to the
-   System Information columns, the Software Update rows and the About card's
-   details, so the certificate info grid keeps its plain keys. */
+   System Information columns (and the Software Update card, which uses them)
+   and the About card's details, so the certificate info grid keeps its plain
+   keys. */
 .sysinfo-group .info-grid,
-#sys-update-info,
 .about-card .info-grid {
   align-items: center;
 }
 .sysinfo-group .info-key,
-#sys-update-info .info-key,
 .about-card .info-key {
   display: inline-flex;
   align-items: center;
@@ -3432,18 +3431,9 @@ select.field-input {
   /* A hint can end in a long command or path. */
   overflow-wrap: anywhere;
 }
-#sys-update-info {
-  margin-bottom: 14px;
-}
-/* The daily-check switch and Check Now share a row; the button wraps below
-   the switch on a narrow card. */
-.update-check-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: var(--control-h-md);
+/* The status sits above the two columns. */
+.update-cols {
+  margin-top: 4px;
 }
 /* On a narrow card (a phone, or a large browser font) the label column would
    squeeze the values to a few characters a line; stack each label over its
