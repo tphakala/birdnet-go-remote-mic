@@ -329,9 +329,9 @@ func TestStartApplyUpdaterRefuses(t *testing.T) {
 		if st := m.Status(); st.Phase != PhaseInstalling {
 			t.Fatalf("phase %q after staging, want installing", st.Phase)
 		}
-		// The updater takes the request and refuses.
-		_ = os.Remove(filepath.Join(dir, RequestFile))
-		if err := os.WriteFile(filepath.Join(dir, StatusFile), []byte(`{"outcome":"failed","from":"v0.2.0","to":"v0.3.0","reason":"not newer"}`), 0o644); err != nil {
+		// The updater refuses without managing to claim the request, so it
+		// is still there; the appliance clears it with the failure.
+		if err := os.WriteFile(filepath.Join(dir, StatusFile), []byte(`{"outcome":"failed","from":"v0.2.0","to":"v0.3.0","installed":"v0.2.0","reason":"not newer"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(resultPoll + time.Millisecond)
@@ -342,6 +342,9 @@ func TestStartApplyUpdaterRefuses(t *testing.T) {
 		}
 		if got := titles(c); !slices.Contains(got, "Installing v0.3.0") || !slices.Contains(got, "Update failed") {
 			t.Errorf("notifications %q", got)
+		}
+		if exists(filepath.Join(dir, RequestFile)) {
+			t.Error("the unclaimed request was left behind after the failure")
 		}
 	})
 }
@@ -449,7 +452,7 @@ func TestStartApplySeesRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		if err := os.WriteFile(filepath.Join(dir, StatusFile), []byte(`{"outcome":"rolled_back","from":"v0.2.0","to":"v0.3.0","reason":"timeout"}`), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, StatusFile), []byte(`{"outcome":"rolled_back","from":"v0.2.0","to":"v0.3.0","installed":"v0.2.0","reason":"timeout"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(resultPoll + time.Millisecond)
@@ -459,6 +462,55 @@ func TestStartApplySeesRollback(t *testing.T) {
 		}
 		if got := titles(c); !slices.Contains(got, "Update rolled back") {
 			t.Errorf("notifications %q", got)
+		}
+	})
+}
+
+// TestStartApplySlowUpdaterNotWithdrawn pins that a request the updater has
+// claimed (renamed to TakenFile) is never withdrawn as "did not start",
+// however long the updater takes before it restarts the appliance.
+func TestStartApplySlowUpdaterNotWithdrawn(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		m, _, dir := applyManager(t, nil)
+		if _, err := m.StartApply(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if err := os.Rename(filepath.Join(dir, RequestFile), filepath.Join(dir, TakenFile)); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(updaterStartTimeout + DefaultHealthTimeout)
+		synctest.Wait()
+		if st := m.Status(); st.Phase != PhaseInstalling {
+			t.Errorf("phase %q (%s) while the updater works, want installing", st.Phase, st.PhaseMessage)
+		}
+	})
+}
+
+// TestStartApplyIgnoresStaleResult pins that a result addressed to another
+// version (not the running one) neither ends nor fails this attempt, and is
+// left for the process it belongs to.
+func TestStartApplyIgnoresStaleResult(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		m, _, dir := applyManager(t, nil)
+		if _, err := m.StartApply(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		// The new version's result, written while this process still runs.
+		status := filepath.Join(dir, StatusFile)
+		if err := os.WriteFile(status, []byte(`{"outcome":"updated","from":"v0.2.0","to":"v0.3.0","installed":"v0.3.0"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(3 * resultPoll)
+		synctest.Wait()
+		if st := m.Status(); st.Phase != PhaseInstalling {
+			t.Errorf("phase %q, want installing", st.Phase)
+		}
+		if !exists(status) {
+			t.Error("a result addressed to another version was consumed")
 		}
 	})
 }

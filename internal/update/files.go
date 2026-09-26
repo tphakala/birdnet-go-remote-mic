@@ -17,10 +17,14 @@ import (
 const (
 	DirName = "update"
 	// RequestFile asks the root updater to install the staged release. It is
-	// written last, once everything else is in place, and the updater removes
-	// it whatever the outcome, so the systemd path unit watching for it does
-	// not start the updater again.
+	// written last, once everything else is in place. The updater claims it
+	// by renaming it to TakenFile, so the systemd path unit watching for it
+	// does not start the updater again.
 	RequestFile = "request.json"
+	// TakenFile is the request once the updater has claimed it: it renames
+	// RequestFile to TakenFile before acting, so the appliance can tell a
+	// running updater from one that never started, and removes it at exit.
+	TakenFile = "request.taken"
 	// BinaryFile is the extracted release binary.
 	BinaryFile = "remote-mic.new"
 	// ManifestFile and SignatureFile are the exact manifest bytes and

@@ -29,11 +29,13 @@ const resultPoll = 2 * time.Second
 // appliance is up and serving. dir is the staging directory; Boot does
 // nothing when it does not exist (the root updater is not installed).
 //
-// It reports the outcome of an update that restarted this process, writes
-// the health file the updater waits for, and clears leftovers of an
-// abandoned attempt. When a request is still pending (this process is the
-// new version the updater is watching), it keeps looking for the result in
-// the background until ctx ends or the updater's health wait has passed.
+// It writes the health file the updater waits for, reports the outcome of
+// an update addressed to this version, and clears leftovers of an abandoned
+// attempt. While an attempt is in flight (a fresh request, or one the
+// updater has taken: this process may be the new version the updater is
+// watching), it keeps looking for the result in the background until ctx
+// ends or the updater's health wait has passed, and leaves results addressed
+// to another version for the process they belong to.
 func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf func(string, ...any)) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return
@@ -41,7 +43,6 @@ func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf f
 	if pub == nil {
 		pub = (*notify.Center)(nil) // a no-op, where a nil interface would panic
 	}
-	reportResult(dir, pub, logf)
 	h, err := json.Marshal(Health{Version: version, PID: os.Getpid()})
 	if err == nil {
 		err = atomicfile.Write(filepath.Join(dir, HealthFile), h, 0o644)
@@ -49,27 +50,50 @@ func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf f
 	if err != nil {
 		logf("update: write the health file: %v", err)
 	}
-	fi, err := os.Stat(filepath.Join(dir, RequestFile))
-	switch {
-	case err == nil && time.Since(fi.ModTime()) < staleRequestAge:
-		go watchResult(ctx, dir, pub, logf, DefaultHealthTimeout+time.Minute)
-	case err == nil:
-		logf("update: removing an update request abandoned since %s", fi.ModTime().UTC().Format(time.RFC3339))
-		(&Stager{Dir: dir}).clean()
-	default:
-		(&Stager{Dir: dir}).clean()
+	if inFlight(dir, logf) {
+		go watchResult(ctx, dir, version, pub, logf, DefaultHealthTimeout+time.Minute)
+		return
 	}
+	// Nothing is in flight, so a result not addressed to this version will
+	// never be reported by anyone: drop it.
+	if reportResult(dir, version, pub, logf) == nil {
+		if res, err := readResult(dir); err == nil {
+			logf("update: dropping a result for %s (this is %s): %s", res.Installed, version, resultMessage(res))
+			_ = os.Remove(filepath.Join(dir, StatusFile))
+		}
+	}
+	(&Stager{Dir: dir}).clean()
 }
 
-// watchResult polls for the updater's result until one is reported, ctx
-// ends, or limit passes.
-func watchResult(ctx context.Context, dir string, pub notify.Publisher, logf func(string, ...any), limit time.Duration) {
+// inFlight reports whether an update attempt may still be running: a request
+// file, or the updater's claim on one, younger than staleRequestAge.
+func inFlight(dir string, logf func(string, ...any)) bool {
+	var abandoned []string
+	for _, name := range []string{RequestFile, TakenFile} {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		if time.Since(fi.ModTime()) < staleRequestAge {
+			return true
+		}
+		abandoned = append(abandoned, fi.ModTime().UTC().Format(time.RFC3339))
+	}
+	for _, since := range abandoned {
+		logf("update: removing an update request abandoned since %s", since)
+	}
+	return false
+}
+
+// watchResult polls for the updater's result addressed to version until one
+// is reported, ctx ends, or limit passes.
+func watchResult(ctx context.Context, dir, version string, pub notify.Publisher, logf func(string, ...any), limit time.Duration) {
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	t := time.NewTicker(resultPoll)
 	defer t.Stop()
 	for {
-		if reportResult(dir, pub, logf) != nil {
+		if reportResult(dir, version, pub, logf) != nil {
 			return
 		}
 		select {
@@ -80,12 +104,13 @@ func watchResult(ctx context.Context, dir string, pub notify.Publisher, logf fun
 	}
 }
 
-// reportResult publishes and removes the updater's result, if there is one,
-// and returns it.
-func reportResult(dir string, pub notify.Publisher, logf func(string, ...any)) *Result {
-	res, err := takeResult(dir)
+// reportResult publishes and removes the updater's result when it is
+// addressed to version, and returns it; a result for another version is left
+// in place.
+func reportResult(dir, version string, pub notify.Publisher, logf func(string, ...any)) *Result {
+	res, err := takeResult(dir, version)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errNotAddressed) {
 			logf("update: %v", err)
 		}
 		return nil
@@ -95,16 +120,35 @@ func reportResult(dir string, pub notify.Publisher, logf func(string, ...any)) *
 	return res
 }
 
-// takeResult reads and removes the status file. A malformed one is removed
-// too, so it is reported once.
-func takeResult(dir string) (*Result, error) {
+// errNotAddressed reports a result written for a process running another
+// version: the one that will be running once the updater is done.
+var errNotAddressed = errors.New("the update result is addressed to another version")
+
+// takeResult reads the status file and removes it when it is addressed to
+// version (Installed names the version the result belongs to). A malformed
+// one is removed too, so it is reported once.
+func takeResult(dir, version string) (*Result, error) {
+	res, err := readResult(dir)
+	if err != nil {
+		return nil, err
+	}
+	if res.Installed != version {
+		return nil, errNotAddressed
+	}
+	_ = os.Remove(filepath.Join(dir, StatusFile))
+	return res, nil
+}
+
+// readResult reads the status file without consuming it. A file that is not
+// a regular file, or does not parse, is removed and reported as an error.
+func readResult(dir string) (*Result, error) {
 	p := filepath.Join(dir, StatusFile)
 	fi, err := os.Lstat(p)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = os.Remove(p) }()
 	if err := regularFile(StatusFile, fi); err != nil {
+		_ = os.Remove(p)
 		return nil, err
 	}
 	b, err := os.ReadFile(p) //nolint:gosec // p is the fixed status file in the staging directory
@@ -113,6 +157,7 @@ func takeResult(dir string) (*Result, error) {
 	}
 	var res Result
 	if err := decodeSmall(StatusFile, b, &res); err != nil {
+		_ = os.Remove(p)
 		return nil, err
 	}
 	return &res, nil

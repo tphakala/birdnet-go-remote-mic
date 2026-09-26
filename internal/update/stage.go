@@ -38,7 +38,8 @@ type Stager struct {
 // Stage downloads rel's tarball for s.Target, checks its size and SHA-256,
 // extracts the binary and checks it against the manifest, writes the manifest
 // pair beside it, and writes the request file last. Leftovers of an earlier
-// attempt are removed first, and a failure removes what it staged.
+// attempt, its result included, are removed first, and a failure removes what
+// it staged.
 func (s *Stager) Stage(ctx context.Context, rel *Release) (err error) {
 	t, ok := rel.Manifest.Targets[s.Target]
 	if !ok {
@@ -48,6 +49,8 @@ func (s *Stager) Stage(ctx context.Context, rel *Release) (err error) {
 		return err
 	}
 	s.clean()
+	// A result left from an earlier attempt must not pass for this one's.
+	_ = os.Remove(filepath.Join(s.Dir, StatusFile))
 	defer func() {
 		if err != nil {
 			s.clean()
@@ -75,9 +78,10 @@ func (s *Stager) Stage(ctx context.Context, rel *Release) (err error) {
 	return atomicfile.Write(filepath.Join(s.Dir, RequestFile), req, 0o644)
 }
 
-// clean removes every staged file, leaving status and health alone.
+// clean removes every staged file and request, leaving status and health
+// alone.
 func (s *Stager) clean() {
-	for _, name := range []string{RequestFile, downloadFile, BinaryFile, BinaryFile + ".part", ManifestFile, SignatureFile} {
+	for _, name := range []string{RequestFile, TakenFile, downloadFile, BinaryFile, BinaryFile + ".part", ManifestFile, SignatureFile} {
 		_ = os.Remove(filepath.Join(s.Dir, name))
 	}
 }

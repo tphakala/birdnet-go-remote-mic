@@ -56,9 +56,9 @@ WantedBy=multi-user.target
 // update request into the staging directory, and when an install journal is
 // found beside the binary (an update cut off by a power loss or a kill, which
 // the updater rolls back on its next start, even after a reboot). Nothing
-// listens and nothing runs until then; the updater removes the request and
-// the journal whatever the outcome, so the unit does not start it again for
-// the same one.
+// listens and nothing runs until then; the updater claims the request by
+// renaming it and removes the journal whatever the outcome, so the unit does
+// not start it again for the same one.
 const updatePathTemplate = `[Unit]
 Description=Watch for a staged remote-mic update
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic

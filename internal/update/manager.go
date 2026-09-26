@@ -401,20 +401,26 @@ func (m *Manager) apply(rel *Release) {
 }
 
 // awaitUpdater polls for the root updater's result. The updater restarts this
-// process when it installs, so seeing a result here means it refused the
-// update; seeing nothing means it never started or never finished.
+// process when it installs, so a result addressed to this version here means
+// it refused the update or could not complete it. A request still unclaimed
+// after updaterStartTimeout is withdrawn by removing it: the updater claims
+// one by renaming it, so a failed remove means the updater has it and is
+// working, however slowly.
 func (m *Manager) awaitUpdater(v string) {
 	start := time.Now()
 	t := time.NewTicker(resultPoll)
 	defer t.Stop()
+	withdrawTried := false
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-t.C:
 		}
-		if res, err := takeResult(m.cfg.Dir); err == nil {
+		if res, err := takeResult(m.cfg.Dir, m.cfg.Running); err == nil {
 			if res.Outcome == OutcomeFailed {
+				// An updater that failed to claim the request leaves it behind.
+				_ = os.Remove(filepath.Join(m.cfg.Dir, RequestFile))
 				m.fail(v, errors.New(res.Reason))
 				return
 			}
@@ -422,13 +428,13 @@ func (m *Manager) awaitUpdater(v string) {
 			m.setPhase(PhaseIdle, "")
 			return
 		}
-		_, reqErr := os.Stat(filepath.Join(m.cfg.Dir, RequestFile))
-		pending := reqErr == nil
 		switch {
-		case pending && time.Since(start) > updaterStartTimeout:
-			_ = os.Remove(filepath.Join(m.cfg.Dir, RequestFile))
-			m.fail(v, errors.New("the root updater did not start; re-run sudo remote-mic service install"))
-			return
+		case !withdrawTried && time.Since(start) > updaterStartTimeout:
+			withdrawTried = true
+			if os.Remove(filepath.Join(m.cfg.Dir, RequestFile)) == nil {
+				m.fail(v, errors.New("the root updater did not start; re-run sudo remote-mic service install"))
+				return
+			}
 		case time.Since(start) > updaterStartTimeout+DefaultHealthTimeout+time.Minute:
 			m.fail(v, errors.New("the root updater reported no result"))
 			return

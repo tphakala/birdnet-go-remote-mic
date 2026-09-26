@@ -94,12 +94,14 @@ type Applier struct {
 	Logf func(format string, args ...any)
 }
 
-// Apply installs the staged release, or does nothing when no request is
-// pending. When an install journal is found, a previous run was cut off
+// Apply claims the pending request and installs the staged release, or does
+// nothing when no request is pending. It claims the request by renaming it to
+// TakenFile, so the path unit does not start it again, and removes the claim
+// at exit; it writes the outcome to the status file for the appliance to
+// report. When an install journal is found, a previous run was cut off
 // mid-install, and Apply rolls that back (recoverInterrupted) instead of
-// installing anything. It always removes the request, so the path unit does not start it
-// again, and writes the outcome to the status file for the appliance to
-// report. The returned error is the same outcome, for the unit's log.
+// installing anything. The returned error is the same outcome, for the unit's
+// log.
 func (a *Applier) Apply(ctx context.Context) error {
 	root, err := os.OpenRoot(a.StateDir)
 	if err != nil {
@@ -107,16 +109,22 @@ func (a *Applier) Apply(ctx context.Context) error {
 	}
 	defer func() { _ = root.Close() }()
 	reqPath := path.Join(DirName, RequestFile)
+	takenPath := path.Join(DirName, TakenFile)
+	defer func() { _ = root.Remove(takenPath) }()
 	if _, err := os.Lstat(a.journalPath()); err == nil {
 		defer func() { _ = root.Remove(reqPath) }()
 		return a.finish(root, a.recoverInterrupted(root))
 	}
-	reqBytes, err := readFileIn(root, reqPath, maxSmallFile)
-	if errors.Is(err, fs.ErrNotExist) {
-		a.logf("apply-update: no update requested")
-		return nil
+	// Claim the request by renaming it: the appliance withdraws one nobody
+	// took by removing it, and exactly one of the two wins.
+	if err := root.Rename(reqPath, takenPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			a.logf("apply-update: no update requested")
+			return nil
+		}
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
 	}
-	defer func() { _ = root.Remove(reqPath) }()
+	reqBytes, err := readFileIn(root, takenPath, maxSmallFile)
 	if err != nil {
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
 	}
@@ -281,8 +289,10 @@ func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 // previous one goes back. The installed binary's hash says where the cut
 // fell: still the new binary (rename the kept copy back), already the old
 // one (a rollback that finished its rename), or neither (nothing safe to do
-// but report it). The journal is removed and the unit restarted whatever the
-// outcome, so a failure here cannot repeat on every start.
+// but report it, addressed to this updater's own version, which is what the
+// restarted appliance runs). The journal and any stale .new copy are removed
+// and the unit restarted whatever the outcome, so a failure here cannot
+// repeat on every start.
 func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 	res := &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running}
 	defer func() {
@@ -325,7 +335,9 @@ func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 		a.logf("apply-update: restored %s", j.From)
 		res.Outcome, res.Installed = OutcomeRolledBack, j.From
 	default:
-		res.Installed = ""
+		// This updater runs as the binary at BinPath (ExecStart), so its own
+		// version is what the restarted appliance runs: address it there.
+		res.Installed = a.Running
 		res.Reason += fmt.Sprintf("; %s matches neither version, so it was left as it is", a.BinPath)
 	}
 	return res

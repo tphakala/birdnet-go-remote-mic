@@ -32,9 +32,16 @@ func TestStage(t *testing.T) {
 	t.Parallel()
 	g, rel, verified := stagedRelease(t)
 	dir := filepath.Join(t.TempDir(), DirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeFailed}) // an earlier attempt's
 	s := &Stager{Dir: dir, Client: g.srv.Client(), Target: testTarget}
 	if err := s.Stage(t.Context(), verified); err != nil {
 		t.Fatalf("Stage: %v", err)
+	}
+	if exists(filepath.Join(dir, StatusFile)) {
+		t.Error("an earlier attempt's result survived staging")
 	}
 	bin, err := os.ReadFile(filepath.Join(dir, BinaryFile))
 	if err != nil || !bytes.Equal(bin, rel.bin) {

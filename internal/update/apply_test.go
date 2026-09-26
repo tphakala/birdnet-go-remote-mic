@@ -128,8 +128,10 @@ func (env *applyEnv) installed(t *testing.T) string {
 
 func (env *applyEnv) requestGone(t *testing.T) {
 	t.Helper()
-	if _, err := os.Stat(filepath.Join(env.stateDir, DirName, RequestFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("request file left behind: %v", err)
+	for _, name := range []string{RequestFile, TakenFile} {
+		if _, err := os.Stat(filepath.Join(env.stateDir, DirName, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s left behind: %v", name, err)
+		}
 	}
 }
 
@@ -138,8 +140,11 @@ func TestApplyInstallsAndKeepsPrevious(t *testing.T) {
 	env := newApplyEnv(t)
 	journalAtRestart, journalAtStatus := false, true
 	restart := env.onRestart
+	claimedAtRestart := false
 	env.onRestart = func(e *applyEnv, n int) {
 		journalAtRestart = exists(e.binPath + ".pending")
+		dir := filepath.Join(e.stateDir, DirName)
+		claimedAtRestart = !exists(filepath.Join(dir, RequestFile)) && exists(filepath.Join(dir, TakenFile))
 		restart(e, n)
 	}
 	env.a.Now = func() time.Time {
@@ -167,6 +172,9 @@ func TestApplyInstallsAndKeepsPrevious(t *testing.T) {
 	}
 	// The journal covers the restart and is gone before the outcome is
 	// written: a crash after the status must not roll back a healthy update.
+	if !claimedAtRestart {
+		t.Error("the request was not claimed (renamed to the taken file) while the update ran")
+	}
 	if !journalAtRestart || journalAtStatus {
 		t.Errorf("journal at restart %t (want true), at status %t (want false)", journalAtRestart, journalAtStatus)
 	}
@@ -492,6 +500,11 @@ func interruptedEnv(t *testing.T) *applyEnv {
 	if err := os.WriteFile(env.binPath+".new", env.rel.bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The cut run had claimed the request.
+	dir := filepath.Join(env.stateDir, DirName)
+	if err := os.Rename(filepath.Join(dir, RequestFile), filepath.Join(dir, TakenFile)); err != nil {
+		t.Fatal(err)
+	}
 	env.a.Running = vNew // recovery runs in the new binary
 	return env
 }
@@ -526,7 +539,7 @@ func TestApplyRecoversInterruptedInstall(t *testing.T) {
 				t.Helper()
 				_ = os.Remove(env.binPath + ".prev")
 			},
-			outcome: OutcomeFailed, installed: "", binary: newBinary,
+			outcome: OutcomeFailed, installed: vNew, binary: newBinary,
 		},
 		{
 			name: "installed binary is neither version",
@@ -536,7 +549,7 @@ func TestApplyRecoversInterruptedInstall(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			outcome: OutcomeFailed, installed: "", binary: "hand-installed",
+			outcome: OutcomeFailed, installed: vNew, binary: "hand-installed",
 		},
 		{
 			name: "journal without hashes",
