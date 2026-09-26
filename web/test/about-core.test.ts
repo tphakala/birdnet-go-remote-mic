@@ -178,8 +178,8 @@ const realErrors: { what: string; d: Device; want: string }[] = [
   },
   {
     what: "ambiguous, ports listed unquoted",
-    d: device({ name: "garden", device: "usb:0d8c:0014", state: "skipped", downCause: "ambiguous", error: "Ambiguous: usb:0d8c:0014 matches 2 devices (usb:0D8C:0014:p=0000:00:14.0-1.2:if=0,0, usb:0d8c:0014:p=0000:00:14.0-1.3:if=0,0). Add the serial" }),
-    want: "Ambiguous: usb:0d8c:0014 matches 2 devices (usb:0d8c:0014, usb:0d8c:0014). Add the serial",
+    d: device({ name: "garden", device: "usb:0d8c:0014", state: "skipped", downCause: "ambiguous", error: "Ambiguous: usb:0d8c:0014 matches 2 devices (usb:0D8C:0014:p=0000:00:14.0-1.2:if=0,0, usb:0d8c:0014:p=0000:00:14.0-1.3:if=0,0). Remove this entry and re-add each unit by its own id." }),
+    want: "Ambiguous: usb:0d8c:0014 matches 2 devices (usb:0d8c:0014, usb:0d8c:0014). Remove this entry and re-add each unit by its own id.",
   },
   {
     what: "malformed selector quoting a serial",
@@ -230,6 +230,20 @@ test("supportDetails never includes a USB serial, stream path, card name or devi
   // the literal pass still catches it.
   const glued = supportDetails(null, null, [device({ name: "g", path: "/glued-SECRET", state: "failed", error: "rtsp path:/glued-SECRET taken" })]);
   assert.ok(!glued.includes("glued-SECRET"), glued);
+});
+
+test("supportDetails redacts other quoting styles and keeps each device on its own lines", () => {
+  const d = device({
+    name: "x",
+    friendlyName: "Evil\nDevice 9: forged",
+    state: "failed",
+    error: "cannot open 'Backyard Mic at Smiths' or `Other Name`\nState: forged",
+  });
+  const got = supportDetails(null, null, [d]);
+  assert.ok(!got.includes("Smiths") && !got.includes("Other Name"), got);
+  assert.ok(got.includes("cannot open '<redacted>' or `<redacted>` State: forged"), got);
+  assert.ok(got.includes("Device 1: Evil Device 9: forged\n"), got);
+  assert.equal(got.split("\n").filter((l) => l.startsWith("Device ")).length, 1, got);
 });
 
 test("supportDetails leaves a serving device's stale error out and says 1 channel", () => {

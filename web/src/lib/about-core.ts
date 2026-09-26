@@ -167,6 +167,12 @@ const USB_TOKEN = new RegExp(String.raw`\busb:` + TOKEN_TAIL, "gi");
 const CARD_TOKEN = new RegExp(String.raw`\bhw:CARD=` + TOKEN_TAIL, "gi");
 // A Go %q string, escapes included, so a quote inside a name cannot end it early.
 const QUOTED = /"(?:[^"\\]|\\.)*"/g;
+// Single-quoted and backtick spans: the appliance quotes with %q today, but a
+// dependency's message could quote either way, and the scrub must not rely on it.
+const OTHER_QUOTED = /'[^'\n]*'|`[^`\n]*`/g;
+// Control characters (a newline in a hardware-supplied name) would start a
+// fabricated line in the report.
+const CONTROL = /\p{Cc}+/gu;
 // An absolute path starting a token, to the next whitespace: a stream path may
 // hold any other character. A trailing colon is the message's own separator
 // and is kept. /proc and /dev/snd paths name kernel interfaces, not the
@@ -178,19 +184,23 @@ const SAFE_QUOTED = /^"(?:<[a-z ]+>|usb:[0-9a-f]{4}:[0-9a-f]{4})"$/;
 // scrub makes a device's error text safe to paste publicly. Configured ids and
 // paths go first, while they still match literally, and only as whole tokens.
 // Then catch-all rules cover what the web UI does not know: any quoted string
-// (Go quotes device names and malformed ids with %q), any USB or card-name id,
-// and any other absolute path (a stream past the first, which the record
-// omits).
+// (Go quotes device names and malformed ids with %q; single quotes and
+// backticks too), any USB or card-name id, and any other absolute path (a
+// stream past the first, which the record omits). Control characters become
+// spaces first, so the text stays on its one report line.
 function scrub(text: string, known: readonly Known[]): string {
-  let out = text;
+  let out = oneLine(text);
   for (const k of known) {
     out = out.replace(new RegExp(`(?<![A-Za-z0-9_.-])${escapeRegExp(k.value)}(?![A-Za-z0-9_.-])`, "g"), k.placeholder);
   }
   out = out.replace(USB_TOKEN, (t) => usbLabel(t) ?? "usb:<id>");
   out = out.replace(CARD_TOKEN, "hw:CARD=<card>");
   out = out.replace(QUOTED, (q) => (SAFE_QUOTED.test(q) ? q : `"<redacted>"`));
+  out = out.replace(OTHER_QUOTED, (q) => `${q[0]}<redacted>${q[0]}`);
   return out.replace(PATH_TOKEN, (t) => (t.endsWith(":") ? "<path>:" : "<path>"));
 }
+
+const oneLine = (s: string): string => s.replace(CONTROL, " ");
 
 // ALSA's long card name can end in the bus position ("... at usb-0000:01:00.0-1.2,
 // high speed"); the kernel's short name is the part before it.
@@ -199,7 +209,7 @@ const shortCardName = (name: string): string => name.replace(/\s+at\s+usb-.*$/, 
 const channelList = (ch: readonly number[]): string => (ch.length > 0 ? ch.join(",") : "none");
 
 function deviceBlock(d: Device, n: number, known: readonly Known[]): string[] {
-  const lines = [`Device ${n}: ${(d.friendlyName && shortCardName(d.friendlyName)) || "(no name reported)"}`];
+  const lines = [`Device ${n}: ${(d.friendlyName && shortCardName(oneLine(d.friendlyName))) || "(no name reported)"}`];
   lines.push(`  ID: ${deviceIdKind(d)}`);
   let state: string = d.state;
   if (d.state !== "serving") {
