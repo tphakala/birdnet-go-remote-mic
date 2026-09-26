@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.js";
 import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
-import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeBoolPref, writeToClipboard } from "../lib/ui.js";
+import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, isLocalStorageEvent, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeBoolPref, writeToClipboard } from "../lib/ui.js";
 import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, hideInactivePrefDevice, parseBoolPref, tallyStates, TOKEN_HIDDEN_MESSAGE } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
@@ -345,6 +345,7 @@ export class DashboardView {
     // open settings form's switch. A cleared storage (key null) resets every
     // card to the default.
     window.addEventListener("storage", (e: StorageEvent) => {
+      if (!isLocalStorageEvent(e)) return;
       const id = hideInactivePrefDevice(e.key);
       if (e.key !== null && id === null) return;
       let changed = false;
@@ -1083,9 +1084,9 @@ export class DashboardView {
       // meters is indexed the same as rows (both come from buildMeterConsole);
       // capture it here so the callback below does not re-narrow entry.live.
       const meters = entry.live.meters;
-      // A row hidden while it holds focus (its clip button, as its channel stops
-      // streaming) would drop focus to the document body; note it and re-home
-      // focus after the loop, once the visible rows are settled.
+      // A row hidden while it holds focus (its clip button, as its channel leaves
+      // the stream or hiding turns on) would drop focus to the document body;
+      // note it and re-home focus after the loop, once the visible rows settle.
       const active = document.activeElement;
       let strandedRow = -1;
       entry.live.rows.forEach((row, i) => {

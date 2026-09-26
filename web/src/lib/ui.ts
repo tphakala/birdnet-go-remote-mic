@@ -171,9 +171,9 @@ export function clearBusy(el: HTMLElement, label?: string): void {
 // Per-device meter display preference: "hide inactive channels". It is a per-
 // viewer view option, not appliance config, so it lives in localStorage keyed by
 // the stable device id rather than in the saved config. read/write are wrapped
-// because localStorage can throw (private mode, disabled storage); a failure
-// falls back to the default, does not persist, and raises the shared notice
-// once per page (lib/prefs.ts).
+// because localStorage can throw (private mode, disabled storage): a failed
+// read falls back to the default, and a failed write does not persist and
+// raises the shared notice once per page (lib/prefs.ts).
 export function hideInactiveKey(deviceId: string): string {
   return `${HIDE_INACTIVE_PREFIX}${deviceId}`;
 }
@@ -184,6 +184,17 @@ export function readBoolPref(key: string, fallback: boolean): boolean {
     return fallback;
   }
 }
+// isLocalStorageEvent reports whether a storage event is a localStorage
+// change (key null means another tab cleared it), not a sessionStorage one.
+// Reading localStorage can itself throw where site data is blocked.
+export function isLocalStorageEvent(e: StorageEvent): boolean {
+  try {
+    return e.storageArea === null || e.storageArea === window.localStorage;
+  } catch {
+    return false;
+  }
+}
+
 export function writeBoolPref(key: string, value: boolean): void {
   try {
     localStorage.setItem(key, value ? "1" : "0");

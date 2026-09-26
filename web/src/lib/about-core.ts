@@ -75,14 +75,16 @@ export function componentTitle(e: LicenseEntry): string {
 
 // supportDetails is the plain text the "Copy System Details" button puts on the
 // clipboard for a bug report: the build and the host, and nothing identifying
-// (no hostname, addresses, or token), since the report is public.
+// (no hostname, addresses, or token), since the report is public. A field the
+// host does not report is left out, or reads "unknown" where the line always
+// appears (version, platform).
 export function supportDetails(status: ApplianceStatus | null, system: SystemInfo | null): string {
   const lines = [`remote-mic version: ${status?.version || "unknown"}`];
   if (system) {
-    lines.push(`Platform: ${system.platform}`);
+    lines.push(`Platform: ${system.platform || "unknown"}`);
     if (system.os) lines.push(`OS: ${system.os}`);
     if (system.kernel) lines.push(`Kernel: ${system.kernel}`);
-    if (system.cpuModel) lines.push(`CPU: ${system.cpuModel} (${system.cpuCores} cores)`);
+    if (system.cpuModel) lines.push(system.cpuCores > 0 ? `CPU: ${system.cpuModel} (${system.cpuCores} cores)` : `CPU: ${system.cpuModel}`);
   }
   return lines.join("\n");
 }

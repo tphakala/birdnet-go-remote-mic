@@ -109,7 +109,7 @@ export class AboutView {
   }
 
   private build(): HTMLElement {
-    const stack = elem("div", "about-stack");
+    const stack = elem("div", "config-layout");
     stack.append(this.buildProject(), this.buildHelp(), this.buildSupport(), this.buildLicense(), this.buildThirdParty());
     return stack;
   }
@@ -153,12 +153,12 @@ export class AboutView {
     ul.appendChild(logs);
     bug.appendChild(ul);
     bug.appendChild(elem("p", "about-note", "Issues are public. Remove your access token, addresses, and anything else private from logs and settings before you post them."));
-    bug.appendChild(externalLink(ISSUES_URL, "Report a Bug", { className: "btn btn-secondary about-link-btn", icon: ICON_BUG }));
+    bug.appendChild(externalLink(ISSUES_URL, "Report a Bug", { className: "btn btn-secondary", icon: ICON_BUG }));
 
     const ask = elem("div", "about-help-col");
     ask.appendChild(elem("h3", "about-subtitle", "Ask a Question"));
     ask.appendChild(elem("p", "about-text", "Setup questions, ideas for new features, and stories from your own recordings belong in GitHub Discussions, where other users can join in too."));
-    ask.appendChild(externalLink(DISCUSSIONS_URL, "Open Discussions", { className: "btn btn-secondary about-link-btn", icon: ICON_CHAT }));
+    ask.appendChild(externalLink(DISCUSSIONS_URL, "Open Discussions", { className: "btn btn-secondary", icon: ICON_CHAT }));
 
     cols.append(bug, ask);
     body.appendChild(cols);
@@ -185,7 +185,7 @@ export class AboutView {
     more.appendChild(document.createTextNode("."));
     body.appendChild(more);
     const actions = elem("div", "about-actions");
-    actions.appendChild(externalLink(SPONSOR_URL, "Sponsor on GitHub", { className: "btn btn-primary about-link-btn", icon: ICON_HEART_SM }));
+    actions.appendChild(externalLink(SPONSOR_URL, "Sponsor on GitHub", { className: "btn btn-primary", icon: ICON_HEART_SM }));
     body.appendChild(actions);
     return card;
   }

@@ -24,6 +24,8 @@ interface Harness {
   // otherTab delivers a storage event, as a write in another tab would.
   otherTab: (e: ThemeStorageChange) => void;
   stored: Map<string, string>;
+  // How many setItem and removeItem calls initTheme made.
+  writes: () => number;
   saveFailures: () => number;
 }
 
@@ -52,6 +54,7 @@ function harness(opts: Options = {}): Harness {
   let storageHandler: ((e: ThemeStorageChange) => void) | null = null;
   const stored = new Map<string, string>();
   if (opts.saved !== undefined) stored.set(THEME_KEY, opts.saved);
+  let writes = 0;
   let saveFailures = 0;
   const applied: Array<[ThemeMode, Theme]> = [];
 
@@ -65,10 +68,12 @@ function harness(opts: Options = {}): Harness {
     },
     setItem(key: string, value: string): void {
       guard();
+      writes++;
       stored.set(key, value);
     },
     removeItem(key: string): void {
       guard();
+      writes++;
       stored.delete(key);
     },
   };
@@ -120,6 +125,7 @@ function harness(opts: Options = {}): Harness {
       storageHandler(e);
     },
     stored,
+    writes: () => writes,
     saveFailures: () => saveFailures,
   };
 }
@@ -295,4 +301,22 @@ test("choosing System with blocked storage reports nothing: it reads back as Sys
     h.ctl.setMode("dark");
     assert.equal(h.saveFailures(), 1, blocked);
   }
+});
+
+test("an OS change while Light or Dark is chosen is remembered for a later switch to System", () => {
+  const h = harness({ initial: "dark", saved: "dark" });
+  h.osChange(true);
+  assert.equal(h.theme(), "dark");
+  h.ctl.setMode("system");
+  assert.equal(h.theme(), "light");
+});
+
+test("a storage event from another tab never writes storage here", () => {
+  const h = harness({ initial: "dark" });
+  for (const newValue of ["light", "dark", null, "sepia"]) {
+    h.otherTab({ key: THEME_KEY, newValue });
+    assert.equal(h.writes(), 0, String(newValue));
+  }
+  h.otherTab({ key: null, newValue: null });
+  assert.equal(h.writes(), 0);
 });

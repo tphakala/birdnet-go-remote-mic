@@ -2,7 +2,7 @@ export type ViewName = "dashboard" | "events" | "system" | "about";
 
 // isViewName narrows a hash fragment or a nav item's data-view to a route.
 export function isViewName(v: string | undefined): v is ViewName {
-  return v === "dashboard" || v === "events" || v === "system" || v === "about";
+  return v !== undefined && Object.hasOwn(VIEW_TITLES, v);
 }
 
 // The document title per route, so a browser tab, history entry and a screen

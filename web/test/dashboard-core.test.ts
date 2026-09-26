@@ -141,6 +141,8 @@ test("hideInactivePrefDevice reads back the device id of a hide-inactive key", (
   assert.equal(hideInactivePrefDevice(hideInactiveKey("usb-Foo_Mic-00")), "usb-Foo_Mic-00");
   assert.equal(hideInactivePrefDevice("remote-mic-theme"), null);
   assert.equal(hideInactivePrefDevice(null), null);
+  // The prefix must start the key, not merely appear in it.
+  assert.equal(hideInactivePrefDevice(`x-${hideInactiveKey("dev")}`), null);
 });
 
 test("parseBoolPref reads 1 and 0, and falls back for anything else", () => {
@@ -148,4 +150,7 @@ test("parseBoolPref reads 1 and 0, and falls back for anything else", () => {
   assert.equal(parseBoolPref("0", true), false);
   assert.equal(parseBoolPref(null, true), true);
   assert.equal(parseBoolPref("yes", false), false);
+  // An unrecognized value reads as the default, not as off.
+  assert.equal(parseBoolPref("yes", true), true);
+  assert.equal(parseBoolPref("", true), true);
 });

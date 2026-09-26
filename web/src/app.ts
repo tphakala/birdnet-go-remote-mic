@@ -11,6 +11,7 @@ import { needsNotificationsFallback } from "./lib/dashboard-core.js";
 import { initTheme, PREFERS_LIGHT_QUERY, type Theme, type ThemeMode } from "./lib/theme.js";
 import { prefSaveNotice } from "./lib/prefs.js";
 import { ERROR_TTL_MS, showToast } from "./components/toast.js";
+import { isLocalStorageEvent } from "./lib/ui.js";
 import { MenuButton } from "./components/menu-button.js";
 import { AboutView } from "./views/about.js";
 
@@ -38,7 +39,7 @@ class App {
     // enough to read, since it explains why choices appear to reset on reload.
     prefSaveNotice.setHandler(() =>
       showToast(
-        "This browser could not save your display preferences (such as the theme), so they reset on reload. Check that this browser allows site data here to keep them.",
+        "This browser could not save your display preferences, so they reset on reload. A private window cannot keep them; otherwise allow site data for this address in the browser settings.",
         "warn",
         SAVE_FAILED_TOAST_MS,
       ),
@@ -99,7 +100,7 @@ class App {
     // again as a description.
     const show = (mode: ThemeMode, theme: Theme): void => {
       if (!btn) return;
-      const label = mode === "system" ? `Theme: System (${theme})` : `Theme: ${MODE_LABEL[mode]}`;
+      const label = mode === "system" ? `Theme: System (${MODE_LABEL[theme]})` : `Theme: ${MODE_LABEL[mode]}`;
       if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
       if (btn.title !== label) btn.title = label;
       if (btn.dataset.mode !== mode) btn.dataset.mode = mode;
@@ -109,7 +110,11 @@ class App {
       root: document.documentElement,
       storage: () => window.localStorage,
       media,
-      onStorage: (listener) => window.addEventListener("storage", (e) => listener({ key: e.key, newValue: e.newValue })),
+      // Only localStorage holds the theme; a sessionStorage change is not ours.
+      onStorage: (listener) =>
+        window.addEventListener("storage", (e) => {
+          if (isLocalStorageEvent(e)) listener({ key: e.key, newValue: e.newValue });
+        }),
       onApply: show,
       onSaveFailed: () => prefSaveNotice.report(),
     });

@@ -129,9 +129,12 @@ export function channelHiddenMessage(hidden: number, target: number | null): str
 }
 export const TOKEN_HIDDEN_MESSAGE = "This stream no longer needs the access token. Focus moved to the device settings.";
 
-// hideInactivePrefDevice returns the device id a storage key belongs to when it
-// is a "hide inactive channels" key (see hideInactiveKey in ui.ts), else null.
+// HIDE_INACTIVE_PREFIX starts every "hide inactive channels" storage key; the
+// device id follows it (hideInactiveKey in ui.ts builds the key).
 export const HIDE_INACTIVE_PREFIX = "remote-mic-hide-inactive:";
+
+// hideInactivePrefDevice returns the device id a storage key belongs to when it
+// is a "hide inactive channels" key, else null.
 export function hideInactivePrefDevice(key: string | null): string | null {
   return key !== null && key.startsWith(HIDE_INACTIVE_PREFIX) ? key.slice(HIDE_INACTIVE_PREFIX.length) : null;
 }

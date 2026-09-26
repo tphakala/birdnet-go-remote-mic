@@ -53,6 +53,9 @@ test("parseLicenseDoc rejects anything but the generator's shape", () => {
     { project: entry(), components: [entry({ license: 3 })] },
     { project: entry(), components: [entry({ version: 1 })] },
     { project: entry(), components: [entry({ files: [{ name: "LICENSE" }] })] },
+    { project: entry(), components: [entry({ name: 3 })] },
+    { project: entry(), components: [entry({ files: [{ text: "x" }] })] },
+    { project: entry(), components: [entry({ files: undefined })] },
   ];
   for (const v of bad) assert.equal(parseLicenseDoc(v), null, JSON.stringify(v));
 });
@@ -77,4 +80,12 @@ test("supportDetails lists the build and host without identifying details", () =
   assert.equal(got, "remote-mic version: v0.3.0\nPlatform: linux/arm64\nOS: Debian GNU/Linux 13\nKernel: 6.12.0\nCPU: Cortex-A53 (4 cores)");
   assert.ok(!got.includes("field-mic") && !got.includes("192.0.2.10"));
   assert.equal(supportDetails(null, null), "remote-mic version: unknown");
+});
+
+test("supportDetails leaves out what the host does not report", () => {
+  const status = { version: "" } as ApplianceStatus;
+  const bare = { platform: "", hostname: "h", cpuCores: 0, network: [] } as unknown as SystemInfo;
+  assert.equal(supportDetails(status, bare), "remote-mic version: unknown\nPlatform: unknown");
+  const noCores = { platform: "linux/arm", cpuModel: "ARMv6", cpuCores: 0, hostname: "h", network: [] } as unknown as SystemInfo;
+  assert.equal(supportDetails(status, noCores), "remote-mic version: unknown\nPlatform: linux/arm\nCPU: ARMv6");
 });

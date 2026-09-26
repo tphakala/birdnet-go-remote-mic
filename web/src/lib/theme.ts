@@ -96,8 +96,10 @@ export function initTheme(env: ThemeEnv): ThemeController {
   let prefersLight: boolean | null = media ? media.matches : null;
 
   // resolve names the theme a mode shows. System follows the OS; without
-  // matchMedia it keeps the attribute's theme (dark whether or not theme-init
-  // ran, since index.html hardcodes dark), so a load in that case writes nothing.
+  // matchMedia it keeps the attribute's current theme, so a load in that case
+  // writes nothing (at load that is dark: index.html hardcodes it and
+  // theme-init falls back to it), and a later switch to System keeps whatever
+  // theme was showing until the next load.
   const resolve = (m: ThemeMode): Theme => {
     if (m !== "system") return m;
     if (prefersLight !== null) return prefersLight ? "light" : "dark";

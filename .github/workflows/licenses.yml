@@ -7,13 +7,13 @@ name: Licenses
 # without touching go.mod.
 #
 # - On a Dependabot pull request, a dependency bump is expected to change the
-#   document, so the regenerate job rewrites it and commits the result to the
+#   documents, so the regenerate job rewrites them and commits the result to the
 #   PR branch; no one has to do it by hand. That commit is pushed with the
 #   workflow token, which by design starts no new workflow runs, so it carries
-#   no checks of its own; it only changes the generated document, and the
+#   no checks of its own; it only changes the generated documents, and the
 #   dependency bump itself was checked on the commit before it.
 # - On every other pull request and on main, the verify job fails when the
-#   committed document is stale (run `task licenses:generate`), or when a
+#   committed documents are stale (run `task licenses:generate`), or when a
 #   linked module ships no license file or one the generator cannot name.
 
 on:
@@ -65,7 +65,7 @@ jobs:
       - name: Checkout the pull request branch
         uses: actions/checkout@v7
         with:
-          # The branch itself, not the merge commit, so the regenerated file
+          # The branch itself, not the merge commit, so the regenerated files
           # can be committed back to it.
           ref: ${{ github.event.pull_request.head.ref }}
       - name: Set up Go

@@ -3305,9 +3305,6 @@ select.field-input {
 .menu-popover:not([hidden]) {
   animation: notif-panel-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.menu-popover[hidden] {
-  display: none;
-}
 .menu-item {
   display: flex;
   align-items: center;
@@ -3347,11 +3344,6 @@ select.field-input {
 
 /* About page (views/about.ts). Cards reuse .config-section-card; these style
    the prose, the help columns, and the license disclosures. */
-.about-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
 .about-body {
   display: flex;
   flex-direction: column;
@@ -3365,8 +3357,7 @@ select.field-input {
   max-width: 75ch;
 }
 .about-text a,
-.about-card .info-val a,
-.about-list a {
+.about-card .info-val a {
   color: var(--accent-cyan-text);
   font-weight: 600;
 }
@@ -3415,10 +3406,6 @@ select.field-input {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-}
-/* Button-styled links take the button's own colours, not the prose link colour. */
-.about-link-btn {
-  font-weight: 600;
 }
 .about-details {
   margin: 0;

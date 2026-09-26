@@ -298,9 +298,8 @@ export class DeviceSettingsForm {
     // Meter display preference (not appliance config): hide the channels no
     // stream carries from the VU meter. On by default. Stored client-side and
     // applied at once through the DisplayPrefs callback (the dashboard saves
-    // it), so it stays outside
-    // collect() and the save/dirty flow. Only meaningful when the device has more
-    // than one channel.
+    // it), so it stays outside collect() and the save/dirty flow. Only
+    // meaningful when the device has more than one channel.
     if (this.maxChannels() > 1) {
       const hideField = elem("div", "form-field");
       const hideId = `set-${uid}-hideinactive`;
