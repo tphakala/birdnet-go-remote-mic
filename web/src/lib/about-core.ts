@@ -2,7 +2,7 @@
 // of licenses.json (written by tools/licensegen from the build's module graph,
 // so the page never drifts from what the binary links), and the plain-text
 // system details a bug report asks for. No DOM, network, or storage here.
-import type { ApplianceStatus, Device, DeviceConfig, StreamConfig, SystemInfo } from "./types.js";
+import type { ApplianceStatus, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.js";
 
 export const REPO_URL = "https://github.com/tphakala/birdnet-go-remote-mic";
 export const ISSUES_URL = `${REPO_URL}/issues`;
@@ -237,7 +237,7 @@ const channelList = (ch: readonly number[]): string => (ch.length > 0 ? ch.join(
 // streamLine describes one stream in plain words rather than the UI's modeLabel
 // badges ("OPUS", "PCM L16"), since this is prose for a bug report. The path is
 // left out: it is usually derived from the device name.
-const streamLine = (mode: StreamConfig["mode"], channels: readonly number[]): string =>
+const streamLine = (mode: StreamMode, channels: readonly number[]): string =>
   `${mode === "opus" ? "Opus" : "PCM"}, channels ${channelList(channels)}`;
 
 function deviceBlock(d: Device, n: number, known: readonly Known[], cfg: DeviceConfig | undefined): string[] {

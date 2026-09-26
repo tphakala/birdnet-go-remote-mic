@@ -1,5 +1,6 @@
-// Pure, DOM-free helpers for the dashboard view, split out so they can be unit
-// tested with node:test (see web/test/dashboard-core.test.ts) without a DOM.
+// Pure, DOM-free helpers for the dashboard view, the device rows of the System
+// view and the app's notifications fallback, split out so they can be unit tested with node:test (see
+// web/test/dashboard-core.test.ts) without a DOM.
 
 import type { Device, DeviceConfig, StreamMode } from "./types.js";
 

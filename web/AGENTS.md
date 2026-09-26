@@ -228,10 +228,13 @@ reconcile:
   `#main-content` (device removal, login close) leaves the page where the
   operator was, while the router focuses the new view section and then scrolls
   to the top on purpose, so the header stays in view.
-- The UI follows the browser's font size setting: a box that holds text
-  (grid tracks, badge and pill heights, line heights) is sized in rem or em
-  or by its content, never px, and breakpoints are em. `task web:sweep`
-  renders every view at 16, 20 and 24px roots.
+- The UI follows the browser's font size setting: font sizes are rem
+  tokens, a box sized to fit its text (a badge or pill height, a line height,
+  the meter columns) is rem or em, and breakpoints are em. Layout widths
+  that do not fit text (grid minimums, flex bases, container and modal
+  maximums) may stay px. `task web:sweep` renders every view at
+  16, 20 and 24px browser font sizes and fails on text that does not grow or
+  a page that scrolls sideways.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.

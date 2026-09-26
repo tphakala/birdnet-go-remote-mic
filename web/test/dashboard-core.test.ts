@@ -187,6 +187,8 @@ test("streamSummary falls back to the record without a config", () => {
     { path: "/b", clientConnected: false, droppedFrames: 0 },
   ] }, { streams: [] });
   assert.deepEqual(live.paths, ["/a", "/b"]);
+  assert.deepEqual(live.modes, ["pcm"], "runtime streams carry no mode; the record's is the first stream's");
+  assert.equal(clientSummary(live), "0 of 2 connected");
 });
 
 test("focus messages name the device, the control and why it went", () => {
@@ -195,7 +197,10 @@ test("focus messages name the device, the control and why it went", () => {
     "Garden: the channel 2 clip button went away because the device stopped streaming. Focus moved to its device settings.",
   );
   assert.equal(controlGoneMessage("Garden", "copy", true), "Garden: the Copy URL button is no longer shown. Focus moved to its device settings.");
-  assert.equal(controlGoneMessage("Garden", "token", false).startsWith("Garden: the Token tag went away"), true);
+  assert.equal(
+    controlGoneMessage("Garden", "token", false),
+    "Garden: the Token tag went away because the device stopped streaming. Focus moved to its device settings.",
+  );
   assert.equal(controlGoneMessage("Garden", "other", true), "Garden: the control is no longer shown. Focus moved to its device settings.");
   assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
 });

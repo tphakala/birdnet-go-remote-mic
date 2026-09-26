@@ -17,14 +17,6 @@ export function elem(tag: string, className?: string, text?: string): HTMLElemen
   return e;
 }
 
-// setBusy marks a control in-progress WITHOUT removing it from the tab order:
-// aria-disabled (not the disabled property) keeps it focusable, so a keyboard
-// user is not dumped to <body> when the focused control goes busy. Because
-// aria-disabled does not block activation, the caller must guard re-entry (a
-// boolean flag, or checking aria-disabled). aria-busy announces the state and
-// the .is-busy class dims the control and shows a progress cursor. This is the
-// canonical busy affordance; prefer it over toggling `disabled` on a focused
-// control, which steals focus.
 // ICON_COPY is the shared copy glyph for every copy-to-clipboard control, so the
 // affordance reads the same on the dashboard, the system view, and the device
 // settings form. It lived in dashboard.ts, where only the dashboard's own copy
@@ -35,7 +27,6 @@ export const ICON_COPY = svgIcon('<rect width="14" height="14" x="8" y="8" rx="2
 // ICON_VERSION is the build-version tag glyph, shared by the System Information
 // card and the About page so the same fact carries the same icon.
 export const ICON_VERSION = svgIcon('<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" x2="7.01" y1="7" y2="7"></line>', 14);
-
 
 // ICON_EXTERNAL marks a link that opens in a new tab, for sighted users; the
 // visually hidden note in externalLink tells screen reader users.
@@ -164,6 +155,14 @@ export function setButtonLabel(el: HTMLElement, text: string): void {
   setText(label ?? el, text);
 }
 
+// setBusy marks a control in-progress WITHOUT removing it from the tab order:
+// aria-disabled (not the disabled property) keeps it focusable, so a keyboard
+// user is not dumped to <body> when the focused control goes busy. Because
+// aria-disabled does not block activation, the caller must guard re-entry (a
+// boolean flag, or checking aria-disabled). aria-busy announces the state and
+// the .is-busy class dims the control and shows a progress cursor. This is the
+// canonical busy affordance; prefer it over toggling `disabled` on a focused
+// control, which steals focus.
 export function setBusy(el: HTMLElement, label?: string): void {
   if (label !== undefined) setButtonLabel(el, label);
   el.setAttribute("aria-disabled", "true");

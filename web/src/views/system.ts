@@ -1069,9 +1069,7 @@ export class SystemView {
     }
   }
 
-  // renderLoadError swaps the telemetry placeholder for the failure cause and a
-  // Retry button so the system view is not stuck loading when /system is
-  // unreachable. A successful retry re-renders via the system event.
+  // bindUpdate wires the Software Update card's switch and buttons.
   private bindUpdate(): void {
     this.updateCheckEl?.addEventListener("change", () => void this.saveUpdateCheck());
     this.updateCheckBtn?.addEventListener("click", () => void this.checkForUpdate());
@@ -1329,6 +1327,9 @@ export class SystemView {
     this.renderUpdate();
   }
 
+  // renderLoadError swaps the telemetry placeholder for the failure cause and a
+  // Retry button so the system view is not stuck loading when /system is
+  // unreachable. A successful retry re-renders via the system event.
   private renderLoadError(message: string): void {
     if (!this.tilesEl) return;
     this.tilesEl.textContent = "";

@@ -162,7 +162,8 @@ export function safeNotesUrl(url: string | undefined): string {
 
 // lastCheckText renders when the last check finished. The appliance stamps it
 // with its own wall clock, which can be off (a Pi without an RTC), so the age
-// is computed against the browser clock and a future time reads "just now".
+// is only as right as the two clocks agree; formatRelative, the one caller's
+// relative, reads a future time as "just now".
 export function lastCheckText(lastCheck: string | undefined, nowMs: number, relative: (fromMs: number, toMs: number) => string): string {
   if (!lastCheck) return "Never";
   const t = Date.parse(lastCheck);

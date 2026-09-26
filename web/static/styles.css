@@ -1513,6 +1513,8 @@ textarea.field-input {
 }
 
 .switch-track {
+  /* A wrapping label must not squeeze the track. */
+  flex-shrink: 0;
   width: 36px;
   height: 20px;
   background: var(--bg-surface-active);
@@ -2658,7 +2660,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   font-weight: 500;
-  line-height: 18px;
+  line-height: 1.125rem;
   padding: 0 6px;
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xs);
