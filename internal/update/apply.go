@@ -252,8 +252,11 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 	if err != nil {
 		return fail(fmt.Errorf("the new binary does not run: %w", err))
 	}
-	if want := "remote-mic " + m.Version; strings.TrimSpace(out) != want {
-		return fail(fmt.Errorf("the new binary reports %q, want %q", strings.TrimSpace(out), want))
+	// Only the first line is a contract between versions (AGENTS.md,
+	// Releases); a later release may print more below it.
+	first, _, _ := strings.Cut(out, "\n")
+	if want := "remote-mic " + m.Version; strings.TrimSpace(first) != want {
+		return fail(fmt.Errorf("the new binary reports %q, want %q", strings.TrimSpace(first), want))
 	}
 	prev, err := os.ReadFile(a.BinPath)
 	if err != nil {

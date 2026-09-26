@@ -1168,3 +1168,21 @@ func TestApplyReplacesStaleSidecars(t *testing.T) {
 		t.Errorf(".prev: %v, %v, want a regular file", fi, err)
 	}
 }
+
+// TestApplyAcceptsExtraVersionOutput pins that only the first line of the new
+// binary's version output is compared, as the cross-version contract says.
+func TestApplyAcceptsExtraVersionOutput(t *testing.T) {
+	t.Parallel()
+	env := newApplyEnv(t)
+	version := env.a.Version
+	env.a.Version = func(ctx context.Context, bin string) (string, error) {
+		out, err := version(ctx, bin)
+		return out + "built with go1.27\n", err
+	}
+	if err := env.a.Apply(t.Context()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := env.installed(t); got != newBinary {
+		t.Errorf("installed %q, want the new binary", got)
+	}
+}
