@@ -17,9 +17,9 @@
 //
 // The check is static: a rule that sets a font-size but no font-weight counts
 // as regular (400), even if another rule on the same element sets the weight.
-// Declare the weight next to the size. Relative tokens (em) scale their
-// parent and cannot be resolved here, so they are skipped; keep them for
-// inline code inside text that already passes.
+// Declare the weight next to the size. The one relative token (em) scales its
+// parent and cannot be resolved per rule, so the floor check skips it; a
+// separate test checks that every rule using it sits in body-size text.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -74,7 +74,7 @@ function blankComments(source: string): string {
 // consumed, so "a:1;b:2" finds both, and the last declaration may omit its
 // semicolon.
 function declared(body: string, prop: string): string | null {
-  const re = new RegExp(`(?<=^|[;\\s{])${prop}\\s*:\\s*([^;]*?)\\s*(!important\\s*)?(?:;|$)`, "g");
+  const re = new RegExp(`(?<=^|[;\\s])${prop}\\s*:\\s*([^;]*?)\\s*(!important\\s*)?(?:;|$)`, "g");
   let value: string | null = null;
   let important: string | null = null;
   for (const m of body.matchAll(re)) {
@@ -172,16 +172,21 @@ test("every below-floor allowance names a rule that still exists", () => {
   assert.deepEqual(stale, []);
 });
 
+// INLINE_FONT finds a style attribute, in either quote, that sets a font size
+// or the font shorthand. An inline style is invisible to the checks above,
+// which read styles.css.
+const INLINE_FONT = /style\s*=\s*("[^"]*\bfont(?:-size)?\s*:[^"]*"|'[^']*\bfont(?:-size)?\s*:[^']*')/g;
+const inlineFonts = (html: string): string[] => [...html.matchAll(INLINE_FONT)].map((m) => m[0]);
+
 test("index.html sets no font size inline", () => {
-  // An inline style is invisible to the checks above, which read styles.css.
-  const html = readFileSync(INDEX, "utf8");
-  const inline = [...html.matchAll(/style="[^"]*\bfont(?:-size)?\s*:[^"]*"/g)].map((m) => m[0]);
-  assert.deepEqual(inline, []);
+  assert.deepEqual(inlineFonts(readFileSync(INDEX, "utf8")), []);
+  const sample = `<span style="font-size: 12px">a</span><b style='color: red; font: 600 12px x'>b</b><i style="font-weight: 600">c</i>`;
+  assert.deepEqual(inlineFonts(sample), [`style="font-size: 12px"`, `style='color: red; font: 600 12px x'`]);
 });
 
-// codeHosts maps each rule that sizes inline code relative to its text (the
-// --font-size-code token) to the px size of the text around it, or null when
-// the host rule sets no resolvable size.
+// codeHosts maps each selector that sizes text with the relative code token
+// (--font-size-code) to the px size of the text around it, or null when the
+// selector is not a descendant "code" or its host sets no resolvable size.
 function codeHosts(source: string): Map<string, number | null> {
   const rules = fontRules(source);
   const px = new Map(rules.filter((r) => r.px !== null).map((r) => [r.selector, r.px]));
@@ -206,8 +211,9 @@ test("inline code sits only in body-size or larger text, so it stays above the f
     .note { font-size: var(--font-size-small); font-weight: 500; }
     .note code, .para code { font-size: var(--font-size-code); }
     .para { font-size: var(--font-size-body); }
+    .orphan code, .direct { font-size: var(--font-size-code); }
   `);
-  assert.deepEqual([...sample], [[".note code", 12], [".para code", 13]]);
+  assert.deepEqual([...sample], [[".note code", 12], [".para code", 13], [".orphan code", null], [".direct", null]]);
 });
 
 test("the type scale is px, apart from the one relative code token", () => {

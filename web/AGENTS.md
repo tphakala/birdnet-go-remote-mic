@@ -162,8 +162,8 @@ reconcile:
   combination needs a new entry (each foreground and ground pair once; name
   another surface that shares it in the entry's description). Text and the
   surface under it take token colors even on a one-off surface, so a pair can
-  describe them. Secondary
-  and muted text must reach `SMALL_TEXT` (5.5:1), not just AA.
+  describe them. Secondary and muted text must reach `SMALL_TEXT` (5.5:1),
+  not just AA.
 - Type scale and floor (`test/legibility.test.ts`): every `font-size` is a
   `var(--font-size-*)` role token (px, defined on `:root`), never a literal,
   and a `font:` shorthand may only reset (`font: inherit`). No text below
@@ -172,7 +172,9 @@ reconcile:
   caption (12px) is for short labels, badges and data at 500+. Declare the
   weight next to the size, since the test reads each rule on its own. The two
   allowed 11px exceptions (`--font-size-micro`) are listed in the test with
-  their reasons.
+  their reasons. The one relative token, `--font-size-code`, is only for
+  inline code in body-size or larger text, and `index.html` sets no font size
+  inline; the test checks both.
 - Everything is keyboard-operable with a visible focus ring. Modals trap focus
   (`trapFocus`), make the background inert (`setAppInert`), and return focus
   to the invoker on close. Updates must not steal or drop focus.

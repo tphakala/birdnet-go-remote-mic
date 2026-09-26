@@ -1,8 +1,7 @@
 // Unit tests for the storage side of lib/prefs.ts: isLocalStorageEvent, the
 // guard every storage listener uses to ignore sessionStorage changes, and the
 // boolean preference read and write, including a browser where storage
-// itself throws. Run with node:test over the compiled
-// output (see web:test).
+// itself throws. Run with node:test over the compiled output (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
