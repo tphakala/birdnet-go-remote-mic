@@ -23,6 +23,8 @@ type InitSystem interface {
 	Disable(unit string) error
 	// Stop stops a running unit.
 	Stop(unit string) error
+	// ResetFailed clears a unit's failed state and start-limit counter.
+	ResetFailed(unit string) error
 }
 
 // Systemd drives systemctl through the Runner seam.
@@ -62,6 +64,12 @@ func (s *Systemd) Disable(unit string) error {
 // Stop runs systemctl stop.
 func (s *Systemd) Stop(unit string) error {
 	_, err := s.Run("systemctl", "stop", unit)
+	return err
+}
+
+// ResetFailed runs systemctl reset-failed.
+func (s *Systemd) ResetFailed(unit string) error {
+	_, err := s.Run("systemctl", "reset-failed", unit)
 	return err
 }
 

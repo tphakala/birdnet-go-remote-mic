@@ -111,8 +111,8 @@ func TestRenderUpdaterDefaults(t *testing.T) {
 		"ProtectSystem=strict",
 		"PrivateNetwork=true",
 		"ReadWritePaths=/usr/local/bin /var/lib/remote-mic",
-		"StartLimitBurst=5",
-		"StartLimitIntervalSec=1h",
+		"StartLimitBurst=10",
+		"StartLimitIntervalSec=10min",
 		"TimeoutStartSec=10min",
 	)
 	// The updater must run as root to replace a root-owned binary; a User=

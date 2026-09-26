@@ -824,8 +824,8 @@ func TestApplyRefusesUntrustedBinDir(t *testing.T) {
 		env := interruptedEnv(t)
 		env.a.Owner = func(os.FileInfo) (uint32, uint32, bool) { return 1000, 1000, true }
 		err := env.a.Apply(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "interrupted update is waiting") {
-			t.Errorf("Apply: got %v, want the pending rollback named", err)
+		if err == nil || !strings.Contains(err.Error(), "interrupted update will be rolled back") || !strings.Contains(err.Error(), "re-run sudo remote-mic service install") {
+			t.Errorf("Apply: got %v, want the pending rollback and the way to revive it named", err)
 		}
 		if got := env.installed(t); got != newBinary || !exists(env.binPath+".pending") {
 			t.Errorf("installed %q, journal kept %t: a recovery ran in an untrusted directory", got, exists(env.binPath+".pending"))
@@ -1077,5 +1077,27 @@ func TestCheckRootOnlyRefusesBadInput(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: got %v, want an error containing %q", tt.name, err, tt.want)
 		}
+	}
+}
+
+// TestApplyRecoversWithoutStateDir pins that a journal is recovered even when
+// the state directory cannot be opened: the previous binary goes back, the
+// journal goes and the unit restarts, with the outcome only in the error.
+func TestApplyRecoversWithoutStateDir(t *testing.T) {
+	t.Parallel()
+	env := interruptedEnv(t)
+	env.a.StateDir = filepath.Join(t.TempDir(), "missing")
+	err := env.a.Apply(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Errorf("Apply: got %v, want the interrupted update reported", err)
+	}
+	if got := env.installed(t); got != oldBinary {
+		t.Errorf("installed %q, want %q", got, oldBinary)
+	}
+	if _, err := os.Lstat(env.binPath + ".pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("journal left behind: %v", err)
+	}
+	if env.restarts != 1 {
+		t.Errorf("restarts = %d, want 1", env.restarts)
 	}
 }

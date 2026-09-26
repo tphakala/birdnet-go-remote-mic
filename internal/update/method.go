@@ -59,7 +59,7 @@ func DetectInstall(env InstallEnv) Install {
 		if env.UpdaterBinPath != "" && filepath.Clean(env.UpdaterBinPath) == exe {
 			return Install{Method: MethodService, CanApply: true}
 		}
-		return Install{Method: MethodService, Hint: "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to enable one-button updates, or install the release by hand"}
+		return Install{Method: MethodService, Hint: "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to enable one-button updates (if install warns that others can write the binary's directory, fix that first), or install the release by hand"}
 	default:
 		return Install{Method: MethodManual, Hint: "Download the release for this system from the release page and replace " + exe}
 	}

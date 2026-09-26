@@ -79,9 +79,10 @@ WantedBy=multi-user.target
 // restarts the appliance and rolls back when the new version does not come
 // up. It needs no network, and may write only the binary's directory and the
 // state directory; restarting the appliance goes through systemd's own
-// socket, which PrivateNetwork does not affect. StartLimitBurst keeps a
+// socket, which PrivateNetwork does not affect. The start limit keeps a
 // request or journal the updater somehow cannot clear from restarting it in a
-// loop.
+// tight loop, yet leaves room for an operator's retries; service install
+// resets it, so re-running install revives a path unit that hit it.
 //
 // Self-updated appliances keep the units their install wrote, so every later
 // release is started by this ExecStart line: its subcommand and flags are a
@@ -89,8 +90,8 @@ WantedBy=multi-user.target
 const updateServiceTemplate = `[Unit]
 Description=Install a staged remote-mic update
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic
-StartLimitIntervalSec=1h
-StartLimitBurst=5
+StartLimitIntervalSec=10min
+StartLimitBurst=10
 
 [Service]
 Type=oneshot

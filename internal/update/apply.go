@@ -108,30 +108,43 @@ type Applier struct {
 // report. It first refuses a binary or bin directory that anyone but root
 // could write (checkBinDir). When an install journal is found, a previous run
 // was cut off mid-install, and Apply rolls that back (recoverInterrupted)
-// instead of installing anything. The returned error is the same outcome, for
-// the unit's log.
+// instead of installing anything; that recovery runs even when the state
+// directory cannot be opened (the status is then only logged). The returned
+// error is the same outcome, for the unit's log.
 func (a *Applier) Apply(ctx context.Context) error {
-	root, err := os.OpenRoot(a.StateDir)
-	if err != nil {
-		return err
+	// Without the state directory there is no request and no status, but a
+	// journal beside the binary still has to be recovered, so go on: a nil
+	// root skips what lives in the state directory.
+	root, rootErr := os.OpenRoot(a.StateDir)
+	if rootErr != nil {
+		a.logf("apply-update: open state directory: %v", rootErr)
+	} else {
+		defer func() { _ = root.Close() }()
 	}
-	defer func() { _ = root.Close() }()
 	reqPath := path.Join(DirName, RequestFile)
 	takenPath := path.Join(DirName, TakenFile)
-	defer func() { _ = root.Remove(takenPath) }()
+	remove := func(name string) {
+		if root != nil {
+			_ = root.Remove(name)
+		}
+	}
+	defer remove(takenPath)
 	// Before touching anything in the bin directory (the journal included),
 	// make sure only root can write there: root runs the binary it holds.
 	if err := a.checkBinDir(); err != nil {
-		defer func() { _ = root.Remove(reqPath) }()
+		defer remove(reqPath)
 		reason := "refusing to update: " + err.Error()
 		if _, jerr := os.Lstat(a.journalPath()); jerr == nil {
-			reason += "; an interrupted update is waiting to be rolled back once only root can write there"
+			reason += "; an interrupted update will be rolled back once only root can write there: fix that, then re-run sudo remote-mic service install"
 		}
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: reason})
 	}
 	if _, err := os.Lstat(a.journalPath()); err == nil {
-		defer func() { _ = root.Remove(reqPath) }()
+		defer remove(reqPath)
 		return a.finish(root, a.recoverInterrupted(root))
+	}
+	if rootErr != nil {
+		return rootErr
 	}
 	// Claim the request by renaming it: the appliance withdraws one nobody
 	// took by removing it, and exactly one of the two wins.
@@ -594,7 +607,11 @@ func (a *Applier) finish(root *os.Root, res *Result) error {
 // writeResult writes the status file through root: a fresh temporary file
 // (O_EXCL, so a planted file or link is never written through) renamed over
 // the status file, which replaces a planted link rather than following it.
+// Without a state directory (a nil root) it writes nothing and says so.
 func (a *Applier) writeResult(root *os.Root, res *Result) error {
+	if root == nil {
+		return errors.New("no state directory")
+	}
 	now := time.Now
 	if a.Now != nil {
 		now = a.Now

@@ -5,6 +5,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/user"
@@ -38,7 +39,10 @@ type Installer struct {
 	stagingDir func(stateDir string, uid, gid int) error
 	// rootOnly refuses a directory that it or a directory above it lets
 	// anyone but root write (update.CheckRootOnly).
-	rootOnly func(dir string) error
+	rootOnly   func(dir string) error
+	removeFile func(path string) error
+	// warn receives a warning that does not fail the install.
+	warn io.Writer
 }
 
 // NewInstaller builds an Installer for spec with the production init system,
@@ -58,15 +62,19 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		writeFile:  atomicfile.Write,
 		stagingDir: ensureStagingDir,
 		rootOnly:   update.CheckRootOnly,
+		removeFile: os.Remove,
+		warn:       os.Stderr,
 	}
 }
 
 // Install creates the service user, installs the binary, the unit and the root
 // updater's path and service units, hands the config, state and update staging
 // directories to the service user, then reloads systemd and enables the unit
-// and the updater's path unit (starting both too when now is true). It refuses,
-// before copying anything, a bin directory that it or a directory above it
-// lets anyone but root write, since the root updater runs that binary.
+// and the updater's path unit (starting both too when now is true). Since the
+// root updater runs the installed binary, a bin directory that it or a
+// directory above it lets anyone but root write gets no updater: install
+// warns, removes updater units an earlier install left, and installs the
+// appliance alone.
 //
 // The order is deliberate: ownership is handed over BEFORE the unit starts, so
 // the appliance can write config.yaml on first provision and take its run lock
@@ -98,9 +106,11 @@ func (in *Installer) Install(now bool) error {
 		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
 	}
 	// The root updater runs this binary, so nobody but root may be able to
-	// replace it: refuse before installing anything.
+	// replace it; otherwise the appliance is installed without the updater.
+	updater := true
 	if err := in.rootOnly(filepath.Dir(s.BinPath)); err != nil {
-		return fmt.Errorf("service: the root updater would run %s, but %w; install the binary somewhere only root can write", s.BinPath, err)
+		updater = false
+		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the directory writable only by root (or install the binary somewhere only root can write) and re-run sudo remote-mic service install\n", s.BinPath, err)
 	}
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
 		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
@@ -113,15 +123,12 @@ func (in *Installer) Install(now bool) error {
 	if err := in.writeFile(s.UnitPath(), unit, 0o644); err != nil {
 		return fmt.Errorf("service: write unit %s: %w", s.UnitPath(), err)
 	}
-	pathUnit, updaterUnit, err := RenderUpdater(s)
-	if err != nil {
+	if updater {
+		if err := in.writeUpdaterUnits(s); err != nil {
+			return err
+		}
+	} else if err := in.removeUpdaterUnits(s); err != nil {
 		return err
-	}
-	if err := in.writeFile(s.UpdateServiceUnitPath(), updaterUnit, 0o644); err != nil {
-		return fmt.Errorf("service: write unit %s: %w", s.UpdateServiceUnitPath(), err)
-	}
-	if err := in.writeFile(s.UpdatePathUnitPath(), pathUnit, 0o644); err != nil {
-		return fmt.Errorf("service: write unit %s: %w", s.UpdatePathUnitPath(), err)
 	}
 
 	// Create the config and state directories and hand them to the service user
@@ -145,8 +152,10 @@ func (in *Installer) Install(now bool) error {
 
 	// The staging directory sits in the state directory the service user
 	// owns, so it is handled on its own (see ensureStagingDir).
-	if err := in.stagingDir(s.StateDir, uid, gid); err != nil {
-		return fmt.Errorf("service: update staging directory %s: %w", s.UpdateDir(), err)
+	if updater {
+		if err := in.stagingDir(s.StateDir, uid, gid); err != nil {
+			return fmt.Errorf("service: update staging directory %s: %w", s.UpdateDir(), err)
+		}
 	}
 
 	if err := in.Init.DaemonReload(); err != nil {
@@ -155,9 +164,50 @@ func (in *Installer) Install(now bool) error {
 	if err := in.Init.Enable(DefaultUnitName, now); err != nil {
 		return fmt.Errorf("service: enable %s: %w", DefaultUnitName, err)
 	}
+	if !updater {
+		return nil
+	}
+	// A path unit that hit its start limit stays failed until reset, so
+	// re-running install is how an operator revives it. Nothing to reset is
+	// not an error worth failing the install for.
+	_ = in.Init.ResetFailed(UpdateServiceUnit)
+	_ = in.Init.ResetFailed(UpdatePathUnit)
 	// Only the path unit is enabled: it starts the updater service on demand.
 	if err := in.Init.Enable(UpdatePathUnit, now); err != nil {
 		return fmt.Errorf("service: enable %s: %w", UpdatePathUnit, err)
+	}
+	return nil
+}
+
+// writeUpdaterUnits writes the root updater's service and path units.
+func (in *Installer) writeUpdaterUnits(s ServiceSpec) error {
+	pathUnit, updaterUnit, err := RenderUpdater(s)
+	if err != nil {
+		return err
+	}
+	if err := in.writeFile(s.UpdateServiceUnitPath(), updaterUnit, 0o644); err != nil {
+		return fmt.Errorf("service: write unit %s: %w", s.UpdateServiceUnitPath(), err)
+	}
+	if err := in.writeFile(s.UpdatePathUnitPath(), pathUnit, 0o644); err != nil {
+		return fmt.Errorf("service: write unit %s: %w", s.UpdatePathUnitPath(), err)
+	}
+	return nil
+}
+
+// removeUpdaterUnits stops and removes updater units an earlier install left,
+// which would otherwise keep running a binary in a directory that is no
+// longer root-only. Stopping or disabling a unit that is not there is fine.
+func (in *Installer) removeUpdaterUnits(s ServiceSpec) error {
+	_ = in.Init.Stop(UpdatePathUnit)
+	_ = in.Init.Disable(UpdatePathUnit)
+	_ = in.Init.Stop(UpdateServiceUnit)
+	// A unit that failed stays listed as failed, file or not, until reset.
+	_ = in.Init.ResetFailed(UpdatePathUnit)
+	_ = in.Init.ResetFailed(UpdateServiceUnit)
+	for _, p := range []string{s.UpdatePathUnitPath(), s.UpdateServiceUnitPath()} {
+		if err := in.removeFile(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("service: remove unit %s: %w", p, err)
+		}
 	}
 	return nil
 }

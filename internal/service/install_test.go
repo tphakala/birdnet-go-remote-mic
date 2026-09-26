@@ -5,6 +5,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,8 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 			*events = append(*events, fmt.Sprintf("staging %s %d:%d", stateDir, uid, gid))
 			return nil
 		},
+		removeFile: func(path string) error { *events = append(*events, "remove "+path); return nil },
+		warn:       io.Discard,
 	}
 }
 
@@ -59,7 +62,7 @@ func TestInstallSequence(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	wantSeq(t, events, []string{
-		"run groupadd --system --force remote-mic",
+		evGroupadd,
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
 		"mkdir /usr/local/bin",
@@ -69,12 +72,14 @@ func TestInstallSequence(t *testing.T) {
 		"write /etc/systemd/system/remote-mic-update.service",
 		"write /etc/systemd/system/remote-mic-update.path",
 		"mkdir /etc/remote-mic",
-		"chown /etc/remote-mic 990:990",
+		evChownConfig,
 		"mkdir /var/lib/remote-mic",
 		"chown /var/lib/remote-mic 990:990",
 		"staging /var/lib/remote-mic 990:990",
 		evReload,
-		"enable --now remote-mic.service",
+		evEnableNowApp,
+		evResetUpdater,
+		evResetPath,
 		"enable --now remote-mic-update.path",
 	})
 }
@@ -95,10 +100,10 @@ func TestInstallChownBeforeStart(t *testing.T) {
 	}
 	chownIdx, enableIdx := -1, -1
 	for i, e := range events {
-		if e == "chown /etc/remote-mic 990:990" {
+		if e == evChownConfig {
 			chownIdx = i
 		}
-		if e == "enable --now remote-mic.service" {
+		if e == evEnableNowApp {
 			enableIdx = i
 		}
 	}
@@ -120,7 +125,7 @@ func TestInstallUserExistsSkipsCreation(t *testing.T) {
 	var groupadd bool
 	for _, e := range events {
 		switch e {
-		case "run groupadd --system --force remote-mic":
+		case evGroupadd:
 			groupadd = true
 		case "run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 			"run usermod --append --groups audio remote-mic":
@@ -134,7 +139,12 @@ func TestInstallUserExistsSkipsCreation(t *testing.T) {
 	}
 	// now=false enables without starting, the appliance and the updater's
 	// path unit alike.
-	wantSeq(t, events[len(events)-2:], []string{"enable remote-mic.service", "enable remote-mic-update.path"})
+	wantSeq(t, events[len(events)-4:], []string{
+		"enable remote-mic.service",
+		evResetUpdater,
+		evResetPath,
+		"enable remote-mic-update.path",
+	})
 }
 
 // TestChownTreeStaysShallow proves the TOCTOU fix: chownTree touches the root
@@ -240,21 +250,55 @@ func TestEnsureStagingDir(t *testing.T) {
 	}
 }
 
-// TestInstallRefusesUntrustedBinDir pins that install stops before copying
-// the binary or writing any unit when the bin directory is not root-only.
-func TestInstallRefusesUntrustedBinDir(t *testing.T) {
+// TestInstallWithoutUpdaterOnUntrustedBinDir pins that a bin directory that
+// is not root-only still gets the appliance, with a warning, but no updater:
+// updater units an earlier install left are stopped and removed, and no
+// staging directory is made.
+func TestInstallWithoutUpdaterOnUntrustedBinDir(t *testing.T) {
 	var events []string
 	init := &fakeInit{events: &events, present: true}
 	userThere := true
 	in := testInstaller(&events, init, &userThere)
 	in.rootOnly = func(string) error { return errors.New("/opt is writable by group 50") }
-	err := in.Install(true)
-	if err == nil || !strings.Contains(err.Error(), "writable by group 50") {
-		t.Fatalf("Install: got %v", err)
+	var warn strings.Builder
+	in.warn = &warn
+	if err := in.Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
 	}
-	for _, e := range events {
-		if strings.HasPrefix(e, "copy ") || strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "enable") {
-			t.Errorf("install went on after the refusal: %q", e)
-		}
+	if got := warn.String(); !strings.Contains(got, "without automatic updates") || !strings.Contains(got, "writable by group 50") {
+		t.Errorf("warning %q, want it to name the reason updates are off", got)
+	}
+	wantSeq(t, events, []string{
+		evGroupadd,
+		"mkdir /usr/local/bin",
+		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
+		"write /etc/systemd/system/remote-mic.service",
+		evStopPath,
+		evDisablePath,
+		evStopUpdater,
+		evResetPath,
+		evResetUpdater,
+		"remove /etc/systemd/system/remote-mic-update.path",
+		"remove /etc/systemd/system/remote-mic-update.service",
+		"mkdir /etc/remote-mic",
+		evChownConfig,
+		"mkdir /var/lib/remote-mic",
+		"chown /var/lib/remote-mic 990:990",
+		evReload,
+		evEnableNowApp,
+	})
+}
+
+// TestInstallIgnoresResetFailedErrors pins that a reset-failed that fails
+// (nothing to reset, say) does not fail the install.
+func TestInstallIgnoresResetFailedErrors(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true, resetErr: errors.New("unit not loaded")}
+	userThere := true
+	if err := testInstaller(&events, init, &userThere).Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if last := events[len(events)-1]; last != "enable --now remote-mic-update.path" {
+		t.Errorf("last event %q, want the path unit enabled", last)
 	}
 }
