@@ -35,11 +35,16 @@ interface Env {
   prefersLight?: boolean;
 }
 
+// How many times the last runThemeInit called matchMedia, so a test can tell
+// "never consulted" from "consulted and its throw swallowed".
+let mediaCalls = 0;
+
 // runThemeInit executes theme-init.js against stubbed globals and returns the
 // data-theme it set, or null when it set none.
 function runThemeInit(env: Env): string | null {
   const key = appThemeKey();
   let theme: string | null = null;
+  mediaCalls = 0;
   // The context is the script's global object; window refers back to it, as
   // in a browser, so bare and window-qualified names resolve alike.
   const context: Record<string, unknown> = {
@@ -50,6 +55,7 @@ function runThemeInit(env: Env): string | null {
       },
     },
     matchMedia(query: string): { matches: boolean } {
+      mediaCalls++;
       if (env.prefersLight === undefined) throw new Error("no matchMedia");
       return { matches: query === "(prefers-color-scheme: light)" && env.prefersLight };
     },
@@ -91,17 +97,25 @@ test("a missing matchMedia keeps the dark default without throwing", () => {
 
 test("a saved choice applies without consulting matchMedia", () => {
   assert.equal(runThemeInit({ stored: "light", prefersLight: undefined }), "light");
+  assert.equal(mediaCalls, 0);
 });
 
 test("index.html loads theme-init.js as a blocking classic script in <head>", () => {
   const html = readFileSync(INDEX_HTML, "utf8");
   const head = /<head>([\s\S]*?)<\/head>/.exec(html);
   assert.ok(head, "no <head> in index.html");
-  const tag = /<script\b([^>]*)\ssrc\s*=\s*["']?theme-init\.js["']?([^>]*)>/i.exec(head[1]);
+  // A commented-out tag loads nothing.
+  const live = head[1].replace(/<!--[\s\S]*?-->/g, "");
+  const tag = /<script\b([^>]*)\ssrc\s*=\s*["']?(?:\.?\/)?theme-init\.js["']?([^>]*)>/i.exec(live);
   assert.ok(tag, "theme-init.js is not loaded in <head>");
-  // A module, deferred or async script runs after the first paint, which is
-  // the flash this script exists to prevent.
   const attrs = ` ${tag[1]} ${tag[2]} `;
-  assert.ok(!/\stype\s*=\s*["']?module\b/i.test(attrs), "theme-init.js tag is a module");
+  // A module, deferred or async script runs after the first paint, which is
+  // the flash this script exists to prevent, and a non-JavaScript type never
+  // runs at all.
+  const type = /\stype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
+  assert.ok(
+    type === null || ["text/javascript", "application/javascript"].includes(type[1].toLowerCase()),
+    `theme-init.js tag has type ${type?.[1]}`,
+  );
   assert.ok(!/\s(defer|async)(?=[\s=/]|$)/i.test(attrs), "theme-init.js tag is deferred or async");
 });
