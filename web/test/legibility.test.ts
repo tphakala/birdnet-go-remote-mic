@@ -84,7 +84,7 @@ function resolve(value: string, tokens: Map<string, number | null>): Pick<Rule, 
     return { px: null, problem: `font-size ${value} is not a type scale token; use var(--font-size-*)` };
   }
   if (!tokens.has(ref[1])) {
-    return { px: null, problem: `${ref[1]} is not defined on :root` };
+    return { px: null, problem: `${ref[1]} is not a defined type scale token` };
   }
   return { px: tokens.get(ref[1]) ?? null, problem: null };
 }

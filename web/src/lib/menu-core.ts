@@ -69,7 +69,8 @@ export function openIndex(fromEnd: boolean, checked: number, count: number): num
   return Math.max(0, checked);
 }
 
-// closesOnFocusOut decides whether focus leaving an item closes the menu: only
+// closesOnFocusOut decides whether a focus move (an item blurring, or focus
+// arriving anywhere on the page) closes the menu: only
 // while it is open (hiding the menu blurs the focused item, which must not
 // count) and only when focus landed elsewhere on the page, such as a route
 // change or a dialog taking focus. A window blur keeps it open, as the

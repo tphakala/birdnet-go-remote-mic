@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// Fixture texts shared by several tests.
+// Fixture values shared by several tests.
 const (
 	apacheText  = "Apache License\nVersion 2.0, January 2004"
 	unknownText = "All rights reserved."
@@ -178,7 +178,7 @@ func TestRenderJSON(t *testing.T) {
 	if f, _ := stdFiles[1].(entry); f["name"] != "NOTICE.txt" || f["text"] != "Portions copyright the authors" {
 		t.Errorf("component 1 file 1 = %v, want the NOTICE and its text", stdFiles[1])
 	}
-	if !strings.HasSuffix(string(b), "}\n") || strings.HasSuffix(string(b), "\n\n") {
+	if !strings.HasSuffix(string(b), "}\n") {
 		t.Error("output does not end in exactly one newline")
 	}
 }

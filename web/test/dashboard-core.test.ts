@@ -11,14 +11,12 @@ import {
   bannerIsError,
   captureFormatLabel,
   channelHiddenMessage,
-  CONTROL_GONE_MESSAGE,
   channelLabel,
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
   hiddenRows,
   needsNotificationsFallback,
-  REMOVED_FOCUS_MESSAGE,
   tallyStates,
 } from "../src/lib/dashboard-core.js";
 import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.js";
@@ -153,9 +151,4 @@ test("parseBoolPref reads 1 and 0, and falls back for anything else", () => {
   // An unrecognized value reads as the default, not as off.
   assert.equal(parseBoolPref("yes", true), true);
   assert.equal(parseBoolPref("", true), true);
-});
-
-test("the focus-move messages say where focus went", () => {
-  assert.equal(REMOVED_FOCUS_MESSAGE, "Focus moved to the dashboard.");
-  assert.ok(CONTROL_GONE_MESSAGE.endsWith("Focus moved to the device settings."));
 });

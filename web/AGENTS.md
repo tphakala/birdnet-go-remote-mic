@@ -160,8 +160,9 @@ reconcile:
   (`test/contrast.test.ts`) must pass. The contrast test checks only the pairs
   in its `PAIRS` table, so any new colored surface or text-on-background
   combination needs a new entry (each foreground and ground pair once; name
-  another surface that shares it in the entry's description). Colors are
-  tokens even for a one-off surface, so a pair can describe them. Secondary
+  another surface that shares it in the entry's description). Text and the
+  surface under it take token colors even on a one-off surface, so a pair can
+  describe them. Secondary
   and muted text must reach `SMALL_TEXT` (5.5:1), not just AA.
 - Type scale and floor (`test/legibility.test.ts`): every `font-size` is a
   `var(--font-size-*)` role token (px, defined on `:root`), never a literal,
@@ -187,8 +188,8 @@ reconcile:
 
 ## Styling
 
-- Colors, spacing, radii, and type come from CSS custom properties on `:root`
-  (dark is the default) overridden in `:root[data-theme="light"]`. Use the
+- Colors, radii, control heights and type come from CSS custom properties on
+  `:root` (dark is the default) overridden in `:root[data-theme="light"]`. Use the
   tokens; no hard-coded colors or one-off per-theme overrides. If a token pair
   fails contrast, fix the token.
 - Theme is the `data-theme` attribute on `<html>`, persisted per browser.

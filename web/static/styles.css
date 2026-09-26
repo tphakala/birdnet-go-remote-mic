@@ -1080,7 +1080,7 @@ textarea {
 .clip-latch-btn {
   font-family: var(--font-mono);
   /* Interactive text ("CLIP", a clickable latch reset), so it stays at the
-     12px label size rather than the 11px meter-scale caption size. */
+     caption size rather than the micro size of the meter scale. */
   font-size: var(--font-size-caption);
   font-weight: 700;
   display: inline-flex;
@@ -1445,17 +1445,6 @@ textarea.field-input {
 /* Custom Switch Toggle */
 /* Visually hides an element while keeping it in the accessibility tree and
    keyboard-focusable (do NOT use display:none, which removes focusability). */
-/* The new-tab mark after an external link's text (lib/ui.ts externalLink). */
-.external-icon {
-  display: inline-flex;
-  margin-left: 4px;
-  vertical-align: -1px;
-  opacity: 0.8;
-}
-.btn .external-icon {
-  margin-left: 0;
-}
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -1464,6 +1453,16 @@ textarea.field-input {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* The new-tab mark after an external link's text (lib/ui.ts externalLink). */
+.external-icon {
+  display: inline-flex;
+  margin-left: 4px;
+  vertical-align: -1px;
+}
+.btn .external-icon {
+  margin-left: 0;
 }
 
 .switch-control {
@@ -1553,7 +1552,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   letter-spacing: 0.03em;
   text-transform: uppercase;
   /* Use text-secondary, not text-muted: this is the only visible label for an
-     interactive control, so it needs AA contrast at 11px in both themes. */
+     interactive control, so it needs AA contrast at the caption size in both
+     themes. */
   color: var(--text-secondary);
 }
 
@@ -2225,9 +2225,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* Notification center: the header bell badge and its popover panel. Colors come
-   from the shared tokens, with two exceptions tuned for AA contrast: the unread
-   badge uses a fixed darkened red with white text, and the active-issues heading
-   takes one light-theme override. */
+   from the shared tokens. */
 
 /* Header popovers: the notification panel and the menu-button menus
    (components/menu-button.ts) share one anchor, surface and slide-in, so the
@@ -2409,8 +2407,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .notif-row-time {
   font-size: var(--font-size-caption);
   font-weight: 500;
-  /* text-secondary, not text-muted: at 10px the muted tone is too faint to
-     read comfortably on the row surface. */
+  /* text-secondary, not text-muted: at the caption size the muted tone is too
+     faint to read comfortably on the row surface. */
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;

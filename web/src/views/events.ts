@@ -212,7 +212,7 @@ export class EventsView {
     // null) means the default, on.
     window.addEventListener("storage", (e: StorageEvent) => {
       if (!isLocalStorageEvent(e) || (e.key !== null && e.key !== SLASH_PREF_KEY)) return;
-      const on = parseBoolPref(e.key === null ? null : e.newValue, true);
+      const on = parseBoolPref(e.newValue, true);
       if (on === this.slashShortcut) return;
       this.slashShortcut = on;
       this.slashInput.checked = on;

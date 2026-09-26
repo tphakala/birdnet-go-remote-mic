@@ -9,12 +9,10 @@
 // right after the button, so the caller wraps the button in a positioned
 // element (.menu-wrap) the popover anchors to. The state, key and focus rules
 // live in lib/menu-core.ts (MenuController); this file is the DOM side.
-import { MenuController, type FocusTarget } from "../lib/menu-core.js";
+import { MenuController, type FocusTarget, type MenuItem } from "../lib/menu-core.js";
 import { elem, iconSpan } from "../lib/ui.js";
 
-export interface MenuChoice {
-  value: string;
-  label: string;
+export interface MenuChoice extends MenuItem {
   // Static, trusted inline SVG markup (an ICON_* constant), shown before the label.
   icon?: string;
 }
