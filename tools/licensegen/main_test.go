@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,41 +108,101 @@ func TestIsLicenseName(t *testing.T) {
 
 // TestRenderJSON pins the About page's contract: the project entry first, then
 // every component in order with its summarized license and full texts, and an
-// omitted version where the document shows "-".
+// omitted version where the document shows "-". It reads the raw JSON, so the
+// key names web/src/lib/about-core.ts parses are pinned too, not only a round
+// trip through the same struct.
 func TestRenderJSON(t *testing.T) {
 	t.Parallel()
-	own := licenseFile{name: projectLicense, text: "MIT License\n\nPermission is hereby granted, free of charge"}
+	project := component{name: "remote-mic", files: []licenseFile{{name: projectLicense, text: "MIT License\n\nPermission is hereby granted, free of charge"}}}
 	comps := []component{
 		{name: "example.com/a", version: "v1.0.0", files: []licenseFile{{name: "LICENSE.txt", text: "Apache License\nVersion 2.0"}}},
 		{name: "Go standard library and runtime", files: []licenseFile{
 			{name: "LICENSE.md", text: "Redistribution and use in source and binary forms ... Neither the name of"},
-			{name: "NOTICE", text: "Portions copyright the authors"},
+			{name: "NOTICE.txt", text: "Portions copyright the authors"},
 		}},
 	}
-	b, err := renderJSON(own, comps)
+	b, err := renderJSON(project, comps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc licenseDoc
+	var doc map[string]any
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if doc.Project.Name != "remote-mic" || doc.Project.License != classify(own.text) || doc.Project.Files[0].Text != own.text {
-		t.Errorf("project = %+v, want remote-mic, its classified license, the LICENSE text", doc.Project)
+	type entry = map[string]any
+	proj, ok := doc["project"].(entry)
+	if !ok {
+		t.Fatalf("project = %v, want an object", doc["project"])
 	}
-	if got := len(doc.Components); got != 2 {
-		t.Fatalf("got %d components, want 2", got)
+	const wantProjectLicense = "MIT"
+	if proj["name"] != "remote-mic" || proj["license"] != wantProjectLicense {
+		t.Errorf("project = %v, want name remote-mic, license MIT", proj)
 	}
-	if c := doc.Components[0]; c.Name != "example.com/a" || c.Version != "v1.0.0" || c.License != "Apache-2.0" {
-		t.Errorf("component 0 = %+v, want example.com/a v1.0.0 Apache-2.0", c)
+	if _, has := proj["version"]; has {
+		t.Error("project has a version key; want it omitted")
 	}
-	if c := doc.Components[1]; c.Version != "" || c.License != "BSD-3-Clause" || len(c.Files) != 2 {
-		t.Errorf("component 1 = %+v, want no version, BSD-3-Clause, 2 files", c)
+	files, ok := proj["files"].([]any)
+	if !ok || len(files) != 1 {
+		t.Fatalf("project files = %v, want one file", proj["files"])
 	}
-	if strings.Contains(string(b), `"version": ""`) {
-		t.Error("an empty version is written; want it omitted")
+	if f, _ := files[0].(entry); f["name"] != projectLicense || f["text"] != project.files[0].text {
+		t.Errorf("project file = %v, want LICENSE and its text", files[0])
+	}
+	list, ok := doc["components"].([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("components = %v, want 2", doc["components"])
+	}
+	a, _ := list[0].(entry)
+	if a["name"] != "example.com/a" || a["version"] != "v1.0.0" || a["license"] != "Apache-2.0" {
+		t.Errorf("component 0 = %v, want example.com/a v1.0.0 Apache-2.0", a)
+	}
+	std, _ := list[1].(entry)
+	if _, has := std["version"]; has {
+		t.Error("component 1 has a version key; want it omitted")
+	}
+	if std["license"] != "BSD-3-Clause" {
+		t.Errorf("component 1 license = %v, want BSD-3-Clause", std["license"])
+	}
+	stdFiles, _ := std["files"].([]any)
+	if len(stdFiles) != 2 {
+		t.Fatalf("component 1 files = %v, want 2", std["files"])
+	}
+	if f, _ := stdFiles[1].(entry); f["name"] != "NOTICE.txt" || f["text"] != "Portions copyright the authors" {
+		t.Errorf("component 1 file 1 = %v, want the NOTICE and its text", stdFiles[1])
 	}
 	if !strings.HasSuffix(string(b), "}\n") {
 		t.Error("output does not end in a newline")
+	}
+}
+
+// TestSyncOutputs pins the write and -check behaviour for every generated
+// file: write mode writes each one, and check mode fails, naming the path,
+// when any of them (not only the first) is missing or differs.
+func TestSyncOutputs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	md, js := filepath.Join(dir, "a.md"), filepath.Join(dir, "b.json")
+	outs := []output{{md, []byte("doc\n")}, {js, []byte("{}\n")}}
+
+	if err := syncOutputs(outs, true); !errors.Is(err, ErrStale) || !strings.Contains(err.Error(), md) {
+		t.Fatalf("check with nothing written: got %v, want ErrStale naming %s", err, md)
+	}
+	if err := syncOutputs(outs, false); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	for _, o := range outs {
+		got, err := os.ReadFile(o.path)
+		if err != nil || !bytes.Equal(got, o.data) {
+			t.Errorf("%s = %q, %v; want %q", o.path, got, err, o.data)
+		}
+	}
+	if err := syncOutputs(outs, true); err != nil {
+		t.Fatalf("check after write: got %v, want nil", err)
+	}
+	if err := os.WriteFile(js, []byte("{\"stale\": true}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncOutputs(outs, true); !errors.Is(err, ErrStale) || !strings.Contains(err.Error(), js) {
+		t.Fatalf("check with the second file stale: got %v, want ErrStale naming %s", err, js)
 	}
 }

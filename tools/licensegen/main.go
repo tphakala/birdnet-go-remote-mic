@@ -1,9 +1,10 @@
 // Command licensegen writes THIRD_PARTY_LICENSES.md: the license of every
-// third-party component shipped in the remote-mic binary. It also writes the
-// same data, plus remote-mic's own LICENSE, as web/static/licenses.json, which
-// the web UI's About page loads, so the page never drifts from the document. That is the Go
+// third-party component shipped in the remote-mic binary. That is the Go
 // modules linked into ./cmd/remotemic for each release target, the Go standard
-// library and runtime, and the fonts bundled with the web UI.
+// library and runtime, and the fonts bundled with the web UI. It also writes
+// the same data, plus remote-mic's own LICENSE, as web/static/licenses.json,
+// which the web UI's About page loads, so the page never drifts from the
+// document.
 //
 // The module list comes from the build graph (go list -deps), never from a
 // hand-kept list, so a dependency added or dropped by a go.mod change shows up
@@ -95,15 +96,30 @@ func run(check bool) error {
 	if err != nil {
 		return fmt.Errorf("remote-mic %s: %w", projectLicense, err)
 	}
-	js, err := renderJSON(own, comps)
+	project := component{name: "remote-mic", files: []licenseFile{own}}
+	// The same bar as every dependency: a LICENSE the classifier cannot name
+	// would list remote-mic itself as "see license text" on the About page.
+	if err := checkRecognized(project); err != nil {
+		return err
+	}
+	js, err := renderJSON(project, comps)
 	if err != nil {
 		return err
 	}
-	outputs := []struct {
-		path string
-		data []byte
-	}{{outFile, render(comps)}, {jsonFile, js}}
-	for _, o := range outputs {
+	return syncOutputs([]output{{outFile, render(comps)}, {jsonFile, js}}, check)
+}
+
+// output is one generated file and the bytes it must hold.
+type output struct {
+	path string
+	data []byte
+}
+
+// syncOutputs writes each output, or with check compares it with the file on
+// disk instead and returns an error wrapping ErrStale that names the first
+// file missing or different.
+func syncOutputs(outs []output, check bool) error {
+	for _, o := range outs {
 		if !check {
 			if err := os.WriteFile(o.path, o.data, 0o644); err != nil { //nolint:gosec // public documents in the repository, meant to be world-readable
 				return err
@@ -258,7 +274,7 @@ func isLicenseName(name string) bool {
 
 // readLicense reads a license file with CRLF line endings normalized.
 func readLicense(path string) (licenseFile, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // paths come from the module cache, GOROOT, or the fixed asset table
+	b, err := os.ReadFile(path) //nolint:gosec // paths come from the module cache, GOROOT, the fixed asset table, or the repository LICENSE
 	if err != nil {
 		return licenseFile{}, err
 	}
@@ -421,9 +437,9 @@ type fileEntry struct {
 	Text string `json:"text"`
 }
 
-// renderJSON encodes remote-mic's own license and every component, in the
+// renderJSON encodes remote-mic's own entry and every component, in the
 // document's order, indented so a diff of the committed file stays readable.
-func renderJSON(own licenseFile, comps []component) ([]byte, error) {
+func renderJSON(project component, comps []component) ([]byte, error) {
 	entry := func(c component) licenseEntry {
 		files := make([]fileEntry, 0, len(c.files))
 		for _, f := range c.files {
@@ -432,7 +448,7 @@ func renderJSON(own licenseFile, comps []component) ([]byte, error) {
 		return licenseEntry{Name: c.name, Version: c.version, License: componentLicense(c), Files: files}
 	}
 	doc := licenseDoc{
-		Project:    entry(component{name: "remote-mic", files: []licenseFile{own}}),
+		Project:    entry(project),
 		Components: make([]licenseEntry, 0, len(comps)),
 	}
 	for _, c := range comps {

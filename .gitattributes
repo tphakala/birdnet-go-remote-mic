@@ -1,3 +1,4 @@
-# licensegen -check compares bytes, so keep the generated document LF on every
+# licensegen -check compares bytes, so keep the generated documents LF on every
 # checkout (a core.autocrlf=true clone would otherwise fail the check).
 THIRD_PARTY_LICENSES.md text eol=lf
+web/static/licenses.json text eol=lf
