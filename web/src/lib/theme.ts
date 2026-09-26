@@ -1,10 +1,10 @@
 // The light/dark theme toggle and the live OS-preference follow. theme-init.ts
 // has already applied the theme before the first paint (the saved choice, else
-// prefers-color-scheme); initTheme adopts that attribute, owns the toggle, and,
-// while no choice is saved, keeps following the OS preference as it changes (a
-// phone or laptop that switches at dusk), since a dashboard is often left open
-// for hours. A click is an explicit choice: it is saved and wins from then on,
-// in other open tabs too once they next see an OS change.
+// prefers-color-scheme); initTheme re-derives it the same way, owns the toggle,
+// and, while no choice is saved, keeps following the OS preference as it
+// changes (a phone or laptop that switches at dusk), since a dashboard is often
+// left open for hours. A click is an explicit choice: it is saved and wins from
+// then on, in other open tabs too once they next see an OS change.
 //
 // The browser objects are passed in so the logic runs under node:test with
 // stubs; app.ts wires the real ones.
@@ -77,11 +77,17 @@ export function initTheme(env: ThemeEnv): void {
     if (toggle) toggle.title = dark ? "Dark theme (on)" : "Dark theme (off)";
   };
   const current = (): Theme => (root.getAttribute("data-theme") === "light" ? "light" : "dark");
-  applyTheme(current());
+  // Derive the theme the way theme-init.ts did (saved, else the OS; without
+  // matchMedia, the attribute, which is then dark whether or not theme-init ran)
+  // rather than trusting the attribute: in the normal case it is the
+  // same value, and it corrects an OS change between the two scripts, or a
+  // theme-init.js that never ran (index.html hardcodes dark).
+  const saved = savedTheme(env.storage);
+  applyTheme(saved ?? (media ? (media.matches ? "light" : "dark") : current()));
 
   // Follow the OS only while nothing is saved; a blocked storage reads as
   // nothing saved, the same way theme-init.ts treats it.
-  let following = savedTheme(env.storage) === null;
+  let following = saved === null;
   // The flag alone ends the follow; removing the listener is only tidying, and
   // may throw.
   const stopFollowing = (): void => {
@@ -96,10 +102,10 @@ export function initTheme(env: ThemeEnv): void {
     if (!following) return;
     // Another tab may have saved an explicit choice since this page loaded; it
     // wins here too, from this OS change on.
-    const saved = savedTheme(env.storage);
-    if (saved !== null) {
+    const savedNow = savedTheme(env.storage);
+    if (savedNow !== null) {
       stopFollowing();
-      applyTheme(saved);
+      applyTheme(savedNow);
       return;
     }
     applyTheme(e.matches ? "light" : "dark");

@@ -31,6 +31,11 @@ interface Options {
   // removed, so only the follow flag stops a click from being overridden.
   media?: "none" | "legacy" | "sticky";
   noToggle?: boolean;
+  // The OS preference when initTheme runs (media.matches); false (dark) unless
+  // a case needs the OS preferring light at load.
+  initialMatches?: boolean;
+  // A media query whose addEventListener throws.
+  addThrows?: boolean;
 }
 
 function harness(opts: Options = {}): Harness {
@@ -62,12 +67,13 @@ function harness(opts: Options = {}): Harness {
       stored.set(key, value);
     },
   };
+  const matches = opts.initialMatches ?? false;
   let media: ThemeEnv["media"] = null;
   if (opts.media === "legacy") {
-    media = { matches: false };
+    media = { matches };
   } else if (opts.media === "sticky") {
     media = {
-      matches: false,
+      matches,
       addEventListener(_type: "change", listener: (e: { matches: boolean }) => void): void {
         changeHandler = listener;
       },
@@ -77,8 +83,9 @@ function harness(opts: Options = {}): Harness {
     };
   } else if (opts.media !== "none") {
     media = {
-      matches: false,
+      matches,
       addEventListener(_type: "change", listener: (e: { matches: boolean }) => void): void {
+        if (opts.addThrows) throw new Error("cannot listen");
         changeHandler = listener;
       },
       removeEventListener(_type: "change", listener: (e: { matches: boolean }) => void): void {
@@ -120,7 +127,7 @@ function harness(opts: Options = {}): Harness {
   };
 }
 
-test("the toggle adopts the theme theme-init applied", () => {
+test("the toggle reflects the theme theme-init applied", () => {
   const light = harness({ initial: "light", saved: "light" });
   assert.equal(light.theme(), "light");
   assert.equal(light.pressed(), "false");
@@ -132,9 +139,39 @@ test("the toggle adopts the theme theme-init applied", () => {
   assert.equal(dark.title(), "Dark theme (on)");
 });
 
-test("a missing or unknown data-theme is treated as dark", () => {
-  assert.equal(harness({}).theme(), "dark");
-  assert.equal(harness({ initial: "sepia" }).pressed(), "true");
+test("at load a saved choice wins over the OS preference", () => {
+  const h = harness({ initial: "dark", saved: "dark", initialMatches: true });
+  assert.equal(h.theme(), "dark");
+  assert.equal(h.pressed(), "true");
+});
+
+test("at load with nothing saved the OS preference corrects a stale attribute", () => {
+  // theme-init.js did not run (index.html hardcodes dark), or the OS switched
+  // between the two scripts: the OS now prefers light.
+  const h = harness({ initial: "dark", initialMatches: true });
+  assert.equal(h.theme(), "light");
+  assert.equal(h.pressed(), "false");
+  assert.equal(h.title(), "Dark theme (off)");
+});
+
+test("at load a saved choice corrects a stale attribute", () => {
+  const h = harness({ initial: "dark", saved: "light" });
+  assert.equal(h.theme(), "light");
+});
+
+test("without matchMedia the attribute is kept (missing or unknown reads as dark)", () => {
+  assert.equal(harness({ media: "none" }).theme(), "dark");
+  assert.equal(harness({ initial: "sepia", media: "none" }).pressed(), "true");
+  assert.equal(harness({ initial: "light", media: "none" }).theme(), "light");
+});
+
+test("a listener that cannot be added still leaves a working toggle", () => {
+  // initTheme itself must not throw (harness() would), and no follow is set up.
+  const h = harness({ initial: "dark", addThrows: true });
+  assert.equal(h.listening(), false);
+  h.click();
+  assert.equal(h.theme(), "light");
+  assert.equal(h.stored.get(THEME_KEY), "light");
 });
 
 test("with no saved choice the theme follows OS changes live", () => {
@@ -143,9 +180,11 @@ test("with no saved choice the theme follows OS changes live", () => {
   h.osChange(true);
   assert.equal(h.theme(), "light");
   assert.equal(h.pressed(), "false");
+  assert.equal(h.title(), "Dark theme (off)");
   h.osChange(false);
   assert.equal(h.theme(), "dark");
   assert.equal(h.pressed(), "true");
+  assert.equal(h.title(), "Dark theme (on)");
   // Following never persists: only a click is a choice.
   assert.equal(h.stored.has(THEME_KEY), false);
 });
@@ -168,6 +207,7 @@ test("a click saves the choice and stops following the OS", () => {
   h.click();
   assert.equal(h.theme(), "light");
   assert.equal(h.pressed(), "false");
+  assert.equal(h.title(), "Dark theme (off)");
   assert.equal(h.stored.get(THEME_KEY), "light");
   assert.equal(h.listening(), false);
   h.osChange(false);
@@ -242,7 +282,7 @@ test("a missing matchMedia or legacy MediaQueryList still toggles", () => {
 });
 
 test("a page without the toggle still applies and follows the theme", () => {
-  const h = harness({ initial: "light", noToggle: true });
+  const h = harness({ initial: "light", noToggle: true, initialMatches: true });
   assert.equal(h.theme(), "light");
   h.osChange(false);
   assert.equal(h.theme(), "dark");
