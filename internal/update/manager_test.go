@@ -625,6 +625,64 @@ func TestManagerOffClearsAndRefuses(t *testing.T) {
 			}
 		})
 	})
+	t.Run("check stopped", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			var cause error
+			m := NewManager(t.Context(), &Config{
+				Running: vOld,
+				Fetch: func(ctx context.Context) (*Release, error) {
+					<-ctx.Done() // a check stuck on a slow network
+					cause = context.Cause(ctx)
+					return nil, ctx.Err()
+				},
+				Logf: (&logSink{}).logf,
+			})
+			m.Apply(on())
+			start := time.Now()
+			var wg sync.WaitGroup
+			wg.Go(func() { m.check(t.Context(), false) })
+			synctest.Wait()
+			m.Apply(off())
+			wg.Wait()
+			if waited := time.Since(start); waited != 0 {
+				t.Errorf("check ran %v after checks were turned off, want it stopped at once", waited)
+			}
+			if !errors.Is(cause, ErrChecksDisabled) {
+				t.Errorf("fetch cancelled with %v, want ErrChecksDisabled", cause)
+			}
+			if st := m.Status(); st.LastError != "" || !st.LastCheck.IsZero() {
+				t.Errorf("status %+v, want the stopped check not recorded", st)
+			}
+		})
+	})
+	t.Run("check stopped, then checks back on", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			resume := make(chan struct{})
+			m := NewManager(t.Context(), &Config{
+				Running: vOld,
+				Fetch: func(ctx context.Context) (*Release, error) {
+					<-ctx.Done()
+					<-resume // returns only after checks are back on
+					return nil, ctx.Err()
+				},
+				Logf: (&logSink{}).logf,
+			})
+			m.Apply(on())
+			var failures int
+			var wg sync.WaitGroup
+			wg.Go(func() { failures = m.check(t.Context(), false) })
+			synctest.Wait()
+			m.Apply(off())
+			m.Apply(on())
+			close(resume)
+			wg.Wait()
+			if st := m.Status(); failures != 0 || st.LastError != "" || !st.LastCheck.IsZero() {
+				t.Errorf("failures %d, status %+v; want the stopped check not recorded as a failure", failures, st)
+			}
+		})
+	})
 	t.Run("check with checks off fetches nothing", func(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetch{rel: fakeRelease(vNew)}
@@ -700,8 +758,11 @@ func TestStartApplyBusyOnDisk(t *testing.T) {
 		if err := os.Chtimes(taken, now, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.StartApply(); !errors.Is(err, ErrBusy) {
+		_, err := m.StartApply()
+		if !errors.Is(err, ErrBusy) {
 			t.Errorf("claim on disk: got %v, want ErrBusy", err)
+		} else if !strings.Contains(err.Error(), "earlier update attempt may still be running") {
+			t.Errorf("claim on disk: message %q does not say an earlier attempt may still be running", err)
 		}
 		old := now.Add(-time.Hour)
 		if err := os.Chtimes(taken, old, old); err != nil {

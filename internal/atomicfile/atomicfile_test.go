@@ -66,3 +66,32 @@ func TestWritePreservesSymlink(t *testing.T) {
 		t.Errorf("real file = %q, want v2", got)
 	}
 }
+
+func TestReplaceDoesNotFollowSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "bin")
+	if err := os.Symlink(victim, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := Replace(p, []byte("new"), 0o755); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Errorf("link target = %q, want it untouched (keep)", b)
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o755 {
+		t.Errorf("replaced entry mode = %v, want a regular file with 0755", fi.Mode())
+	}
+	if b, _ := os.ReadFile(p); string(b) != "new" {
+		t.Errorf("content = %q, want new", b)
+	}
+}

@@ -75,3 +75,22 @@ func ownerOf(t *testing.T, p string) [2]uint32 {
 	}
 	return [2]uint32{st.Uid, st.Gid}
 }
+
+// TestReplaceDoesNotKeepOwner pins that Replace never carries the old file's
+// owner over: a file planted by someone else must not stay theirs once root
+// writes the binary. Restoring the preserveOwner call makes chownFile run.
+func TestReplaceDoesNotKeepOwner(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("planted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := chownFile
+	t.Cleanup(func() { chownFile = orig })
+	chownFile = func(*os.File, int, int) error {
+		t.Error("Replace chowned the new file to the old file's owner")
+		return nil
+	}
+	if err := Replace(p, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -31,9 +31,15 @@ type Installer struct {
 	userExists func(name string) bool
 	lookupUser func(name string) (uid, gid int, err error)
 	ensureDir  func(path string, perm os.FileMode) error
-	chownTree  func(root string, uid, gid int) error
-	copyFile   func(src, dst string, perm os.FileMode) error
-	writeFile  func(path string, data []byte, perm os.FileMode) error
+	// makeBinDir creates the bin directory when it is missing and leaves an
+	// existing one as it is (see ensureBinDir).
+	makeBinDir func(path string) error
+	// isLink reports whether path is a symlink, for the warning that the
+	// install replaces it.
+	isLink    func(path string) bool
+	chownTree func(root string, uid, gid int) error
+	copyFile  func(src, dst string, perm os.FileMode) error
+	writeFile func(path string, data []byte, perm os.FileMode) error
 	// stagingDir creates the update staging directory inside the state
 	// directory and hands it to the service user.
 	stagingDir func(stateDir string, uid, gid int) error
@@ -58,6 +64,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		userExists: userExists,
 		lookupUser: lookupUser,
 		ensureDir:  ensureDir,
+		makeBinDir: ensureBinDir,
+		isLink:     isSymlink,
 		chownTree:  chownTree,
 		copyFile:   copyFile,
 		writeFile:  atomicfile.Write,
@@ -104,11 +112,15 @@ func (in *Installer) Install(now bool) error {
 	if err != nil {
 		return fmt.Errorf("service: locate the running binary: %w", err)
 	}
-	if err := in.ensureDir(filepath.Dir(s.BinPath), 0o755); err != nil {
+	if err := in.makeBinDir(filepath.Dir(s.BinPath)); err != nil {
 		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
 	}
+	replacesLink := in.isLink(s.BinPath)
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
 		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
+	}
+	if replacesLink {
+		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", s.BinPath)
 	}
 	unit, err := Render(s)
 	if err != nil {
@@ -138,10 +150,9 @@ func (in *Installer) Install(now bool) error {
 
 	// The root updater runs this binary, so nobody but root may be able to
 	// replace it; otherwise the appliance is installed without the updater.
-	// The installed file is checked, not just its directory (the copy keeps
-	// an existing file's owner and writes through an existing link), and only
-	// after the ownership handover, which a config or state path aliased
-	// onto the bin directory through a link would otherwise slip past. An
+	// The installed file is checked, not just its directory, and only after
+	// the ownership handover, which a config or state path aliased onto the
+	// bin directory through a link would otherwise slip past. An
 	// install that fails before here leaves an earlier install's updater
 	// units in place; the updater makes this same check before it acts.
 	updater := true
@@ -279,6 +290,22 @@ func ensureDir(path string, perm os.FileMode) error {
 	return os.Chmod(path, perm)
 }
 
+// ensureBinDir creates the bin directory (and parents) when missing. Unlike
+// ensureDir it never chmods an existing directory: the bin directory is the
+// operator's (often /usr/local/bin), and when anyone but root can write the
+// directory above it, the name may be a planted link that a chmod would
+// follow. A bin directory that is not root-only is reported by the root-only
+// check instead, which installs without the updater.
+func ensureBinDir(path string) error {
+	return os.MkdirAll(path, 0o755)
+}
+
+// isSymlink reports whether path is a symlink itself.
+func isSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&fs.ModeSymlink != 0
+}
+
 // chownTree chowns root and its immediate flat-file entries to uid/gid, without
 // descending into subdirectories, using Lchown so a symlink entry is retargeted
 // rather than followed. Staying shallow both matches the flat layout (config,
@@ -343,10 +370,15 @@ func ensureStagingDir(stateDir string, uid, gid int) error {
 // file into memory (the binary is small). It uses atomicfile so a concurrent
 // reader never sees a partial binary, and copying the running binary onto its
 // own destination is safe (the source is fully read before the rename).
+//
+// The copy replaces the entry at dst rather than writing through it
+// (atomicfile.Replace): on a bin directory someone else can write, a link
+// planted at dst would otherwise have root overwrite a file of their choosing,
+// and a file they own there would keep its owner.
 func copyFile(src, dst string, perm os.FileMode) error {
 	data, err := os.ReadFile(src) //nolint:gosec // src is the running binary path from os.Executable
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(dst, data, perm)
+	return atomicfile.Replace(dst, data, perm)
 }
