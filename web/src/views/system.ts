@@ -1143,7 +1143,11 @@ export class SystemView {
     }
     const apply = this.updateApplyBtn;
     if (apply) {
-      setHidden(apply, view.applyVersion === "" && !view.busy);
+      const hide = view.applyVersion === "" && !view.busy;
+      // Update can vanish under focus (checks turned off in another tab);
+      // Check Now beside it keeps the keyboard in the card.
+      if (hide && !apply.hidden && document.activeElement === apply) this.updateCheckBtn?.focus({ preventScroll: true });
+      setHidden(apply, hide);
       if (view.busy) setBusy(apply, u.phase === "installing" ? "Installing..." : u.phase === "downloading" ? "Downloading..." : "Updating...");
       else if (!this.updateApplying && view.applyVersion) clearBusy(apply, `Update to ${view.applyVersion}`);
     }

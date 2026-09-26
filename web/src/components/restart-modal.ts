@@ -195,6 +195,9 @@ export function showUpdateModal(target: string): UpdateModal | null {
       setAppInert(false);
       if (titleEl) titleEl.textContent = oldTitle;
       textEl?.replaceChildren(...oldText);
+      // An overdue wait revealed Reload; a later restart must not open with it.
+      const retry = document.getElementById("restart-retry");
+      if (retry) retry.hidden = true;
       restarting = false;
       // announce writes on the next frame; a clear queued after it runs after
       // it in that frame, so a hidden modal leaves nothing to be read out.

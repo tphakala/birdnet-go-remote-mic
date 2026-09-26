@@ -277,6 +277,7 @@ export class UpdateFollow {
   private modalShown = false;
   private ended = false;
   private installSeen = false;
+  private timedOut = false;
   private deadline = 0;
 
   constructor(private readonly fromVersion: string) {}
@@ -320,10 +321,11 @@ export class UpdateFollow {
   }
 
   // tick reports the install as overdue, once, when the deadline passes while
-  // the modal shows.
+  // the modal shows. The follow goes on: an overdue wait (a page back from
+  // sleep, say) still ends on the idle or failed status that arrives later.
   tick(nowMs: number): FollowStep {
-    if (!this.modalShown || this.ended || nowMs < this.deadline) return "none";
-    this.ended = true;
+    if (!this.modalShown || this.ended || this.timedOut || nowMs < this.deadline) return "none";
+    this.timedOut = true;
     return "timeout";
   }
 }

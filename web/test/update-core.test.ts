@@ -351,7 +351,13 @@ test("UpdateFollow times out once, only after showing, at the install deadline",
   assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS - 1), "none");
   assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS), "timeout", "the deadline runs from the first shown");
   assert.equal(f.tick(1000 + INSTALL_WAIT_TIMEOUT_MS + 1), "none");
-  assert.equal(f.status(status({ phase: "idle" })), "none", "a timed-out follow has ended");
+  assert.equal(f.status(status({ phase: "installing" })), "none", "the modal already shows");
+  assert.equal(f.status(status({ phase: "failed" })), "end", "a late result still ends an overdue follow");
+  const early = new UpdateFollow("v0.2.0");
+  early.status(status({ phase: "installing" }));
+  early.shown(1000);
+  early.status(status({ phase: "idle" }));
+  assert.equal(early.tick(1000 + INSTALL_WAIT_TIMEOUT_MS), "none", "a follow that ended never times out");
 });
 
 test("followEndText says why from the status and the stage reached", () => {
