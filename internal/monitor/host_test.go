@@ -1017,8 +1017,8 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 		t.Fatalf("no overrun onset after %d overruns within the window", overrunOnsetCount)
 	}
 	n, _ := rec.lastOnset(key)
-	if n.Category != notify.CategoryDevice || n.Severity != notify.SeverityWarning || n.Source != nameGarden {
-		t.Errorf("overrun onset = %+v, want a device warning sourced %q", n, nameGarden)
+	if n.Category != notify.CategoryDevice || n.Severity != notify.SeverityWarning || n.Source != nameGarden || n.Title != "Capture overruns" {
+		t.Errorf("overrun onset = %+v, want a device warning titled %q sourced %q", n, "Capture overruns", nameGarden)
 	}
 	if want := overrunOnsetText(); !strings.Contains(n.Message, want) {
 		t.Errorf("overrun onset message = %q, want it to contain %q", n.Message, want)
@@ -1178,6 +1178,46 @@ func TestHostOverrunsRestartWhileActive(t *testing.T) {
 	pollEvery(h, c, 10*time.Second, 1)
 	if rec.isActive(key) || rec.clearCount(key) != 1 || rec.resolveCount(key) != 0 {
 		t.Errorf("active=%v clears=%d resolves=%d, want cleared once and never resolved", rec.isActive(key), rec.clearCount(key), rec.resolveCount(key))
+	}
+}
+
+// The quiet dwell is judged per poll: overruns counted by the poll that
+// completes it clear the condition and start a fresh window, so a full burst
+// there clears and re-raises it at once, and a smaller one leaves it cleared with
+// a pending window. Either way the clear is published, never skipped.
+func TestHostOverrunsBurstOnQuietBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		burst      uint64
+		wantActive bool
+	}{
+		{"full burst re-raises", overrunOnsetCount, true},
+		{"small burst stays cleared", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+			rec := newRecPub()
+			c := newClk()
+			h := newHostT(nil, feed.source, rec, hostSettings(), c)
+			key := deviceOverrunsKey(nameGarden)
+			h.poll()
+			overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount)
+			pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter)-1)
+			if !rec.isActive(key) || rec.clearCount(key) != 0 {
+				t.Fatal("cleared before the quiet dwell")
+			}
+			overrunPoll(h, c, feed, 10*time.Second, tc.burst)
+			wantOnsets := 1
+			if tc.wantActive {
+				wantOnsets = 2
+			}
+			if rec.clearCount(key) != 1 || rec.onsetCount(key) != wantOnsets || rec.isActive(key) != tc.wantActive {
+				t.Errorf("boundary poll: clears=%d onsets=%d active=%v, want 1/%d/%v",
+					rec.clearCount(key), rec.onsetCount(key), rec.isActive(key), wantOnsets, tc.wantActive)
+			}
+		})
 	}
 }
 

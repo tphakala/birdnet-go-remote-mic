@@ -108,9 +108,10 @@ with no config-file editing.
 
 A capture overrun (an ALSA xrun) means the capture fell behind the sound card
 and its buffer filled before it was read, so audio was lost on every stream of
-that device; it usually points at a busy host or an unstable USB connection.
-With notifications on (the default), five overruns within five minutes raise a
-warning notification, which clears after five minutes without one.
+that device; it usually points at a busy host or an unstable USB connection (a
+recovered system suspend counts as one too). With notifications on (the
+default), five overruns within five minutes raise a warning notification, which
+clears after five minutes without one.
 
 ![The System tab: host telemetry, per-device stream status, and network and discovery settings](assets/system.png)
 

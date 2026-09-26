@@ -171,8 +171,7 @@ type deviceRuntime struct {
 	// creation (see runtimeGen). A restart builds a fresh runtime with a fresh gen,
 	// so the host monitor treats the change as a restart of its dropped-frame and
 	// overrun counters even when a new runtime's counter has already climbed past
-	// the old value. Static
-	// per run; read without a lock, like dev.Name.
+	// the old value. Static per run; read without a lock, like dev.Name.
 	gen uint64
 
 	mu    sync.Mutex

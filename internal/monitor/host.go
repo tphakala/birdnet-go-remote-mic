@@ -466,7 +466,8 @@ func (h *Host) evaluateCounters(now time.Time) {
 		// not have to reveal, e.g. a new counter already passed the old value
 		// between polls) or, absent a Gen, a counter went backwards. Adopting the
 		// new gen here is essential: without it a restarted device would read as
-		// restarted on every later poll and its conditions would never fire again.
+		// restarted on every later poll, so its drops would rebaseline forever and
+		// never fire, and its overruns would be recounted every poll and never clear.
 		restarted := d.Gen != st.gen || d.Dropped < st.prev || d.Overruns < st.ovPrev
 		st.gen = d.Gen
 		h.observeDrops(st, now, d.Name, d.Dropped, restarted)
@@ -537,7 +538,11 @@ func (h *Host) observeDrops(st *counterState, now time.Time, name string, droppe
 // none. A restarted runtime's counter started at zero after the poll that last
 // saw its predecessor, so its whole count is new since that poll. Each poll
 // that sees overruns short of the onset logs them; once the condition is
-// raised it speaks for them until it clears. Like every condition monitor this
+// raised it speaks for them until it clears. The quiet dwell is judged per
+// poll, as notify.Flap does: overruns counted by the poll that completes the
+// dwell clear the condition and start a fresh window, so a burst of
+// overrunOnsetCount there clears and re-raises it in the same poll. Like every
+// condition monitor this
 // runs only while notifications are enabled (the device's API and dashboard
 // counter keeps counting regardless), and a device's first sighting takes its
 // cumulative count as the baseline, so overruns before that are not logged.

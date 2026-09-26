@@ -118,8 +118,9 @@ func TestDeviceRuntimeAggregatesStreamDrops(t *testing.T) {
 }
 
 func TestDeviceRuntimeStatusReportsOverruns(t *testing.T) {
+	t.Parallel()
 	// status() reports the device capture's overrun count, and zero for a record
-	// with no open capture.
+	// that holds no capture.
 	rt := &deviceRuntime{dev: config.Device{Name: "iface"}, state: mgmtserver.StateServing}
 	if got := rt.status().Overruns; got != 0 {
 		t.Errorf("status Overruns with no capture source = %d, want 0", got)
