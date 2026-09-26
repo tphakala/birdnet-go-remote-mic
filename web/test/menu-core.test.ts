@@ -208,3 +208,44 @@ test("MenuController skips typeahead for a modified key but keeps navigation", (
   assert.equal(ctl.menuKey("Tab", 1, true), false);
   assert.deepEqual(calls, ["open:false"]);
 });
+
+test("typeahead ignores a label's leading spaces, and Space never matches", () => {
+  const labels = ["  Dark", " Light"];
+  assert.equal(typeaheadIndex("l", 0, labels), 1);
+  assert.deepEqual(menuKeyAction(" ", 0, 2, labels), { kind: "none" });
+});
+
+test("MenuController opening again while open only moves focus", () => {
+  const { ctl, calls } = harness();
+  ctl.buttonClick();
+  calls.length = 0;
+  assert.equal(ctl.buttonKey("ArrowUp"), true);
+  assert.deepEqual(calls, ["item:2"]);
+});
+
+test("MenuController ignores the focus move its own hide causes", () => {
+  // The real hide blurs the focused item, which reports a focus move back
+  // into the controller while close() is still running; the state must be
+  // closed by then, so the pick returns focus to the button exactly once.
+  const calls: string[] = [];
+  const ctl: MenuController = new MenuController(
+    {
+      setOpen: (open) => {
+        calls.push(`open:${open}`);
+        if (!open) ctl.focusMoved("outside");
+      },
+      setChecked: () => {},
+      focusItem: (i) => calls.push(`item:${i}`),
+      focusButton: () => calls.push("button"),
+    },
+    [
+      { value: "light", label: "Light" },
+      { value: "dark", label: "Dark" },
+    ],
+    () => {},
+  );
+  ctl.buttonClick();
+  calls.length = 0;
+  ctl.pick("dark");
+  assert.deepEqual(calls, ["open:false", "button"]);
+});

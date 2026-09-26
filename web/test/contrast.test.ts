@@ -284,6 +284,10 @@ const PAIRS: Pair[] = [
 // changes; a test below keeps it in step with the stylesheet. A rendered
 // sweep would be needed to prove nothing else paints the base accent on its
 // own.
+// The color property itself (not background-color or border-color) set to the
+// base accent.
+const PAINTS_ACCENT = /(?:^|[;{\s])color\s*:\s*var\(--accent-cyan\)/;
+
 const DECORATIVE = new Map<string, string>([
   [".brand-icon", "the logo beside the brand name"],
   [".nav-item:hover svg", "hover tint on a tab icon; the tab label carries the meaning"],
@@ -332,10 +336,20 @@ test("every decorative accent icon rule still paints the base accent", () => {
   const stale: string[] = [];
   for (const selector of DECORATIVE.keys()) {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const rule = new RegExp(`(?:^|[}\\s,])${escaped}\\s*\\{([^}]*)\\}`, "m").exec(source);
-    if (!rule || !/color\s*:\s*var\(--accent-cyan\)/.test(rule[1])) stale.push(selector);
+    const rule = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
+    if (!rule || !PAINTS_ACCENT.test(rule[1])) stale.push(selector);
   }
   assert.deepEqual(stale, [], "update DECORATIVE: these rules no longer paint --accent-cyan");
+});
+
+test("every rule that paints the base accent as a colour is listed as decorative", () => {
+  const source = stripComments(css);
+  const unlisted: string[] = [];
+  for (const m of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = m[1].trim().replace(/\s+/g, " ");
+    if (PAINTS_ACCENT.test(m[2]) && !DECORATIVE.has(selector)) unlisted.push(selector);
+  }
+  assert.deepEqual(unlisted, [], "the base accent fails as text or a sole indicator; use --accent-cyan-text, or list the rule in DECORATIVE with its reason");
 });
 
 test("a theme override only redefines tokens the base theme declares", () => {

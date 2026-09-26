@@ -69,13 +69,19 @@ function blankComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
 }
 
-// The value of the last declaration of prop in a block (the one that wins),
-// with !important stripped. The last declaration may omit its semicolon.
+// The value of the declaration of prop that wins in a block: the last
+// !important one, else the last one. The boundary before the name is not
+// consumed, so "a:1;b:2" finds both, and the last declaration may omit its
+// semicolon.
 function declared(body: string, prop: string): string | null {
-  const re = new RegExp(`(?:^|[;\\s])${prop}\\s*:\\s*([^;]*?)\\s*(?:!important\\s*)?(?:;|$)`, "g");
+  const re = new RegExp(`(?<=^|[;\\s{])${prop}\\s*:\\s*([^;]*?)\\s*(!important\\s*)?(?:;|$)`, "g");
   let value: string | null = null;
-  for (const m of body.matchAll(re)) value = m[1];
-  return value;
+  let important: string | null = null;
+  for (const m of body.matchAll(re)) {
+    value = m[1];
+    if (m[2]) important = m[1];
+  }
+  return important ?? value;
 }
 
 function resolve(value: string, tokens: Map<string, number | null>): Pick<Rule, "px" | "problem"> {
@@ -232,13 +238,18 @@ test("the checker flags literals, unknown tokens, shorthands, and small or thin 
     .k { font-size: var(--font-size-huge); }
     .l { font: 600 12px/1.2 var(--font-sans); }
     .m { font-size: 12px; font-size: var(--font-size-body); }
+    .n { font-size:var(--font-size-body);font-size:10px }
+    .o { font-size: 12px !important; font-size: var(--font-size-body); }
+    .meter-scale-track { font-size: var(--font-size-tiny); font-weight: 600; }
+    .notif-badge { font-size: var(--font-size-micro); font-weight: 400; }
     .ok4 { font-weight: 500; font-size: var(--font-size-small) }
     .ok1 { font-size: var(--font-size-small); font-weight: 500; }
     .ok2 { font-size: var(--font-size-body); }
     .ok3 { font-size: var(--font-size-code); }
     .ok5 { font: inherit; }
-    .notif-badge { font-size: var(--font-size-micro); font-weight: 700; }
   `;
   const got = violations(fontRules(sample)).map((v) => v.split(" ")[1].replace(":", ""));
-  assert.deepEqual(got, [".a", ".b", ".c", ".e", ".g", ".g", ".h", ".i", ".j", ".k", ".l"]);
+  // .meter-scale-track is below its own allowance; .notif-badge is within its
+  // allowance but thin.
+  assert.deepEqual(got, [".a", ".b", ".c", ".e", ".g", ".g", ".h", ".i", ".j", ".k", ".l", ".n", ".o", ".meter-scale-track", ".notif-badge"]);
 });

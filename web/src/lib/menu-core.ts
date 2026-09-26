@@ -36,7 +36,9 @@ export function typeaheadIndex(key: string, current: number, labels: readonly st
 // handled: they activate the focused item's own button. With labels, a single
 // printable character moves focus to the next item starting with it.
 export function menuKeyAction(key: string, current: number, count: number, labels: readonly string[] = []): MenuKeyAction {
-  if (key.length === 1 && key !== " " && labels.length === count) {
+  // Space never matches: labels are compared trimmed, so it falls through to
+  // none and activates the focused item's own button.
+  if (key.length === 1 && labels.length === count) {
     const index = typeaheadIndex(key, current, labels);
     return index >= 0 ? { kind: "focus", index } : { kind: "none" };
   }
