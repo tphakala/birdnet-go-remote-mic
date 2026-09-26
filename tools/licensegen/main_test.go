@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+// Fixture texts shared by several tests.
+const (
+	apacheText  = "Apache License\nVersion 2.0, January 2004"
+	unknownText = "All rights reserved."
+	projectName = "remote-mic"
+	apacheID    = "Apache-2.0"
+)
+
 // TestClassify pins the license names recognized from each license's own
 // wording, including the OFL, whose grant sentence would otherwise read as MIT.
 func TestClassify(t *testing.T) {
@@ -22,14 +30,14 @@ func TestClassify(t *testing.T) {
 		name, text, want string
 	}{
 		{"mit", "Permission is hereby granted, free of charge, to any person", "MIT"},
-		{"apache", "Apache License\nVersion 2.0, January 2004", "Apache-2.0"},
+		{"apache", apacheText, apacheID},
 		{"bsd3", "Redistribution and use in source and binary forms ... Neither the name of", "BSD-3-Clause"},
 		{"bsd2", "Redistribution and use in source and binary forms, with or without", "BSD-2-Clause"},
 		{"isc", "Permission to use, copy, modify, and/or distribute this software for any purpose", "ISC"},
 		{"mpl", "Mozilla Public License Version 2.0", "MPL-2.0"},
 		{"ofl is not mit", string(ofl), "OFL-1.1"},
 		{"dual", "MIT: Permission is hereby granted, free of charge ... Apache License Version 2.0", "Apache-2.0, MIT"},
-		{"unknown", "All rights reserved.", "see license text"},
+		{"unknown", unknownText, "see license text"},
 	} {
 		if got := classify(tc.text); got != tc.want {
 			t.Errorf("%s: classify = %q, want %q", tc.name, got, tc.want)
@@ -42,7 +50,7 @@ func TestClassify(t *testing.T) {
 func TestUnrecognizedLicenseFails(t *testing.T) {
 	t.Parallel()
 	const license, notice = "LICENSE", "NOTICE"
-	odd := component{name: "example.com/odd", files: []licenseFile{{name: license, text: "All rights reserved."}}}
+	odd := component{name: "example.com/odd", files: []licenseFile{{name: license, text: unknownText}}}
 	if err := checkRecognized(odd); !errors.Is(err, ErrUnrecognized) {
 		t.Errorf("unrecognized LICENSE: err = %v, want ErrUnrecognized", err)
 	}
@@ -113,7 +121,7 @@ func TestIsLicenseName(t *testing.T) {
 // trip through the same struct.
 func TestRenderJSON(t *testing.T) {
 	t.Parallel()
-	project := component{name: "remote-mic", files: []licenseFile{{name: projectLicense, text: "MIT License\n\nPermission is hereby granted, free of charge"}}}
+	project := component{name: projectName, files: []licenseFile{{name: projectLicense, text: "MIT License\n\nPermission is hereby granted, free of charge"}}}
 	comps := []component{
 		{name: "example.com/a", version: "v1.0.0", files: []licenseFile{{name: "LICENSE.txt", text: "Apache License\nVersion 2.0"}}},
 		{name: "Go standard library and runtime", files: []licenseFile{
@@ -135,7 +143,7 @@ func TestRenderJSON(t *testing.T) {
 		t.Fatalf("project = %v, want an object", doc["project"])
 	}
 	const wantProjectLicense = "MIT"
-	if proj["name"] != "remote-mic" || proj["license"] != wantProjectLicense {
+	if proj["name"] != projectName || proj["license"] != wantProjectLicense {
 		t.Errorf("project = %v, want name remote-mic, license MIT", proj)
 	}
 	if _, has := proj["version"]; has {
@@ -153,7 +161,7 @@ func TestRenderJSON(t *testing.T) {
 		t.Fatalf("components = %v, want 2", doc["components"])
 	}
 	a, _ := list[0].(entry)
-	if a["name"] != "example.com/a" || a["version"] != "v1.0.0" || a["license"] != "Apache-2.0" {
+	if a["name"] != "example.com/a" || a["version"] != "v1.0.0" || a["license"] != apacheID {
 		t.Errorf("component 0 = %v, want example.com/a v1.0.0 Apache-2.0", a)
 	}
 	std, _ := list[1].(entry)
@@ -170,8 +178,24 @@ func TestRenderJSON(t *testing.T) {
 	if f, _ := stdFiles[1].(entry); f["name"] != "NOTICE.txt" || f["text"] != "Portions copyright the authors" {
 		t.Errorf("component 1 file 1 = %v, want the NOTICE and its text", stdFiles[1])
 	}
-	if !strings.HasSuffix(string(b), "}\n") {
-		t.Error("output does not end in a newline")
+	if !strings.HasSuffix(string(b), "}\n") || strings.HasSuffix(string(b), "\n\n") {
+		t.Error("output does not end in exactly one newline")
+	}
+}
+
+// TestRenderJSONKeepsHTMLCharacters pins that <, > and & in a license text are
+// written literally, not as \u003c, \u003e and \u0026, so the committed file
+// reads like its source texts.
+func TestRenderJSONKeepsHTMLCharacters(t *testing.T) {
+	t.Parallel()
+	const text = "Copyright <someone@example.com> & others"
+	project := component{name: projectName, files: []licenseFile{{name: projectLicense, text: text}}}
+	b, err := renderJSON(project, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); !strings.Contains(got, `"text": "`+text+`"`) {
+		t.Errorf("got %s, want the text with <, > and & unescaped", got)
 	}
 }
 
@@ -226,7 +250,7 @@ func TestGeneratedOutputs(t *testing.T) {
 func TestRenderNamesProjectLicense(t *testing.T) {
 	t.Parallel()
 	// render takes the license from the files; the name is not printed.
-	project := component{files: []licenseFile{{name: projectLicense, text: "Apache License\nVersion 2.0, January 2004"}}}
+	project := component{files: []licenseFile{{name: projectLicense, text: apacheText}}}
 	doc := string(render(project, nil))
 	if want := "remote-mic itself is licensed under Apache-2.0; see LICENSE and NOTICE."; !strings.Contains(doc, want) {
 		t.Errorf("document lacks %q", want)
@@ -260,6 +284,49 @@ func TestReadProject(t *testing.T) {
 	}
 }
 
+// TestLoadProject pins the gate on remote-mic's own LICENSE: a recognized one
+// loads, while an unrecognized or missing one fails with an error naming the
+// cause, so the document can never call remote-mic "see license text".
+func TestLoadProject(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		license string // "" leaves LICENSE out
+		wantErr error  // nil means success
+		wantMsg string // substring the error must carry
+	}{
+		{name: "recognized", license: apacheText},
+		{name: "unrecognized", license: unknownText, wantErr: ErrUnrecognized, wantMsg: "remote-mic: LICENSE"},
+		{name: "missing", wantErr: os.ErrNotExist, wantMsg: "remote-mic LICENSE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if tc.license != "" {
+				if err := os.WriteFile(filepath.Join(dir, projectLicense), []byte(tc.license), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, projectNotice), []byte("Copyright holder"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			p, err := loadProject(dir)
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("got error %v, want nil", err)
+				}
+				if got := componentLicense(p); got != apacheID {
+					t.Errorf("got license %q, want Apache-2.0", got)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) || !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("got error %v, want %v mentioning %q", err, tc.wantErr, tc.wantMsg)
+			}
+		})
+	}
+}
+
 // TestGenerate drives the generator end to end in a temporary tree: a write
 // produces both files, a check of them passes, a changed NOTICE makes the check
 // fail, and an unrecognized project LICENSE is refused. It changes the working
@@ -276,7 +343,7 @@ func TestGenerate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(projectLicense, "Apache License\nVersion 2.0, January 2004")
+	write(projectLicense, apacheText)
 	write(projectNotice, "Copyright holder")
 	comps := []component{{name: "example.com/gen", version: "v2.3.4", files: []licenseFile{{name: "LICENCE", text: "Permission is hereby granted, free of charge"}}}}
 
@@ -295,7 +362,7 @@ func TestGenerate(t *testing.T) {
 	if err := generate(comps, true); !errors.Is(err, ErrStale) {
 		t.Fatalf("check after a NOTICE change: got %v, want ErrStale", err)
 	}
-	write(projectLicense, "All rights reserved.")
+	write(projectLicense, unknownText)
 	if err := generate(comps, false); !errors.Is(err, ErrUnrecognized) {
 		t.Fatalf("unrecognized LICENSE: got %v, want ErrUnrecognized", err)
 	}

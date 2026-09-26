@@ -103,13 +103,8 @@ func run(check bool) error {
 // from the project's LICENSE and NOTICE in the current directory. It is run()
 // without the module listing, so tests can drive it in a temporary directory.
 func generate(comps []component, check bool) error {
-	project, err := readProject(".")
+	project, err := loadProject(".")
 	if err != nil {
-		return err
-	}
-	// The same bar as every dependency: a LICENSE the classifier cannot name
-	// would list remote-mic itself as "see license text" on the About page.
-	if err := checkRecognized(project); err != nil {
 		return err
 	}
 	js, err := renderJSON(project, comps)
@@ -123,6 +118,21 @@ func generate(comps []component, check bool) error {
 // markdown document and the About page's JSON copy.
 func generatedOutputs(doc, js []byte) []output {
 	return []output{{outFile, doc}, {jsonFile, js}}
+}
+
+// loadProject reads remote-mic's LICENSE and NOTICE from dir and holds them to
+// the same bar as every dependency: a LICENSE the classifier cannot name would
+// list remote-mic itself as "see license text" on the About page and in the
+// document, so it fails instead.
+func loadProject(dir string) (component, error) {
+	project, err := readProject(dir)
+	if err != nil {
+		return component{}, err
+	}
+	if err := checkRecognized(project); err != nil {
+		return component{}, err
+	}
+	return project, nil
 }
 
 // readProject reads exactly remote-mic's LICENSE and NOTICE from dir (Apache
@@ -470,6 +480,8 @@ type fileEntry struct {
 
 // renderJSON encodes remote-mic's own entry and every component, in the
 // document's order, indented so a diff of the committed file stays readable.
+// HTML escaping is off so license texts keep <, > and & literally rather than
+// as \u003c and the like; the About page renders them as text, never as HTML.
 func renderJSON(project component, comps []component) ([]byte, error) {
 	entry := func(c component) licenseEntry {
 		files := make([]fileEntry, 0, len(c.files))
@@ -485,9 +497,13 @@ func renderJSON(project component, comps []component) ([]byte, error) {
 	for _, c := range comps {
 		doc.Components = append(doc.Components, entry(c))
 	}
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	// Encode ends the document with a newline, as the committed file does.
+	if err := enc.Encode(doc); err != nil {
 		return nil, err
 	}
-	return append(b, '\n'), nil
+	return b.Bytes(), nil
 }
