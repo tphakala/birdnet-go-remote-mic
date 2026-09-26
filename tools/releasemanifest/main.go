@@ -12,14 +12,16 @@
 // Usage, from the repository root:
 //
 //	go run ./tools/releasemanifest keygen -out <file>    # new signing key pair
-//	go run ./tools/releasemanifest check-key             # is RELEASE_MANIFEST_KEY trusted?
+//	go run ./tools/releasemanifest check-key [-tag vX.Y.Z]  # trusted key, valid tag?
 //	go run ./tools/releasemanifest generate [-tag vX.Y.Z] [-dist dist]
 //	go run ./tools/releasemanifest verify [-dist dist]
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -32,6 +34,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -42,6 +45,10 @@ import (
 
 // keyEnv holds the base64 Ed25519 seed that signs the manifest.
 const keyEnv = "RELEASE_MANIFEST_KEY"
+
+// binaryName is the executable inside each release tarball (`binary:` in
+// .goreleaser.yaml).
+const binaryName = "remote-mic"
 
 // requiredTargets mirrors the release builds in .goreleaser.yaml. A release
 // missing one would leave those appliances without an update, so generate
@@ -55,6 +62,8 @@ var (
 	ErrChecksum        = errors.New("archive checksum mismatch")
 	ErrMissingTarget   = errors.New("release is missing a target")
 	ErrDuplicateTarget = errors.New("release has two archives for one target")
+	ErrBadTag          = errors.New("tag is not a v-prefixed semantic version")
+	ErrNoBinary        = errors.New("archive does not hold exactly one " + binaryName + " executable")
 )
 
 func main() {
@@ -82,8 +91,12 @@ func run(args []string, stdout io.Writer) error {
 		}
 		return keygen(*out, stdout)
 	case "check-key":
+		tag := fs.String("tag", "", "release tag to validate before anything is published")
 		if err := fs.Parse(args); err != nil {
 			return err
+		}
+		if *tag != "" && !releasemanifest.ValidVersion(*tag) {
+			return fmt.Errorf("%w: %q", ErrBadTag, *tag)
 		}
 		priv, trusted, err := signingKey()
 		if err != nil {
@@ -272,7 +285,8 @@ func generate(dist, wantTag string, priv ed25519.PrivateKey, trusted map[string]
 
 // archiveTarget hashes one archive and cross-checks the digest against
 // checksums.txt and GoReleaser's own record, so the manifest cannot disagree
-// with the checksums published beside it.
+// with the checksums published beside it. It also records the executable
+// inside the archive (see binaryIn).
 func archiveTarget(a *artifact, tag string, sums map[string]string) (releasemanifest.Target, error) {
 	f, err := os.Open(a.Path)
 	if err != nil {
@@ -295,16 +309,63 @@ func archiveTarget(a *artifact, tag string, sums map[string]string) (releasemani
 	if rec := a.Extra.Checksum; rec != "" && rec != "sha256:"+sum {
 		return releasemanifest.Target{}, fmt.Errorf("%w: %s hashes to %s, GoReleaser recorded %s", ErrChecksum, a.Name, sum, rec)
 	}
+	bin, err := binaryIn(a.Path)
+	if err != nil {
+		return releasemanifest.Target{}, err
+	}
 	return releasemanifest.Target{
 		URL:    "https://github.com/" + releasemanifest.Repository + "/releases/download/" + tag + "/" + a.Name,
 		Size:   size,
 		SHA256: sum,
+		Binary: bin,
 	}, nil
 }
 
+// binaryIn hashes the executable inside a .tar.gz release archive. Exactly one
+// regular-file entry named binaryName must exist, at the top level or in one
+// wrapping directory, so the recorded path is the one an installer extracts.
+func binaryIn(archive string) (releasemanifest.Binary, error) {
+	f, err := os.Open(archive)
+	if err != nil {
+		return releasemanifest.Binary{}, err
+	}
+	defer f.Close() //nolint:errcheck // read-only file; a close error cannot lose data
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return releasemanifest.Binary{}, fmt.Errorf("%s: %w", archive, err)
+	}
+	var found []releasemanifest.Binary
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return releasemanifest.Binary{}, fmt.Errorf("%s: %w", archive, err)
+		}
+		if path.Base(hdr.Name) != binaryName || strings.Count(path.Clean(hdr.Name), "/") > 1 {
+			continue
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			return releasemanifest.Binary{}, fmt.Errorf("%w: %s: %s is not a regular file", ErrNoBinary, archive, hdr.Name)
+		}
+		h := sha256.New()
+		size, err := io.Copy(h, tr)
+		if err != nil {
+			return releasemanifest.Binary{}, fmt.Errorf("%s: %s: %w", archive, hdr.Name, err)
+		}
+		found = append(found, releasemanifest.Binary{Path: path.Clean(hdr.Name), Size: size, SHA256: hex.EncodeToString(h.Sum(nil))})
+	}
+	if len(found) != 1 {
+		return releasemanifest.Binary{}, fmt.Errorf("%w: %s has %d", ErrNoBinary, archive, len(found))
+	}
+	return found[0], nil
+}
+
 // readChecksums parses a sha256sum-format file: "<hex>  <name>" per line.
-func readChecksums(path string) (map[string]string, error) {
-	b, err := os.ReadFile(path)
+func readChecksums(file string) (map[string]string, error) {
+	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +378,7 @@ func readChecksums(path string) (map[string]string, error) {
 		}
 		sum, name, ok := strings.Cut(line, "  ")
 		if !ok {
-			return nil, fmt.Errorf("%s: malformed line %q", path, line)
+			return nil, fmt.Errorf("%s: malformed line %q", file, line)
 		}
 		sums[strings.TrimPrefix(name, "*")] = strings.ToLower(sum)
 	}
@@ -337,13 +398,13 @@ func verifyFiles(dist string, trusted map[string]ed25519.PublicKey) (*releaseman
 	return releasemanifest.Verify(body, sig, trusted)
 }
 
-func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
+func readJSON(file string, v any) error {
+	b, err := os.ReadFile(file)
 	if err != nil {
 		return err
 	}
 	if err := json.Unmarshal(b, v); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return fmt.Errorf("%s: %w", file, err)
 	}
 	return nil
 }

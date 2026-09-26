@@ -51,11 +51,13 @@ jobs:
       # GoReleaser publishes, so check the signing key first: a missing secret,
       # or a key absent from internal/releasemanifest/keys.go, fails here before
       # anything is published rather than leaving a live release without a
-      # manifest that update checks can verify.
+      # manifest that update checks can verify. It also rejects a tag that is not
+      # a v-prefixed semantic version, which the manifest would refuse later.
       - name: Check the release manifest signing key
         env:
           RELEASE_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_KEY }}
-        run: go run ./tools/releasemanifest check-key
+          TAG: ${{ github.ref_name }}
+        run: go run ./tools/releasemanifest check-key -tag "$TAG"
       # GoReleaser's brews step pushes the regenerated formula to the tap over
       # SSH. Prime the runner's known_hosts with GitHub's key so that push cannot
       # hang or fail on host-key verification, rather than relying on an
@@ -80,7 +82,9 @@ jobs:
       # the release, then download what was published and verify it with the
       # keys compiled into the tool, exactly as an appliance will. Until the
       # upload lands the release has no manifest; update checks treat that like
-      # any other failed check and try again later. If this step fails after
+      # any other failed check and try again later. (Publishing a draft first is
+      # no better: the Homebrew formula is pushed regardless and would point at
+      # draft downloads that 404 until the draft is published.) If this fails after
       # publishing, rerun it by hand: `go run ./tools/releasemanifest generate`
       # against the same dist/, then `gh release upload`.
       - name: Publish the signed release manifest

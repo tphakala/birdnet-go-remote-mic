@@ -74,6 +74,12 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# A tag with a prerelease suffix (v1.3.0-rc.1) is published as a GitHub
+# prerelease, so it never becomes "latest": the release manifest that update
+# checks fetch from releases/latest/download/ stays on the newest stable release.
+release:
+  prerelease: auto
+
 changelog:
   use: github
   filters:

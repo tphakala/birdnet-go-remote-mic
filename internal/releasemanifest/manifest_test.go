@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ func validManifest() *Manifest {
 				URL:    "https://github.com/" + Repository + "/releases/download/v1.2.3/a.tar.gz",
 				Size:   42,
 				SHA256: strings.Repeat("ab", 32),
+				Binary: Binary{Path: "remote-mic", Size: 7, SHA256: strings.Repeat("cd", 32)},
 			},
 		},
 	}
@@ -60,8 +62,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	want := validManifest()
-	if m.Version != want.Version || !m.Date.Equal(want.Date) || m.Targets["linux/arm64"] != want.Targets["linux/arm64"] {
+	if want := validManifest(); !reflect.DeepEqual(m, want) {
 		t.Errorf("got %+v, want %+v", m, want)
 	}
 }
@@ -148,6 +149,15 @@ func TestValidate(t *testing.T) {
 		{"zero size", func(m *Manifest) { setTarget(m, func(t *Target) { t.Size = 0 }) }, ErrInvalid},
 		{"short sha", func(m *Manifest) { setTarget(m, func(t *Target) { t.SHA256 = "abcd" }) }, ErrInvalid},
 		{"upper sha", func(m *Manifest) { setTarget(m, func(t *Target) { t.SHA256 = strings.Repeat("AB", 32) }) }, ErrInvalid},
+		{"binary in a directory", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "dir/remote-mic" }) }, nil},
+		{"no binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "" }) }, ErrInvalid},
+		{"absolute binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "/usr/bin/remote-mic" }) }, ErrInvalid},
+		{"escaping binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "../remote-mic" }) }, ErrInvalid},
+		{"parent binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = ".." }) }, ErrInvalid},
+		{"unclean binary path", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Path = "./remote-mic" }) }, ErrInvalid},
+		{"zero binary size", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.Size = 0 }) }, ErrInvalid},
+		{"bad binary sha", func(m *Manifest) { setTarget(m, func(t *Target) { t.Binary.SHA256 = "abcd" }) }, ErrInvalid},
+		{"unknown requirement", func(m *Manifest) { m.Requires = []string{"config-migration-v2"} }, ErrUnsupportedRequirement},
 	} {
 		m := validManifest()
 		tc.mutate(m)
@@ -246,6 +256,26 @@ func TestVerifyRejectsMalformedInput(t *testing.T) {
 		if _, err := Verify(tc.body, tc.sig, trusted); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
 		}
+	}
+}
+
+// TestVerifyRejectsOversizeAndBadKeys pins the download size limits, and that
+// a wrong-length trusted key is refused instead of panicking in ed25519.Verify.
+func TestVerifyRejectsOversizeAndBadKeys(t *testing.T) {
+	t.Parallel()
+	priv, trusted := testKey(t)
+	body, sig := signed(t, priv)
+	big := append(bytes.Clone(body), bytes.Repeat([]byte(" "), MaxManifestSize)...)
+	if _, err := Verify(big, sig, trusted); !errors.Is(err, ErrInvalid) {
+		t.Errorf("oversize manifest: err = %v, want ErrInvalid", err)
+	}
+	bigSig := append(bytes.Clone(sig), bytes.Repeat([]byte(" "), MaxSignatureSize)...)
+	if _, err := Verify(body, bigSig, trusted); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("oversize signature: err = %v, want ErrBadSignature", err)
+	}
+	short := map[string]ed25519.PublicKey{firstKey(trusted): trusted[firstKey(trusted)][:16]}
+	if _, err := Verify(body, sig, short); !errors.Is(err, ErrUntrustedKey) {
+		t.Errorf("short trusted key: err = %v, want ErrUntrustedKey", err)
 	}
 }
 

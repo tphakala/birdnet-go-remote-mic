@@ -296,9 +296,11 @@ Each release also gets a signed manifest (`manifest.json` plus
 `tools/releasemanifest` with the `RELEASE_MANIFEST_KEY` secret (a base64
 Ed25519 seed). The workflow runs `check-key` before publishing, so a key
 missing from `internal/releasemanifest/keys.go` fails the release early. The
-schema is additive like `/api/v1`: add optional fields, never repurpose one;
-bump `Schema` only for an incompatible change. Rotate the key by shipping the
-new public key in `keys.go` first, then switching the secret.
+schema is additive like `/api/v1`: add optional fields, never repurpose one; a
+field old readers must not ignore goes in `requires`. A `Schema` bump ships
+under a new file name beside `manifest.json`, since installed appliances keep
+fetching that one. Rotate the key by shipping the new public key in `keys.go`
+first, then switching the secret.
 
 ## Gotchas
 

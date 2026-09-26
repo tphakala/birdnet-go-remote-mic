@@ -503,7 +503,8 @@ formula pushed to [tphakala/homebrew-tap](https://github.com/tphakala/homebrew-t
 
 Each release also carries a signed release manifest, `manifest.json` with its
 Ed25519 signature in `manifest.json.sig`. It lists the version, the release
-date, the release notes link, and each target's tarball URL, size and SHA-256;
+date, the release notes link, and each target's tarball URL, size and SHA-256
+plus the size and SHA-256 of the `remote-mic` binary inside it;
 the newest release's copy is always at
 `https://github.com/tphakala/birdnet-go-remote-mic/releases/latest/download/manifest.json`.
 The release workflow writes and signs it (`tools/releasemanifest`), and

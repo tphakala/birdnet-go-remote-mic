@@ -10,6 +10,15 @@
 // canonicalization to get wrong: a verifier checks the bytes it downloaded,
 // then parses them.
 //
+// A valid signature proves the manifest came from a release, not that it is
+// the newest one: whoever controls the download can replay an older signed
+// manifest, or keep serving the last one (a static asset cannot expire). So a
+// consumer must act only on a version strictly newer than the one it runs,
+// must not treat a prerelease version as an update unless the operator opted
+// in, and must read at most MaxManifestSize and MaxSignatureSize bytes. Fetch
+// the manifest and its signature from the same release tag (resolve "latest"
+// once), or a publish between the two downloads yields a mismatched pair.
+//
 // The package is platform-neutral and uses only the standard library, so the
 // same code runs in CI, on the appliance, and in the updater.
 package releasemanifest
@@ -23,14 +32,19 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
 
-// Schema is the manifest schema this package reads and writes. It changes only
-// for an incompatible change; new optional fields are added without a bump, and
-// a reader ignores fields it does not know.
+// Schema is the manifest schema this package reads and writes. New optional
+// fields are added without a bump, and a reader ignores fields it does not
+// know. A field an older reader must not ignore is announced in Requires
+// instead. A bump is for an incompatible change only, and ships under a new
+// file name published beside this one, since every installed appliance keeps
+// fetching FileName and would refuse a manifest with a newer schema.
 const Schema = 1
 
 // File names of the manifest and its detached signature, as release assets.
@@ -51,6 +65,13 @@ const (
 	LatestSignatureURL = "https://github.com/" + Repository + "/releases/latest/download/" + SignatureFileName
 )
 
+// Size limits for downloading the manifest and its signature; real ones are a
+// few KiB and a few hundred bytes.
+const (
+	MaxManifestSize  = 64 << 10
+	MaxSignatureSize = 4 << 10
+)
+
 // signingContext prefixes every signed message. The key signs nothing else
 // today; the prefix keeps it that way, so a manifest signature can never be
 // replayed as a signature over some other payload if the key gains a second use.
@@ -67,11 +88,27 @@ type Manifest struct {
 	NotesURL string `json:"notesUrl"`
 	// Targets maps a target key (see TargetKey) to its release tarball.
 	Targets map[string]Target `json:"targets"`
+	// Requires lists capabilities a reader must understand before acting on
+	// this manifest (for example a mandatory migration step). A reader that
+	// finds a value it does not know refuses the manifest instead of ignoring
+	// it. Empty in schema 1 releases so far.
+	Requires []string `json:"requires,omitempty"`
 }
 
 // Target is the release tarball for one platform.
 type Target struct {
 	URL    string `json:"url"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+	// Binary is the executable inside the tarball, so an installer can check
+	// the extracted file itself rather than trusting whoever unpacked it.
+	Binary Binary `json:"binary"`
+}
+
+// Binary is the executable inside a release tarball.
+type Binary struct {
+	// Path is the entry name inside the tarball.
+	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
 }
@@ -92,7 +129,12 @@ var (
 	ErrUntrustedKey      = errors.New("manifest signed by an untrusted key")
 	ErrBadSignature      = errors.New("manifest signature does not verify")
 	ErrInvalid           = errors.New("invalid manifest")
+	// ErrUnsupportedRequirement reports a Requires value this build does not know.
+	ErrUnsupportedRequirement = errors.New("manifest requires a capability this build does not have")
 )
+
+// knownRequirements are the Requires values this build understands; none yet.
+var knownRequirements = []string{}
 
 // versionPattern accepts a v-prefixed semantic version, with an optional
 // prerelease suffix and no leading zeros.
@@ -102,8 +144,9 @@ var versionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // TargetKey names a release target in Manifest.Targets: "linux/amd64",
-// "linux/arm64", and "linux/armv6" for 32-bit arm (goarm is ignored for other
-// architectures).
+// "linux/arm64", and "linux/armv6" for 32-bit arm. goarm is required for arm
+// (a build reads it from debug.ReadBuildInfo's GOARM setting) and ignored for
+// other architectures.
 func TargetKey(goos, goarch, goarm string) string {
 	if goarch == "arm" {
 		return goos + "/armv" + goarm
@@ -130,6 +173,11 @@ func (m *Manifest) Validate() error {
 	if err := checkHTTPS(m.NotesURL); err != nil {
 		return fmt.Errorf("%w: notesUrl: %w", ErrInvalid, err)
 	}
+	for _, r := range m.Requires {
+		if !slices.Contains(knownRequirements, r) {
+			return fmt.Errorf("%w: %q", ErrUnsupportedRequirement, r)
+		}
+	}
 	if len(m.Targets) == 0 {
 		return fmt.Errorf("%w: no targets", ErrInvalid)
 	}
@@ -142,6 +190,16 @@ func (m *Manifest) Validate() error {
 		}
 		if !sha256Pattern.MatchString(t.SHA256) {
 			return fmt.Errorf("%w: target %s: sha256 %q is not 64 lowercase hex digits", ErrInvalid, key, t.SHA256)
+		}
+		b := t.Binary
+		if b.Path == "" || b.Path == ".." || path.IsAbs(b.Path) || path.Clean(b.Path) != b.Path || strings.HasPrefix(b.Path, "../") {
+			return fmt.Errorf("%w: target %s: binary path %q is not a clean relative path", ErrInvalid, key, b.Path)
+		}
+		if b.Size <= 0 {
+			return fmt.Errorf("%w: target %s: binary size %d", ErrInvalid, key, b.Size)
+		}
+		if !sha256Pattern.MatchString(b.SHA256) {
+			return fmt.Errorf("%w: target %s: binary sha256 %q is not 64 lowercase hex digits", ErrInvalid, key, b.SHA256)
 		}
 	}
 	return nil
@@ -212,7 +270,16 @@ func Sign(priv ed25519.PrivateKey, manifest []byte) ([]byte, error) {
 // Verify checks that sig is a valid signature over the exact manifest bytes by
 // one of the trusted keys (keyed by KeyID), then parses and validates the
 // manifest. Nothing in an unverified manifest is trusted, including its schema.
+// Input over MaxManifestSize or MaxSignatureSize, and a trusted key of the
+// wrong length, are refused before any signature check. A manifest that
+// verifies may still be an old one; see the package doc.
 func Verify(manifest, sig []byte, trusted map[string]ed25519.PublicKey) (*Manifest, error) {
+	if len(manifest) > MaxManifestSize {
+		return nil, fmt.Errorf("%w: %d bytes, limit %d", ErrInvalid, len(manifest), MaxManifestSize)
+	}
+	if len(sig) > MaxSignatureSize {
+		return nil, fmt.Errorf("%w: signature file is %d bytes, limit %d", ErrBadSignature, len(sig), MaxSignatureSize)
+	}
 	var s Signature
 	if err := json.Unmarshal(sig, &s); err != nil {
 		return nil, fmt.Errorf("%w: signature file: %w", ErrBadSignature, err)
@@ -221,7 +288,9 @@ func Verify(manifest, sig []byte, trusted map[string]ed25519.PublicKey) (*Manife
 		return nil, fmt.Errorf("%w: signature schema %d (this build reads %d)", ErrUnsupportedSchema, s.Schema, Schema)
 	}
 	pub, ok := trusted[s.KeyID]
-	if !ok {
+	// ed25519.Verify panics on a wrong-length key; a hand-built map must not
+	// turn a bad key into a crash.
+	if !ok || len(pub) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: key id %q", ErrUntrustedKey, s.KeyID)
 	}
 	if !ed25519.Verify(pub, signedMessage(manifest), s.Signature) {

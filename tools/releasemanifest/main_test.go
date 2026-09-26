@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,6 +21,53 @@ import (
 )
 
 const testTag = "v1.2.3"
+
+// tarEntry is one file in a fake release archive.
+type tarEntry struct {
+	name, content string
+	typeflag      byte
+}
+
+// writeTarGz writes a gzipped tar archive holding entries.
+func writeTarGz(t *testing.T, path string, entries []tarEntry) {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Mode: 0o755, Typeflag: e.typeflag}
+		if e.typeflag == tar.TypeReg {
+			hdr.Size = int64(len(e.content))
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(e.content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, buf.String())
+}
+
+// binaryContent is the fake executable stored in the archive for suffix.
+func binaryContent(suffix string) string { return "binary for " + suffix }
+
+// hashArchive returns the hex SHA-256 of the file at path.
+func hashArchive(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
 
 // fakeDist writes a GoReleaser-shaped dist directory, in the layout of a real
 // `goreleaser release --snapshot` run: metadata.json, artifacts.json (with
@@ -43,10 +93,11 @@ func fakeDist(t *testing.T, mutate func(arts []artifact, sums map[string]string)
 		suffix := strings.TrimPrefix(releasemanifest.TargetKey(goos, tgt.goarch, tgt.goarm), goos+"/")
 		name := "birdnet-go-remote-mic_1.2.3_linux_" + suffix + ".tar.gz"
 		path := filepath.Join(dist, name)
-		content := "archive for " + suffix
-		writeFile(t, path, content)
-		sum := sha256.Sum256([]byte(content))
-		hexSum := hex.EncodeToString(sum[:])
+		writeTarGz(t, path, []tarEntry{
+			{"README.md", "readme", tar.TypeReg},
+			{binaryName, binaryContent(suffix), tar.TypeReg},
+		})
+		hexSum := hashArchive(t, path)
 		sums[name] = hexSum
 		a := artifact{Name: name, Path: path, GOOS: goos, GOARCH: tgt.goarch, GOARM: tgt.goarm, Type: "Archive"}
 		a.Extra.Checksum = "sha256:" + hexSum
@@ -115,12 +166,21 @@ func TestGenerate(t *testing.T) {
 	if armv6.URL != wantURL {
 		t.Errorf("armv6 url = %q, want %q", armv6.URL, wantURL)
 	}
-	if want := int64(len("archive for armv6")); armv6.Size != want {
-		t.Errorf("armv6 size = %d, want %d", armv6.Size, want)
+	archivePath := filepath.Join(dist, "birdnet-go-remote-mic_1.2.3_linux_armv6.tar.gz")
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantSum := sha256.Sum256([]byte("archive for armv6"))
-	if armv6.SHA256 != hex.EncodeToString(wantSum[:]) {
-		t.Errorf("armv6 sha256 = %s, want %x", armv6.SHA256, wantSum)
+	if armv6.Size != info.Size() {
+		t.Errorf("armv6 size = %d, want %d", armv6.Size, info.Size())
+	}
+	if want := hashArchive(t, archivePath); armv6.SHA256 != want {
+		t.Errorf("armv6 sha256 = %s, want %s", armv6.SHA256, want)
+	}
+	binSum := sha256.Sum256([]byte(binaryContent("armv6")))
+	wantBin := releasemanifest.Binary{Path: binaryName, Size: int64(len(binaryContent("armv6"))), SHA256: hex.EncodeToString(binSum[:])}
+	if armv6.Binary != wantBin {
+		t.Errorf("armv6 binary = %+v, want %+v", armv6.Binary, wantBin)
 	}
 	if got, want := m.Date.Format("2006-01-02T15:04:05.999999999Z07:00"), "2026-09-26T10:57:30Z"; got != want {
 		t.Errorf("date = %s, want %s (UTC, whole seconds)", got, want)
@@ -161,6 +221,14 @@ func TestGenerateRefuses(t *testing.T) {
 		{"goreleaser record disagrees", testTag, func(arts []artifact, _ map[string]string) {
 			archiveFor(t, arts, "armv6").Extra.Checksum = "sha256:" + strings.Repeat("0", 64)
 		}, ErrChecksum},
+		{"archive without the binary", testTag, rewriteArchive(t, []tarEntry{{"README.md", "readme", tar.TypeReg}}), ErrNoBinary},
+		{"archive with two binaries", testTag, rewriteArchive(t, []tarEntry{
+			{binaryName, "one", tar.TypeReg},
+			{"sub/" + binaryName, "two", tar.TypeReg},
+		}), ErrNoBinary},
+		{"binary is a symlink", testTag, rewriteArchive(t, []tarEntry{{binaryName, "", tar.TypeSymlink}}), ErrNoBinary},
+		{"archive is not gzip", testTag, rewriteArchiveRaw(t, []byte("plain bytes")), gzip.ErrHeader},
+		{"archive is truncated", testTag, rewriteArchiveRaw(t, truncatedTarGz(t)), io.ErrUnexpectedEOF},
 	} {
 		priv, trusted := testKey(t)
 		dist := fakeDist(t, tc.mutate)
@@ -171,6 +239,57 @@ func TestGenerateRefuses(t *testing.T) {
 			t.Errorf("%s: manifest written despite the error (stat err = %v)", tc.name, err)
 		}
 	}
+}
+
+// rewriteArchive returns a fakeDist mutation that replaces the arm64 archive
+// with one holding entries, keeping checksums.txt and GoReleaser's record in
+// step so only the archive content is wrong.
+func rewriteArchive(t *testing.T, entries []tarEntry) func([]artifact, map[string]string) {
+	t.Helper()
+	return func(arts []artifact, sums map[string]string) {
+		a := archiveFor(t, arts, "arm64")
+		writeTarGz(t, a.Path, entries)
+		sum := hashArchive(t, a.Path)
+		sums[a.Name] = sum
+		a.Extra.Checksum = "sha256:" + sum
+	}
+}
+
+// rewriteArchiveRaw is rewriteArchive for raw file content.
+func rewriteArchiveRaw(t *testing.T, content []byte) func([]artifact, map[string]string) {
+	t.Helper()
+	return func(arts []artifact, sums map[string]string) {
+		a := archiveFor(t, arts, "arm64")
+		writeFile(t, a.Path, string(content))
+		sum := hashArchive(t, a.Path)
+		sums[a.Name] = sum
+		a.Extra.Checksum = "sha256:" + sum
+	}
+}
+
+// truncatedTarGz returns a valid gzip stream holding a tar whose binary entry
+// is cut short of its declared size.
+func truncatedTarGz(t *testing.T) []byte {
+	t.Helper()
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	content := strings.Repeat("x", 4096)
+	if err := tw.WriteHeader(&tar.Header{Name: binaryName, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	cut := tarBuf.Bytes()[:512+1024] // header block plus part of the data
+	var out bytes.Buffer
+	gz := gzip.NewWriter(&out)
+	if _, err := gz.Write(cut); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 // TestGenerateRefusesUntrustedKey pins that a signing key missing from the
@@ -256,6 +375,7 @@ func TestRunCommands(t *testing.T) {
 		{"check-key without key", "", []string{checkKeyCmd}, ErrNoKey},
 		{"generate without key", "", []string{"generate"}, ErrNoKey},
 		{"check-key with malformed key", "!!!", []string{checkKeyCmd}, nil},
+		{"check-key with a bad tag", string(seed), []string{checkKeyCmd, "-tag", "1.2.3"}, ErrBadTag},
 		// A fresh key is not in keys.go, so it must be refused.
 		{"check-key with untrusted key", string(seed), []string{checkKeyCmd}, releasemanifest.ErrUntrustedKey},
 		{"generate without dist", string(seed), []string{"generate", "-dist", empty}, os.ErrNotExist},
