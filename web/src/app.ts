@@ -15,6 +15,10 @@ import { showToast } from "./components/toast.js";
 // notifications snapshot before loading it directly (see init).
 const NOTIFICATIONS_FALLBACK_MS = 3000;
 
+// How long the "theme not saved" warning stays up: as long as an error toast,
+// since it is two sentences and appears while the whole page changes colour.
+const SAVE_FAILED_TOAST_MS = 8000;
+
 class App {
   public init(): void {
     this.initTheme();
@@ -70,8 +74,14 @@ class App {
       toggle: document.getElementById("theme-toggle-btn"),
       storage: () => window.localStorage,
       media,
+      // A warning, held long enough to read: it explains why the theme will
+      // appear to reset on its own after a reload.
       onSaveFailed: () =>
-        showToast("Theme changed for this visit only. This browser is blocking site data, so the choice resets on reload."),
+        showToast(
+          "Theme changed for this visit only: this browser could not save it, so it resets on reload. Check that this browser allows site data here to keep it.",
+          "warn",
+          SAVE_FAILED_TOAST_MS,
+        ),
     });
   }
 
