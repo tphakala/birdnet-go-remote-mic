@@ -11,6 +11,7 @@ export type UpdateTone = "ok" | "info" | "accent" | "warn" | "error";
 
 // UpdateView is what the card shows for one UpdateStatus.
 export interface UpdateView {
+  // Empty when there is nothing to report yet (before the first check).
   headline: string;
   tone: UpdateTone;
   detail: string;
@@ -115,11 +116,9 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     view.note = `Running ${u.currentVersion}. The appliance tries again on its own; Check Now asks at once.`;
     return view;
   }
-  if (!u.lastCheck) {
-    view.headline = "Not checked yet";
-    view.detail = `Running ${u.currentVersion}. The first check runs a few minutes after the appliance starts or checks are turned on; Check Now asks at once.`;
-    return view;
-  }
+  // Before the first check there is nothing to report: the rows already say
+  // the last check was never, and the card shows no status.
+  if (!u.lastCheck) return view;
   // Up to date needs a known newest release: turning checks off forgets it
   // while keeping the time of the last check.
   if (!latest) {

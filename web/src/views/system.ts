@@ -1103,9 +1103,16 @@ export class SystemView {
       const cls = `update-headline tone-${view.tone}`;
       if (headline.className !== cls) headline.className = cls;
       setText(headline, view.headline);
+      setHidden(headline, view.headline === "");
     }
     const detail = document.getElementById("sys-update-detail");
-    if (detail) setText(detail, view.detail);
+    if (detail) {
+      setText(detail, view.detail);
+      setHidden(detail, view.detail === "");
+    }
+    // The status region stays in place for announcements; with nothing to
+    // say it takes no room.
+    document.getElementById("sys-update-state")?.classList.toggle("is-empty", view.headline === "");
     for (const [id, text] of [["sys-update-hint", view.hint], ["sys-update-note", view.note]] as const) {
       const el = document.getElementById(id);
       if (!el) continue;

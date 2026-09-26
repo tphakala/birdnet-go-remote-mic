@@ -81,7 +81,8 @@ test("describeUpdate: a failed check with nothing on offer", () => {
 
 test("describeUpdate: never checked", () => {
   const v = describeUpdate(status({ lastCheck: undefined, latestVersion: undefined }));
-  assert.equal(v.headline, "Not checked yet");
+  assert.equal(v.headline, "", "no status before the first check");
+  assert.equal(v.detail, "");
   assert.equal(v.canCheck, true);
 });
 
@@ -154,8 +155,7 @@ test("describeUpdate: up to date only when the newest release is known", () => {
   assert.equal(v.headline, "Checking soon");
   assert.ok(v.detail.includes("checks are turned on"), v.detail);
   const never = describeUpdate(status({ latestVersion: undefined, lastCheck: undefined }));
-  assert.equal(never.headline, "Not checked yet");
-  assert.ok(never.detail.includes("or checks are turned on"), never.detail);
+  assert.equal(never.headline, "");
 });
 
 test("describeUpdate: no upgrade hint still says how to update, in a sentence", () => {

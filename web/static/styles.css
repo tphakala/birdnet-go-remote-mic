@@ -3401,6 +3401,9 @@ select.field-input {
   gap: 4px;
   margin: 0 0 14px;
 }
+.update-state.is-empty {
+  margin: 0;
+}
 .update-state p {
   margin: 0;
 }
