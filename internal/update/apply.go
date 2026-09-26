@@ -49,6 +49,7 @@ type journal struct {
 // Default timings for Applier.
 const (
 	DefaultHealthTimeout = 2 * time.Minute
+	DefaultHealthSettle  = 10 * time.Second
 	defaultPoll          = time.Second
 	versionTimeout       = 15 * time.Second
 )
@@ -78,15 +79,18 @@ type Applier struct {
 	// Trusted are the release signing keys.
 	Trusted map[string]ed25519.PublicKey
 
-	// Restart restarts a systemd unit; Active reports whether it is active.
+	// Restart restarts a systemd unit; MainPID returns its main process ID,
+	// 0 when it is not running.
 	Restart func(unit string) error
-	Active  func(unit string) (bool, error)
+	MainPID func(unit string) (int, error)
 	// Version runs a binary's version command and returns its output.
 	Version func(ctx context.Context, bin string) (string, error)
 
 	// HealthTimeout bounds the wait for the new version to report healthy;
-	// Poll is the interval between checks.
+	// HealthSettle is how long its process must then stay the unit's main
+	// process; Poll is the interval between checks.
 	HealthTimeout time.Duration
+	HealthSettle  time.Duration
 	Poll          time.Duration
 	// Now stamps the result; time.Now when nil.
 	Now func() time.Time
@@ -366,40 +370,58 @@ func fileSHA256(p string) string {
 	return sha256Hex(b)
 }
 
-// awaitHealthy waits until the unit is active and the appliance has written a
-// health file naming version, or the timeout passes, or ctx is cancelled (the
-// updater being stopped); the timeout error says which of the two was missing
-// last.
+// awaitHealthy waits until the appliance is up on version: a health file
+// naming version, written by the process that is the unit's main process,
+// which is still its main process HealthSettle later. The PID check rejects
+// a health file left by an earlier incarnation of a crash-looping version,
+// and the settle rejects one that dies right after writing it. A candidate
+// first seen before the timeout may finish its settle after it. It gives up
+// at the timeout, or when ctx is cancelled (the updater being stopped); the
+// timeout error says what was missing last.
 func (a *Applier) awaitHealthy(ctx context.Context, root *os.Root, version string) error {
 	timeout := cmp.Or(a.HealthTimeout, DefaultHealthTimeout)
+	settle := cmp.Or(a.HealthSettle, DefaultHealthSettle)
 	poll := cmp.Or(a.Poll, defaultPoll)
-	parent := ctx
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	deadline := time.Now().Add(timeout)
 	t := time.NewTicker(poll)
 	defer t.Stop()
-	var last string
+	var (
+		last      string
+		candidate int
+		since     time.Time
+	)
 	for {
 		if b, err := readFileIn(root, path.Join(DirName, HealthFile), maxSmallFile); err == nil {
 			var h Health
-			if json.Unmarshal(b, &h) == nil && h.Version == version {
-				if active, err := a.Active(a.Unit); err == nil && active {
+			switch {
+			case json.Unmarshal(b, &h) != nil:
+				last, candidate = "the health file is malformed", 0
+			case h.Version != version:
+				last, candidate = "the health file names "+h.Version, 0
+			default:
+				pid, err := a.MainPID(a.Unit)
+				switch {
+				case err != nil:
+					last, candidate = fmt.Sprintf("query the main process of %s: %v", a.Unit, err), 0
+				case pid == 0 || pid != h.PID:
+					last, candidate = fmt.Sprintf("the health file is from process %d, but %s runs as %d", h.PID, a.Unit, pid), 0
+				case candidate != pid:
+					candidate, since = pid, time.Now()
+					last = fmt.Sprintf("process %d had not stayed up for %s", pid, settle)
+				case time.Since(since) >= settle:
 					return nil
 				}
-				last = a.Unit + " is not active"
-			} else {
-				last = "the health file names " + h.Version
 			}
 		}
-		select {
-		case <-ctx.Done():
-			if parent.Err() != nil {
-				return fmt.Errorf("the updater was stopped before %s was confirmed healthy", version)
-			}
+		if now := time.Now(); now.After(deadline) && (candidate == 0 || now.After(deadline.Add(settle))) {
 			if last == "" {
 				last = "it never wrote its health file"
 			}
 			return fmt.Errorf("no healthy start within %s: %s", timeout, last)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the updater was stopped before %s was confirmed healthy", version)
 		case <-t.C:
 		}
 	}

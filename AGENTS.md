@@ -282,7 +282,8 @@ thelper, and testifylint. `unused` is disabled.
   `<cert dir>/update/`; `Applier` is the root updater
   (`service apply-update`, started by `remote-mic-update.path`), which
   re-verifies everything through an `os.Root`, swaps the binary, and rolls
-  back unless the new version writes its health file; `Boot` reports the
+  back unless the new version writes its health file from the unit's main
+  process and stays up for a settle period; `Boot` reports the
   outcome and writes that file.
 - `internal/releasemanifest`: the signed release manifest schema, Ed25519
   signing and verification, and the trusted release keys. Platform-neutral,

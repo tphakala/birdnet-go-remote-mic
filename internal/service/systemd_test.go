@@ -92,3 +92,36 @@ func TestSystemdPresent(t *testing.T) {
 		t.Error("Present() = true, want false when marker absent")
 	}
 }
+
+// TestSystemdRestartAndMainPID pins the two calls the root updater makes: the
+// exact systemctl invocations and the MainPID parse, including a stopped unit
+// (MainPID 0) and output that is not a number.
+func TestSystemdRestartAndMainPID(t *testing.T) {
+	out := "4242\n"
+	fr := &fakeRunner{resp: func(name string, args []string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "show" {
+			return []byte(out), nil
+		}
+		return nil, nil
+	}}
+	sd := &Systemd{Run: fr.run}
+	if err := sd.Restart("remote-mic.service"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	pid, err := sd.MainPID("remote-mic.service")
+	if err != nil || pid != 4242 {
+		t.Errorf("MainPID = %d, %v; want 4242", pid, err)
+	}
+	fr.wantSeq(t,
+		"systemctl restart remote-mic.service",
+		"systemctl show --property=MainPID --value remote-mic.service",
+	)
+	out = "0\n"
+	if pid, err := sd.MainPID("remote-mic.service"); err != nil || pid != 0 {
+		t.Errorf("stopped unit: MainPID = %d, %v; want 0", pid, err)
+	}
+	out = "MainPID=4242\n"
+	if _, err := sd.MainPID("remote-mic.service"); err == nil {
+		t.Error("unparsable output: got nil error")
+	}
+}

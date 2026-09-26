@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -23,6 +24,11 @@ type applyEnv struct {
 	mu                sync.Mutex
 	restarts          int
 	onRestart         func(env *applyEnv, n int)
+	// mainPID is what the fake systemd reports as the unit's main process;
+	// a restart that boots the installed binary gives it a new PID.
+	mainPID int
+	// units records the unit every systemd call named.
+	units []string
 }
 
 // oldBinary is the installed binary's content; its first line is what the
@@ -64,7 +70,8 @@ func newApplyEnv(t *testing.T) *applyEnv {
 		Running:  vOld,
 		Target:   testTarget,
 		Trusted:  trusted,
-		Restart: func(string) error {
+		Restart: func(unit string) error {
+			env.units = append(env.units, unit)
 			env.mu.Lock()
 			env.restarts++
 			n := env.restarts
@@ -72,7 +79,10 @@ func newApplyEnv(t *testing.T) *applyEnv {
 			env.onRestart(env, n)
 			return nil
 		},
-		Active: func(string) (bool, error) { return true, nil },
+		MainPID: func(unit string) (int, error) {
+			env.units = append(env.units, unit)
+			return env.mainPID, nil
+		},
 		Version: func(_ context.Context, bin string) (string, error) {
 			b, err := os.ReadFile(bin)
 			if err != nil {
@@ -82,6 +92,7 @@ func newApplyEnv(t *testing.T) *applyEnv {
 			return line + "\n", nil
 		},
 		HealthTimeout: 200 * time.Millisecond,
+		HealthSettle:  20 * time.Millisecond,
 		Poll:          5 * time.Millisecond,
 		Logf:          t.Logf,
 	}
@@ -98,7 +109,8 @@ func (env *applyEnv) bootInstalled(t *testing.T) {
 		return
 	}
 	line, _, _ := strings.Cut(string(b), "\n")
-	h, _ := json.Marshal(Health{Version: strings.TrimPrefix(line, "remote-mic "), PID: 1})
+	env.mainPID = 1000 + env.restarts
+	h, _ := json.Marshal(Health{Version: strings.TrimPrefix(line, "remote-mic "), PID: env.mainPID})
 	if err := os.WriteFile(filepath.Join(env.stateDir, DirName, HealthFile), h, 0o644); err != nil {
 		t.Error(err)
 	}
@@ -165,6 +177,11 @@ func TestApplyInstallsAndKeepsPrevious(t *testing.T) {
 	}
 	if env.restarts != 1 {
 		t.Errorf("got %d restarts, want 1", env.restarts)
+	}
+	for _, u := range env.units {
+		if u != env.a.Unit {
+			t.Errorf("systemd was asked about %q, want %q", u, env.a.Unit)
+		}
 	}
 	env.requestGone(t)
 	if _, err := os.Stat(env.binPath + ".new"); !errors.Is(err, os.ErrNotExist) {
@@ -379,9 +396,10 @@ func TestApplyRollsBackOnRestartFailure(t *testing.T) {
 	}
 }
 
-// TestApplyHealthNeedsActiveUnitAndVersion pins that a health file naming
-// another version, or an inactive unit, is not healthy, and says which.
-func TestApplyHealthNeedsActiveUnitAndVersion(t *testing.T) {
+// TestApplyHealthNeedsRunningUnitAndVersion pins that a health file naming
+// another version, or a unit with no main process, is not healthy, and says
+// which.
+func TestApplyHealthNeedsRunningUnitAndVersion(t *testing.T) {
 	t.Parallel()
 	env := newApplyEnv(t)
 	env.onRestart = func(env *applyEnv, n int) {
@@ -395,8 +413,32 @@ func TestApplyHealthNeedsActiveUnitAndVersion(t *testing.T) {
 	}
 
 	env = newApplyEnv(t)
-	env.a.Active = func(string) (bool, error) { return false, nil }
-	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "is not active") {
+	env.onRestart = func(e *applyEnv, _ int) {
+		h, _ := json.Marshal(Health{Version: vNew})
+		_ = os.WriteFile(filepath.Join(e.stateDir, DirName, HealthFile), h, 0o644)
+	}
+	env.a.MainPID = func(string) (int, error) { return 0, nil } // not running
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "runs as 0") {
+		t.Errorf("health naming no process, unit not running: got %v", err)
+	}
+
+	env = newApplyEnv(t)
+	env.a.MainPID = func(string) (int, error) { return 0, errors.New("bus unavailable") }
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "bus unavailable") {
+		t.Errorf("main process query failing: got %v", err)
+	}
+
+	env = newApplyEnv(t)
+	env.onRestart = func(e *applyEnv, _ int) {
+		_ = os.WriteFile(filepath.Join(e.stateDir, DirName, HealthFile), []byte("{"), 0o644)
+	}
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Errorf("malformed health file: got %v", err)
+	}
+
+	env = newApplyEnv(t)
+	env.a.MainPID = func(string) (int, error) { return 0, nil } // not running
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), "runs as 0") {
 		t.Errorf("inactive unit: got %v", err)
 	}
 }
@@ -602,4 +644,87 @@ func TestApplyRecoversInterruptedInstall(t *testing.T) {
 			env.requestGone(t)
 		})
 	}
+}
+
+// TestApplyHealthNeedsStablePID pins the health handshake against a new
+// version that does not stay up: a health file from a process that is not
+// the unit's main process (an earlier, crashed incarnation) is not healthy,
+// and neither is a main process that keeps changing (a crash loop), however
+// often each incarnation writes a fresh health file.
+func TestApplyHealthNeedsStablePID(t *testing.T) {
+	t.Parallel()
+	t.Run("stale health file", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			env := newApplyEnv(t)
+			restart := env.onRestart
+			env.onRestart = func(e *applyEnv, n int) {
+				restart(e, n)
+				if n == 1 {
+					e.mainPID++ // it crashed and systemd started another one
+				}
+			}
+			err := env.a.Apply(t.Context())
+			if err == nil || !strings.Contains(err.Error(), "is from process") {
+				t.Fatalf("Apply: got %v, want a rollback naming the stale process", err)
+			}
+			if got := env.installed(t); got != oldBinary {
+				t.Errorf("installed %q, want the previous binary", got)
+			}
+		})
+	})
+	t.Run("crash loop", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			env := newApplyEnv(t)
+			dir := filepath.Join(env.stateDir, DirName)
+			// Each incarnation starts, writes its health file, and is seen as the
+			// main process on a few polls (about 10 ms) before it dies, well
+			// inside the 40 ms settle.
+			env.a.HealthSettle = 40 * time.Millisecond
+			calls := 0
+			env.a.MainPID = func(string) (int, error) {
+				pid := 6000 + calls/3
+				if calls%3 == 0 {
+					h, _ := json.Marshal(Health{Version: vNew, PID: pid})
+					_ = os.WriteFile(filepath.Join(dir, HealthFile), h, 0o644)
+				}
+				calls++
+				return pid, nil
+			}
+			env.onRestart = func(*applyEnv, int) {
+				h, _ := json.Marshal(Health{Version: vNew, PID: 6000})
+				_ = os.WriteFile(filepath.Join(dir, HealthFile), h, 0o644)
+			}
+			err := env.a.Apply(t.Context())
+			if err == nil || !strings.Contains(err.Error(), "rolled_back") {
+				t.Fatalf("Apply: got %v, want a rollback for an unstable process", err)
+			}
+			if got := env.installed(t); got != oldBinary {
+				t.Errorf("installed %q, want the previous binary", got)
+			}
+		})
+	})
+	t.Run("late but stable start", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			env := newApplyEnv(t)
+			env.a.HealthSettle = 60 * time.Millisecond
+			start := time.Now()
+			env.a.MainPID = func(string) (int, error) {
+				// Up and stable only from 170 ms of the 200 ms timeout (fake clock), so its
+				// settle ends after the timeout: it must still be kept.
+				if time.Since(start) < 170*time.Millisecond {
+					return 0, nil
+				}
+				return env.mainPID, nil
+			}
+			if err := env.a.Apply(t.Context()); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if got := env.installed(t); got != newBinary {
+				t.Errorf("installed %q, want the new binary", got)
+			}
+		})
+	})
 }

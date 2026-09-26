@@ -154,11 +154,8 @@ var applyUpdate = func(ctx context.Context, binPath, stateDir string) error {
 		Running:  version,
 		Target:   update.RunningTarget(),
 		Trusted:  trusted,
-		Restart: func(unit string) error {
-			_, err := sd.Run("systemctl", "restart", unit)
-			return err
-		},
-		Active: sd.IsActive,
+		Restart: sd.Restart,
+		MainPID: sd.MainPID,
 		Version: func(ctx context.Context, bin string) (string, error) {
 			b, err := exec.CommandContext(ctx, bin, "version").Output() //nolint:gosec // bin is the staged binary, verified against the signed manifest
 			return string(b), err
