@@ -20,7 +20,7 @@ import {
 } from "../lib/about-core.js";
 import { router } from "../lib/router.js";
 import { store } from "../lib/store.js";
-import type { ApplianceStatus, SystemInfo } from "../lib/types.js";
+import type { ApplianceStatus, Device, SystemInfo } from "../lib/types.js";
 import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText } from "../lib/ui.js";
 
 // Section and link icons: static, trusted markup.
@@ -86,6 +86,9 @@ export class AboutView {
   private thirdPartyEl: HTMLElement | null = null;
   private status: ApplianceStatus | null = null;
   private system: SystemInfo | null = null;
+  // Undefined until the first device list arrives, so the details leave the
+  // device section out instead of claiming there are no devices.
+  private devices: readonly Device[] | undefined;
   // idle until the first visit; loading while the fetch runs; done once rendered.
   // A failure returns to idle so Retry (or the next visit) tries again.
   private licenses: "idle" | "loading" | "done" = "idle";
@@ -96,6 +99,7 @@ export class AboutView {
     const { status, system } = store.getState();
     this.status = status;
     this.system = system;
+    if (status) this.devices = store.getState().devices;
     root.appendChild(this.build());
     this.renderLive();
 
@@ -105,6 +109,10 @@ export class AboutView {
     });
     store.addEventListener("system", (e: Event) => {
       this.system = (e as CustomEvent<SystemInfo>).detail;
+      this.renderLive();
+    });
+    store.addEventListener("devices", (e: Event) => {
+      this.devices = (e as CustomEvent<Device[]>).detail;
       this.renderLive();
     });
     router.addEventListener("route", (e: Event) => {
@@ -172,7 +180,7 @@ export class AboutView {
     const detailsHead = elem("h3", "about-subtitle", "System Details");
     this.detailsEl = elem("pre", "about-details mono");
     const copy = button({ variant: "secondary", label: "Copy System Details", icon: ICON_COPY });
-    copy.addEventListener("click", () => copyText(supportDetails(this.status, this.system), "System details copied"));
+    copy.addEventListener("click", () => copyText(supportDetails(this.status, this.system, this.devices), "System details copied"));
     const actions = elem("div", "network-actions");
     actions.append(elem("span", "network-actions-spacer"), copy);
     body.append(detailsHead, this.detailsEl, actions);
@@ -222,7 +230,7 @@ export class AboutView {
   // details. setText writes only on change, so a status tick costs nothing.
   private renderLive(): void {
     if (this.versionEl) setText(this.versionEl, this.status?.version || "-");
-    if (this.detailsEl) setText(this.detailsEl, supportDetails(this.status, this.system));
+    if (this.detailsEl) setText(this.detailsEl, supportDetails(this.status, this.system, this.devices));
   }
 
   private async loadLicenses(): Promise<void> {
