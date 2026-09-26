@@ -326,6 +326,11 @@ func TestStaticHandlerGzipETag(t *testing.T) {
 	if plain == "" || zipped == "" || plain == zipped {
 		t.Fatalf("ETags plain %q and gzip %q, want two different ones", plain, zipped)
 	}
+	// A strong ETag is one quoted string: the gzip one is the plain one with
+	// "-gz" inside the quotes.
+	if want := strings.TrimSuffix(plain, `"`) + `-gz"`; zipped != want || !strings.HasPrefix(plain, `"`) || !strings.HasSuffix(plain, `"`) {
+		t.Errorf("gzip ETag %q, want %q (plain %q)", zipped, want, plain)
+	}
 	if rec := gzipGetStatic(t, h, "/licenses.json", encGzip, zipped); rec.Code != http.StatusNotModified {
 		t.Errorf("revalidating the gzip ETag: status %d, want 304", rec.Code)
 	}
