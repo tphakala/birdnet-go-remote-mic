@@ -27,6 +27,25 @@ import (
 // binaries are a few tens of MB.
 const maxBinarySize = 256 << 20
 
+// journal is the content of the install journal, BinPath+".pending". It is
+// written, root-owned beside the binary, after the previous binary is kept
+// and before the new one is swapped in, and removed once the outcome is final.
+// Finding it when the updater starts means a run was cut off mid-install (a
+// power loss or a kill): the installed binary was never confirmed healthy,
+// so it is rolled back. It never lives in the state directory, where the
+// service user could forge one to force a downgrade.
+//
+// Recovery runs in whatever binary is installed, which after a cut is the
+// new one, so the file name and these fields are a contract between
+// versions: a release must read the journal an older one wrote. Add fields,
+// never rename or repurpose one.
+type journal struct {
+	From       string `json:"from"`
+	To         string `json:"to"`
+	PrevSHA256 string `json:"prevSha256"`
+	NewSHA256  string `json:"newSha256"`
+}
+
 // Default timings for Applier.
 const (
 	DefaultHealthTimeout = 2 * time.Minute
@@ -76,7 +95,9 @@ type Applier struct {
 }
 
 // Apply installs the staged release, or does nothing when no request is
-// pending. It always removes the request, so the path unit does not start it
+// pending. When an install journal is found, a previous run was cut off
+// mid-install, and Apply rolls that back (recoverInterrupted) instead of
+// installing anything. It always removes the request, so the path unit does not start it
 // again, and writes the outcome to the status file for the appliance to
 // report. The returned error is the same outcome, for the unit's log.
 func (a *Applier) Apply(ctx context.Context) error {
@@ -86,6 +107,10 @@ func (a *Applier) Apply(ctx context.Context) error {
 	}
 	defer func() { _ = root.Close() }()
 	reqPath := path.Join(DirName, RequestFile)
+	if _, err := os.Lstat(a.journalPath()); err == nil {
+		defer func() { _ = root.Remove(reqPath) }()
+		return a.finish(root, a.recoverInterrupted(root))
+	}
 	reqBytes, err := readFileIn(root, reqPath, maxSmallFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		a.logf("apply-update: no update requested")
@@ -151,8 +176,7 @@ func (a *Applier) verifyStaged(root *os.Root) (*releasemanifest.Manifest, []byte
 	if int64(len(bin)) != t.Binary.Size {
 		return nil, nil, fmt.Errorf("staged binary is %d bytes, want %d", len(bin), t.Binary.Size)
 	}
-	sum := sha256.Sum256(bin)
-	if got := hex.EncodeToString(sum[:]); got != t.Binary.SHA256 {
+	if got := sha256Hex(bin); got != t.Binary.SHA256 {
 		return nil, nil, fmt.Errorf("staged binary sha256 %s, want %s", got, t.Binary.SHA256)
 	}
 	return m, bin, nil
@@ -160,7 +184,8 @@ func (a *Applier) verifyStaged(root *os.Root) (*releasemanifest.Manifest, []byte
 
 // install swaps in bin, restarts the unit and waits for the new version to
 // report healthy, restoring the previous binary when it does not, including
-// when ctx is cancelled (the updater being stopped) during the wait.
+// when ctx is cancelled (the updater being stopped) during the wait. The
+// install journal covers the span from the swap to the final outcome.
 func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest.Manifest, bin []byte) *Result {
 	res := &Result{From: a.Running, To: m.Version, Installed: a.Running}
 	fail := func(err error) *Result {
@@ -191,9 +216,17 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 	if err := atomicfile.Write(a.BinPath+".prev", prev, 0o755); err != nil {
 		return fail(fmt.Errorf("keep the installed binary: %w", err))
 	}
+	j, err := json.Marshal(journal{From: a.Running, To: m.Version, PrevSHA256: sha256Hex(prev), NewSHA256: sha256Hex(bin)})
+	if err == nil {
+		err = atomicfile.Write(a.journalPath(), j, 0o600)
+	}
+	if err != nil {
+		return fail(fmt.Errorf("write the install journal: %w", err))
+	}
 	// A health file from before the restart must not pass for the new one.
 	_ = root.Remove(path.Join(DirName, HealthFile))
 	if err := os.Rename(newPath, a.BinPath); err != nil {
+		a.removeJournal()
 		return fail(fmt.Errorf("install the new binary: %w", err))
 	}
 	atomicfile.SyncDir(filepath.Dir(a.BinPath))
@@ -206,15 +239,18 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 	if err := a.awaitHealthy(ctx, root, m.Version); err != nil {
 		return a.rollback(root, res, err)
 	}
+	// Removing the journal is the commit point: from here a crash keeps the
+	// new version, which has proven healthy.
+	a.removeJournal()
 	res.Outcome = OutcomeUpdated
 	a.logf("apply-update: %s is up", m.Version)
 	return res
 }
 
 // rollback puts the previous binary back by renaming BinPath.prev over it,
-// which needs no free space, then writes the result and restarts the unit on
-// the restored binary. The result is written before the restart so the
-// restored appliance finds it when it boots. When the rename fails the new
+// which needs no free space, then removes the install journal, writes the
+// result and restarts the unit on the restored binary. The result is written
+// before the restart so the restored appliance finds it when it boots. When the rename fails the new
 // binary stays installed: the result says so, and the unit is restarted
 // anyway, since leaving it stopped helps nobody.
 func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
@@ -227,6 +263,9 @@ func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 		atomicfile.SyncDir(filepath.Dir(a.BinPath))
 		res.Installed = res.From
 	}
+	// The outcome is final either way; a journal left behind would make the
+	// next start roll back again.
+	a.removeJournal()
 	if err := a.writeResult(root, res); err != nil {
 		a.logf("apply-update: write status: %v", err)
 	}
@@ -235,6 +274,84 @@ func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 		a.logf("apply-update: restart %s on the restored binary: %v", a.Unit, err)
 	}
 	return res
+}
+
+// recoverInterrupted finishes a run that was cut off after the swap, from
+// the journal: the installed binary was never confirmed healthy, so the
+// previous one goes back. The installed binary's hash says where the cut
+// fell: still the new binary (rename the kept copy back), already the old
+// one (a rollback that finished its rename), or neither (nothing safe to do
+// but report it). The journal is removed and the unit restarted whatever the
+// outcome, so a failure here cannot repeat on every start.
+func (a *Applier) recoverInterrupted(root *os.Root) *Result {
+	res := &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running}
+	defer func() {
+		_ = os.Remove(a.BinPath + ".new") // a cut before the swap leaves it
+		a.removeJournal()
+		if err := a.writeResult(root, res); err != nil {
+			a.logf("apply-update: write status: %v", err)
+		}
+		res.written = true
+		if err := a.Restart(a.Unit); err != nil {
+			a.logf("apply-update: restart %s: %v", a.Unit, err)
+		}
+	}()
+	var j journal
+	b, err := os.ReadFile(a.journalPath())
+	if err == nil {
+		err = decodeSmall(filepath.Base(a.journalPath()), b, &j)
+	}
+	if err == nil && (j.PrevSHA256 == "" || j.NewSHA256 == "") {
+		err = errors.New("it names no binary hashes")
+	}
+	if err != nil {
+		res.Reason = fmt.Sprintf("an interrupted update left an unreadable journal: %v", err)
+		return res
+	}
+	res.From, res.To = j.From, j.To
+	a.logf("apply-update: the update from %s to %s was interrupted before it was confirmed healthy", j.From, j.To)
+	res.Reason = fmt.Sprintf("the updater was interrupted before %s was confirmed healthy", j.To)
+	installed := fileSHA256(a.BinPath)
+	switch {
+	case installed == j.PrevSHA256:
+		res.Outcome, res.Installed = OutcomeRolledBack, j.From
+	case installed == j.NewSHA256 && fileSHA256(a.BinPath+".prev") == j.PrevSHA256:
+		if err := os.Rename(a.BinPath+".prev", a.BinPath); err != nil {
+			res.Installed = j.To
+			res.Reason += fmt.Sprintf("; restoring %s failed, so %s stays installed: %v", j.From, j.To, err)
+			return res
+		}
+		atomicfile.SyncDir(filepath.Dir(a.BinPath))
+		a.logf("apply-update: restored %s", j.From)
+		res.Outcome, res.Installed = OutcomeRolledBack, j.From
+	default:
+		res.Installed = ""
+		res.Reason += fmt.Sprintf("; %s matches neither version, so it was left as it is", a.BinPath)
+	}
+	return res
+}
+
+func (a *Applier) journalPath() string { return a.BinPath + ".pending" }
+
+func (a *Applier) removeJournal() {
+	if err := os.Remove(a.journalPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		a.logf("apply-update: remove the install journal: %v", err)
+	}
+	atomicfile.SyncDir(filepath.Dir(a.BinPath))
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// fileSHA256 hashes a file, or returns "" when it cannot be read.
+func fileSHA256(p string) string {
+	b, err := os.ReadFile(p) //nolint:gosec // the binary path and its kept copy, root-owned
+	if err != nil {
+		return ""
+	}
+	return sha256Hex(b)
 }
 
 // awaitHealthy waits until the unit is active and the appliance has written a

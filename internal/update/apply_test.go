@@ -29,6 +29,9 @@ type applyEnv struct {
 // fake version command prints.
 const oldBinary = "remote-mic v0.2.0\nold"
 
+// newBinary is the staged release's content (see newApplyEnv).
+const newBinary = "remote-mic v0.3.0\nnew"
+
 func newApplyEnv(t *testing.T) *applyEnv {
 	t.Helper()
 	priv, trusted := testKeys(t)
@@ -38,7 +41,7 @@ func newApplyEnv(t *testing.T) *applyEnv {
 	if err := os.WriteFile(env.binPath, []byte(oldBinary), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env.rel = newRelease(t, priv, vNew, testTarget, "https://example.invalid/r.tar.gz", []byte("remote-mic v0.3.0\nnew"))
+	env.rel = newRelease(t, priv, vNew, testTarget, "https://example.invalid/r.tar.gz", []byte(newBinary))
 	dir := filepath.Join(env.stateDir, DirName)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -133,6 +136,16 @@ func (env *applyEnv) requestGone(t *testing.T) {
 func TestApplyInstallsAndKeepsPrevious(t *testing.T) {
 	t.Parallel()
 	env := newApplyEnv(t)
+	journalAtRestart, journalAtStatus := false, true
+	restart := env.onRestart
+	env.onRestart = func(e *applyEnv, n int) {
+		journalAtRestart = exists(e.binPath + ".pending")
+		restart(e, n)
+	}
+	env.a.Now = func() time.Time {
+		journalAtStatus = exists(env.binPath + ".pending")
+		return time.Now()
+	}
 	if err := env.a.Apply(t.Context()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -152,6 +165,11 @@ func TestApplyInstallsAndKeepsPrevious(t *testing.T) {
 	if _, err := os.Stat(env.binPath + ".new"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("temporary binary left behind: %v", err)
 	}
+	// The journal covers the restart and is gone before the outcome is
+	// written: a crash after the status must not roll back a healthy update.
+	if !journalAtRestart || journalAtStatus {
+		t.Errorf("journal at restart %t (want true), at status %t (want false)", journalAtRestart, journalAtStatus)
+	}
 }
 
 // TestApplyRollsBack pins that a new version that never reports healthy is
@@ -161,11 +179,13 @@ func TestApplyRollsBack(t *testing.T) {
 	t.Parallel()
 	env := newApplyEnv(t)
 	var statusAtSecondRestart Outcome
+	journalAtSecondRestart := true
 	writes := 0
 	env.a.Now = func() time.Time { writes++; return time.Now() }
 	env.onRestart = func(env *applyEnv, n int) {
 		if n == 2 {
 			statusAtSecondRestart = env.result(t).Outcome
+			journalAtSecondRestart = exists(env.binPath + ".pending")
 		}
 		// The new binary crash-loops: no health file ever appears.
 	}
@@ -181,6 +201,9 @@ func TestApplyRollsBack(t *testing.T) {
 	}
 	if writes != 1 {
 		t.Errorf("status written %d times, want once", writes)
+	}
+	if journalAtSecondRestart {
+		t.Error("install journal still present after the rollback")
 	}
 	if statusAtSecondRestart != OutcomeRolledBack {
 		t.Errorf("status before the restoring restart: %q, want rolled_back", statusAtSecondRestart)
@@ -447,5 +470,123 @@ func TestApplyCancelledBeforeSwap(t *testing.T) {
 	}
 	if r := env.result(t); r.Outcome != OutcomeFailed || r.Installed != vOld || env.restarts != 0 {
 		t.Errorf("result %+v, %d restarts", r, env.restarts)
+	}
+}
+
+// interruptedEnv is an applyEnv left as a run cut off after the swap: the
+// new binary installed, the old one kept as .prev, and the journal naming
+// both.
+func interruptedEnv(t *testing.T) *applyEnv {
+	t.Helper()
+	env := newApplyEnv(t)
+	if err := os.WriteFile(env.binPath+".prev", []byte(oldBinary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.binPath, env.rel.bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	j, _ := json.Marshal(journal{From: vOld, To: vNew, PrevSHA256: sha([]byte(oldBinary)), NewSHA256: sha(env.rel.bin)})
+	if err := os.WriteFile(env.binPath+".pending", j, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.binPath+".new", env.rel.bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env.a.Running = vNew // recovery runs in the new binary
+	return env
+}
+
+// TestApplyRecoversInterruptedInstall pins the journal recovery: whatever
+// point the cut fell at, the next start reports the interrupted update, puts
+// the previous binary back when it can, removes the journal and the request,
+// restarts the unit, and does not install anything.
+func TestApplyRecoversInterruptedInstall(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, env *applyEnv)
+		outcome   Outcome
+		installed string
+		binary    string
+	}{
+		{name: "new binary installed", outcome: OutcomeRolledBack, installed: vOld, binary: oldBinary},
+		{
+			name: "rollback already renamed",
+			setup: func(t *testing.T, env *applyEnv) {
+				t.Helper()
+				if err := os.Rename(env.binPath+".prev", env.binPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+			outcome: OutcomeRolledBack, installed: vOld, binary: oldBinary,
+		},
+		{
+			name: "kept copy missing",
+			setup: func(t *testing.T, env *applyEnv) {
+				t.Helper()
+				_ = os.Remove(env.binPath + ".prev")
+			},
+			outcome: OutcomeFailed, installed: "", binary: newBinary,
+		},
+		{
+			name: "installed binary is neither version",
+			setup: func(t *testing.T, env *applyEnv) {
+				t.Helper()
+				if err := os.WriteFile(env.binPath, []byte("hand-installed"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			outcome: OutcomeFailed, installed: "", binary: "hand-installed",
+		},
+		{
+			name: "journal without hashes",
+			setup: func(t *testing.T, env *applyEnv) {
+				t.Helper()
+				if err := os.WriteFile(env.binPath+".pending", []byte(`{"from":"v0.2.0","to":"v0.3.0"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			outcome: OutcomeFailed, installed: vNew, binary: newBinary,
+		},
+		{
+			name: "unreadable journal",
+			setup: func(t *testing.T, env *applyEnv) {
+				t.Helper()
+				if err := os.WriteFile(env.binPath+".pending", []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			outcome: OutcomeFailed, installed: vNew, binary: newBinary,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := interruptedEnv(t)
+			if tt.setup != nil {
+				tt.setup(t, env)
+			}
+			_ = env.a.Apply(t.Context())
+			if got := env.installed(t); got != tt.binary {
+				t.Errorf("installed %q, want %q", got, tt.binary)
+			}
+			r := env.result(t)
+			if r.Outcome != tt.outcome || r.Installed != tt.installed || !strings.Contains(r.Reason, "interrupted") {
+				t.Errorf("result %+v, want %s with %q installed", r, tt.outcome, tt.installed)
+			}
+			if !strings.Contains(tt.name, "journal") && (r.From != vOld || r.To != vNew) {
+				t.Errorf("result %+v, want %s with %q installed", r, tt.outcome, tt.installed)
+			}
+			if exists(env.binPath + ".pending") {
+				t.Error("journal left behind")
+			}
+			if exists(env.binPath + ".new") {
+				t.Error("staged copy left behind")
+			}
+			if env.restarts != 1 {
+				t.Errorf("got %d restarts, want 1", env.restarts)
+			}
+			env.requestGone(t)
+		})
 	}
 }

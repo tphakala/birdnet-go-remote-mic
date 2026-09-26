@@ -99,6 +99,7 @@ func TestRenderUpdaterDefaults(t *testing.T) {
 	wantLines(t, string(pathUnit),
 		"[Path]",
 		"PathExists=/var/lib/remote-mic/update/request.json",
+		"PathExists=/usr/local/bin/remote-mic.pending",
 		"Unit=remote-mic-update.service",
 		"WantedBy=multi-user.target",
 	)
@@ -124,7 +125,7 @@ func TestRenderUpdaterCustom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderUpdater: %v", err)
 	}
-	wantLines(t, string(pathUnit), "PathExists=/srv/remote-mic/update/request.json")
+	wantLines(t, string(pathUnit), "PathExists=/srv/remote-mic/update/request.json", "PathExists=/opt/remote-mic/bin/remote-mic.pending")
 	wantLines(t, string(serviceUnit),
 		"ExecStart=/opt/remote-mic/bin/remote-mic service apply-update --bin-path=/opt/remote-mic/bin/remote-mic --state-dir=/srv/remote-mic",
 		"ReadWritePaths=/opt/remote-mic/bin /srv/remote-mic",

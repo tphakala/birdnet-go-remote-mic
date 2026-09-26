@@ -53,15 +53,19 @@ WantedBy=multi-user.target
 `
 
 // updatePathTemplate starts the root updater when the appliance writes an
-// update request into the staging directory. Nothing listens and nothing
-// runs until then; the updater removes the request whatever the outcome, so
-// the unit does not start it again for the same request.
+// update request into the staging directory, and when an install journal is
+// found beside the binary (an update cut off by a power loss or a kill, which
+// the updater rolls back on its next start, even after a reboot). Nothing
+// listens and nothing runs until then; the updater removes the request and
+// the journal whatever the outcome, so the unit does not start it again for
+// the same one.
 const updatePathTemplate = `[Unit]
 Description=Watch for a staged remote-mic update
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic
 
 [Path]
 PathExists={{.RequestPath}}
+PathExists={{.BinPath}}.pending
 Unit=` + UpdateServiceUnit + `
 
 [Install]

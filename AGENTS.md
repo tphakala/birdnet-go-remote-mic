@@ -314,6 +314,13 @@ under a new file name beside `manifest.json`, since installed appliances keep
 fetching that one. Rotate the key by shipping the new public key in `keys.go`
 first, then switching the secret.
 
+Self-updated appliances keep the updater units their original install wrote,
+and recovery after a power loss runs in the new, unconfirmed binary. So the
+`service apply-update --bin-path --state-dir` invocation, the staging file
+names in `internal/update/files.go` and the install journal
+(`<bin>.pending`) are contracts between versions: add, never rename or
+repurpose.
+
 ## Gotchas
 
 - go-audio-capture: `Negotiate` must issue PREPARE after SW_PARAMS, or Start
