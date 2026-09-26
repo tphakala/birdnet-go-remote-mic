@@ -1,5 +1,7 @@
-// Unit tests for initTheme (lib/theme.ts): the toggle keeps aria-pressed and
-// its tooltip in step with data-theme, the theme follows OS preference changes
+// Unit tests for initTheme (lib/theme.ts): at load the theme is derived (saved
+// choice, else the OS) rather than taken from the attribute, and an unchanged
+// theme is not rewritten; the toggle keeps aria-pressed and its tooltip in step
+// with data-theme; the theme follows OS preference changes
 // live only while no choice is saved (here or, by the next OS change, in another
 // tab), a click stops the follow and saves, and a save that fails is reported
 // once. Run with node:test over the compiled output (see web:test).
@@ -11,6 +13,8 @@ import { initTheme, THEME_KEY, type ThemeEnv } from "../src/lib/theme.js";
 
 interface Harness {
   theme: () => string | null;
+  // How many times initTheme wrote data-theme on the root (seeding excluded).
+  rootWrites: () => number;
   pressed: () => string | null;
   title: () => string;
   click: () => void;
@@ -41,6 +45,7 @@ interface Options {
 function harness(opts: Options = {}): Harness {
   const attrs = new Map<string, string>();
   if (opts.initial !== undefined) attrs.set("data-theme", opts.initial);
+  let rootWrites = 0;
   const toggleAttrs = new Map<string, string>();
   let clickHandler: (() => void) | null = null;
   let changeHandler: ((e: { matches: boolean }) => void) | null = null;
@@ -98,6 +103,7 @@ function harness(opts: Options = {}): Harness {
     root: {
       getAttribute: (name) => attrs.get(name) ?? null,
       setAttribute: (name, value) => {
+        rootWrites++;
         attrs.set(name, value);
       },
     },
@@ -114,6 +120,7 @@ function harness(opts: Options = {}): Harness {
 
   return {
     theme: () => attrs.get("data-theme") ?? null,
+    rootWrites: () => rootWrites,
     pressed: () => toggleAttrs.get("aria-pressed") ?? null,
     title: () => toggle.title,
     click: () => {
@@ -127,7 +134,22 @@ function harness(opts: Options = {}): Harness {
   };
 }
 
-test("the toggle reflects the theme theme-init applied", () => {
+test("a load whose derived theme is already shown writes nothing", () => {
+  // Every branch of the load derivation: the OS, a saved choice, and the
+  // attribute when matchMedia is missing.
+  for (const opts of [
+    { initial: "dark" },
+    { initial: "light", saved: "light" },
+    { initial: "light", media: "none" as const },
+  ]) {
+    const h = harness(opts);
+    assert.equal(h.rootWrites(), 0, JSON.stringify(opts));
+  }
+  // A load that corrects the attribute writes it once.
+  assert.equal(harness({ initial: "dark", initialMatches: true }).rootWrites(), 1);
+});
+
+test("the toggle reflects the derived theme at load", () => {
   const light = harness({ initial: "light", saved: "light" });
   assert.equal(light.theme(), "light");
   assert.equal(light.pressed(), "false");
@@ -159,7 +181,7 @@ test("at load a saved choice corrects a stale attribute", () => {
   assert.equal(h.theme(), "light");
 });
 
-test("without matchMedia the attribute is kept (missing or unknown reads as dark)", () => {
+test("without matchMedia the attribute's theme is kept (missing or unknown becomes dark)", () => {
   assert.equal(harness({ media: "none" }).theme(), "dark");
   assert.equal(harness({ initial: "sepia", media: "none" }).pressed(), "true");
   assert.equal(harness({ initial: "light", media: "none" }).theme(), "light");

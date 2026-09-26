@@ -19,7 +19,7 @@ export const TOAST_ICONS: Record<ToastType, string> = {
 const INFO_TTL_MS = 3200;
 // A failed provisioning, removal or save deserves more than a glance: errors
 // live in an assertive region, stay longer, and can be dismissed by hand.
-const ERROR_TTL_MS = 8000;
+export const ERROR_TTL_MS = 8000;
 
 export function showToast(message: string, type: ToastType = "info", durationMs?: number): void {
   const isError = type === "error";

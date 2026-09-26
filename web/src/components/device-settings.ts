@@ -111,7 +111,7 @@ export class DeviceSettingsForm {
   // operator instead of the change appearing to happen on its own.
   private loadCoercion: string | null = null;
 
-  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware = {}, display: DisplayPrefs = { hideInactive: true, onHideInactiveChange: () => {} }) {
+  constructor(device: DeviceConfig, onDirty: () => void, hardware: DeviceHardware, display: DisplayPrefs) {
     this.device = device;
     this.hardware = hardware;
     this.onDirty = onDirty;

@@ -3,8 +3,10 @@
 // prefers-color-scheme); initTheme re-derives it the same way, owns the toggle,
 // and, while no choice is saved, keeps following the OS preference as it
 // changes (a phone or laptop that switches at dusk), since a dashboard is often
-// left open for hours. A click is an explicit choice: it is saved and wins from
-// then on, in other open tabs too once they next see an OS change.
+// left open for hours. A click is an explicit choice: it is saved when the
+// browser allows (otherwise it lasts this visit and a warning says why) and wins
+// from then on, on every later load and, at their next OS change, in other open
+// tabs still following the OS.
 //
 // The browser objects are passed in so the logic runs under node:test with
 // stubs; app.ts wires the real ones.
@@ -72,6 +74,8 @@ export function initTheme(env: ThemeEnv): void {
   // current theme or the one a click switches to.
   const applyTheme = (theme: Theme): void => {
     const dark = theme === "dark";
+    // Skip an unchanged write: even a same-value setAttribute queues a mutation
+    // record, which wakes vu-meter's observer.
     if (root.getAttribute("data-theme") !== theme) root.setAttribute("data-theme", theme);
     toggle?.setAttribute("aria-pressed", String(dark));
     if (toggle) toggle.title = dark ? "Dark theme (on)" : "Dark theme (off)";
@@ -79,9 +83,11 @@ export function initTheme(env: ThemeEnv): void {
   const current = (): Theme => (root.getAttribute("data-theme") === "light" ? "light" : "dark");
   // Derive the theme the way theme-init.ts did (saved, else the OS; without
   // matchMedia, the attribute, which is then dark whether or not theme-init ran)
-  // rather than trusting the attribute: in the normal case it is the
-  // same value, and it corrects an OS change between the two scripts, or a
-  // theme-init.js that never ran (index.html hardcodes dark).
+  // rather than trusting the attribute: in the normal case it is the same value,
+  // and it corrects an OS change between the two scripts, or a theme-init.js that
+  // never ran (index.html hardcodes dark). Reading the attribute in that last
+  // case, rather than a literal dark, keeps whatever the page already shows, so
+  // the load writes nothing (see applyTheme's guard).
   const saved = savedTheme(env.storage);
   applyTheme(saved ?? (media ? (media.matches ? "light" : "dark") : current()));
 

@@ -9,7 +9,7 @@ import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 import { needsNotificationsFallback } from "./lib/dashboard-core.js";
 import { initTheme, PREFERS_LIGHT_QUERY } from "./lib/theme.js";
-import { showToast } from "./components/toast.js";
+import { ERROR_TTL_MS, showToast } from "./components/toast.js";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
 // notifications snapshot before loading it directly (see init).
@@ -17,7 +17,7 @@ const NOTIFICATIONS_FALLBACK_MS = 3000;
 
 // How long the "theme not saved" warning stays up: as long as an error toast,
 // since it is two sentences and appears while the whole page changes colour.
-const SAVE_FAILED_TOAST_MS = 8000;
+const SAVE_FAILED_TOAST_MS = ERROR_TTL_MS;
 
 class App {
   public init(): void {
