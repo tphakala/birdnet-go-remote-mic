@@ -64,6 +64,14 @@ The output must stay plain ES modules (plus the one classic script,
   Every non-trivial decision (filtering, grouping, formatting, diffing,
   validation) belongs here, with a matching `test/*.test.ts` run by
   `node:test`.
+- `e2e/`: the rendered sweep (`task web:sweep`, about 90 s, not in `check`).
+  `mock-server.ts` serves a compiled UI with fixture data for every endpoint
+  (run it alone to look at the UI: `node web/e2e/mock-server.ts <dir> [port]`);
+  `sweep.ts` drives Playwright's Chromium over every view in both themes at
+  320 and 1280 px and 16, 20 and 24 px browser font sizes, checking composited
+  contrast, that text scales, horizontal overflow, and steady meter rows. Run
+  it after layout, colour or type changes; keep the fixtures in step with
+  `types.ts`.
 
 ## State and reactivity
 

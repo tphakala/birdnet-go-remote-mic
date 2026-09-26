@@ -149,7 +149,7 @@ tasks:
   web:lint:
     desc: Lint web UI TypeScript and JavaScript
     cmds:
-      - npx -p oxlint@1.80.0 oxlint --deny-warnings web/src
+      - npx -p oxlint@1.80.0 oxlint --deny-warnings web/src web/e2e
 
   web:a11y:
     desc: Audit HTML markup and accessibility rules
@@ -181,6 +181,24 @@ tasks:
       - task: web:a11y
       - task: web:test
       - task: web:build
+
+  web:sweep:
+    desc: Rendered UI sweep in Chromium against a mock API at 16, 20 and 24 px browser font sizes (composited contrast, text scaling, horizontal overflow, meter row stability); pass flags after --, e.g. task web:sweep -- --only-view system
+    # Optional and not part of web:verify or check: it needs Playwright's
+    # Chromium build in ~/.cache/ms-playwright (`npx -p playwright@1.59.0
+    # playwright install chromium` fetches it once). The UI is compiled into a
+    # private temporary directory, never web/dist, so the sweep can run beside
+    # a build or a test run.
+    cmds:
+      - npx -p typescript@7.0.2 tsc -p web/e2e/tsconfig.json
+      - |
+        out=$(mktemp -d)
+        npx -p typescript@7.0.2 tsc -p web/tsconfig.json --outDir "$out" &&
+          cp -r web/static/. "$out"/ &&
+          npx -p playwright@1.59.0 node web/e2e/sweep.ts "$out" {{.CLI_ARGS}}
+        status=$?
+        rm -rf "$out"
+        exit $status
 
   agents:size:
     desc: Fail if any AGENTS.md exceeds 20 KB
