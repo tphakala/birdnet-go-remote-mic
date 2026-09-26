@@ -13,6 +13,9 @@ import {
   lastCheckText,
   safeNotesUrl,
   sentence,
+  TICK_GAP_MS,
+  TICK_HOLD_MS,
+  TickGuard,
   UpdateFollow,
   updateUnderway,
   VERSION_SETTLE_S,
@@ -234,6 +237,37 @@ test("VersionWatch rebase makes the version updated from the page's own", () => 
   w.rebase("v0.3.0");
   assert.equal(w.seen("v0.3.0", 100), "same", "the version updated from is not the update landing");
   assert.equal(w.seen("v0.4.0", 100), "confirmed");
+});
+
+test("TickGuard lets a steady visible timer check the deadline", () => {
+  const g = new TickGuard(0);
+  assert.equal(g.mayCheck(1000, false), true);
+  assert.equal(g.mayCheck(2000, false), true);
+});
+
+// tickUntil runs a one-second timer up to and including endMs and returns
+// the first time the guard let the deadline be checked, or null.
+function tickUntil(g: TickGuard, fromMs: number, endMs: number): number | null {
+  for (let t = fromMs; t <= endMs; t += 1000) if (g.mayCheck(t, false)) return t;
+  return null;
+}
+
+test("TickGuard holds after a hidden tick until the hold has passed", () => {
+  const g = new TickGuard(0);
+  assert.equal(g.mayCheck(1000, true), false);
+  assert.equal(g.mayCheck(2000, true), false, "hidden keeps holding");
+  // Shown again at 3 s: steady ticks resume once the hold from the last
+  // hidden tick ends; an appliance that never answers still times out then.
+  assert.equal(tickUntil(g, 3000, 30_000), 2000 + TICK_HOLD_MS);
+});
+
+test("TickGuard holds after a gap between ticks (a machine that slept)", () => {
+  const g = new TickGuard(0);
+  assert.equal(g.mayCheck(1000, false), true);
+  assert.equal(g.mayCheck(1000 + TICK_GAP_MS, false), true, "a gap of exactly the limit is not a sleep");
+  const woke = 1000 + 2 * TICK_GAP_MS + 1;
+  assert.equal(g.mayCheck(woke, false), false);
+  assert.equal(tickUntil(g, woke + 1000, woke + 30_000), woke + TICK_HOLD_MS);
 });
 
 test("updateUnderway is anything but idle or failed", () => {

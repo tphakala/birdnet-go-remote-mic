@@ -5,7 +5,7 @@ import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, e
 import { confirmDialog } from "../lib/modal.js";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
-import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, sentence, UpdateFollow, updateUnderway, VersionWatch } from "../lib/update-core.js";
+import { describeUpdate, followEndText, installMethodLabel, lastCheckText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch } from "../lib/update-core.js";
 import { showToast } from "../components/toast.js";
 import { generateToken, setToken } from "../lib/auth.js";
 import {
@@ -223,9 +223,6 @@ export class SystemView {
   private readonly versionWatch = new VersionWatch();
   private versionNoticeFor = "";
   private reloading = false;
-  // Set while the page was hidden during the install wait, until the next
-  // status read after it shows again.
-  private awaitFreshStatus = false;
 
   constructor() {
     this.tilesEl = document.getElementById("sys-tiles");
@@ -1179,7 +1176,6 @@ export class SystemView {
   // followStatus feeds each status to the update this tab follows. The store
   // drops reads started before the request, so every status here is current.
   private followStatus(u: UpdateStatus): void {
-    this.awaitFreshStatus = false;
     const step = this.follow?.status(u);
     if (step === "show") this.showInstallModal(u.latestVersion ?? "the update");
     else if (step === "end") this.endFollow(u);
@@ -1199,17 +1195,13 @@ export class SystemView {
     if (!this.updateModal) return;
     const shownAt = Date.now();
     this.follow?.shown(shownAt);
+    // A deadline read after the page was hidden or asleep says nothing about
+    // the install until a fresh status has had a chance to arrive.
+    const guard = new TickGuard(shownAt);
     this.followTimer = setInterval(() => {
-      // A hidden page's timers are throttled and its polling paused, so a
-      // deadline read there says nothing about the install; nor does one read
-      // on its return before a fresh status has come in.
-      if (document.hidden) {
-        this.awaitFreshStatus = true;
-        return;
-      }
-      if (this.awaitFreshStatus) return;
       const now = Date.now();
-      this.updateModal?.elapsed(now - shownAt);
+      if (!document.hidden) this.updateModal?.elapsed(now - shownAt);
+      if (!guard.mayCheck(now, document.hidden)) return;
       if (this.follow?.tick(now) === "timeout") {
         this.stopFollowTimer();
         this.updateModal?.overdue();

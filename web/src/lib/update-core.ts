@@ -175,6 +175,34 @@ export function lastCheckText(lastCheck: string | undefined, nowMs: number, rela
 // longer.
 export const INSTALL_WAIT_TIMEOUT_MS = 6 * 60_000;
 
+// TICK_GAP_MS is a gap between two ticks of a one-second timer that means the
+// page was asleep (a suspended machine, a throttled background tab), and
+// TICK_HOLD_MS how long a deadline then waits: long enough for the store's
+// own poll, which runs when the page shows again, to bring a fresh status.
+export const TICK_GAP_MS = 5000;
+export const TICK_HOLD_MS = 10_000;
+
+// TickGuard decides whether a deadline may be checked on a timer tick. After
+// a tick while hidden, or one that follows a gap, it holds for TICK_HOLD_MS, so
+// a wait never times out on a clock that ran while nobody was looking before a
+// status could arrive; it waits on nothing else, so an appliance that never
+// answers still times out once the hold ends.
+export class TickGuard {
+  private last: number;
+  private holdUntil = 0;
+
+  constructor(nowMs: number) {
+    this.last = nowMs;
+  }
+
+  // mayCheck reports whether the deadline may be checked on this tick.
+  mayCheck(nowMs: number, hidden: boolean): boolean {
+    if (hidden || nowMs - this.last > TICK_GAP_MS) this.holdUntil = nowMs + TICK_HOLD_MS;
+    this.last = nowMs;
+    return nowMs >= this.holdUntil;
+  }
+}
+
 // VERSION_SETTLE_S is how long a new version must have been up before a page
 // reloads onto it. The root updater confirms a new version only after it has
 // stayed up for its settle period (DefaultHealthSettle, 10 s in
