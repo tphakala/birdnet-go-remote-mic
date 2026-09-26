@@ -65,10 +65,13 @@
 
     <!-- Header Quick Actions -->
     <div class="header-actions">
-      <!-- A toggle: pressed means the dark theme is on. app.ts keeps aria-pressed
-           in step with data-theme; the icon shows the current theme (moon for
-           dark, sun for light) through CSS on data-theme. -->
-      <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" title="Dark theme (on)" aria-label="Dark theme" aria-pressed="true">
+      <!-- A toggle: pressed means the dark theme is on. lib/theme.ts sets
+           aria-pressed and the title and keeps them in step with data-theme;
+           neither is hardcoded here, because theme-init.js may already have
+           applied light, and a stale "pressed" would stay if app.js failed to
+           load. The icon shows the current theme (moon for dark, sun for
+           light) through CSS on data-theme. -->
+      <button type="button" class="icon-btn theme-toggle" id="theme-toggle-btn" aria-label="Dark theme">
         <svg class="theme-icon-dark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
         </svg>

@@ -127,6 +127,11 @@ interface CardEntry extends ArticleParts {
   staleNote: HTMLElement | null;
   expanded: boolean;
   dirty: boolean;
+  // The per-device "hide inactive channels" display preference. Read from
+  // storage once when the entry is created and updated by the settings switch,
+  // rather than re-read on every poll; also keeps the choice working for this
+  // visit when the browser cannot persist it.
+  hideInactive: boolean;
 }
 
 // runtimeEnabled reports whether a device is on at runtime. A disabled device is
@@ -592,8 +597,11 @@ export class DashboardView {
         await api.deleteDevice(entry.device.name);
         // The card (and this button) is about to be destroyed by the refresh,
         // which would drop focus to the document body. Move it to the workspace
-        // region first so a keyboard user keeps a sensible place.
-        document.getElementById("main-content")?.focus();
+        // region first so a keyboard user keeps a sensible place. A fallback focus
+        // onto that tall landmark never scrolls (as in the router and the login
+        // modal): a plain focus() would jump the page to the top of <main>, away
+        // from where the removed card was.
+        document.getElementById("main-content")?.focus({ preventScroll: true });
         await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         showToast(`Removed ${entry.device.name}.`);
       });
@@ -627,6 +635,7 @@ export class DashboardView {
       staleNote: null,
       expanded: false,
       dirty: false,
+      hideInactive: readBoolPref(hideInactiveKey(d.device), true),
     };
     this.wireArticleHandlers(entry);
     entry.article.appendChild(entry.settingsWrap);
@@ -1039,18 +1048,24 @@ export class DashboardView {
       // row is marked live and the tally lights stay consistent. Rows index
       // hardware channels from 0, selections number them from 1.
       const states = tallyStates(d.streamedChannels ?? d.channels, entry.live.rows.length);
-      const hideInactive = readBoolPref(hideInactiveKey(d.device), true);
+      const hideInactive = entry.hideInactive;
       // Never hide every row: if no row is streamed (a channel-count/selection
       // mismatch), show them all rather than leave an empty meter console.
       const anyLive = states.some((s) => s);
       // meters is indexed the same as rows (both come from buildMeterConsole);
       // capture it here so the callback below does not re-narrow entry.live.
       const meters = entry.live.meters;
+      // A row hidden while it holds focus (its clip button, as its channel stops
+      // streaming) would drop focus to the document body; note it and re-home
+      // focus after the loop, once the visible rows are settled.
+      const active = document.activeElement;
+      let strandedFocus = false;
       entry.live.rows.forEach((row, i) => {
         const on = states[i];
         row.classList.toggle("ch-live", on);
         row.classList.toggle("ch-off", !on);
         const hide = hideInactive && anyLive && !on;
+        if (hide && !row.hidden && active instanceof Node && row.contains(active)) strandedFocus = true;
         setHidden(row, hide);
         // Stop the hidden row's ~60fps canvas loop; resume it when shown again.
         const meter = meters[i];
@@ -1063,6 +1078,12 @@ export class DashboardView {
         const clipAria = `Channel ${i + 1} (${on ? "streamed" : "not streamed"}) clip indicator, click to clear`;
         if (clip && clip.getAttribute("aria-label") !== clipAria) clip.setAttribute("aria-label", clipAria);
       });
+      if (strandedFocus) {
+        // The nearest stable place: the first visible row's clip button (anyLive
+        // guarantees one), else the card's settings button.
+        const next = entry.live.rows.find((r) => !r.hidden)?.querySelector<HTMLElement>(".clip-latch-btn");
+        (next ?? entry.settingsBtn).focus();
+      }
     }
     if (entry.idle) {
       setHidden(entry.idle.banner, !d.error);
@@ -1247,7 +1268,13 @@ export class DashboardView {
         supportedRates: entry.device.supportedRates,
         supportedChannels: entry.device.supportedChannels,
         idStable: entry.device.idStable,
-      }, () => this.render());
+      }, {
+        hideInactive: entry.hideInactive,
+        onHideInactiveChange: (hide) => {
+          entry.hideInactive = hide;
+          this.render();
+        },
+      });
       entry.settingsForm = form;
       // Record what the form was built from, so an out-of-band change is detected.
       // Cache its config key now: formSource is fixed until the form is rebuilt,

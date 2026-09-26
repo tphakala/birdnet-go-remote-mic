@@ -5,8 +5,9 @@
 // allows scripts from 'self' only. This file must stay a script (no import or
 // export), and it must never throw: the page renders even if it fails.
 //
-// app.ts initTheme reads the attribute set here and owns the toggle, which
-// saves the choice under the same key (app.ts THEME_KEY; a test pins the two).
+// lib/theme.ts initTheme reads the attribute set here and owns the toggle,
+// which saves the choice under the same key, and follows later OS changes with
+// the same media query (THEME_KEY and PREFERS_LIGHT_QUERY; a test pins both).
 (() => {
   let saved: string | null = null;
   try {

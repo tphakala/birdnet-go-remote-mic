@@ -42,7 +42,8 @@ The output must stay plain ES modules (plus the one classic script,
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
   state), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`),
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
-  formatting helpers), `types.ts` (API types).
+  formatting helpers), `theme.ts` (theme toggle and live OS follow, with the
+  browser objects injected so `node:test` covers it), `types.ts` (API types).
 - `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
   `CustomDropdown`, `VUMeter`, `DeviceSettingsForm`, `NotificationCenter`,
   toast, modals).
@@ -129,8 +130,8 @@ reconcile:
 - `localStorage` holds only per-browser preferences (theme, access token,
   collapsed sections, dismissed notifications). Wrap access so a
   storage-blocked browser still works (`readBoolPref`/`writeBoolPref`, the
-  try/catch in `auth.ts`, `notifications.ts`, `theme-init.ts`, and the theme
-  code in `app.ts`).
+  try/catch in `auth.ts`, `notifications.ts`, `theme-init.ts`, and
+  `lib/theme.ts`).
 
 ## Accessibility (a CI gate, not a nicety)
 
@@ -160,7 +161,13 @@ reconcile:
   saved, or storage blocked) `prefers-color-scheme`, else dark when
   `matchMedia` is unavailable. Keep it import-free and non-throwing;
   `test/theme-init.test.ts` runs it as a classic script and pins its `<head>`
-  tag and its key against `THEME_KEY`.
+  tag, its key and its media query against `THEME_KEY` and
+  `PREFERS_LIGHT_QUERY` in `lib/theme.ts`. While nothing is saved,
+  `lib/theme.ts` follows OS changes live; a toggle click saves and wins.
+  `color-scheme` on each theme block keeps native controls in step.
+- Programmatic focus moved to a tall region as a fallback (`#main-content`, a
+  view section) uses `focus({ preventScroll: true })`, so the page stays where
+  the operator was.
 - Class names are descriptive kebab-case (`.view-container`,
   `.meter-canvas-container`). Apart from `.visually-hidden` there are no
   utility classes; style by component.

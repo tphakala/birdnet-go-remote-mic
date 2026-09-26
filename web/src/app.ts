@@ -8,9 +8,8 @@ import { NotificationCenter } from "./components/notification-center.js";
 import { initLoginModal } from "./components/login-modal.js";
 import { applyStoredToken } from "./lib/auth.js";
 import { needsNotificationsFallback } from "./lib/dashboard-core.js";
-
-// theme-init.ts reads the same key before the first paint.
-const THEME_KEY = "remote-mic-theme";
+import { initTheme, PREFERS_LIGHT_QUERY } from "./lib/theme.js";
+import { showToast } from "./components/toast.js";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
 // notifications snapshot before loading it directly (see init).
@@ -56,38 +55,24 @@ class App {
     });
   }
 
-  // theme-init.ts already applied the saved (or OS-preferred) theme before the
-  // first paint, so initTheme adopts the attribute rather than reading storage
-  // a second time. The toggle's save is wrapped so a storage-blocked browser (a
-  // private window, site data blocked) still switches the theme, just without
-  // persisting it.
+  // The toggle and the live OS follow live in lib/theme.ts; this only hands it
+  // the page's objects. A storage-blocked browser (a private window, site data
+  // blocked) still switches the theme, and learns once why it will not stick.
   private initTheme(): void {
-    const initialTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-    const themeToggleBtn = document.getElementById("theme-toggle-btn");
-    // applyTheme is the one place the theme changes, so the toggle's pressed
-    // state (labelled "Dark theme": pressed means dark) never drifts from it.
-    // The tooltip spells the state out, since the icon alone reads as either
-    // the current theme or the one a click switches to.
-    const applyTheme = (theme: string): void => {
-      const dark = theme !== "light";
-      document.documentElement.setAttribute("data-theme", theme);
-      themeToggleBtn?.setAttribute("aria-pressed", String(dark));
-      if (themeToggleBtn) themeToggleBtn.title = dark ? "Dark theme (on)" : "Dark theme (off)";
-    };
-    applyTheme(initialTheme);
-
-    if (themeToggleBtn) {
-      themeToggleBtn.addEventListener("click", () => {
-        const currentTheme = document.documentElement.getAttribute("data-theme");
-        const nextTheme = currentTheme === "light" ? "dark" : "light";
-        applyTheme(nextTheme);
-        try {
-          localStorage.setItem(THEME_KEY, nextTheme);
-        } catch {
-          /* storage unavailable: the theme just does not persist */
-        }
-      });
+    let media: MediaQueryList | null = null;
+    try {
+      media = window.matchMedia(PREFERS_LIGHT_QUERY);
+    } catch {
+      /* matchMedia unavailable: no live follow */
     }
+    initTheme({
+      root: document.documentElement,
+      toggle: document.getElementById("theme-toggle-btn"),
+      storage: () => window.localStorage,
+      media,
+      onSaveFailed: () =>
+        showToast("Theme changed for this visit only. This browser is blocking site data, so the choice resets on reload."),
+    });
   }
 
   private initNav(): void {
