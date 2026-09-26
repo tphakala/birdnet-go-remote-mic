@@ -1,10 +1,32 @@
 // Unit tests for theme-init, the classic script that applies the theme before
-// the first paint. It has no exports, so each case stubs the browser globals
-// it touches and runs the compiled script afresh. Run with node:test over the
-// compiled output (see web:test).
+// the first paint. It has no exports, so each case runs the compiled script in
+// a fresh node:vm context holding stubs for the browser globals it touches.
+// node:vm runs it with classic-script semantics, as the <head> tag does, so an
+// import or export added to it fails here instead of only in the browser. Run
+// with node:test over the compiled output (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { Script } from "node:vm";
+
+// Compiled tests live in web/.test-out/test/, the compiled script in
+// web/.test-out/src/, and the sources two levels up; resolve from
+// import.meta.url rather than process.cwd().
+const THEME_INIT_JS = fileURLToPath(new URL("../src/theme-init.js", import.meta.url).href);
+const INDEX_HTML = fileURLToPath(new URL("../../static/index.html", import.meta.url).href);
+const APP_TS = fileURLToPath(new URL("../../src/app.ts", import.meta.url).href);
+
+const script = new Script(readFileSync(THEME_INIT_JS, "utf8"), { filename: "theme-init.js" });
+
+// The key app.ts saves the toggle's choice under, read from its source so the
+// two files cannot drift apart unnoticed (theme-init cannot import it).
+function appThemeKey(): string {
+  const m = /const THEME_KEY\s*=\s*(["'])([^"']+)\1/.exec(readFileSync(APP_TS, "utf8"));
+  assert.ok(m, "THEME_KEY not found in web/src/app.ts");
+  return m[2];
+}
 
 interface Env {
   // The stored preference; undefined makes storage access throw.
@@ -13,24 +35,23 @@ interface Env {
   prefersLight?: boolean;
 }
 
-let run = 0;
-
 // runThemeInit executes theme-init.js against stubbed globals and returns the
 // data-theme it set, or null when it set none.
-async function runThemeInit(env: Env): Promise<string | null> {
+function runThemeInit(env: Env): string | null {
+  const key = appThemeKey();
   let theme: string | null = null;
-  const stubs: Record<string, unknown> = {
+  // The context is the script's global object; window refers back to it, as
+  // in a browser, so bare and window-qualified names resolve alike.
+  const context: Record<string, unknown> = {
     localStorage: {
-      getItem(key: string): string | null {
+      getItem(k: string): string | null {
         if (env.stored === undefined) throw new Error("storage blocked");
-        return key === "remote-mic-theme" ? env.stored : null;
+        return k === key ? env.stored : null;
       },
     },
-    window: {
-      matchMedia(query: string): { matches: boolean } {
-        if (env.prefersLight === undefined) throw new Error("no matchMedia");
-        return { matches: query === "(prefers-color-scheme: light)" && env.prefersLight };
-      },
+    matchMedia(query: string): { matches: boolean } {
+      if (env.prefersLight === undefined) throw new Error("no matchMedia");
+      return { matches: query === "(prefers-color-scheme: light)" && env.prefersLight };
     },
     document: {
       documentElement: {
@@ -40,44 +61,47 @@ async function runThemeInit(env: Env): Promise<string | null> {
       },
     },
   };
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  for (const [name, value] of Object.entries(stubs)) {
-    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
-  }
-  try {
-    // A fresh query string re-evaluates the script instead of reusing the
-    // cached module from an earlier case.
-    run++;
-    await import(new URL(`../src/theme-init.js?run=${run}`, import.meta.url).href);
-  } finally {
-    for (const [name, desc] of saved) {
-      if (desc) Object.defineProperty(globalThis, name, desc);
-      else Reflect.deleteProperty(globalThis, name);
-    }
-  }
+  context.window = context;
+  script.runInNewContext(context);
   return theme;
 }
 
-test("a saved choice wins over the OS preference", async () => {
-  assert.equal(await runThemeInit({ stored: "light", prefersLight: false }), "light");
-  assert.equal(await runThemeInit({ stored: "dark", prefersLight: true }), "dark");
+test("a saved choice wins over the OS preference", () => {
+  assert.equal(runThemeInit({ stored: "light", prefersLight: false }), "light");
+  assert.equal(runThemeInit({ stored: "dark", prefersLight: true }), "dark");
 });
 
-test("with no saved choice the OS preference decides", async () => {
-  assert.equal(await runThemeInit({ stored: null, prefersLight: true }), "light");
-  assert.equal(await runThemeInit({ stored: null, prefersLight: false }), "dark");
+test("with no saved choice the OS preference decides", () => {
+  assert.equal(runThemeInit({ stored: null, prefersLight: true }), "light");
+  assert.equal(runThemeInit({ stored: null, prefersLight: false }), "dark");
 });
 
-test("an unrecognized saved value falls back to the OS preference", async () => {
-  assert.equal(await runThemeInit({ stored: "sepia", prefersLight: true }), "light");
-  assert.equal(await runThemeInit({ stored: "", prefersLight: false }), "dark");
+test("an unrecognized saved value falls back to the OS preference", () => {
+  assert.equal(runThemeInit({ stored: "sepia", prefersLight: true }), "light");
+  assert.equal(runThemeInit({ stored: "", prefersLight: false }), "dark");
 });
 
-test("blocked storage keeps the dark default without throwing", async () => {
-  assert.equal(await runThemeInit({ stored: undefined, prefersLight: true }), "dark");
+test("blocked storage keeps the dark default without throwing", () => {
+  assert.equal(runThemeInit({ stored: undefined, prefersLight: true }), "dark");
 });
 
-test("a missing matchMedia keeps the dark default without throwing", async () => {
-  assert.equal(await runThemeInit({ stored: null, prefersLight: undefined }), "dark");
+test("a missing matchMedia keeps the dark default without throwing", () => {
+  assert.equal(runThemeInit({ stored: null, prefersLight: undefined }), "dark");
+});
+
+test("a saved choice applies without consulting matchMedia", () => {
+  assert.equal(runThemeInit({ stored: "light", prefersLight: undefined }), "light");
+});
+
+test("index.html loads theme-init.js as a blocking classic script in <head>", () => {
+  const html = readFileSync(INDEX_HTML, "utf8");
+  const head = /<head>([\s\S]*?)<\/head>/.exec(html);
+  assert.ok(head, "no <head> in index.html");
+  const tag = /<script\b([^>]*)\ssrc\s*=\s*["']?theme-init\.js["']?([^>]*)>/i.exec(head[1]);
+  assert.ok(tag, "theme-init.js is not loaded in <head>");
+  // A module, deferred or async script runs after the first paint, which is
+  // the flash this script exists to prevent.
+  const attrs = ` ${tag[1]} ${tag[2]} `;
+  assert.ok(!/\stype\s*=\s*["']?module\b/i.test(attrs), "theme-init.js tag is a module");
+  assert.ok(!/\s(defer|async)(?=[\s=/]|$)/i.test(attrs), "theme-init.js tag is deferred or async");
 });
