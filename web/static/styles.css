@@ -1046,16 +1046,20 @@ body {
   gap: 10px;
 }
 
+/* On a narrow card whole metrics wrap to the next line instead of the row
+   overflowing the card or a label splitting from its value. */
 .stream-metrics {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 4px 16px;
 }
 
 .metric-item {
   display: flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
 }
 
 .metric-val {
