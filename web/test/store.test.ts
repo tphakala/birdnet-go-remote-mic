@@ -229,6 +229,16 @@ test("applyUpdateStatus wins over a system read already in flight and announces"
   assert.equal(h.events.get("system"), 2);
 });
 
+test("applyUpdateStatus announces only a change", async () => {
+  const h = harness();
+  h.push("getSystem", { hostname: "pi" } as unknown as SystemInfo);
+  await h.store.refreshSystem();
+  const update = { phase: "downloading" } as unknown as UpdateStatus;
+  h.store.applyUpdateStatus(update);
+  h.store.applyUpdateStatus({ ...update });
+  assert.equal(h.events.get("system"), 2, "the first read and one change");
+});
+
 test("applyUpdateStatus without a system snapshot still drops the older read", async () => {
   const h = harness();
   const slow = deferred<SystemInfo>();

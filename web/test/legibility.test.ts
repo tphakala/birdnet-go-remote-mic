@@ -227,7 +227,7 @@ test("inline code sits only in body-size or larger text, so it stays above the f
   assert.deepEqual([...sample], [[".note code", 12], [".para code", 13], [".orphan code", null], [".direct", null]]);
 });
 
-test("the type scale is rem, apart from the one relative code token", () => {
+test("the type scale is rem, apart from the one em code token", () => {
   const source = blankComments(css);
   const tokens = scaleTokens(source);
   assert.ok(tokens.size >= 5, `found only ${tokens.size} --font-size-* tokens`);

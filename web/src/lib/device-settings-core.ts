@@ -62,9 +62,14 @@ export function bitrateFollowsDefault(savedBitrate: number | undefined, channelC
 // mode, channels and opus fields). The appliance rejects a patch without
 // streams that would collapse a multi-stream device, and with streams present
 // it ignores the flat fields, so the edited first stream goes in streams[0]. A
-// single-stream device is sent flat, as before.
+// single-stream device is sent flat, as before, without any streams field the
+// edit carried.
 export function withFirstStream(edited: DeviceConfig, saved: readonly StreamConfig[] | undefined): DeviceConfig {
-  if (!saved || saved.length < 2) return edited;
+  if (!saved || saved.length < 2) {
+    // Flat: a streams field the edit carries would be authoritative and stale.
+    const { streams: _stale, ...flat } = edited;
+    return flat;
+  }
   const first: StreamConfig = { path: edited.path, mode: edited.mode, channels: edited.channels };
   if (edited.opus) first.opus = edited.opus;
   return { ...edited, streams: [first, ...saved.slice(1)] };

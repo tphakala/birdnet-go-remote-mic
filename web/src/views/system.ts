@@ -1146,7 +1146,8 @@ export class SystemView {
     const grid = document.getElementById("sys-update-info");
     if (!grid) return;
     // Versions are code-like, so mono; the others are words. A build that
-    // names no release never checks, so its Last Check row stays hidden.
+    // names no release never checks, so its Latest Release and Last Check
+    // rows stay hidden.
     const rows: [string, string, boolean, boolean][] = [
       ["Installed Version", u.currentVersion || "-", true, true],
       ["Latest Release", u.latestVersion ?? "-", true, u.supported],

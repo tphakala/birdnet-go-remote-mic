@@ -38,11 +38,11 @@ The output must stay plain ES modules (plus the one classic script,
 - `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the REST client;
   raises `ApiError` from RFC 9457 problem bodies, handles the Bearer token and
   401; the one deliberate bypass is the restart modal's raw
-  `fetch("/api/v1/healthz")` probe),
-  `sse.ts` (`sse`, fetch-streaming SSE
+  `fetch("/api/v1/healthz")` probe), `sse.ts` (`sse`, fetch-streaming SSE
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
   state; `applyUpdateStatus` merges an update check or request response and
-  drops older system reads), `router.ts` (hash routes `#/dashboard`, `#/events`, `#/system`,
+  drops older system reads), `router.ts` (hash routes `#/dashboard`,
+  `#/events`, `#/system`,
   `#/about`; the pure route decisions are in `router-core.ts`),
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
   formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow

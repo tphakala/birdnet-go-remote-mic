@@ -233,7 +233,7 @@ export type FollowStep = "none" | "show" | "end" | "timeout";
 // release downloads; the modal shows once the root updater has it, and a
 // deadline runs only from then. idle or failed on the version the update started
 // from means the attempt ended without a restart. A status on another version
-// is left to VersionWatch, which reloads the page.
+// is left to VersionWatch, and the view reloads the page on its answer.
 export class UpdateFollow {
   private modalShown = false;
   private ended = false;

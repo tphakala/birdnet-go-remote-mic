@@ -154,9 +154,11 @@ test("describeUpdate: up to date only when the newest release is known", () => {
   assert.ok(never.detail.includes("or checks are turned on"), never.detail);
 });
 
-test("describeUpdate: no upgrade hint still ends in a sentence and says where to look", () => {
+test("describeUpdate: no upgrade hint still says how to update, in a sentence", () => {
   const v = describeUpdate(status({ latestVersion: "v0.3.0", available: true, canApply: false, upgradeHint: undefined }));
   assert.equal(v.hint, "Update it the way it was installed.");
+  const blank = describeUpdate(status({ latestVersion: "v0.3.0", available: true, canApply: false, upgradeHint: "   " }));
+  assert.equal(blank.hint, "Update it the way it was installed.", "a blank hint counts as none");
 });
 
 test("describeUpdate: neutral states are info toned", () => {

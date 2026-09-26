@@ -102,8 +102,8 @@ test("the name and path limits match internal/config MaxNameLen and MaxPathLen",
 
 test("withFirstStream sends a single-stream device flat", () => {
   const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16" };
-  assert.equal(withFirstStream(edited, undefined), edited);
-  assert.equal(withFirstStream(edited, [{ path: "/old", mode: "opus", channels: [1] }]), edited);
+  assert.deepEqual(withFirstStream(edited, undefined), edited);
+  assert.deepEqual(withFirstStream(edited, [{ path: "/old", mode: "opus", channels: [1] }]), edited);
 });
 
 test("withFirstStream puts the edit in streams[0] and keeps the others", () => {
@@ -128,7 +128,11 @@ test("withFirstStream keeps every other stream exactly, and an edit without opus
 test("withFirstStream takes the other streams from the list it is given, not the edit", () => {
   // The save passes the config current at save time; a stream added there
   // since the form opened is kept, and one removed there stays removed.
-  const edited: DeviceConfig = { name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16" };
+  // The edit carries a stale streams list, which must not win.
+  const edited: DeviceConfig = {
+    name: "a", device: "hw:1,0", path: "/a", mode: "pcm", rate: 48000, channels: [1], format: "s16",
+    streams: [{ path: "/a", mode: "pcm", channels: [1] }, { path: "/stale", mode: "pcm", channels: [2] }],
+  };
   const now = [{ path: "/a", mode: "pcm" as const, channels: [1] }, { path: "/new", mode: "pcm" as const, channels: [2] }];
   assert.deepEqual(withFirstStream(edited, now).streams?.map((st) => st.path), ["/a", "/new"]);
   assert.equal(withFirstStream(edited, [now[0]]).streams, undefined, "down to one stream, the edit goes flat");

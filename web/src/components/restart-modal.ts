@@ -196,8 +196,8 @@ export function showUpdateModal(target: string): UpdateModal | null {
       if (titleEl) titleEl.textContent = oldTitle;
       textEl?.replaceChildren(...oldText);
       restarting = false;
-      // announce writes on the next frame; clearing on a later frame drops a
-      // phase still queued, so a hidden modal leaves nothing to be read out.
+      // announce writes on the next frame; a clear queued after it runs after
+      // it in that frame, so a hidden modal leaves nothing to be read out.
       const region = document.getElementById("restart-announce");
       requestAnimationFrame(() => {
         if (region) region.textContent = "";

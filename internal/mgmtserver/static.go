@@ -72,9 +72,10 @@ func (g *gzipped) get(a *staticAsset, c *compressor) (data []byte, etag string) 
 // compressor gzips assets one at a time. A first page load asks for dozens of
 // assets at once, and a flate writer allocates about a megabyte of tables, so
 // compressing them side by side would spike the heap on a Pi; one at a time,
-// each writer is garbage before the next is made, and nothing is kept once the
-// UI goes quiet. The default level is used: the best level costs twice the CPU
-// for a few percent.
+// each writer is garbage before the next is made, and no writer is kept once
+// the UI goes quiet (each asset's encoding is, for the life of the process).
+// The default level is used: the best level costs two to four times the CPU
+// for a few percent smaller output.
 type compressor struct {
 	mu sync.Mutex
 }
