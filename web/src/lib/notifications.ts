@@ -171,13 +171,13 @@ export class NotificationStore extends EventTarget {
 
   public markAllRead(): void {
     coreMarkAllRead(this.state);
-    this.persist();
+    this.persist(true);
     this.emitChange();
   }
 
   public clearAll(): void {
     coreClearAll(this.state);
-    this.persist();
+    this.persist(true);
     this.emitChange();
   }
 
@@ -284,8 +284,11 @@ export class NotificationStore extends EventTarget {
 
   // persist writes the read state, but only when it changed since the last
   // write: most live events leave it untouched, and a write per event would
-  // cost a synchronous storage write for nothing.
-  private persist(): void {
+  // cost a synchronous storage write for nothing. userAction marks a write the
+  // operator caused (mark all read, clear all): only such a failure raises the
+  // shared "not saved" notice, since an automatic write after a snapshot or a
+  // live event fails on every load in a storage-blocked browser, unprompted.
+  private persist(userAction = false): void {
     const next = serialize(this.state);
     if (next === this.persisted) return;
     // Recorded before the write, so a storage that throws is not retried on
@@ -296,8 +299,8 @@ export class NotificationStore extends EventTarget {
     } catch {
       // A quota or availability error must not break the UI; the read state is
       // a convenience, rebuilt from the server on the next load either way. The
-      // shared notice says once why read marks reset on reload.
-      prefSaveNotice.report();
+      // shared notice says once why the operator's read marks reset on reload.
+      if (userAction) prefSaveNotice.report();
     }
   }
 

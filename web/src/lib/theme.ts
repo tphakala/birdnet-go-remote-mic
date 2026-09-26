@@ -148,7 +148,9 @@ export function initTheme(env: ThemeEnv): ThemeController {
         else env.storage().setItem(THEME_KEY, next);
       } catch {
         // The mode still applies for this visit; say once why it will not stick.
-        if (!saveWarned) {
+        // A failed removeItem for System loses nothing: storage that cannot be
+        // read back already reads as System, here and in theme-init.
+        if (next !== "system" && !saveWarned) {
           saveWarned = true;
           env.onSaveFailed();
         }

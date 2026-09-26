@@ -136,13 +136,15 @@ reconcile:
   Never interpolate device names, config values, API responses, or any user
   input into markup.
 - `localStorage` holds only per-browser preferences (theme, access token,
-  hidden meter channels, read and dismissed notifications). Wrap access so a
-  storage-blocked browser still works (`readBoolPref`/`writeBoolPref`, the
-  try/catch in `auth.ts`, `notifications.ts`, `theme-init.ts`, and
-  `lib/theme.ts`). A failed preference save calls `prefSaveNotice.report()`
-  (`lib/prefs.ts`), which warns once per page. Each key has one writer, and a
-  preference another tab can change listens for the `storage` event (the
-  theme, hidden channels).
+  hidden meter channels, the Events `/` shortcut, read and dismissed
+  notifications). Wrap access so a storage-blocked browser still works
+  (`readBoolPref`/`writeBoolPref`, the try/catch in `auth.ts`,
+  `notifications.ts`, `theme-init.ts`, and `lib/theme.ts`). When a display
+  preference the operator just chose cannot be saved, call
+  `prefSaveNotice.report()` (`lib/prefs.ts`), which warns once per page; an
+  automatic write (a snapshot or a live event) and the access token stay
+  silent. Each key has one writer. The theme and the hidden channels also
+  follow changes made in another tab (the `storage` event).
 
 ## Accessibility (a CI gate, not a nicety)
 

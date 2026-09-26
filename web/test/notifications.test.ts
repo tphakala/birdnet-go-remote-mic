@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 
 import { ApiError } from "../src/lib/api.js";
 import { NotificationStore } from "../src/lib/notifications.js";
+import { prefSaveNotice } from "../src/lib/prefs.js";
 import { resyncDelay } from "../src/lib/notifications-core.js";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.js";
 import { FakeTimers, notif } from "./fixtures.js";
@@ -191,4 +192,22 @@ test("a load failing after the stream went down arms no retry until it is back",
   await settle();
   assert.equal(h.calls(), 2);
   assert.equal(h.ns.hasLoaded(), true);
+});
+
+// node has no localStorage, so every persist here fails the way a
+// storage-blocked browser does. This test sets the page-wide notice handler, so
+// it must stay the last in the file that can report.
+test("a failed automatic save stays silent; a failed mark-all-read reports once", async () => {
+  let shown = 0;
+  prefSaveNotice.setHandler(() => shown++);
+  const h = harness();
+  h.push(snap([notif({ id: 1 }), notif({ id: 2 })]));
+  h.connect();
+  await settle();
+  // The snapshot's write (it records the boot id) fails, unprompted.
+  assert.equal(shown, 0, "a snapshot write is not the operator's choice");
+  h.ns.markAllRead();
+  assert.equal(shown, 1);
+  h.ns.clearAll();
+  assert.equal(shown, 1, "the notice shows once per page");
 });

@@ -286,3 +286,13 @@ test("without storage events the theme still applies and follows", () => {
   h.osChange(false);
   assert.equal(h.theme(), "dark");
 });
+
+test("choosing System with blocked storage reports nothing: it reads back as System anyway", () => {
+  for (const blocked of ["getter", "calls"] as const) {
+    const h = harness({ initial: "dark", blocked });
+    h.ctl.setMode("system");
+    assert.equal(h.saveFailures(), 0, blocked);
+    h.ctl.setMode("dark");
+    assert.equal(h.saveFailures(), 1, blocked);
+  }
+});
