@@ -4,10 +4,13 @@ package main
 
 import (
 	"errors"
+	"io"
+	"sync/atomic"
 	"testing"
 
 	capture "github.com/tphakala/go-audio-capture"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 )
@@ -29,6 +32,14 @@ func swapResolveOpenChannels(fn func(string, []int) int) func() {
 	prev := resolveOpenChannels
 	resolveOpenChannels = fn
 	return func() { resolveOpenChannels = prev }
+}
+
+// swapOpenCaptureAt substitutes the capture-open seam and returns a restore
+// func, so a test can open a device without hardware.
+func swapOpenCaptureAt(fn func(*config.Device, int) (audio.Source, capture.Format, error)) func() {
+	prev := openCaptureAt
+	openCaptureAt = fn
+	return func() { openCaptureAt = prev }
 }
 
 // TestOpenDeviceRetrySkipsBusyDevice verifies the non-blocking busy gate: a
@@ -171,5 +182,47 @@ func TestPermanentOpenError(t *testing.T) {
 		if got := permanentOpenError(c.err); got != c.want {
 			t.Errorf("permanentOpenError(%v) = %v, want %v", c.err, got, c.want)
 		}
+	}
+}
+
+// overrunCapture is a capture source that ends at once and reports a settable
+// overrun count, standing in for the hardware capture openDevice opens and for
+// a runtime's capture in the status and counter tests.
+type overrunCapture struct{ n atomic.Uint64 }
+
+// newOverrunCapture returns an overrunCapture reporting n overruns.
+func newOverrunCapture(n uint64) *overrunCapture {
+	c := &overrunCapture{}
+	c.n.Store(n)
+	return c
+}
+
+func (c *overrunCapture) Negotiated() (rate, channels int) { return 48000, 1 }
+func (c *overrunCapture) Read() (audio.Period, error)      { return audio.Period{}, io.EOF }
+func (c *overrunCapture) Close() error                     { return nil }
+func (c *overrunCapture) Overruns() uint64                 { return c.n.Load() }
+
+// openDevice keeps the (metered) base capture as the runtime's source, so the
+// capture's overrun count reaches the API and the host monitor; a runtime
+// pointed at a per-stream source instead would silently report zero.
+func TestOpenDeviceRuntimeReadsCaptureOverruns(t *testing.T) {
+	fake := newOverrunCapture(4)
+	defer swapOpenCaptureAt(func(*config.Device, int) (audio.Source, capture.Format, error) {
+		return fake, capture.FormatS16LE, nil
+	})()
+
+	dev := &config.Device{Name: "yard", Device: devMissing, Rate: 48000, Format: testFmtS16,
+		Streams: []config.Stream{{Path: "/yard", Mode: config.ModePCM, Channels: []int{1}}}}
+	rt, err := openDevice(dev, 1, levels.NewHub())
+	if err != nil {
+		t.Fatalf("openDevice: %v", err)
+	}
+	defer func() { _ = rt.fanout.Close() }()
+	if got := rt.overruns(); got != 4 {
+		t.Errorf("runtime overruns = %d, want the capture's 4", got)
+	}
+	fake.n.Store(9)
+	if got := rt.status().Overruns; got != 9 {
+		t.Errorf("status Overruns = %d, want the capture's live 9", got)
 	}
 }

@@ -644,15 +644,6 @@ func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 	}
 	// A freshly provisioned device is single-stream, so the flat projection of its
 	// first stream is complete; no per-stream runtime status exists yet.
-	if len(d.Streams) > 0 {
-		s0 := &d.Streams[0]
-		out.Path = s0.Path
-		out.Mode = mapMode(s0.Mode)
-		out.Channels = s0.Channels
-		if s0.Mode == config.ModeOpus {
-			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
-		}
-		out.StreamedChannels = ptr(d.StreamChannelUnion())
-	}
+	projectFirstStream(&out, d)
 	return out
 }

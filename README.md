@@ -101,9 +101,17 @@ device.
 A built-in HTTPS management UI (default `:8443`) runs alongside the streams. The
 **Dashboard** (shown above) lists every capture device with live per-channel
 level meters, stream state, negotiated rate and channel count, the RTSP URL with
-one-click copy, and dropped-frame counters. Its **Available Devices** list
-enumerates capture hardware on the host that is not streaming yet, so you enable
-a device straight from the browser with no config-file editing.
+one-click copy, and counters for dropped frames and capture overruns. The
+Dashboard's **Available Devices** list enumerates capture hardware on the host
+that is not streaming yet, so you enable a device straight from the browser
+with no config-file editing.
+
+A capture overrun (an ALSA xrun) means the capture fell behind the sound card
+and its buffer filled before it was read, so audio was lost on every stream of
+that device; it usually points at a busy host or an unstable USB connection (a
+recovered system suspend counts as one too). With notifications on (the
+default), five overruns within five minutes raise a warning notification, which
+clears after five minutes without one.
 
 ![The System tab: host telemetry, per-device stream status, and network and discovery settings](assets/system.png)
 
@@ -471,8 +479,9 @@ For a local end-to-end check without hardware, use the ALSA loopback
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous
-  bandwidth is shared per controller (watch for xruns when several high-rate
-  or ultrasonic mics share one hub), and independent devices drift relative to
+  bandwidth is shared per controller (watch each device's capture-overrun
+  counter on the Dashboard when several high-rate or ultrasonic mics share one
+  hub), and independent devices drift relative to
   each other over time (each stream is honest to its own capture clock).
 
 ## Development

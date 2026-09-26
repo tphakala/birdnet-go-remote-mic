@@ -6,7 +6,7 @@ require (
 	github.com/brutella/dnssd v1.2.14
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
-	github.com/tphakala/go-audio-capture v0.7.0
+	github.com/tphakala/go-audio-capture v0.7.1
 	github.com/tphakala/go-audio-stream v0.6.0
 	github.com/tphakala/go-opus v1.1.0
 	golang.org/x/term v0.46.0

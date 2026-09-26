@@ -193,8 +193,8 @@ func TestGetConfigProjectsFirstStreamAndListsAll(t *testing.T) {
 	}
 	got := resp.(mgmtapi.GetConfig200JSONResponse)
 	d := got.Devices[0]
-	if d.Path != pathNorth || d.Mode != mgmtapi.Pcm {
-		t.Errorf("flat projection = %q/%v, want /north/pcm", d.Path, d.Mode)
+	if d.Path != pathNorth || d.Mode != mgmtapi.Pcm || !slices.Equal(d.Channels, []int{1}) {
+		t.Errorf("flat projection = %q/%v/%v, want /north/pcm/[1]", d.Path, d.Mode, d.Channels)
 	}
 	if d.Streams == nil || len(*d.Streams) != 2 {
 		t.Fatalf("streams = %+v, want 2", d.Streams)
@@ -269,5 +269,20 @@ func TestDeviceMapsStreamedChannels(t *testing.T) {
 	provisioned := configDeviceToWireDevice(&cfg)
 	if provisioned.StreamedChannels == nil || !slices.Equal(*provisioned.StreamedChannels, []int{1, 3}) {
 		t.Errorf("provisioned streamedChannels = %v, want [1 3]", provisioned.StreamedChannels)
+	}
+}
+
+// A device with no streams has no first stream to project: the flat fields and
+// streamedChannels stay unset rather than describing an empty stream.
+func TestProjectFirstStreamWithoutStreams(t *testing.T) {
+	t.Parallel()
+	streamless := &config.Device{Name: "attic"}
+	if _, ok := firstStream(streamless); ok {
+		t.Error("firstStream of a device with no streams reported ok, want false")
+	}
+	var out mgmtapi.Device
+	projectFirstStream(&out, streamless)
+	if out.Path != "" || out.Mode != "" || out.Channels != nil || out.Opus != nil || out.StreamedChannels != nil {
+		t.Errorf("projection of a streamless device = %+v, want the flat fields unset", out)
 	}
 }

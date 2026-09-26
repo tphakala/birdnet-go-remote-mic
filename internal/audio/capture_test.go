@@ -17,6 +17,7 @@ type stubStream struct {
 	neg     capture.Config
 	started bool
 	closed  bool
+	xruns   uint64
 }
 
 func (s *stubStream) Negotiated() capture.Config { return s.neg }
@@ -24,7 +25,8 @@ func (s *stubStream) Start() error               { s.started = true; return nil 
 func (s *stubStream) Read(buf []byte) (int, error) {
 	return len(buf) / 2, nil
 }
-func (s *stubStream) Close() error { s.closed = true; return nil }
+func (s *stubStream) Close() error  { s.closed = true; return nil }
+func (s *stubStream) Xruns() uint64 { return s.xruns }
 
 func swapOpenStream(neg capture.Config) (stub *stubStream, restore func()) {
 	stub = &stubStream{neg: neg}
@@ -107,6 +109,38 @@ func TestOpenCapturePassesS16Format(t *testing.T) {
 	}
 }
 
+// The capture's recovered-overrun count must reach the appliance through the
+// metered wrapper it actually holds, read live rather than snapshotted at open.
+func TestOverrunsForwardedFromCapture(t *testing.T) {
+	defer swapMonoProbe()()
+	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
+	defer restore()
+	src, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
+	if err != nil {
+		t.Fatalf("OpenCapture: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+	metered := NewMeteredSource(src, &recordingObserver{})
+
+	if got := Overruns(metered); got != 0 {
+		t.Fatalf("Overruns before any xrun = %d, want 0", got)
+	}
+	stub.xruns = 3
+	if got := Overruns(src); got != 3 {
+		t.Errorf("Overruns(capture) = %d, want 3", got)
+	}
+	if got := Overruns(metered); got != 3 {
+		t.Errorf("Overruns(metered) = %d, want 3", got)
+	}
+}
+
+func TestOverrunsZeroForUncountedSource(t *testing.T) {
+	t.Parallel()
+	if got := Overruns(NewFakeSource(48000, 1, nil)); got != 0 {
+		t.Errorf("Overruns(fake) = %d, want 0", got)
+	}
+}
+
 func TestOpenCaptureAtReturnsNegotiatedFormat(t *testing.T) {
 	// The negotiated hardware capture format is surfaced in device status, so
 	// OpenCaptureAt returns it alongside the source. A native-S16 device reports
@@ -165,7 +199,8 @@ func (s *twoChanStub) Read(buf []byte) (int, error) {
 	}
 	return frames, nil
 }
-func (s *twoChanStub) Close() error { s.closed = true; return nil }
+func (s *twoChanStub) Close() error  { s.closed = true; return nil }
+func (s *twoChanStub) Xruns() uint64 { return 0 }
 
 func TestOpenCaptureOpensAtResolvedCountUnselected(t *testing.T) {
 	// A stereo-only device (opens only at 2 channels) with a single-channel
@@ -222,6 +257,7 @@ type s32Stream struct {
 	neg     capture.Config
 	samples []int32
 	closed  bool
+	xruns   uint64
 }
 
 func (s *s32Stream) Negotiated() capture.Config { return s.neg }
@@ -232,7 +268,8 @@ func (s *s32Stream) Read(buf []byte) (int, error) {
 	}
 	return len(s.samples) / s.neg.Channels, nil
 }
-func (s *s32Stream) Close() error { s.closed = true; return nil }
+func (s *s32Stream) Close() error  { s.closed = true; return nil }
+func (s *s32Stream) Xruns() uint64 { return s.xruns }
 
 func TestOpenCaptureFallsBackToS32AndDownconverts(t *testing.T) {
 	// The device rejects S16 (here with a rate error, which must NOT short-circuit
@@ -282,6 +319,11 @@ func TestOpenCaptureFallsBackToS32AndDownconverts(t *testing.T) {
 			t.Errorf("sample %d = %#04x, want %#04x", i, uint16(got), uint16(w))
 		}
 	}
+	// A converting source forwards the stream's overrun count like the plain one.
+	fake.xruns = 4
+	if got := Overruns(src); got != 4 {
+		t.Errorf("Overruns = %d, want 4", got)
+	}
 	if err := src.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -306,7 +348,8 @@ func (s *s243Stream) Read(buf []byte) (int, error) {
 	}
 	return len(s.samples) / s.neg.Channels, nil
 }
-func (s *s243Stream) Close() error { s.closed = true; return nil }
+func (s *s243Stream) Close() error  { s.closed = true; return nil }
+func (s *s243Stream) Xruns() uint64 { return 0 }
 
 func TestOpenCaptureFallsBackToS243LEAndDownconverts(t *testing.T) {
 	// The Apogee HypeMiC (issue #76) exposes only native 24-bit packed capture, so
@@ -389,7 +432,8 @@ func (s *s24leStream) Read(buf []byte) (int, error) {
 	}
 	return len(s.words) / s.neg.Channels, nil
 }
-func (s *s24leStream) Close() error { s.closed = true; return nil }
+func (s *s24leStream) Close() error  { s.closed = true; return nil }
+func (s *s24leStream) Xruns() uint64 { return 0 }
 
 func TestOpenCaptureFallsBackToS24LEAndDownconverts(t *testing.T) {
 	// A 24-in-32 interface: S16 and S32 fail and the device opens in S24_LE, before

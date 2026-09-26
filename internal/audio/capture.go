@@ -18,6 +18,9 @@ type captureStream interface {
 	Start() error
 	Read(buf []byte) (int, error)
 	Close() error
+	// Xruns is the count of overruns (and suspends) the stream recovered from
+	// inside Read.
+	Xruns() uint64
 }
 
 // openStream is a package var so tests can inject a fake capture layer.
@@ -311,6 +314,8 @@ func (c *captureSource) Read() (Period, error) {
 
 func (c *captureSource) Close() error { return c.s.Close() }
 
+func (c *captureSource) Overruns() uint64 { return c.s.Xruns() }
+
 // convertingSource wraps a wider-than-S16 capture stream (S32LE, or the 24-bit
 // S24LE / S24_3LE) and delivers S16LE periods, so a 24/32-bit-only device looks
 // like any other S16 Source to the pipeline. It keeps two reused buffers: in
@@ -358,3 +363,5 @@ func (c *convertingSource) Read() (Period, error) {
 }
 
 func (c *convertingSource) Close() error { return c.s.Close() }
+
+func (c *convertingSource) Overruns() uint64 { return c.s.Xruns() }

@@ -760,6 +760,7 @@ components:
         - channels
         - clientConnected
         - droppedFrames
+        - overruns
       properties:
         name:
           type: string
@@ -864,6 +865,20 @@ components:
           description: >
             Frames dropped because the connected client was not keeping
             up. Zero for devices that never served.
+        overruns:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Capture overruns (ALSA xruns) the device's capture has recovered
+            from since it was last opened. Each one lost audio for every
+            stream on the device, before any client saw it, and usually means
+            the host was too busy or the USB connection is unstable; a
+            recovered system suspend counts as one too. The count starts from
+            zero each time the device is opened. A failed device keeps
+            reporting the count it reached; a device with no open capture
+            (never opened, disabled, or skipped after a failed reopen) reports
+            zero, so treat a decrease as a reset.
         error:
           type: string
           description: Why the device is skipped or failed. Absent when serving.

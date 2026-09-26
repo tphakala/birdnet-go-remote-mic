@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.js";
 import { showToast } from "../components/toast.js";
 import { api, ApiError } from "../lib/api.js";
 import { button, clearBusy, deviceStateBadge, elem, formatUptime, hideInactiveKey, ICON_COPY, iconSpan, modeLabel, readBoolPref, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, switchControl, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, tallyStates } from "../lib/dashboard-core.js";
+import { bannerIsError, captureFormatLabel, channelLabel, downCauseTitle, footerMetrics, tallyStates } from "../lib/dashboard-core.js";
 import { confirmDialog } from "../lib/modal.js";
 import { getToken } from "../lib/auth.js";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
@@ -54,6 +54,7 @@ interface LiveBody {
   urlEl: HTMLElement;
   clientsEl: HTMLElement;
   droppedEl: HTMLElement;
+  overrunsEl: HTMLElement;
   negotiatedEl: HTMLElement;
   // One VU meter per captured hardware channel, indexed by zero-based channel.
   meters: VUMeter[];
@@ -191,6 +192,35 @@ function nonServingFooterText(state: string, configEnabled: boolean): string {
       : "Streaming is disabled for this device. Enable it to start serving.";
   }
   return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
+}
+
+// OVERRUNS_DESCRIPTION explains the capture-overrun counter, which the label
+// alone cannot for an operator who has not met the term.
+const OVERRUNS_DESCRIPTION =
+  "Times capture fell behind the sound card, or the system suspended, and lost audio; " +
+  "usually a busy host or unstable USB. Counted since the device opened.";
+
+// metricItem builds one footer metric: its label and the value element syncCard
+// fills. A description is read after the value by a screen reader from a
+// visually hidden span, and shown to mouse users as a title on the visible
+// label; a title alone reaches neither touch nor assistive-tech users. That
+// label is hidden from assistive tech and a visually hidden copy speaks for it,
+// so a screen reader that also announces titles does not read the description
+// twice.
+function metricItem(label: string, description?: string): { item: HTMLElement; value: HTMLElement } {
+  const item = elem("div", "metric-item");
+  if (description) {
+    const shown = elem("span", undefined, label);
+    shown.title = description;
+    shown.setAttribute("aria-hidden", "true");
+    item.append(shown, elem("span", "visually-hidden", label));
+  } else {
+    item.appendChild(elem("span", undefined, label));
+  }
+  const value = elem("span", "metric-val mono");
+  item.appendChild(value);
+  if (description) item.appendChild(elem("span", "visually-hidden", ` (${description})`));
+  return { item, value };
 }
 
 // Sequence for the settings panels' element ids (aria-controls targets).
@@ -782,16 +812,10 @@ export class DashboardView {
       // Footer
       const footer = elem("div", "rack-footer");
       const metrics = elem("div", "stream-metrics");
-      const clientItem = elem("div", "metric-item");
-      clientItem.appendChild(elem("span", undefined, "Clients:"));
-      const clientsEl = elem("span", "metric-val mono");
-      clientItem.appendChild(clientsEl);
-      const dropItem = elem("div", "metric-item");
-      dropItem.appendChild(elem("span", undefined, "Dropped Frames:"));
-      const droppedEl = elem("span", "metric-val mono");
-      dropItem.appendChild(droppedEl);
-      metrics.appendChild(clientItem);
-      metrics.appendChild(dropItem);
+      const clients = metricItem("Clients:");
+      const dropped = metricItem("Dropped Frames:");
+      const overruns = metricItem("Capture Overruns:", OVERRUNS_DESCRIPTION);
+      metrics.append(clients.item, dropped.item, overruns.item);
       footer.appendChild(metrics);
       const negotiated = elem("div");
       const negotiatedEl = elem("span");
@@ -802,7 +826,15 @@ export class DashboardView {
       footer.appendChild(footerEnd);
       article.appendChild(footer);
 
-      live = { urlEl, clientsEl, droppedEl, negotiatedEl, meters: built.meters, rows: built.rows };
+      live = {
+        urlEl,
+        clientsEl: clients.value,
+        droppedEl: dropped.value,
+        overrunsEl: overruns.value,
+        negotiatedEl,
+        meters: built.meters,
+        rows: built.rows,
+      };
     } else {
       // Error / skipped / disabled body. The banner is always present and hidden
       // by syncCard when the device has no error, so an error whose text changes
@@ -989,8 +1021,10 @@ export class DashboardView {
       const url = this.rtspUrl(d);
       setText(entry.live.urlEl, url);
       if (entry.live.urlEl.title !== url) entry.live.urlEl.title = url;
-      setText(entry.live.clientsEl, d.clientConnected ? "1 connected" : "0 connected");
-      setText(entry.live.droppedEl, String(d.droppedFrames));
+      const counters = footerMetrics(d);
+      setText(entry.live.clientsEl, counters.clients);
+      setText(entry.live.droppedEl, counters.dropped);
+      setText(entry.live.overrunsEl, counters.overruns);
       const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
       setText(entry.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}`);
       // The label is the hardware capture format; the RTSP stream is always 16-bit,

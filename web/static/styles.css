@@ -1046,16 +1046,20 @@ body {
   gap: 10px;
 }
 
+/* On a narrow card whole metrics wrap to the next line instead of the row
+   overflowing the card or a label splitting from its value. */
 .stream-metrics {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 4px 16px;
 }
 
 .metric-item {
   display: flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
 }
 
 .metric-val {
@@ -2847,6 +2851,18 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
      the "/" hint and the switch that turns the shortcut off go together. */
   .ev-search-kbd,
   .ev-shortcut-toggle {
+    display: none;
+  }
+}
+
+/* On a phone-width header the three nav tabs with their icons are wider than
+   the header, so the page scrolled sideways at 320 px. Drop the decorative
+   icons (the labels carry the meaning) and tighten the padding. */
+@media (max-width: 400px) {
+  .nav-item {
+    padding: 0 8px;
+  }
+  .nav-item svg {
     display: none;
   }
 }

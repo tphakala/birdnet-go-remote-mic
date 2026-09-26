@@ -81,7 +81,12 @@ type DeviceStatus struct {
 	NegotiatedFormat string
 	ClientConnected  bool
 	DroppedFrames    int64
-	Error            string
+	// Overruns is the capture's cumulative count of recovered overruns (ALSA
+	// xruns) since the device was last opened. A failed device keeps the count it
+	// reached; a record that holds no capture (never opened, disabled, or skipped)
+	// reports zero.
+	Overruns int64
+	Error    string
 	// DownCause classifies why a skipped or failed device is not serving (the
 	// wire downCause enum: not-connected, ambiguous, malformed, resolve-failed,
 	// same-hardware, open-failed, disconnected, failed); empty when there is no
@@ -361,17 +366,9 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		State:           mgmtapi.DeviceState(d.State),
 		ClientConnected: d.ClientConnected,
 		DroppedFrames:   d.DroppedFrames,
+		Overruns:        d.Overruns,
 	}
-	if len(d.Config.Streams) > 0 {
-		s0 := &d.Config.Streams[0]
-		out.Path = s0.Path
-		out.Mode = mapMode(s0.Mode)
-		out.Channels = s0.Channels
-		if s0.Mode == config.ModeOpus {
-			out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s0.Opus.Bitrate)}
-		}
-		out.StreamedChannels = ptr(d.Config.StreamChannelUnion())
-	}
+	projectFirstStream(&out, &d.Config)
 	if len(d.Streams) > 0 {
 		ss := make([]mgmtapi.StreamStatus, 0, len(d.Streams))
 		for i := range d.Streams {
@@ -425,6 +422,30 @@ func mapMode(m config.Mode) mgmtapi.StreamMode {
 		return mgmtapi.Opus
 	}
 	return mgmtapi.Pcm
+}
+
+// firstStream maps d's first stream exactly as DeviceConfig's streams array
+// (streamConfigToWire) carries it, for the flat path/mode/channels/opus fields
+// the wire Device and DeviceConfig keep so a client that predates fan-out still
+// reads a usable single-stream device; it reports false for a device with no
+// streams. Deriving the flat fields from streamConfigToWire keeps them from
+// drifting from the per-stream mapping.
+func firstStream(d *config.Device) (mgmtapi.StreamConfig, bool) {
+	if len(d.Streams) == 0 {
+		return mgmtapi.StreamConfig{}, false
+	}
+	return streamConfigToWire(&d.Streams[0]), true
+}
+
+// projectFirstStream fills a wire Device's flat single-stream fields from cfg's
+// first stream, and streamedChannels from the union of every stream's channels.
+func projectFirstStream(out *mgmtapi.Device, cfg *config.Device) {
+	flat, ok := firstStream(cfg)
+	if !ok {
+		return
+	}
+	out.Path, out.Mode, out.Channels, out.Opus = flat.Path, flat.Mode, flat.Channels, flat.Opus
+	out.StreamedChannels = ptr(cfg.StreamChannelUnion())
 }
 
 // problem builds an RFC 9457 problem detail.

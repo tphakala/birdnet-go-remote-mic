@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -117,6 +118,18 @@ func (r *recPub) resolveCount(key string) int {
 		}
 	}
 	return n
+}
+
+// resolveReason returns the reason of key's most recent resolve, or "" if none.
+func (r *recPub) resolveReason(key string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rc := range slices.Backward(r.resolves) {
+		if rc.key == key {
+			return rc.reason
+		}
+	}
+	return ""
 }
 
 // onsetMessage returns the message of the last onset for key.

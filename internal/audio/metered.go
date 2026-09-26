@@ -30,3 +30,5 @@ func (m *meteredSource) Read() (Period, error) {
 }
 
 func (m *meteredSource) Close() error { return m.inner.Close() }
+
+func (m *meteredSource) Overruns() uint64 { return Overruns(m.inner) }

@@ -55,6 +55,11 @@ var deviceInUse = audio.DeviceInUse
 // so the open retry's per-attempt resolution is testable without hardware.
 var resolveOpenChannels = audio.ResolveOpenChannels
 
+// openCaptureAt opens a device's hardware capture. It is a package var so
+// openDevice's wiring of the capture into the runtime is testable without
+// hardware.
+var openCaptureAt = audio.OpenCaptureAt
+
 // startPprof serves net/http/pprof diagnostics on addr until ctx is cancelled. It
 // is only reached when the operator passes --pprof: the endpoints expose CPU/heap
 // profiles, a live goroutine dump, and the command line with no authentication, so
@@ -169,9 +174,9 @@ type deviceRuntime struct {
 	hwAddr string
 	// gen is a process-unique identity for this runtime instance, assigned at
 	// creation (see runtimeGen). A restart builds a fresh runtime with a fresh gen,
-	// so the host monitor rebaselines the dropped-frame counter on the change even
-	// when the new runtime's counter has already climbed past the old value. Static
-	// per run; read without a lock, like dev.Name.
+	// so the host monitor treats the change as a restart of its dropped-frame and
+	// overrun counters even when a new runtime's counter has already climbed past
+	// the old value. Static per run; read without a lock, like dev.Name.
 	gen uint64
 
 	mu    sync.Mutex
@@ -218,10 +223,15 @@ func (rt *deviceRuntime) droppedTotal() uint64 {
 	return n
 }
 
+// overruns is the capture's cumulative count of recovered overruns, the
+// device-level figure the host monitor watches for recurring overruns. A record
+// that holds no capture (src nil) reports zero.
+func (rt *deviceRuntime) overruns() uint64 { return audio.Overruns(rt.src) }
+
 // runtimeGen hands out a process-unique generation to each serving deviceRuntime
 // so the host monitor can tell one runtime from its restarted successor. Only
 // openDevice (the sole builder of a serving runtime) draws from it; skipped and
-// disabled records keep gen 0 and never reach the drop monitor.
+// disabled records keep gen 0 and never reach the host monitor's counters.
 var runtimeGen atomic.Uint64
 
 // openDevice opens and starts capture for one configured device at the resolved
@@ -232,7 +242,7 @@ var runtimeGen atomic.Uint64
 // client is playing. Each stream extracts its own channels from the shared
 // capture with a selecting source, so the device opens the hardware exactly once.
 func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
-	base, capFormat, err := audio.OpenCaptureAt(dev, openCh)
+	base, capFormat, err := openCaptureAt(dev, openCh)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
@@ -724,7 +734,7 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	if monSettings.Enabled {
 		logUndervoltageSupport()
 	}
-	app.monitors = buildMonitors(ctx, hub, prov.dataPath, prov.dropCounters, center, &monSettings)
+	app.monitors = buildMonitors(ctx, hub, prov.dataPath, prov.deviceCounters, center, &monSettings)
 
 	// Sweep stale client-flap warnings: the connect-driven detector only clears on
 	// the next connect after the quiet window, which a client that settles into a

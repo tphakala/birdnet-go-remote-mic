@@ -25,8 +25,8 @@ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/tphakala/go-audio-capture v0.7.0 h1:cuhPKgS1pXpuNcOCtGPbYhauhqZYnuHZYfM7vSOKzSY=
-github.com/tphakala/go-audio-capture v0.7.0/go.mod h1:cd2ljQbhwVT5rodyhErr6CTs1E8rZiNwvxF9xoQyzkA=
+github.com/tphakala/go-audio-capture v0.7.1 h1:xi5NrAxIkUMimLaoS0kooMDtYqx4r/g5l1s79EHfVPM=
+github.com/tphakala/go-audio-capture v0.7.1/go.mod h1:cd2ljQbhwVT5rodyhErr6CTs1E8rZiNwvxF9xoQyzkA=
 github.com/tphakala/go-audio-stream v0.6.0 h1:aVMV95cgqpn3fOELIBVDSs9nKuYPLYts1ouQh7ooCfU=
 github.com/tphakala/go-audio-stream v0.6.0/go.mod h1:W9be1o1XSqEkSAG81yHOV6+G9odYbpWJlmL5DBEhfgM=
 github.com/tphakala/go-opus v1.1.0 h1:SbXQjwI/ZYy6wPXd0fafLTurkUbAhBpaYnvXYtn8uIo=
