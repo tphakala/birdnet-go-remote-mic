@@ -1,4 +1,5 @@
-import { api, ApiError, type ApiClient } from "./api.ts";
+import { api, ApiError, apiErrorMessage, isRefusal, TOKEN_NOT_ACCEPTED, UnreadableResponseError, type ApiClient } from "./api.ts";
+import { sentence } from "./text.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
 import { getToken, setToken } from "./auth.ts";
@@ -55,8 +56,10 @@ export interface StoreDeps {
 }
 
 // StoreEvents is what AppStore announces: each event's name and payload.
-// devices, status and system fire only when their data changed, and again on
-// the first read after a failed one; config and available fire every poll.
+// devices, status, system and available fire only when their data changed;
+// devices, status and system also fire again on the first read after a failed
+// one (available does not: no view shows a load error for it). config fires
+// every poll.
 export interface StoreEvents {
   status: ApplianceStatus;
   devices: Device[];
@@ -116,6 +119,7 @@ export class AppStore extends Emitter<StoreEvents> {
   private statusChange = new ChangeTracker();
   private devicesChange = new ChangeTracker();
   private systemChange = new ChangeTracker();
+  private availableChange = new ChangeTracker();
   // loginPending is set from the first 401 until a token is accepted, so a
   // burst of rejected requests (the initial load fires five) opens one prompt
   // and the generic load-error state is suppressed in favor of it.
@@ -182,10 +186,15 @@ export class AppStore extends Emitter<StoreEvents> {
     } catch (err: unknown) {
       setToken(null);
       if (err instanceof ApiError && err.status === 401) {
-        return { ok: false, message: "That token was rejected. Check it and try again." };
+        return { ok: false, message: `${sentence(TOKEN_NOT_ACCEPTED)} Check it and try again.` };
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, message: `Could not reach the appliance: ${msg}` };
+      if (err instanceof UnreadableResponseError) return { ok: false, message: "The appliance answered, but its reply could not be read. Try again." };
+      // A problem body is the appliance's own answer; any other failure (a
+      // proxy's page, no answer) did not reach it.
+      if (isRefusal(err)) return { ok: false, message: `The appliance refused the sign-in: ${apiErrorMessage(err)}.` };
+      // A dropped connection's error text is the browser's and differs by
+      // engine, so it is not quoted.
+      return { ok: false, message: "Could not reach the appliance. Check the connection and try again." };
     }
     this.loginPending = false;
     this.emit("authok");
@@ -198,7 +207,7 @@ export class AppStore extends Emitter<StoreEvents> {
     // rejected token is not kept") and leave a dead credential in storage.
     if (this.loginPending) {
       setToken(null);
-      return { ok: false, message: "The appliance rejected the token during load. Try again." };
+      return { ok: false, message: `${sentence(`${TOKEN_NOT_ACCEPTED} while loading`)} Try again.` };
     }
     this.startPolling();
     return { ok: true, message: "" };
@@ -436,15 +445,19 @@ export class AppStore extends Emitter<StoreEvents> {
   // success: fresher data is in place, so loadInitial must not raise a load
   // error for it.
   //
-  // status, devices and system announce only when the applied data changed (a
-  // ChangeTracker each). In practice this saves work on devices: status carries
-  // uptimeSeconds and system carries live CPU, memory and network counters, so
-  // both still announce nearly every tick (which the System view's certificate
-  // refresh and the uptime displays rely on). config and available announce
-  // every poll, because mutation flows repaint from the config event. The first
-  // applied value always announces, and a failed read resets its tracker, so the
-  // next successful read announces even when it returns data a view showed
-  // before swapping in a load error; that is what repairs the view.
+  // status, devices, system and available announce only when the applied data
+  // changed (a ChangeTracker each). In practice this saves work on devices and
+  // available: status carries uptimeSeconds and system carries live CPU, memory
+  // and network counters, so both still announce nearly every tick (which the
+  // System view's certificate refresh and the uptime displays rely on). config
+  // announces every poll, because mutation flows repaint from it. The first
+  // applied value always announces. A failed read of status, devices or system
+  // resets its tracker, so the next successful read announces even when it
+  // returns data a view showed before swapping in a load error; that is what
+  // repairs the view. A failure that a newer applied read already superseded
+  // resets nothing (the view kept fresh data), and available never resets,
+  // since no view replaces the list with a load error, so there is nothing for
+  // a re-announcement to repair.
 
   // prefetched, when given, is a status the caller just fetched (the boot and
   // login token check), applied through the same gate instead of a second GET.
@@ -458,9 +471,9 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("status", status);
         }
       },
-      (err) => {
+      (err, superseded) => {
         console.warn("Failed to refresh status:", err);
-        this.statusChange.reset();
+        if (!superseded) this.statusChange.reset();
       },
     );
   }
@@ -471,7 +484,9 @@ export class AppStore extends Emitter<StoreEvents> {
       () => this.api.getAvailableDevices(),
       (available) => {
         this.state.available = available;
-        this.emit("available", this.state.available);
+        if (this.availableChange.changed(available)) {
+          this.emit("available", this.state.available);
+        }
       },
       (err) => console.warn("Failed to refresh available devices:", err),
     );
@@ -505,9 +520,9 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("devices", this.state.devices);
         }
       },
-      (err) => {
+      (err, superseded) => {
         console.warn("Failed to refresh devices:", err);
-        this.devicesChange.reset();
+        if (!superseded) this.devicesChange.reset();
       },
     );
   }
@@ -522,8 +537,11 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("system", system);
         }
       },
-      // System info is optional, non-fatal: no warning, just re-arm the tracker.
-      () => this.systemChange.reset(),
+      // System info is optional, non-fatal: no warning, just re-arm the tracker
+      // unless a newer read already applied.
+      (_err, superseded) => {
+        if (!superseded) this.systemChange.reset();
+      },
     );
   }
 

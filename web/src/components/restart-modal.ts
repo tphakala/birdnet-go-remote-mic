@@ -1,4 +1,5 @@
-import { api } from "../lib/api.ts";
+import { api, apiErrorMessage, isRefusal } from "../lib/api.ts";
+import { withDeadline } from "../lib/deadline.ts";
 import { showToast } from "./toast.ts";
 import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
 import { announce } from "../lib/ui.ts";
@@ -22,6 +23,16 @@ function sayNow(text: string): void {
   const region = document.getElementById("restart-announce");
   if (region) region.textContent = text;
 }
+
+// UNCONFIRMED_TEXT is the dialog's text when the appliance did not confirm
+// the restart request (no answer, or an answer that could not be read).
+const UNCONFIRMED_TEXT = "The appliance did not confirm the restart. This page waits to see whether it restarts.";
+// HEALTH_WAIT_MS bounds the wait for the appliance, and HEALTH_PROBE_MS each
+// probe within it.
+const HEALTH_WAIT_MS = 60_000;
+// A probe gets 4 s: the first one after a restart may need a fresh TLS
+// handshake with a busy appliance (its duration NOT MEASURED).
+const HEALTH_PROBE_MS = 4_000;
 
 // confirmRestart asks the user to confirm the disruptive restart before it runs.
 function confirmRestart(): Promise<boolean> {
@@ -51,13 +62,33 @@ export async function triggerApplianceRestart(): Promise<void> {
     return;
   }
 
+  let confirmed = true;
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    showToast(`Restart request failed: ${errorMsg}`, "error");
-    restarting = false;
-    return;
+    // A problem body is a refusal (isRefusal). Anything else (no answer, an
+    // accepted request whose body could not be read, a proxy's error) leaves
+    // the outcome unknown.
+    if (isRefusal(err)) {
+      // 501: the server has no restart control wired
+      // (internal/mgmtserver/system.go:86), so say what to do instead.
+      const why = err.status === 501
+        ? "this appliance cannot restart itself. Restart the remote-mic service on its host instead."
+        : apiErrorMessage(err);
+      showToast(`Restart request failed: ${why}`, "error");
+      restarting = false;
+      return;
+    }
+    // The restart may have started, so wait for the appliance as after a
+    // confirmed one rather than invite a second restart.
+    confirmed = false;
+  }
+
+  if (!confirmed) {
+    const titleEl = document.getElementById("modal-title");
+    const textEl = document.getElementById("modal-text");
+    if (titleEl) titleEl.textContent = "Restart Not Confirmed";
+    if (textEl) textEl.textContent = UNCONFIRMED_TEXT;
   }
 
   modal.classList.add("open");
@@ -65,60 +96,86 @@ export async function triggerApplianceRestart(): Promise<void> {
   trapFocus(modal);
   modal.querySelector<HTMLElement>(".modal-card")?.focus();
 
-  // Announce the phase once; the per-second countdown below updates only the
-  // aria-hidden visual element, so it is not read out on every tick.
-  say("Restarting the appliance. Reconnecting shortly.");
+  // The per-second countdown below updates only the aria-hidden visual
+  // element, so it is not read out on every tick. The dialog names its title
+  // and description (aria-labelledby, aria-describedby,
+  // static/index.html:470) for a screen reader to read as focus enters it
+  // (what a given reader says is NOT MEASURED), so the phase line adds only
+  // what they lack: when it reconnects. The unconfirmed description already
+  // says it waits.
+  if (confirmed) say("Reconnecting in 5 seconds.");
 
   let seconds = 5;
-  if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
+  const countdownText = (s: number) => (confirmed ? `Reconnecting in ${s}s...` : `Checking again in ${s}s...`);
+  if (timerEl) timerEl.textContent = countdownText(seconds);
 
   const countdown = window.setInterval(() => {
     seconds -= 1;
     if (seconds > 0) {
-      if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
+      if (timerEl) timerEl.textContent = countdownText(seconds);
     } else {
       clearInterval(countdown);
-      if (timerEl) timerEl.textContent = "Probing /healthz...";
-      say("Checking whether the appliance is back online.");
-      startHealthPolling();
+      const phase = confirmed ? "Waiting for the appliance to come back" : "Checking whether the appliance answers";
+      if (timerEl) timerEl.textContent = `${phase}...`;
+      say(`${phase}.`);
+      void pollHealth(confirmed, phase);
     }
   }, 1000);
 }
 
-function startHealthPolling(): void {
+// pollHealth waits for the appliance to answer for up to HEALTH_WAIT_MS:
+// probes one at a time with a second between them, each bounded by
+// HEALTH_PROBE_MS and by the time left, so a hanging probe cannot stretch
+// the wait. After a confirmed restart an answer reloads the page.
+// After an unconfirmed one the appliance may never have restarted, so the
+// dialog says so and offers Reload now instead of reloading under the
+// operator, who would not learn it. phase is the waiting text.
+async function pollHealth(confirmed: boolean, phase: string): Promise<void> {
   const timerEl = document.getElementById("reconnect-timer");
-  let attempts = 0;
-  const maxAttempts = 30;
-
-  const interval = window.setInterval(async () => {
-    attempts += 1;
-    if (timerEl) timerEl.textContent = `Probing /healthz (${attempts}/${maxAttempts})...`;
-
+  const until = performance.now() + HEALTH_WAIT_MS;
+  for (let attempt = 1; performance.now() < until; attempt++) {
+    if (timerEl) timerEl.textContent = `${phase} (${attempt})...`;
+    let up = false;
     try {
-      const res = await fetch("/api/v1/healthz", { cache: "no-store" });
-      if (res.ok) {
-        clearInterval(interval);
-        if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
-        sayNow("Appliance is back online. Reloading.");
-        window.setTimeout(() => {
-          window.location.reload();
-        }, 600);
-      }
+      const left = Math.max(0, until - performance.now());
+      up = await withDeadline(Math.min(HEALTH_PROBE_MS, left), async (signal) => (await fetch("/api/v1/healthz", { cache: "no-store", signal })).ok);
     } catch {
-      // Still rebooting / down
+      // Still restarting, or the probe timed out.
     }
-
-    if (attempts >= maxAttempts) {
-      clearInterval(interval);
-      if (timerEl) timerEl.textContent = "Restart timed out.";
-      say("Restart timed out. Use the reload button to try again.");
-      showRetry();
+    if (up && confirmed) {
+      if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
+      sayNow("Appliance is back online. Reloading.");
+      window.setTimeout(() => window.location.reload(), 600);
+      return;
     }
-  }, 1000);
+    if (up) {
+      endWait("The appliance answers, but did not confirm the restart. Check its uptime after you reload.");
+      return;
+    }
+    const pause = Math.min(1000, Math.max(0, until - performance.now()));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, pause));
+  }
+  if (timerEl) timerEl.textContent = confirmed ? "Restart timed out." : "No answer from the appliance.";
+  endWait("The appliance did not answer in time. Use the Reload now button to check on it.");
 }
 
-// showRetry reveals the real Retry button (replacing the old "click anywhere"
-// affordance) and focuses it so a keyboard user can reload.
+// endWait ends the dialog's wait without a reload: the description says why
+// (it said the page was waiting), the spinner stops, the status line drops
+// its probe count, and Reload now takes focus.
+function endWait(text: string): void {
+  const textEl = document.getElementById("modal-text");
+  if (textEl) textEl.textContent = text;
+  const spinner = document.querySelector<HTMLElement>("#restart-modal .spinner-ring");
+  if (spinner) spinner.hidden = true;
+  // The status line still showed the probe count; a timeout sets its own.
+  const timerEl = document.getElementById("reconnect-timer");
+  if (timerEl?.textContent?.endsWith("...")) timerEl.textContent = "";
+  say(text);
+  showRetry();
+}
+
+// showRetry reveals the Reload now button and focuses it so a keyboard user
+// can reload.
 function showRetry(): void {
   const retry = document.getElementById("restart-retry") as HTMLButtonElement | null;
   if (!retry) return;
@@ -156,7 +213,7 @@ export function showUpdateModal(target: string): UpdateModal | null {
   closeTransientDialogs();
 
   const oldTitle = titleEl?.textContent ?? "";
-  // The restart text holds markup (a code span), so keep its nodes, not its text.
+  // Keep the restart text's nodes, so hide() puts them back as they were.
   const oldText = textEl ? Array.from(textEl.childNodes) : [];
   if (titleEl) titleEl.textContent = "Installing Update";
   if (textEl) {
@@ -178,7 +235,7 @@ export function showUpdateModal(target: string): UpdateModal | null {
     overdue(): void {
       settled = true;
       if (timerEl) timerEl.textContent = "The update has not finished yet.";
-      say("The update has not finished yet. Use the reload button to see where it stands.");
+      say("The update has not finished yet. Use the Reload now button to see where it stands.");
       showRetry();
     },
     reloading(): void {

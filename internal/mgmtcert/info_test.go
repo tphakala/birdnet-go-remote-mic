@@ -71,7 +71,7 @@ func TestDescribe(t *testing.T) {
 func TestChainPEMEncodesFullChain(t *testing.T) {
 	// A chain of a leaf plus one intermediate: ChainPEM must emit BOTH blocks so an
 	// operator who installed a chain downloads the whole chain back, not just the
-	// leaf. Sabotage target: the loop over cert.Certificate in ChainPEM.
+	// leaf. Pins the loop over cert.Certificate in ChainPEM.
 	leafPEM, _ := genPairPEM(t, nil)
 	intPEM, _ := genPairPEM(t, nil)
 	leafBlock, _ := pem.Decode(leafPEM)

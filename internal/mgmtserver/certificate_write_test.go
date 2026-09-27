@@ -98,7 +98,7 @@ func TestPutSystemCertificateMapsValidationErrorTo422(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutSystemCertificate: %v", err)
 	}
-	// Sabotage target: the errors.As(*mgmtcert.ValidationError) branch. Without it
+	// Pins the errors.AsType[*mgmtcert.ValidationError] branch. Without it
 	// the error falls through to a 500 default response, not this 422.
 	vp, ok := resp.(mgmtapi.PutSystemCertificate422ApplicationProblemPlusJSONResponse)
 	if !ok {
@@ -111,8 +111,8 @@ func TestPutSystemCertificateMapsValidationErrorTo422(t *testing.T) {
 
 func TestPutSystemCertificateMapsGenericErrorTo500(t *testing.T) {
 	// A non-ValidationError from Install must map to 500, not 422.
-	// Sabotage target: the errors.As branch (deleting it would return this error
-	// through the 422 path or panic on the type assertion).
+	// Pins the ok check on the errors.AsType branch: mapping every Install
+	// error to 422 fails here.
 	mgr := &fakeCertManager{installErr: errors.New("disk full")}
 	s := New(&fakeProvider{}, WithCertificateManager(mgr))
 	resp, err := s.PutSystemCertificate(context.Background(), mgmtapi.PutSystemCertificateRequestObject{
@@ -144,7 +144,7 @@ func TestRegenerateSystemCertificateMapsGenericErrorTo500(t *testing.T) {
 
 func TestRegenerateSystemCertificatePublishes(t *testing.T) {
 	// The regenerate path must publish a system notification, mirroring install.
-	// Sabotage target: the s.notifier.Publish call in RegenerateSystemCertificate.
+	// Pins the s.notifier.Publish call in RegenerateSystemCertificate.
 	mgr := &fakeCertManager{result: CertificateInfo{Managed: true}}
 	notifier := &recordingNotifier{}
 	s := New(&fakeProvider{}, WithCertificateManager(mgr), WithNotifier(notifier))
@@ -163,7 +163,7 @@ func TestRegenerateSystemCertificatePublishes(t *testing.T) {
 
 func TestPutSystemCertificateRejectsNilBody(t *testing.T) {
 	// A nil body (defensive guard) must be a 400 and must not reach Install.
-	// Sabotage target: the request.Body == nil guard.
+	// Pins the request.Body == nil guard.
 	mgr := &fakeCertManager{}
 	s := New(&fakeProvider{}, WithCertificateManager(mgr))
 	resp, err := s.PutSystemCertificate(context.Background(), mgmtapi.PutSystemCertificateRequestObject{Body: nil})
@@ -214,7 +214,7 @@ func TestPutSystemCertificateReturnsInfoAndPublishes(t *testing.T) {
 	if got.FingerprintSha256 != testFP || got.Managed {
 		t.Errorf("200 body = %+v, want fingerprint AB:CD and managed=false", got)
 	}
-	// Sabotage target: the s.notifier.Publish call.
+	// Pins the s.notifier.Publish call.
 	if len(notifier.published) != 1 {
 		t.Fatalf("published %d notifications, want 1", len(notifier.published))
 	}
@@ -232,7 +232,7 @@ func TestRegenerateSystemCertificateForwardsExtraSans(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RegenerateSystemCertificate: %v", err)
 	}
-	// Sabotage target: the `extras = *request.Body.ExtraSans` forwarding line.
+	// Pins the `extras = *request.Body.ExtraSans` forwarding line.
 	if len(mgr.gotExtras) != 2 || mgr.gotExtras[0] != "a.example" || mgr.gotExtras[1] != "10.0.0.9" {
 		t.Errorf("forwarded extras = %v, want [a.example 10.0.0.9]", mgr.gotExtras)
 	}
@@ -258,7 +258,7 @@ func TestRegenerateSystemCertificateAcceptsNilBody(t *testing.T) {
 func TestPutSystemCertificateNeverEchoesKey(t *testing.T) {
 	// A contract guard: the 200 response carries CertificateInfo, which has no key
 	// field, so a rendered success body must never contain the private key. There
-	// is no single line to delete; sabotage by adding the key to the response type.
+	// is no single line it pins; adding the key to the response type breaks it.
 	const secretKey = "-----BEGIN PRIVATE KEY-----\nSUPERSECRETKEYMATERIAL\n-----END PRIVATE KEY-----\n"
 	mgr := &fakeCertManager{result: CertificateInfo{Subject: certSubjectDN, FingerprintSHA256: testFP}}
 	s := New(&fakeProvider{}, WithCertificateManager(mgr))
@@ -296,7 +296,7 @@ func TestGetSystemCertificateIncludesManaged(t *testing.T) {
 	if !ok {
 		t.Fatalf("resp = %T, want 200", resp)
 	}
-	// Sabotage target: Managed: ci.Managed in certificateToWire.
+	// Pins Managed: ci.Managed in certificateToWire.
 	if !got.Managed {
 		t.Error("managed = false, want true")
 	}

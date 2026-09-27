@@ -4,6 +4,7 @@
 // come from licenses.json, which tools/licensegen writes from the build's module
 // graph; it is a static file (served without the token), loaded the first time
 // the page is shown, so an appliance nobody opens About on never fetches it.
+import { withDeadline } from "../lib/deadline.ts";
 import {
   AUTHOR_URL,
   BIRDNET_GO_URL,
@@ -262,17 +263,14 @@ export class AboutView {
     el.textContent = LOADING_TEXT;
     let doc: LicenseDoc | null = null;
     // A deadline, so a stalled request ends in the error and Retry rather than
-    // "Loading" forever. A timer and an AbortController rather than
-    // AbortSignal.timeout, which is missing before Safari 16.
-    const abort = new AbortController();
-    const timer = window.setTimeout(() => abort.abort(), LICENSES_TIMEOUT_MS);
+    // "Loading" forever.
     try {
-      const res = await fetch(LICENSES_PATH, { signal: abort.signal });
-      if (res.ok) doc = parseLicenseDoc(await res.json());
+      doc = await withDeadline(LICENSES_TIMEOUT_MS, async (signal) => {
+        const res = await fetch(LICENSES_PATH, { signal });
+        return res.ok ? parseLicenseDoc(await res.json()) : null;
+      });
     } catch {
       /* a network error, the deadline, or a body that is not JSON: reported below */
-    } finally {
-      window.clearTimeout(timer);
     }
     if (!doc) {
       this.licenses = "idle";

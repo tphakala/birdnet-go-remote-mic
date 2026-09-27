@@ -2,7 +2,9 @@
 // view and the app's notifications fallback, split out so they can be unit tested with node:test (see
 // web/test/dashboard-core.test.ts) without a DOM.
 
-import type { Device, DeviceConfig, StreamMode } from "./types.ts";
+import type { FieldProblem } from "./api.ts";
+import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
+import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
 // "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.
@@ -191,3 +193,158 @@ export function controlGoneMessage(device: string, key: string, serving: boolean
 // Said after a device is removed, following the "Removed" toast: its card and
 // the Remove button that held focus are gone, so focus moved to the dashboard.
 export const REMOVED_FOCUS_MESSAGE = "Focus moved to the dashboard.";
+
+// availableCardKey is what an Available Devices card shows: the device's data
+// and whether an Enable is in flight for it. A card is rebuilt only when this
+// changes. A render during an Enable therefore builds the card busy, and the
+// render after it settles builds it idle again.
+export function availableCardKey(d: AvailableDevice, enabling: boolean): string {
+  return JSON.stringify([d, enabling]);
+}
+
+// AvailablePlan is how to turn the cards on screen into the ones for a new
+// list: which to remove, which to build (new, or changed since shown), and the
+// order to show them in.
+export interface AvailablePlan {
+  remove: string[];
+  build: string[];
+  order: string[];
+}
+
+// availablePlan diffs the shown cards (device id to card key) against the
+// next list, so an unchanged card keeps its node, and with it the operator's
+// focus and text selection.
+export function availablePlan(shown: ReadonlyMap<string, string>, next: readonly { id: string; key: string }[]): AvailablePlan {
+  const nextIds = new Set(next.map((c) => c.id));
+  return {
+    remove: [...shown.keys()].filter((id) => !nextIds.has(id)),
+    build: next.filter((c) => shown.get(c.id) !== c.key).map((c) => c.id),
+    order: next.map((c) => c.id),
+  };
+}
+
+// availableGoneMessage is announced when a poll takes away the Available
+// Devices card that held keyboard focus: which device went, and where focus
+// went (the neighbour's Enable button, named by its device, or the
+// dashboard when no other card was left to take it).
+export function availableGoneMessage(label: string, next: string | null): string {
+  return `${label} is no longer available. ${next === null ? REMOVED_FOCUS_MESSAGE : `Focus moved to Enable ${next}.`}`;
+}
+
+// neighbourOrder lists where focus goes, in order of preference, when the
+// item at index of order (the ids on screen before a render) goes away: the
+// items after it, nearest first, then those before it, nearest first. The
+// caller takes the first one still on screen, so several items going at once
+// still leave focus next to where it was.
+export function neighbourOrder(order: readonly string[], index: number): string[] {
+  if (index < 0) return [...order];
+  return [...order.slice(index + 1), ...order.slice(0, index).reverse()];
+}
+
+// settingsFocusMessage is said when focus moves to a device card's settings
+// button the operator did not choose: after an Enable, or when the card that
+// held focus went away.
+export function settingsFocusMessage(name: string): string {
+  return `Focus moved to ${name} settings.`;
+}
+
+// focusMovedMessage says where focus went: a card's settings, or the
+// dashboard when no card took it.
+export function focusMovedMessage(next: string | null): string {
+  return next === null ? REMOVED_FOCUS_MESSAGE : settingsFocusMessage(next);
+}
+
+// SaveVerdict is what a re-read says about a device save whose answer was
+// lost: unread (the re-read failed), applied (it reads as sent), unchanged
+// (the save changed nothing, and it still reads so), notApplied (it reads
+// as before), changed (neither: the appliance filled in a value, or another
+// tab changed the device).
+export type SaveVerdict = "unread" | "applied" | "unchanged" | "notApplied" | "changed";
+
+// judgeUnconfirmedSave judges a lost save from the device's config keys
+// before the save, after the re-read, and as sent.
+export function judgeUnconfirmedSave(read: boolean, before: string, after: string, sent: string): SaveVerdict {
+  if (!read) return "unread";
+  if (sent === before) return after === before ? "unchanged" : "changed";
+  if (after === sent) return "applied";
+  if (after === before) return "notApplied";
+  return "changed";
+}
+
+// deviceGoneMessage is said when a render removes the configured device card
+// that held keyboard focus (another tab removed it, or a config reload
+// dropped it): which device went, and where focus went (the next card's
+// settings, or the dashboard when no card is left).
+export function deviceGoneMessage(name: string, next: string | null): string {
+  return `${name} was removed. ${focusMovedMessage(next)}`;
+}
+
+// deviceFieldLabel turns a validation problem's field path into what an
+// operator reads: the field's label (without a unit in parentheses, as it
+// reads mid-sentence), and for a path into the device list the name of the
+// device it points at (names is the device list the request sent, in order),
+// since a save sends every device. A field of a stream after the first names
+// that stream, since the form edits only the first. It returns the path
+// itself for one it does not know. The appliance also reports the list as a
+// whole ("devices", config.go:591) and a provision's device id ("device",
+// mgmtserver/devices.go:182).
+export function deviceFieldLabel(path: string, names: readonly string[] = []): string {
+  if (path === "devices") return "The device list";
+  if (path === "device") return DEVICE_FIELD_LABELS.device;
+  const f = parseDeviceFieldPath(path);
+  if (!f) return path;
+  const label = DEVICE_FIELD_LABELS[f.key].replace(/ \([^)]*\)$/, "");
+  const name = names[f.device];
+  const owner = f.stream > 0 ? (name ? `${name}'s stream ${f.stream + 1}` : `stream ${f.stream + 1}`) : name;
+  return owner ? `${label} of ${owner}` : label;
+}
+
+// DeviceFieldPath is a validation path into the device list: the device's
+// index in the list the request sent, the stream's index (0 for a device
+// field), and the field's key in DEVICE_FIELD_LABELS.
+export interface DeviceFieldPath {
+  device: number;
+  stream: number;
+  key: keyof typeof DEVICE_FIELD_LABELS;
+}
+
+// parseDeviceFieldPath reads devices[i].<key>, devices[i].streams[j].<key>
+// and devices[i].streams[j].opus.bitrate, or returns null for any other path
+// or a key with no label.
+export function parseDeviceFieldPath(path: string): DeviceFieldPath | null {
+  const m = /^devices\[(\d+)\]\.(?:streams\[(\d+)\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
+  const key = m?.[3];
+  if (!m || key === undefined || !Object.hasOwn(DEVICE_FIELD_LABELS, key)) return null;
+  return { device: Number(m[1]), stream: Number(m[2] ?? 0), key: key as keyof typeof DEVICE_FIELD_LABELS };
+}
+
+// rejectionText is the toast for a request the appliance refused with a
+// validation problem: the action that failed, the field by its form label and
+// the device by its name in names (the device list the request sent), and the
+// reason: "Save failed: RTSP Path of garden was rejected: ...".
+export function rejectionText(prefix: string, problem: FieldProblem, names: readonly string[]): string {
+  const what = problem.field ? deviceFieldLabel(problem.field, names) : "the configuration";
+  return `${prefix}: ${what} was rejected: ${problem.reason}`;
+}
+
+// rejectedFieldKey is the settings form field to mark for a validation
+// problem on a save of the device edited (its id), sent being the device list
+// the save sent: the problem's own field when it points at that device's
+// first stream, the one the form edits. A duplicate name or path is reported
+// at its later occurrence (internal/config/config.go:625 and :682), which may
+// be another device or stream, so a duplicate of the edited device's name or
+// path marks that field too. It returns null for a problem that is not the
+// edited device's; which keys the form can show is markRejected's call.
+export function rejectedFieldKey(field: string, sent: readonly DeviceConfig[], edited: string): keyof typeof DEVICE_FIELD_LABELS | null {
+  const at = parseDeviceFieldPath(field);
+  const own = sent.find((d) => d.device === edited);
+  if (!at || !own) return null;
+  const there = sent[at.device];
+  if (there?.device === edited && at.stream === 0) return at.key;
+  if (at.key === "name" && there?.name === own.name) return "name";
+  if (at.key === "path") {
+    const path = there?.streams?.[at.stream]?.path ?? (at.stream === 0 ? there?.path : undefined);
+    if (path !== undefined && path === (own.streams?.[0]?.path ?? own.path)) return "path";
+  }
+  return null;
+}

@@ -1,6 +1,7 @@
 import { CustomDropdown } from "./custom-dropdown.ts";
 import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.ts";
 import {
+  DEVICE_FIELD_LABELS,
   MAX_NAME_LEN,
   MAX_PATH_LEN,
   bitrateFollowsDefault,
@@ -11,6 +12,7 @@ import {
   otherOpusStream,
 } from "../lib/device-settings-core.ts";
 import { store } from "../lib/store.ts";
+import { sentence } from "../lib/text.ts";
 import type { DeviceConfig, StreamMode } from "../lib/types.ts";
 
 const CHEVRON =
@@ -168,9 +170,9 @@ export class DeviceSettingsForm {
 
     // Rate
     const rateField = elem("div", "form-field");
-    rateField.appendChild(this.label("Sample Rate (Hz)"));
+    rateField.appendChild(this.label(DEVICE_FIELD_LABELS.rate));
     const rateOpts = this.rateOptions(d.rate);
-    const rate = this.buildDropdown("Sample rate", rateOpts, this.pick(rateOpts, String(d.rate)));
+    const rate = this.buildDropdown(DEVICE_FIELD_LABELS.rate, rateOpts, this.pick(rateOpts, String(d.rate)));
     this.rateHidden = rate.hidden;
     this.rateDrop = rate.dropdown;
     rateField.appendChild(rate.container);
@@ -187,7 +189,7 @@ export class DeviceSettingsForm {
     // three or more is a multi-channel PCM stream. The number of selectable
     // channels is the largest probed channel count, defaulting to stereo when unknown.
     const chField = elem("div", "form-field");
-    chField.appendChild(this.label("Channels"));
+    chField.appendChild(this.label(DEVICE_FIELD_LABELS.channels));
     const chGroup = this.buildChannelSelect(this.maxChannels(), d.channels);
     this.channelsGroup = chGroup;
     chField.appendChild(chGroup);
@@ -241,13 +243,13 @@ export class DeviceSettingsForm {
 
     // Name, defaulting from the sound card's friendly label when blank.
     const initialName = d.name || this.hardware.friendlyName || "";
-    const name = this.field(grid, `set-${uid}-name`, "Device Name", initialName, "text",
+    const name = this.field(grid, `set-${uid}-name`, DEVICE_FIELD_LABELS.name, initialName, "text",
       `DNS-SD instance name and log label. Must be unique. Up to ${MAX_NAME_LEN} characters.`);
     this.nameEl = name.input;
     this.nameErr = name.error;
     this.nameEl.maxLength = inputMaxLength(MAX_NAME_LEN);
 
-    const path = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
+    const path = this.field(grid, `set-${uid}-path`, DEVICE_FIELD_LABELS.path, d.path, "text",
       `Unique endpoint path on the RTSP server, e.g. /stream. Up to ${MAX_PATH_LEN} characters.`);
     this.pathEl = path.input;
     this.pathErr = path.error;
@@ -257,8 +259,8 @@ export class DeviceSettingsForm {
     // codec, mono or stereo). On a device that cannot, only PCM L16 is offered and
     // a saved opus mode is coerced to pcm so the form is never in an unsaveable state.
     const modeField = elem("div", "form-field");
-    modeField.appendChild(this.label("Stream Codec Mode"));
-    const mode = this.buildDropdown("Stream codec mode", modeOpts, modeInitial);
+    modeField.appendChild(this.label(DEVICE_FIELD_LABELS.mode));
+    const mode = this.buildDropdown(DEVICE_FIELD_LABELS.mode, modeOpts, modeInitial);
     this.modeHidden = mode.hidden;
     modeField.appendChild(mode.container);
     const opusOffered = modeOpts.some((o) => o.val === "opus");
@@ -287,7 +289,7 @@ export class DeviceSettingsForm {
 
     // Bitrate
     this.bitrateField = elem("div", "form-field");
-    this.bitrateField.appendChild(this.label("Opus Bitrate"));
+    this.bitrateField.appendChild(this.label(DEVICE_FIELD_LABELS.bitrate));
     // An unset bitrate (absent or 0) is the per-channel default, and so is a
     // saved value that equals it: both keep following the channel count. Opus
     // carries at most two channels, so the default is seeded from at most two
@@ -295,7 +297,7 @@ export class DeviceSettingsForm {
     const defaultRate = defaultOpusBitrate(Math.min(2, d.channels.length));
     const saved = d.opus?.bitrate || defaultRate;
     this.bitrateFollows = bitrateFollowsDefault(d.opus?.bitrate, d.channels.length);
-    const bitrate = this.buildDropdown("Opus bitrate", this.bitrateOptions(saved), this.selectedBitrate(saved));
+    const bitrate = this.buildDropdown(DEVICE_FIELD_LABELS.bitrate, this.bitrateOptions(saved), this.selectedBitrate(saved));
     this.bitrateHidden = bitrate.hidden;
     this.bitrateDrop = bitrate.dropdown;
     this.bitrateHidden.addEventListener("change", () => {
@@ -374,14 +376,14 @@ export class DeviceSettingsForm {
     }
   }
 
-  // buildIdentity renders the read-only "Device id" row (a focusable, selectable
+  // buildIdentity renders the read-only "Device ID" row (a focusable, selectable
   // mono input plus a Copy button) and a hint that explains the id's stability
   // and, for a card-index id, the remedy (remove and re-add to pin by identity).
   // Read-only: it carries no change listener and is never read by collect().
   private buildIdentity(grid: HTMLElement, uid: number): void {
     const field = elem("div", "form-field device-identity");
     const inputId = `set-${uid}-devid`;
-    const label = this.label("Device id");
+    const label = this.label(DEVICE_FIELD_LABELS.device);
     label.setAttribute("for", inputId);
     field.appendChild(label);
 
@@ -399,8 +401,8 @@ export class DeviceSettingsForm {
       variant: "secondary",
       icon: ICON_COPY,
       label: "Copy",
-      ariaLabel: "Copy device id",
-      onClick: () => copyText(this.device.device, "Device id copied."),
+      ariaLabel: "Copy device ID",
+      onClick: () => copyText(this.device.device, "Device ID copied."),
     });
     row.append(input, copyBtn);
     field.appendChild(row);
@@ -493,7 +495,7 @@ export class DeviceSettingsForm {
     let rateMsg = "Rate must be 8000-384000 Hz.";
     if (mode === "opus") {
       rateOk = rate === 48000;
-      rateMsg = `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`;
+      rateMsg = `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch ${DEVICE_FIELD_LABELS.mode} to PCM L16, which supports the other rates this device offers.`;
       chOk = channels.length >= 1 && channels.length <= 2;
       chMsg = "Opus requires one or two channels.";
     } else if (otherOpusStream(store.getState().config?.devices.find((c) => c.device === this.device.device)?.streams ?? this.device.streams)) {
@@ -506,6 +508,35 @@ export class DeviceSettingsForm {
     ok = this.markControl(this.chErr, chOk, chMsg) && ok;
     this.channelsGroup.setAttribute("aria-invalid", String(!chOk));
     return ok;
+  }
+
+  // markRejected marks the field the appliance rejected on save with its
+  // reason and, when moveFocus is set, moves focus to it, as a failed local
+  // check does. Only name, path, rate and channels have an error line; for
+  // any other field it returns false, and the caller's toast covers it
+  // alone. The mark lasts until the next local check (validate), as the
+  // form's own marks do.
+  public markRejected(key: keyof typeof DEVICE_FIELD_LABELS, reason: string, moveFocus: boolean): boolean {
+    const text = sentence(reason);
+    switch (key) {
+      case "name":
+        this.mark(this.nameEl, this.nameErr, false, text);
+        break;
+      case "path":
+        this.mark(this.pathEl, this.pathErr, false, text);
+        break;
+      case "rate":
+        this.markControl(this.rateErr, false, text);
+        break;
+      case "channels":
+        this.markControl(this.chErr, false, text);
+        this.channelsGroup.setAttribute("aria-invalid", "true");
+        break;
+      default:
+        return false;
+    }
+    if (moveFocus) this.focusFirstInvalid();
+    return true;
   }
 
   // markControl toggles the invalid state on a dropdown field (which has no text

@@ -1,7 +1,9 @@
 // A harness for AppStore with a fake API and event stream, pinning how the
 // store wires its refresh helpers (store-core.ts, tested on their own):
-// status, devices and system announce only on change and re-announce after a
-// failed read; config and available announce on every read; an older response
+// status, devices, system and available announce only on change; status,
+// devices and system re-announce after a failed read that nothing newer
+// superseded; config announces on every read; a failed
+// initial load announces which views' data is missing; an older response
 // never overwrites a newer one; polling pauses while the page is hidden; and
 // the event stream stops after the hidden-page grace and restarts on showing.
 // Run with node:test (see web:test).
@@ -10,9 +12,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
-import { setToken } from "../src/lib/auth.ts";
-import { at, FakeTimers } from "./fixtures.ts";
-import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
+import { ApiError, UnreadableResponseError } from "../src/lib/api.ts";
+import { getToken, setToken } from "../src/lib/auth.ts";
+import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
+import type { AvailableDevice, ApplianceStatus, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
 
 // Outcome is one queued result for an endpoint: a value to resolve with, an
 // Error to reject with, or a promise the test settles itself.
@@ -35,6 +38,8 @@ interface Harness {
   emit: (name: string) => void;
   // connection records the detail of every "connection" event, in order.
   connection: boolean[];
+  // unauthorized reports a 401 to the store, as the API client would.
+  unauthorized: () => void;
 }
 
 const ANNOUNCED: (keyof StoreEvents)[] = ["status", "devices", "system", "config", "available", "loaderror", "connection"];
@@ -53,7 +58,7 @@ function harness(timers?: FakeTimers): Harness {
   };
   let starts = 0;
   let stops = 0;
-  let handler: ((name: string, data: unknown) => void) | null = null;
+  const stream = new FakeStream();
   const deps: StoreDeps = {
     api: {
       onUnauthorized: null,
@@ -65,10 +70,7 @@ function harness(timers?: FakeTimers): Harness {
       getAvailableDevices: next("getAvailableDevices"),
     },
     sse: {
-      subscribe: (h) => {
-        handler = h;
-        return () => true;
-      },
+      subscribe: stream.subscribe,
       start: () => {
         starts++;
       },
@@ -90,8 +92,9 @@ function harness(timers?: FakeTimers): Harness {
   const connection: boolean[] = [];
   store.on("connection", (up) => connection.push(up));
   return {
+    unauthorized: () => deps.api.onUnauthorized?.(),
     sseStops: () => stops,
-    emit: (name) => handler?.(name, null),
+    emit: (name) => stream.deliver(name, null),
     connection,
     store,
     push(endpoint, outcome) {
@@ -108,16 +111,6 @@ function harness(timers?: FakeTimers): Harness {
 
 function status(uptimeSeconds: number): ApplianceStatus {
   return { uptimeSeconds } as unknown as ApplianceStatus;
-}
-
-// deferred returns a promise with its resolve exposed, so a test controls the
-// order in which overlapping reads land.
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
 }
 
 test("status announces the first read and then only on change", async () => {
@@ -181,21 +174,74 @@ test("system announces on change and re-announces after a failure", async () => 
   assert.equal(h.last.get("system"), sys);
 });
 
-test("config and available announce on every read", async () => {
+test("config announces on every read", async () => {
   const h = harness();
   const cfg = { devices: [] } as unknown as Config;
   h.push("getConfig", cfg);
   h.push("getConfig", cfg);
-  h.push("getAvailableDevices", []);
-  h.push("getAvailableDevices", []);
   await h.store.refreshConfig();
   await h.store.refreshConfig();
-  await h.store.refreshAvailable();
-  await h.store.refreshAvailable();
   assert.equal(h.events.get("config"), 2);
-  assert.equal(h.events.get("available"), 2);
   assert.equal(h.last.get("config"), cfg);
+});
+
+test("available announces only on change, even after a failure", async () => {
+  const h = harness();
+  const one = [{ device: "hw:1,0" }] as unknown as AvailableDevice[];
+  h.push("getAvailableDevices", []);
+  h.push("getAvailableDevices", []);
+  h.push("getAvailableDevices", one);
+  h.push("getAvailableDevices", new Error("offline"));
+  h.push("getAvailableDevices", one);
+  await h.store.refreshAvailable();
+  await h.store.refreshAvailable();
+  assert.equal(h.events.get("available"), 1, "an unchanged list must not announce");
+  await h.store.refreshAvailable();
+  assert.equal(h.events.get("available"), 2);
   assert.equal(h.last.get("available"), h.store.getState().available);
+  assert.equal(await h.store.refreshAvailable(), false);
+  await h.store.refreshAvailable();
+  // No view swaps the list for a load error, so an unchanged list after a
+  // failure has nothing to repair and must not announce.
+  assert.equal(h.events.get("available"), 2, "an unchanged list after a failure must not announce");
+});
+
+test("a failure after a newer read applied does not re-announce", async () => {
+  // The same guard in each refresh that resets its tracker on a failure.
+  const cases = [
+    { name: "status", endpoint: "getStatus", body: status(1), refresh: (h: Harness) => h.store.refreshStatus() },
+    { name: "devices", endpoint: "getDevices", body: [{ name: "mic", channels: [] }], refresh: (h: Harness) => h.store.refreshDevices() },
+    { name: "system", endpoint: "getSystem", body: { hostname: "pi" }, refresh: (h: Harness) => h.store.refreshSystem() },
+  ] as const;
+  for (const c of cases) {
+    const h = harness();
+    const slow = deferred<unknown>();
+    h.push(c.endpoint, slow.promise);
+    h.push(c.endpoint, c.body);
+    h.push(c.endpoint, c.body);
+    const older = c.refresh(h);
+    await c.refresh(h);
+    assert.equal(h.events.get(c.name), 1, `${c.name}: the newer read announces`);
+    // The older read fails after the newer one applied: fresh data is in place.
+    slow.reject(new Error("offline"));
+    assert.equal(await older, true);
+    await c.refresh(h);
+    assert.equal(h.events.get(c.name), 1, `${c.name}: a superseded failure must not re-arm the announcement`);
+  }
+});
+
+test("a login that cannot reach the appliance never shows a response body", async () => {
+  const h = harness(new FakeTimers());
+  // A non-problem error with a body in its detail, which request() no longer
+  // keeps: the message must show the status text alone either way.
+  h.push("getStatus", new ApiError(502, "Bad Gateway", { detail: "<html><body>upstream down</body></html>" }));
+  try {
+    const res = await h.store.login("typed-token");
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "Could not reach the appliance. Check the connection and try again.");
+  } finally {
+    setToken(null);
+  }
 });
 
 test("an older status response landing late does not overwrite a newer one", async () => {
@@ -419,6 +465,54 @@ test("stopping polling reports the stream down", () => {
   assert.deepEqual(h.connection, [true, false]);
 });
 
+test("a login whose token is refused says so and keeps no token", async () => {
+  const h = harness(new FakeTimers());
+  h.push("getStatus", new ApiError(401, "unauthorized"));
+  const res = await h.store.login("typed-token");
+  assert.equal(res.ok, false);
+  assert.equal(res.message, "The access token was not accepted. Check it and try again.");
+  assert.equal(getToken(), null);
+});
+
+test("a login the appliance refuses, or answers unreadably, says which", async () => {
+  for (const [outcome, want] of [
+    [new ApiError(503, "unavailable", { detail: "still starting", problem: true }), "The appliance refused the sign-in: still starting."],
+    [new UnreadableResponseError(200), "The appliance answered, but its reply could not be read. Try again."],
+    [new TypeError("Failed to fetch"), "Could not reach the appliance. Check the connection and try again."],
+  ] as const) {
+    const h = harness(new FakeTimers());
+    h.push("getStatus", outcome);
+    const res = await h.store.login("typed-token");
+    assert.equal(res.ok, false);
+    assert.equal(res.message, want);
+    assert.equal(getToken(), null, "a failed login keeps no token");
+  }
+});
+
+test("a login whose token is refused during the load says so", async () => {
+  const h = harness(new FakeTimers());
+  const devices = deferred<Device[]>();
+  h.push("getStatus", status(1));
+  h.push("getDevices", devices.promise);
+  h.push("getSystem", {});
+  h.push("getConfig", { devices: [] });
+  h.push("getAvailableDevices", []);
+  try {
+    const login = h.store.login("typed-token");
+    await settle();
+    // The token is revoked while the load is in flight.
+    h.unauthorized();
+    devices.resolve([]);
+    const res = await login;
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "The access token was not accepted while loading. Try again.");
+    assert.equal(getToken(), null);
+  } finally {
+    h.store.stopPolling();
+    setToken(null);
+  }
+});
+
 test("a login fetches /status once and applies the verifying read", async () => {
   const h = harness(new FakeTimers());
   try {
@@ -448,7 +542,7 @@ test("a token-gated boot fetches /status once and applies the verifying read", a
     });
     assert.equal(await h.store.start(), true);
     // loadInitial runs detached from start(); let its refreshes settle.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
     assert.equal(h.calls.get("getStatus"), 1);
     assert.deepEqual(h.store.getState().status, status(1));
     assert.equal(h.events.get("status"), 1);
@@ -457,4 +551,63 @@ test("a token-gated boot fetches /status once and applies the verifying read", a
     h.store.stopPolling();
     setToken(null);
   }
+});
+
+// ENDPOINTS are the reads loadInitial makes, with a successful body for each.
+const ENDPOINTS = {
+  getStatus: status(1),
+  getDevices: [],
+  getSystem: {},
+  getConfig: { devices: [] },
+  getAvailableDevices: [],
+} as const;
+
+// loadFailing runs loadInitial with the named reads failing and the others
+// succeeding, and returns every loaderror it announced.
+async function loadFailing(h: Harness, failing: (keyof typeof ENDPOINTS)[]): Promise<LoadError[]> {
+  for (const [ep, body] of Object.entries(ENDPOINTS) as [keyof typeof ENDPOINTS, unknown][]) {
+    h.push(ep, failing.includes(ep) ? new Error("offline") : body);
+  }
+  const errors: LoadError[] = [];
+  h.store.on("loaderror", (e) => errors.push(e));
+  await h.store.loadInitial();
+  return errors;
+}
+
+test("a failed initial load announces which views' data is missing", async () => {
+  const message = "Could not reach the appliance.";
+  const cases: { failing: (keyof typeof ENDPOINTS)[]; want: LoadError | null }[] = [
+    { failing: [], want: null },
+    // The dashboard needs status or devices; one of them alone is enough.
+    { failing: ["getStatus"], want: null },
+    { failing: ["getDevices"], want: null },
+    { failing: ["getStatus", "getDevices"], want: { coreFailed: true, systemFailed: false, configFailed: false, availableFailed: false, message } },
+    { failing: ["getSystem"], want: { coreFailed: false, systemFailed: true, configFailed: false, availableFailed: false, message } },
+    { failing: ["getConfig"], want: { coreFailed: false, systemFailed: false, configFailed: true, availableFailed: false, message } },
+    // The available list is advisory: its failure alone raises nothing, and it
+    // rides along in the detail when something else failed.
+    { failing: ["getAvailableDevices"], want: null },
+    { failing: ["getSystem", "getAvailableDevices"], want: { coreFailed: false, systemFailed: true, configFailed: false, availableFailed: true, message } },
+  ];
+  for (const c of cases) {
+    const got = await loadFailing(harness(), c.failing);
+    assert.deepEqual(got, c.want ? [c.want] : [], `failing ${c.failing.join(", ") || "nothing"}`);
+  }
+});
+
+test("a 401 during the initial load leaves the failure to the login prompt", async () => {
+  const h = harness();
+  const statusRead = deferred<ApplianceStatus>();
+  h.push("getStatus", statusRead.promise);
+  for (const ep of ["getDevices", "getSystem", "getConfig"] as const) h.push(ep, new Error("offline"));
+  h.push("getAvailableDevices", []);
+  const errors: LoadError[] = [];
+  h.store.on("loaderror", (e) => errors.push(e));
+  const load = h.store.loadInitial();
+  // The reads are in flight when one is rejected with a 401, which raises the
+  // login prompt; the load then finishes with every core read failed.
+  h.unauthorized();
+  statusRead.reject(new Error("401"));
+  await load;
+  assert.deepEqual(errors, [], "a pending login must suppress the load error");
 });

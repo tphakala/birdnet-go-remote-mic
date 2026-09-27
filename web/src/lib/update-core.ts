@@ -2,6 +2,7 @@
 // for an update to install, split out so node:test covers it
 // (web/test/update-core.test.ts).
 
+import { sentence } from "./text.ts";
 import type { UpdateStatus } from "./types.ts";
 
 // UpdateTone colours the card's headline: ok for up to date, info for a neutral
@@ -28,17 +29,8 @@ export interface UpdateView {
   busy: boolean;
 }
 
-// sentence turns a backend message (a Go error string: lowercase, often no
-// final stop) into a sentence for the card: first letter capitalised, and a
-// period added unless it already ends in one (a trailing colon becomes the
-// period). Empty stays empty. Hints are left as sent: they end in commands
-// and paths an operator copies.
-export function sentence(msg: string | undefined): string {
-  const t = (msg ?? "").trim().replace(/:$/, "");
-  if (!t) return "";
-  const s = t.charAt(0).toUpperCase() + t.slice(1);
-  return /[.!?]$/.test(s) ? s : `${s}.`;
-}
+// The card's sentences come from sentence (lib/text.ts); its hints are left
+// as sent, since they end in commands and paths an operator copies.
 
 const RESTART_NOTE =
   "The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start.";
@@ -145,17 +137,6 @@ export function withChecksSetting(u: UpdateStatus, on: boolean): UpdateStatus {
     latestVersion: undefined,
     notesUrl: undefined,
   };
-}
-
-// refusalText is what a refused update request shows: the problem detail the
-// appliance gave (why it refused, such as an earlier attempt still running) as
-// a sentence, when it reads as a message; else the problem title, else the
-// HTTP status. A body that was not a problem (a proxy's HTML error page, a
-// long plain-text dump) arrives as the detail too and is not shown.
-export function refusalText(status: number, title: string, detail: string | undefined): string {
-  const d = (detail ?? "").trim();
-  if (d && d.length <= 300 && !d.includes("<")) return sentence(d);
-  return sentence(title) || `HTTP ${status}.`;
 }
 
 // safeNotesUrl returns the release notes address when it is an https URL, and
@@ -334,12 +315,13 @@ export class UpdateFollow {
 }
 
 // followEndText says why a follow ended without a restart, from the status and
-// whether the install was reached: a failure carries its reason (as a
-// sentence); checks turned off (here or in another tab) stop a download but
-// not an install already handed over; anything else ended before installing
-// (a restart during the download, say), which not every path notifies about.
+// whether the install was reached: a failure carries its reason (lowercase
+// after the colon, like the other failure toasts); checks turned off (here
+// or in another tab) stop a download but not an install already handed over;
+// anything else ended before installing (a restart during the download,
+// say), which not every path notifies about.
 export function followEndText(u: UpdateStatus, reachedInstall: boolean): { text: string; tone: "warn" | "error" } {
-  if (u.phase === "failed") return { text: `Update failed: ${sentence(u.phaseMessage) || "The attempt did not finish."}`, tone: "error" };
+  if (u.phase === "failed") return { text: `Update failed: ${u.phaseMessage?.trim() || "the attempt did not finish"}`, tone: "error" };
   if (!u.checkEnabled && !reachedInstall) return { text: "The update stopped because update checks were turned off.", tone: "warn" };
   return { text: `The update did not install; still running ${u.currentVersion}.`, tone: "warn" };
 }

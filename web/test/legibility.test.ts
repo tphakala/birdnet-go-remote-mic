@@ -28,8 +28,8 @@ import { fileURLToPath } from "node:url";
 
 import { at, group } from "./fixtures.ts";
 
-const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url).href);
-const INDEX = fileURLToPath(new URL("../static/index.html", import.meta.url).href);
+const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url));
+const INDEX = fileURLToPath(new URL("../static/index.html", import.meta.url));
 
 const MIN_PX = 12;
 const BODY_PX = 13;

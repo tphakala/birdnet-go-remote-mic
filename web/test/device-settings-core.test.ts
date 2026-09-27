@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
+  DEVICE_FIELD_LABELS,
   MAX_NAME_LEN,
   MAX_PATH_LEN,
   OPUS_BITRATE_PER_CHANNEL,
@@ -21,6 +22,7 @@ import {
   otherOpusStream,
   withFirstStream,
 } from "../src/lib/device-settings-core.ts";
+import { group } from "./fixtures.ts";
 import type { DeviceConfig } from "../src/lib/types.ts";
 
 test("defaultOpusBitrate scales per channel, floors at one, and caps at the Opus ceiling", () => {
@@ -85,7 +87,7 @@ test("lengthError enforces the stream path limit", () => {
 
 // Resolve from import.meta.url rather than process.cwd(), so the test finds
 // the file whatever directory the runner is invoked from.
-const CONFIG_GO = fileURLToPath(new URL("../../internal/config/config.go", import.meta.url).href);
+const CONFIG_GO = fileURLToPath(new URL("../../internal/config/config.go", import.meta.url));
 
 // goConst reads an integer constant from the Go config source, so the UI limits
 // cannot drift from the ones the appliance enforces.
@@ -154,4 +156,19 @@ test("extraStreamsNote speaks only for a multi-stream device", () => {
   const note = extraStreamsNote([{ path: "/a", mode: "pcm", channels: [1] }, { path: "/b", mode: "pcm", channels: [2] }]);
   assert.ok(note.includes("serves 2 streams"), note);
   assert.ok(note.includes("Opus bitrate"), note);
+});
+
+test("every device config field the appliance validates has a form label", () => {
+  // The rejection toast names a field by the last part of its path; config.go
+  // builds most paths with field("x") and sfield("x").
+  // The length checks spell the path out in a Sprintf, devices[%d].<key>.
+  const src = readFileSync(CONFIG_GO, "utf8");
+  const found = [
+    ...src.matchAll(/\bs?field\("([a-z_.]+)"\)/g),
+    ...src.matchAll(/"devices\[%d\]\.(?:streams\[%d\]\.)?([a-z_.]+)"/g),
+  ];
+  const keys = new Set(found.map((m) => group(m, 1).split(".").at(-1) ?? ""));
+  assert.ok(keys.size >= 5, `found only ${keys.size} field keys in config.go; did the helpers change?`);
+  const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
+  for (const key of keys) assert.ok(Object.hasOwn(labels, key) && labels[key], `config.go validates "${key}" but DEVICE_FIELD_LABELS has no label for it`);
 });

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 
 import { NotificationStore } from "../src/lib/notifications.ts";
 import { prefSaveNotice } from "../src/lib/prefs.ts";
-import { FakeConnection, FakeTimers, notif } from "./fixtures.ts";
+import { FakeConnection, FakeTimers, notif, settle, snap } from "./fixtures.ts";
 
 test("a failed clear-all write reports the notice", async () => {
   // Every write fails, as in a browser with site data blocked (set here rather
@@ -23,22 +23,14 @@ test("a failed clear-all write reports the notice", async () => {
     const connection = new FakeConnection();
     const ns = new NotificationStore({
       api: {
-        getNotifications: () =>
-          Promise.resolve({
-            bootId: "boot-a",
-            serverTime: "2026-09-12T14:00:05Z",
-            uptimeMs: 5_000,
-            capacity: 500,
-            nextId: 3,
-            notifications: [notif({ id: 1 }), notif({ id: 2 })],
-          }),
+        getNotifications: () => Promise.resolve(snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] })),
       },
       sse: { subscribe: () => () => true },
       connection,
       timers: new FakeTimers(),
     });
     connection.set(true);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
     // The snapshot's write failed too, silently.
     assert.equal(shown, 0);
     ns.clearAll();

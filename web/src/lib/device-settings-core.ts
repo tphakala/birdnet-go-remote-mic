@@ -89,3 +89,23 @@ export function extraStreamsNote(streams: readonly StreamConfig[] | undefined): 
   if (n < 2) return "";
   return `This device serves ${n} streams from one capture. The path, codec mode, channels and Opus bitrate here are the first stream's; the other streams keep theirs, and the sample rate applies to all of them.`;
 }
+
+// DEVICE_FIELD_LABELS is how the device settings form labels each device
+// config field, keyed by the last part of the field path the appliance
+// reports in a validation problem: internal/config/config.go builds paths as
+// devices[i].<key> (config.go:598) and devices[i].streams[j].<key>
+// (config.go:647), the Opus bitrate as streams[j].opus.bitrate. The form and
+// the rejection toast both read it, so a field is named the same in both. The
+// sample format and the stream list have no control in the form and get a
+// plain name.
+export const DEVICE_FIELD_LABELS = {
+  name: "Device Name",
+  device: "Device ID",
+  format: "Sample Format",
+  rate: "Sample Rate (Hz)",
+  streams: "Streams",
+  path: "RTSP Path",
+  mode: "Stream Codec Mode",
+  channels: "Channels",
+  bitrate: "Opus Bitrate",
+} as const;

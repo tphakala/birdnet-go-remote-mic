@@ -2,9 +2,10 @@ import { store } from "../lib/store.ts";
 import { VUMeter } from "../components/vu-meter.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
-import { api, ApiError } from "../lib/api.ts";
-import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
+import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusOnOrDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -29,6 +30,29 @@ const ICON_SLIDERS =
   svgIcon('<line x1="4" x2="4" y1="21" y2="14"></line><line x1="4" x2="4" y1="10" y2="3"></line><line x1="12" x2="12" y1="21" y2="12"></line><line x1="12" x2="12" y1="8" y2="3"></line><line x1="20" x2="20" y1="21" y2="16"></line><line x1="20" x2="20" y1="12" y2="3"></line><line x1="2" x2="6" y1="14" y2="14"></line><line x1="10" x2="14" y1="8" y2="8"></line><line x1="18" x2="22" y1="16" y2="16"></line>', 13);
 const ICON_CHEVRON =
   svgIcon('<path d="m6 9 6 6 6-6"></path>', 12, 2.2);
+
+// STALE_BASE_TEXT is said when a change must build on the appliance's config
+// and a re-read of it failed (see freshBase).
+const STALE_BASE_TEXT = "Could not read the current configuration; nothing was changed. Try again in a moment.";
+
+// FIX_FIELDS_TEXT is the toast for a save stopped by a marked field, found by
+// the form's own check or by the appliance: the field carries the reason.
+const FIX_FIELDS_TEXT = "Save failed: fix the highlighted fields.";
+
+// availableLabel names an available device for people: its friendly name,
+// with the ALSA address when there is one to tell two identical units apart,
+// else the address, else the device id.
+function availableLabel(d: AvailableDevice): string {
+  return d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+}
+
+// setEnableBusy shows an Enable button's progress, and keeps its accessible
+// name (which names the device) saying the same as its visible text.
+function setEnableBusy(btn: HTMLElement, d: AvailableDevice, busy: boolean): void {
+  if (busy) setBusy(btn, "Enabling...");
+  else clearBusy(btn, "Enable");
+  btn.setAttribute("aria-label", `${busy ? "Enabling" : "Enable"} ${availableLabel(d)}`);
+}
 
 // capsSummary renders a short human summary of a device's probed capabilities
 // (channel support and top sample rate) for the available-devices list.
@@ -112,6 +136,12 @@ interface ArticleParts {
 // the class of bug the old build/update split produced.
 interface CardEntry extends ArticleParts {
   device: Device; // latest runtime view, set by syncCard; device.device is the id
+  // Set while an enable/disable PATCH for this device is queued or in flight,
+  // on the entry rather than the toggle node, so a card rebuilt meanwhile
+  // gets a busy toggle that the sync does not reset.
+  togglePending?: boolean;
+  // The state the pending change asked for, shown on a rebuilt toggle.
+  toggleWant?: boolean;
   shape: string; // shapeKey of the currently mounted article
   // Settings panel: owned by the entry and moved between article renders, so an
   // open form survives a card rebuild rather than being torn down under the user.
@@ -312,14 +342,27 @@ export class DashboardView {
   // Device ids with a provisioning request in flight, so the Enable button shows
   // progress and a second click cannot double-provision.
   private provisioning: Set<string> = new Set();
-  // The last available-device list rendered, serialized, so an unchanged poll
-  // skips the rebuild.
-  private availableKey = "";
+  // The Available Devices cards on screen, by device id, each with the key of
+  // what it shows (availableCardKey), so a render rebuilds only changed cards.
+  private availableCards = new Map<string, { card: HTMLElement; key: string; label: string }>();
+  // The Available card that held keyboard focus when a render removed it
+  // during that device's Enable: its device, its neighbours on screen and its
+  // label, so the Enable can move focus when it settles (to the new device
+  // card on success; on failure to its own card when it is listed again,
+  // else its nearest neighbour still listed). Only set while that Enable is in flight.
+  private availableFocusLost: { id: string; neighbours: string[]; label: string } | null = null;
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
   // built from a fresh base only after the previous mutation settled. Prevents a
   // full-array PATCH from a stale base from clobbering a concurrent change.
   private mutationQueue: Promise<void> = Promise.resolve();
+  // Set when the cached config may not match the appliance: a change's
+  // outcome was unknown and its re-read failed. The next full-array PATCH
+  // re-reads first (freshBase).
+  private baseStale = false;
+  // Device ids this view is removing, so the render that removes the card
+  // announces only where focus went: the Remove's own toast says what went.
+  private removing = new Set<string>();
   // Set while a reconcile() is queued on the microtask, so the several store
   // events a single poll tick fires collapse into one pass (see render()).
   private renderScheduled = false;
@@ -471,9 +514,18 @@ export class DashboardView {
       this.syncCard(entry, d, cfgByDevice);
     }
 
-    // Remove cards for devices that are gone.
+    // Remove cards for devices that are gone. A removed card that held
+    // keyboard focus (another tab removed the device, or a reload dropped it)
+    // hands it on below, as Available Devices does.
+    let focusLost: { id: string; neighbours: string[]; name: string } | null = null;
     for (const [id, entry] of this.cards) {
       if (!seen.has(id)) {
+        if (holdsFocus(entry.article)) {
+          // The screen order, read only when a removed card held focus.
+          const idOf = new Map([...this.cards].map(([cid, e]) => [e.article, cid] as const));
+          const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
+          focusLost = { id, neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: entry.device.name };
+        }
         entry.live?.meters.forEach((m) => m.destroy());
         entry.settingsForm?.destroy();
         entry.article.remove();
@@ -486,13 +538,14 @@ export class DashboardView {
     // also holds the hidden #rack-empty placeholder, so an index-based compare was
     // off by one and moved a card every poll. Steady state performs no DOM moves,
     // so focus inside a card is never dropped by re-inserting its node.
-    let prev: Element | null = null;
-    for (const d of devices) {
-      const entry = this.cards.get(d.device);
-      if (!entry) continue;
-      const target: Element | null = prev ? prev.nextElementSibling : rack.firstElementChild;
-      if (entry.article !== target) rack.insertBefore(entry.article, target);
-      prev = entry.article;
+    const ordered = devices.flatMap((d) => this.cards.get(d.device) ?? []);
+    orderChildren(rack, ordered.map((e) => e.article));
+    if (focusLost && focusDropped()) {
+      const { name, id } = focusLost;
+      // The view's own Remove says what went in its toast, so this says
+      // only where focus went.
+      const own = this.removing.has(id);
+      this.focusNeighbour(focusLost.neighbours, (nid) => this.settingsTarget(nid), (next) => (own ? focusMovedMessage(next) : deviceGoneMessage(name, next)));
     }
 
     // Rebuild the name index for the levels stream (cards are keyed by id, the
@@ -512,19 +565,102 @@ export class DashboardView {
   // renderAvailable lists the host's detected-but-unconfigured capture devices,
   // each with an Enable button that provisions it. The whole section hides when
   // nothing is available, so a fully configured host shows no empty panel.
+  // Cards are keyed by device id and rebuilt only when what they show changed
+  // (availablePlan), so a render keeps the operator's text selection (the
+  // device id is there to be copied) and keyboard focus on the cards it leaves
+  // alone. A rebuilt card that held focus hands it to its new Enable button.
   private renderAvailable(available: AvailableDevice[]): void {
     if (!this.availableRack || !this.availableSection) return;
+    const rack = this.availableRack;
     this.availableSection.hidden = available.length === 0;
-    // The store announces this list on every poll. Rebuild only when it
-    // changed, so an unchanged list keeps the operator's text selection (the
-    // device id is there to be copied) and keyboard focus on an Enable button.
-    const key = JSON.stringify(available);
-    if (key === this.availableKey) return;
-    this.availableKey = key;
-    this.availableRack.textContent = "";
-    for (const d of available) {
-      this.availableRack.appendChild(this.buildAvailableCard(d));
+    const next = available.map((d) => ({ d, id: d.device, key: availableCardKey(d, this.provisioning.has(d.device)) }));
+    const shown = new Map([...this.availableCards].map(([id, c]) => [id, c.key]));
+    const plan = availablePlan(shown, next);
+
+    // A removed card that held focus: during its own Enable the Enable moves
+    // focus once it settles; otherwise (the device went away) focus goes to
+    // its nearest neighbour still listed, below. availableCards is kept in
+    // screen order (see the end of this render), so its keys are the order
+    // on screen.
+    let stranded: { neighbours: string[]; label: string } | null = null;
+    const oldOrder = [...this.availableCards.keys()];
+    for (const id of plan.remove) {
+      const c = this.availableCards.get(id);
+      if (!c) continue;
+      if (holdsFocus(c.card)) {
+        const lost = { id, neighbours: neighbourOrder(oldOrder, oldOrder.indexOf(id)), label: c.label };
+        if (this.provisioning.has(id)) this.availableFocusLost = lost;
+        else stranded = lost;
+      }
+      c.card.remove();
+      this.availableCards.delete(id);
     }
+    const build = new Set(plan.build);
+    for (const { d, id, key } of next) {
+      if (!build.has(id)) continue;
+      const old = this.availableCards.get(id);
+      const card = this.buildAvailableCard(d);
+      const refocus = old !== undefined && holdsFocus(old.card);
+      if (old) old.card.replaceWith(card);
+      this.availableCards.set(id, { card, key, label: availableLabel(d) });
+      if (refocus) card.querySelector<HTMLElement>(".available-enable")?.focus({ preventScroll: true });
+    }
+    // Order with a diff, as the device rack does: steady state moves no node.
+    // The map is rebuilt in the same order, so its order is the screen's.
+    const ordered = new Map(plan.order.flatMap((id) => {
+      const c = this.availableCards.get(id);
+      return c ? [[id, c] as const] : [];
+    }));
+    this.availableCards = ordered;
+    orderChildren(rack, [...ordered.values()].map((c) => c.card));
+
+    if (stranded) this.focusAvailableNeighbour(stranded.neighbours, stranded.label);
+  }
+
+  // takeAvailableFocusLost returns and clears the record of a focused card
+  // that a render removed during this device's Enable, if there is one.
+  private takeAvailableFocusLost(device: string): { id: string; neighbours: string[]; label: string } | null {
+    const lost = this.availableFocusLost;
+    if (lost?.id !== device) return null;
+    this.availableFocusLost = null;
+    return lost;
+  }
+
+  // focusAvailableNeighbour moves focus, after an Available card holding it
+  // went away, to the Enable button of the first of its neighbours still
+  // listed (see neighbourOrder), else to the workspace, and announces which
+  // device went.
+  private focusAvailableNeighbour(neighbours: readonly string[], label: string): void {
+    this.focusNeighbour(
+      neighbours,
+      (id) => {
+        const c = this.availableCards.get(id);
+        const control = c?.card.querySelector<HTMLElement>(".available-enable");
+        return control ? { control, name: c?.label ?? "" } : undefined;
+      },
+      (next) => availableGoneMessage(label, next),
+    );
+  }
+
+  // focusNeighbour moves focus to the control of the first of ids still
+  // shown (for a card that went, its neighbours from neighbourOrder; after
+  // an Enable, the new card), else to the workspace, and announces
+  // message(that card's name, or null).
+  private focusNeighbour(
+    neighbours: readonly string[],
+    find: (id: string) => { control: HTMLElement; name: string } | undefined,
+    message: (next: string | null) => string,
+  ): void {
+    const next = neighbours.map(find).find((n) => n !== undefined);
+    if (next) {
+      // The control may be out of view (the removed card was last and the
+      // one before it is tall), so bring it just into view.
+      next.control.focus({ preventScroll: true });
+      next.control.scrollIntoView({ block: "nearest" });
+    } else {
+      focusWorkspace();
+    }
+    announce(this.announceEl, message(next?.name ?? null));
   }
 
   private buildAvailableCard(d: AvailableDevice): HTMLElement {
@@ -535,7 +671,7 @@ export class DashboardView {
     info.appendChild(elem("div", "device-title", d.friendlyName || d.hwAddr || d.device));
     const sub = elem("div", "available-sub");
     sub.appendChild(elem("span", "mono", d.hwAddr ?? d.device));
-    if (d.idStable === false) sub.appendChild(elem("span", "available-caps", "no stable id"));
+    if (d.idStable === false) sub.appendChild(elem("span", "available-caps", "no stable ID"));
     const caps = capsSummary(d);
     if (caps) sub.appendChild(elem("span", "available-caps", caps));
     info.appendChild(sub);
@@ -543,7 +679,7 @@ export class DashboardView {
     // tooltip (unreachable by keyboard, touch and screen readers), so an operator
     // can tell which of two identical units (serial or port) this card binds.
     if (d.hwAddr && d.device !== d.hwAddr) {
-      info.appendChild(elem("div", "available-id mono", `Device id: ${d.device}`));
+      info.appendChild(elem("div", "available-id mono", deviceIdTitle(d.device)));
     }
 
     const enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
@@ -551,19 +687,50 @@ export class DashboardView {
     // available device, so a bare "Enable" is ambiguous to a screen-reader user.
     // Two identical units share a friendly name, so add the address to tell
     // their buttons apart.
-    const which = d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
-    enableBtn.setAttribute("aria-label", `Enable ${which}`);
-    if (this.provisioning.has(d.device)) setBusy(enableBtn, "Enabling...");
+    setEnableBusy(enableBtn, d, this.provisioning.has(d.device));
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
     card.append(info, enableBtn);
     return card;
   }
 
+  // refreshDeviceViews re-reads what a device change affects (devices,
+  // available, config) and reports whether the device list was read, which
+  // alone decides whether a device is listed, and whether all three were. A
+  // failed config read marks the cached base stale (see freshBase).
+  private async refreshDeviceViews(): Promise<{ devices: boolean; all: boolean }> {
+    const [devices, available, config] = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+    this.baseStale = !config;
+    return { devices, all: devices && available && config };
+  }
+
+  // refreshConfigViews re-reads config and devices after a config PATCH, as
+  // refreshDeviceViews does.
+  private async refreshConfigViews(): Promise<boolean> {
+    const [config, devices] = await Promise.all([store.refreshConfig(), store.refreshDevices()]);
+    this.baseStale = !config;
+    return config && devices;
+  }
+
+  // freshBase makes sure a full-array PATCH builds from the appliance's
+  // config: after a change whose outcome is unknown and whose re-read failed
+  // (baseStale), it reads the config first, and reports false if it cannot.
+  private async freshBase(): Promise<boolean> {
+    if (!this.baseStale) return true;
+    this.baseStale = !(await store.refreshConfig());
+    return !this.baseStale;
+  }
+
+  // settingsTarget is a device card's settings button as a focus target.
+  private settingsTarget(id: string): { control: HTMLElement; name: string } | undefined {
+    const e = this.cards.get(id);
+    return e && { control: e.settingsBtn, name: e.device.name };
+  }
+
   private async provisionDevice(d: AvailableDevice, btn: HTMLElement): Promise<void> {
     if (this.provisioning.has(d.device)) return;
     this.provisioning.add(d.device);
-    setBusy(btn, "Enabling...");
+    setEnableBusy(btn, d, true);
     try {
       // Serialize through the same queue as toggles and settings saves: those
       // submit a full-array PATCH built from the cached config, so a provision
@@ -571,26 +738,67 @@ export class DashboardView {
       // The refreshes run inside the task so the next queued mutation rebuilds
       // from the post-provision config.
       await this.enqueue(async () => {
-        const created = await api.provisionDevice({ device: d.device });
-        await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-        const ch = created.channels.length === 1 ? ` on channel ${created.channels[0]}` : "";
-        showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
+        let created: Device | undefined;
+        let read: { devices: boolean; all: boolean } | undefined;
+        try {
+          created = await api.provisionDevice({ device: d.device });
+        } catch (err: unknown) {
+          if (isRefusal(err)) throw err;
+          // No readable answer: re-read inside the queue, so the next queued
+          // change builds from what the appliance now holds, and judge by it.
+          read = await this.refreshDeviceViews();
+          created = store.getState().devices.find((dv) => dv.device === d.device);
+          if (!created) {
+            if (read.devices) showToast(`${availableLabel(d)} does not appear to have been enabled; check again shortly.`, "warn");
+            else showUnconfirmed(`that ${availableLabel(d)} was enabled`, "the device list could not be read; check it before trying again");
+            return;
+          }
+        }
+        // A re-read that found the device already refreshed everything.
+        read ??= await this.refreshDeviceViews();
+        if (!read.all) {
+          showToast(`Enabled ${created.name}. The dashboard could not be refreshed; it updates on the next poll.`, "warn");
+        } else {
+          const ch = created.channels.length === 1 ? ` on channel ${created.channels[0]}` : "";
+          showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
+        }
+        // The refresh removed this device's Available card. If it held focus
+        // and focus has not moved since (it fell to the document body), hand
+        // it to the new device card, else to the workspace region, and say
+        // where it went.
+        const lost = this.takeAvailableFocusLost(d.device);
+        if (lost && focusDropped()) {
+          // Reconcile now rather than rely on the render the refresh queued:
+          // the new card's settings button must exist before focus moves.
+          this.reconcile();
+          const newId = created.device;
+          this.focusNeighbour([newId], (id) => this.settingsTarget(id), (next) => focusMovedMessage(next));
+        }
       });
     } catch (err: unknown) {
-      this.apiErrorToast(err, "Enable failed");
+      // Only a refusal reaches here: an unknown outcome is settled in the task.
+      this.apiErrorToast(err, `Could not enable ${availableLabel(d)}`);
       // A 404 (the device left or was re-detected) or 409 (already set up)
       // means this card is stale; refresh now rather than at the next poll.
-      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
+      if (isRefusal(err) && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
     } finally {
       this.provisioning.delete(d.device);
-      clearBusy(btn, "Enable");
-      // A poll that changed the list meanwhile rebuilt the card with a fresh
-      // busy button, which btn no longer is; re-render so it is not left stuck
-      // on "Enabling..." while an unchanged list skips the rebuild. A device
-      // no longer listed (the usual success) has no card left to fix.
-      if (!btn.isConnected && store.getState().available.some((a) => a.device === d.device)) {
-        this.availableKey = "";
-        this.renderAvailable(store.getState().available);
+      // Set only if the Enable failed after a render took its focused card:
+      // focus goes to its own card when it is listed again, else to its
+      // nearest neighbour still listed, as for any card that went.
+      const lost = this.takeAvailableFocusLost(d.device);
+      setEnableBusy(btn, d, false);
+      // clearBusy restores the card built before the click. If a render
+      // during the Enable rebuilt the card busy instead (its key includes the
+      // in-flight state), this render rebuilds it idle, since the key changed
+      // back. A device no longer listed (the usual success) has no card left.
+      this.renderAvailable(store.getState().available);
+      if (lost && focusDropped()) {
+        // Listed again by now (a poll brought it back): its own card takes
+        // focus; otherwise its nearest neighbour still listed.
+        const own = this.availableCards.get(d.device)?.card.querySelector<HTMLElement>(".available-enable");
+        if (own) own.focus({ preventScroll: true });
+        else this.focusAvailableNeighbour(lost.neighbours, lost.label);
       }
     }
   }
@@ -612,37 +820,70 @@ export class DashboardView {
       danger: true,
     });
     if (!ok) return;
+    // The accessible name follows the visible text, as on Enable.
+    const removeLabel = btn.getAttribute("aria-label");
     setBusy(btn, "Removing...");
+    btn.setAttribute("aria-label", `Removing ${entry.device.name}`);
     let removed = false;
     try {
       // Serialize with toggles and settings saves: a stale full-array PATCH from
       // one of those must not run interleaved with this delete and restore the
       // removed device (or drop a concurrently provisioned one).
       await this.enqueue(async () => {
-        await api.deleteDevice(entry.device.name);
+        const id = entry.device.device;
+        const name = entry.device.name;
+        // notFound is a 404: no device by that name, so gone already (an
+        // earlier attempt whose answer was lost, another tab) or renamed,
+        // which the re-read tells apart by the device's id. unknown is no
+        // readable answer at all.
+        let notFound: unknown = null;
+        let unknown = false;
+        // A render that removes the card (the re-read below, or a poll that
+        // lands while the DELETE is in flight) hands focus to its nearest
+        // neighbour, saying only where focus went (see reconcile): the toast
+        // below says what went.
+        this.removing.add(id);
+        let read: { devices: boolean; all: boolean };
+        try {
+          try {
+            await api.deleteDevice(name);
+          } catch (err: unknown) {
+            if (!isRefusal(err)) unknown = true;
+            else if (err.status === 404) notFound = err;
+            else throw err;
+          }
+          read = await this.refreshDeviceViews();
+        } finally {
+          this.removing.delete(id);
+        }
+        const listed = store.getState().devices.some((dv) => dv.device === id);
+        if (read.devices && listed) {
+          if (notFound !== null) throw notFound;
+          showToast(`${name} does not appear to have been removed; check again shortly.`, "warn");
+          return;
+        }
+        if (!read.devices && (unknown || notFound !== null)) {
+          showUnconfirmed(`that ${name} was removed`, "the device list could not be read; check it before trying again");
+          return;
+        }
         removed = true;
-        // The card (and this button) is about to be destroyed by the refresh,
-        // which would drop focus to the document body. Move it to the workspace
-        // region first so a keyboard user keeps a sensible place. preventScroll,
-        // as in the login modal: a plain focus() would jump the page to the top
-        // of <main>, away from where the removed card was.
-        const main = document.getElementById("main-content");
-        main?.focus({ preventScroll: true });
-        const refreshed = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-        if (refreshed.every(Boolean)) showToast(`Removed ${entry.device.name}.`);
-        else showToast(`Removed ${entry.device.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
-        // Only while focus is still where it was put: the refresh can take a
-        // while on a slow link, and the operator may have moved on.
-        if (main && document.activeElement === main) announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
+        if (read.all) showToast(`Removed ${name}.`);
+        else showToast(`Removed ${name}. The dashboard could not be refreshed; it updates on the next poll.`, "warn");
+        // Focus that had already fallen to the page (the confirm returned it
+        // to a Remove button a poll had just removed) goes to the dashboard.
+        if (focusDropped()) {
+          focusWorkspace();
+          announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
+        }
       });
     } catch (err: unknown) {
-      if (removed) {
-        // The device is gone; only the follow-up went wrong.
-        showToast(`Removed ${entry.device.name}. The page could not update: ${apiErrorMessage(err)}`, "warn");
-        return;
+      // Only a refusal reaches here: an unknown outcome is settled in the task.
+      this.apiErrorToast(err, `Could not remove ${entry.device.name}`);
+    } finally {
+      if (!removed) {
+        clearBusy(btn, "Remove");
+        if (removeLabel !== null) btn.setAttribute("aria-label", removeLabel);
       }
-      this.apiErrorToast(err, "Remove failed");
-      clearBusy(btn, "Remove");
     }
   }
 
@@ -722,6 +963,12 @@ export class DashboardView {
   private wireArticleHandlers(entry: CardEntry): void {
     entry.settingsBtn.addEventListener("click", () => this.toggleSettings(entry));
     entry.toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry));
+    if (entry.togglePending) {
+      // Show the change asked for, not the unchecked default of a new switch.
+      entry.toggleInput.checked = entry.toggleWant ?? entry.toggleInput.checked;
+      entry.toggleInput.disabled = true;
+      entry.toggleInput.setAttribute("aria-busy", "true");
+    }
     this.syncSettingsButton(entry);
   }
 
@@ -1020,10 +1267,11 @@ export class DashboardView {
     const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : serving ? `ALSA: ${d.device}` : "No matching hardware";
     let hwText = showHw ? `${addr} · ${hw}` : addr;
     // A card-index id can name a different device after a reboot or replug; the
-    // settings panel's Device id hint carries the remedy (remove and re-add).
+    // settings panel's Device ID hint carries the remedy (remove and re-add).
     if (d.idStable === false) hwText += " · card index (can change after a reboot)";
     setText(entry.hwEl, hwText);
-    if (entry.hwEl.title !== `Device id: ${d.device}`) entry.hwEl.title = `Device id: ${d.device}`;
+    const hwTitle = deviceIdTitle(d.device);
+    if (entry.hwEl.title !== hwTitle) entry.hwEl.title = hwTitle;
 
     // Chips describe the live stream and are shown only while serving.
     const rate = d.negotiatedRate ?? d.rate;
@@ -1043,7 +1291,7 @@ export class DashboardView {
     // (the card shape does not change, so mount's focus capture never runs);
     // if it held focus, keep focus on the card and say why it moved.
     const hideLock = !serving || !this.status?.authRequired;
-    const lockHadFocus = hideLock && !entry.lockEl.hidden && entry.lockEl.contains(document.activeElement);
+    const lockHadFocus = hideLock && !entry.lockEl.hidden && holdsFocus(entry.lockEl);
     setHidden(entry.lockEl, hideLock);
     if (lockHadFocus) {
       entry.settingsBtn.focus();
@@ -1060,9 +1308,9 @@ export class DashboardView {
     // a screen-reader user can tell which card's settings the button opens.
     const settingsAria = `Settings for ${d.name}`;
     if (entry.settingsBtn.getAttribute("aria-label") !== settingsAria) entry.settingsBtn.setAttribute("aria-label", settingsAria);
-    // Do not fight the user mid-interaction (the input is disabled while a PATCH
-    // is in flight); otherwise keep it in sync with the persisted flag.
-    if (!entry.toggleInput.disabled && entry.toggleInput.checked !== configEnabled) {
+    // Do not fight the user mid-interaction (a PATCH is queued or in flight);
+    // otherwise keep it in sync with the persisted flag.
+    if (!entry.togglePending && entry.toggleInput.checked !== configEnabled) {
       entry.toggleInput.checked = configEnabled;
     }
 
@@ -1099,14 +1347,13 @@ export class DashboardView {
       // A row hidden while it holds focus (its clip button, as its channel leaves
       // the stream or hiding turns on) would drop focus to the document body;
       // note it and re-home focus after the loop, once the visible rows settle.
-      const active = document.activeElement;
       let strandedRow = -1;
       entry.live.rows.forEach((row, i) => {
         const on = states[i] ?? false;
         row.classList.toggle("ch-live", on);
         row.classList.toggle("ch-off", !on);
         const hide = hidden[i] ?? false;
-        if (hide && !row.hidden && active instanceof Node && row.contains(active)) strandedRow = i;
+        if (hide && !row.hidden && holdsFocus(row)) strandedRow = i;
         setHidden(row, hide);
         // Stop the hidden row's ~60fps canvas loop; resume it when shown again.
         const meter = meters[i];
@@ -1205,15 +1452,18 @@ export class DashboardView {
     return run;
   }
 
-  // apiErrorToast surfaces a failed PATCH: a validation problem shows the first
-  // field/reason, anything else shows the raw message, both under a prefix.
-  private apiErrorToast(err: unknown, prefix: string): void {
-    const first = err instanceof ApiError ? err.errors?.[0] : undefined;
-    if (err instanceof ApiError && first) {
-      showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
+  // apiErrorToast surfaces a failed request under a prefix that says which
+  // action failed. A validation problem names the first field by its form
+  // label, and the device by its name in sent, the device list the request
+  // carried (the stored config when the request carried none), since a field
+  // path indexes that list.
+  private apiErrorToast(err: unknown, prefix: string, sent?: readonly DeviceConfig[]): void {
+    const problem = firstProblem(err);
+    if (problem) {
+      const names = (sent ?? store.getState().config?.devices ?? []).map((cd) => cd.name);
+      showToast(rejectionText(prefix, problem, names), "error");
     } else {
-      const msg = err instanceof Error ? err.message : String(err);
-      showToast(`${prefix}: ${msg}`, "error");
+      showToast(`${prefix}: ${apiErrorMessage(err)}`, "error");
     }
   }
 
@@ -1240,42 +1490,69 @@ export class DashboardView {
     // Remember focus before disabling: re-enabling a disabled control drops focus
     // to the body, dumping a keyboard user at the top of the page.
     const hadFocus = document.activeElement === input;
+    entry.togglePending = true;
+    entry.toggleWant = want;
     input.disabled = true;
     input.setAttribute("aria-busy", "true");
     await this.enqueue(async () => {
       // Build merged from a FRESH base inside the queued task, after any prior
       // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
       // a concurrent change with a stale base.
-      const merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
+      let merged: DeviceConfig[] = [];
+      const verb = want ? "Enabled" : "Disabled";
       try {
+        if (!(await this.freshBase())) {
+          entry.toggleInput.checked = !want;
+          showToast(STALE_BASE_TEXT, "warn");
+          return;
+        }
+        merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
         const res = await api.patchConfig({ devices: merged });
         // The PATCH persisted. Seed the cached config with the authoritative
         // response before the refresh, so a later queued mutation rebuilds its
         // base from this change even if the GET refresh below fails.
         store.applyConfig(res.config);
+        this.baseStale = false;
         // A refresh failure afterwards must NOT revert the toggle: the change is
         // already applied and reflected in the cached config above.
         await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-        const verb = want ? "Enabled" : "Disabled";
         showToast(
           res.restartRequired
             ? `${verb} ${name}. Restart the appliance to apply.`
             : `${verb} ${name}.`,
         );
       } catch (err: unknown) {
-        // Only a failed PATCH reverts the toggle: the mutation did not persist.
-        input.checked = !want;
-        this.apiErrorToast(err, "Toggle failed");
+        if (isRefusal(err)) {
+          // A refusal did not persist, so the toggle reverts (the live node:
+          // a poll may have rebuilt the card meanwhile).
+          entry.toggleInput.checked = !want;
+          this.apiErrorToast(err, `Could not ${want ? "enable" : "disable"} ${name}`, merged);
+        } else {
+          // The change may have persisted: re-read inside the queue, so the
+          // next queued change builds from what the appliance holds, and say
+          // what the re-read found.
+          const read = await this.refreshConfigViews();
+          const now = store.getState().config?.devices.find((cd) => cd.device === id);
+          if (!read) showUnconfirmed(`the change to ${name}`, "check the switch before trying again");
+          else if ((now?.enabled ?? true) === want) showToast(`${verb} ${name}.`);
+          else showToast(`The change to ${name} does not appear to have applied; check again shortly.`, "warn");
+        }
       } finally {
         // Re-read the current toggle: a poll may have rebuilt the card during the
         // PATCH (a serving<->idle flip, or a captured-channel change) and replaced
         // the node this closure captured. Clear the busy state and restore focus on
         // the live node, falling back to the settings button if the toggle is gone, so a
         // keyboard user is never stranded on the document body.
+        entry.togglePending = false;
+        // A card rebuilt while the change was pending skipped the sync, so
+        // render once more to set its toggle from the config.
+        this.render();
         const toggle = entry.toggleInput;
         toggle.disabled = false;
         toggle.removeAttribute("aria-busy");
-        if (hadFocus) (toggle.isConnected ? toggle : entry.settingsBtn).focus();
+        // Only if focus is still on the toggle or dropped: the operator may
+        // have moved on while the change was queued.
+        if (hadFocus && ((toggle.isConnected && holdsFocus(toggle)) || focusDropped())) (toggle.isConnected ? toggle : entry.settingsBtn).focus();
       }
     });
   }
@@ -1429,12 +1706,23 @@ export class DashboardView {
     setHidden(entry.staleNote, !stale);
   }
 
+  // finishSave ends a device save that applied: it closes the form that was
+  // saved (not one the operator opened while the save was queued, which
+  // would drop its edits), says so, and returns focus to the settings button
+  // if closing the form dropped it.
+  private finishSave(entry: CardEntry, form: DeviceSettingsForm, text: string): void {
+    const same = entry.settingsForm === form;
+    if (same) this.closeSettings(entry);
+    showToast(text);
+    if (same && focusDropped()) entry.settingsBtn.focus();
+  }
+
   private async saveDevice(entry: CardEntry, btn: HTMLElement, cancelBtn: HTMLButtonElement): Promise<void> {
     if (btn.getAttribute("aria-disabled") === "true") return;
     const form = entry.settingsForm;
     if (!form) return;
     if (!form.validate()) {
-      showToast("Fix the highlighted fields before saving.", "warn");
+      showToast(FIX_FIELDS_TEXT, "error");
       // Move focus to the first flagged field, matching saveAuth, so a keyboard
       // user is taken to what needs fixing instead of staying on the Save button.
       form.focusFirstInvalid();
@@ -1456,6 +1744,10 @@ export class DashboardView {
     cancelBtn.disabled = true;
     try {
       await this.enqueue(async () => {
+      if (!(await this.freshBase())) {
+        showToast(STALE_BASE_TEXT, "warn");
+        return;
+      }
       // Source the enabled flag and the patch base FRESH inside the queued task:
       // the settings form does not edit enabled, the card toggle may have changed
       // it since the panel opened, and a prior queued mutation may have changed
@@ -1471,21 +1763,52 @@ export class DashboardView {
 
       try {
         const res = await api.patchConfig({ devices: merged });
-        this.closeSettings(entry);
         // Seed the cached config with the authoritative PATCH response before the
         // refresh so a later queued mutation cannot rebuild from a stale base if
         // the GET refresh fails (see applyConfig). A refresh failure after a
         // successful PATCH must not report "Save failed": the change persisted.
         store.applyConfig(res.config);
+        this.baseStale = false;
+        this.finishSave(entry, form, res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
         await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-        showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
-        // closeSettings above destroyed the focused Save button and collapsed the
-        // panel, dropping focus to <body>. Return it to the settings button (which survives
-        // any rebuild the refresh triggered, via the stable entry), matching the
-        // Cancel and reload paths so a keyboard user is not stranded at the top.
-        entry.settingsBtn.focus();
       } catch (err: unknown) {
-        this.apiErrorToast(err, "Save failed");
+        // A problem the form can show is marked on its field (see
+        // rejectedFieldKey and markRejected), and the toast then only says
+        // the save failed, as for a local check: the field carries the
+        // reason. Focus moves there only if it is still on Save or dropped,
+        // and only on the form that was saved.
+        const problem = firstProblem(err);
+        const key = problem?.field ? rejectedFieldKey(problem.field, merged, edited.device) : null;
+        const moveFocus = focusOnOrDropped(btn);
+        const marked = problem !== null && key !== null && entry.settingsForm === form && form.markRejected(key, problem.reason, moveFocus);
+        // The short toast only when focus went to the marked field, which
+        // then reads the reason; otherwise the toast says it all.
+        if (marked && moveFocus) showToast(FIX_FIELDS_TEXT, "error");
+        else if (isRefusal(err)) this.apiErrorToast(err, "Save failed", merged);
+        else {
+          // The save may have persisted: re-read inside the queue, and judge
+          // by what the appliance now holds (judgeUnconfirmedSave).
+          const read = await this.refreshConfigViews();
+          const after = store.getState().config?.devices.find((cd) => cd.device === edited.device);
+          const what = `the save of ${edited.name}`;
+          switch (judgeUnconfirmedSave(read, deviceConfigKey(cur), deviceConfigKey(after), deviceConfigKey(toSave))) {
+            case "unread":
+              showUnconfirmed(what, "check the settings before saving again");
+              break;
+            case "applied":
+              this.finishSave(entry, form, "Device settings applied.");
+              break;
+            case "unchanged":
+              this.finishSave(entry, form, `${edited.name}'s settings were already as saved.`);
+              break;
+            case "notApplied":
+              showToast(`The save of ${edited.name} does not appear to have applied; check again shortly.`, "warn");
+              break;
+            case "changed":
+              showUnconfirmed(what, "the settings changed; check them before saving again");
+              break;
+          }
+        }
       }
       });
     } finally {

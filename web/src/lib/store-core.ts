@@ -8,10 +8,10 @@ import type { LatestGate } from "./latest-core.ts";
 // awaits fetch, and calls apply only when the gate accepts the token (no newer
 // response has been applied meanwhile). It resolves true when fresh data is in
 // place: this response was applied, or it was dropped because a newer one had
-// already been applied. A failure calls onError and resolves true only when a
-// newer response is already applied (fresher data is in place, so the caller
-// must not raise a load error for it); otherwise false. It rejects only if
-// onError itself throws.
+// already been applied. A failure calls onError, telling it whether a newer
+// response is already applied, and resolves true only then (fresher data is
+// in place, so the caller must not raise a load error or treat the resource
+// as failed); otherwise false. It rejects only if onError itself throws.
 //
 // fetch runs before accept, so any validation or normalization that can throw
 // belongs in fetch: a response that throws never marks its token applied and
@@ -20,7 +20,7 @@ export async function gatedRefresh<T>(
   gate: LatestGate,
   fetch: () => Promise<T>,
   apply: (value: T) => void,
-  onError?: (err: unknown) => void,
+  onError?: (err: unknown, superseded: boolean) => void,
 ): Promise<boolean> {
   const token = gate.begin();
   try {
@@ -29,8 +29,9 @@ export async function gatedRefresh<T>(
     apply(value);
     return true;
   } catch (err) {
-    onError?.(err);
-    return gate.superseded(token);
+    const superseded = gate.superseded(token);
+    onError?.(err, superseded);
+    return superseded;
   }
 }
 
@@ -57,9 +58,10 @@ export class ChangeTracker {
   }
 
   // reset forgets the last value, so the next one announces. The store calls it
-  // after a failed read, because a view may have replaced its content with a
-  // load error that only the next announcement clears, even when the data that
-  // comes back matches what was shown before the failure.
+  // for status, devices and system after a failed read with no newer data in
+  // place, because a view may have replaced its content with a load error that
+  // only the next announcement clears, even when the data that comes back
+  // matches what was shown before the failure.
   reset(): void {
     this.seen = false;
     this.last = "";

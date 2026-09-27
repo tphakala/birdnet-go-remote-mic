@@ -5,10 +5,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
 import { fileURLToPath } from "node:url";
 
 import {
+  availableCardKey,
+  availableGoneMessage,
+  deviceGoneMessage,
+  focusMovedMessage,
+  judgeUnconfirmedSave,
+  neighbourOrder,
+  parseDeviceFieldPath,
+  rejectedFieldKey,
+  settingsFocusMessage,
+  availablePlan,
   bannerIsError,
+  deviceFieldLabel,
+  rejectionText,
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
@@ -57,7 +70,7 @@ test("downCauseTitle names each cause as its notification does and falls back", 
 // The banner titles promise to match the notification titles the appliance
 // raises for the same cause; this reads the Go source so a title renamed on
 // one side only fails here instead of silently drifting.
-const APPLIANCE_GO = fileURLToPath(new URL("../../cmd/remotemic/appliance.go", import.meta.url).href);
+const APPLIANCE_GO = fileURLToPath(new URL("../../cmd/remotemic/appliance.go", import.meta.url));
 
 test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go", () => {
   const src = readFileSync(APPLIANCE_GO, "utf8");
@@ -203,4 +216,154 @@ test("focus messages name the device, the control and why it went", () => {
   );
   assert.equal(controlGoneMessage("Garden", "other", true), "Garden: the control is no longer shown. Focus moved to its device settings.");
   assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
+});
+
+test("availablePlan keeps unchanged cards and rebuilds only changed ones", () => {
+  const shown = new Map([
+    ["a", "ka"],
+    ["b", "kb"],
+    ["c", "kc"],
+  ]);
+  const plan = availablePlan(shown, [
+    { id: "a", key: "ka" },
+    { id: "b", key: "kb2" },
+    { id: "d", key: "kd" },
+  ]);
+  assert.deepEqual(plan.remove, ["c"]);
+  assert.deepEqual(plan.build, ["b", "d"], "only the changed and the new card are built");
+});
+
+test("availablePlan builds a new card mid-list and orders it there", () => {
+  const shown = new Map([
+    ["a", "ka"],
+    ["c", "kc"],
+  ]);
+  const plan = availablePlan(shown, [
+    { id: "a", key: "ka" },
+    { id: "b", key: "kb" },
+    { id: "c", key: "kc" },
+  ]);
+  assert.deepEqual(plan.build, ["b"]);
+  assert.deepEqual(plan.order, ["a", "b", "c"], "a new card is ordered by its place in the list, not appended");
+});
+
+test("availablePlan orders cards like the list", () => {
+  const shown = new Map([
+    ["a", "ka"],
+    ["b", "kb"],
+  ]);
+  const plan = availablePlan(shown, [
+    { id: "b", key: "kb" },
+    { id: "a", key: "ka" },
+  ]);
+  assert.deepEqual(plan.order, ["b", "a"]);
+  assert.deepEqual(plan.build, [], "a reorder rebuilds nothing");
+  assert.deepEqual(plan.remove, []);
+});
+
+test("availablePlan rebuilds a card whose busy state changed", () => {
+  const d = { device: "hw:1,0", friendlyName: "USB mic" } as unknown as AvailableDevice;
+  const shown = new Map([[d.device, availableCardKey(d, true)]]);
+  // The Enable settled: the same device, no longer in flight.
+  const plan = availablePlan(shown, [{ id: d.device, key: availableCardKey(d, false) }]);
+  assert.deepEqual(plan.build, [d.device], "a card left busy must be rebuilt idle");
+  assert.notEqual(availableCardKey(d, true), availableCardKey(d, false));
+  assert.equal(availableCardKey(d, false), availableCardKey({ ...d }, false), "equal data gives equal keys");
+});
+
+test("neighbourOrder prefers the nearest item after, then the nearest before", () => {
+  assert.deepEqual(neighbourOrder(["a", "b", "c", "d"], 1), ["c", "d", "a"]);
+  assert.deepEqual(neighbourOrder(["a", "b", "c", "d"], 3), ["c", "b", "a"]);
+  // Several items going at once: the caller takes the first still shown, so
+  // with b and c gone focus leaves b for d, the nearest card left after it.
+  const left = new Set(["a", "d"]);
+  assert.equal(neighbourOrder(["a", "b", "c", "d"], 1).find((id) => left.has(id)), "d");
+  assert.deepEqual(neighbourOrder(["a"], 0), []);
+  assert.deepEqual(neighbourOrder(["a", "b"], -1), ["a", "b"], "an item not on screen leaves every item as a candidate");
+});
+
+test("deviceGoneMessage names the removed device and where focus went", () => {
+  assert.equal(deviceGoneMessage("garden", "porch"), "garden was removed. Focus moved to porch settings.");
+  assert.equal(deviceGoneMessage("garden", null), "garden was removed. Focus moved to the dashboard.");
+  assert.equal(settingsFocusMessage("porch"), "Focus moved to porch settings.");
+});
+
+test("availableGoneMessage names the device and says where focus went", () => {
+  assert.equal(availableGoneMessage("USB mic (hw:1,0)", "hw:2,0"), "USB mic (hw:1,0) is no longer available. Focus moved to Enable hw:2,0.");
+  assert.equal(availableGoneMessage("hw:2,0", null), "hw:2,0 is no longer available. Focus moved to the dashboard.");
+});
+
+test("deviceFieldLabel names the field and the device a problem points at", () => {
+  const names = ["garden", "bats"];
+  assert.equal(deviceFieldLabel("devices[0].name", names), "Device Name of garden");
+  assert.equal(deviceFieldLabel("devices[1].streams[0].path", names), "RTSP Path of bats");
+  assert.equal(deviceFieldLabel("devices[0].streams[0].opus.bitrate", names), "Opus Bitrate of garden");
+  assert.equal(deviceFieldLabel("devices[1].rate", names), "Sample Rate of bats", "a unit is dropped mid-sentence");
+  assert.equal(deviceFieldLabel("devices[1].streams", names), "Streams of bats");
+  // An index past the list the view knows still names the field.
+  assert.equal(deviceFieldLabel("devices[5].name", names), "Device Name");
+  assert.equal(deviceFieldLabel("devices"), "The device list");
+  assert.equal(deviceFieldLabel("device"), "Device ID");
+  // The form edits only the first stream, so a later one is named.
+  assert.equal(deviceFieldLabel("devices[0].streams[1].path", names), "RTSP Path of garden's stream 2");
+  assert.equal(deviceFieldLabel("devices[5].streams[2].mode", names), "Stream Codec Mode of stream 3");
+  // A key that only an object's prototype has is not a field.
+  assert.equal(deviceFieldLabel("devices[0].constructor", names), "devices[0].constructor");
+  assert.equal(deviceFieldLabel("devices[0].streams[0].bogus", names), "devices[0].streams[0].bogus", "an unknown key shows the path");
+  assert.equal(deviceFieldLabel("network.hostname"), "network.hostname");
+});
+
+test("parseDeviceFieldPath reads the device, the stream and the key", () => {
+  assert.deepEqual(parseDeviceFieldPath("devices[2].name"), { device: 2, stream: 0, key: "name" });
+  assert.deepEqual(parseDeviceFieldPath("devices[0].streams[1].path"), { device: 0, stream: 1, key: "path" });
+  assert.deepEqual(parseDeviceFieldPath("devices[0].streams[0].opus.bitrate"), { device: 0, stream: 0, key: "bitrate" });
+  assert.equal(parseDeviceFieldPath("devices[0].bogus"), null, "a key with no label");
+  assert.equal(parseDeviceFieldPath("devices[0].constructor"), null, "a prototype key");
+  assert.equal(parseDeviceFieldPath("network.hostname"), null);
+});
+
+test("rejectionText says which action failed, on which field of which device", () => {
+  assert.equal(
+    rejectionText("Save failed", { field: "devices[1].streams[0].path", reason: "must be at most 128 characters" }, ["garden", "bats"]),
+    "Save failed: RTSP Path of bats was rejected: must be at most 128 characters",
+  );
+  assert.equal(rejectionText("Toggle failed", { reason: "invalid config" }, []), "Toggle failed: the configuration was rejected: invalid config");
+});
+
+test("rejectedFieldKey marks the edited device's field, and a duplicate of it reported elsewhere", () => {
+  const dev = (name: string, device: string, path: string, extra: string[] = []): DeviceConfig => ({
+    name, device, path, mode: "pcm", rate: 48000, channels: [1], format: "s16",
+    streams: [{ path, mode: "pcm", channels: [1] }, ...extra.map((p) => ({ path: p, mode: "pcm" as const, channels: [1] }))],
+  });
+  const sent = [dev("garden", "hw:1", "/bats"), dev("bats", "hw:2", "/bats", ["/garden2"])];
+  // The edited device's own first stream.
+  assert.equal(rejectedFieldKey("devices[0].streams[0].path", sent, "hw:1"), "path");
+  assert.equal(rejectedFieldKey("devices[0].rate", sent, "hw:1"), "rate");
+  // garden's new path collides with bats', reported at bats (the later one).
+  assert.equal(rejectedFieldKey("devices[1].streams[0].path", sent, "hw:1"), "path");
+  // A problem with another device's own field is not garden's to fix.
+  assert.equal(rejectedFieldKey("devices[1].rate", sent, "hw:1"), null);
+  assert.equal(rejectedFieldKey("devices[1].name", sent, "hw:1"), null, "bats' own name is not a duplicate of garden's");
+  assert.equal(rejectedFieldKey("devices[1].streams[1].path", sent, "hw:1"), null, "a different path");
+  // A duplicate name reported at the other device.
+  const named = [dev("porch", "hw:1", "/a"), dev("porch", "hw:2", "/b")];
+  assert.equal(rejectedFieldKey("devices[1].name", named, "hw:1"), "name");
+  // The edited device's second stream is not in the form.
+  assert.equal(rejectedFieldKey("devices[1].streams[1].mode", sent, "hw:2"), null);
+  assert.equal(rejectedFieldKey("network.hostname", sent, "hw:1"), null);
+});
+
+test("focusMovedMessage says where focus went", () => {
+  assert.equal(focusMovedMessage("porch"), "Focus moved to porch settings.");
+  assert.equal(focusMovedMessage(null), "Focus moved to the dashboard.");
+});
+
+test("judgeUnconfirmedSave judges a lost save by the re-read", () => {
+  assert.equal(judgeUnconfirmedSave(false, "a", "b", "b"), "unread");
+  assert.equal(judgeUnconfirmedSave(true, "a", "b", "b"), "applied");
+  assert.equal(judgeUnconfirmedSave(true, "a", "a", "b"), "notApplied");
+  assert.equal(judgeUnconfirmedSave(true, "a", "c", "b"), "changed", "neither as before nor as sent");
+  // A save that changed nothing cannot be told apart by the re-read.
+  assert.equal(judgeUnconfirmedSave(true, "a", "a", "a"), "unchanged");
+  assert.equal(judgeUnconfirmedSave(true, "a", "c", "a"), "changed");
 });

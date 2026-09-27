@@ -33,7 +33,7 @@ declare module "node:fs" {
 }
 
 declare module "node:url" {
-  export function fileURLToPath(url: string): string;
+  export function fileURLToPath(url: string | URL): string;
 }
 
 // node:vm, for running a classic (non-module) browser script against stubbed

@@ -7,18 +7,7 @@ import assert from "node:assert/strict";
 
 import { LatestGate } from "../src/lib/latest-core.ts";
 import { ChangeTracker, gatedRefresh } from "../src/lib/store-core.ts";
-
-// deferred returns a promise with its resolve and reject exposed, so a test
-// controls the order in which overlapping reads land.
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred } from "./fixtures.ts";
 
 test("gatedRefresh applies a response and reports success", async () => {
   const gate = new LatestGate();
@@ -26,6 +15,21 @@ test("gatedRefresh applies a response and reports success", async () => {
   const ok = await gatedRefresh(gate, () => Promise.resolve(7), (v) => applied.push(v));
   assert.equal(ok, true);
   assert.deepEqual(applied, [7]);
+});
+
+test("gatedRefresh tells onError whether newer data is in place", async () => {
+  const gate = new LatestGate();
+  const seen: boolean[] = [];
+  const onError = (_err: unknown, superseded: boolean) => seen.push(superseded);
+  // A failure with nothing newer applied.
+  assert.equal(await gatedRefresh(gate, () => Promise.reject(new Error("offline")), () => {}, onError), false);
+  // A failure that lands after a newer read applied.
+  const older = deferred<number>();
+  const olderRun = gatedRefresh(gate, () => older.promise, () => {}, onError);
+  await gatedRefresh(gate, () => Promise.resolve(2), () => {});
+  older.reject(new Error("offline"));
+  assert.equal(await olderRun, true);
+  assert.deepEqual(seen, [false, true]);
 });
 
 test("gatedRefresh drops a superseded response but still reports success", async () => {

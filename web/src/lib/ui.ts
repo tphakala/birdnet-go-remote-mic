@@ -2,8 +2,8 @@
 // builder, the uptime formatter (which had diverged between the dashboard and
 // the system view), the load-error/retry pattern, and the per-mode/per-state
 // label maps live in exactly one place.
-import { ApiError } from "./api.ts";
-import { showToast } from "../components/toast.ts";
+import { ERROR_TTL_MS, showToast } from "../components/toast.ts";
+import { unconfirmedText } from "./api.ts";
 import type { FocusTarget } from "./menu-core.ts";
 import { svgIcon } from "./svg.ts";
 
@@ -197,16 +197,6 @@ export function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
 }
 
-// apiErrorMessage reduces any thrown value to a short human string: an ApiError
-// shows its problem title, any other Error its message, and anything else its
-// string form. Shared so the several save/PATCH catch blocks map failures the
-// same way instead of re-inlining the ternary.
-export function apiErrorMessage(err: unknown): string {
-  if (err instanceof ApiError) return err.title;
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
 // setFieldError marks (or clears) a form field's invalid state uniformly: the
 // red border/background via .invalid on the wrapper, aria-invalid on the input
 // so a screen reader announces it, and the rule text in the error element. An
@@ -295,6 +285,65 @@ export function focusTarget(t: EventTarget | null, popup: Node, opener: Node): F
   if (popup.contains(t)) return "menu";
   if (opener.contains(t)) return "button";
   return "outside";
+}
+
+// focusDropped reports whether keyboard focus fell to the document body (or
+// nowhere), as it does when the element holding it is removed; a focus move
+// the operator made since then must be left alone.
+export function focusDropped(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
+}
+
+// showUnconfirmed shows the toast for a change whose outcome is unknown
+// (unconfirmedText), held as long as an error so its advice can be read, and
+// dismissible.
+export function showUnconfirmed(what: string, next: string): void {
+  showToast(unconfirmedText(what, next), "warn", ERROR_TTL_MS);
+}
+
+// focusOnOrDropped reports whether focus is still on el (or inside it) or
+// has fallen to the page: where an action that settles later may move it.
+export function focusOnOrDropped(el: Element): boolean {
+  return holdsFocus(el) || focusDropped();
+}
+
+// holdsFocus reports whether keyboard focus is on el or inside it.
+export function holdsFocus(el: Element): boolean {
+  const active = document.activeElement;
+  return active !== null && el.contains(active);
+}
+
+// focusWorkspace moves focus to the workspace region when the control
+// holding it went away, without scrolling (see web/AGENTS.md), and returns
+// it.
+export function focusWorkspace(): HTMLElement | null {
+  const main = document.getElementById("main-content");
+  main?.focus({ preventScroll: true });
+  return main;
+}
+
+// scrollBehavior is how a scripted scroll moves: smoothly, unless the viewer
+// asked for reduced motion (an explicit "smooth" is not overridden by the
+// stylesheet's reduced-motion rule).
+export function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.(REDUCED_MOTION_QUERY).matches ? "auto" : "smooth";
+}
+
+// REDUCED_MOTION_QUERY is the media query for the viewer's reduced-motion
+// preference, shared by the scripts that follow it.
+export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+// orderChildren puts nodes into parent in the given order. In steady state
+// nothing moves, so keyboard focus and a screen reader's position inside a
+// node survive the render. It walks element siblings from the first, so a
+// child it does not manage (a placeholder) ends up after the managed ones.
+export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
+  let prev: Element | null = null;
+  for (const node of nodes) {
+    const target: Element | null = prev ? prev.nextElementSibling : parent.firstElementChild;
+    if (node !== target) parent.insertBefore(node, target);
+    prev = node;
+  }
 }
 
 export function setHidden(el: HTMLElement, hidden: boolean): void {

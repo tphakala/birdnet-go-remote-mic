@@ -4,6 +4,7 @@
 // or backdrop dismissal: nothing on the page works without a token.
 import { store } from "../lib/store.ts";
 import { closeTransientDialogs, setAppInert, trapFocus } from "../lib/modal.ts";
+import { focusWorkspace } from "../lib/ui.ts";
 
 export function initLoginModal(): void {
   const overlay = document.getElementById("login-modal");
@@ -46,7 +47,7 @@ export function initLoginModal(): void {
     // where the operator left it: a plain focus() on the tall landmark would jump
     // to the top of <main>.
     const app = document.querySelector<HTMLElement>(".app-container");
-    if (!app?.hasAttribute("inert")) document.getElementById("main-content")?.focus({ preventScroll: true });
+    if (!app?.hasAttribute("inert")) focusWorkspace();
   };
 
   form.addEventListener("submit", (e) => {

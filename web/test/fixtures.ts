@@ -2,7 +2,7 @@
 
 import { Emitter } from "../src/lib/emitter.ts";
 import type { Timers } from "../src/lib/store.ts";
-import type { Notification } from "../src/lib/types.ts";
+import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
 
 // FakeTimer is one timer a FakeTimers has handed out.
 export interface FakeTimer {
@@ -12,7 +12,7 @@ export interface FakeTimer {
   cleared: boolean;
 }
 
-// FakeTimers implements the stores' Timers seam without a clock: a test lists
+// FakeTimers implements the Timers seam without a clock: a test lists
 // what is scheduled and fires it by hand, so a 60 s grace or a backoff runs at
 // once and a cancelled timer is visible as cleared.
 export class FakeTimers implements Timers {
@@ -81,6 +81,41 @@ export function notif(over: Partial<Notification> & { id: number }): Notificatio
   };
 }
 
+// snap builds a notifications snapshot around the given entries, every other
+// field defaulted and nextId one past the highest id.
+export function snap(
+  over: Partial<NotificationSnapshot> & { notifications: Notification[] },
+): NotificationSnapshot {
+  const ids = over.notifications.map((n) => n.id);
+  return {
+    bootId: over.bootId ?? "boot-a",
+    serverTime: over.serverTime ?? "2026-09-12T14:00:05Z",
+    uptimeMs: over.uptimeMs ?? 5_000,
+    capacity: over.capacity ?? 500,
+    nextId: over.nextId ?? (ids.length ? Math.max(...ids) + 1 : 1),
+    notifications: over.notifications,
+  };
+}
+
+// deferred returns a promise with its resolve and reject exposed, so a test
+// controls when, and in which order, overlapping requests settle.
+export function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+// settle lets awaited work (a fetch answered by a fake, the follow-up that
+// awaits it) run to completion: it resolves after the current macrotask, by
+// which time every microtask queued before it has run.
+export function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // at is items[i] for a test that knows the index is in range: an index past
 // the end fails the test with a message instead of reading a property of
 // undefined.
@@ -96,6 +131,22 @@ export function group(m: RegExpMatchArray, i: number): string {
   const g = m[i];
   if (g === undefined) throw new Error(`capture group ${i} did not take part in ${JSON.stringify(m[0])}`);
   return g;
+}
+
+// FakeStream stands in for the SSE client's subscription: a store under test
+// subscribes to it, and deliver hands that subscriber an event-stream frame
+// as the client would.
+export class FakeStream {
+  private handler: ((name: string, data: unknown) => void) | null = null;
+
+  readonly subscribe = (h: (name: string, data: unknown) => void): (() => boolean) => {
+    this.handler = h;
+    return () => true;
+  };
+
+  deliver(name: string, data: unknown): void {
+    this.handler?.(name, data);
+  }
 }
 
 // FakeConnection stands in for the app store as a NotificationStore's

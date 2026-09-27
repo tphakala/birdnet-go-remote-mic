@@ -172,9 +172,9 @@
 
       <h2 class="visually-hidden">Streaming Devices</h2>
       <!-- Announces a keyboard focus move the operator did not make: a control
-           holding focus hid (its channel left the stream, another tab turned on
-           hiding inactive channels, or access control was turned off). Present
-           from load so the first message is read. -->
+           holding focus hid or went away (a channel row, a card control, a
+           device or Available Devices card), or an Enable moved focus to the
+           new device. Present from load so the first message is read. -->
       <span class="visually-hidden" id="dashboard-announce" role="status" aria-live="polite"></span>
       <div class="channel-rack" id="channel-rack">
         <p class="rack-empty" id="rack-empty">Loading devices...</p>
@@ -473,7 +473,7 @@
     <div>
       <h3 id="modal-title" class="modal-title">Restarting Appliance</h3>
       <p class="modal-text" id="modal-text">
-        The appliance service is performing a graceful shutdown and restart. Polling <span class="mono">/healthz</span> for recovery.
+        The appliance service is performing a graceful shutdown and restart. This page reloads once it is back.
       </p>
     </div>
     <div class="modal-status">
@@ -489,7 +489,7 @@
   <form class="modal-card login-card" id="login-form" novalidate>
     <div class="brand-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></div>
     <div>
-      <h3 id="login-title" class="modal-title">Access token required</h3>
+      <h3 id="login-title" class="modal-title">Access Token Required</h3>
       <p id="login-desc" class="modal-text">
         This appliance requires its shared access token (<span class="mono">auth.token</span> in its configuration). Enter it to open the dashboard.
       </p>

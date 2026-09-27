@@ -103,7 +103,7 @@ func TestStartManagementServesRegeneratedCertToNewHandshake(t *testing.T) {
 	before := dialLeaf(t, h.serving().addr)
 
 	// Regenerate with an extra SAN; the new certificate must reach a fresh handshake
-	// (sabotage target: TLSConfig.GetCertificate = prov.tlsCertificate).
+	// (it pins TLSConfig.GetCertificate = prov.tlsCertificate).
 	if _, err := prov.Regenerate([]string{"mic.example.org"}); err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
@@ -155,7 +155,8 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 	}()
 
 	// Second run over the same cert dir: Ensure must reuse the pinned custom pair,
-	// not regenerate it (sabotage target: the pinned early return in mgmtcert.Ensure).
+	// not regenerate it (it pins the early return for a pinned pair in
+	// mgmtcert.Ensure).
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: certDir}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -178,7 +179,7 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 
 func TestProviderCertificateSnapshotConsistent(t *testing.T) {
 	// A reader must never see the metadata of one certificate with the PEM of
-	// another. Run under -race; the single atomic Store is the sabotage target
+	// another. Run under -race; the single atomic Store is what it pins
 	// (splitting the fields into separate stores tears here).
 	prov := &provider{certPath: t.TempDir() + "/mgmt-cert.pem"}
 	certA, _ := genCertPEM(t, "a", []string{"a.example"})
@@ -256,16 +257,21 @@ func TestProviderCertificateReturnsDefensiveCopies(t *testing.T) {
 	}
 	got.DNSNames[0] = "tampered"
 	pemBytes := prov.CertificatePEM()
-	if len(pemBytes) > 0 {
-		pemBytes[0] = 'X'
+	if len(pemBytes) == 0 {
+		t.Fatal("no certificate PEM to mutate")
 	}
-	// Sabotage target: the append([]string(nil), ...) and append([]byte(nil), ...)
-	// defensive copies. Without them the mutations above would persist.
+	pemBytes[0] = 'X'
+	// Pins the DNSNames and PEM defensive copies. Without them the
+	// mutations above would persist.
 	again := prov.Certificate()
 	if again.DNSNames[0] == "tampered" {
 		t.Error("Certificate did not return a defensive copy of DNSNames")
 	}
-	if fresh := prov.CertificatePEM(); len(fresh) > 0 && fresh[0] == 'X' {
+	fresh := prov.CertificatePEM()
+	if len(fresh) == 0 {
+		t.Fatal("CertificatePEM returned nothing")
+	}
+	if fresh[0] == 'X' {
 		t.Error("CertificatePEM did not return a defensive copy")
 	}
 }
@@ -324,7 +330,7 @@ func TestStartManagementEnforcesBearerOnCertWrites(t *testing.T) {
 		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
-	// Sabotage target: requireBearer wrapping the API subtree; both writes must 401.
+	// Pins requireBearer wrapping the API subtree; both writes must 401.
 	if got := do(http.MethodPut, "/api/v1/system/certificate"); got != http.StatusUnauthorized {
 		t.Errorf("PUT without token = %d, want 401", got)
 	}

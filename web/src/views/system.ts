@@ -1,11 +1,12 @@
-import { api, ApiError } from "../lib/api.ts";
+import { api, ApiError, apiErrorMessage, failureReason, firstProblem, isRefusal, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
+import { deviceIdTitle, sentence } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
-import { describeUpdate, followEndText, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
+import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
 import { generateToken, setToken } from "../lib/auth.ts";
 import {
@@ -87,12 +88,6 @@ function formatCertTime(iso: string): string {
 // TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
 // so an obviously invalid token is caught before the round trip.
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
-
-// updateErrorText says why an update request failed: the appliance's own
-// reason for a refusal (see refusalText), or the error's message.
-function updateErrorText(err: unknown): string {
-  return err instanceof ApiError ? refusalText(err.status, err.title, err.detail) : apiErrorMessage(err);
-}
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
 // enough to be seen by someone who comes back to the tab.
@@ -337,9 +332,9 @@ export class SystemView {
   // the control that resolves the warning.
   private focusAuthCard(): void {
     if (!this.authCardEl || this.authCardEl.hidden) return;
-    this.authCardEl.scrollIntoView({ behavior: "smooth", block: "start" });
-    // preventScroll: the smooth scroll above already positions the card; a focus
-    // scroll would fight it with an instant jump.
+    this.authCardEl.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+    // preventScroll: the scroll above already positions the card; a focus
+    // scroll would fight a smooth one with an instant jump.
     this.authTokenEl?.focus({ preventScroll: true });
   }
 
@@ -445,7 +440,9 @@ export class SystemView {
       this.renderCertificate();
     } catch (err: unknown) {
       if (this.certGen !== gen) return;
-      if (err instanceof ApiError && err.status === 501) {
+      // Only the appliance's own 501 means it has no certificate control; a
+      // proxy's says nothing about it.
+      if (isRefusal(err) && err.status === 501) {
         this.certUnavailable = true;
         return;
       }
@@ -506,7 +503,7 @@ export class SystemView {
       downloadBlob(new Blob([pem], { type: "application/x-pem-file" }), "birdnet-go-remote-mic-mgmt.pem");
       showToast("Certificate downloaded.");
     } catch (err: unknown) {
-      showToast(`Download failed: ${apiErrorMessage(err)}`, "error");
+      showToast(`Download failed: ${failureReason(err)}`, "error");
     } finally {
       if (btn) clearBusy(btn, "Download PEM");
     }
@@ -550,17 +547,18 @@ export class SystemView {
       void this.loadCertificate();
       showToast("Certificate regenerated and applied to new connections. Download and trust the new certificate where needed.");
     } catch (err: unknown) {
-      if (!(err instanceof ApiError)) {
-        // A transport failure (the connection dropped mid-request) says nothing
-        // about whether the appliance already applied the change; reconcile
-        // from the server instead of reporting a failure that may not be one.
-        showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
+      if (!isRefusal(err)) {
+        // Anything but a refusal (a dropped connection, or an answer that
+        // could not be read) says nothing about whether the appliance applied
+        // the change; reconcile from the server instead of reporting a failure
+        // that may not be one.
+        showUnconfirmed("the certificate change", "refreshing the current certificate");
         void this.loadCertificate();
         return;
       }
-      const item = err.errors?.find((e) => e.field?.startsWith("extraSans"));
+      const item = problemFor(err, (e) => e.field?.startsWith("extraSans") ?? false);
       if (item) {
-        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, item.reason ?? apiErrorMessage(err));
+        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, sentence(item.reason));
         this.certSansEl?.focus();
       } else {
         showToast(`Regenerate failed: ${apiErrorMessage(err)}`, "error");
@@ -609,27 +607,29 @@ export class SystemView {
       void this.loadCertificate();
       showToast("Custom certificate installed and applied to new connections.");
     } catch (err: unknown) {
-      if (!(err instanceof ApiError)) {
-        // Same as regenerate: a dropped connection leaves the outcome unknown,
-        // so reconcile rather than claim a failure. The key textarea is still
-        // cleared in finally.
-        showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
-        void this.loadCertificate();
-        return;
-      }
       // The API caps request bodies, and a full CA bundle pasted with the
       // certificate is the usual way past the cap, so say what to trim rather
       // than echoing the bare "payload too large". The limit itself comes from
       // the problem detail, so this text cannot drift from the server's value.
-      if (err.status === 413) {
-        showToast(`Install failed: ${certTooLargeReason(err.detail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
+      // A 413 is a refusal from whoever sent it: a proxy's means the request
+      // never reached the appliance.
+      if (err instanceof ApiError && err.status === 413) {
+        showToast(`Install failed: ${certTooLargeReason(err.problemDetail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
+        return;
+      }
+      if (!isRefusal(err)) {
+        // Same as regenerate: anything but a refusal leaves the outcome
+        // unknown, so reconcile rather than claim a failure. The key
+        // textarea is still cleared in finally.
+        showUnconfirmed("the certificate change", "refreshing the current certificate");
+        void this.loadCertificate();
         return;
       }
       let pemBad = false;
       let keyBad = false;
       if (err.errors) {
         for (const item of err.errors) {
-          const reason = item.reason ?? apiErrorMessage(err);
+          const reason = sentence(problemReason(err, item));
           if (item.field === "certPem") {
             this.setCertFieldError(this.certPemEl, this.certPemErrorEl, reason);
             pemBad = true;
@@ -854,26 +854,28 @@ export class SystemView {
   // the named input (or the form-level region when the path is not one the card
   // owns) and refocuses it; any other failure is a toast.
   private showNotifyError(err: unknown): void {
-    const item = err instanceof ApiError ? err.errors?.[0] : undefined;
-    if (err instanceof ApiError && item) {
-      const spec = item.field ? fieldForServerPath(item.field) : null;
-      const reason = item.reason ?? err.title;
+    const problem = firstProblem(err);
+    if (problem) {
+      const spec = problem.field ? fieldForServerPath(problem.field) : null;
       if (spec) {
-        this.notifyFields.get(spec.key)?.classList.add("invalid");
+        // Field reasons read as sentences, as on the device form.
         const input = this.notifyInputs.get(spec.key);
-        input?.setAttribute("aria-invalid", "true");
-        const errEl = document.getElementById(`sys-notify-${spec.key}-err`);
-        if (errEl) errEl.textContent = reason;
+        setFieldError(this.notifyFields.get(spec.key) ?? null, input, document.getElementById(`sys-notify-${spec.key}-err`), sentence(problem.reason));
         input?.focus();
         return;
       }
       if (this.notifyErrorEl) {
-        this.notifyErrorEl.textContent = reason;
+        this.notifyErrorEl.textContent = sentence(problem.reason);
         return;
       }
     }
-    const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
-    showToast(`Save failed: ${msg}`, "error");
+    if (isRefusal(err)) {
+      showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
+      return;
+    }
+    // It may have applied. The form keeps the edits (a refresh would not
+    // show over a dirty form), and saving the same values again is safe.
+    showUnconfirmed("that the notification settings were saved", "save again to be sure");
   }
 
   // setAuthReveal shows or hides the token field and keeps the reveal button's
@@ -1052,15 +1054,19 @@ export class SystemView {
       // copy it, and leaving a saved secret in plain sight is needless exposure.
       this.setAuthReveal(false);
     } catch (err: unknown) {
-      const item = err instanceof ApiError ? err.errors?.[0] : undefined;
-      if (err instanceof ApiError && item) {
-        this.setAuthError(item.reason ?? err.title);
+      const problem = firstProblem(err);
+      if (problem) {
+        this.setAuthError(sentence(problem.reason));
+      } else if (isRefusal(err)) {
+        // The appliance refused before applying the token
+        // (internal/mgmtserver/config.go:159-166 returns before guard.Set at
+        // :190), so the old token is still in force.
+        showToast(`Token change failed: ${apiErrorMessage(err)}. The current token is unchanged.`, "error");
       } else {
-        // A non-validation failure (network drop, a lost response) is ambiguous:
-        // the appliance applies the token BEFORE it finishes writing the PATCH
-        // response, so the new credential may already be in force even though this
-        // call looks failed. Warn rather than imply nothing changed.
-        showToast(`Could not confirm the token change: ${apiErrorMessage(err)}. The new token may already be in force; if this UI locks you out, reload and sign in with it.`, "warn");
+        // No answer is ambiguous: the appliance applies the token BEFORE it
+        // finishes writing the PATCH response, so the new credential may
+        // already be in force. Warn rather than imply nothing changed.
+        showUnconfirmed("the token change", "the new token may already be in force; if this page locks you out, reload and sign in with it");
       }
     } finally {
       store.endTokenSwap();
@@ -1284,8 +1290,14 @@ export class SystemView {
       if (cur) store.applyUpdateStatus(withChecksSetting(cur, want));
       showToast(want ? "Daily update check turned on." : "Daily update check turned off.");
     } catch (err: unknown) {
-      input.checked = !want;
-      showToast(`Could not change the update check: ${updateErrorText(err)}`, "error");
+      if (isRefusal(err)) {
+        input.checked = !want;
+        showToast(`Could not change the update check: ${apiErrorMessage(err)}`, "error");
+      } else {
+        // It may have applied: the refresh below sets the switch from the
+        // appliance.
+        showUnconfirmed("that the update check was changed", "refreshing");
+      }
     } finally {
       this.updateToggling = false;
       input.removeAttribute("aria-busy");
@@ -1306,10 +1318,12 @@ export class SystemView {
       // Checks turned off while it ran (here or in another tab) stop a check
       // without a result; an old error must not read as this check's.
       if (!status.checkEnabled) showToast("The check stopped because update checks were turned off.", "warn");
-      else if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
+      else if (status.lastError) showToast(`Update check failed: ${status.lastError.trim()}`, "warn");
       else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
-      showToast(`Update check failed: ${updateErrorText(err)}`, "error");
+      // Any failure reads the same: a check changes no setting, so a lost
+      // answer only hides a result the next status read brings.
+      showToast(`Update check failed: ${failureReason(err)}`, "error");
     } finally {
       this.updateChecking = false;
       clearBusy(btn, "Check Now");
@@ -1345,8 +1359,12 @@ export class SystemView {
         showToast("An update is already under way; following it here.", "warn");
         this.startFollow(now.currentVersion);
         this.followStatus(now);
+      } else if (isRefusal(err)) {
+        showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
+      } else if (now) {
+        showUnconfirmed("that the update started", "no update is under way yet; try again if none begins");
       } else {
-        showToast(`Update did not start: ${updateErrorText(err)}`, "error");
+        showUnconfirmed("that the update started", "its status could not be read either; check it before trying again");
       }
     } finally {
       this.updateApplying = false;
@@ -1438,7 +1456,15 @@ export class SystemView {
       // the discovery toggle, the card's editable control.
       this.discoveryEl?.focus();
     } catch (err: unknown) {
-      showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
+      if (isRefusal(err)) {
+        // A validation problem reads by its reason, as on the other forms;
+        // its detail repeats the raw field path.
+        showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
+      } else {
+        // As for the notification settings: the form keeps the edit, and a
+        // second save is safe.
+        showUnconfirmed("that the discovery setting was saved", "save again to be sure");
+      }
     } finally {
       if (saveBtn) clearBusy(saveBtn, "Save Changes");
       if (discardBtn) discardBtn.disabled = false;
@@ -1530,15 +1556,14 @@ export class SystemView {
       if (!want.has(key)) { refs.tile.remove(); this.tileEls.delete(key); }
     }
 
-    let prev: ChildNode | null = null;
+    const tiles: HTMLElement[] = [];
     for (const spec of specs) {
       let refs = this.tileEls.get(spec.key);
       if (!refs) { refs = this.buildTile(spec.label); this.tileEls.set(spec.key, refs); }
       this.updateTile(refs, spec);
-      const target: ChildNode | null = prev ? prev.nextSibling : grid.firstChild;
-      if (refs.tile !== target) grid.insertBefore(refs.tile, target);
-      prev = refs.tile;
+      tiles.push(refs.tile);
     }
+    orderChildren(grid, tiles);
   }
 
   // renderInfo fills the System Information label/value grid, diffed: rows are
@@ -1585,11 +1610,9 @@ export class SystemView {
       if (!want.has(key)) { pair.dt.remove(); pair.dd.remove(); this.infoRows.delete(key); }
     }
 
-    // Track the trailing node per column so each row is ordered within its own
-    // grid rather than a single shared cursor.
-    const prev: Record<"hw" | "sw", ChildNode | null> = { hw: null, sw: null };
+    // Each column is ordered within its own grid, dt then dd per row.
+    const order: Record<"hw" | "sw", HTMLElement[]> = { hw: [], sw: [] };
     for (const r of rows) {
-      const grid = r.group === "hw" ? hw : sw;
       let pair = this.infoRows.get(r.label);
       if (!pair) {
         const dt = elem("dt", "info-key");
@@ -1599,12 +1622,10 @@ export class SystemView {
       } else {
         setText(pair.dd, r.value);
       }
-      const anchor = prev[r.group];
-      const dtTarget: ChildNode | null = anchor ? anchor.nextSibling : grid.firstChild;
-      if (pair.dt !== dtTarget) grid.insertBefore(pair.dt, dtTarget);
-      if (pair.dd !== pair.dt.nextSibling) grid.insertBefore(pair.dd, pair.dt.nextSibling);
-      prev[r.group] = pair.dd;
+      order[r.group].push(pair.dt, pair.dd);
     }
+    orderChildren(hw, order.hw);
+    orderChildren(sw, order.sw);
     if (this.infoCardEl) this.infoCardEl.hidden = rows.length === 0;
   }
 
@@ -1629,7 +1650,8 @@ export class SystemView {
     // configured id and anything else shows "-". The persisted id is long and
     // goes in the tooltip.
     setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
-    if (r.alsa.title !== `Device id: ${d.device}`) r.alsa.title = `Device id: ${d.device}`;
+    const alsaTitle = deviceIdTitle(d.device);
+    if (r.alsa.title !== alsaTitle) r.alsa.title = alsaTitle;
     // By the device id, which a rename does not change.
     const streams = streamSummary(d, store.getState().config?.devices.find((c) => c.device === d.device));
     // One path per line (the cell keeps the line breaks), in stream order.
@@ -1676,15 +1698,14 @@ export class SystemView {
       if (!want.has(id)) { r.tr.remove(); this.deviceRows.delete(id); }
     }
 
-    let prev: ChildNode | null = null;
+    const rows: HTMLElement[] = [];
     for (const d of devices) {
       let r = this.deviceRows.get(d.device);
       if (!r) { r = this.buildDeviceRow(); this.deviceRows.set(d.device, r); }
       this.updateDeviceRow(r, d);
-      const target: ChildNode | null = prev ? prev.nextSibling : body.firstChild;
-      if (r.tr !== target) body.insertBefore(r.tr, target);
-      prev = r.tr;
+      rows.push(r.tr);
     }
+    orderChildren(body, rows);
   }
 
   private td(text: string, mono = false): HTMLElement {
