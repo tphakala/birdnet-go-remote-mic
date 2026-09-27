@@ -358,6 +358,60 @@ func TestStartApplyUpdaterRefuses(t *testing.T) {
 	})
 }
 
+// TestStartApplyBusyWithOwnRequest pins that pressing again while this
+// process's own attempt holds a live request on disk is ErrBusy, not an
+// earlier attempt. The stager writes the request last, so that is mostly
+// while the updater is awaited (installing), and briefly before the phase
+// moves on (downloading).
+func TestStartApplyBusyWithOwnRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		phase Phase
+		block bool // hold staging open after the request is written
+	}{
+		{PhaseInstalling, false},
+		{PhaseDownloading, true},
+	} {
+		t.Run(string(tc.phase), func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				var dir string
+				m, _, dir := applyManager(t, func(ctx context.Context, _ *Release) error {
+					p := filepath.Join(dir, RequestFile)
+					if err := os.WriteFile(p, []byte(`{"version":"v0.3.0"}`), 0o644); err != nil {
+						return err
+					}
+					// The bubble's clock is not the file system's; date the
+					// request by it so the on-disk check sees a live attempt.
+					now := time.Now()
+					if err := os.Chtimes(p, now, now); err != nil {
+						return err
+					}
+					if tc.block {
+						<-ctx.Done()
+						return ctx.Err()
+					}
+					return nil
+				})
+				if _, err := m.StartApply(); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				if st := m.Status(); st.Phase != tc.phase {
+					t.Fatalf("phase %q before the second press, want %q", st.Phase, tc.phase)
+				}
+				if !inFlight(dir) {
+					t.Fatal("the request staging wrote is not a live attempt on disk")
+				}
+				_, err := m.StartApply()
+				if !errors.Is(err, ErrBusy) || errors.Is(err, errEarlierAttempt) {
+					t.Errorf("second StartApply: got %v, want ErrBusy for this process's own attempt", err)
+				}
+			})
+		})
+	}
+}
+
 // TestStartApplyUpdaterMissing pins that a request nobody takes is withdrawn
 // and the attempt fails with a hint.
 func TestStartApplyUpdaterMissing(t *testing.T) {
