@@ -391,6 +391,11 @@ func failureCause(err error) string {
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked()
+}
+
+// statusLocked is Status with m.mu held.
+func (m *Manager) statusLocked() Status {
 	s := Status{
 		Current:      m.cfg.Running,
 		Supported:    m.supported,
@@ -420,19 +425,20 @@ func (m *Manager) StartApply() (Status, error) {
 	if !m.enabled.Load() {
 		return m.Status(), ErrChecksDisabled
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// This process's own attempt comes first: once staging has written the
+	// request, the check below would report it as an earlier one.
+	if m.phase == PhaseDownloading || m.phase == PhaseInstalling {
+		return m.statusLocked(), ErrBusy
+	}
 	// An attempt on disk counts too: one started before this process (which
 	// may be the new version the updater is still watching) has not ended.
 	if inFlight(m.cfg.Dir) {
-		return m.Status(), errEarlierAttempt
+		return m.statusLocked(), errEarlierAttempt
 	}
-	m.mu.Lock()
-	switch {
-	case m.phase == PhaseDownloading || m.phase == PhaseInstalling:
-		m.mu.Unlock()
-		return m.Status(), ErrBusy
-	case !m.available || m.latest == nil:
-		m.mu.Unlock()
-		return m.Status(), ErrNoUpdate
+	if !m.available || m.latest == nil {
+		return m.statusLocked(), ErrNoUpdate
 	}
 	rel := m.latest
 	m.phase, m.phaseMsg = PhaseDownloading, "Downloading "+rel.Manifest.Version
@@ -441,9 +447,10 @@ func (m *Manager) StartApply() (Status, error) {
 	// finds this cancel.
 	ctx, stop := context.WithCancelCause(m.ctx)
 	m.cancelApply = stop
-	m.mu.Unlock()
 	go m.apply(ctx, stop, rel)
-	return m.Status(), nil
+	// Read before m.mu is released, so it is the phase set here and not one
+	// the apply goroutine has already moved on to.
+	return m.statusLocked(), nil
 }
 
 // apply stages rel on ctx, which turning checks off or the appliance shutting

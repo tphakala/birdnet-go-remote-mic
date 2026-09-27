@@ -358,6 +358,41 @@ func TestStartApplyUpdaterRefuses(t *testing.T) {
 	})
 }
 
+// TestStartApplyBusyWithOwnRequest pins that pressing again while this
+// process's own download runs is ErrBusy, not an earlier attempt, although
+// its request is on disk and live by then.
+func TestStartApplyBusyWithOwnRequest(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var dir string
+		m, _, dir := applyManager(t, func(ctx context.Context, _ *Release) error {
+			p := filepath.Join(dir, RequestFile)
+			if err := os.WriteFile(p, []byte(`{"version":"v0.3.0"}`), 0o644); err != nil {
+				return err
+			}
+			// The bubble's clock is not the file system's; date the request
+			// by it so the on-disk check sees a live attempt.
+			now := time.Now()
+			if err := os.Chtimes(p, now, now); err != nil {
+				return err
+			}
+			<-ctx.Done() // still downloading
+			return ctx.Err()
+		})
+		if _, err := m.StartApply(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if !inFlight(dir) {
+			t.Fatal("the request staging wrote is not a live attempt on disk")
+		}
+		_, err := m.StartApply()
+		if !errors.Is(err, ErrBusy) || errors.Is(err, errEarlierAttempt) {
+			t.Errorf("second StartApply: got %v, want ErrBusy for this process's own attempt", err)
+		}
+	})
+}
+
 // TestStartApplyUpdaterMissing pins that a request nobody takes is withdrawn
 // and the attempt fails with a hint.
 func TestStartApplyUpdaterMissing(t *testing.T) {
