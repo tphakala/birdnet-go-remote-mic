@@ -273,8 +273,9 @@ test("neighbourOrder prefers the nearest item after, then the nearest before", (
   assert.deepEqual(neighbourOrder(["a", "b", "c", "d"], 1), ["c", "d", "a"]);
   assert.deepEqual(neighbourOrder(["a", "b", "c", "d"], 3), ["c", "b", "a"]);
   // Several items going at once: the caller takes the first still shown, so
-  // with a and b gone focus leaves b for c, the card now in its place.
-  assert.equal(neighbourOrder(["a", "b", "c", "d"], 1).find((id) => id !== "a"), "c");
+  // with b and c gone focus leaves b for d, the nearest card left after it.
+  const left = new Set(["a", "d"]);
+  assert.equal(neighbourOrder(["a", "b", "c", "d"], 1).find((id) => left.has(id)), "d");
   assert.deepEqual(neighbourOrder(["a"], 0), []);
   assert.deepEqual(neighbourOrder(["a", "b"], -1), ["a", "b"], "an item not on screen leaves every item as a candidate");
 });
@@ -340,6 +341,7 @@ test("rejectedFieldKey marks the edited device's field, and a duplicate of it re
   assert.equal(rejectedFieldKey("devices[1].streams[0].path", sent, "hw:1"), "path");
   // A problem with another device's own field is not garden's to fix.
   assert.equal(rejectedFieldKey("devices[1].rate", sent, "hw:1"), null);
+  assert.equal(rejectedFieldKey("devices[1].name", sent, "hw:1"), null, "bats' own name is not a duplicate of garden's");
   assert.equal(rejectedFieldKey("devices[1].streams[1].path", sent, "hw:1"), null, "a different path");
   // A duplicate name reported at the other device.
   const named = [dev("porch", "hw:1", "/a"), dev("porch", "hw:2", "/b")];

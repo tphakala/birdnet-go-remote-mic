@@ -307,10 +307,10 @@ export function rejectionText(prefix: string, problem: FieldProblem, names: read
 // problem on a save of the device edited (its id), sent being the device list
 // the save sent: the problem's own field when it points at that device's
 // first stream, the one the form edits. A duplicate name or path is reported
-// at its later occurrence (internal/config/config.go:624 and :681), which may
+// at its later occurrence (internal/config/config.go:625 and :682), which may
 // be another device or stream, so a duplicate of the edited device's name or
-// path marks that field too. It returns null for a problem the form cannot
-// show.
+// path marks that field too. It returns null for a problem that is not the
+// edited device's; which keys the form can show is markRejected's call.
 export function rejectedFieldKey(field: string, sent: readonly DeviceConfig[], edited: string): keyof typeof DEVICE_FIELD_LABELS | null {
   const at = parseDeviceFieldPath(field);
   const own = sent.find((d) => d.device === edited);

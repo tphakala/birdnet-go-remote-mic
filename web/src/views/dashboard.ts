@@ -495,12 +495,13 @@ export class DashboardView {
     // Remove cards for devices that are gone. A removed card that held
     // keyboard focus (another tab removed the device, or a reload dropped it)
     // hands it on below, as Available Devices does.
-    const idOf = new Map([...this.cards].map(([id, e]) => [e.article, id] as const));
-    const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
     let focusLost: { neighbours: string[]; name: string } | null = null;
     for (const [id, entry] of this.cards) {
       if (!seen.has(id)) {
         if (entry.article.contains(document.activeElement)) {
+          // The screen order, read only here and before any card is removed.
+          const idOf = new Map([...this.cards].map(([cid, e]) => [e.article, cid] as const));
+          const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
           focusLost = { neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: entry.device.name };
         }
         entry.live?.meters.forEach((m) => m.destroy());
@@ -518,11 +519,15 @@ export class DashboardView {
     const ordered = devices.flatMap((d) => this.cards.get(d.device) ?? []);
     orderChildren(rack, ordered.map((e) => e.article));
     if (focusLost && focusDropped()) {
-      // The nearest card left after the removed one, else before it.
-      const next = focusLost.neighbours.map((id) => this.cards.get(id)).find((e) => e !== undefined);
-      if (next) next.settingsBtn.focus({ preventScroll: true });
-      else focusWorkspace();
-      announce(this.announceEl, deviceGoneMessage(focusLost.name, next?.device.name ?? null));
+      const { name } = focusLost;
+      this.focusNeighbour(
+        focusLost.neighbours,
+        (id) => {
+          const e = this.cards.get(id);
+          return e && { control: e.settingsBtn, name: e.device.name };
+        },
+        (next) => deviceGoneMessage(name, next),
+      );
     }
 
     // Rebuild the name index for the levels stream (cards are keyed by id, the
@@ -610,11 +615,30 @@ export class DashboardView {
   // listed (see neighbourOrder), else to the workspace, and announces which
   // device went.
   private focusAvailableNeighbour(neighbours: readonly string[], label: string): void {
-    const neighbour = neighbours.map((id) => this.availableCards.get(id)).find((c) => c !== undefined);
-    const button = neighbour?.card.querySelector<HTMLElement>(".available-enable");
-    if (button) button.focus({ preventScroll: true });
+    this.focusNeighbour(
+      neighbours,
+      (id) => {
+        const c = this.availableCards.get(id);
+        const control = c?.card.querySelector<HTMLElement>(".available-enable");
+        return control ? { control, name: c?.label ?? "" } : undefined;
+      },
+      (next) => availableGoneMessage(label, next !== null),
+    );
+  }
+
+  // focusNeighbour is the one hand-off for a card that held focus and went
+  // away: focus moves to the control of the first neighbour still shown
+  // (neighbourOrder), else to the workspace, and message(the neighbour's
+  // name, or null) is announced.
+  private focusNeighbour(
+    neighbours: readonly string[],
+    find: (id: string) => { control: HTMLElement; name: string } | undefined,
+    message: (next: string | null) => string,
+  ): void {
+    const next = neighbours.map(find).find((n) => n !== undefined);
+    if (next) next.control.focus({ preventScroll: true });
     else focusWorkspace();
-    announce(this.announceEl, availableGoneMessage(label, button != null));
+    announce(this.announceEl, message(next?.name ?? null));
   }
 
   private buildAvailableCard(d: AvailableDevice): HTMLElement {
@@ -743,7 +767,10 @@ export class DashboardView {
         // region first so a keyboard user keeps a sensible place. preventScroll,
         // as in the login modal: a plain focus() would jump the page to the top
         // of <main>, away from where the removed card was.
-        const main = focusWorkspace();
+        // A poll may have removed the card first and handed focus on; then
+        // it stays where that put it.
+        const holds = entry.article.isConnected && entry.article.contains(document.activeElement);
+        const main = holds || focusDropped() ? focusWorkspace() : null;
         const refreshed = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         if (refreshed.every(Boolean)) showToast(`Removed ${entry.device.name}.`);
         else showToast(`Removed ${entry.device.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
@@ -1590,7 +1617,10 @@ export class DashboardView {
 
       try {
         const res = await api.patchConfig({ devices: merged });
-        this.closeSettings(entry);
+        // Close the form that was saved, not one the operator opened while
+        // the save was queued (closing that would drop its edits).
+        const same = entry.settingsForm === form;
+        if (same) this.closeSettings(entry);
         // Seed the cached config with the authoritative PATCH response before the
         // refresh so a later queued mutation cannot rebuild from a stale base if
         // the GET refresh fails (see applyConfig). A refresh failure after a
@@ -1598,19 +1628,24 @@ export class DashboardView {
         store.applyConfig(res.config);
         await Promise.all([store.refreshConfig(), store.refreshDevices()]);
         showToast(res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
-        // closeSettings above destroyed the focused Save button and collapsed the
-        // panel, dropping focus to <body>. Return it to the settings button (which survives
-        // any rebuild the refresh triggered, via the stable entry), matching the
-        // Cancel and reload paths so a keyboard user is not stranded at the top.
-        entry.settingsBtn.focus();
+        // closeSettings above destroyed the focused Save button and collapsed
+        // the panel, dropping focus to <body>. Return it to the settings
+        // button (which survives any rebuild the refresh triggered, via the
+        // stable entry), matching the Cancel and reload paths, unless the
+        // operator has moved it since.
+        if (same && focusDropped()) entry.settingsBtn.focus();
       } catch (err: unknown) {
-        this.apiErrorToast(err, "Save failed", merged);
-        // A problem the form can show (see rejectedFieldKey) is marked on
-        // its field too, and focus goes there; mode and bitrate have no error
-        // line, so the toast alone covers them.
+        // A problem the form can show is marked on its field (see
+        // rejectedFieldKey and markRejected), and the toast then only says
+        // the save failed, as for a local check: the field carries the
+        // reason. Focus moves there only if it is still on Save or dropped,
+        // and only on the form that was saved.
         const problem = firstProblem(err);
         const key = problem?.field ? rejectedFieldKey(problem.field, merged, edited.device) : null;
-        if (problem && key) entry.settingsForm?.markRejected(key, problem.reason);
+        const moveFocus = btn.contains(document.activeElement) || focusDropped();
+        const marked = problem !== null && key !== null && entry.settingsForm === form && form.markRejected(key, problem.reason, moveFocus);
+        if (marked) showToast("Save failed: fix the highlighted field.", "error");
+        else this.apiErrorToast(err, "Save failed", merged);
       }
       });
     } finally {

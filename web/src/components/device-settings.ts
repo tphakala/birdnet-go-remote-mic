@@ -511,11 +511,12 @@ export class DeviceSettingsForm {
   }
 
   // markRejected marks the field the appliance rejected on save with its
-  // reason and moves focus to it, as a failed local check does. It returns
-  // false for a field the form has no error line for (the codec mode, the
-  // Opus bitrate), which the caller's toast covers alone. The mark lasts
-  // until the next local check (validate), as the form's own marks do.
-  public markRejected(key: string, reason: string): boolean {
+  // reason and, when moveFocus is set, moves focus to it, as a failed local
+  // check does. It returns false for any field other than name, path, rate
+  // and channels, which have no error line, so the caller's toast covers
+  // them alone. The mark lasts until the next local check (validate), as the
+  // form's own marks do.
+  public markRejected(key: keyof typeof DEVICE_FIELD_LABELS, reason: string, moveFocus: boolean): boolean {
     const text = sentence(reason);
     switch (key) {
       case "name":
@@ -534,7 +535,7 @@ export class DeviceSettingsForm {
       default:
         return false;
     }
-    this.focusFirstInvalid();
+    if (moveFocus) this.focusFirstInvalid();
     return true;
   }
 
