@@ -2,7 +2,7 @@
 // of licenses.json (written by tools/licensegen from the build's module graph,
 // so the page never drifts from what the binary links), and the plain-text
 // system details a bug report asks for. No DOM, network, or storage here.
-import type { ApplianceStatus, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.js";
+import type { ApplianceStatus, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.ts";
 
 export const REPO_URL = "https://github.com/tphakala/birdnet-go-remote-mic";
 export const ISSUES_URL = `${REPO_URL}/issues`;
@@ -128,7 +128,9 @@ const USB_ID = /^usb:([0-9a-f]{4}):([0-9a-f]{4})(?::|$)/i;
 // model and not the unit, or null when id is not a USB id.
 function usbLabel(id: string): string | null {
   const m = USB_ID.exec(id);
-  return m ? `usb:${m[1].toLowerCase()}:${m[2].toLowerCase()}` : null;
+  const vendor = m?.[1];
+  const product = m?.[2];
+  return vendor && product ? `usb:${vendor.toLowerCase()}:${product.toLowerCase()}` : null;
 }
 
 // deviceIdKind describes a configured device id without the parts that identify

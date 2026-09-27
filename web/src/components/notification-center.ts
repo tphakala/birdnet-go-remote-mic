@@ -3,12 +3,12 @@
 // concerns (open/close, focus, keyboard, DOM). All state lives in the store and
 // its pure core.
 
-import { button, elem, focusTarget, setHidden, setText } from "../lib/ui.js";
-import { PopoverController, type FocusTarget } from "../lib/menu-core.js";
-import { ICON_CLOSE } from "./toast.js";
-import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.js";
-import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
-import type { NotificationStore } from "../lib/notifications.js";
+import { button, elem, focusTarget, setHidden, setText } from "../lib/ui.ts";
+import { PopoverController, type FocusTarget } from "../lib/menu-core.ts";
+import { ICON_CLOSE } from "./toast.ts";
+import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.ts";
+import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.ts";
+import type { NotificationStore } from "../lib/notifications.ts";
 
 // The popover renders at most this many history rows. The server ring holds far
 // more (its capacity, 500 by default); the Events page (#/events) shows the full
@@ -53,7 +53,7 @@ export class NotificationCenter {
     (bell.parentElement ?? document.body).appendChild(this.panel);
 
     bell.addEventListener("click", () => this.ctl.toggle());
-    this.store.addEventListener("change", () => this.onChange());
+    this.store.on("change", () => this.onChange());
     this.onChange();
   }
 

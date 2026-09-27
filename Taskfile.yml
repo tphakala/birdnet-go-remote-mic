@@ -142,9 +142,12 @@ tasks:
       - cp -r web/static/* web/dist/
 
   web:typecheck:
-    desc: Type-check web UI TypeScript (and the rendered sweep in web/e2e) without emitting
+    desc: Type-check web UI TypeScript, its unit tests, and the rendered sweep in web/e2e without emitting
     cmds:
       - npx -p typescript@7.0.2 tsc -p web/tsconfig.json --noEmit
+      # web:test runs the tests with Node's type stripping, which checks no
+      # types, so they are type-checked here.
+      - npx -p typescript@7.0.2 tsc -p web/test/tsconfig.json
       # The sweep's mock fixtures are typed against web/src/lib/types.ts, so a
       # type change that breaks them fails here, not only in the optional sweep.
       # Its Playwright typings are local, so this needs no browser.
@@ -161,17 +164,11 @@ tasks:
       - npx -p html-validate@11.10.0 html-validate -c web/.htmlvalidate.json web/static/index.html
 
   web:test:
-    desc: Compile and run the web UI unit tests (node:test)
+    desc: Run the web UI unit tests (node:test) straight from the TypeScript source
     cmds:
-      # A second tsconfig emits src + test to web/.test-out preserving structure,
-      # so the compiled test resolves ../src/... the same as the source tree. The
-      # package.json pins ESM resolution for node --test. Zero new dependencies.
-      # Clean first (like web:build) so a renamed or deleted test cannot leave a
-      # stale compiled file behind that node --test would still run.
-      - rm -rf web/.test-out
-      - npx -p typescript@7.0.2 tsc -p web/tsconfig.test.json
-      - printf '{"type":"module"}' > web/.test-out/package.json
-      - node --test web/.test-out/test/
+      # Node strips the types itself, so there is no compile step; web:typecheck
+      # checks the types.
+      - node --test web/test/
 
   web:verify:
     desc: Type-check, lint, a11y-audit, unit-test, and rebuild the web UI

@@ -11,14 +11,14 @@
 // ongoing durations) comes from the entries' server uptime mapped onto the
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
-import { router } from "../lib/router.js";
-import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.js";
-import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
-import { showToast } from "../components/toast.js";
-import { FilterChips } from "../components/filter-chips.js";
-import { StatTile } from "../components/stat-tile.js";
-import { RESTAMP_MS, SEVERITY_TO_TOAST, renderNotificationRow, restampRows, type ChipFacet } from "../components/notification-row.js";
-import { activeConditions, eventTimeMs, uptimeToMs, type CoreState } from "../lib/notifications-core.js";
+import { router } from "../lib/router.ts";
+import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
+import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
+import { showToast } from "../components/toast.ts";
+import { FilterChips } from "../components/filter-chips.ts";
+import { StatTile } from "../components/stat-tile.ts";
+import { RESTAMP_MS, SEVERITY_TO_TOAST, renderNotificationRow, restampRows, type ChipFacet } from "../components/notification-row.ts";
+import { activeConditions, eventTimeMs, uptimeToMs, type CoreState } from "../lib/notifications-core.ts";
 import {
   CATEGORIES,
   SEVERITIES,
@@ -35,9 +35,9 @@ import {
   rowSignature,
   type EventFilter,
   type Lifecycle,
-} from "../lib/events-core.js";
-import type { NotificationStore } from "../lib/notifications.js";
-import type { Notification, NotificationSeverity } from "../lib/types.js";
+} from "../lib/events-core.ts";
+import type { NotificationStore } from "../lib/notifications.ts";
+import type { Notification, NotificationSeverity } from "../lib/types.ts";
 
 const ICON_ALERT =
   svgIcon('<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>');
@@ -99,8 +99,8 @@ interface FocusMark {
 function syncChildren(parent: HTMLElement, nodes: HTMLElement[]): void {
   const want = new Set(nodes);
   for (const c of Array.from(parent.children)) if (!want.has(c as HTMLElement)) c.remove();
-  for (let i = 0; i < nodes.length; i++) {
-    if (parent.children[i] !== nodes[i]) parent.insertBefore(nodes[i], parent.children[i] ?? null);
+  for (const [i, node] of nodes.entries()) {
+    if (parent.children[i] !== node) parent.insertBefore(node, parent.children[i] ?? null);
   }
   while (parent.children.length > nodes.length) parent.lastElementChild?.remove();
 }
@@ -202,9 +202,9 @@ export class EventsView {
     this.root = root;
     this.build();
 
-    this.store.addEventListener("change", () => this.scheduleRender());
-    router.addEventListener("route", (e: Event) => {
-      this.setVisible((e as CustomEvent<string>).detail === "events");
+    this.store.on("change", () => this.scheduleRender());
+    router.on("route", (view) => {
+      this.setVisible(view === "events");
     });
     document.addEventListener("keydown", this.onKeydown);
     // A "/" shortcut change saved in another tab applies here at once (the

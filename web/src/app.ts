@@ -1,20 +1,20 @@
-import { isViewName } from "./lib/router-core.js";
-import { router } from "./lib/router.js";
-import { store } from "./lib/store.js";
-import { DashboardView } from "./views/dashboard.js";
-import { SystemView } from "./views/system.js";
-import { EventsView } from "./views/events.js";
-import { NotificationStore } from "./lib/notifications.js";
-import { NotificationCenter } from "./components/notification-center.js";
-import { initLoginModal } from "./components/login-modal.js";
-import { applyStoredToken } from "./lib/auth.js";
-import { needsNotificationsFallback } from "./lib/dashboard-core.js";
-import { initTheme, PREFERS_LIGHT_QUERY, THEME_KEY, type Theme, type ThemeMode } from "./lib/theme.js";
-import { onPrefChange, prefSaveNotice } from "./lib/prefs.js";
-import { ERROR_TTL_MS, showToast } from "./components/toast.js";
-import { MenuButton } from "./components/menu-button.js";
-import { svgIcon } from "./lib/ui.js";
-import { AboutView } from "./views/about.js";
+import { isViewName } from "./lib/router-core.ts";
+import { router } from "./lib/router.ts";
+import { store } from "./lib/store.ts";
+import { DashboardView } from "./views/dashboard.ts";
+import { SystemView } from "./views/system.ts";
+import { EventsView } from "./views/events.ts";
+import { NotificationStore } from "./lib/notifications.ts";
+import { NotificationCenter } from "./components/notification-center.ts";
+import { initLoginModal } from "./components/login-modal.ts";
+import { applyStoredToken } from "./lib/auth.ts";
+import { needsNotificationsFallback } from "./lib/dashboard-core.ts";
+import { initTheme, PREFERS_LIGHT_QUERY, THEME_KEY, type Theme, type ThemeMode } from "./lib/theme.ts";
+import { onPrefChange, prefSaveNotice } from "./lib/prefs.ts";
+import { ERROR_TTL_MS, showToast } from "./components/toast.ts";
+import { MenuButton } from "./components/menu-button.ts";
+import { svgIcon } from "./lib/ui.ts";
+import { AboutView } from "./views/about.ts";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
 // notifications snapshot before loading it directly (see init).
@@ -78,7 +78,7 @@ class App {
         if (needsNotificationsFallback(notifications.hasLoaded(), store.getState().connected)) void notifications.load();
       }, NOTIFICATIONS_FALLBACK_MS);
     };
-    store.addEventListener("authok", armNotificationsFallback);
+    store.on("authok", armNotificationsFallback);
     void store.start().then((running) => {
       if (running) armNotificationsFallback();
     });

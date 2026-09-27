@@ -1,7 +1,7 @@
 // Minimal ambient declarations for the Node built-in test modules, covering
 // only the surface the notification-core tests use. This keeps the test build
 // dependency-free (no @types/node): the types live under web/test, so they are
-// compiled only by tsconfig.test.json, never by the dist build or the linter,
+// type-checked only by test/tsconfig.json, never by the dist build or the linter,
 // both of which are scoped to web/src.
 
 declare module "node:test" {

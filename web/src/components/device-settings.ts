@@ -1,5 +1,5 @@
-import { CustomDropdown } from "./custom-dropdown.js";
-import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.js";
+import { CustomDropdown } from "./custom-dropdown.ts";
+import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.ts";
 import {
   MAX_NAME_LEN,
   MAX_PATH_LEN,
@@ -9,9 +9,9 @@ import {
   inputMaxLength,
   lengthError,
   otherOpusStream,
-} from "../lib/device-settings-core.js";
-import { store } from "../lib/store.js";
-import type { DeviceConfig, StreamMode } from "../lib/types.js";
+} from "../lib/device-settings-core.ts";
+import { store } from "../lib/store.ts";
+import type { DeviceConfig, StreamMode } from "../lib/types.ts";
 
 const CHEVRON =
   svgIcon('<path d="m6 9 6 6 6-6"></path>', 14);

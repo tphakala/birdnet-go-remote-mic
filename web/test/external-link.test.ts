@@ -1,11 +1,10 @@
 // Unit tests for externalTailStart (lib/ui.ts): which end of an external
-// link's text stays on one line with its new-tab icon. Run with node:test over
-// the compiled output (see web:test).
+// link's text stays on one line with its new-tab icon. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { externalTailStart } from "../src/lib/ui.js";
+import { externalTailStart } from "../src/lib/ui.ts";
 
 const tail = (text: string): string => text.slice(externalTailStart(text));
 

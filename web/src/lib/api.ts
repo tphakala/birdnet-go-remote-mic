@@ -15,17 +15,21 @@ import type {
   SystemInfo,
   UpdateStatus,
   ValidationProblem,
-} from "./types.js";
+} from "./types.ts";
 
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public title: string,
-    public detail?: string,
-    public errors?: Array<{ field?: string; reason?: string }>
-  ) {
+  public status: number;
+  public title: string;
+  public detail?: string;
+  public errors?: Array<{ field?: string; reason?: string }>;
+
+  constructor(status: number, title: string, detail?: string, errors?: Array<{ field?: string; reason?: string }>) {
     super(detail || title);
     this.name = "ApiError";
+    this.status = status;
+    this.title = title;
+    this.detail = detail;
+    this.errors = errors;
   }
 }
 

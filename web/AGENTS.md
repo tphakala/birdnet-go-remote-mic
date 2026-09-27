@@ -12,16 +12,27 @@ The output must stay plain ES modules (plus the one classic script,
 ## Toolchain and modules
 
 - TypeScript strict mode (`tsconfig.json`: `strict`, `noImplicitAny`,
-  `noUnusedLocals`, `noUnusedParameters`), target and module ES2022. Every
-  step runs through `npx -p <pinned tool>` from `Taskfile.yml`: `tsc`
+  `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess`,
+  `verbatimModuleSyntax`, `erasableSyntaxOnly`), target and module ES2022.
+  Every step runs through `npx -p <pinned tool>` from `Taskfile.yml`: `tsc`
   (typescript 7), `oxlint --deny-warnings`, and `html-validate` with the
   recommended and a11y presets. Zero warnings is the bar. `task web:verify`
   runs them all; `task web:test` runs the unit tests.
-- Relative imports carry the emitted `.js` extension
-  (`import { store } from "./lib/store.js"`); no bare package imports.
-  `moduleResolution: "bundler"` is only a tsc resolution mode; there is no
-  bundler, and the browser loads the emitted files as is, so an extensionless
-  import breaks at runtime.
+- An indexed read (`arr[i]`, `record[key]`, a regex group) may be
+  `undefined`: guard it, or use `.entries()` or `charAt`. No blanket `!`. In
+  tests, `at` and `group` from `test/fixtures.ts` fail the test on a missing
+  item.
+- Relative imports carry the source `.ts` extension
+  (`import { store } from "./lib/store.ts"`); no bare package imports. tsc
+  rewrites them to `.js` in the output (`rewriteRelativeImportExtensions`),
+  which the browser loads as is. `moduleResolution: "bundler"` is only a tsc
+  resolution mode; there is no bundler, so an extensionless import breaks at
+  runtime.
+- Only erasable syntax (`erasableSyntaxOnly`): no enums, namespaces, or
+  constructor parameter properties; declare the field and assign it. Type-only
+  imports say `import type` (`verbatimModuleSyntax`). This is what lets
+  `web:test` run the tests straight from source with Node's type stripping;
+  `web:typecheck` type-checks them (`test/tsconfig.json`).
 - `static/index.html` is the one page: header, nav, one `.view-container` per
   view, toast regions, and live regions. It loads `app.js` as a module, and
   `theme-init.js` as a blocking classic script in `<head>`.
@@ -82,15 +93,17 @@ No reactive framework; reactivity is explicit events plus idempotent
 reconcile:
 
 - `AppStore` (`lib/store.ts`) and `NotificationStore` (`lib/notifications.ts`)
-  extend `EventTarget` and own all server state. They poll the REST API,
-  consume SSE, and announce changes with named `CustomEvent`s (`devices`,
-  `status`, `config`, `system`, `available`, `levels`, `connection`,
-  `loaderror`, `authrequired`, `authok`, and `change` on the notification
-  store). `devices`, `status` and `system` fire only when their data changed
+  own all server state. They poll the REST API, consume SSE, and announce
+  changes as typed events: they extend `Emitter` (`lib/emitter.ts`), whose
+  event map fixes each name and payload (`StoreEvents`: `devices`, `status`,
+  `config`, `system`, `available`, `levels`, `connection`, `loaderror`,
+  `authrequired`, `authok`; `change` on the notification store). The router
+  announces `route` the same way. A new event goes in the map first, so a
+  misspelled name or a wrong payload fails `tsc`. `devices`, `status` and `system` fire only when their data changed
   (always after a failed read); `config` and `available` fire every poll. A
   mutation flow must not wait for a `devices`, `status` or `system` event,
   which a no-op change never sends: repaint from `config` or the awaited call.
-- Views and components subscribe with `addEventListener` and render from
+- Views and components subscribe with `on(name, payload => ...)` and render from
   `store.getState()`. They never keep a second copy of server state or fetch
   on their own; mutations go through store or `api` methods, then the view
   re-renders from the next event.

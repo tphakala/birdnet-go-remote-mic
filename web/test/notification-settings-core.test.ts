@@ -1,5 +1,5 @@
 // Unit tests for the pure Notifications settings-card logic. Run with Node's
-// built-in test runner over the compiled output (see the web:test task): no
+// built-in test runner (see the web:test task): no
 // browser, no DOM, no dependencies.
 
 import test from "node:test";
@@ -11,7 +11,7 @@ import {
   fieldForServerPath,
   parseThreshold,
   unparsedThresholds,
-} from "../src/lib/notification-settings-core.js";
+} from "../src/lib/notification-settings-core.ts";
 
 test("NOTIFY_FIELDS covers the five audio and eight host thresholds with unique keys and paths", () => {
   assert.equal(NOTIFY_FIELDS.length, 13);

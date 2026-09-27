@@ -1,9 +1,10 @@
 // Unit tests for theme-init, the classic script that applies the theme before
-// the first paint. It has no exports, so each case runs the compiled script in
-// a fresh node:vm context holding stubs for the browser globals it touches.
-// node:vm runs it with classic-script semantics, as the <head> tag does, so an
-// import or export added to it fails here instead of only in the browser. Run
-// with node:test over the compiled output (see web:test).
+// the first paint. It has no exports, so each case runs the source in a fresh
+// node:vm context holding stubs for the browser globals it touches. node:vm
+// runs it with classic-script semantics, as the <head> tag does, so an import
+// or export added to it fails here instead of only in the browser, and so does
+// type syntax, which keeps the source the same statements tsc emits. Run with
+// node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -11,15 +12,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Script } from "node:vm";
 
-import { PREFERS_LIGHT_QUERY, THEME_KEY } from "../src/lib/theme.js";
+import { PREFERS_LIGHT_QUERY, THEME_KEY } from "../src/lib/theme.ts";
+import { group } from "./fixtures.ts";
 
-// Compiled tests live in web/.test-out/test/, the compiled script in
-// web/.test-out/src/, and the sources two levels up; resolve from
-// import.meta.url rather than process.cwd().
-const THEME_INIT_JS = fileURLToPath(new URL("../src/theme-init.js", import.meta.url).href);
-const INDEX_HTML = fileURLToPath(new URL("../../static/index.html", import.meta.url).href);
+// Resolve from import.meta.url rather than process.cwd().
+const THEME_INIT_TS = fileURLToPath(new URL("../src/theme-init.ts", import.meta.url).href);
+const INDEX_HTML = fileURLToPath(new URL("../static/index.html", import.meta.url).href);
 
-const script = new Script(readFileSync(THEME_INIT_JS, "utf8"), { filename: "theme-init.js" });
+const script = new Script(readFileSync(THEME_INIT_TS, "utf8"), { filename: "theme-init.ts" });
 
 interface Env {
   // The stored preference; undefined blocks storage the way Chromium does
@@ -130,7 +130,7 @@ test("index.html loads theme-init.js as a blocking classic script in <head>", ()
   const head = /<head>([\s\S]*?)<\/head>/.exec(html);
   assert.ok(head, "no <head> in index.html");
   // A commented-out tag loads nothing.
-  const live = head[1].replace(/<!--[\s\S]*?-->/g, "");
+  const live = group(head, 1).replace(/<!--[\s\S]*?-->/g, "");
   const tag = /<script\b([^>]*)\ssrc\s*=\s*["']?(?:\.?\/)?theme-init\.js(?=[?#"'\s>])["']?([^>]*)>/i.exec(live);
   assert.ok(tag, "theme-init.js is not loaded in <head>");
   const attrs = ` ${tag[1]} ${tag[2]} `;
@@ -139,7 +139,7 @@ test("index.html loads theme-init.js as a blocking classic script in <head>", ()
   // nomodule in any browser that supports modules, never runs it at all.
   const type = /\stype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
   assert.ok(
-    type === null || ["text/javascript", "application/javascript"].includes(type[1].toLowerCase()),
+    type === null || ["text/javascript", "application/javascript"].includes(group(type, 1).toLowerCase()),
     `theme-init.js tag has type ${type?.[1]}`,
   );
   assert.ok(!/\s(defer|async|nomodule)(?=[\s=/]|$)/i.test(attrs), "theme-init.js tag is deferred, async or nomodule");

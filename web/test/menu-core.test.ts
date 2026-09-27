@@ -1,12 +1,11 @@
 // Unit tests for the MenuButton rules and wiring (lib/menu-core.ts): where each key moves
 // focus in an open menu, which item opening starts on, and when focus leaving
-// the menu closes it. Run with node:test over the compiled output (see
-// web:test).
+// the menu closes it. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { closesOnFocusOut, MenuController, menuKeyAction, openIndex, PopoverController, typeaheadIndex } from "../src/lib/menu-core.js";
+import { closesOnFocusOut, MenuController, menuKeyAction, openIndex, PopoverController, typeaheadIndex } from "../src/lib/menu-core.ts";
 
 test("arrows move focus and wrap at both ends", () => {
   assert.deepEqual(menuKeyAction("ArrowDown", 0, 3), { kind: "focus", index: 1 });

@@ -1,5 +1,5 @@
 // Unit tests for the pure notification-core reconcile logic. Run with Node's
-// built-in test runner over the compiled output (see the web:test task): no
+// built-in test runner (see the web:test task): no
 // browser, no DOM, no dependencies.
 
 import test from "node:test";
@@ -28,9 +28,9 @@ import {
   serialize,
   unreadCount,
   uptimeToMs,
-} from "../src/lib/notifications-core.js";
-import type { Notification, NotificationSnapshot } from "../src/lib/types.js";
-import { notif } from "./fixtures.js";
+} from "../src/lib/notifications-core.ts";
+import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
+import { notif } from "./fixtures.ts";
 
 // A fixed browser clock reading, so anchor arithmetic is exact.
 const NOW = Date.parse("2026-09-12T14:00:05Z");

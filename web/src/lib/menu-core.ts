@@ -28,7 +28,7 @@ export function typeaheadIndex(key: string, current: number, labels: readonly st
   const k = key.toLocaleLowerCase();
   for (let step = 1; step <= labels.length; step++) {
     const i = wrap(current + step, labels.length);
-    if (labels[i].trimStart().toLocaleLowerCase().startsWith(k)) return i;
+    if (labels[i]?.trimStart().toLocaleLowerCase().startsWith(k)) return i;
   }
   return -1;
 }
@@ -107,12 +107,14 @@ export class MenuController {
   private open = false;
   private value = "";
   private readonly labels: string[];
+  private readonly ports: MenuPorts;
+  private readonly items: readonly MenuItem[];
+  private readonly onSelect: (value: string) => void;
 
-  constructor(
-    private readonly ports: MenuPorts,
-    private readonly items: readonly MenuItem[],
-    private readonly onSelect: (value: string) => void,
-  ) {
+  constructor(ports: MenuPorts, items: readonly MenuItem[], onSelect: (value: string) => void) {
+    this.ports = ports;
+    this.items = items;
+    this.onSelect = onSelect;
     this.labels = items.map((i) => i.label);
   }
 
@@ -228,8 +230,11 @@ export interface PopoverPorts {
 // nowhere (the window blurred) keeps it open.
 export class PopoverController {
   private open = false;
+  private readonly ports: PopoverPorts;
 
-  constructor(private readonly ports: PopoverPorts) {}
+  constructor(ports: PopoverPorts) {
+    this.ports = ports;
+  }
 
   public isOpen(): boolean {
     return this.open;

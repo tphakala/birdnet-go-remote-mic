@@ -1,11 +1,10 @@
 // Unit tests for lib/router-core.ts: which hash fragments name a route, and the
-// document title per route. Run with node:test over the compiled output (see
-// web:test).
+// document title per route. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { documentTitle, isViewName } from "../src/lib/router-core.js";
+import { documentTitle, isViewName } from "../src/lib/router-core.ts";
 
 test("isViewName accepts each route", () => {
   for (const v of ["dashboard", "events", "system", "about"]) {

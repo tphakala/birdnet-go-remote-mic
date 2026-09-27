@@ -3,7 +3,7 @@
 // field mapping all live here so they are unit-tested with node:test and no
 // browser. The view (views/system.ts) owns the DOM and calls into here.
 
-import type { AudioAlertSettings, HostAlertSettings, NotificationSettings } from "./types.js";
+import type { AudioAlertSettings, HostAlertSettings, NotificationSettings } from "./types.ts";
 
 // NotifyGroup is the settings sub-object a field belongs to. It is also the
 // nested key in the patch (notifications.audio / notifications.host).

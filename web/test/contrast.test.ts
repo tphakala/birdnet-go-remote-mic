@@ -23,10 +23,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// Compiled output lives at web/.test-out/test/, so the stylesheet is two levels
-// up in web/static/. Resolving from import.meta.url rather than process.cwd()
-// keeps the test correct whatever directory the runner is invoked from.
-const STYLES = fileURLToPath(new URL("../../static/styles.css", import.meta.url).href);
+import { group } from "./fixtures.ts";
+
+// Resolving from import.meta.url rather than process.cwd() keeps the test
+// correct whatever directory the runner is invoked from.
+const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url).href);
 
 interface RGBA {
   r: number;
@@ -52,7 +53,7 @@ function parseColor(raw: string): RGBA | null {
 
   const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v);
   if (hex) {
-    const h = hex[1];
+    const h = group(hex, 1);
     const wide = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
     return {
       r: parseInt(wide.slice(0, 2), 16),
@@ -64,9 +65,10 @@ function parseColor(raw: string): RGBA | null {
 
   const fn = /^rgba?\(([^)]+)\)$/i.exec(v);
   if (fn) {
-    const parts = fn[1].split(",").map((s) => Number(s.trim()));
-    if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return null;
-    return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+    const parts = group(fn, 1).split(",").map((s) => Number(s.trim()));
+    const [r, g, b, a = 1] = parts;
+    if (r === undefined || g === undefined || b === undefined || parts.some((n) => Number.isNaN(n))) return null;
+    return { r, g, b, a };
   }
 
   return null;
@@ -120,7 +122,7 @@ function blockDeclarations(source: string, selector: RegExp): Map<string, string
   const decl = /--([\w-]+)\s*:\s*([^;]+);/g;
   const body = css.slice(start, end);
   let m: RegExpExecArray | null;
-  while ((m = decl.exec(body)) !== null) out.set(`--${m[1]}`, m[2].trim());
+  while ((m = decl.exec(body)) !== null) out.set(`--${group(m, 1)}`, group(m, 2).trim());
   return out;
 }
 
@@ -146,7 +148,7 @@ function colorOf(tokens: Map<string, string>, name: string): RGBA {
     const ref = /^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)$/.exec(value.trim());
     if (!ref) break;
 
-    const next = tokens.get(ref[1]) ?? ref[2];
+    const next = tokens.get(group(ref, 1)) ?? ref[2];
     if (next === undefined) throw new Error(`undefined token: ${ref[1]} (via ${name})`);
     value = next;
   }
@@ -337,7 +339,7 @@ test("every decorative accent icon rule still paints the base accent", () => {
   for (const selector of DECORATIVE.keys()) {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const rule = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
-    if (!rule || !PAINTS_ACCENT.test(rule[1])) stale.push(selector);
+    if (!rule || !PAINTS_ACCENT.test(group(rule, 1))) stale.push(selector);
   }
   assert.deepEqual(stale, [], "update DECORATIVE: these rules no longer paint --accent-cyan");
 });
@@ -346,8 +348,8 @@ test("every rule that paints the base accent as a colour is listed as decorative
   const source = stripComments(css);
   const unlisted: string[] = [];
   for (const m of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const selector = m[1].trim().replace(/\s+/g, " ");
-    if (PAINTS_ACCENT.test(m[2]) && !DECORATIVE.has(selector)) unlisted.push(selector);
+    const selector = group(m, 1).trim().replace(/\s+/g, " ");
+    if (PAINTS_ACCENT.test(group(m, 2)) && !DECORATIVE.has(selector)) unlisted.push(selector);
   }
   assert.deepEqual(unlisted, [], "the base accent fails as text or a sole indicator; use --accent-cyan-text, or list the rule in DECORATIVE with its reason");
 });

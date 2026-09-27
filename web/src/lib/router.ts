@@ -1,6 +1,7 @@
-import { documentTitle, isViewName, type ViewName } from "./router-core.js";
+import { Emitter } from "./emitter.ts";
+import { documentTitle, isViewName, type ViewName } from "./router-core.ts";
 
-export class Router extends EventTarget {
+export class Router extends Emitter<{ route: ViewName }> {
   private currentView: ViewName = "dashboard";
 
   constructor() {
@@ -29,7 +30,7 @@ export class Router extends EventTarget {
     const changed = view !== this.currentView;
     this.currentView = view;
     this.updateDOM(view);
-    this.dispatchEvent(new CustomEvent("route", { detail: view }));
+    this.emit("route", view);
     // A hash route swaps the content without a page load, so a keyboard or screen
     // reader user would otherwise be left on the nav link with no cue that the
     // page changed. Move focus to the active view's section (tabindex=-1), whose

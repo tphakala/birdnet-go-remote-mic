@@ -1,12 +1,12 @@
 // Unit tests for the app store's pure refresh helpers: gatedRefresh (one gated
 // read of a polled resource) and ChangeTracker (announce only on change). Run
-// with node:test over the compiled output (see web:test).
+// with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { LatestGate } from "../src/lib/latest-core.js";
-import { ChangeTracker, gatedRefresh } from "../src/lib/store-core.js";
+import { LatestGate } from "../src/lib/latest-core.ts";
+import { ChangeTracker, gatedRefresh } from "../src/lib/store-core.ts";
 
 // deferred returns a promise with its resolve and reject exposed, so a test
 // controls the order in which overlapping reads land.

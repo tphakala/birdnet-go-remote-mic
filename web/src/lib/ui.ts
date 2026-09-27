@@ -2,10 +2,10 @@
 // builder, the uptime formatter (which had diverged between the dashboard and
 // the system view), the load-error/retry pattern, and the per-mode/per-state
 // label maps live in exactly one place.
-import { ApiError } from "./api.js";
-import { showToast } from "../components/toast.js";
-import type { FocusTarget } from "./menu-core.js";
-import { svgIcon } from "./svg.js";
+import { ApiError } from "./api.ts";
+import { showToast } from "../components/toast.ts";
+import type { FocusTarget } from "./menu-core.ts";
+import { svgIcon } from "./svg.ts";
 
 export { svgIcon };
 

@@ -1,4 +1,4 @@
-import { svgIcon } from "../lib/svg.js";
+import { svgIcon } from "../lib/svg.ts";
 
 export type ToastType = "info" | "warn" | "error";
 

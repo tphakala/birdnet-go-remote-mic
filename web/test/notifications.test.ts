@@ -2,18 +2,18 @@
 // connection source and timers, pinning its re-sync wiring: a failed load on
 // connect retries with backoff, a 401 defers to the login flow, an applied load
 // clears a pending backoff retry but not a pending gap re-sync, and the stream
-// going down drops a pending retry and arms no new one until it is back. Run with node:test over the compiled output
-// (see web:test).
+// going down drops a pending retry and arms no new one until it is back. Run
+// with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiError } from "../src/lib/api.js";
-import { NotificationStore } from "../src/lib/notifications.js";
-import { prefSaveNotice } from "../src/lib/prefs.js";
-import { resyncDelay } from "../src/lib/notifications-core.js";
-import type { Notification, NotificationSnapshot } from "../src/lib/types.js";
-import { FakeTimers, notif } from "./fixtures.js";
+import { ApiError } from "../src/lib/api.ts";
+import { NotificationStore } from "../src/lib/notifications.ts";
+import { prefSaveNotice } from "../src/lib/prefs.ts";
+import { resyncDelay } from "../src/lib/notifications-core.ts";
+import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
+import { FakeConnection, FakeTimers, notif } from "./fixtures.ts";
 
 interface Harness {
   ns: NotificationStore;
@@ -22,7 +22,7 @@ interface Harness {
   // with, or an Error to reject with.
   push(outcome: NotificationSnapshot | Error): void;
   calls: () => number;
-  // connect and disconnect dispatch the app store's "connection" event.
+  // connect and disconnect announce the "connection" event the app store would.
   connect(): void;
   disconnect(): void;
   // live delivers a "notification" frame, as the event stream would.
@@ -34,7 +34,7 @@ function harness(): Harness {
   const queue: (NotificationSnapshot | Error)[] = [];
   let calls = 0;
   let handler: ((name: string, data: unknown) => void) | null = null;
-  const connection = new EventTarget();
+  const connection = new FakeConnection();
   const ns = new NotificationStore({
     api: {
       getNotifications: () => {
@@ -57,8 +57,8 @@ function harness(): Harness {
     timers,
     push: (o) => queue.push(o),
     calls: () => calls,
-    connect: () => connection.dispatchEvent(new CustomEvent("connection", { detail: true })),
-    disconnect: () => connection.dispatchEvent(new CustomEvent("connection", { detail: false })),
+    connect: () => connection.set(true),
+    disconnect: () => connection.set(false),
     live: (n) => handler?.("notification", n),
   };
 }

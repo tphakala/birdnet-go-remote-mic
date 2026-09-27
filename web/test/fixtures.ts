@@ -1,7 +1,8 @@
 // Shared test fixtures. This file holds no tests of its own.
 
-import type { Timers } from "../src/lib/store.js";
-import type { Notification } from "../src/lib/types.js";
+import { Emitter } from "../src/lib/emitter.ts";
+import type { Timers } from "../src/lib/store.ts";
+import type { Notification } from "../src/lib/types.ts";
 
 // FakeTimer is one timer a FakeTimers has handed out.
 export interface FakeTimer {
@@ -78,4 +79,29 @@ export function notif(over: Partial<Notification> & { id: number }): Notificatio
     title: over.title ?? "Title",
     message: over.message ?? "Message",
   };
+}
+
+// at is items[i] for a test that knows the index is in range: an index past
+// the end fails the test with a message instead of reading a property of
+// undefined.
+export function at<T>(items: readonly T[], i: number): T {
+  const item = items[i];
+  if (item === undefined) throw new Error(`no item at index ${i} of ${items.length}`);
+  return item;
+}
+
+// group is capture group i of a match whose pattern always fills it, failing
+// the test if the pattern changed and it did not take part.
+export function group(m: RegExpMatchArray, i: number): string {
+  const g = m[i];
+  if (g === undefined) throw new Error(`capture group ${i} did not take part in ${JSON.stringify(m[0])}`);
+  return g;
+}
+
+// FakeConnection stands in for the app store as a NotificationStore's
+// connection source: set announces the event stream going up or down.
+export class FakeConnection extends Emitter<{ connection: boolean }> {
+  set(up: boolean): void {
+    this.emit("connection", up);
+  }
 }

@@ -4,8 +4,8 @@
 // clients whenever it changes. The appliance is LAN-only and the token is
 // already shown on the Access Control card, so per-device persistence is an
 // acceptable trade for not re-typing it.
-import { api } from "./api.js";
-import { sse } from "./sse.js";
+import { api } from "./api.ts";
+import { sse } from "./sse.ts";
 
 const STORAGE_KEY = "remote-mic-token";
 

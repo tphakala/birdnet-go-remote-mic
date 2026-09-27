@@ -2,7 +2,7 @@
 // of their own: the fetch and the side effects are passed in, so the ordering
 // and change-detection rules are unit tested on their own.
 
-import type { LatestGate } from "./latest-core.js";
+import type { LatestGate } from "./latest-core.ts";
 
 // gatedRefresh runs one gated read of a polled resource: it takes a gate token,
 // awaits fetch, and calls apply only when the gate accepts the token (no newer

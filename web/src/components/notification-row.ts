@@ -12,10 +12,10 @@
 // step. Each row keeps its uptime in a data attribute so restampRows can re-map
 // it after a later re-sync moves the anchor.
 
-import { elem, formatRelative, setText } from "../lib/ui.js";
-import { TOAST_ICONS, type ToastType } from "./toast.js";
-import { formatDuration, isoOrNull, type Lifecycle } from "../lib/events-core.js";
-import type { Notification, NotificationSeverity } from "../lib/types.js";
+import { elem, formatRelative, setText } from "../lib/ui.ts";
+import { TOAST_ICONS, type ToastType } from "./toast.ts";
+import { formatDuration, isoOrNull, type Lifecycle } from "../lib/events-core.ts";
+import type { Notification, NotificationSeverity } from "../lib/types.ts";
 
 // Notification severity maps onto the toast icon set so every surface shows the
 // same glyphs (warning uses the "warn" toast icon).

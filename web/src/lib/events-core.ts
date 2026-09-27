@@ -5,8 +5,8 @@
 // entries in the per-browser dismissed set; they only count as read, so clearing
 // the bell tidies the popover without removing an entry from the full event log.
 
-import { anchorToMs, type ClockAnchor } from "./notifications-core.js";
-import type { Notification, NotificationSeverity } from "./types.js";
+import { anchorToMs, type ClockAnchor } from "./notifications-core.ts";
+import type { Notification, NotificationSeverity } from "./types.ts";
 
 // SEVERITIES and CATEGORIES fix the facet order the page renders, most severe
 // first and categories in the order an operator scans an appliance (hardware to

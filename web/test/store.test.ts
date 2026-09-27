@@ -4,15 +4,15 @@
 // failed read; config and available announce on every read; an older response
 // never overwrites a newer one; polling pauses while the page is hidden; and
 // the event stream stops after the hidden-page grace and restarts on showing.
-// Run with node:test over the compiled output (see web:test).
+// Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps } from "../src/lib/store.js";
-import { setToken } from "../src/lib/auth.js";
-import { FakeTimers } from "./fixtures.js";
-import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../src/lib/types.js";
+import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
+import { setToken } from "../src/lib/auth.ts";
+import { FakeTimers } from "./fixtures.ts";
+import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
 
 // Outcome is one queued result for an endpoint: a value to resolve with, an
 // Error to reject with, or a promise the test settles itself.
@@ -35,7 +35,7 @@ interface Harness {
   connection: boolean[];
 }
 
-const ANNOUNCED = ["status", "devices", "system", "config", "available", "loaderror", "connection"];
+const ANNOUNCED: (keyof StoreEvents)[] = ["status", "devices", "system", "config", "available", "loaderror", "connection"];
 
 // harness builds a store over fakes. With timers given, the store schedules
 // through them (see FakeTimers); without, it uses the real globals.
@@ -79,10 +79,10 @@ function harness(timers?: FakeTimers): Harness {
   const store = new AppStore(deps);
   const events = new Map<string, number>();
   for (const name of ANNOUNCED) {
-    store.addEventListener(name, () => events.set(name, (events.get(name) ?? 0) + 1));
+    store.on(name, () => events.set(name, (events.get(name) ?? 0) + 1));
   }
   const connection: boolean[] = [];
-  store.addEventListener("connection", (e: Event) => connection.push((e as CustomEvent<boolean>).detail));
+  store.on("connection", (up) => connection.push(up));
   return {
     sseStops: () => stops,
     emit: (name) => handler?.(name, null),
@@ -147,7 +147,7 @@ test("devices announce on change, reset on failure, and normalize channels", asy
   h.push("getDevices", new Error("offline"));
   h.push("getDevices", [{ name: "mic", channels: [] }]);
   await h.store.refreshDevices();
-  assert.deepEqual(h.store.getState().devices[0].channels, []);
+  assert.deepEqual(h.store.getState().devices[0]?.channels, []);
   // The normalized payload equals the next one, so no second announcement.
   await h.store.refreshDevices();
   assert.equal(h.events.get("devices"), 1);
@@ -427,7 +427,7 @@ test("a token-gated boot fetches /status once and applies the verifying read", a
     // "nothing queued" and fail the core load.
     pollable(h);
     let loadError = false;
-    h.store.addEventListener("loaderror", () => {
+    h.store.on("loaderror", () => {
       loadError = true;
     });
     assert.equal(await h.store.start(), true);

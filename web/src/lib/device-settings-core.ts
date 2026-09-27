@@ -1,7 +1,7 @@
 // Pure, DOM-free helpers for the device settings form, split out so they can be
 // unit tested with node:test (see web/test/device-settings-core.test.ts).
 
-import type { DeviceConfig, StreamConfig } from "./types.js";
+import type { DeviceConfig, StreamConfig } from "./types.ts";
 
 // Opus bitrate default: 128 kbps for each channel carried, capped at the top of
 // the bitrate range Opus supports (510 kbps). Keep in sync with
