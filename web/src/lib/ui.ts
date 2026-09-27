@@ -306,14 +306,17 @@ export function focusWorkspace(): HTMLElement | null {
 // asked for reduced motion (an explicit "smooth" is not overridden by the
 // stylesheet's reduced-motion rule).
 export function scrollBehavior(): ScrollBehavior {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  return window.matchMedia?.(REDUCED_MOTION_QUERY).matches ? "auto" : "smooth";
 }
+
+// REDUCED_MOTION_QUERY is the media query for the viewer's reduced-motion
+// preference, for every script that follows it.
+export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
 // orderChildren puts nodes into parent in the given order. In steady state
 // nothing moves, so keyboard focus and a screen reader's position inside a
-// node survive the render. It walks element
-// siblings from the first, so a child it does not manage (a placeholder) ends
-// up after the managed ones.
+// node survive the render. It walks element siblings from the first, so a
+// child it does not manage (a placeholder) ends up after the managed ones.
 export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
   let prev: Element | null = null;
   for (const node of nodes) {

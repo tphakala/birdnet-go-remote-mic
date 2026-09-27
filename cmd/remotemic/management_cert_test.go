@@ -257,16 +257,17 @@ func TestProviderCertificateReturnsDefensiveCopies(t *testing.T) {
 	}
 	got.DNSNames[0] = "tampered"
 	pemBytes := prov.CertificatePEM()
-	if len(pemBytes) > 0 {
-		pemBytes[0] = 'X'
+	if len(pemBytes) == 0 {
+		t.Fatal("no certificate PEM to mutate")
 	}
+	pemBytes[0] = 'X'
 	// Pins the DNSNames and PEM defensive copies. Without them the
 	// mutations above would persist.
 	again := prov.Certificate()
 	if again.DNSNames[0] == "tampered" {
 		t.Error("Certificate did not return a defensive copy of DNSNames")
 	}
-	if fresh := prov.CertificatePEM(); len(fresh) > 0 && fresh[0] == 'X' {
+	if fresh := prov.CertificatePEM(); len(fresh) == 0 || fresh[0] == 'X' {
 		t.Error("CertificatePEM did not return a defensive copy")
 	}
 }

@@ -4,6 +4,7 @@ import { router } from "../lib/router.ts";
 import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
+import { deviceIdTitle } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
 import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
@@ -88,11 +89,11 @@ function formatCertTime(iso: string): string {
 // so an obviously invalid token is caught before the round trip.
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 
-// updateErrorText says why an update request failed, as a sentence: the
-// appliance's own reason for a refusal (such as an earlier attempt still
-// running), by the same rules as every other failure (apiErrorMessage).
+// updateErrorText says why an update request failed: the appliance's own
+// reason for a refusal (such as an earlier attempt still running), by the
+// same rules as every other failure toast (apiErrorMessage).
 function updateErrorText(err: unknown): string {
-  return sentence(apiErrorMessage(err));
+  return apiErrorMessage(err);
 }
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
@@ -1438,7 +1439,7 @@ export class SystemView {
       this.discoveryEl?.focus();
     } catch (err: unknown) {
       // A validation problem reads by its reason, as on the other forms; its
-      // detail is the raw field path.
+      // detail repeats the raw field path.
       showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
     } finally {
       if (saveBtn) clearBusy(saveBtn, "Save Changes");
@@ -1625,7 +1626,8 @@ export class SystemView {
     // configured id and anything else shows "-". The persisted id is long and
     // goes in the tooltip.
     setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
-    if (r.alsa.title !== `Device ID: ${d.device}`) r.alsa.title = `Device ID: ${d.device}`;
+    const alsaTitle = deviceIdTitle(d.device);
+    if (r.alsa.title !== alsaTitle) r.alsa.title = alsaTitle;
     // By the device id, which a rename does not change.
     const streams = streamSummary(d, store.getState().config?.devices.find((c) => c.device === d.device));
     // One path per line (the cell keeps the line breaks), in stream order.

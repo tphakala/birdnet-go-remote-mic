@@ -74,12 +74,12 @@ export class UnreadableResponseError extends Error {
 // apiErrorMessage reduces any thrown value to a short human string. An
 // ApiError shows its problem detail, which says what went wrong (problem
 // titles are generic: "bad request", "internal error"), else its title, else
-// its status; a 401 says the token was not accepted (lowercase with no final
-// period, like the appliance's details, since callers build sentences around
-// it), because the login prompt opens with it and the problem's detail names
-// an HTTP header. Any other
-// Error shows its message, and anything else its string form. Shared so
-// every failure toast maps errors the same way.
+// its status; a 401 says the token was not accepted, because the login
+// prompt opens with it and the problem's detail names an HTTP header. The
+// text is lowercase with no final period, like the appliance's details,
+// since callers build sentences around it. Any other Error shows its
+// message, and anything else its string form. Shared so every failure toast
+// maps errors the same way.
 export function apiErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 401) return "the access token was not accepted";

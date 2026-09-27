@@ -86,19 +86,14 @@ export function parseExtraSans(raw: string): ParsedSans {
 // detail (an older appliance, or a proxy's 413, which is not a problem body).
 export const CERT_TOO_LARGE_FALLBACK = "the request is larger than the appliance accepts";
 
-// MAX_ECHOED_DETAIL_LEN is the longest problem detail certTooLargeReason
-// echoes into the toast. The appliance's own 413 detail is one short sentence;
-// anything longer is replaced, since the toast continues the sentence.
-export const MAX_ECHOED_DETAIL_LEN = 200;
-
 // certTooLargeReason is the reason clause of the certificate-install 413 toast:
 // the problem detail the appliance sent (which names its body limit), or a
 // generic clause when there is none. Its caller passes only a problem body's
-// detail; one that holds markup or runs long is not echoed either. A trailing
+// detail, which every toast shows as sent (apiErrorMessage). A trailing
 // period is dropped because the toast continues the sentence.
 export function certTooLargeReason(detail: string | undefined): string {
   const d = (detail ?? "").trim().replace(/\.+$/, "");
-  if (d === "" || d.length > MAX_ECHOED_DETAIL_LEN || /[<>\n]/.test(d)) return CERT_TOO_LARGE_FALLBACK;
+  if (d === "") return CERT_TOO_LARGE_FALLBACK;
   return d;
 }
 

@@ -2,6 +2,7 @@
 // for an update to install, split out so node:test covers it
 // (web/test/update-core.test.ts).
 
+import { sentence } from "./text.ts";
 import type { UpdateStatus } from "./types.ts";
 
 // UpdateTone colours the card's headline: ok for up to date, info for a neutral
@@ -28,17 +29,9 @@ export interface UpdateView {
   busy: boolean;
 }
 
-// sentence turns a backend message (a Go error string: lowercase, often no
-// final stop) into a sentence for the card: first letter capitalised, and a
-// period added unless it already ends in one (a trailing colon becomes the
-// period). Empty stays empty. Hints are left as sent: they end in commands
-// and paths an operator copies.
-export function sentence(msg: string | undefined): string {
-  const t = (msg ?? "").trim().replace(/:$/, "");
-  if (!t) return "";
-  const s = t.charAt(0).toUpperCase() + t.slice(1);
-  return /[.!?]$/.test(s) ? s : `${s}.`;
-}
+// sentence (lib/text.ts) makes the card's sentences; the update card's hints
+// are left as sent, since they end in commands and paths an operator copies.
+export { sentence };
 
 const RESTART_NOTE =
   "The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start.";

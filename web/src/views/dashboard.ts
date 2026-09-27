@@ -5,6 +5,7 @@ import { showToast } from "../components/toast.ts";
 import { api, ApiError, apiErrorMessage, firstProblem } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusWorkspace, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
 import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, settingsFocusMessage, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -657,7 +658,7 @@ export class DashboardView {
     // tooltip (unreachable by keyboard, touch and screen readers), so an operator
     // can tell which of two identical units (serial or port) this card binds.
     if (d.hwAddr && d.device !== d.hwAddr) {
-      info.appendChild(elem("div", "available-id mono", `Device ID: ${d.device}`));
+      info.appendChild(elem("div", "available-id mono", deviceIdTitle(d.device)));
     }
 
     const enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
@@ -1166,7 +1167,8 @@ export class DashboardView {
     // settings panel's Device ID hint carries the remedy (remove and re-add).
     if (d.idStable === false) hwText += " · card index (can change after a reboot)";
     setText(entry.hwEl, hwText);
-    if (entry.hwEl.title !== `Device ID: ${d.device}`) entry.hwEl.title = `Device ID: ${d.device}`;
+    const hwTitle = deviceIdTitle(d.device);
+    if (entry.hwEl.title !== hwTitle) entry.hwEl.title = hwTitle;
 
     // Chips describe the live stream and are shown only while serving.
     const rate = d.negotiatedRate ?? d.rate;

@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CERT_TOO_LARGE_FALLBACK, MAX_ECHOED_DETAIL_LEN, certTooLargeReason, describeManaged, parseExtraSans } from "../src/lib/certificate-core.ts";
+import { CERT_TOO_LARGE_FALLBACK, certTooLargeReason, describeManaged, parseExtraSans } from "../src/lib/certificate-core.ts";
 
 test("parseExtraSans splits on commas and whitespace, trims, and drops empties", () => {
   const r = parseExtraSans("  mic.lan,  192.168.1.20 \n\tsensor.local ,, ");
@@ -85,9 +85,6 @@ test("certTooLargeReason echoes the appliance's problem detail", () => {
 test("certTooLargeReason falls back without a usable detail", () => {
   assert.equal(certTooLargeReason(undefined), CERT_TOO_LARGE_FALLBACK);
   assert.equal(certTooLargeReason("  "), CERT_TOO_LARGE_FALLBACK);
-  // Markup, or anything long or multi-line, is not echoed.
-  assert.equal(certTooLargeReason("<html><body>413</body></html>"), CERT_TOO_LARGE_FALLBACK);
-  assert.equal(certTooLargeReason("x".repeat(MAX_ECHOED_DETAIL_LEN)), "x".repeat(MAX_ECHOED_DETAIL_LEN));
-  assert.equal(certTooLargeReason("x".repeat(MAX_ECHOED_DETAIL_LEN + 1)), CERT_TOO_LARGE_FALLBACK);
-  assert.equal(certTooLargeReason("line one\nline two"), CERT_TOO_LARGE_FALLBACK);
+  // A problem detail is shown as sent, as every toast shows one.
+  assert.equal(certTooLargeReason("x".repeat(300)), "x".repeat(300));
 });

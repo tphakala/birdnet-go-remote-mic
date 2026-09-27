@@ -12,7 +12,7 @@ import {
   otherOpusStream,
 } from "../lib/device-settings-core.ts";
 import { store } from "../lib/store.ts";
-import { sentence } from "../lib/update-core.ts";
+import { sentence } from "../lib/text.ts";
 import type { DeviceConfig, StreamMode } from "../lib/types.ts";
 
 const CHEVRON =
@@ -401,7 +401,7 @@ export class DeviceSettingsForm {
       variant: "secondary",
       icon: ICON_COPY,
       label: "Copy",
-      ariaLabel: "Copy device id",
+      ariaLabel: "Copy device ID",
       onClick: () => copyText(this.device.device, "Device ID copied."),
     });
     row.append(input, copyBtn);
