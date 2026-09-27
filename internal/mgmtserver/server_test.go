@@ -459,7 +459,7 @@ func TestOversizedBodyYieldsProblem413(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
-			// Sabotage target: limitBody in Handler. Without it the oversized
+			// Pins limitBody in Handler. Without it the oversized
 			// body decodes in full and the store's 501 comes back instead.
 			if rec.Code != tc.want {
 				t.Errorf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())

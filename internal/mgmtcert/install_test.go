@@ -91,7 +91,7 @@ func TestValidateAcceptsGoodPair(t *testing.T) {
 func TestValidateRejectsMismatchedKey(t *testing.T) {
 	certPEM, _ := genPairPEM(t, nil)
 	_, otherKey := genPairPEM(t, nil)
-	// Sabotage target: the X509KeyPair error-to-ValidationError mapping. Deleting it
+	// Pins the X509KeyPair error-to-ValidationError mapping. Deleting it
 	// returns the raw crypto/tls error, so errors.As for *ValidationError fails.
 	verr := asValidationError(t, mustErr(Validate(certPEM, otherKey)))
 	if verr.Field != fieldKeyPem {
@@ -104,7 +104,7 @@ func TestValidateRejectsExpired(t *testing.T) {
 		c.NotBefore = time.Now().Add(-48 * time.Hour)
 		c.NotAfter = time.Now().Add(-24 * time.Hour)
 	})
-	// Sabotage target: the now.After(leaf.NotAfter) check.
+	// Pins the now.After(leaf.NotAfter) check.
 	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
 	if verr.Field != fieldCertPem {
 		t.Errorf("field = %q, want certPem", verr.Field)
@@ -116,7 +116,7 @@ func TestValidateRejectsNotYetValid(t *testing.T) {
 		c.NotBefore = time.Now().Add(24 * time.Hour)
 		c.NotAfter = time.Now().Add(48 * time.Hour)
 	})
-	// Sabotage target: the now.Before(leaf.NotBefore) check (agy finding #3).
+	// Pins the now.Before(leaf.NotBefore) check.
 	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
 	if verr.Field != fieldCertPem {
 		t.Errorf("field = %q, want certPem", verr.Field)
@@ -128,7 +128,7 @@ func TestValidateRejectsNoSANs(t *testing.T) {
 		c.DNSNames = nil
 		c.IPAddresses = nil
 	})
-	// Sabotage target: the "no subject alternative names" check (agy finding #2).
+	// Pins the "no subject alternative names" check.
 	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
 	if verr.Field != fieldCertPem {
 		t.Errorf("field = %q, want certPem", verr.Field)
@@ -139,7 +139,7 @@ func TestValidateRejectsNonServerAuthEKU(t *testing.T) {
 	certPEM, keyPEM := genPairPEM(t, func(c *x509.Certificate) {
 		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 	})
-	// Sabotage target: the usableForServerAuth check (agy finding #5).
+	// Pins the usableForServerAuth check.
 	verr := asValidationError(t, mustErr(Validate(certPEM, keyPEM)))
 	if verr.Field != fieldCertPem {
 		t.Errorf("field = %q, want certPem", verr.Field)
@@ -159,7 +159,7 @@ func TestValidateAcceptsEmptyEKU(t *testing.T) {
 func TestValidateAcceptsKeyWithLeadingBlock(t *testing.T) {
 	// A key file whose first PEM block is a non-key block (a comment or a stray
 	// certificate) followed by the real private key must be accepted, exactly as
-	// crypto/tls locates the key. Sabotage target: firstPrivateKeyBlock (inspecting
+	// crypto/tls locates the key. Pins firstPrivateKeyBlock (inspecting
 	// only the first block would reject this valid input).
 	certPEM, keyPEM := genPairPEM(t, nil)
 	leading := pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: []byte("not a real cert")})
@@ -224,7 +224,7 @@ func TestInstallPersistsPairAndPins(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	if !Pinned(certPath) {
-		t.Error("Install did not write the pin marker") // sabotage target: the marker atomicfile.Write
+		t.Error("Install did not write the pin marker") // pins the marker atomicfile.Write
 	}
 	if info, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("stat key: %v", err)
@@ -237,7 +237,7 @@ func TestInstallPersistsChainWithoutKeyMaterial(t *testing.T) {
 	// A certPEM that (by operator mistake) also contains a PRIVATE KEY block must
 	// never be written verbatim to the 0644 cert file. Install persists the
 	// re-encoded chain, so the cert file carries only certificate blocks.
-	// Sabotage target: writing ChainPEM(&cert) instead of the raw certPEM.
+	// Pins writing the raw certPEM, not ChainPEM(&cert).
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "mgmt-cert.pem")
 	keyPath := filepath.Join(dir, "mgmt-key.pem")
@@ -259,8 +259,8 @@ func TestInstallPersistsChainWithoutKeyMaterial(t *testing.T) {
 func TestRegenerateKeepsOldPairOnGenerateFailure(t *testing.T) {
 	// If regeneration fails while staging the new pair, the previously installed
 	// pair must survive intact (both files loadable, same serial) and stay pinned,
-	// so the next restart still serves it rather than discarding it. Sabotage
-	// targets: writePair's atomic staging (a non-atomic write corrupts the pair)
+	// so the next restart still serves it rather than discarding it. It pins
+	// writePair's atomic staging (a non-atomic write corrupts the pair)
 	// and Regenerate generating before clearing the pin.
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "mgmt-cert.pem")
@@ -305,7 +305,7 @@ func TestInstallWritesNothingOnValidationFailure(t *testing.T) {
 	if _, err := Install(certPath, keyPath, certPEM, otherKey); err == nil {
 		t.Fatal("Install accepted a mismatched pair")
 	}
-	// Sabotage target: the early return after Validate fails. If Install wrote
+	// Pins the early return after Validate fails. If Install wrote
 	// before validating, these files would exist.
 	if _, err := os.Stat(certPath); !errors.Is(err, os.ErrNotExist) {
 		t.Error("cert file written despite validation failure")
@@ -326,7 +326,7 @@ func TestEnsureKeepsPinnedPairNotCoveringHosts(t *testing.T) {
 	}
 
 	// A pinned pair must be reused verbatim even for hosts it does not cover.
-	// Sabotage target: the `if pinned { return cert, nil }` early return in Ensure.
+	// Pins the `if pinned { return cert, nil }` early return in Ensure.
 	got, err := Ensure(certPath, keyPath, []string{localhost, testIP})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -348,7 +348,7 @@ func TestEnsureKeepsPinnedExpiredPair(t *testing.T) {
 		t.Fatalf("write pin: %v", err)
 	}
 
-	// Sabotage target: the pinned early return bypasses the currentlyValid check.
+	// Pins that the pinned early return bypasses the currentlyValid check.
 	got, err := Ensure(certPath, keyPath, []string{localhost})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -377,7 +377,7 @@ func TestEnsureUnpinsUnloadablePinnedPair(t *testing.T) {
 	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	// Sabotage target: the os.Remove(PinPath) in the stale-pin fallthrough.
+	// Pins the os.Remove(PinPath) in the stale-pin fallthrough.
 	if Pinned(certPath) {
 		t.Error("stale pin marker was not dropped after regenerating an unloadable pinned pair")
 	}
@@ -421,7 +421,7 @@ func TestEnsureRefusesUnreadablePinnedPair(t *testing.T) {
 			}
 
 			_, err = Ensure(certPath, keyPath, []string{localhost})
-			// Sabotage target: the readFault checks in Ensure. Without them the
+			// Pins the readFault checks in Ensure. Without them the
 			// read error falls through to generate, which overwrites the pair.
 			pe, ok := errors.AsType[*PinnedReadError](err)
 			if !ok {
@@ -482,7 +482,7 @@ func TestEnsureRefusesDanglingPinnedSymlink(t *testing.T) {
 	}
 
 	_, err := Ensure(certPath, keyPath, []string{localhost})
-	// Sabotage target: the Lstat step in readFault. Without it the dangling
+	// Pins the Lstat step in readFault. Without it the dangling
 	// link reads as "missing", the pin is dropped, and generate replaces the
 	// link with a regular file.
 	pe, ok := errors.AsType[*PinnedReadError](err)
@@ -519,7 +519,7 @@ func TestEnsureRegeneratesDanglingUnpinnedLink(t *testing.T) {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 
-	// Sabotage target: the `if pinned` scoping around readFault in Ensure.
+	// Pins the `if pinned` scoping around readFault in Ensure.
 	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
 		t.Fatalf("Ensure over an unreadable unpinned pair: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestEnsureCarriesForwardSANsOnDrift(t *testing.T) {
 		t.Fatalf("second Ensure: %v", err)
 	}
 	gl, _ := x509.ParseCertificate(got.Certificate[0])
-	// Sabotage target: hosts = carryForward(leaf, hosts). Without it the operator's
+	// Pins hosts = carryForward(leaf, hosts). Without it the operator's
 	// original name is dropped when regenerating for the new address.
 	if err := gl.VerifyHostname("mic.example.org"); err != nil {
 		t.Errorf("carried-forward SAN missing: %v", err)
@@ -585,7 +585,7 @@ func TestRegenerateUnpinsAndCoversHosts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
-	// Sabotage target: the os.Remove(PinPath) in Regenerate.
+	// Pins the os.Remove(PinPath) in Regenerate.
 	if Pinned(certPath) {
 		t.Error("Regenerate did not clear the pin marker")
 	}
@@ -630,7 +630,7 @@ func TestValidateHosts(t *testing.T) {
 
 func TestValidateHostsRejectsTooMany(t *testing.T) {
 	// The contract caps extraSans at maxExtraSANs; ValidateHosts enforces it since
-	// no request-schema middleware runs. Sabotage target: the len(extra) check.
+	// no request-schema middleware runs. Pins the len(extra) check.
 	many := make([]string, maxExtraSANs+1)
 	for i := range many {
 		many[i] = "host.example"
