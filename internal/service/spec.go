@@ -51,6 +51,9 @@ const (
 	DefaultConfigPath = "/etc/remote-mic/config.yaml"
 	DefaultStateDir   = "/var/lib/remote-mic"
 	DefaultUnitName   = "remote-mic.service"
+	// ConfigEnv is the environment variable the appliance unit sets to the
+	// config path, and the one the CLI reads it from.
+	ConfigEnv = "REMOTEMIC_CONFIG"
 	// UpdatePathUnit watches the staging directory for an update request and
 	// starts UpdateServiceUnit, the root updater that installs it.
 	UpdatePathUnit    = "remote-mic-update.path"
@@ -99,7 +102,7 @@ func (s ServiceSpec) withDefaults() ServiceSpec {
 func (s ServiceSpec) ConfigDir() string { return filepath.Dir(s.ConfigPath) }
 
 // UnitPath is the absolute path the unit file is written to.
-func (s ServiceSpec) UnitPath() string { return filepath.Join(unitDir, DefaultUnitName) }
+func (s ServiceSpec) UnitPath() string { return applianceUnitPath() }
 
 // UpdateDir is the update staging directory, owned by the service user.
 func (s ServiceSpec) UpdateDir() string { return filepath.Join(s.StateDir, UpdateDirName) }
@@ -114,7 +117,10 @@ func (s ServiceSpec) UpdateServiceUnitPath() string {
 
 // Validate rejects a spec that would render an unusable unit or damage the
 // host: an invalid system user name, a non-absolute path (systemd requires
-// absolute ExecStart and directory paths), a config or state directory that
+// absolute ExecStart and directory paths), a path with characters systemd
+// would split, quote, escape or expand, a config or state directory under
+// privateDirs (seen differently by the service, checked through links), a
+// config or state directory that
 // is a shared system location the installer would chown recursively and --purge
 // would delete, or a bin path inside the config or state directory, which the
 // service user owns. It assumes defaults have already been applied.
@@ -133,16 +139,22 @@ func (s ServiceSpec) Validate() error {
 		if !filepath.IsAbs(p) {
 			return fmt.Errorf("service: %s must be absolute, got %q", label, p)
 		}
-		// systemd splits ExecStart and ReadWritePaths on spaces and reads '%' as
-		// a specifier, so a path containing either would silently misparse.
-		if strings.ContainsAny(p, " \t\n%") {
-			return fmt.Errorf("service: %s %q must not contain spaces, tabs, newlines, or %%", label, p)
+		// systemd splits ExecStart and ReadWritePaths on blanks and reads %,
+		// quotes and backslashes as specifiers, quoting and escapes, and
+		// InstalledConfig refuses a value it would have to decode, so a path
+		// is limited to the characters both read the same way.
+		if !isPlain(p) {
+			return fmt.Errorf("service: %s %q may hold only letters, digits and ._/+,:@=~-", label, p)
 		}
 	}
 	for label, dir := range map[string]string{
 		"config directory": s.ConfigDir(),
 		"state directory":  s.StateDir,
 	} {
+		// The service may see privateDirs differently from the CLI.
+		if inPrivateDir(dir) {
+			return fmt.Errorf("service: %s %q is under one of %s, which the service may see differently", label, filepath.Clean(dir), strings.Join(privateDirs, ", "))
+		}
 		if isSharedSystemDir(dir) {
 			return fmt.Errorf("service: %s %q is a shared system directory; use a dedicated subdirectory such as %s or %s",
 				label, filepath.Clean(dir), filepath.Dir(DefaultConfigPath), DefaultStateDir)

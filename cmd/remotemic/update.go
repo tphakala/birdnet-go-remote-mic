@@ -66,7 +66,8 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 // detectInstall classifies this installation from the running binary's path,
 // the installed systemd units, and dpkg's file lists. The one-button update
 // also needs the staging directory the installer creates; without it the
-// root updater has nothing to watch.
+// root updater has nothing to watch. An installed unit that cannot be read
+// means this install cannot update itself; the reason is logged.
 func detectInstall(dir string) update.Install {
 	exe, err := os.Executable()
 	if err == nil {
@@ -76,7 +77,10 @@ func detectInstall(dir string) update.Install {
 		log.Printf("update: locate the running binary: %v", err)
 		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}
 	}
-	app, upd := service.InstalledBinPaths()
+	app, upd, err := service.InstalledBinPaths()
+	if err != nil {
+		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
+	}
 	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns})
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {

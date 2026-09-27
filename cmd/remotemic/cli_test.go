@@ -92,7 +92,7 @@ func TestApplyServeOverridesDiscoveryFalse(t *testing.T) {
 // every override flag name matches the key applyServeOverrides reads, catching a
 // flag-name/set-key mismatch that would silently disable an override.
 func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
-	cfgPath, ov, check, pprofAddr, err := parseServeFlags([]string{
+	cfg, ov, check, pprofAddr, err := parseServeFlags([]string{
 		flagConfig, cfgPathX, flagListen, listenAddr9, "-mgmt-listen", mgmtAddr7,
 		"-cert-dir", "/c", "-management=false", "-discovery=false", "-check",
 		"-pprof", pprofAddr6060,
@@ -100,8 +100,8 @@ func TestParseServeFlagsMapsVisitedFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
 	}
-	if cfgPath != cfgPathX {
-		t.Errorf("cfgPath = %q, want x.yaml", cfgPath)
+	if cfg.path != cfgPathX {
+		t.Errorf("cfgPath = %q, want x.yaml", cfg.path)
 	}
 	if !check {
 		t.Error("--check should parse to check=true")

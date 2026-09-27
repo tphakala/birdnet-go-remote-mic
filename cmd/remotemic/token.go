@@ -23,6 +23,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/runlock"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 )
 
 // Terminal seams, so the interactive paths of token set and token clear are
@@ -106,8 +107,9 @@ see its flags.
 }
 
 // newTokenFlags returns a FlagSet for a token command with the shared --config
-// flag registered and a usage function printing synopsis and summary.
-func newTokenFlags(name, synopsis, summary string, stderr io.Writer) (fs *flag.FlagSet, cfgPath *string) {
+// flag registered and a usage function printing synopsis and summary. The
+// caller resolves the flag's value with resolveConfig after parsing.
+func newTokenFlags(name, synopsis, summary string, stderr io.Writer) (fs *flag.FlagSet, cfgFlag *string) {
 	fs = flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -115,6 +117,15 @@ func newTokenFlags(name, synopsis, summary string, stderr io.Writer) (fs *flag.F
 		fs.PrintDefaults()
 	}
 	return fs, configFlag(fs)
+}
+
+// noteWriter is where a command sends notes: stderr, or nowhere under
+// --quiet.
+func noteWriter(quiet bool, stderr io.Writer) io.Writer {
+	if quiet {
+		return io.Discard
+	}
+	return stderr
 }
 
 // parseNoArgs parses args into fs and rejects stray positional arguments.
@@ -133,21 +144,30 @@ func parseNoArgs(fs *flag.FlagSet, args []string) error {
 // config or an unset token is an error with no stdout, so a script never reads
 // empty output as a token. The file is authoritative even while the appliance
 // runs: the management API persists a token change before it enforces it.
-func runTokenGet(args []string, stdout, stderr io.Writer) error {
-	fs, cfgPath := newTokenFlags("token get", "token get [flags]",
+func runTokenGet(args []string, stdout, stderr io.Writer) (err error) {
+	fs, cfgFlag := newTokenFlags("token get", "token get [flags]",
 		"Print the current access token.", stderr)
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	cfg, err := config.Load(*cfgPath)
+	ref, err := resolveConfig(fs, *cfgFlag, stderr)
+	if err != nil {
+		return err
+	}
+	defer func() { err = ref.explain(err, "token get", args) }()
+	cfg, err := config.Load(ref.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("no config file at %s; pass --config or set %s", *cfgPath, configEnv)
+		if ref.source == fromUnit {
+			return fmt.Errorf("the config %s named by %s does not exist; pass --config or set %s to use another file",
+				ref.path, service.DefaultUnitName, configEnv)
+		}
+		return fmt.Errorf("no config file at %s; pass --config or set %s", absPath(ref.path), configEnv)
 	}
 	if err != nil {
 		return withPermHint(err)
 	}
 	if cfg.Auth.Token == "" {
-		return fmt.Errorf("no access token is set in %s (the appliance is open); create one with `remote-mic token generate`", *cfgPath)
+		return fmt.Errorf("no access token is set in %s (the appliance is open); create one with `remote-mic token generate`", absPath(ref.path))
 	}
 	out(stdout, "%s\n", cfg.Auth.Token)
 	return nil
@@ -157,24 +177,30 @@ func runTokenGet(args []string, stdout, stderr io.Writer) error {
 // replace an existing token without --force (a silent rotation locks out every
 // connected client). The bare token goes to stdout; guidance goes to stderr and
 // --quiet suppresses it.
-func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
-	fs, cfgPath := newTokenFlags("token generate", "token generate [flags]",
+func runTokenGenerate(args []string, stdout, stderr io.Writer) (err error) {
+	fs, cfgFlag := newTokenFlags("token generate", "token generate [flags]",
 		"Generate a random access token, store it, and print it.", stderr)
 	force := fs.Bool("force", false, "replace an existing token")
 	quiet := fs.Bool("quiet", false, "print only the token (no guidance on stderr)")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	if err := checkOwner(*cfgPath, "token generate", args); err != nil {
+	ref, err := resolveConfig(fs, *cfgFlag, noteWriter(*quiet, stderr))
+	if err != nil {
+		return err
+	}
+	defer func() { err = ref.explain(err, "token generate", args) }()
+	cfgPath := ref.path
+	if err := checkOwner(cfgPath, "token generate", args); err != nil {
 		return err
 	}
 	token, err := auth.GenerateToken()
 	if err != nil {
 		return fmt.Errorf("generate token: %w", err)
 	}
-	res, err := changeToken(*cfgPath, token, func(cur string) error {
+	res, err := changeToken(cfgPath, token, func(cur string) error {
 		if cur != "" && !*force {
-			return fmt.Errorf("an access token is already set in %s; show it with `remote-mic token get`, or re-run with --force to replace it", *cfgPath)
+			return fmt.Errorf("an access token is already set in %s; show it with `remote-mic token get`, or re-run with --force to replace it", absPath(cfgPath))
 		}
 		return nil
 	})
@@ -182,7 +208,7 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if !*quiet {
-		reportChange(stderr, res, "Access token saved to "+absPath(*cfgPath)+".")
+		reportChange(stderr, res, "Access token saved to "+absPath(cfgPath)+".")
 		out(stderr, "Clients authenticate with it as a Bearer token (web UI, management API)\n"+
 			"and as the Digest password with any username (RTSP stream):\n\n")
 	}
@@ -194,8 +220,8 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) error {
 // confirmed prompt on a terminal, otherwise the first line of piped input. It
 // takes no positional token so the secret stays out of shell history and the
 // process list.
-func runTokenSet(args []string, stderr io.Writer) error {
-	fs, cfgPath := newTokenFlags("token set", "token set [flags] < token-file",
+func runTokenSet(args []string, stderr io.Writer) (err error) {
+	fs, cfgFlag := newTokenFlags("token set", "token set [flags] < token-file",
 		"Set the access token to a value read from stdin (prompted, hidden, on a\n"+
 			"terminal). The token is 12-128 characters of letters, digits, and . _ ~ -", stderr)
 	quiet := fs.Bool("quiet", false, "print nothing on success")
@@ -205,7 +231,13 @@ func runTokenSet(args []string, stderr io.Writer) error {
 	if fs.NArg() > 0 {
 		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
 	}
-	if err := checkOwner(*cfgPath, "token set", args); err != nil {
+	ref, err := resolveConfig(fs, *cfgFlag, noteWriter(*quiet, stderr))
+	if err != nil {
+		return err
+	}
+	defer func() { err = ref.explain(err, "token set", args) }()
+	cfgPath := ref.path
+	if err := checkOwner(cfgPath, "token set", args); err != nil {
 		return err
 	}
 	token, err := readNewToken(stderr)
@@ -215,12 +247,12 @@ func runTokenSet(args []string, stderr io.Writer) error {
 	if msg := auth.ValidToken(token); msg != "" {
 		return fmt.Errorf("invalid token: %s", msg)
 	}
-	res, err := changeToken(*cfgPath, token, nil)
+	res, err := changeToken(cfgPath, token, nil)
 	if err != nil {
 		return err
 	}
 	if !*quiet {
-		reportChange(stderr, res, "Access token saved to "+absPath(*cfgPath)+".")
+		reportChange(stderr, res, "Access token saved to "+absPath(cfgPath)+".")
 	}
 	return nil
 }
@@ -268,8 +300,8 @@ func readNewToken(stderr io.Writer) (string, error) {
 // runTokenClear removes the token, opening the appliance to the network. It
 // asks for confirmation on a terminal and requires --yes otherwise. Clearing
 // when no token is set succeeds, so a provisioning script can run it blindly.
-func runTokenClear(args []string, stderr io.Writer) error {
-	fs, cfgPath := newTokenFlags("token clear", "token clear [flags]",
+func runTokenClear(args []string, stderr io.Writer) (err error) {
+	fs, cfgFlag := newTokenFlags("token clear", "token clear [flags]",
 		"Remove the access token. The RTSP stream, management API, and web UI\n"+
 			"become open to anyone on the network.", stderr)
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
@@ -277,19 +309,25 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	if err := checkOwner(*cfgPath, "token clear", args); err != nil {
+	ref, err := resolveConfig(fs, *cfgFlag, noteWriter(*quiet, stderr))
+	if err != nil {
+		return err
+	}
+	defer func() { err = ref.explain(err, "token clear", args) }()
+	cfgPath := ref.path
+	if err := checkOwner(cfgPath, "token clear", args); err != nil {
 		return err
 	}
 	// Load and confirm before touching the run lock. The y/N prompt must not run
 	// while this command holds the lock, or an appliance starting during the
 	// prompt would wait out the lock and fail with a false "already running".
-	cfg, err := config.LoadOrDefault(*cfgPath)
+	cfg, err := config.LoadOrDefault(cfgPath)
 	if err != nil {
 		return withPermHint(err)
 	}
 	if cfg.Auth.Token == "" {
 		if !*quiet {
-			out(stderr, "No access token is set in %s; the appliance is already open.\n", absPath(*cfgPath))
+			out(stderr, "No access token is set in %s; the appliance is already open.\n", absPath(cfgPath))
 		}
 		return nil
 	}
@@ -298,7 +336,7 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	}
 
 	var alreadyOpen bool
-	res, err := changeToken(*cfgPath, "", func(cur string) error {
+	res, err := changeToken(cfgPath, "", func(cur string) error {
 		if cur == "" {
 			// Cleared between the load above and this change (the file edit runs
 			// under the lock; a live change goes through the management API).
@@ -310,14 +348,14 @@ func runTokenClear(args []string, stderr io.Writer) error {
 	switch {
 	case alreadyOpen:
 		if !*quiet {
-			out(stderr, "No access token is set in %s; the appliance is already open.\n", absPath(*cfgPath))
+			out(stderr, "No access token is set in %s; the appliance is already open.\n", absPath(cfgPath))
 		}
 		return nil
 	case err != nil:
 		return err
 	}
 	if !*quiet {
-		reportChange(stderr, res, "Access token removed from "+absPath(*cfgPath)+".")
+		reportChange(stderr, res, "Access token removed from "+absPath(cfgPath)+".")
 		switch res.outcome {
 		case changedLive, changedLiveRestart:
 			out(stderr, "The RTSP stream, management API, and web UI are now open to anyone on the network.\n")
@@ -604,11 +642,40 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// permError is a permission failure carrying withPermHint's generic advice.
+// A token command returning one unwrapped lets configRef.explain swap that
+// advice for the exact command when the account is known.
+type permError struct{ err error }
+
+func (e *permError) Error() string {
+	return e.err.Error() + " (the config is normally readable only by the account the appliance runs as; run this command as that account, for example with sudo -u)"
+}
+
+func (e *permError) Unwrap() error { return e.err }
+
 // withPermHint adds a pointer to the likely fix when err is a permission
 // failure: the config is 0600 and owned by the account the appliance runs as.
+// It returns a *permError so configRef.explain can name the account instead.
 func withPermHint(err error) error {
 	if errors.Is(err, os.ErrPermission) {
-		return fmt.Errorf("%w (the config is normally readable only by the account the appliance runs as; run this command as that account, for example with sudo -u)", err)
+		return &permError{err: err}
 	}
 	return err
+}
+
+// explain replaces the generic advice of a permission failure with the command
+// to run as the appliance account, when the config is the one the installed
+// unit names and the unit names its account. /etc/remote-mic is not
+// searchable by other accounts, so checkOwner cannot stat the file there; the
+// unit names the account directly. A permission error wrapped in
+// further context is left alone: the rewrite would drop that context.
+func (c configRef) explain(err error, command string, args []string) error {
+	pe, ok := err.(*permError) //nolint:errorlint // only an unwrapped one: a wrapped one carries context this rewrite would drop
+	// An exact match, not a cleaned one: like absPath, do not resolve ".."
+	// lexically, since after a symlink it can name another file.
+	if !ok || c.unitUser == "" || c.unitPath == "" || absPath(c.path) != c.unitPath {
+		return err
+	}
+	return fmt.Errorf("%w; run this command as the appliance account: sudo -u %s %s",
+		pe.err, shellQuote(c.unitUser), rerunCommand(command, args, c.path))
 }

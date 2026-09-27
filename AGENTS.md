@@ -202,7 +202,12 @@ later update is refused or rolled back for good:
   which the old updater compares with the manifest;
 - the staging file names in `internal/update/files.go` and the JSON fields
   of `health.json`, `status.json` and `request.json`;
-- the install journal (`<bin>.pending`) and its fields.
+- the install journal (`<bin>.pending`) and its fields;
+- the appliance unit's text: the CLI accepts an installed unit only when it
+  renders byte for byte from a template in `releasedUnitTexts`
+  (`internal/service/unit.go`). A released template is never edited or
+  removed, a template change adds an entry, and `unitData` keeps its field
+  names, or existing installs stop resolving their config.
 
 ## Build, test, and the gate
 
@@ -273,8 +278,9 @@ Apache-2.0 (`LICENSE`, `NOTICE`).
 
 - `cmd/remotemic`: the binary (all files `//go:build linux`). Subcommands
   `serve` (default), `token`, `devices`, `service`, `version`. `--config`
-  defaults to `$REMOTEMIC_CONFIG`, else `./config.yaml`. `appliance.go` wires
-  capture, pipeline, RTSP, monitors, and reload. `default.pgo` is the PGO
+  defaults to `$REMOTEMIC_CONFIG`, else the installed unit's config, else
+  `./config.yaml`. `appliance.go` wires capture, pipeline, RTSP, monitors,
+  and reload. `default.pgo` is the PGO
   profile.
 - `internal/`: the packages; see `internal/AGENTS.md`.
 - `tools/releasemanifest`: writes, signs and verifies the release manifest

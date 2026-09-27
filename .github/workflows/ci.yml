@@ -8,7 +8,7 @@ on:
 
 env:
   GO_VERSION: '1.27'
-  GOLANGCI_LINT_VERSION: 'v2.13.2'
+  GOLANGCI_LINT_VERSION: 'v2.14.0'
   NODE_VERSION: '26'
   # Pinned to the version the Taskfile is developed against, so CI and a local
   # `task check` cannot interpret the same file differently.

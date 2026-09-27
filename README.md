@@ -167,10 +167,30 @@ remote-mic version
 
 `remote-mic help` lists the commands; add `-h` to `serve` or to a `token` or
 `devices` command for its flags. Commands that read the config take
-`--config`, which defaults to the `REMOTEMIC_CONFIG` environment variable and
-then to `config.yaml` in the working directory. Set `REMOTEMIC_CONFIG` in the
-service unit and in your shell profile on the appliance, and every command
-finds the same file without `--config`.
+`--config`, which defaults to the `REMOTEMIC_CONFIG` environment variable,
+then to the config of the installed service, then to `config.yaml` in the
+working directory. On an installed appliance every command therefore acts on
+the service's config from any directory without `--config`; when that means a
+`config.yaml` in the working directory is ignored, the command says so on
+stderr (not with `--quiet`). An empty `--config` is an error.
+
+The installed service's config is read from `remote-mic.service` and its
+drop-ins only where that is certain: the unit must be exactly what `service
+install` wrote, and a drop-in that changes the environment, the account, the
+program or how paths resolve must be a plain override in
+`/etc/systemd/system/remote-mic.service.d/` (or another `remote-mic.service.d`
+directory) holding only `[Service]`, `Environment=` lines of plain words (no
+quotes, `$`, `%` or backslashes) and `User=name` lines. Anything else, such as a unit edited with `systemctl edit
+--full`, an `EnvironmentFile=`, or a config under `/tmp`, `/home` or `/run`,
+makes a command stop and ask for `--config` rather than guess. The files are
+what count, so an override takes effect for the commands at once, while the
+running appliance picks it up only when it restarts.
+
+Run by hand as an account other than the config's owner, `serve` refuses, as
+the token commands do, and names the command to run instead; a start by
+systemd is not checked. A unit you wrote yourself that sets neither
+`--config` nor `REMOTEMIC_CONFIG` still reads `config.yaml` in its
+`WorkingDirectory=`.
 
 ### Run at boot (systemd service)
 
@@ -198,7 +218,12 @@ appliance offers the one-button update.
 Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
 your password for the privileged steps. Flags override the defaults (`--user`,
 `--config`, `--state-dir`, `--bin-path`, and `--no-start` to enable without
-starting). Manage it afterwards:
+starting). Re-running `install` without them keeps the values of the unit it
+installed before, and says which it kept; if that unit was edited by hand, it
+asks for all four flags. `uninstall --purge` prints what it removes first, and
+removes a user, config, state directory or binary other than the defaults
+only when the flag names it, since `install` may have reused an existing
+account or directory. Manage it afterwards:
 
 ```bash
 remote-mic service status                    # enabled at boot? running now?
@@ -402,15 +427,16 @@ editing the file at once take turns on a second lock file
 
 The config is written 0600, so run the commands as the account the appliance
 runs as, the one that owns the config file (`remote-mic` for the installed
-service), for example `sudo -u remote-mic remote-mic token generate --config
-/etc/remote-mic/config.yaml`. `generate`, `set`, and `clear` refuse to run as
-any other account, root included, because a lock file or config written by
-another account is one the appliance's own account can no longer open; the
-error names the owning account and the command to run instead. When the config
-does not exist yet, the check uses the owner of the directory that will hold
-it, except in a shared directory (sticky or world-writable, such as `/tmp`),
-where that owner says nothing about the appliance's account and the command is
-not refused. A group-writable directory owned by another account (say
+service), for example `sudo -u remote-mic remote-mic token generate`.
+`generate`, `set`, and `clear` refuse to run as any other account, root
+included, because a lock file or config written by another account is one the
+appliance's own account can no longer open; the error names the owning account
+and the command to run instead. A command that cannot read the installed
+service's config names the service's account and the command the same way.
+When the config does not exist yet, the check uses the owner of the directory
+that will hold it, except in a shared directory (sticky or world-writable,
+such as `/tmp`), where that owner says nothing about the appliance's account
+and the command is not refused. A group-writable directory owned by another account (say
 root-owned, mode 0770, group `remote-mic`) is not treated as shared; create the
 config there as the appliance's account first, or keep the installer's layout,
 where the directory belongs to the appliance's account.
