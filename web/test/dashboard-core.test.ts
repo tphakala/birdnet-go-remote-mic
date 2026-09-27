@@ -12,6 +12,8 @@ import {
   availableCardKey,
   availableGoneMessage,
   deviceGoneMessage,
+  focusMovedMessage,
+  judgeUnconfirmedSave,
   neighbourOrder,
   parseDeviceFieldPath,
   rejectedFieldKey,
@@ -287,8 +289,8 @@ test("deviceGoneMessage names the removed device and where focus went", () => {
 });
 
 test("availableGoneMessage names the device and says where focus went", () => {
-  assert.equal(availableGoneMessage("USB mic (hw:1,0)", true), "USB mic (hw:1,0) is no longer available.");
-  assert.equal(availableGoneMessage("hw:2,0", false), "hw:2,0 is no longer available. Focus moved to the dashboard.");
+  assert.equal(availableGoneMessage("USB mic (hw:1,0)", "hw:2,0"), "USB mic (hw:1,0) is no longer available. Focus moved to Enable hw:2,0.");
+  assert.equal(availableGoneMessage("hw:2,0", null), "hw:2,0 is no longer available. Focus moved to the dashboard.");
 });
 
 test("deviceFieldLabel names the field and the device a problem points at", () => {
@@ -349,4 +351,19 @@ test("rejectedFieldKey marks the edited device's field, and a duplicate of it re
   // The edited device's second stream is not in the form.
   assert.equal(rejectedFieldKey("devices[1].streams[1].mode", sent, "hw:2"), null);
   assert.equal(rejectedFieldKey("network.hostname", sent, "hw:1"), null);
+});
+
+test("focusMovedMessage says where focus went", () => {
+  assert.equal(focusMovedMessage("porch"), "Focus moved to porch settings.");
+  assert.equal(focusMovedMessage(null), "Focus moved to the dashboard.");
+});
+
+test("judgeUnconfirmedSave judges a lost save by the re-read", () => {
+  assert.equal(judgeUnconfirmedSave(false, "a", "b", "b"), "unread");
+  assert.equal(judgeUnconfirmedSave(true, "a", "b", "b"), "applied");
+  assert.equal(judgeUnconfirmedSave(true, "a", "a", "b"), "notApplied");
+  assert.equal(judgeUnconfirmedSave(true, "a", "c", "b"), "changed", "neither as before nor as sent");
+  // A save that changed nothing cannot be told apart by the re-read.
+  assert.equal(judgeUnconfirmedSave(true, "a", "a", "a"), "unchanged");
+  assert.equal(judgeUnconfirmedSave(true, "a", "c", "a"), "changed");
 });

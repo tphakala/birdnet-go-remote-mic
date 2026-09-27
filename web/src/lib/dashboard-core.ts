@@ -225,9 +225,10 @@ export function availablePlan(shown: ReadonlyMap<string, string>, next: readonly
 
 // availableGoneMessage is announced when a poll takes away the Available
 // Devices card that held keyboard focus: which device went, and where focus
-// went when no other card was left to take it.
-export function availableGoneMessage(label: string, toNeighbour: boolean): string {
-  return toNeighbour ? `${label} is no longer available.` : `${label} is no longer available. ${REMOVED_FOCUS_MESSAGE}`;
+// went (the neighbour's Enable button, named by its device, or the
+// dashboard when no other card was left to take it).
+export function availableGoneMessage(label: string, next: string | null): string {
+  return `${label} is no longer available. ${next === null ? REMOVED_FOCUS_MESSAGE : `Focus moved to Enable ${next}.`}`;
 }
 
 // neighbourOrder lists where focus goes, in order of preference, when the
@@ -247,12 +248,35 @@ export function settingsFocusMessage(name: string): string {
   return `Focus moved to ${name} settings.`;
 }
 
+// focusMovedMessage says where focus went: a card's settings, or the
+// dashboard when no card took it.
+export function focusMovedMessage(next: string | null): string {
+  return next === null ? REMOVED_FOCUS_MESSAGE : settingsFocusMessage(next);
+}
+
+// SaveVerdict is what a re-read says about a device save whose answer was
+// lost: unread (the re-read failed), applied (it reads as sent), unchanged
+// (the save changed nothing, and it still reads so), notApplied (it reads
+// as before), changed (neither: the appliance filled in a value, or another
+// tab changed the device).
+export type SaveVerdict = "unread" | "applied" | "unchanged" | "notApplied" | "changed";
+
+// judgeUnconfirmedSave judges a lost save from the device's config keys
+// before the save, after the re-read, and as sent.
+export function judgeUnconfirmedSave(read: boolean, before: string, after: string, sent: string): SaveVerdict {
+  if (!read) return "unread";
+  if (sent === before) return after === before ? "unchanged" : "changed";
+  if (after === sent) return "applied";
+  if (after === before) return "notApplied";
+  return "changed";
+}
+
 // deviceGoneMessage is said when a render removes the configured device card
 // that held keyboard focus (another tab removed it, or a config reload
 // dropped it): which device went, and where focus went (the next card's
 // settings, or the dashboard when no card is left).
 export function deviceGoneMessage(name: string, next: string | null): string {
-  return `${name} was removed. ${next === null ? REMOVED_FOCUS_MESSAGE : settingsFocusMessage(next)}`;
+  return `${name} was removed. ${focusMovedMessage(next)}`;
 }
 
 // deviceFieldLabel turns a validation problem's field path into what an

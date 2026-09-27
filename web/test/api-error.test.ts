@@ -106,6 +106,7 @@ test("a success body labelled JSON that does not parse is an unknown outcome tha
   // Not an ApiError: the request was accepted, so every caller that tells a
   // refusal from an unknown outcome (isRefusal) takes it as unknown.
   assert.ok(err instanceof UnreadableResponseError);
+  assert.equal(err.status, 200);
   assert.equal(err instanceof ApiError, false);
   assert.equal(apiErrorMessage(err), "the response could not be read");
 });
@@ -179,7 +180,7 @@ test("a malformed entry in a problem's errors list is dropped", async () => {
   assert.deepEqual(problemFor(err, (e) => e.field === "certPem"), { field: "certPem", reason: "bad" });
 });
 
-test("only an ApiError is a refusal; an unknown outcome is said without error text", () => {
+test("only an ApiError from a problem body is a refusal; an unknown outcome is said without error text", () => {
   assert.equal(isRefusal(new ApiError(409, "conflict", { problem: true })), true);
   assert.equal(isRefusal(new ApiError(504, "Gateway Timeout")), false, "a proxy's error says nothing about the appliance");
   assert.equal(isRefusal(new UnreadableResponseError(200)), false);

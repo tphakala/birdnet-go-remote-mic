@@ -12,7 +12,7 @@
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.ts";
-import { button, clearBusy, downloadBlob, elem, focusDropped, iconSpan, orderChildren, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
+import { button, clearBusy, downloadBlob, elem, focusDropped, focusOnOrDropped, iconSpan, orderChildren, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
 import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { showToast } from "../components/toast.ts";
 import { FilterChips } from "../components/filter-chips.ts";
@@ -525,7 +525,7 @@ export class EventsView {
           // Success hides the notice (on the change render, which may already
           // have run), so a focused Retry would drop focus to the body. Move it
           // to the log heading without scrolling.
-          if (document.activeElement === btn || focusDropped()) this.logTitle.focus({ preventScroll: true });
+          if (focusOnOrDropped(btn)) this.logTitle.focus({ preventScroll: true });
         } else if (this.store.hasFailed()) {
           // Still failing: the notice stayed up, so say it again.
           setText(this.announceEl, NOTICE_TEXT);

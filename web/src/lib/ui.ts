@@ -2,7 +2,8 @@
 // builder, the uptime formatter (which had diverged between the dashboard and
 // the system view), the load-error/retry pattern, and the per-mode/per-state
 // label maps live in exactly one place.
-import { showToast } from "../components/toast.ts";
+import { ERROR_TTL_MS, showToast } from "../components/toast.ts";
+import { unconfirmedText } from "./api.ts";
 import type { FocusTarget } from "./menu-core.ts";
 import { svgIcon } from "./svg.ts";
 
@@ -291,6 +292,19 @@ export function focusTarget(t: EventTarget | null, popup: Node, opener: Node): F
 // the operator made since then must be left alone.
 export function focusDropped(): boolean {
   return document.activeElement === null || document.activeElement === document.body;
+}
+
+// showUnconfirmed shows the toast for a change whose outcome is unknown
+// (unconfirmedText), held as long as an error so its advice can be read, and
+// dismissible.
+export function showUnconfirmed(what: string, next: string): void {
+  showToast(unconfirmedText(what, next), "warn", ERROR_TTL_MS);
+}
+
+// focusOnOrDropped reports whether focus is still on el (or inside it) or
+// has fallen to the page: where an action that settles later may move it.
+export function focusOnOrDropped(el: Element): boolean {
+  return holdsFocus(el) || focusDropped();
 }
 
 // holdsFocus reports whether keyboard focus is on el or inside it.

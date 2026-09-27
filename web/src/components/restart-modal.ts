@@ -27,8 +27,9 @@ function sayNow(text: string): void {
 // UNCONFIRMED_TEXT is the dialog's text when the appliance did not confirm
 // the restart request (no answer, or an answer that could not be read).
 const UNCONFIRMED_TEXT = "The appliance did not confirm the restart. This page waits to see whether it restarts.";
-// HEALTH_ATTEMPTS and HEALTH_PROBE_MS bound the wait for the appliance.
-const HEALTH_ATTEMPTS = 30;
+// HEALTH_WAIT_MS bounds the wait for the appliance, and HEALTH_PROBE_MS each
+// probe within it.
+const HEALTH_WAIT_MS = 60_000;
 // A probe gets 4 s: the first one after a restart may need a fresh TLS
 // handshake with a busy appliance (its duration NOT MEASURED).
 const HEALTH_PROBE_MS = 4_000;
@@ -65,8 +66,9 @@ export async function triggerApplianceRestart(): Promise<void> {
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    // An ApiError is a refusal. Anything else (no answer, or an accepted
-    // request whose body could not be read) leaves the outcome unknown.
+    // A problem body is a refusal (isRefusal). Anything else (no answer, an
+    // accepted request whose body could not be read, a proxy's error) leaves
+    // the outcome unknown.
     if (isRefusal(err)) {
       // 501: the server has no restart control wired
       // (internal/mgmtserver/system.go:86), so say what to do instead.
@@ -95,15 +97,16 @@ export async function triggerApplianceRestart(): Promise<void> {
   modal.querySelector<HTMLElement>(".modal-card")?.focus();
 
   // The per-second countdown below updates only the aria-hidden visual
-  // element, so it is not read out on every tick. The dialog's title and
-  // description (aria-describedby, static/index.html:470) are read as focus
-  // enters it, so the phase line adds only
-  // what they lack: when it reconnects (the unconfirmed description already
-  // says it waits).
+  // element, so it is not read out on every tick. The dialog names its title
+  // and description (aria-labelledby, aria-describedby,
+  // static/index.html:470) for a screen reader to read as focus enters it
+  // (what a given reader says is NOT MEASURED), so the phase line adds only
+  // what they lack: when it reconnects. The unconfirmed description already
+  // says it waits.
   if (confirmed) say("Reconnecting in 5 seconds.");
 
   let seconds = 5;
-  const countdownText = (s: number) => (confirmed ? `Reconnecting in ${s}s...` : `Checking in ${s}s...`);
+  const countdownText = (s: number) => (confirmed ? `Reconnecting in ${s}s...` : `Checking again in ${s}s...`);
   if (timerEl) timerEl.textContent = countdownText(seconds);
 
   const countdown = window.setInterval(() => {
@@ -120,16 +123,17 @@ export async function triggerApplianceRestart(): Promise<void> {
   }, 1000);
 }
 
-// pollHealth waits for the appliance to answer: up to HEALTH_ATTEMPTS
-// probes, one at a time with a second between them, each bounded by
-// HEALTH_PROBE_MS. After a confirmed restart an answer reloads the page.
+// pollHealth waits for the appliance to answer for up to HEALTH_WAIT_MS:
+// probes one at a time with a second between them, each bounded by
+// HEALTH_PROBE_MS, so a hanging probe cannot stretch the wait. After a confirmed restart an answer reloads the page.
 // After an unconfirmed one the appliance may never have restarted, so the
 // dialog says so and offers Reload now instead of reloading under the
 // operator, who would not learn it. phase is the waiting text.
 async function pollHealth(confirmed: boolean, phase: string): Promise<void> {
   const timerEl = document.getElementById("reconnect-timer");
-  for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++) {
-    if (timerEl) timerEl.textContent = `${phase} (${attempt}/${HEALTH_ATTEMPTS})...`;
+  const until = performance.now() + HEALTH_WAIT_MS;
+  for (let attempt = 1; performance.now() < until; attempt++) {
+    if (timerEl) timerEl.textContent = `${phase} (${attempt})...`;
     let up = false;
     try {
       up = await withDeadline(HEALTH_PROBE_MS, async (signal) => (await fetch("/api/v1/healthz", { cache: "no-store", signal })).ok);

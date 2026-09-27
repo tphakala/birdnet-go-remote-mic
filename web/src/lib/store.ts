@@ -192,7 +192,9 @@ export class AppStore extends Emitter<StoreEvents> {
       // A problem body is the appliance's own answer; any other failure (a
       // proxy's page, no answer) did not reach it.
       if (isRefusal(err)) return { ok: false, message: `The appliance refused the sign-in: ${apiErrorMessage(err)}.` };
-      return { ok: false, message: `Could not reach the appliance: ${apiErrorMessage(err)}` };
+      // A dropped connection's error text is the browser's and differs by
+      // engine, so it is not quoted.
+      return { ok: false, message: "Could not reach the appliance. Check the connection and try again." };
     }
     this.loginPending = false;
     this.emit("authok");

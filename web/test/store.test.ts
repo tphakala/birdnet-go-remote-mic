@@ -12,7 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
-import { ApiError } from "../src/lib/api.ts";
+import { ApiError, UnreadableResponseError } from "../src/lib/api.ts";
 import { getToken, setToken } from "../src/lib/auth.ts";
 import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
 import type { AvailableDevice, ApplianceStatus, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
@@ -238,7 +238,7 @@ test("a login that cannot reach the appliance never shows a response body", asyn
   try {
     const res = await h.store.login("typed-token");
     assert.equal(res.ok, false);
-    assert.equal(res.message, "Could not reach the appliance: Bad Gateway");
+    assert.equal(res.message, "Could not reach the appliance. Check the connection and try again.");
   } finally {
     setToken(null);
   }
@@ -472,6 +472,21 @@ test("a login whose token is refused says so and keeps no token", async () => {
   assert.equal(res.ok, false);
   assert.equal(res.message, "The access token was not accepted. Check it and try again.");
   assert.equal(getToken(), null);
+});
+
+test("a login the appliance refuses, or answers unreadably, says which", async () => {
+  for (const [outcome, want] of [
+    [new ApiError(503, "unavailable", { detail: "still starting", problem: true }), "The appliance refused the sign-in: still starting."],
+    [new UnreadableResponseError(200), "The appliance answered, but its reply could not be read. Try again."],
+    [new TypeError("Failed to fetch"), "Could not reach the appliance. Check the connection and try again."],
+  ] as const) {
+    const h = harness(new FakeTimers());
+    h.push("getStatus", outcome);
+    const res = await h.store.login("typed-token");
+    assert.equal(res.ok, false);
+    assert.equal(res.message, want);
+    assert.equal(getToken(), null, "a failed login keeps no token");
+  }
 });
 
 test("a login whose token is refused during the load says so", async () => {

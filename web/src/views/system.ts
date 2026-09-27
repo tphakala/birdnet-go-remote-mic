@@ -1,10 +1,10 @@
-import { api, ApiError, apiErrorMessage, firstProblem, isRefusal, problemFor, problemReason, unconfirmedText } from "../lib/api.ts";
+import { api, ApiError, apiErrorMessage, failureReason, firstProblem, isRefusal, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
-import { deviceIdTitle } from "../lib/text.ts";
+import { deviceIdTitle, sentence } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
 import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
@@ -440,7 +440,9 @@ export class SystemView {
       this.renderCertificate();
     } catch (err: unknown) {
       if (this.certGen !== gen) return;
-      if (err instanceof ApiError && err.status === 501) {
+      // Only the appliance's own 501 means it has no certificate control; a
+      // proxy's says nothing about it.
+      if (isRefusal(err) && err.status === 501) {
         this.certUnavailable = true;
         return;
       }
@@ -501,7 +503,7 @@ export class SystemView {
       downloadBlob(new Blob([pem], { type: "application/x-pem-file" }), "birdnet-go-remote-mic-mgmt.pem");
       showToast("Certificate downloaded.");
     } catch (err: unknown) {
-      showToast(`Download failed: ${apiErrorMessage(err)}`, "error");
+      showToast(`Download failed: ${failureReason(err)}`, "error");
     } finally {
       if (btn) clearBusy(btn, "Download PEM");
     }
@@ -550,13 +552,13 @@ export class SystemView {
         // could not be read) says nothing about whether the appliance applied
         // the change; reconcile from the server instead of reporting a failure
         // that may not be one.
-        showToast(unconfirmedText("the certificate change", "refreshing the current certificate"), "warn");
+        showUnconfirmed("the certificate change", "refreshing the current certificate");
         void this.loadCertificate();
         return;
       }
       const item = problemFor(err, (e) => e.field?.startsWith("extraSans") ?? false);
       if (item) {
-        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, item.reason);
+        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, sentence(item.reason));
         this.certSansEl?.focus();
       } else {
         showToast(`Regenerate failed: ${apiErrorMessage(err)}`, "error");
@@ -605,27 +607,29 @@ export class SystemView {
       void this.loadCertificate();
       showToast("Custom certificate installed and applied to new connections.");
     } catch (err: unknown) {
-      if (!isRefusal(err)) {
-        // Same as regenerate: anything but a refusal leaves the outcome
-        // unknown, so reconcile rather than claim a failure. The key textarea is still
-        // cleared in finally.
-        showToast(unconfirmedText("the certificate change", "refreshing the current certificate"), "warn");
-        void this.loadCertificate();
-        return;
-      }
       // The API caps request bodies, and a full CA bundle pasted with the
       // certificate is the usual way past the cap, so say what to trim rather
       // than echoing the bare "payload too large". The limit itself comes from
       // the problem detail, so this text cannot drift from the server's value.
-      if (err.status === 413) {
+      // A 413 is a refusal from whoever sent it: a proxy's means the request
+      // never reached the appliance.
+      if (err instanceof ApiError && err.status === 413) {
         showToast(`Install failed: ${certTooLargeReason(err.problemDetail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
+        return;
+      }
+      if (!isRefusal(err)) {
+        // Same as regenerate: anything but a refusal leaves the outcome
+        // unknown, so reconcile rather than claim a failure. The key
+        // textarea is still cleared in finally.
+        showUnconfirmed("the certificate change", "refreshing the current certificate");
+        void this.loadCertificate();
         return;
       }
       let pemBad = false;
       let keyBad = false;
       if (err.errors) {
         for (const item of err.errors) {
-          const reason = problemReason(err, item);
+          const reason = sentence(problemReason(err, item));
           if (item.field === "certPem") {
             this.setCertFieldError(this.certPemEl, this.certPemErrorEl, reason);
             pemBad = true;
@@ -854,16 +858,14 @@ export class SystemView {
     if (problem) {
       const spec = problem.field ? fieldForServerPath(problem.field) : null;
       if (spec) {
-        this.notifyFields.get(spec.key)?.classList.add("invalid");
+        // Field reasons read as sentences, as on the device form.
         const input = this.notifyInputs.get(spec.key);
-        input?.setAttribute("aria-invalid", "true");
-        const errEl = document.getElementById(`sys-notify-${spec.key}-err`);
-        if (errEl) errEl.textContent = problem.reason;
+        setFieldError(this.notifyFields.get(spec.key) ?? null, input, document.getElementById(`sys-notify-${spec.key}-err`), sentence(problem.reason));
         input?.focus();
         return;
       }
       if (this.notifyErrorEl) {
-        this.notifyErrorEl.textContent = problem.reason;
+        this.notifyErrorEl.textContent = sentence(problem.reason);
         return;
       }
     }
@@ -873,7 +875,7 @@ export class SystemView {
     }
     // It may have applied. The form keeps the edits (a refresh would not
     // show over a dirty form), and saving the same values again is safe.
-    showToast(unconfirmedText("the notification settings", "save again to be sure"), "warn");
+    showUnconfirmed("that the notification settings were saved", "save again to be sure");
   }
 
   // setAuthReveal shows or hides the token field and keeps the reveal button's
@@ -1054,7 +1056,7 @@ export class SystemView {
     } catch (err: unknown) {
       const problem = firstProblem(err);
       if (problem) {
-        this.setAuthError(problem.reason);
+        this.setAuthError(sentence(problem.reason));
       } else if (isRefusal(err)) {
         // The appliance refused before applying the token
         // (internal/mgmtserver/config.go:159-166 returns before guard.Set at
@@ -1064,7 +1066,7 @@ export class SystemView {
         // No answer is ambiguous: the appliance applies the token BEFORE it
         // finishes writing the PATCH response, so the new credential may
         // already be in force. Warn rather than imply nothing changed.
-        showToast(unconfirmedText("the token change", "the new token may already be in force; if this page locks you out, reload and sign in with it"), "warn");
+        showUnconfirmed("the token change", "the new token may already be in force; if this page locks you out, reload and sign in with it");
       }
     } finally {
       store.endTokenSwap();
@@ -1294,7 +1296,7 @@ export class SystemView {
       } else {
         // It may have applied: the refresh below sets the switch from the
         // appliance.
-        showToast(unconfirmedText("the update check change", "refreshing"), "warn");
+        showUnconfirmed("that the update check was changed", "refreshing");
       }
     } finally {
       this.updateToggling = false;
@@ -1321,7 +1323,7 @@ export class SystemView {
     } catch (err: unknown) {
       // Any failure reads the same: a check changes no setting, so a lost
       // answer only hides a result the next status read brings.
-      showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");
+      showToast(`Update check failed: ${failureReason(err)}`, "error");
     } finally {
       this.updateChecking = false;
       clearBusy(btn, "Check Now");
@@ -1360,9 +1362,9 @@ export class SystemView {
       } else if (isRefusal(err)) {
         showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
       } else if (now) {
-        showToast(unconfirmedText("that the update started", "no update is under way yet; try again if none begins"), "warn");
+        showUnconfirmed("that the update started", "no update is under way yet; try again if none begins");
       } else {
-        showToast(unconfirmedText("that the update started", "its status could not be read either; check it before trying again"), "warn");
+        showUnconfirmed("that the update started", "its status could not be read either; check it before trying again");
       }
     } finally {
       this.updateApplying = false;
@@ -1461,7 +1463,7 @@ export class SystemView {
       } else {
         // As for the notification settings: the form keeps the edit, and a
         // second save is safe.
-        showToast(unconfirmedText("the discovery setting", "save again to be sure"), "warn");
+        showUnconfirmed("that the discovery setting was saved", "save again to be sure");
       }
     } finally {
       if (saveBtn) clearBusy(saveBtn, "Save Changes");

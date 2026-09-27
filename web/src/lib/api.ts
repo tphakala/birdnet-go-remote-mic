@@ -16,6 +16,7 @@ import type {
   UpdateStatus,
   ValidationErrorItem,
 } from "./types.ts";
+import { withDeadline } from "./deadline.ts";
 
 // ApiErrorBody is what a problem body adds to an ApiError: its detail, its
 // validation items, and whether it was a problem body at all.
@@ -75,7 +76,7 @@ export class UnreadableResponseError extends Error {
 
 // isRefusal reports whether a failed request was refused by the appliance
 // itself (an ApiError from a problem body, which the appliance writes for
-// every failure), so the change did not happen. Anything else (no answer, an
+// every failure of a route it serves), so the change did not happen. Anything else (no answer, an
 // answer that could not be read, or a proxy's error page, which says nothing
 // about whether the appliance applied it) leaves the outcome unknown: the
 // caller reconciles from the appliance instead of reporting a failure, and
@@ -95,6 +96,15 @@ export function unconfirmedText(what: string, next: string): string {
 // TOKEN_NOT_ACCEPTED is how every message says a 401: the login prompt and
 // the failure toasts.
 export const TOKEN_NOT_ACCEPTED = "the access token was not accepted";
+
+// failureReason is what a failed request says after "... failed: ": the
+// appliance's own reason for a refusal, else fixed text, since a dropped
+// connection's error text is the browser's and differs by engine.
+export function failureReason(err: unknown): string {
+  if (isRefusal(err)) return apiErrorMessage(err);
+  if (err instanceof UnreadableResponseError) return err.message;
+  return "the appliance could not be reached";
+}
 
 // apiErrorMessage reduces any thrown value to a short human string. An
 // ApiError shows its problem detail, which says what went wrong (problem
@@ -181,6 +191,9 @@ async function problemError(res: Response, isProblem: boolean): Promise<ApiError
   );
 }
 
+// REQUEST_DEADLINE_MS bounds one API request's wait for its response headers.
+export const REQUEST_DEADLINE_MS = 30_000;
+
 export class ApiClient {
   private baseUrl: string;
   private token: string | null = null;
@@ -214,10 +227,10 @@ export class ApiClient {
       headers.set("Content-Type", "application/json");
     }
 
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      ...options,
-      headers,
-    });
+    // Every request ends within REQUEST_DEADLINE_MS: one that hangs on a
+    // dead connection would otherwise hold the view's queue of changes. An
+    // aborted change is an unknown outcome to its caller (isRefusal).
+    const res = await withDeadline(REQUEST_DEADLINE_MS, (signal) => fetch(`${this.baseUrl}${path}`, { ...options, headers, signal }));
 
     if (res.status === 401 && used === this.token) {
       this.onUnauthorized?.();
