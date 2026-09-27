@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,42 @@ func TestDefaultCapacityKeepsNewest(t *testing.T) {
 	}
 	if last != uint64(defaultCapacity+1) {
 		t.Errorf("last id = %d, want %d (newest retained)", last, defaultCapacity+1)
+	}
+}
+
+func TestCenterEventNamesMatchEmitted(t *testing.T) {
+	t.Parallel()
+	c := NewCenter()
+	ch, cancel := c.Subscribe()
+	defer cancel()
+	next := func(what string) sse.Event {
+		t.Helper()
+		select {
+		case ev := <-ch:
+			return ev
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no event delivered for %s", what)
+			return sse.Event{}
+		}
+	}
+	// Both emit sites: a new entry (publishLocked, reached from Publish,
+	// Onset, Clear and Resolve) and an active entry's new text (Update).
+	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "one"})
+	ev := next("Publish")
+	c.Onset(Notification{Category: CategoryDevice, Key: testDeviceKey, Title: testDownTitle})
+	next("Onset")
+	if !c.Update(testDeviceKey, "waiting", "new") {
+		t.Fatal("Update of an active condition must emit")
+	}
+	if upd := next("Update"); upd.Name != ev.Name {
+		t.Errorf("Update emits %q, Publish %q", upd.Name, ev.Name)
+	}
+	if got := c.EventNames(); !slices.Equal(got, []string{ev.Name}) {
+		t.Errorf("EventNames() = %v, want [%s], the name the center emits", got, ev.Name)
+	}
+	var nilCenter *Center
+	if got := nilCenter.EventNames(); !slices.Equal(got, []string{ev.Name}) {
+		t.Errorf("nil Center EventNames() = %v, want [%s]", got, ev.Name)
 	}
 }
 

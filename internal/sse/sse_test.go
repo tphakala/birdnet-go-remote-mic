@@ -34,10 +34,22 @@ type fakeSource struct {
 	mu           sync.Mutex
 	subs         map[chan Event]struct{}
 	cancelCalled atomic.Bool
+	// subscribed is signalled on every Subscribe (the send is dropped when
+	// 16 signals are unread; waitSubscribed re-checks the count, so none is
+	// missed), and cancelled is closed at the first cancel, so tests wait on
+	// them rather than poll.
+	subscribed    chan struct{}
+	cancelled     chan struct{}
+	cancelledOnce sync.Once
 }
 
 func newFakeSource(buf int) *fakeSource {
-	return &fakeSource{buf: buf, subs: make(map[chan Event]struct{})}
+	return &fakeSource{
+		buf:        buf,
+		subs:       make(map[chan Event]struct{}),
+		subscribed: make(chan struct{}, 16),
+		cancelled:  make(chan struct{}),
+	}
 }
 
 func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
@@ -45,6 +57,10 @@ func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
 	f.mu.Lock()
 	f.subs[ch] = struct{}{}
 	f.mu.Unlock()
+	select {
+	case f.subscribed <- struct{}{}:
+	default:
+	}
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
@@ -52,6 +68,7 @@ func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
 			delete(f.subs, ch)
 			f.mu.Unlock()
 			f.cancelCalled.Store(true)
+			f.cancelledOnce.Do(func() { close(f.cancelled) })
 		})
 	}
 }
@@ -92,10 +109,37 @@ func (f *fakeSource) subCount() int {
 // the client's GET).
 func (f *fakeSource) waitSubscribed(t *testing.T, n int) {
 	t.Helper()
-	waitFor(t, func() bool { return f.subCount() >= n }, 2*time.Second)
+	deadline := time.After(2 * time.Second)
+	for f.subCount() < n {
+		select {
+		case <-f.subscribed:
+		case <-deadline:
+			t.Fatalf("%d subscriptions live, want %d", f.subCount(), n)
+		}
+	}
+}
+
+// waitCancelled blocks until a subscription was cancelled.
+func (f *fakeSource) waitCancelled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no subscription was cancelled")
+	}
 }
 
 var _ Source = (*fakeSource)(nil)
+
+// namedSource is a fakeSource that declares the event names it emits.
+type namedSource struct {
+	*fakeSource
+	names []string
+}
+
+func (n namedSource) EventNames() []string { return n.names }
+
+var _ Named = namedSource{}
 
 // ctrlWriter is a controllable ResponseWriter for unit tests: it records what
 // was written, can fail a write, records a flush, and records that a write
@@ -106,6 +150,8 @@ type ctrlWriter struct {
 	code          int
 	buf           bytes.Buffer
 	writeErr      error
+	writeErrAfter int // let this many writes succeed before writeErr kicks in
+	writes        int
 	flushErr      error
 	flushErrAfter int // let this many flushes succeed before flushErr kicks in
 	flushes       int
@@ -121,7 +167,8 @@ func (c *ctrlWriter) Header() http.Header {
 }
 func (c *ctrlWriter) WriteHeader(code int) { c.code = code }
 func (c *ctrlWriter) Write(p []byte) (int, error) {
-	if c.writeErr != nil {
+	c.writes++
+	if c.writeErr != nil && c.writes > c.writeErrAfter {
 		return 0, c.writeErr
 	}
 	return c.buf.Write(p)
@@ -186,24 +233,12 @@ func (s *sseReader) next(t *testing.T) (name, data string) {
 	return "", ""
 }
 
-func waitFor(t *testing.T, cond func() bool, d time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("condition not met within timeout")
-}
-
 // openStream issues the GET, checks the content type, and returns the response
 // for the caller to read and close (returning the *http.Response keeps the body
 // the caller's to close, which bodyclose is happy with).
 func openStream(t *testing.T, url string) *http.Response {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	t.Cleanup(cancel)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	resp, err := http.DefaultClient.Do(req)
@@ -269,6 +304,57 @@ func TestHandlerHeartbeatSurvivesFilter(t *testing.T) {
 
 	if n, _ := rd.next(t); n != heartbeatName {
 		t.Fatalf("first event = %q, want heartbeat (levels filtered out)", n)
+	}
+}
+
+func TestHandlerSkipsFilteredNamedSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		query     string
+		wantNamed int
+	}{
+		{"other events only", "?events=" + evNotification, 0},
+		{"its event", "?events=" + evLevels, 1},
+		{"no filter", "", 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			named := namedSource{newFakeSource(4), []string{evLevels}}
+			h := &handler{sources: []Source{named}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+			resp := openStream(t, srv.URL+tc.query)
+			defer func() { _ = resp.Body.Close() }()
+			// The open comment is written after every source was decided.
+			if _, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil {
+				t.Fatalf("read the open comment: %v", err)
+			}
+			if got := named.subCount(); got != tc.wantNamed {
+				t.Errorf("named source subscriptions = %d, want %d", got, tc.wantNamed)
+			}
+		})
+	}
+}
+
+func TestEventFilterAllowsAny(t *testing.T) {
+	t.Parallel()
+	f := parseEventFilter(evNotification)
+	if f.allowsAny([]string{evLevels}) {
+		t.Error("a filter without levels must not allow a levels-only source")
+	}
+	if !f.allowsAny([]string{evLevels, evNotification}) {
+		t.Error("a filter must allow a source when one of its names passes")
+	}
+	if f.allowsAny(nil) {
+		t.Error("a source with no names must not pass a named filter")
+	}
+	if !parseEventFilter("").allowsAny([]string{"anything"}) {
+		t.Error("the all filter must allow any source")
+	}
+	if !parseEventFilter("").allowsAny(nil) {
+		t.Error("the all filter must allow a source that names nothing")
 	}
 }
 
@@ -340,7 +426,7 @@ func TestHandlerCancelUnsubscribesSources(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, http.NoBody)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -354,7 +440,7 @@ func TestHandlerCancelUnsubscribesSources(t *testing.T) {
 	cancel()
 	_ = resp.Body.Close()
 
-	waitFor(t, fake.wasCancelled, time.Second)
+	fake.waitCancelled(t)
 }
 
 func TestServeHTTPNonFlusherWritesProblem(t *testing.T) {
@@ -377,32 +463,83 @@ func TestServeHTTPNonFlusherWritesProblem(t *testing.T) {
 	}
 }
 
-func TestServeHTTPEndsStreamOnWriteError(t *testing.T) {
-	fake := newFakeSource(4)
-	cw := &ctrlWriter{writeErr: errors.New("client gone")}
-	h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
-	// ServeHTTP derives its own cancellable context from the request, so it tears
-	// down the forward goroutine on return even for this direct (server-less) call.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
-
-	done := make(chan struct{})
-	go func() { h.ServeHTTP(cw, req); close(done) }()
-
-	fake.waitSubscribed(t, 1)
-	fake.emit(Event{Name: evLevels, Data: []byte("{}")})
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stream did not end on write error")
+func TestServeHTTPEndsStreamOnEventWriteOrFlushError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cw   *ctrlWriter
+	}{
+		// The open comment is written; the first event's write fails.
+		{"write", &ctrlWriter{writeErr: errors.New("client gone"), writeErrAfter: 1}},
+		// The post-header and open-comment flushes succeed; the first event
+		// flush fails.
+		{"flush", &ctrlWriter{flushErr: errors.New("flush failed"), flushErrAfter: 2}},
 	}
-	if !fake.wasCancelled() {
-		t.Fatal("source must be unsubscribed when the stream ends")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakeSource(4)
+			h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
+
+			done := make(chan struct{})
+			go func() { h.ServeHTTP(tc.cw, req); close(done) }()
+
+			fake.waitSubscribed(t, 1)
+			fake.emit(Event{Name: evLevels, Data: []byte("{}")})
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("stream did not end on a failed event %s", tc.name)
+			}
+			if !fake.wasCancelled() {
+				t.Fatal("source must be unsubscribed when the stream ends")
+			}
+		})
+	}
+}
+
+func TestServeHTTPEndsStreamWhenTheOpenCommentFails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cw   *ctrlWriter
+	}{
+		// The first write after the headers is the open comment.
+		{"write", &ctrlWriter{writeErr: errors.New("client gone")}},
+		// The post-header flush succeeds; the open comment's flush fails.
+		{"flush", &ctrlWriter{flushErr: errors.New("flush failed"), flushErrAfter: 1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakeSource(1)
+			h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
+
+			done := make(chan struct{})
+			go func() { h.ServeHTTP(tc.cw, req); close(done) }()
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("stream did not end when the open comment's %s failed", tc.name)
+			}
+			if !fake.wasCancelled() {
+				t.Fatal("source must be unsubscribed when the stream ends")
+			}
+			if tc.cw.writes > 1 {
+				t.Fatalf("writes = %d, want the open comment at most", tc.cw.writes)
+			}
+		})
 	}
 }
 
 func TestServeHTTPEndsStreamOnHeartbeatWriteError(t *testing.T) {
+	t.Parallel()
 	fake := newFakeSource(1)
-	cw := &ctrlWriter{writeErr: errors.New("client gone")}
+	// The open comment is written; the first heartbeat's write fails.
+	cw := &ctrlWriter{writeErr: errors.New("client gone"), writeErrAfter: 1}
 	h := &handler{sources: []Source{fake}, heartbeat: 10 * time.Millisecond, writeTimeout: time.Second, mergeBuffer: 8}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
 
@@ -416,28 +553,6 @@ func TestServeHTTPEndsStreamOnHeartbeatWriteError(t *testing.T) {
 	}
 	if !fake.wasCancelled() {
 		t.Fatal("source must be unsubscribed when the stream ends")
-	}
-}
-
-func TestServeHTTPEndsStreamOnFlushError(t *testing.T) {
-	fake := newFakeSource(4)
-	// Let the initial post-header flush succeed, then fail the first event flush.
-	cw := &ctrlWriter{flushErr: errors.New("flush failed"), flushErrAfter: 1}
-	h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
-
-	done := make(chan struct{})
-	go func() { h.ServeHTTP(cw, req); close(done) }()
-
-	fake.waitSubscribed(t, 1)
-	fake.emit(Event{Name: evLevels, Data: []byte("{}")})
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stream did not end when a flush failed")
-	}
-	if !fake.wasCancelled() {
-		t.Fatal("source must be unsubscribed when a flush fails")
 	}
 }
 
@@ -463,11 +578,13 @@ func TestServeHTTPStopsWhenInitialFlushFails(t *testing.T) {
 }
 
 func TestWriteEventSuccess(t *testing.T) {
+	t.Parallel()
 	cw := &ctrlWriter{}
 	rc := http.NewResponseController(cw)
 	h := &handler{writeTimeout: time.Second}
+	var buf []byte
 
-	if !h.writeEvent(cw, rc, Event{Name: evLevels, Data: []byte(`{"a":1}`)}) {
+	if !h.writeEvent(cw, rc, &buf, Event{Name: evLevels, Data: []byte(`{"a":1}`)}) {
 		t.Fatal("writeEvent should return true on success")
 	}
 	if got, want := cw.buf.String(), "event: levels\ndata: {\"a\":1}\n\n"; got != want {
@@ -482,15 +599,118 @@ func TestWriteEventSuccess(t *testing.T) {
 }
 
 func TestWriteEventReturnsFalseOnError(t *testing.T) {
+	t.Parallel()
 	cw := &ctrlWriter{writeErr: errors.New("boom")}
 	rc := http.NewResponseController(cw)
 	h := &handler{writeTimeout: time.Second}
+	var buf []byte
 
-	if h.writeEvent(cw, rc, Event{Name: "x", Data: []byte("{}")}) {
+	if h.writeEvent(cw, rc, &buf, Event{Name: "x", Data: []byte("{}")}) {
 		t.Fatal("writeEvent should return false on write error")
 	}
 	if !cw.deadlineSet {
 		t.Fatal("writeEvent must set a write deadline even when the write fails")
+	}
+}
+
+// Pins that writeEvent allocates nothing once its buffer has grown to the
+// event's size. Not parallel: AllocsPerRun counts allocations
+// process-wide.
+func TestWriteEventDoesNotAllocate(t *testing.T) {
+	dw := &probeWriter{hdr: http.Header{}}
+	rc := http.NewResponseController(dw)
+	h := &handler{writeTimeout: time.Second}
+	var buf []byte
+	ev := Event{Name: evLevels, Data: []byte(`{"devices":[]}`)}
+	if !h.writeEvent(dw, rc, &buf, ev) { // grow buf once
+		t.Fatal("writeEvent failed")
+	}
+	ok := true
+	if n := testing.AllocsPerRun(100, func() { ok = h.writeEvent(dw, rc, &buf, ev) && ok }); n != 0 {
+		t.Fatalf("writeEvent allocs = %v, want 0", n)
+	}
+	if !ok {
+		t.Fatal("a measured writeEvent failed, so it may have skipped the write")
+	}
+}
+
+func TestStreamOpensWithACommentAndNoProxyBuffering(t *testing.T) {
+	t.Parallel()
+	h := &handler{sources: []Source{newFakeSource(1)}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp := openStream(t, srv.URL+"?events=notification")
+	defer func() { _ = resp.Body.Close() }()
+	if got := resp.Header.Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering = %q, want no", got)
+	}
+	// A filter that leaves the stream quiet still gets its first bytes at
+	// once, not at the first heartbeat.
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first line: %v", err)
+	}
+	if line != ": open\n" {
+		t.Fatalf("first line = %q, want the open comment", line)
+	}
+}
+
+// probeWriter is a flushable ResponseWriter (http.Flusher, as the handler
+// requires) that keeps nothing, so an allocation count sees only the
+// handler's own work. Like net/http's writer it takes a write deadline and
+// reports flush errors, which the ResponseController uses directly. A
+// non-nil onWrite runs on each write.
+type probeWriter struct {
+	hdr     http.Header
+	onWrite func()
+}
+
+func (p *probeWriter) Header() http.Header              { return p.hdr }
+func (p *probeWriter) WriteHeader(int)                  {}
+func (p *probeWriter) Flush()                           {}
+func (p *probeWriter) FlushError() error                { return nil }
+func (p *probeWriter) SetWriteDeadline(time.Time) error { return nil }
+func (p *probeWriter) Write(b []byte) (int, error) {
+	if p.onWrite != nil {
+		p.onWrite()
+	}
+	return len(b), nil
+}
+
+// Pins the order the web client relies on: the open comment, the stream's
+// first bytes, is written only once every source is subscribed.
+func TestOpenCommentFollowsEverySubscription(t *testing.T) {
+	t.Parallel()
+	a, b := newFakeSource(1), newFakeSource(1)
+	var early atomic.Bool
+	wrote := make(chan struct{}, 1)
+	w := &probeWriter{hdr: http.Header{}, onWrite: func() {
+		if a.subCount() == 0 || b.subCount() == 0 {
+			early.Store(true)
+		}
+		select {
+		case wrote <- struct{}{}:
+		default:
+		}
+	}}
+	h := &handler{sources: []Source{a, b}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+	ctx, cancel := context.WithCancel(t.Context())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/events", http.NoBody)
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(w, req); close(done) }()
+	select {
+	case <-wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing was written")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return")
+	}
+	if early.Load() {
+		t.Fatal("the first bytes were written before every source was subscribed")
 	}
 }
 

@@ -1,3 +1,6 @@
+import { REDUCED_MOTION_QUERY } from "../lib/ui.ts";
+import { FLOOR_DB, FrameScheduler, levelBand, levelRatio, MeterController, WAITING_READOUT, WAITING_TITLE } from "../lib/meter-core.ts";
+
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (initTheme's
 // load-time correction, a pick in the header theme menu, an OS change in System
@@ -6,44 +9,78 @@
 // and unlit-segment tints need to swap, since white-on-light was invisible.
 // Shared by every meter instance.
 let meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
+// Every meter not yet destroyed. A settled meter draws nothing until its level
+// changes, so a theme change asks each one to repaint in the new tints.
+const liveMeters = new Set<VUMeter>();
 try {
   new MutationObserver(() => {
     meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
+    for (const m of liveMeters) m.redraw();
   }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 } catch {
   /* no MutationObserver: keep the theme detected at load */
 }
 
-export interface MeterState {
-  rms: number;
-  peak: number;
-  peakHold: number;
-  peakHoldTimer: number;
-  clipped: boolean;
-}
+// The meter is 36 segments over the scale from FLOOR_DB to 0 dBFS, each lit in
+// the colour of its level band (levelBand): green, amber, red. The needle
+// takes the same band's colour, opaque.
+const SEGMENTS = 36;
+const SEGMENT_PALETTE = ["rgba(16, 185, 129, 0.85)", "rgba(245, 158, 11, 0.9)", "rgba(239, 68, 68, 0.95)"] as const;
+const NEEDLE_PALETTE = ["#10b981", "#f59e0b", "#ef4444"] as const;
+const SEGMENT_COLORS: readonly string[] = Array.from({ length: SEGMENTS }, (_, i) =>
+  SEGMENT_PALETTE[levelBand(FLOOR_DB - (i / SEGMENTS) * FLOOR_DB)]);
 
+// The viewer's motion preference, followed live: every live meter switches
+// between the gliding needle and the per-event steps when it changes.
+const reducedMotionQuery: MediaQueryList | null = (() => {
+  try {
+    return window.matchMedia?.(REDUCED_MOTION_QUERY) ?? null;
+  } catch {
+    return null;
+  }
+})();
+reducedMotionQuery?.addEventListener?.("change", (e) => {
+  for (const m of liveMeters) m.setReducedMotion(e.matches);
+});
+
+// A meter scrolled out of view (a card off a phone screen, a row inside a
+// scrolled console) skips its canvas paint until it comes back, so it does
+// not repaint at the display rate where nobody sees it; its readout stays
+// current. One observer serves every meter; without IntersectionObserver
+// every meter counts as in view.
+const meterByCanvas = new WeakMap<Element, VUMeter>();
+const viewObserver: IntersectionObserver | null = (() => {
+  try {
+    return new IntersectionObserver((entries) => {
+      for (const e of entries) meterByCanvas.get(e.target)?.setOffscreen(!e.isIntersecting);
+    });
+  } catch {
+    return null;
+  }
+})();
+
+// meterFrames is the one frame loop every meter draws on. It runs only while a
+// meter has something to animate, and the dashboard suspends it while another
+// view shows.
+export const meterFrames = new FrameScheduler({
+  request: (cb) => requestAnimationFrame(cb),
+  cancel: (handle) => cancelAnimationFrame(handle),
+  timers: globalThis,
+});
+
+// VUMeter is one channel's meter on the dashboard: the canvas, the dB readout
+// and the clip latch button. Its state and sequencing live in a
+// MeterController (lib/meter-core.ts); this class paints and wires the DOM
+// (the clip button, a restored canvas context, theme and motion changes).
 export class VUMeter {
   private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
+  // Null when the browser gives no 2D context: the meter then paints nothing,
+  // but its readout and clip latch still work and the rest of the dashboard
+  // renders.
+  private ctx: CanvasRenderingContext2D | null;
   private peakValEl: HTMLElement | null;
   private clipEl: HTMLElement | null;
-
-  private rmsVal: number = -60;
-  private peakVal: number = -60;
-  private peakHoldVal: number = -60;
-  private peakHoldTimer: number = 0;
-  private isClipped: boolean = false;
-  // The latch state last written to the clip button, so the ~60fps render
-  // touches the DOM only when it changes.
-  private shownClip: boolean | null = null;
-
-  private animFrameId: number | null = null;
-  private paused: boolean = false;
-  private lastTime: number = performance.now();
-  // When the viewer prefers reduced motion, skip the free-running rAF loop and
-  // the peak-needle decay animation, redrawing a static bar on each level
-  // update instead.
-  private reducedMotion: boolean;
+  private readonly controller: MeterController;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -51,126 +88,99 @@ export class VUMeter {
     clipEl?: HTMLElement | null
   ) {
     this.canvas = canvas;
-    const context = this.canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Canvas 2D context is not available");
-    }
-    this.ctx = context;
+    this.ctx = this.canvas.getContext("2d");
+    if (!this.ctx) console.warn("meter: canvas 2D context is not available; the bar and needle will not draw");
+    // A browser may drop a canvas's pixels (context loss) and hand it back
+    // blank; a settled meter draws nothing new on its own, so repaint.
+    this.canvas.addEventListener("contextrestored", () => this.redraw());
     this.peakValEl = peakValEl ?? null;
     this.clipEl = clipEl ?? null;
-    this.reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
     if (this.clipEl) {
       this.clipEl.addEventListener("click", () => this.clearClip());
-      this.syncClip();
     }
 
-    if (this.reducedMotion) {
-      this.render();
-    } else {
-      this.startLoop();
-    }
+    liveMeters.add(this);
+    this.controller = new MeterController(
+      {
+        draw: (rms, peak) => this.paint(rms, peak),
+        showClip: (clipped) => this.showClip(clipped),
+        showReadout: (text) => {
+          if (!this.peakValEl) return;
+          this.peakValEl.textContent = text;
+          // Say what "--" means to a pointer user. Only a pointer gets it, by
+          // choice: the readout is aria-hidden with the canvas (the dashboard
+          // hides both, web/src/views/dashboard.ts:1218-1227), so "--" is
+          // visual only, and the stream state reaches everyone through the
+          // connection indicator instead.
+          // Written on change only: the text changes up to ten times a second.
+          const title = text === WAITING_READOUT ? WAITING_TITLE : "";
+          if (this.peakValEl.title !== title) this.peakValEl.title = title;
+        },
+      },
+      meterFrames,
+      {
+        reducedMotion: reducedMotionQuery?.matches ?? false,
+        now: () => performance.now(),
+      },
+    );
+    meterByCanvas.set(this.canvas, this);
+    viewObserver?.observe(this.canvas);
   }
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
-    this.rmsVal = isFinite(rms) ? rms : -60;
-    this.peakVal = isFinite(peak) ? peak : -60;
-
-    if (clipped || this.peakVal >= -0.1) {
-      this.isClipped = true;
-    }
-
-    if (this.peakVal > this.peakHoldVal) {
-      this.peakHoldVal = this.peakVal;
-      this.peakHoldTimer = 45; // Hold peak needle for ~45 frames before decay
-    }
-
-    // With no animation loop running, ease the peak hold down once per level
-    // event (~10 Hz) rather than pinning it to the instantaneous peak. The peak
-    // rise is already applied above; this keeps the dB readout holding recent
-    // peaks and calm instead of flickering, which matters most in reduced motion.
-    if (this.reducedMotion) {
-      if (this.peakHoldTimer > 0) {
-        this.peakHoldTimer -= 1;
-      } else {
-        this.peakHoldVal = Math.max(-60, this.peakHoldVal - 3);
-      }
-      if (!this.paused) this.render();
-    }
+    this.controller.setLevels(rms, peak, clipped);
   }
 
   public clearClip(): void {
-    this.isClipped = false;
-    this.syncClip();
-  }
-
-  // syncClip shows the latch on the clip button: the lit style, and
-  // aria-pressed so a screen reader hears whether it is latched (pressing it
-  // clears the latch, which releases the button).
-  private syncClip(): void {
-    const el = this.clipEl;
-    if (!el || this.shownClip === this.isClipped) return;
-    this.shownClip = this.isClipped;
-    el.classList.toggle("clipped", this.isClipped);
-    el.setAttribute("aria-pressed", String(this.isClipped));
+    this.controller.clearClip();
   }
 
   public pause(): void {
-    if (this.paused) return;
-    this.paused = true;
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
-    }
+    this.controller.pause();
   }
 
   public resume(): void {
-    if (!this.paused) return;
-    this.paused = false;
-    if (this.reducedMotion) {
-      this.render();
-    } else {
-      this.lastTime = performance.now(); // avoid a decay jump after the gap
-      this.startLoop();
-    }
+    this.controller.resume();
   }
 
-  private startLoop(): void {
-    const loop = (now: number) => {
-      const dt = Math.min((now - this.lastTime) / 1000, 0.1);
-      this.lastTime = now;
+  public redraw(): void {
+    this.controller.redraw();
+  }
 
-      // Peak needle decay
-      if (this.peakHoldTimer > 0) {
-        this.peakHoldTimer -= 1;
-      } else {
-        this.peakHoldVal = Math.max(-60, this.peakHoldVal - 30 * dt);
-      }
+  public clearLevels(): void {
+    this.controller.clearLevels();
+  }
 
-      this.render();
-      this.animFrameId = requestAnimationFrame(loop);
-    };
-    this.animFrameId = requestAnimationFrame(loop);
+  public setReducedMotion(reduced: boolean): void {
+    this.controller.setReducedMotion(reduced);
   }
 
   public destroy(): void {
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
-    }
+    liveMeters.delete(this);
+    viewObserver?.unobserve(this.canvas);
+    this.controller.destroy();
   }
 
-  private dbToRatio(db: number): number {
-    // Calibrate -60 dBFS to 0.0 and 0 dBFS to 1.0
-    if (db <= -60) return 0;
-    if (db >= 0) return 1;
-    return (db + 60) / 60;
+  public setOffscreen(offscreen: boolean): void {
+    this.controller.setOffscreen(offscreen);
   }
 
-  private render(): void {
+  // showClip shows the latch on the clip button: the lit style, and
+  // aria-pressed so a screen reader hears whether it is latched (pressing it
+  // clears the latch, which releases the button).
+  private showClip(clipped: boolean): void {
+    const el = this.clipEl;
+    if (!el) return;
+    el.classList.toggle("clipped", clipped);
+    el.setAttribute("aria-pressed", String(clipped));
+  }
+
+  private paint(rmsDb: number, peakDb: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
     const w = this.canvas.width;
     const h = this.canvas.height;
-    const ctx = this.ctx;
 
     ctx.clearRect(0, 0, w, h);
 
@@ -183,55 +193,29 @@ export class VUMeter {
     ctx.fillStyle = trackBg;
     ctx.fillRect(0, 0, w, h);
 
-    // Segmented meter settings
-    const numSegments = 36;
     const gap = 2;
-    const segWidth = (w - (numSegments - 1) * gap) / numSegments;
+    const segWidth = (w - (SEGMENTS - 1) * gap) / SEGMENTS;
+    const activeSegments = Math.round(levelRatio(rmsDb) * SEGMENTS);
 
-    const rmsRatio = this.dbToRatio(this.rmsVal);
-    const activeSegments = Math.round(rmsRatio * numSegments);
-
-    for (let i = 0; i < numSegments; i++) {
-      const x = i * (segWidth + gap);
-      const segRatio = i / numSegments;
-      const segDb = -60 + segRatio * 60;
-
-      let color = "rgba(16, 185, 129, 0.85)"; // Green
-      if (segDb > -12 && segDb <= -3) {
-        color = "rgba(245, 158, 11, 0.9)"; // Amber
-      } else if (segDb > -3) {
-        color = "rgba(239, 68, 68, 0.95)"; // Red
-      }
-
-      if (i < activeSegments) {
+    // Neighbouring segments mostly share a colour, so fillStyle is set only
+    // when it changes. The last value is local to this paint, so nothing
+    // assumes the context kept it from an earlier one.
+    let fill = "";
+    for (let i = 0; i < SEGMENTS; i++) {
+      const color = i < activeSegments ? (SEGMENT_COLORS[i] ?? unlitSeg) : unlitSeg;
+      if (color !== fill) {
         ctx.fillStyle = color;
-      } else {
-        ctx.fillStyle = unlitSeg;
+        fill = color;
       }
-
-      ctx.fillRect(x, 0, segWidth, h);
+      ctx.fillRect(i * (segWidth + gap), 0, segWidth, h);
     }
 
     // Peak hold needle
-    const peakHoldRatio = this.dbToRatio(this.peakHoldVal);
-    if (peakHoldRatio > 0.02) {
-      const peakX = Math.min(w - 2, Math.max(0, peakHoldRatio * w - 1.5));
-      let needleColor = "#10b981";
-      if (this.peakHoldVal > -12 && this.peakHoldVal <= -3) {
-        needleColor = "#f59e0b";
-      } else if (this.peakHoldVal > -3) {
-        needleColor = "#ef4444";
-      }
-      ctx.fillStyle = needleColor;
+    const needleRatio = levelRatio(peakDb);
+    if (needleRatio > 0.02) {
+      const peakX = Math.min(w - 2, Math.max(0, needleRatio * w - 1.5));
+      ctx.fillStyle = NEEDLE_PALETTE[levelBand(peakDb)];
       ctx.fillRect(peakX, 0, 2, h);
     }
-
-    // Update DOM indicators
-    if (this.peakValEl) {
-      const formatted = this.peakHoldVal <= -59.9 ? "-inf" : `${this.peakHoldVal.toFixed(1)} dBFS`;
-      this.peakValEl.textContent = formatted;
-    }
-
-    this.syncClip();
   }
 }

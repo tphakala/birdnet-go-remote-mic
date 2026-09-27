@@ -2,16 +2,18 @@
 // store wires its refresh helpers (store-core.ts, tested on their own):
 // status, devices, system and available announce only on change; status,
 // devices and system re-announce after a failed read that nothing newer
-// superseded; config announces on every read; a failed
-// initial load announces which views' data is missing; an older response
-// never overwrites a newer one; polling pauses while the page is hidden; and
-// the event stream stops after the hidden-page grace and restarts on showing.
+// superseded; config announces on every read; a failed initial load
+// announces which views' data is missing; an older response
+// never overwrites a newer one; polling pauses while the page is hidden; the
+// event stream stops after the hidden-page grace and restarts on showing; and
+// levels leave the stream LEVELS_GRACE_MS after the dashboard does (at once
+// for a start-up route elsewhere) and come back at once.
 // Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
+import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents, LEVELS_GRACE_MS, NON_LEVEL_EVENTS } from "../src/lib/store.ts";
 import { ApiError, UnreadableResponseError } from "../src/lib/api.ts";
 import { getToken, setToken } from "../src/lib/auth.ts";
 import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
@@ -35,9 +37,11 @@ interface Harness {
   sseStops: () => number;
   // emit delivers a synthesized event-stream event ("connected", ...) to the
   // store's subscription, as the SSE client would.
-  emit: (name: string) => void;
+  emit: (name: string, data?: unknown) => void;
   // connection records the detail of every "connection" event, in order.
   connection: boolean[];
+  // filters records every event filter the store set on the stream.
+  filters: (readonly string[] | null)[];
   // unauthorized reports a 401 to the store, as the API client would.
   unauthorized: () => void;
 }
@@ -59,6 +63,7 @@ function harness(timers?: FakeTimers): Harness {
   let starts = 0;
   let stops = 0;
   const stream = new FakeStream();
+  const filters: (readonly string[] | null)[] = [];
   const deps: StoreDeps = {
     api: {
       onUnauthorized: null,
@@ -77,6 +82,9 @@ function harness(timers?: FakeTimers): Harness {
       stop: () => {
         stops++;
       },
+      setEvents: (names) => {
+        filters.push(names);
+      },
     },
     timers,
   };
@@ -93,8 +101,9 @@ function harness(timers?: FakeTimers): Harness {
   store.on("connection", (up) => connection.push(up));
   return {
     unauthorized: () => deps.api.onUnauthorized?.(),
+    filters,
     sseStops: () => stops,
-    emit: (name) => stream.deliver(name, null),
+    emit: (name, data = null) => stream.deliver(name, data),
     connection,
     store,
     push(endpoint, outcome) {
@@ -610,4 +619,100 @@ test("a 401 during the initial load leaves the failure to the login prompt", asy
   statusRead.reject(new Error("401"));
   await load;
   assert.deepEqual(errors, [], "a pending login must suppress the load error");
+});
+
+test("levels drop LEVELS_GRACE_MS after leaving the dashboard", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  // The start-up route is the dashboard.
+  h.store.setLevelsWanted(true);
+  let dropped = 0;
+  h.store.on("levelsdropped", () => dropped++);
+  h.emit("levels", { devices: [{ name: "mic", channels: [] }] });
+  assert.equal(h.store.getState().levels.size, 1);
+  h.store.setLevelsWanted(false);
+  assert.deepEqual(h.filters, [], "nothing changes before the grace ends");
+  const [grace] = timers.pending(LEVELS_GRACE_MS);
+  assert.ok(grace, "leaving the dashboard must arm the grace");
+  timers.fire(grace);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS], "the stream must drop levels");
+  assert.equal(dropped, 1, "the drop must be announced so the meters clear");
+  assert.equal(h.store.getState().levels.size, 0);
+});
+
+test("the dropped-levels filter keeps notifications and leaves levels out", () => {
+  // Compared with the wire names, not the constant itself, so an entry lost
+  // from the list fails here.
+  assert.ok(NON_LEVEL_EVENTS.includes("notification"), "notifications must keep arriving off the dashboard");
+  assert.equal(NON_LEVEL_EVENTS.includes("levels"), false);
+  assert.ok(NON_LEVEL_EVENTS.length > 0, "an empty filter would mean every event, levels included");
+});
+
+test("levels hold only the latest event's devices, and a disconnect clears them", () => {
+  const h = harness(new FakeTimers());
+  h.emit("levels", { devices: [{ name: "mic", channels: [] }, { name: "bat", channels: [] }] });
+  // The bat detector's meter left the appliance's levels.
+  h.emit("levels", { devices: [{ name: "mic", channels: [] }] });
+  assert.deepEqual([...h.store.getState().levels.keys()], ["mic"], "a device missing from the event must not keep its level");
+  h.emit("connected");
+  h.emit("disconnected", new Error("gone"));
+  assert.equal(h.store.getState().levels.size, 0, "levels from before a drop are not current");
+});
+
+test("a stream that keeps failing to reconnect is announced down once", () => {
+  const h = harness(new FakeTimers());
+  const seen: boolean[] = [];
+  h.store.on("connection", (up) => seen.push(up));
+  h.emit("disconnected", new Error("gone"));
+  h.emit("disconnected", new Error("still gone"));
+  h.emit("connected");
+  h.emit("disconnected", new Error("gone again"));
+  assert.deepEqual(seen, [false, true, false], "once per outage, the first before any connect included");
+});
+
+test("returning within the grace keeps the stream untouched", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  // The start-up route is the dashboard.
+  h.store.setLevelsWanted(true);
+  h.store.setLevelsWanted(false);
+  h.store.setLevelsWanted(true);
+  assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0, "a return must cancel the grace");
+  assert.deepEqual(h.filters, [], "a quick return must not reconnect the stream");
+});
+
+test("returning after the drop requests levels again at once", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  // The start-up route is the dashboard.
+  h.store.setLevelsWanted(true);
+  h.store.setLevelsWanted(false);
+  const [grace] = timers.pending(LEVELS_GRACE_MS);
+  assert.ok(grace);
+  timers.fire(grace);
+  h.store.setLevelsWanted(true);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS, null], "the return must restore every event type");
+  // Staying on the dashboard changes nothing more.
+  h.store.setLevelsWanted(true);
+  assert.equal(h.filters.length, 2);
+});
+
+test("the start-up route on the dashboard changes nothing", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  h.store.setLevelsWanted(true);
+  assert.deepEqual(h.filters, [], "a fresh store already streams levels");
+  assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0);
+});
+
+test("a start-up route off the dashboard filters levels at once", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  // A deep link to another view: the stream has not opened yet.
+  h.store.setLevelsWanted(false);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS], "the first connect must already leave levels out");
+  assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0, "no grace for levels never shown");
+  // Moving to the dashboard brings them in at once.
+  h.store.setLevelsWanted(true);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS, null]);
 });

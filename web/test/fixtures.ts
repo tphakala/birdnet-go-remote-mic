@@ -1,7 +1,7 @@
 // Shared test fixtures. This file holds no tests of its own.
 
 import { Emitter } from "../src/lib/emitter.ts";
-import type { Timers } from "../src/lib/store.ts";
+import type { Timers } from "../src/lib/timers.ts";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
 
 // FakeTimer is one timer a FakeTimers has handed out.

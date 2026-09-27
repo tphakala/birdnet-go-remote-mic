@@ -1,14 +1,19 @@
 package levels
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtapi"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/sse"
 )
 
 const nameGarden = "garden"
@@ -121,6 +126,75 @@ func TestMeterSubscriberGate(t *testing.T) {
 	d = m.sample("x")
 	if d.Channels[0].PeakDbfs == dbfsFloor {
 		t.Error("with a subscriber Observe must accumulate")
+	}
+}
+
+func TestHubEventNamesMatchEmitted(t *testing.T) {
+	t.Parallel()
+	h := NewHub()
+	h.Meter(nameGarden, 1)
+	ev := h.levelsEvent()
+	if got := h.EventNames(); !slices.Equal(got, []string{ev.Name}) {
+		t.Errorf("EventNames() = %v, want [%s], the name the hub emits", got, ev.Name)
+	}
+}
+
+// signalSource is an sse.Source that reports each Subscribe on a channel, so a
+// test knows the handler has reached it.
+type signalSource chan struct{}
+
+func (s signalSource) Subscribe() (events <-chan sse.Event, cancel func()) {
+	s <- struct{}{}
+	return nil, func() {}
+}
+
+func TestFilteredStreamDoesNotSubscribeTheHub(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  int32
+	}{
+		{"other events only", "?events=notification", 0},
+		{"no filter", "", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := NewHub()
+			h.Meter(nameGarden, 1)
+			// The handler subscribes in source order, so once the source after the
+			// hub has been reached, the hub has been decided.
+			reached := make(signalSource, 1)
+			srv := httptest.NewServer(sse.Handler(h, reached))
+			defer srv.Close()
+			// A bounded request, so a handler that blocks before its header
+			// flush fails the test instead of hanging it.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+tc.query, http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			select {
+			case <-reached:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the handler never reached the source after the hub")
+			}
+			h.mu.Lock()
+			count := h.sseCount
+			h.mu.Unlock()
+			if count != int(tc.want) {
+				t.Errorf("hub SSE subscribers = %d, want %d", count, tc.want)
+			}
+			if got := h.subs.Load(); got != tc.want {
+				t.Errorf("hub metering gate = %d, want %d (no tap is registered here)", got, tc.want)
+			}
+		})
 	}
 }
 

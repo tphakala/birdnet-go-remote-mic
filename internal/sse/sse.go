@@ -1,7 +1,7 @@
 // Package sse multiplexes named application events onto a single
 // text/event-stream HTTP response. It is a platform-neutral leaf: it depends
 // only on the standard library and knows nothing about audio, ALSA, or the
-// management API. Producers (the levels hub, later the notification center)
+// management API. Producers (the levels hub and the notification center)
 // implement Source; one Handler fans any number of sources onto one
 // connection, with a per-connection heartbeat and an optional ?events= name
 // filter. Coupling runs one way: producers import sse, never the reverse.
@@ -10,9 +10,10 @@ package sse
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,16 @@ type Source interface {
 	Subscribe() (events <-chan Event, cancel func())
 }
 
+// Named is implemented by a Source that emits only a fixed set of event names.
+// The Handler subscribes to such a source only when the request's ?events=
+// filter allows at least one of them, so a producer that works only while it
+// has a subscriber (the levels hub marshals and broadcasts only then, see
+// Hub.Run at internal/levels/levels.go:313 and :333) stays idle for a client that did
+// not ask for its events. A Source that is not Named is always subscribed.
+type Named interface {
+	EventNames() []string
+}
+
 const (
 	// defaultHeartbeat is how often an idle connection emits a heartbeat so
 	// clients can detect a dead server and proxies keep the connection open.
@@ -48,7 +59,14 @@ const (
 	defaultMergeBuffer = 32
 	// heartbeatName is the reserved event type that always passes the filter.
 	heartbeatName = "heartbeat"
+	// openComment is written once the sources are subscribed: an SSE comment,
+	// which clients ignore, so a stream whose filter leaves it quiet until
+	// the first heartbeat still delivers its first bytes at once.
+	openComment = ": open\n\n"
 )
+
+// heartbeatData is the heartbeat event's payload. Read only.
+var heartbeatData = []byte("{}")
 
 // Handler returns an http.Handler that streams every source's events onto one
 // text/event-stream response, with a 15 s heartbeat and the ?events= name
@@ -89,6 +107,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Content-Type", "text/event-stream")
 	hdr.Set("Cache-Control", "no-cache")
 	hdr.Set("Connection", "keep-alive")
+	// Ask a reverse proxy not to buffer the stream (nginx documents this
+	// header; other proxies NOT MEASURED): buffered, a quiet stream's
+	// heartbeats never reach the client, whose watchdog then drops a live
+	// connection (armHeartbeat, web/src/lib/sse.ts:133-146).
+	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
 	// Flush through the ResponseController so a failed flush is observed rather
@@ -103,6 +126,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// goroutine is torn down when ServeHTTP exits, regardless of how the caller
 	// manages r.Context(). Under net/http the request context is already
 	// cancelled on return; deriving our own also covers a direct ServeHTTP call.
+	// The forwarders are waited for on return, after cancelForward (defers
+	// run last first), so none outlives the request.
+	var forwarders sync.WaitGroup
+	defer forwarders.Wait()
 	ctx, cancelForward := context.WithCancel(r.Context())
 	defer cancelForward()
 	merged := make(chan Event, h.mergeBuffer)
@@ -116,9 +143,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	for _, src := range h.sources {
+		if n, ok := src.(Named); ok && !filter.allowsAny(n.EventNames()) {
+			continue
+		}
 		ch, cancel := src.Subscribe()
 		cancels = append(cancels, cancel)
-		go forward(ctx, ch, merged)
+		forwarders.Go(func() { forward(ctx, ch, merged) })
+	}
+
+	// buf is reused for every event this connection writes.
+	buf := []byte(openComment)
+	if !h.write(w, rc, buf) {
+		return
 	}
 
 	hb := time.NewTicker(h.heartbeat)
@@ -131,11 +167,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !filter.allows(ev.Name) {
 				continue
 			}
-			if !h.writeEvent(w, rc, ev) {
+			if !h.writeEvent(w, rc, &buf, ev) {
 				return
 			}
 		case <-hb.C:
-			if !h.writeEvent(w, rc, Event{Name: heartbeatName, Data: []byte("{}")}) {
+			if !h.writeEvent(w, rc, &buf, Event{Name: heartbeatName, Data: heartbeatData}) {
 				return
 			}
 		}
@@ -161,13 +197,24 @@ func forward(ctx context.Context, in <-chan Event, out chan<- Event) {
 	}
 }
 
-// writeEvent writes one event with a bounded per-write deadline and flushes,
-// both through the ResponseController so a broken connection surfaces as an
-// error. It returns false on any write or flush error so the caller ends the
-// stream.
-func (h *handler) writeEvent(w http.ResponseWriter, rc *http.ResponseController, ev Event) bool {
+// writeEvent formats one event into buf, reused across the connection's
+// events so formatting allocates only when an event outgrows every earlier
+// one, and writes it (see write). The write itself may allocate in net/http.
+func (h *handler) writeEvent(w http.ResponseWriter, rc *http.ResponseController, buf *[]byte, ev Event) bool {
+	*buf = append((*buf)[:0], "event: "...)
+	*buf = append(*buf, ev.Name...)
+	*buf = append(*buf, "\ndata: "...)
+	*buf = append(*buf, ev.Data...)
+	*buf = append(*buf, "\n\n"...)
+	return h.write(w, rc, *buf)
+}
+
+// write writes b with a bounded per-write deadline and flushes, both through
+// the ResponseController so a broken connection surfaces as an error. It
+// returns false on any write or flush error so the caller ends the stream.
+func (h *handler) write(w http.ResponseWriter, rc *http.ResponseController, b []byte) bool {
 	_ = rc.SetWriteDeadline(time.Now().Add(h.writeTimeout))
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, ev.Data); err != nil {
+	if _, err := w.Write(b); err != nil {
 		return false
 	}
 	if err := rc.Flush(); err != nil {
@@ -217,6 +264,12 @@ func parseEventFilter(q string) eventFilter {
 		return eventFilter{all: true}
 	}
 	return eventFilter{names: names}
+}
+
+// allowsAny reports whether the filter lets through at least one of names.
+// The all filter lets through any source, even one that names nothing.
+func (f eventFilter) allowsAny(names []string) bool {
+	return f.all || slices.ContainsFunc(names, f.allows)
 }
 
 func (f eventFilter) allows(name string) bool {

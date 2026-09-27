@@ -211,6 +211,9 @@ type Event = sse.Event
 // it drops levels frames rather than stalling the sampler.
 const sseBuffer = 8
 
+// eventName is the SSE event name every levels snapshot streams under.
+const eventName = "levels"
+
 // tap is one in-process structured-levels consumer. Unlike a subscriber, a tap
 // receives the LevelsEvent value directly on the sampler goroutine (no SSE
 // marshal, no channel, no fan-out buffer), so a consumer like the signal monitor
@@ -249,7 +252,10 @@ type Hub struct {
 
 // Hub is an sse.Source: it fans marshaled levels events to SSE subscribers. The
 // heartbeat lives on the SSE connection, not here.
-var _ sse.Source = (*Hub)(nil)
+var (
+	_ sse.Source = (*Hub)(nil)
+	_ sse.Named  = (*Hub)(nil)
+)
 
 // NewHub returns a hub with the default 10 Hz sampling cadence.
 func NewHub() *Hub {
@@ -382,8 +388,12 @@ func (h *Hub) sampleDevicesLocked() []DeviceLevels {
 // the floats finite, no NaN or Inf) plus a string and a bool.
 func marshalLevels(le LevelsEvent) Event {
 	data, _ := json.Marshal(le)
-	return Event{Name: "levels", Data: data}
+	return Event{Name: eventName, Data: data}
 }
+
+// EventNames reports the one event name the hub emits, so an SSE request that
+// filters levels out never subscribes and never counts as a levels consumer.
+func (h *Hub) EventNames() []string { return []string{eventName} }
 
 // Subscribe registers a new SSE client and returns its event channel plus a
 // cancel func that unregisters it. The shared sse.Broadcaster owns the channel

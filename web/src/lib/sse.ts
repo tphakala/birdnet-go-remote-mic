@@ -1,26 +1,87 @@
+import type { OneShotTimers } from "./timers.ts";
+
 export type SSEEventHandler = (eventName: string, data: unknown) => void;
+
+// The wire event types the UI consumes (the appliance's names: eventName in
+// internal/levels/levels.go, notificationEvent in internal/notify/notify.go).
+// Every consumer compares against these, so a filter built from them cannot
+// drift from what the consumers read.
+export const LEVELS_EVENT = "levels";
+export const NOTIFICATION_EVENT = "notification";
 
 // Event names the client synthesizes internally (from the connect loop) and the
 // store routes on. A server event reusing one would be misrouted into the
 // connection/auth state machine, so the generic wire dispatch refuses them.
 const RESERVED_EVENTS = new Set(["connected", "disconnected", "unauthorized", "heartbeat"]);
 
+// SSEDeps is what the client needs from the browser, injected so node:test can
+// drive the connect loop with a fake fetch, no real timers and a set clock.
+// timers is the same seam the stores use (lib/timers.ts); now is a monotonic
+// clock in milliseconds.
+export interface SSEDeps {
+  fetch(url: string, init: RequestInit): Promise<Response>;
+  timers: OneShotTimers;
+  now(): number;
+}
+
+const browserDeps: SSEDeps = {
+  fetch: (url, init) => fetch(url, init),
+  timers: globalThis,
+  now: () => performance.now(),
+};
+
+// HEARTBEAT_TIMEOUT_MS is how long a stream may stay silent before the client
+// reconnects; the server sends a heartbeat every 15 s (defaultHeartbeat in
+// internal/sse/sse.go).
+export const HEARTBEAT_TIMEOUT_MS = 30_000;
+// RECONNECT_DELAY_MS is the first backoff after a dropped stream, doubled up
+// to RECONNECT_MAX_MS.
+export const RECONNECT_DELAY_MS = 1_000;
+export const RECONNECT_MAX_MS = 10_000;
+
+// discardBody releases a response body the client will not read, so the
+// connection is not left open; cancel() rejects when the stream is already
+// errored, which is swallowed.
+function discardBody(res: Response): void {
+  void res.body?.cancel().catch(() => {});
+}
+
 export class SSEClient {
   private url: string;
+  private readonly deps: SSEDeps;
+  // The ?events= value, each name URL-encoded and joined by literal commas
+  // (the spec's form style, explode false), or null for every event type.
+  private events: string | null = null;
   private token: string | null = null;
   private abortController: AbortController | null = null;
   private isRunning: boolean = false;
-  private reconnectDelayMs: number = 1000;
-  private maxReconnectDelayMs: number = 10000;
-  private heartbeatTimeoutMs: number = 30000;
-  private heartbeatTimer: number | null = null;
+  private reconnectDelayMs: number = RECONNECT_DELAY_MS;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  // When the stream last showed it is alive (deps.now). The watchdog checks
+  // it when it fires, so a message costs no timer calls.
+  private aliveAt = 0;
   private handlers: Set<SSEEventHandler> = new Set();
   // generation invalidates an in-flight connect loop when stop()/start() race:
   // a loop keeps running only while its captured generation is still current.
   private generation = 0;
 
-  constructor(url: string = "/api/v1/events") {
+  constructor(url: string = "/api/v1/events", deps: SSEDeps = browserDeps) {
     this.url = url;
+    this.deps = deps;
+  }
+
+  // setEvents sets the event types to stream; null or an empty list means
+  // every type, as the server reads an empty filter (parseEventFilter in
+  // internal/sse/sse.go). A running stream reconnects under the new filter;
+  // a stopped one only records it, so this never starts a stream the store
+  // stopped (a 401, a hidden page).
+  public setEvents(names: readonly string[] | null): void {
+    const events = names === null || names.length === 0 ? null : names.map(encodeURIComponent).join(",");
+    if (events === this.events) return;
+    this.events = events;
+    if (!this.isRunning) return;
+    this.stop();
+    this.start();
   }
 
   public setToken(token: string | null): void {
@@ -60,19 +121,33 @@ export class SSEClient {
     }
   }
 
+  // resetHeartbeat marks the stream alive now and makes sure the watchdog is
+  // armed. The watchdog fires at most HEARTBEAT_TIMEOUT_MS after it was set
+  // and re-arms for what is left of the window when data came since, so a
+  // stream carrying levels at 10 Hz does not clear and set a timer per message.
   private resetHeartbeat(): void {
-    this.clearHeartbeat();
-    this.heartbeatTimer = window.setTimeout(() => {
-      console.warn("SSE heartbeat timeout exceeded (30s). Reconnecting...");
+    this.aliveAt = this.deps.now();
+    if (this.heartbeatTimer === null) this.armHeartbeat(HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private armHeartbeat(ms: number): void {
+    this.heartbeatTimer = this.deps.timers.setTimeout(() => {
+      this.heartbeatTimer = null;
+      const silent = this.deps.now() - this.aliveAt;
+      if (silent < HEARTBEAT_TIMEOUT_MS) {
+        this.armHeartbeat(HEARTBEAT_TIMEOUT_MS - silent);
+        return;
+      }
+      console.warn(`SSE heartbeat timeout exceeded (${HEARTBEAT_TIMEOUT_MS / 1000}s). Reconnecting...`);
       if (this.abortController) {
         this.abortController.abort();
       }
-    }, this.heartbeatTimeoutMs);
+    }, ms);
   }
 
   private clearHeartbeat(): void {
     if (this.heartbeatTimer !== null) {
-      clearTimeout(this.heartbeatTimer);
+      this.deps.timers.clearTimeout(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
   }
@@ -90,23 +165,40 @@ export class SSEClient {
         headers.set("Authorization", `Bearer ${used}`);
       }
 
+      // Every connect runs under the watchdog: a restart is silent (a filter
+      // change, the end of a token swap), so the store may still say
+      // connected, and a connect that hangs on a dead link must not leave
+      // the page looking live, or parked, until the browser gives up.
+      this.resetHeartbeat();
+
       try {
-        const response = await fetch(this.url, {
+        const url = this.events === null ? this.url : `${this.url}?events=${this.events}`;
+        const response = await this.deps.fetch(url, {
           headers,
           signal: this.abortController.signal,
         });
+        // A stop or restart that ran while the response was on its way owns
+        // the stream now: this loop must not act on a stale answer (a 401
+        // here would stop the new stream).
+        if (gen !== this.generation) {
+          discardBody(response);
+          return;
+        }
 
         if (response.status === 401) {
           // Release the unread body so the rejected connection is not left open.
           // cancel() rejects when the stream is already errored; swallow that so
           // it does not surface as an unhandled rejection.
-          void response.body?.cancel().catch(() => {});
+          discardBody(response);
           if (used === this.token) {
             // The appliance rejects the token in force. Reconnecting on a timer
             // would hammer it with the same rejected credential every 1..10 s,
             // so stop; the store restarts the stream once a token is accepted.
             this.isRunning = false;
             this.generation++;
+            // The watchdog armed for this connect must not fire into the
+            // stream a later start opens.
+            this.clearHeartbeat();
             this.abortController = null;
             this.dispatch("unauthorized", null);
             return;
@@ -121,28 +213,60 @@ export class SSEClient {
           throw new Error(`SSE HTTP error: ${response.status} ${response.statusText}`);
         }
 
-        // Successfully connected, reset backoff delay
-        this.reconnectDelayMs = 1000;
-        this.dispatch("connected", null);
-        this.resetHeartbeat();
-
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let announced = false;
+        // A CR that ends a chunk ends its line at once; if the next chunk
+        // starts with the LF of a CRLF split across them, that LF is dropped.
+        let skipLF = false;
 
-        while (this.isRunning) {
+        while (this.isRunning && gen === this.generation) {
           const { done, value } = await reader.read();
           if (done) break;
+          // The stream counts as connected at its first bytes, not at the
+          // 200: the appliance writes its open comment once its sources are
+          // subscribed (openComment in internal/sse/sse.go), so a re-sync on
+          // connect cannot miss what is raised in between. An older
+          // appliance's first bytes are its first event.
+          if (!announced) {
+            // A stop or restart that ran while this read was on its way owns
+            // the stream now.
+            if (gen !== this.generation) break;
+            announced = true;
+            this.resetHeartbeat();
+            this.dispatch("connected", null);
+          }
 
-          buffer += decoder.decode(value, { stream: true });
+          // SSE allows CRLF and CR line endings as well as LF.
+          let text = decoder.decode(value, { stream: true });
+          if (skipLF && text !== "") {
+            // Only the one LF right after the CR belongs to it.
+            if (text.startsWith("\n")) text = text.slice(1);
+            skipLF = false;
+          }
+          if (text !== "") skipLF = text.endsWith("\r");
+          // The appliance writes LF only, so most chunks skip the scan.
+          buffer += text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
           const messages = buffer.split("\n\n");
           // Keep trailing incomplete chunk
           buffer = messages.pop() || "";
 
           for (const msg of messages) {
-            this.parseMessage(msg);
+            // A handler may have stopped or restarted the stream.
+            if (gen !== this.generation) break;
+            // The backoff resets on the first event, not on the 200 or the
+            // open comment: a server or proxy that answers and closes at once
+            // must still back off.
+            if (this.parseMessage(msg)) this.reconnectDelayMs = RECONNECT_DELAY_MS;
           }
         }
+        // The server ended the stream (a proxy timeout, say): the reconnect
+        // below runs as after an error, and listeners learn the stream is down
+        // until it comes back. A stop or restart that ran during a read also
+        // ends the loop here; the catch drops it, as it drops the aborted read
+        // a restart usually ends in.
+        throw new Error("SSE stream closed by the server");
       } catch (err: unknown) {
         if (!this.isRunning || gen !== this.generation) return;
         this.dispatch("disconnected", err);
@@ -154,16 +278,18 @@ export class SSEClient {
       }
 
       if (this.isRunning && gen === this.generation) {
-        await new Promise((resolve) => setTimeout(resolve, this.reconnectDelayMs));
+        await new Promise<void>((resolve) => this.deps.timers.setTimeout(resolve, this.reconnectDelayMs));
         // Re-check after the delay: a stop()+start() during it must not let this
         // stale loop double the new generation's shared backoff.
         if (!this.isRunning || gen !== this.generation) return;
-        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.maxReconnectDelayMs);
+        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, RECONNECT_MAX_MS);
       }
     }
   }
 
-  private parseMessage(raw: string): void {
+  // parseMessage dispatches one message and reports whether it carried a
+  // heartbeat or data (a comment, or a line with neither, does not count).
+  private parseMessage(raw: string): boolean {
     let eventName = "message";
     let dataStr = "";
 
@@ -179,7 +305,7 @@ export class SSEClient {
     if (eventName === "heartbeat") {
       this.resetHeartbeat();
       this.dispatch("heartbeat", {});
-      return;
+      return true;
     }
 
     // Any other named event that carries a JSON data payload is dispatched under
@@ -193,7 +319,7 @@ export class SSEClient {
       this.resetHeartbeat();
       if (RESERVED_EVENTS.has(eventName)) {
         console.warn(`Ignoring SSE event with reserved name "${eventName}"`);
-        return;
+        return true;
       }
       try {
         const payload: unknown = JSON.parse(dataStr);
@@ -201,7 +327,9 @@ export class SSEClient {
       } catch (err) {
         console.error(`Failed to parse SSE payload for event "${eventName}":`, err);
       }
+      return true;
     }
+    return false;
   }
 }
 

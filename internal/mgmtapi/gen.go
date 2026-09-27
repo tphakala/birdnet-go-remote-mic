@@ -1073,7 +1073,7 @@ type ValidationProblem struct {
 
 // StreamEventsParams defines parameters for StreamEvents.
 type StreamEventsParams struct {
-	// Events Event types to subscribe to, comma-separated. Absent means all types. Heartbeats are always sent.
+	// Events Event types to subscribe to, comma-separated. Absent or empty means all types. Heartbeats are always sent.
 	Events *[]string `form:"events,omitempty" json:"events,omitempty"`
 }
 
@@ -1255,6 +1255,10 @@ type ClientInterface interface {
 	//   idle connections stay alive and clients can detect a dead
 	//   server. Sent as a named event (not an SSE comment) so simple
 	//   fetch-based parsers see it.
+	//
+	// The stream opens with an SSE comment line (`: open`) once the
+	// server has subscribed to the requested events; clients ignore it,
+	// as the SSE format asks, or may take it as the stream being up.
 	//
 	// Further event types will be added additively; clients must ignore
 	// event types they do not know. Level data is ephemeral: there is no
@@ -1554,6 +1558,10 @@ func (c *Client) GetDevice(ctx context.Context, name string, reqEditors ...Reque
 //     idle connections stay alive and clients can detect a dead
 //     server. Sent as a named event (not an SSE comment) so simple
 //     fetch-based parsers see it.
+//
+// The stream opens with an SSE comment line (`: open`) once the
+// server has subscribed to the requested events; clients ignore it,
+// as the SSE format asks, or may take it as the stream being up.
 //
 // Further event types will be added additively; clients must ignore
 // event types they do not know. Level data is ephemeral: there is no
@@ -2562,6 +2570,10 @@ type ClientWithResponsesInterface interface {
 	//   idle connections stay alive and clients can detect a dead
 	//   server. Sent as a named event (not an SSE comment) so simple
 	//   fetch-based parsers see it.
+	//
+	// The stream opens with an SSE comment line (`: open`) once the
+	// server has subscribed to the requested events; clients ignore it,
+	// as the SSE format asks, or may take it as the stream being up.
 	//
 	// Further event types will be added additively; clients must ignore
 	// event types they do not know. Level data is ephemeral: there is no
@@ -3816,6 +3828,10 @@ func (c *ClientWithResponses) GetDeviceWithResponse(ctx context.Context, name st
 //     idle connections stay alive and clients can detect a dead
 //     server. Sent as a named event (not an SSE comment) so simple
 //     fetch-based parsers see it.
+//
+// The stream opens with an SSE comment line (`: open`) once the
+// server has subscribed to the requested events; clients ignore it,
+// as the SSE format asks, or may take it as the stream being up.
 //
 // Further event types will be added additively; clients must ignore
 // event types they do not know. Level data is ephemeral: there is no

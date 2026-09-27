@@ -6,7 +6,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
+import { Emitter } from "../src/lib/emitter.ts";
+import type { ViewName } from "../src/lib/router-core.ts";
 import { fileURLToPath } from "node:url";
+import { at, FakeTimers } from "./fixtures.ts";
 
 import {
   availableCardKey,
@@ -22,6 +25,11 @@ import {
   bannerIsError,
   deviceFieldLabel,
   rejectionText,
+  followDashboardRoute,
+  followLevels,
+  routeLevels,
+  LEVELS_STALE_MS,
+  LevelsWatch,
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
@@ -366,4 +374,149 @@ test("judgeUnconfirmedSave judges a lost save by the re-read", () => {
   // A save that changed nothing cannot be told apart by the re-read.
   assert.equal(judgeUnconfirmedSave(true, "a", "a", "a"), "unchanged");
   assert.equal(judgeUnconfirmedSave(true, "a", "c", "a"), "changed");
+});
+
+// FakeRouter announces routes as the app's router does.
+class FakeRouter extends Emitter<{ route: ViewName }> {
+  go(view: ViewName): void {
+    this.emit("route", view);
+  }
+}
+
+test("the dashboard follower suspends meters, drops levels and stops the stale check off the dashboard", () => {
+  const router = new FakeRouter();
+  const calls: string[] = [];
+  followDashboardRoute(router, {
+    setFramesSuspended: (s) => calls.push(`frames ${s ? "off" : "on"}`),
+    setLevelsWanted: (w) => calls.push(`levels ${w ? "on" : "off"}`),
+    setWatched: (w) => calls.push(`watch ${w ? "on" : "off"}`),
+  });
+  router.go("dashboard");
+  router.go("system");
+  router.go("events");
+  router.go("dashboard");
+  assert.deepEqual(calls, [
+    "frames on", "levels on", "watch on",
+    "frames off", "levels off", "watch off",
+    "frames off", "levels off", "watch off",
+    "frames on", "levels on", "watch on",
+  ]);
+});
+
+// watchHarness builds a LevelsWatch on fake timers and a clock the test sets,
+// counting how often it clears the meters.
+function watchHarness() {
+  const timers = new FakeTimers();
+  let clock = 0;
+  let clears = 0;
+  const watch = new LevelsWatch({ timers, now: () => clock, clear: () => clears++ });
+  return {
+    watch,
+    timers,
+    clears: () => clears,
+    setClock: (t: number) => {
+      clock = t;
+    },
+    // tick runs the check interval once.
+    tick: () => at(timers.intervals(), 0).fn(),
+  };
+}
+
+test("LevelsWatch clears the meters once when levels stop on a live stream", () => {
+  const h = watchHarness();
+  h.watch.setWatched(true);
+  h.watch.setConnected(true);
+  h.watch.levels();
+  h.setClock(LEVELS_STALE_MS);
+  h.tick();
+  assert.equal(h.clears(), 0, "a gap of the full window is still current");
+  h.setClock(LEVELS_STALE_MS + 1);
+  h.tick();
+  assert.equal(h.clears(), 1, "a longer gap clears the meters");
+  h.setClock(LEVELS_STALE_MS * 3);
+  h.tick();
+  assert.equal(h.clears(), 1, "a long gap clears them once");
+  h.watch.levels();
+  // Levels arrived at 3x: half a window later they are still current.
+  h.setClock(LEVELS_STALE_MS * 3 + LEVELS_STALE_MS / 2);
+  h.tick();
+  assert.equal(h.clears(), 1, "levels() must restart the window, not only allow another clear");
+  h.setClock(LEVELS_STALE_MS * 4 + 1);
+  h.tick();
+  assert.equal(h.clears(), 2, "levels that came back and stopped again clear again");
+});
+
+test("LevelsWatch runs its check only while the dashboard shows on a live stream", () => {
+  const h = watchHarness();
+  h.watch.setConnected(true);
+  assert.equal(h.timers.intervals().length, 0, "the dashboard is not showing");
+  h.watch.setWatched(true);
+  assert.equal(h.timers.intervals().length, 1);
+  h.watch.setWatched(false);
+  assert.equal(h.timers.intervals().length, 0, "leaving the dashboard stops the check");
+  h.watch.setWatched(true);
+  // Showing again starts a new window rather than judging the time away.
+  h.setClock(LEVELS_STALE_MS * 10);
+  h.watch.setWatched(false);
+  h.watch.setWatched(true);
+  h.tick();
+  assert.equal(h.clears(), 0);
+});
+
+test("LevelsWatch clears at once when the stream goes down and stops its check", () => {
+  const h = watchHarness();
+  h.watch.setWatched(true);
+  h.watch.setConnected(true);
+  h.watch.setConnected(false);
+  assert.equal(h.clears(), 1);
+  assert.equal(h.timers.intervals().length, 0);
+});
+
+// FakeLevelsEvents announces what the store does about levels.
+class FakeLevelsEvents extends Emitter<{ levels: undefined; levelsdropped: undefined; connection: boolean }> {
+  fire(name: "levels" | "levelsdropped"): void {
+    this.emit(name);
+  }
+  connection(up: boolean): void {
+    this.emit("connection", up);
+  }
+}
+
+test("followLevels feeds the watch from the store's announcements", () => {
+  const h = watchHarness();
+  const events = new FakeLevelsEvents();
+  followLevels(events, h.watch);
+  h.watch.setWatched(true);
+  events.connection(true);
+  assert.equal(h.timers.intervals().length, 1, "a live stream starts the check");
+  events.fire("levelsdropped");
+  assert.equal(h.clears(), 1, "dropped levels clear the meters");
+  events.fire("levels");
+  h.setClock(LEVELS_STALE_MS + 1);
+  h.tick();
+  assert.equal(h.clears(), 2, "levels that stop again clear again");
+  events.connection(false);
+  assert.equal(h.clears(), 3, "a stream going down clears the meters");
+});
+
+test("routeLevels feeds each channel's meter and clears a card the event lacks", () => {
+  const calls: string[] = [];
+  const cards = [
+    { name: "garden", meters: ["g0", "g1"] },
+    { name: "bats", meters: ["b0"] },
+  ];
+  const channels = [
+    { channel: 1, rmsDbfs: -20, peakDbfs: -6, clipped: false },
+    { channel: 0, rmsDbfs: -30, peakDbfs: -0.05, clipped: true },
+    { channel: 5, rmsDbfs: -1, peakDbfs: -1, clipped: false },
+  ];
+  routeLevels(cards, new Map([["garden", { channels }]]), {
+    set: (m, rms, peak, clipped) => calls.push(`${m} ${rms} ${peak} ${clipped}`),
+    clear: (m) => calls.push(`${m} clear`),
+  });
+  assert.deepEqual(
+    calls,
+    ["g1 -20 -6 false", "g0 -30 -0.05 true", "b0 clear"],
+    "each channel's own levels and latch reach its meter; a channel with no meter is skipped; bats is missing, so cleared",
+  );
 });

@@ -1080,7 +1080,8 @@ textarea {
   font-weight: 700;
   color: var(--text-primary);
   /* Reserve the widest value so the readout neither wraps nor resizes as the
-     level changes ~10 times a second: "-59.9 dBFS" is 10 monospace cells. */
+     level changes several times a second (see READOUT_INTERVAL_MS in
+     lib/meter-core.ts): "-59.9 dBFS" is 10 monospace cells. */
   min-width: 10ch;
   white-space: nowrap;
   text-align: right;
@@ -1283,8 +1284,8 @@ textarea {
 }
 
 /* Respect a reduced-motion preference: stop the pulsing status dots, the
-   restart spinner, and other animation/transition motion. The VU meter also
-   checks this in script and renders a static bar. */
+   restart spinner, and other animation/transition motion. The VU meter
+   follows it in script: its needle steps once per level instead of gliding. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

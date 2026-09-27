@@ -230,6 +230,7 @@ func newBootID() string {
 
 var (
 	_ sse.Source = (*Center)(nil)
+	_ sse.Named  = (*Center)(nil)
 	_ Publisher  = (*Center)(nil)
 	_ Updater    = (*Center)(nil)
 )
@@ -241,6 +242,11 @@ func (c *Center) BootID() string {
 	}
 	return c.bootID
 }
+
+// EventNames reports the one event name the Center emits, so an SSE request
+// that filters notifications out never subscribes. It needs no Center, so a
+// nil receiver answers the same.
+func (c *Center) EventNames() []string { return []string{notificationEvent} }
 
 // Subscribe registers an SSE consumer and returns its event channel plus a
 // cancel func that unregisters it. The shared sse.Broadcaster owns the

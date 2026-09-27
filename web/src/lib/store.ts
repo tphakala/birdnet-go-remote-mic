@@ -1,7 +1,8 @@
 import { api, ApiError, apiErrorMessage, isRefusal, TOKEN_NOT_ACCEPTED, UnreadableResponseError, type ApiClient } from "./api.ts";
 import { sentence } from "./text.ts";
 import { Emitter } from "./emitter.ts";
-import { sse, type SSEClient } from "./sse.ts";
+import { LEVELS_EVENT, NOTIFICATION_EVENT, sse, type SSEClient } from "./sse.ts";
+import type { Timers } from "./timers.ts";
 import { getToken, setToken } from "./auth.ts";
 import { LatestGate } from "./latest-core.ts";
 import { ChangeTracker, gatedRefresh } from "./store-core.ts";
@@ -23,15 +24,18 @@ const POLL_INTERVAL_MS = 3000;
 // quick tab switch keeps the stream (and its toasts); a tab left in the
 // background stops holding the appliance's levels feed.
 export const HIDDEN_STREAM_GRACE_MS = 60_000;
-
-// Timers is the timer API the stores schedule with: the globals in the app, a
-// fake a test fires by hand.
-export interface Timers {
-  setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
-  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
-  setInterval(fn: () => void, ms: number): ReturnType<typeof setInterval>;
-  clearInterval(handle: ReturnType<typeof setInterval>): void;
-}
+// How long levels keep streaming after the dashboard stops showing. A quick
+// look at another view keeps the stream as it is; a longer stay drops levels
+// from it, so the appliance marshals and sends none for this page (the SSE
+// handler skips a source the filter excludes: the Named check in
+// handler.ServeHTTP, internal/sse/sse.go).
+export const LEVELS_GRACE_MS = 30_000;
+// NON_LEVEL_EVENTS is every event type the UI consumes except levels, the
+// filter the stream uses while levels are dropped. An event type the UI
+// starts consuming gets a constant in lib/sse.ts and goes here too, or it
+// stops arriving while no dashboard shows. It must not be empty: an empty
+// filter means every event type, levels included (a test checks both).
+export const NON_LEVEL_EVENTS: readonly string[] = [NOTIFICATION_EVENT];
 
 export interface AppState {
   status: ApplianceStatus | null;
@@ -51,7 +55,7 @@ export interface StoreDeps {
     ApiClient,
     "onUnauthorized" | "getHealth" | "getStatus" | "getDevices" | "getSystem" | "getConfig" | "getAvailableDevices"
   >;
-  sse: Pick<SSEClient, "subscribe" | "start" | "stop">;
+  sse: Pick<SSEClient, "subscribe" | "start" | "stop" | "setEvents">;
   timers?: Timers;
 }
 
@@ -71,6 +75,10 @@ export interface StoreEvents {
   loaderror: LoadError;
   authrequired: undefined;
   authok: undefined;
+  // levelsdropped: the stream stopped carrying levels, or starts without them
+  // on a page that opens off the dashboard (see setLevelsWanted), so any
+  // levels the meters show are no longer current.
+  levelsdropped: undefined;
 }
 
 export class AppStore extends Emitter<StoreEvents> {
@@ -98,6 +106,15 @@ export class AppStore extends Emitter<StoreEvents> {
   // shows again (see setPageHidden).
   private streamStopTimer: ReturnType<typeof setTimeout> | null = null;
   private streamPaused = false;
+  // Levels: whether a view wants them, whether the stream dropped them, and
+  // the grace timer between the two (see setLevelsWanted).
+  private levelsWanted = true;
+  private levelsDropped = false;
+  // Whether a view has said yet whether it wants levels (the first route).
+  private levelsDecided = false;
+  private levelsTimer: ReturnType<typeof setTimeout> | null = null;
+  // Whether the current outage was announced (see markStreamDown).
+  private downAnnounced = false;
   // One ordering gate per polled resource (see LatestGate). The poll timer does
   // not wait for a tick to finish, and a provision, removal, or save triggers an
   // extra refresh, so reads of one resource overlap and can resolve out of
@@ -223,6 +240,7 @@ export class AppStore extends Emitter<StoreEvents> {
         this.onUnauthorized();
       } else if (eventName === "connected") {
         this.state.connected = true;
+        this.downAnnounced = false;
         this.emit("connection", true);
       } else if (eventName === "disconnected") {
         // During a deliberate token rotation the SSE connection carrying the old
@@ -231,10 +249,12 @@ export class AppStore extends Emitter<StoreEvents> {
         // indicator to "Reconnecting" for it; a genuine drop (swapDepth 0) still
         // shows. endTokenSwap restarts the stream so the recovery is not skipped.
         if (this.swapDepth > 0) return;
-        this.state.connected = false;
-        this.emit("connection", false);
-      } else if (eventName === "levels") {
+        this.markStreamDown();
+      } else if (eventName === LEVELS_EVENT) {
+        // The map holds this event's devices only: a device missing from it
+        // (its meter was removed) must not have its last level replayed.
         const payload = data as LevelsEvent;
+        this.state.levels.clear();
         for (const dl of payload.devices) {
           this.state.levels.set(dl.name, dl);
         }
@@ -341,6 +361,72 @@ export class AppStore extends Emitter<StoreEvents> {
     else this.armPollTimer();
   }
 
+  // setLevelsWanted says whether a view is showing levels (the dashboard).
+  // Levels stop LEVELS_GRACE_MS after the dashboard leaves, by changing the
+  // stream's event filter, and come back at once when one returns; a return
+  // within the grace changes nothing. Dropping them announces levelsdropped.
+  // Each filter change reconnects a running stream once, and the connect
+  // re-sync reloads the notifications snapshot, as on any reconnect; a
+  // notification raised during that reconnect arrives through the snapshot,
+  // without a toast.
+  // The filter outlives a stopped stream (a 401, a hidden page), so a restart
+  // keeps it.
+  public setLevelsWanted(wanted: boolean): void {
+    // The first call comes from the start-up route, before the stream opens:
+    // a page that starts on another view never shows levels, so it opens the
+    // stream without them rather than streaming them for the grace and then
+    // reconnecting.
+    if (!this.levelsDecided) {
+      this.levelsDecided = true;
+      this.levelsWanted = wanted;
+      if (!wanted) this.dropLevels();
+      return;
+    }
+    if (wanted === this.levelsWanted) return;
+    this.levelsWanted = wanted;
+    if (wanted) {
+      this.clearLevelsTimer();
+      if (this.levelsDropped) {
+        this.levelsDropped = false;
+        this.sse.setEvents(null);
+      }
+      return;
+    }
+    this.levelsTimer = this.timers.setTimeout(() => {
+      this.levelsTimer = null;
+      this.dropLevels();
+    }, LEVELS_GRACE_MS);
+  }
+
+  private clearLevelsTimer(): void {
+    if (this.levelsTimer !== null) {
+      this.timers.clearTimeout(this.levelsTimer);
+      this.levelsTimer = null;
+    }
+  }
+
+  // markStreamDown records that the stream went down: every path that says
+  // so resets the same state (the levels it carried are not current) and
+  // announces it once per outage, not once per failed reconnect. The first
+  // failure before any connect announces too, so "Connecting" becomes
+  // "Reconnecting".
+  private markStreamDown(): void {
+    this.state.connected = false;
+    this.state.levels.clear();
+    if (this.downAnnounced) return;
+    this.downAnnounced = true;
+    this.emit("connection", false);
+  }
+
+  // dropLevels takes levels off the stream and announces it, so the meters
+  // stop showing the last ones.
+  private dropLevels(): void {
+    this.levelsDropped = true;
+    this.sse.setEvents(NON_LEVEL_EVENTS);
+    this.state.levels.clear();
+    this.emit("levelsdropped");
+  }
+
   public stopPolling(): void {
     this.polling = false;
     this.clearPollTimer();
@@ -351,21 +437,18 @@ export class AppStore extends Emitter<StoreEvents> {
     // does: otherwise connected stays true through a login prompt, and the
     // notifications fallback after the login would take a stream that never
     // came back for a live one.
-    if (this.state.connected) {
-      this.state.connected = false;
-      this.emit("connection", false);
-    }
+    if (this.state.connected) this.markStreamDown();
   }
 
   // setPageHidden pauses the poll while the page is hidden (a background tab or
   // a minimized window): nobody is looking, and every tick costs the appliance
   // five requests. The event stream stays up for HIDDEN_STREAM_GRACE_MS, so a
   // quick tab switch keeps notifications and their toasts arriving, and is then
-  // stopped, so a forgotten tab does not keep the appliance metering and
-  // sending levels for it. On showing again the page refreshes at once, so the
-  // views are current without waiting an interval, and resumes the timer; a
-  // stopped stream restarts, and its connect re-sync recovers any notification
-  // raised meanwhile (toasts for those are not replayed).
+  // stopped, so a forgotten tab does not keep the appliance sending it
+  // levels. On showing again the page refreshes at once, so the views are
+  // current without waiting an interval, and resumes the timer; a stopped
+  // stream restarts, and its connect re-sync recovers any notification raised
+  // meanwhile (toasts for those are not replayed).
   public setPageHidden(hidden: boolean): void {
     if (hidden === this.pageHidden) return;
     this.pageHidden = hidden;
@@ -397,10 +480,7 @@ export class AppStore extends Emitter<StoreEvents> {
       // stop() is silent, so say the stream is down: the notification store
       // drops a pending re-sync retry (the restart's connect re-syncs), and the
       // indicator reads "Reconnecting" until the restarted stream connects.
-      if (this.state.connected) {
-        this.state.connected = false;
-        this.emit("connection", false);
-      }
+      if (this.state.connected) this.markStreamDown();
     }, HIDDEN_STREAM_GRACE_MS);
   }
 
@@ -510,12 +590,6 @@ export class AppStore extends Emitter<StoreEvents> {
       },
       (devices) => {
         this.state.devices = devices;
-        // Drop level entries for devices that are no longer present so the map
-        // does not grow without bound as devices are added or removed.
-        const present = new Set(this.state.devices.map((d) => d.name));
-        for (const name of this.state.levels.keys()) {
-          if (!present.has(name)) this.state.levels.delete(name);
-        }
         if (this.devicesChange.changed(devices)) {
           this.emit("devices", this.state.devices);
         }

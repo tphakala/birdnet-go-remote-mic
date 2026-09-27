@@ -1,0 +1,515 @@
+// Unit tests for the SSE client (lib/sse.ts): the event filter goes in the
+// stream URL, changing it reconnects a running stream without reporting a
+// disconnect, and it never starts a stopped one; the heartbeat watchdog and
+// the reconnect backoff, including a stream the server ends. A fake fetch
+// stands in for the network and FakeTimers for the heartbeat and backoff.
+// Run with node:test (see web:test).
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import {
+  HEARTBEAT_TIMEOUT_MS,
+  LEVELS_EVENT,
+  NOTIFICATION_EVENT,
+  RECONNECT_DELAY_MS,
+  RECONNECT_MAX_MS,
+  SSEClient,
+} from "../src/lib/sse.ts";
+import { at, FakeTimers, settle } from "./fixtures.ts";
+
+// Call is one fetch the client made: its URL, and hooks to answer it.
+interface Call {
+  url: string;
+  // headers are the request's headers.
+  headers: Headers;
+  // stream answers 200 with a body that opens with the appliance's open
+  // comment (unless open is false) and stays open until the request aborts.
+  // Its send writes to the body, and end closes it as a server ending the
+  // stream would.
+  stream(open?: boolean): { send(text: string): void; end(): void };
+  // reply answers with a bare status.
+  reply(status: number): void;
+}
+
+function harness() {
+  const calls: Call[] = [];
+  const timers = new FakeTimers();
+  let clock = 0;
+  const client = new SSEClient("/api/v1/events", {
+    fetch: (url, init) =>
+      new Promise<Response>((resolve, reject) => {
+        const signal = init.signal;
+        const abortError = () => new DOMException("aborted", "AbortError");
+        signal?.addEventListener("abort", () => reject(abortError()));
+        calls.push({
+          url,
+          headers: new Headers(init.headers),
+          stream: (open = true) => {
+            let ctl: ReadableStreamDefaultController<Uint8Array> | undefined;
+            const body = new ReadableStream<Uint8Array>({
+              start(controller) {
+                ctl = controller;
+                if (open) controller.enqueue(new TextEncoder().encode(": open\n\n"));
+                // A real fetch errors the body when its request aborts.
+                signal?.addEventListener("abort", () => controller.error(abortError()));
+              },
+            });
+            resolve(new Response(body, { status: 200 }));
+            return {
+              send: (text) => ctl?.enqueue(new TextEncoder().encode(text)),
+              end: () => ctl?.close(),
+            };
+          },
+          reply: (status) => resolve(new Response(null, { status })),
+        });
+      }),
+    timers,
+    now: () => clock,
+  });
+  const events: string[] = [];
+  const payloads: [string, unknown][] = [];
+  client.subscribe((name, data) => {
+    events.push(name);
+    payloads.push([name, data]);
+  });
+  return {
+    client,
+    calls,
+    events,
+    payloads,
+    timers,
+    // last is the newest request the client made.
+    last: () => at(calls, calls.length - 1),
+    setClock: (t: number) => {
+      clock = t;
+    },
+  };
+}
+
+test("the event filter goes in the stream URL", async () => {
+  const h = harness();
+  h.client.setEvents(["notification"]);
+  h.client.start();
+  assert.equal(h.last().url, "/api/v1/events?events=notification");
+  h.client.setEvents(["levels", "notification"]);
+  await settle();
+  assert.equal(h.last().url, "/api/v1/events?events=levels,notification");
+  h.client.setEvents(null);
+  await settle();
+  assert.equal(h.last().url, "/api/v1/events", "no filter means every event type");
+  h.client.stop();
+});
+
+test("setting the same filter does not reconnect", async () => {
+  const h = harness();
+  h.client.start();
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.equal(h.calls.length, 2);
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.equal(h.calls.length, 2, "an unchanged filter must not reconnect");
+  h.client.stop();
+});
+
+test("changing the filter mid-connect reconnects without a disconnected event", async () => {
+  const h = harness();
+  h.client.start();
+  // The first connect is still waiting for its response.
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.events, [], "a deliberate reconnect must not report a disconnect");
+  h.last().stream();
+  await settle();
+  assert.deepEqual(h.events, ["connected"]);
+  h.client.stop();
+});
+
+test("changing the filter while streaming reconnects once, without a disconnected event", async () => {
+  const h = harness();
+  h.client.start();
+  h.last().stream();
+  await settle();
+  assert.deepEqual(h.events, ["connected"]);
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.equal(h.calls.length, 2);
+  h.last().stream();
+  await settle();
+  assert.deepEqual(h.events, ["connected", "connected"], "the new stream connects once, with no disconnect between");
+  h.client.stop();
+});
+
+test("changing the filter while stopped does not start the stream", async () => {
+  const h = harness();
+  h.client.setEvents(["notification"]);
+  assert.equal(h.calls.length, 0, "setEvents before start must not connect");
+  h.client.start();
+  // The appliance rejects the token, which stops the stream.
+  h.last().reply(401);
+  await settle();
+  assert.deepEqual(h.events, ["unauthorized"]);
+  h.client.setEvents(null);
+  await settle();
+  assert.equal(h.calls.length, 1, "a filter change must not restart a stream stopped by a 401");
+});
+
+test("an empty filter list means every event type", async () => {
+  const h = harness();
+  h.client.setEvents([]);
+  h.client.start();
+  assert.equal(h.last().url, "/api/v1/events");
+  h.client.setEvents(null);
+  await settle();
+  assert.equal(h.calls.length, 1, "an empty list and null are the same filter");
+  h.client.stop();
+});
+
+test("a restart while a 401 is on its way does not stop the new stream", async () => {
+  const h = harness();
+  h.client.start();
+  // The first request is answered 401, but before its continuation runs the
+  // filter changes and the stream restarts.
+  h.last().reply(401);
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.deepEqual(h.events, [], "the stale 401 must not reach the store");
+  assert.equal(h.calls.length, 2);
+  h.last().stream();
+  await settle();
+  assert.deepEqual(h.events, ["connected"], "the new stream must still connect");
+  h.client.stop();
+});
+
+test("the heartbeat watchdog and the reconnect backoff use the injected timers", async () => {
+  const h = harness();
+  h.client.setEvents(["notification"]);
+  h.client.start();
+  h.last().stream();
+  await settle();
+  const [watchdog] = h.timers.pending(HEARTBEAT_TIMEOUT_MS);
+  assert.ok(watchdog, "a connected stream must arm the heartbeat watchdog");
+  // The watchdog firing on a stream silent for the whole window aborts it,
+  // and it then backs off.
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(watchdog);
+  await settle();
+  assert.deepEqual(h.events, ["connected", "disconnected"]);
+  const [backoff] = h.timers.pending(RECONNECT_DELAY_MS);
+  assert.ok(backoff, "a dropped stream must wait out the backoff");
+  h.timers.fire(backoff);
+  await settle();
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.last().url, "/api/v1/events?events=notification", "the reconnect keeps the filter");
+  h.client.stop();
+});
+
+test("a filter restart arms the heartbeat watchdog before the new stream answers", async () => {
+  const h = harness();
+  h.client.start();
+  h.last().stream();
+  await settle();
+  h.client.setEvents(["notification"]);
+  await settle();
+  // The new request hangs (a dead link); the watchdog must still be armed.
+  const [watchdog] = h.timers.pending(HEARTBEAT_TIMEOUT_MS);
+  assert.ok(watchdog, "a silent restart must arm the watchdog");
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(watchdog);
+  await settle();
+  assert.deepEqual(h.events, ["connected", "disconnected"], "the hung restart must be reported once the watchdog fires");
+  h.client.stop();
+});
+
+test("a 401 on a filter restart clears the watchdog the restart armed", async () => {
+  const h = harness();
+  h.client.start();
+  h.last().stream();
+  await settle();
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.equal(h.timers.pending(HEARTBEAT_TIMEOUT_MS).length, 1);
+  h.last().reply(401);
+  await settle();
+  assert.deepEqual(h.events, ["connected", "unauthorized"]);
+  assert.deepEqual(h.timers.pending(), [], "a stream stopped by a 401 must leave no watchdog to fire later");
+});
+
+test("a stream the server ends is reported down and reconnects", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body?.end();
+  await settle();
+  assert.deepEqual(h.events, ["connected", "disconnected"], "listeners must learn the stream is down");
+  const [backoff] = h.timers.pending(RECONNECT_DELAY_MS);
+  assert.ok(backoff, "an ended stream must wait out the backoff");
+  h.timers.fire(backoff);
+  await settle();
+  assert.equal(h.calls.length, 2);
+  h.client.stop();
+});
+
+test("a stream that ends before any event backs off further (its open comment is no event); an event resets the backoff", async () => {
+  const h = harness();
+  h.client.start();
+  // Answered and closed at once, twice: the second wait is longer.
+  for (const wait of [RECONNECT_DELAY_MS, RECONNECT_DELAY_MS * 2]) {
+    h.last().stream().end();
+    await settle();
+    const [backoff] = h.timers.pending(wait);
+    assert.ok(backoff, `a stream with no event must wait ${wait} ms before reconnecting`);
+    h.timers.fire(backoff);
+    await settle();
+  }
+  // This stream carries a heartbeat before it ends, so the next wait is the
+  // shortest again.
+  const body = h.last().stream();
+  await settle();
+  body?.send("event: heartbeat\ndata: {}\n\n");
+  await settle();
+  body?.end();
+  await settle();
+  assert.equal(h.timers.pending(RECONNECT_DELAY_MS).length, 1, "a stream that carried data must reset the backoff");
+  h.client.stop();
+});
+
+test("data inside the window keeps the stream and costs no timer calls", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  const armed = h.timers.all.length;
+  for (let t = 100; t <= 1300; t += 100) {
+    h.setClock(t);
+    body.send(`event: levels\ndata: {"t":${t}}\n\n`);
+    await settle();
+  }
+  assert.equal(h.timers.all.length, armed, "a message must not clear and set a timer");
+  // At the end of the window the stream was last heard from 1.3 s ago: the
+  // watchdog re-arms for what is left instead of dropping the stream. The
+  // remainder (1300 ms) is no backoff delay, so it can only be the watchdog.
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(at(h.timers.pending(HEARTBEAT_TIMEOUT_MS), 0));
+  await settle();
+  assert.deepEqual(h.events.filter((e) => e !== "levels"), ["connected"]);
+  assert.equal(h.timers.pending(1300).length, 1, "the watchdog must re-arm for the rest of the window");
+  h.client.stop();
+});
+
+test("a named data frame is dispatched by name; a reserved name or bad JSON is not", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  const warn = console.warn;
+  const error = console.error;
+  console.warn = () => {};
+  console.error = () => {};
+  try {
+    body.send('event: levels\ndata: {"a":1}\n\n');
+    body.send('event: connected\ndata: {"b":2}\n\n');
+    body.send("event: notification\ndata: {not json\n\n");
+    body.send('event: notification\ndata: {"c":3}\n\n');
+    await settle();
+  } finally {
+    console.warn = warn;
+    console.error = error;
+  }
+  assert.deepEqual(h.payloads.slice(1), [
+    ["levels", { a: 1 }],
+    ["notification", { c: 3 }],
+  ]);
+  h.client.stop();
+});
+
+test("stopping a stream reports no disconnect and leaves no timer", async () => {
+  const h = harness();
+  h.client.start();
+  h.last().stream();
+  await settle();
+  h.client.stop();
+  await settle();
+  assert.deepEqual(h.events, ["connected"]);
+  assert.deepEqual(h.timers.pending(), [], "no watchdog or backoff after a stop");
+});
+
+test("a handler that stops the stream ends the chunk's dispatch", async () => {
+  const h = harness();
+  h.client.subscribe((name) => {
+    if (name === "levels") h.client.stop();
+  });
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send('event: levels\ndata: {}\n\nevent: notification\ndata: {}\n\n');
+  await settle();
+  assert.deepEqual(h.events, ["connected", "levels"], "nothing after the stop may be dispatched");
+  assert.deepEqual(h.timers.pending(), [], "no watchdog armed on a stopped client");
+});
+
+test("heartbeats alone keep a quiet stream up", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  // A notifications-only stream carries nothing but heartbeats.
+  h.setClock(15_000);
+  body.send("event: heartbeat\ndata: {}\n\n");
+  await settle();
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(at(h.timers.pending(HEARTBEAT_TIMEOUT_MS), 0));
+  await settle();
+  assert.deepEqual(h.events, ["connected", "heartbeat"], "a heartbeat must keep the watchdog from dropping the stream");
+  assert.equal(h.timers.pending(15_000).length, 1, "the watchdog re-arms for the rest of the heartbeat's window");
+  h.client.stop();
+});
+
+test("the stream counts as connected at its first bytes, not at the 200", async () => {
+  const h = harness();
+  h.client.start();
+  // A 200 whose body has sent nothing yet: the server may not have
+  // subscribed its sources.
+  const body = h.last().stream(false);
+  await settle();
+  assert.deepEqual(h.events, [], "headers alone must not count as connected");
+  body.send(": open\n\n");
+  await settle();
+  assert.deepEqual(h.events, ["connected"]);
+  h.client.stop();
+});
+
+test("CRLF line endings are read like LF", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send('event: levels\r\ndata: {"a":1}\r\n\r\n');
+  await settle();
+  assert.deepEqual(h.payloads.at(-1), ["levels", { a: 1 }]);
+  h.client.stop();
+});
+
+test("a 401 against a token rotated in flight reconnects under the new token", async () => {
+  const h = harness();
+  h.client.setToken("old");
+  h.client.start();
+  assert.equal(h.last().headers.get("Authorization"), "Bearer old", "the token goes in the header");
+  h.client.setToken("new");
+  h.last().reply(401);
+  await settle();
+  assert.deepEqual(h.events, ["disconnected"], "a stale 401 must not prompt for a token");
+  h.timers.fire(at(h.timers.pending(RECONNECT_DELAY_MS), 0));
+  await settle();
+  assert.equal(h.last().headers.get("Authorization"), "Bearer new");
+  h.client.stop();
+});
+
+test("a failed status backs off, doubling up to RECONNECT_MAX_MS", async () => {
+  const h = harness();
+  h.client.start();
+  const waits: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    h.last().reply(503);
+    await settle();
+    const [backoff] = h.timers.pending().filter((t) => t.ms !== HEARTBEAT_TIMEOUT_MS);
+    assert.ok(backoff, `attempt ${i + 1} must back off`);
+    waits.push(backoff.ms);
+    h.timers.fire(backoff);
+    await settle();
+  }
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, RECONNECT_MAX_MS, RECONNECT_MAX_MS]);
+  h.client.stop();
+});
+
+test("a CRLF split across two chunks is one line break", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send("event: notification\r");
+  await settle();
+  body.send('\ndata: {"c":3}\r\n\r\n');
+  await settle();
+  assert.deepEqual(h.payloads.at(-1), ["notification", { c: 3 }]);
+  h.client.stop();
+});
+
+test("the watchdog's window starts again at the stream's first bytes", async () => {
+  const h = harness();
+  h.client.start();
+  // The first bytes take 25 s (a slow proxy or TLS setup).
+  h.setClock(25_000);
+  h.last().stream();
+  await settle();
+  // 30 s after the connect began, the stream has been up for 5 s.
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(at(h.timers.pending(HEARTBEAT_TIMEOUT_MS), 0));
+  await settle();
+  assert.deepEqual(h.events, ["connected"], "a stream up for 5 s must not be dropped");
+  assert.equal(h.timers.pending(25_000).length, 1, "the watchdog re-arms for the rest of the window");
+  h.client.stop();
+});
+
+test("a lone CR ends a line", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  // A CR that ends a chunk ends its line at once: the event is not held
+  // back until the next bytes.
+  body.send('event: levels\rdata: {"a":2}\r\r');
+  await settle();
+  assert.deepEqual(h.payloads.at(-1), ["levels", { a: 2 }]);
+  h.client.stop();
+});
+
+test("a stop that lands with the first bytes announces nothing", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream(false);
+  await settle();
+  // The read resolves with these bytes, but the stop runs before the loop
+  // gets to them.
+  body.send(": open\n\n");
+  h.client.stop();
+  await settle();
+  assert.deepEqual(h.events, [], "a stopped stream must not be announced as connected");
+});
+
+test("a CRLF split so its LF arrives alone keeps the blank line after it", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  // CR, then its LF alone, then the blank line's LF that ends the event.
+  body.send('event: levels\r\ndata: {"a":1}\r');
+  body.send("\n");
+  body.send('\nevent: notification\r\ndata: {"c":3}\r\n\r\n');
+  await settle();
+  assert.deepEqual(h.payloads.slice(1), [
+    ["levels", { a: 1 }],
+    ["notification", { c: 3 }],
+  ]);
+  h.client.stop();
+});
+
+// goString reads a string constant from a Go source under internal/, so the
+// event names the UI routes on cannot drift from the ones the appliance sends.
+function goString(file: string, name: string): string {
+  const src = readFileSync(fileURLToPath(new URL(`../../internal/${file}`, import.meta.url)), "utf8");
+  const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(src);
+  if (!m?.[1]) throw new Error(`no string constant ${name} in ${file}`);
+  return m[1];
+}
+
+test("the event names match the appliance's", () => {
+  assert.equal(LEVELS_EVENT, goString("levels/levels.go", "eventName"));
+  assert.equal(NOTIFICATION_EVENT, goString("notify/notify.go", "notificationEvent"));
+  assert.equal("heartbeat", goString("sse/sse.go", "heartbeatName"));
+});
