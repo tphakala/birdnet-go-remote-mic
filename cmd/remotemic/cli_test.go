@@ -224,7 +224,7 @@ func checkDevice(name, id, path string) config.Device {
 // checkLine returns the report line naming a device, so each status is bound to
 // its own device and an inversion cannot pass on a word found elsewhere.
 func checkLine(report, name string) string {
-	for _, ln := range strings.Split(report, "\n") {
+	for ln := range strings.SplitSeq(report, "\n") {
 		if strings.Contains(ln, " "+name+" ") {
 			return ln
 		}

@@ -90,10 +90,10 @@ func notificationToWire(n *notify.Notification) mgmtapi.Notification {
 		Message:  n.Message,
 	}
 	if n.Key != "" {
-		out.Key = ptr(n.Key)
+		out.Key = new(n.Key)
 	}
 	if n.Source != "" {
-		out.Source = ptr(n.Source)
+		out.Source = new(n.Source)
 	}
 	return out
 }

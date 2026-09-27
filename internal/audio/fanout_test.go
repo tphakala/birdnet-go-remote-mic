@@ -50,7 +50,7 @@ func TestFanoutDeliversEveryPeriodToEveryConsumer(t *testing.T) {
 	if err := f.Run(); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	for i := 0; i < len(cons); i++ {
+	for range cons {
 		got := <-results
 		if !bytes.Equal(got, []byte{1, 2, 3}) {
 			t.Errorf("a consumer got %v, want [1 2 3]", got)
@@ -236,7 +236,7 @@ func TestFanoutMetersEachPeriodOnce(t *testing.T) {
 	}
 	// Both consumers receive every period. This pins the delivery loop: deleting the
 	// per-consumer send in Run leaves the meter count right but this assertion red.
-	for i := 0; i < len(cons); i++ {
+	for range cons {
 		if got := <-results; !bytes.Equal(got, []byte{1, 2, 3}) {
 			t.Errorf("a consumer got %v, want [1 2 3]", got)
 		}

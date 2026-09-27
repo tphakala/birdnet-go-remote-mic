@@ -60,7 +60,7 @@ func TestDeriveNameUniqueSuffix(t *testing.T) {
 func TestRandomPathFormatAndUniqueness(t *testing.T) {
 	t.Parallel()
 	seen := map[string]bool{}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		p := randomPath(seen)
 		if !hexPath.MatchString(p) {
 			t.Fatalf("randomPath = %q, want /<16 hex>", p)
@@ -76,10 +76,6 @@ func TestRandomPathFormatAndUniqueness(t *testing.T) {
 		t.Errorf("randomPath returned a taken path %q", got)
 	}
 }
-
-func modePtr(m mgmtapi.StreamMode) *mgmtapi.StreamMode { return &m }
-func intPtr(v int) *int                                { return &v }
-func chanPtr(v ...int) *[]int                          { return &v }
 
 func TestChooseParams(t *testing.T) {
 	t.Parallel()
@@ -104,30 +100,30 @@ func TestChooseParams(t *testing.T) {
 		{"auto stereo-only defaults to one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{}, config.ModeOpus, 48000, []int{1}},
 		// But selecting a single channel on that same stereo-only device unlocks
 		// Opus: the selecting source extracts one channel to a mono stream.
-		{"single-channel selection unlocks opus on stereo-only", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1)}, config.ModeOpus, 48000, []int{1}},
+		{"single-channel selection unlocks opus on stereo-only", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: new([]int{1})}, config.ModeOpus, 48000, []int{1}},
 		// An explicit non-first single channel must be honored for Opus, not
 		// silently rewritten to channel 1.
-		{"explicit single non-first channel preserved for opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(2)}, config.ModeOpus, 48000, []int{2}},
-		{"auto single non-first channel picks opus on that channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(2)}, config.ModeOpus, 48000, []int{2}},
-		{"explicit opus forces 48k mono", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
-		{"explicit pcm with rate override defaults mono", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(96000)}, config.ModePCM, 96000, []int{1}},
-		{"explicit pcm derives best rate", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)}, config.ModePCM, 384000, []int{1}},
-		{"channel selection respected for pcm", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm), Channels: chanPtr(1, 2)}, config.ModePCM, 48000, []int{1, 2}},
+		{"explicit single non-first channel preserved for opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Opus), Channels: new([]int{2})}, config.ModeOpus, 48000, []int{2}},
+		{"auto single non-first channel picks opus on that channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Channels: new([]int{2})}, config.ModeOpus, 48000, []int{2}},
+		{"explicit opus forces 48k mono", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
+		{"explicit pcm with rate override defaults mono", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Pcm), Rate: new(96000)}, config.ModePCM, 96000, []int{1}},
+		{"explicit pcm derives best rate", ultrasonic, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Pcm)}, config.ModePCM, 384000, []int{1}},
+		{"channel selection respected for pcm", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Pcm), Channels: new([]int{1, 2})}, config.ModePCM, 48000, []int{1, 2}},
 		// Auto mode must NOT silently return Opus and discard an explicit rate the
 		// operator asked for; an explicit non-48k rate means they want PCM.
-		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: intPtr(96000)}, config.ModePCM, 96000, []int{1}},
-		{"auto with multi-channel selection falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(1, 2)}, config.ModePCM, 48000, []int{1, 2}},
+		{"auto with explicit rate falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Rate: new(96000)}, config.ModePCM, 96000, []int{1}},
+		{"auto with multi-channel selection falls to pcm not opus", opusCapable, &mgmtapi.ProvisionDeviceRequest{Channels: new([]int{1, 2})}, config.ModePCM, 48000, []int{1, 2}},
 		// An EXPLICIT selection with explicit Opus is kept as asked, not collapsed:
 		// two channels is a valid stereo Opus selection, and three or more is what
 		// config.Validate rejects (422) rather than the request being narrowed here.
-		{"explicit opus with explicit multi-channel is not collapsed", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2)}, config.ModeOpus, 48000, []int{1, 2}},
+		{"explicit opus with explicit multi-channel is not collapsed", opusCapable, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Opus), Channels: new([]int{1, 2})}, config.ModeOpus, 48000, []int{1, 2}},
 		// A derived selection is always a single channel, so explicit Opus on a
 		// stereo-only device lands on one channel.
-		{"explicit opus on stereo-only derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
+		{"explicit opus on stereo-only derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Opus)}, config.ModeOpus, 48000, []int{1}},
 		// An explicit EMPTY channel array is a derived selection just like an
 		// omitted field, so it derives a single channel instead of 422ing where
 		// omitting the field would have succeeded.
-		{"explicit opus with empty channel array derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Opus), Channels: chanPtr()}, config.ModeOpus, 48000, []int{1}},
+		{"explicit opus with empty channel array derives one channel", stereoOnly48k, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Opus), Channels: new([]int{})}, config.ModeOpus, 48000, []int{1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -283,7 +279,7 @@ func TestProvisionDeviceInvalidOverrideYields422(t *testing.T) {
 	prov := &fakeProvider{available: []AvailableDevice{{ID: devAttic, FriendlyName: nameAudioMoth}}}
 	s := New(prov, WithConfigStore(store))
 	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
-		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(500000)},
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: new(mgmtapi.Pcm), Rate: new(500000)},
 	})
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)
@@ -390,7 +386,7 @@ func TestProvisionDeviceOpusStereoYields201(t *testing.T) {
 	}}
 	s := New(prov, WithConfigStore(store))
 	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
-		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2)},
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: new(mgmtapi.Opus), Channels: new([]int{1, 2})},
 	})
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)
@@ -412,7 +408,7 @@ func TestProvisionDeviceOpusThreeChannelYields422(t *testing.T) {
 	s := New(prov, WithConfigStore(store))
 	before := len(store.Config().Devices)
 	resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
-		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: modePtr(mgmtapi.Opus), Channels: chanPtr(1, 2, 3)},
+		Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Mode: new(mgmtapi.Opus), Channels: new([]int{1, 2, 3})},
 	})
 	if err != nil {
 		t.Fatalf("ProvisionDevice: %v", err)
@@ -479,7 +475,7 @@ func TestChooseParamsPreferredChannel(t *testing.T) {
 	if _, _, ch := chooseParams(dev, &mgmtapi.ProvisionDeviceRequest{}, 3); !slices.Equal(ch, []int{3}) {
 		t.Errorf("derived selection = %v, want [3]", ch)
 	}
-	if _, _, ch := chooseParams(dev, &mgmtapi.ProvisionDeviceRequest{Channels: chanPtr(2)}, 3); !slices.Equal(ch, []int{2}) {
+	if _, _, ch := chooseParams(dev, &mgmtapi.ProvisionDeviceRequest{Channels: new([]int{2})}, 3); !slices.Equal(ch, []int{2}) {
 		t.Errorf("explicit selection = %v, want [2]", ch)
 	}
 }
@@ -580,7 +576,7 @@ func TestProvisionDeviceProbeFallbacks(t *testing.T) {
 		called = true
 		return []float64{-90, -10}, nil
 	}
-	ch := provision(t, newServer(t, spy), &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr(1)})
+	ch := provision(t, newServer(t, spy), &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: new([]int{1})})
 	if called {
 		t.Error("probe ran although the request named its channels")
 	}
@@ -704,7 +700,7 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 		})
 		d := &AvailableDevice{SupportedRates: []int{44100, 48000}, SupportedChannels: []int{2}}
 		s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{
-			Mode: modePtr(mgmtapi.Opus), Rate: intPtr(44100),
+			Mode: new(mgmtapi.Opus), Rate: new(44100),
 		})
 		if gotRate != 48000 {
 			t.Errorf("probe rate = %d, want 48000 (the rate opus provisioning uses)", gotRate)
@@ -719,7 +715,7 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 		})
 		d := &AvailableDevice{SupportedRates: []int{48000}, SupportedChannels: []int{2}}
 		got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{
-			Mode: modePtr(mgmtapi.Pcm), Rate: intPtr(1000),
+			Mode: new(mgmtapi.Pcm), Rate: new(1000),
 		})
 		if called || got != 1 {
 			t.Errorf("probe called=%v, channel=%d; want the probe skipped and channel 1 for a 1000 Hz request", called, got)
@@ -740,7 +736,7 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 				return []float64{-90, -10}, nil
 			}))
 		resp, err := s.ProvisionDevice(context.Background(), mgmtapi.ProvisionDeviceRequestObject{
-			Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: chanPtr()},
+			Body: &mgmtapi.ProvisionDeviceRequest{Device: devAttic, Channels: new([]int{})},
 		})
 		if err != nil {
 			t.Fatalf("ProvisionDevice: %v", err)
@@ -764,7 +760,7 @@ func TestPreferredChannelProbeParams(t *testing.T) {
 			return []float64{-90, -10}, nil
 		})
 		d := &AvailableDevice{SupportedRates: []int{192000}, SupportedChannels: []int{1, 2, 4, 8}}
-		got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Mode: modePtr(mgmtapi.Pcm)})
+		got := s.preferredChannel(context.Background(), d, &mgmtapi.ProvisionDeviceRequest{Mode: new(mgmtapi.Pcm)})
 		if got != 2 || !slices.Equal(tried, []int{8, 4, 2}) {
 			t.Errorf("channel %d after widths %v; want channel 2 after trying [8 4 2]", got, tried)
 		}

@@ -90,7 +90,7 @@ func FuzzDownconvertS32ToS16(f *testing.F) {
 		if n != samples*2 {
 			t.Fatalf("wrote %d bytes, want %d", n, samples*2)
 		}
-		for i := 0; i < samples; i++ {
+		for i := range samples {
 			v := int32(binary.LittleEndian.Uint32(src[i*4:]))
 			want := int16(v >> 16)
 			got := int16(binary.LittleEndian.Uint16(dst[i*2:]))
@@ -107,7 +107,7 @@ func BenchmarkDownconvertS32ToS16(b *testing.B) {
 	dst := make([]byte, 960*2)
 	b.SetBytes(int64(len(src)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		downconvertS32ToS16(dst, src)
 	}
 }
@@ -284,7 +284,7 @@ func FuzzDownconvertS24ToS16(f *testing.F) {
 		if n != samples*2 {
 			t.Fatalf("wrote %d bytes, want %d", n, samples*2)
 		}
-		for i := 0; i < samples; i++ {
+		for i := range samples {
 			s := src[i*srcBytes : i*srcBytes+3]
 			want := int16(sext24(s[0], s[1], s[2]) >> 8)
 			got := int16(binary.LittleEndian.Uint16(dst[i*2:]))
@@ -301,7 +301,7 @@ func BenchmarkDownconvertS243LEToS16(b *testing.B) {
 	dst := make([]byte, 960*2)
 	b.SetBytes(int64(len(src)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		downconvertS243LEToS16(dst, src)
 	}
 }

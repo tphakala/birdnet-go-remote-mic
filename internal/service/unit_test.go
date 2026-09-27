@@ -17,7 +17,7 @@ func wantLines(t *testing.T, got string, lines ...string) {
 		t.Errorf("rendered unit contains an unexpanded template placeholder:\n%s", got)
 	}
 	have := make(map[string]bool)
-	for _, l := range strings.Split(got, "\n") {
+	for l := range strings.SplitSeq(got, "\n") {
 		have[l] = true
 	}
 	for _, l := range lines {

@@ -40,7 +40,7 @@ type connSession struct {
 	conn  net.Conn
 	track *Track // bound at SETUP; one connection serves one track
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx // the connection's lifetime, cancelled by close() to stop its writer
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	writeMu   sync.Mutex

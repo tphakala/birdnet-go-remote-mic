@@ -34,7 +34,7 @@ func findNotification(ns []notify.Notification, category notify.Category, kind n
 func patchDiscovery(t *testing.T, s *Server, enabled bool) {
 	t.Helper()
 	if _, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{
-		Body: &mgmtapi.ConfigPatch{Discovery: &mgmtapi.DiscoverySettings{Enabled: ptr(enabled)}},
+		Body: &mgmtapi.ConfigPatch{Discovery: &mgmtapi.DiscoverySettings{Enabled: new(enabled)}},
 	}); err != nil {
 		t.Fatalf("PatchConfig: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestPatchConfigAuthEnableEmitsAuthChanged(t *testing.T) {
 	ok := func(context.Context, config.Config) error { return nil }
 	s := New(&fakeProvider{}, WithConfigStore(store), WithAuth(guard), WithReloader(ok), WithNotifier(center))
 
-	patchAuth(t, s, ptr(testAuthToken))
+	patchAuth(t, s, new(testAuthToken))
 
 	n := findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed")
 	if n == nil {
@@ -190,7 +190,7 @@ func TestPatchConfigAuthRotateEmitsAuthChanged(t *testing.T) {
 	ok := func(context.Context, config.Config) error { return nil }
 	s := New(&fakeProvider{}, WithConfigStore(store), WithAuth(guard), WithReloader(ok), WithNotifier(center))
 
-	patchAuth(t, s, ptr(testAuthToken2))
+	patchAuth(t, s, new(testAuthToken2))
 
 	n := findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed")
 	if n == nil {
@@ -208,7 +208,7 @@ func TestPatchConfigAuthDisableEmitsAuthChanged(t *testing.T) {
 	ok := func(context.Context, config.Config) error { return nil }
 	s := New(&fakeProvider{}, WithConfigStore(store), WithAuth(guard), WithReloader(ok), WithNotifier(center))
 
-	patchAuth(t, s, ptr(""))
+	patchAuth(t, s, new(""))
 
 	n := findNotification(center.Snapshot().Notifications, notify.CategoryConfig, notify.KindEvent, "Access control changed")
 	if n == nil {
@@ -228,7 +228,7 @@ func TestPatchConfigUnchangedTokenEmitsNoAuthChanged(t *testing.T) {
 
 	// Re-applying the same token does not advance the guard generation.
 	genBefore := guard.Generation()
-	patchAuth(t, s, ptr(testAuthToken))
+	patchAuth(t, s, new(testAuthToken))
 
 	if got := guard.Generation(); got != genBefore {
 		t.Errorf("generation advanced from %d to %d on an unchanged token", genBefore, got)

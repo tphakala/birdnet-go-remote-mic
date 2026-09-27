@@ -197,7 +197,7 @@ func ValidToken(token string) string {
 	if len(token) > maxTokenLen {
 		return fmt.Sprintf("must be at most %d characters", maxTokenLen)
 	}
-	for i := 0; i < len(token); i++ {
+	for i := range len(token) {
 		if !unreserved(token[i]) {
 			return "must contain only letters, digits, and . _ ~ -"
 		}

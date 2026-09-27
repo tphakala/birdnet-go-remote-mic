@@ -100,12 +100,12 @@ func parseOSRelease(r io.Reader) Platform {
 // familyFromLike classifies from the space-separated ID_LIKE list, checking
 // debian before rhel so a token list mentioning both resolves deterministically.
 func familyFromLike(idLike string) Family {
-	for _, tok := range strings.Fields(idLike) {
+	for tok := range strings.FieldsSeq(idLike) {
 		if debianIDs[tok] {
 			return FamilyDebian
 		}
 	}
-	for _, tok := range strings.Fields(idLike) {
+	for tok := range strings.FieldsSeq(idLike) {
 		if rhelIDs[tok] {
 			return FamilyRHEL
 		}

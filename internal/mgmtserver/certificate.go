@@ -127,8 +127,7 @@ func (s *Server) PutSystemCertificate(_ context.Context, request mgmtapi.PutSyst
 	}
 	info, err := s.certMgr.Install([]byte(request.Body.CertPem), []byte(request.Body.KeyPem))
 	if err != nil {
-		var verr *mgmtcert.ValidationError
-		if errors.As(err, &verr) {
+		if verr, ok := errors.AsType[*mgmtcert.ValidationError](err); ok {
 			return mgmtapi.PutSystemCertificate422ApplicationProblemPlusJSONResponse(certValidationProblem(verr)), nil
 		}
 		return mgmtapi.PutSystemCertificatedefaultApplicationProblemPlusJSONResponse{
@@ -164,8 +163,7 @@ func (s *Server) RegenerateSystemCertificate(_ context.Context, request mgmtapi.
 	}
 	info, err := s.certMgr.Regenerate(extras)
 	if err != nil {
-		var verr *mgmtcert.ValidationError
-		if errors.As(err, &verr) {
+		if verr, ok := errors.AsType[*mgmtcert.ValidationError](err); ok {
 			return mgmtapi.RegenerateSystemCertificate422ApplicationProblemPlusJSONResponse(certValidationProblem(verr)), nil
 		}
 		return mgmtapi.RegenerateSystemCertificatedefaultApplicationProblemPlusJSONResponse{
@@ -190,9 +188,9 @@ func (s *Server) RegenerateSystemCertificate(_ context.Context, request mgmtapi.
 // validationProblem (config.go) for the certificate endpoints.
 func certValidationProblem(verr *mgmtcert.ValidationError) mgmtapi.ValidationProblem {
 	return mgmtapi.ValidationProblem{
-		Status: ptr(http.StatusUnprocessableEntity),
-		Title:  ptr("invalid certificate"),
-		Detail: ptr(verr.Error()),
+		Status: new(http.StatusUnprocessableEntity),
+		Title:  new("invalid certificate"),
+		Detail: new(verr.Error()),
 		Errors: &[]struct {
 			Field  string `json:"field"`
 			Reason string `json:"reason"`

@@ -172,10 +172,7 @@ func cpuBusyPercent(prevIdle, prevTotal, idle, total uint64) (float64, bool) {
 		return 0, false
 	}
 	dTotal := total - prevTotal
-	dIdle := idle - prevIdle
-	if dIdle > dTotal {
-		dIdle = dTotal
-	}
+	dIdle := min(idle-prevIdle, dTotal)
 	pct := float64(dTotal-dIdle) / float64(dTotal) * 100
 	if pct < 0 {
 		pct = 0

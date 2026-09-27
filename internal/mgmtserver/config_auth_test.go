@@ -74,7 +74,7 @@ func TestPatchConfigAuthOnlyPersistsAndReloads(t *testing.T) {
 	}
 	s := New(&fakeProvider{}, WithConfigStore(store), WithReloader(reloader))
 
-	resp := patchAuth(t, s, ptr(testAuthToken))
+	resp := patchAuth(t, s, new(testAuthToken))
 	got, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
 	if !ok {
 		t.Fatalf("response type %T, want 200", resp)
@@ -112,7 +112,7 @@ func TestPatchConfigAuthEnforcedEvenWhenReloadFails(t *testing.T) {
 	}
 	s := New(&fakeProvider{}, WithConfigStore(store), WithAuth(guard), WithReloader(failingReload))
 
-	resp := patchAuth(t, s, ptr(testAuthToken))
+	resp := patchAuth(t, s, new(testAuthToken))
 	got, ok := resp.(mgmtapi.PatchConfig200JSONResponse)
 	if !ok {
 		t.Fatalf("response type %T, want 200", resp)
@@ -128,7 +128,7 @@ func TestPatchConfigAuthEnforcedEvenWhenReloadFails(t *testing.T) {
 func TestPatchConfigAuthShortTokenYields422(t *testing.T) {
 	store, _ := tokenStore(t, "")
 	s := New(&fakeProvider{}, WithConfigStore(store))
-	resp := patchAuth(t, s, ptr("short"))
+	resp := patchAuth(t, s, new("short"))
 	got, ok := resp.(mgmtapi.PatchConfig422ApplicationProblemPlusJSONResponse)
 	if !ok {
 		t.Fatalf("response type %T, want 422", resp)
@@ -144,7 +144,7 @@ func TestPatchConfigAuthShortTokenYields422(t *testing.T) {
 func TestPatchConfigAuthEmptyDisables(t *testing.T) {
 	store, _ := tokenStore(t, testAuthToken)
 	s := New(&fakeProvider{}, WithConfigStore(store))
-	resp := patchAuth(t, s, ptr(""))
+	resp := patchAuth(t, s, new(""))
 	if _, ok := resp.(mgmtapi.PatchConfig200JSONResponse); !ok {
 		t.Fatalf("response type %T, want 200", resp)
 	}
@@ -157,7 +157,7 @@ func TestPatchConfigAbsentAuthKeepsToken(t *testing.T) {
 	store, _ := tokenStore(t, testAuthToken)
 	s := New(&fakeProvider{}, WithConfigStore(store))
 	_, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{
-		Body: &mgmtapi.ConfigPatch{Discovery: &mgmtapi.DiscoverySettings{Enabled: ptr(false)}},
+		Body: &mgmtapi.ConfigPatch{Discovery: &mgmtapi.DiscoverySettings{Enabled: new(false)}},
 	})
 	if err != nil {
 		t.Fatal(err)

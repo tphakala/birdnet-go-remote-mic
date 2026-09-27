@@ -130,7 +130,7 @@ type Manager struct {
 	supported bool
 	enabled   atomic.Bool
 	wake      chan struct{}
-	ctx       context.Context // the appliance's lifetime, for apply goroutines
+	ctx       context.Context //nolint:containedctx // the appliance's lifetime, for apply goroutines
 
 	checkMu sync.Mutex // serializes checks
 

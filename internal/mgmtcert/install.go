@@ -310,7 +310,7 @@ func validHostname(h string) bool {
 	if h == "" || len(h) > 253 {
 		return false
 	}
-	for _, label := range strings.Split(h, ".") {
+	for label := range strings.SplitSeq(h, ".") {
 		if !hostnameLabel.MatchString(label) {
 			return false
 		}

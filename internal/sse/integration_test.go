@@ -48,7 +48,7 @@ func readEventName(t *testing.T, sc *bufio.Scanner) string {
 // stream that never carries want fails rather than looping.
 func requireEvent(t *testing.T, who string, sc *bufio.Scanner, want string) {
 	t.Helper()
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if readEventName(t, sc) == want {
 			return
 		}
@@ -87,8 +87,7 @@ func TestHandlerStreamsRealHubToConcurrentConnections(t *testing.T) {
 	hub := levels.NewHub()
 	hub.Meter("mic", 1) // a registered silent meter reports the floor each window
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go hub.Run(ctx)
 
 	center := notify.NewCenter()

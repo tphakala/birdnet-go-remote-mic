@@ -157,8 +157,7 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 		return cur, nil
 	})
 	if err != nil {
-		var verr *config.ValidationError
-		if errors.As(err, &verr) {
+		if verr, ok := errors.AsType[*config.ValidationError](err); ok {
 			return mgmtapi.PatchConfig422ApplicationProblemPlusJSONResponse(validationProblem(verr)), nil
 		}
 		return mgmtapi.PatchConfigdefaultApplicationProblemPlusJSONResponse{
@@ -293,9 +292,9 @@ func AuthChangedNotification(wasEnabled, nowEnabled bool) notify.Notification {
 // ValidationProblem carrying the single offending field.
 func validationProblem(verr *config.ValidationError) mgmtapi.ValidationProblem {
 	return mgmtapi.ValidationProblem{
-		Status: ptr(http.StatusUnprocessableEntity),
-		Title:  ptr("invalid configuration"),
-		Detail: ptr(verr.Error()),
+		Status: new(http.StatusUnprocessableEntity),
+		Title:  new("invalid configuration"),
+		Detail: new(verr.Error()),
 		Errors: &[]struct {
 			Field  string `json:"field"`
 			Reason string `json:"reason"`
@@ -361,24 +360,24 @@ func configToWire(c *config.Config) mgmtapi.Config {
 	}
 	out := mgmtapi.Config{
 		Listen:    c.Listen,
-		Discovery: mgmtapi.DiscoverySettings{Enabled: ptr(c.DiscoveryEnabled())},
+		Discovery: mgmtapi.DiscoverySettings{Enabled: new(c.DiscoveryEnabled())},
 		Management: mgmtapi.ManagementSettings{
-			Enabled: ptr(c.ManagementEnabled()),
+			Enabled: new(c.ManagementEnabled()),
 		},
 		// The token is materialized even when empty so the UI sees a definite
 		// "open access" rather than a null it must reinterpret. Returning it to
 		// an authenticated caller (who already holds it) is not an escalation, and
 		// the Access Control card needs it to show what to paste into BirdNET-Go.
-		Auth:          mgmtapi.AuthSettings{Token: ptr(c.Auth.Token)},
+		Auth:          mgmtapi.AuthSettings{Token: new(c.Auth.Token)},
 		Notifications: notificationsToWire(c),
 		Updates:       mgmtapi.UpdateSettings{Check: new(c.UpdateCheckEnabled())},
 		Devices:       devs,
 	}
 	if c.Management.Listen != "" {
-		out.Management.Listen = ptr(c.Management.Listen)
+		out.Management.Listen = new(c.Management.Listen)
 	}
 	if c.Management.CertDir != "" {
-		out.Management.CertDir = ptr(c.Management.CertDir)
+		out.Management.CertDir = new(c.Management.CertDir)
 	}
 	return out
 }
@@ -392,23 +391,23 @@ func configToWire(c *config.Config) mgmtapi.Config {
 func notificationsToWire(c *config.Config) mgmtapi.NotificationSettings {
 	n := &c.Notifications
 	return mgmtapi.NotificationSettings{
-		Enabled: ptr(c.NotificationsEnabled()),
+		Enabled: new(c.NotificationsEnabled()),
 		Audio: &mgmtapi.AudioAlertSettings{
-			QuietDbfs:         ptr(*n.Audio.QuietDbfs),
-			QuietSeconds:      ptr(*n.Audio.QuietSeconds),
-			ZeroSeconds:       ptr(*n.Audio.ZeroSeconds),
-			ClipPercent:       ptr(*n.Audio.ClipPercent),
-			ClipWindowSeconds: ptr(*n.Audio.ClipWindowSeconds),
+			QuietDbfs:         new(*n.Audio.QuietDbfs),
+			QuietSeconds:      new(*n.Audio.QuietSeconds),
+			ZeroSeconds:       new(*n.Audio.ZeroSeconds),
+			ClipPercent:       new(*n.Audio.ClipPercent),
+			ClipWindowSeconds: new(*n.Audio.ClipWindowSeconds),
 		},
 		Host: &mgmtapi.HostAlertSettings{
-			CpuPercent:       ptr(*n.Host.CPUPercent),
-			CpuClearPercent:  ptr(*n.Host.CPUClearPercent),
-			TempCelsius:      ptr(*n.Host.TempCelsius),
-			TempClearCelsius: ptr(*n.Host.TempClearCelsius),
-			DiskPercent:      ptr(*n.Host.DiskPercent),
-			DiskClearPercent: ptr(*n.Host.DiskClearPercent),
-			MemFreePercent:   ptr(*n.Host.MemFreePercent),
-			MemFreeMiB:       ptr(*n.Host.MemFreeMiB),
+			CpuPercent:       new(*n.Host.CPUPercent),
+			CpuClearPercent:  new(*n.Host.CPUClearPercent),
+			TempCelsius:      new(*n.Host.TempCelsius),
+			TempClearCelsius: new(*n.Host.TempClearCelsius),
+			DiskPercent:      new(*n.Host.DiskPercent),
+			DiskClearPercent: new(*n.Host.DiskClearPercent),
+			MemFreePercent:   new(*n.Host.MemFreePercent),
+			MemFreeMiB:       new(*n.Host.MemFreeMiB),
 		},
 	}
 }
@@ -427,45 +426,45 @@ func mergeNotifications(dst *config.Notifications, p *mgmtapi.NotificationSettin
 	}
 	if a := p.Audio; a != nil {
 		if a.QuietDbfs != nil {
-			dst.Audio.QuietDbfs = ptr(*a.QuietDbfs)
+			dst.Audio.QuietDbfs = new(*a.QuietDbfs)
 		}
 		if a.QuietSeconds != nil {
-			dst.Audio.QuietSeconds = ptr(*a.QuietSeconds)
+			dst.Audio.QuietSeconds = new(*a.QuietSeconds)
 		}
 		if a.ZeroSeconds != nil {
-			dst.Audio.ZeroSeconds = ptr(*a.ZeroSeconds)
+			dst.Audio.ZeroSeconds = new(*a.ZeroSeconds)
 		}
 		if a.ClipPercent != nil {
-			dst.Audio.ClipPercent = ptr(*a.ClipPercent)
+			dst.Audio.ClipPercent = new(*a.ClipPercent)
 		}
 		if a.ClipWindowSeconds != nil {
-			dst.Audio.ClipWindowSeconds = ptr(*a.ClipWindowSeconds)
+			dst.Audio.ClipWindowSeconds = new(*a.ClipWindowSeconds)
 		}
 	}
 	if h := p.Host; h != nil {
 		if h.CpuPercent != nil {
-			dst.Host.CPUPercent = ptr(*h.CpuPercent)
+			dst.Host.CPUPercent = new(*h.CpuPercent)
 		}
 		if h.CpuClearPercent != nil {
-			dst.Host.CPUClearPercent = ptr(*h.CpuClearPercent)
+			dst.Host.CPUClearPercent = new(*h.CpuClearPercent)
 		}
 		if h.TempCelsius != nil {
-			dst.Host.TempCelsius = ptr(*h.TempCelsius)
+			dst.Host.TempCelsius = new(*h.TempCelsius)
 		}
 		if h.TempClearCelsius != nil {
-			dst.Host.TempClearCelsius = ptr(*h.TempClearCelsius)
+			dst.Host.TempClearCelsius = new(*h.TempClearCelsius)
 		}
 		if h.DiskPercent != nil {
-			dst.Host.DiskPercent = ptr(*h.DiskPercent)
+			dst.Host.DiskPercent = new(*h.DiskPercent)
 		}
 		if h.DiskClearPercent != nil {
-			dst.Host.DiskClearPercent = ptr(*h.DiskClearPercent)
+			dst.Host.DiskClearPercent = new(*h.DiskClearPercent)
 		}
 		if h.MemFreePercent != nil {
-			dst.Host.MemFreePercent = ptr(*h.MemFreePercent)
+			dst.Host.MemFreePercent = new(*h.MemFreePercent)
 		}
 		if h.MemFreeMiB != nil {
-			dst.Host.MemFreeMiB = ptr(*h.MemFreeMiB)
+			dst.Host.MemFreeMiB = new(*h.MemFreeMiB)
 		}
 	}
 }
@@ -491,8 +490,8 @@ func deviceConfigToWire(d *config.Device) mgmtapi.DeviceConfig {
 	out.Streams = &streams
 	// Materialize the default-on Enabled and QuietAlert flags to concrete booleans
 	// so the web UI sees definite values rather than nulls it must reinterpret.
-	out.Enabled = ptr(d.IsEnabled())
-	out.QuietAlert = ptr(d.QuietAlertEnabled())
+	out.Enabled = new(d.IsEnabled())
+	out.QuietAlert = new(d.QuietAlertEnabled())
 	return out
 }
 
@@ -504,7 +503,7 @@ func streamConfigToWire(s *config.Stream) mgmtapi.StreamConfig {
 		Channels: s.Channels,
 	}
 	if s.Mode == config.ModeOpus {
-		out.Opus = &mgmtapi.OpusSettings{Bitrate: ptr(s.Opus.Bitrate)}
+		out.Opus = &mgmtapi.OpusSettings{Bitrate: new(s.Opus.Bitrate)}
 	}
 	return out
 }

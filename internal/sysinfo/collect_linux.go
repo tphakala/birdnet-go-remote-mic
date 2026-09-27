@@ -301,10 +301,7 @@ func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 	total = int64(st.Blocks) * bsize //nolint:gosec // block counts fit int64 on real filesystems
 	free := int64(st.Bfree) * bsize  //nolint:gosec // block counts fit int64 on real filesystems
 	avail = int64(st.Bavail) * bsize //nolint:gosec // block counts fit int64 on real filesystems
-	used = total - free
-	if used < 0 {
-		used = 0
-	}
+	used = max(total-free, 0)
 	if avail < 0 {
 		avail = 0
 	}

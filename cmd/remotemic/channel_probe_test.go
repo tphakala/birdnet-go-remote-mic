@@ -24,7 +24,7 @@ func (s *scriptedSource) Negotiated() (rate, channels int) { return s.rate, 2 }
 func (s *scriptedSource) Close() error                     { return nil }
 func (s *scriptedSource) Read() (audio.Period, error) {
 	buf := make([]byte, s.frames*2*2)
-	for f := 0; f < s.frames; f++ {
+	for f := range s.frames {
 		ch := 1 // loud channel, 0-based
 		if s.sent+f < s.loudFrames {
 			ch = 0

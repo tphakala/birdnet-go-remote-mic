@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -89,7 +90,7 @@ func (p *recordedPub) countTitles(op, title string) int {
 func (p *recordedPub) lastByOp(op string) *recordedNote {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for i := len(p.notes) - 1; i >= 0; i-- {
+	for i := range slices.Backward(p.notes) {
 		if p.notes[i].op == op {
 			cp := p.notes[i]
 			return &cp

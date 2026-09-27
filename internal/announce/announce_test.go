@@ -72,8 +72,7 @@ func TestRunStopsOnCancel(t *testing.T) {
 }
 
 func TestRunRejectsNoServices(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if err := Run(ctx, nil); err == nil {
 		t.Fatal("Run with no services should error, not advertise nothing silently")
 	}

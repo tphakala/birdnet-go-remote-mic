@@ -64,7 +64,7 @@ type reconcileReq struct {
 // their own goroutines but touch only their own deviceRuntime (its frame source
 // and drop counter), never the appliance's shared state.
 type appliance struct {
-	ctx  context.Context
+	ctx  context.Context //nolint:containedctx // the run loop's lifetime, for the pumps and stages it starts
 	hub  *levels.Hub
 	srv  *rtspserver.Server
 	prov *provider

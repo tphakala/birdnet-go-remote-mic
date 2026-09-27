@@ -4,6 +4,7 @@ package audio
 
 import (
 	"errors"
+	"slices"
 
 	capture "github.com/tphakala/go-audio-capture"
 )
@@ -153,10 +154,8 @@ func rateProbeChannel(supported []int) int {
 	if len(supported) == 0 {
 		return 1
 	}
-	for _, ch := range supported {
-		if ch == 1 {
-			return 1
-		}
+	if slices.Contains(supported, 1) {
+		return 1
 	}
 	return supported[0]
 }

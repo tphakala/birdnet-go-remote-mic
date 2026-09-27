@@ -17,6 +17,7 @@ output:
 linters:
   enable:
     - bodyclose
+    - containedctx
     - copyloopvar
     - dupl
     - durationcheck
@@ -30,7 +31,9 @@ linters:
     - gocyclo
     - iface
     - ineffassign
+    - intrange
     - misspell
+    - modernize
     - nilerr
     - nilnil
     - predeclared
@@ -40,6 +43,7 @@ linters:
     - testifylint
     - thelper
     - unconvert
+    - usetesting
     - wastedassign
   disable:
     - unused
@@ -64,6 +68,12 @@ linters:
       rules:
         - name: unused-parameter
           disabled: true
+    modernize:
+      disable:
+        # Keep embedded-struct literals explicit: the grouping shows which
+        # fields belong to the embedded type, and gopls v0.22.0 reports the
+        # promoted-field form as an error.
+        - embedlit
     prealloc:
       simple: true
       range-loops: true

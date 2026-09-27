@@ -195,8 +195,8 @@ func baseSettings() Settings {
 	return Settings{
 		Enabled: true,
 		Audio: config.AudioAlerts{
-			QuietDbfs: p(-60), QuietSeconds: p(600), ZeroSeconds: p(30),
-			ClipPercent: p(20), ClipWindowSeconds: p(10),
+			QuietDbfs: new(-60), QuietSeconds: new(600), ZeroSeconds: new(30),
+			ClipPercent: new(20), ClipWindowSeconds: new(10),
 		},
 		QuietAlert: map[string]bool{},
 	}
@@ -272,14 +272,14 @@ func TestSignalClipOnsetAndClear(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(4) // short window keeps the test to a few steps
-	s.Audio.ClipPercent = p(20)
+	s.Audio.ClipWindowSeconds = new(4) // short window keeps the test to a few steps
+	s.Audio.ClipPercent = new(20)
 	sig := newSignalT(rec, s, c)
 	key := audioClipKey(nameGarden)
 
 	// Clip every window at 1 s spacing. The ratio is only judged once a full 4 s
 	// window has been observed, so onset lands on the window at t0+4 s.
-	for i := 0; i <= 4; i++ {
+	for i := range 5 {
 		c.at(time.Duration(i) * time.Second)
 		sig.observe(evt(devClip(nameGarden, true, -1)))
 	}
@@ -309,7 +309,7 @@ func TestSignalNoRepeatsWhileActive(t *testing.T) {
 	c.advance(30 * time.Second)
 	sig.observe(evt(dev(nameGarden, floorDbfs)))
 	// Keep feeding zero: the condition stays active and must not re-onset.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		c.advance(10 * time.Second)
 		sig.observe(evt(dev(nameGarden, floorDbfs)))
 	}
@@ -388,7 +388,7 @@ func TestSignalApplyRaisedQuietThresholdCancelsPendingOnsetKeepsZeroTimer(t *tes
 	// Raise the quiet threshold below q's level so quiet no longer holds. Apply
 	// only swaps the pointer; the tap applies it on the next window.
 	s := baseSettings()
-	s.Audio.QuietDbfs = p(-80)
+	s.Audio.QuietDbfs = new(-80)
 	sig.Apply(&s)
 
 	// At 30 s: z's zero onsets (its timer was untouched by Apply), while q's quiet
@@ -476,7 +476,7 @@ func TestSignalHelpers(t *testing.T) {
 	if intVal(nil) != 0 {
 		t.Error("intVal(nil) != 0")
 	}
-	if intVal(p(7)) != 7 {
+	if intVal(new(7)) != 7 {
 		t.Error("intVal(p(7)) != 7")
 	}
 	if allChannelsAtFloor(&levels.DeviceLevels{}) {
@@ -529,7 +529,7 @@ func TestSignalHelpers(t *testing.T) {
 // holds clip. It expects a Settings with a 4 s clip window.
 func raiseAllKinds(t *testing.T, sig *Signal, rec *recPub, c *clk) {
 	t.Helper()
-	for i := 0; i <= 4; i++ {
+	for i := range 5 {
 		c.at(time.Duration(i) * time.Second)
 		sig.observe(evt(dev("z", floorDbfs), devClip("c", true, -1)))
 	}
@@ -547,7 +547,7 @@ func TestSignalResolvesEveryConditionKindOnDisable(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(4)
+	s.Audio.ClipWindowSeconds = new(4)
 	sig := newSignalT(rec, s, c)
 	raiseAllKinds(t, sig, rec, c)
 
@@ -567,7 +567,7 @@ func TestSignalResolvesEveryConditionKindOnDisappearance(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(4)
+	s.Audio.ClipWindowSeconds = new(4)
 	sig := newSignalT(rec, s, c)
 	raiseAllKinds(t, sig, rec, c)
 
@@ -643,11 +643,11 @@ func TestSignalClipGateWaitsForFullWindow(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(4)
-	s.Audio.ClipPercent = p(20)
+	s.Audio.ClipWindowSeconds = new(4)
+	s.Audio.ClipPercent = new(20)
 	sig := newSignalT(rec, s, c)
 	key := audioClipKey(nameGarden)
-	for i := 0; i <= 3; i++ {
+	for i := range 4 {
 		c.at(time.Duration(i) * time.Second)
 		sig.observe(evt(devClip(nameGarden, true, -1)))
 		if rec.onsetCount(key) != 0 {
@@ -667,8 +667,8 @@ func TestSignalClipRatioBoundary(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(4)
-	s.Audio.ClipPercent = p(40)
+	s.Audio.ClipWindowSeconds = new(4)
+	s.Audio.ClipPercent = new(40)
 	sig := newSignalT(rec, s, c)
 	key := audioClipKey(nameGarden)
 	for i, cl := range []bool{true, false, false, false, false} { // 1/5 = 20%
@@ -698,11 +698,11 @@ func TestSignalClipNoReflapWithLongWindow(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(60) // longer than the 30s clear dwell
-	s.Audio.ClipPercent = p(20)
+	s.Audio.ClipWindowSeconds = new(60) // longer than the 30s clear dwell
+	s.Audio.ClipPercent = new(20)
 	sig := newSignalT(rec, s, c)
 	key := audioClipKey(nameGarden)
-	for i := 0; i <= 60; i++ {
+	for i := range 61 {
 		c.at(time.Duration(i) * time.Second)
 		sig.observe(evt(devClip(nameGarden, true, -1)))
 	}
@@ -733,16 +733,16 @@ func TestSignalClipWindowLengthenDefersOnset(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ClipWindowSeconds = p(4)
-	s.Audio.ClipPercent = p(20)
+	s.Audio.ClipWindowSeconds = new(4)
+	s.Audio.ClipPercent = new(20)
 	sig := newSignalT(rec, s, c)
 	key := audioClipKey(nameGarden)
-	for i := 0; i <= 4; i++ { // observe a full short window, no clipping
+	for i := range 5 { // observe a full short window, no clipping
 		c.at(time.Duration(i) * time.Second)
 		sig.observe(evt(devClip(nameGarden, false, -20)))
 	}
 	s2 := s
-	s2.Audio.ClipWindowSeconds = p(30)
+	s2.Audio.ClipWindowSeconds = new(30)
 	sig.Apply(&s2)
 	c.at(5 * time.Second)
 	sig.observe(evt(devClip(nameGarden, true, -1)))
@@ -768,7 +768,7 @@ func TestSignalApplyShortensZeroSecondsMidRun(t *testing.T) {
 	key := audioZeroKey(nameGarden)
 	sig.observe(evt(dev(nameGarden, floorDbfs))) // start the zero run at t0
 	s := baseSettings()
-	s.Audio.ZeroSeconds = p(10)
+	s.Audio.ZeroSeconds = new(10)
 	sig.Apply(&s)
 	c.advance(10 * time.Second)
 	sig.observe(evt(dev(nameGarden, floorDbfs)))
@@ -822,7 +822,7 @@ func TestRunSignalDrivesMonitorFromHub(t *testing.T) {
 	hub.Meter("x", 1) // a registered but silent meter reports the floor each window
 	rec := newRecPub()
 	s := baseSettings()
-	s.Audio.ZeroSeconds = p(0) // onset on the first floor window, no waiting
+	s.Audio.ZeroSeconds = new(0) // onset on the first floor window, no waiting
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := RunSignal(ctx, hub, rec, &s)
@@ -873,7 +873,7 @@ func TestRunSignalTapFollowsEnabled(t *testing.T) {
 	hub.Meter("x", 1)
 	rec := newRecPub()
 	s := baseSettings()
-	s.Audio.ZeroSeconds = p(0)
+	s.Audio.ZeroSeconds = new(0)
 	s.Enabled = false
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -968,8 +968,7 @@ func TestRunSignalDetachRechecksEnabled(t *testing.T) {
 	hub := levels.NewHub()
 	rec := newRecPub()
 	s := baseSettings() // enabled
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	sig := RunSignal(ctx, hub, rec, &s)
 	if !sig.attached() {
 		t.Fatal("enabled monitor did not attach at start")
@@ -1007,8 +1006,8 @@ func TestSignalReconcileRetriesResolveAfterPublisherPanic(t *testing.T) {
 	rec := &panicPub{recPub: newRecPub(), panicKey: audioQuietKey("b")}
 	c := newClk()
 	s := baseSettings()
-	s.Audio.ZeroSeconds = p(0)  // zero onsets on the first floor window
-	s.Audio.QuietSeconds = p(0) // quiet onsets on the first quiet window
+	s.Audio.ZeroSeconds = new(0)  // zero onsets on the first floor window
+	s.Audio.QuietSeconds = new(0) // quiet onsets on the first quiet window
 	sig := NewSignal(rec, &s, WithClock(c.now))
 
 	// Onset zero on device a and quiet on device b under the enabled settings.
@@ -1089,10 +1088,9 @@ func (r *reenablePub) Resolve(key, reason string) bool {
 func TestRunSignalApplyReentrantEnableKeepsTap(t *testing.T) {
 	hub := levels.NewHub()
 	s := baseSettings()
-	s.Audio.ZeroSeconds = p(0) // zero onsets on the first floor window
+	s.Audio.ZeroSeconds = new(0) // zero onsets on the first floor window
 	rec := &reenablePub{recPub: newRecPub()}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	sig := RunSignal(ctx, hub, rec, &s)
 	rec.sig = sig
 	if !sig.attached() {

@@ -51,7 +51,7 @@ func TestTokenRuleMatchesOpenAPIPattern(t *testing.T) {
 	// of them exercises (if one rule stopped accepting, say, 'q', every fixed case
 	// would still agree); this loop catches a character-class drift on any single
 	// character. Length is held at the valid 12 so only the character class varies.
-	for b := 0; b < 0x80; b++ {
+	for b := range 0x80 {
 		tok := strings.Repeat(string([]byte{byte(b)}), 12)
 		specOK := re.MatchString(tok)
 		goOK := ValidToken(tok) == ""

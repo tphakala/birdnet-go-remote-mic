@@ -6,17 +6,14 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 )
 
-// p returns a pointer to n, for building the presence-aware threshold fields.
-func p(n int) *int { return &n }
-
 func TestSettingsFromMapsEveryField(t *testing.T) {
 	t.Parallel()
 	off := false
 	cfg := config.Config{
 		Notifications: config.Notifications{
 			// Enabled left nil: defaults on.
-			Audio: config.AudioAlerts{QuietDbfs: p(-50), QuietSeconds: p(1200), ZeroSeconds: p(45), ClipPercent: p(30), ClipWindowSeconds: p(15)},
-			Host:  config.HostAlerts{CPUPercent: p(85), CPUClearPercent: p(70), TempCelsius: p(75), TempClearCelsius: p(70), DiskPercent: p(88), DiskClearPercent: p(80), MemFreePercent: p(15), MemFreeMiB: p(128)},
+			Audio: config.AudioAlerts{QuietDbfs: new(-50), QuietSeconds: new(1200), ZeroSeconds: new(45), ClipPercent: new(30), ClipWindowSeconds: new(15)},
+			Host:  config.HostAlerts{CPUPercent: new(85), CPUClearPercent: new(70), TempCelsius: new(75), TempClearCelsius: new(70), DiskPercent: new(88), DiskClearPercent: new(80), MemFreePercent: new(15), MemFreeMiB: new(128)},
 		},
 		Devices: []config.Device{
 			{Name: nameGarden},              // no quiet_alert flag -> armed (default on)

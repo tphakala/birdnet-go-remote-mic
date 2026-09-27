@@ -194,9 +194,7 @@ func TestProviderCertificateSnapshotConsistent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
@@ -209,12 +207,10 @@ func TestProviderCertificateSnapshotConsistent(t *testing.T) {
 				_ = prov.setCertificate(tlsB)
 			}
 		}
-	}()
-	for r := 0; r < 4; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 4000; i++ {
+	})
+	for range 4 {
+		wg.Go(func() {
+			for range 4000 {
 				// Read ONE snapshot and cross-check its three fields. A single
 				// atomic.Load gives a coherent certState, so the metadata, the PEM,
 				// and the parsed pair must all describe the same certificate. The
@@ -241,7 +237,7 @@ func TestProviderCertificateSnapshotConsistent(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	time.Sleep(50 * time.Millisecond)
 	close(stop)
