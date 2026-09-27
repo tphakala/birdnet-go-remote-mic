@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,22 @@ func TestDefaultCapacityKeepsNewest(t *testing.T) {
 	}
 	if last != uint64(defaultCapacity+1) {
 		t.Errorf("last id = %d, want %d (newest retained)", last, defaultCapacity+1)
+	}
+}
+
+func TestCenterEventNamesMatchEmitted(t *testing.T) {
+	t.Parallel()
+	c := NewCenter()
+	ch, cancel := c.Subscribe()
+	defer cancel()
+	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "one"})
+	ev := <-ch
+	if got := c.EventNames(); !slices.Equal(got, []string{ev.Name}) {
+		t.Errorf("EventNames() = %v, want [%s], the name the center emits", got, ev.Name)
+	}
+	var nilCenter *Center
+	if got := nilCenter.EventNames(); !slices.Equal(got, []string{ev.Name}) {
+		t.Errorf("nil Center EventNames() = %v, want [%s]", got, ev.Name)
 	}
 }
 

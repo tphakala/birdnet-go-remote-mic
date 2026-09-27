@@ -1,7 +1,7 @@
 // Package sse multiplexes named application events onto a single
 // text/event-stream HTTP response. It is a platform-neutral leaf: it depends
 // only on the standard library and knows nothing about audio, ALSA, or the
-// management API. Producers (the levels hub, later the notification center)
+// management API. Producers (the levels hub and the notification center)
 // implement Source; one Handler fans any number of sources onto one
 // connection, with a per-connection heartbeat and an optional ?events= name
 // filter. Coupling runs one way: producers import sse, never the reverse.
@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -32,6 +33,16 @@ type Event struct {
 // producer on a slow consumer: a full subscriber buffer drops events instead.
 type Source interface {
 	Subscribe() (events <-chan Event, cancel func())
+}
+
+// Named is implemented by a Source that emits only a fixed set of event names.
+// The Handler subscribes to such a source only when the request's ?events=
+// filter allows at least one of them, so a producer that works only while it
+// has a subscriber (the levels hub marshals and broadcasts only then) stays
+// idle for a client that did not ask for its events. A Source that is not
+// Named is always subscribed.
+type Named interface {
+	EventNames() []string
 }
 
 const (
@@ -116,6 +127,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	for _, src := range h.sources {
+		if n, ok := src.(Named); ok && !filter.allowsAny(n.EventNames()) {
+			continue
+		}
 		ch, cancel := src.Subscribe()
 		cancels = append(cancels, cancel)
 		go forward(ctx, ch, merged)
@@ -217,6 +231,12 @@ func parseEventFilter(q string) eventFilter {
 		return eventFilter{all: true}
 	}
 	return eventFilter{names: names}
+}
+
+// allowsAny reports whether the filter lets through at least one of names.
+// The all filter lets through any source, even one that names nothing.
+func (f eventFilter) allowsAny(names []string) bool {
+	return f.all || slices.ContainsFunc(names, f.allows)
 }
 
 func (f eventFilter) allows(name string) bool {

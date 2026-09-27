@@ -97,6 +97,16 @@ func (f *fakeSource) waitSubscribed(t *testing.T, n int) {
 
 var _ Source = (*fakeSource)(nil)
 
+// namedSource is a fakeSource that declares the event names it emits.
+type namedSource struct {
+	*fakeSource
+	names []string
+}
+
+func (n namedSource) EventNames() []string { return n.names }
+
+var _ Named = namedSource{}
+
 // ctrlWriter is a controllable ResponseWriter for unit tests: it records what
 // was written, can fail a write, records a flush, and records that a write
 // deadline was set. It implements http.Flusher and SetWriteDeadline so
@@ -269,6 +279,56 @@ func TestHandlerHeartbeatSurvivesFilter(t *testing.T) {
 
 	if n, _ := rd.next(t); n != heartbeatName {
 		t.Fatalf("first event = %q, want heartbeat (levels filtered out)", n)
+	}
+}
+
+func TestHandlerSkipsFilteredNamedSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		query     string
+		wantNamed int
+	}{
+		{"?events=" + evNotification, 0},
+		{"?events=" + evLevels, 1},
+		{"", 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			named := namedSource{newFakeSource(4), []string{evLevels}}
+			plain := newFakeSource(4)
+			// The handler subscribes in source order, so once the plain source
+			// (listed second) has subscribed, the named one has been decided.
+			h := &handler{sources: []Source{named, plain}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+			resp := openStream(t, srv.URL+tc.query)
+			defer func() { _ = resp.Body.Close() }()
+			plain.waitSubscribed(t, 1)
+			if got := named.subCount(); got != tc.wantNamed {
+				t.Errorf("named source subscriptions = %d, want %d", got, tc.wantNamed)
+			}
+		})
+	}
+}
+
+func TestEventFilterAllowsAny(t *testing.T) {
+	t.Parallel()
+	f := parseEventFilter(evNotification)
+	if f.allowsAny([]string{evLevels}) {
+		t.Error("a filter without levels must not allow a levels-only source")
+	}
+	if !f.allowsAny([]string{evLevels, evNotification}) {
+		t.Error("a filter must allow a source when one of its names passes")
+	}
+	if f.allowsAny(nil) {
+		t.Error("a source with no names must not pass a named filter")
+	}
+	if !parseEventFilter("").allowsAny([]string{"anything"}) {
+		t.Error("the all filter must allow any source")
+	}
+	if !parseEventFilter("").allowsAny(nil) {
+		t.Error("the all filter must allow a source that names nothing")
 	}
 }
 
