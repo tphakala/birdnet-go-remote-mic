@@ -708,3 +708,23 @@ test("with reduced motion every readout change is written at once", () => {
     assert.equal(h.readouts.at(-1), formatReadout(curve(-20, t)), `event at ${t} ms must show its value`);
   }
 });
+
+test("switching reduced motion off wakes a falling needle and it glides", () => {
+  const h = meterHarness({ reducedMotion: true });
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  assert.equal(h.frames.running(), false, "reduced motion asks for no more frames");
+  h.setClock(PEAK_HOLD_MS + 100);
+  h.meter.setReducedMotion(false);
+  assert.equal(h.frames.running(), true, "turning animation back on must wake the meter");
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, curve(-20, PEAK_HOLD_MS + 100)]);
+  assert.equal(h.frames.running(), true, "a needle above the floor keeps gliding");
+  // And back: the glide stops at the next frame.
+  h.meter.setReducedMotion(true);
+  h.setClock(PEAK_HOLD_MS + 116);
+  h.step();
+  assert.equal(h.frames.running(), false);
+});

@@ -297,6 +297,14 @@ export class MeterController implements Animator {
     this.frames.remove(this);
   }
 
+  // setReducedMotion follows the viewer's motion preference when it changes.
+  // The redraw it asks for also restarts the glide of a needle still falling.
+  public setReducedMotion(reduced: boolean): void {
+    if (this.reducedMotion === reduced) return;
+    this.reducedMotion = reduced;
+    this.redraw();
+  }
+
   // frame is the meter's turn on the shared loop: bring the needle up to date
   // (it glides only without reduced motion), draw if anything changed, and ask
   // for another frame only while the needle still has somewhere to go.

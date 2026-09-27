@@ -30,6 +30,19 @@ const SEGMENT_COLORS: readonly string[] = Array.from({ length: SEGMENTS }, (_, i
   return "rgba(16, 185, 129, 0.85)"; // Green
 });
 
+// The viewer's motion preference, followed live: every live meter switches
+// between the gliding needle and the per-event steps when it changes.
+const reducedMotionQuery: MediaQueryList | null = (() => {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
+  } catch {
+    return null;
+  }
+})();
+reducedMotionQuery?.addEventListener?.("change", (e) => {
+  for (const m of liveMeters) m.setReducedMotion(e.matches);
+});
+
 // meterFrames is the one frame loop every meter draws on. It runs only while a
 // meter has something to animate, and the dashboard suspends it while another
 // view shows.
@@ -43,7 +56,10 @@ export const meterFrames = new FrameScheduler({
 // MeterController (lib/meter-core.ts); this class only paints.
 export class VUMeter {
   private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
+  // Null when the browser gives no 2D context: the meter then paints nothing,
+  // but its readout and clip latch still work and the rest of the dashboard
+  // renders.
+  private ctx: CanvasRenderingContext2D | null;
   private peakValEl: HTMLElement | null;
   private clipEl: HTMLElement | null;
   private readonly controller: MeterController;
@@ -54,11 +70,11 @@ export class VUMeter {
     clipEl?: HTMLElement | null
   ) {
     this.canvas = canvas;
-    const context = this.canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Canvas 2D context is not available");
-    }
-    this.ctx = context;
+    this.ctx = this.canvas.getContext("2d");
+    if (!this.ctx) console.warn("meter: canvas 2D context is not available; the bar and needle will not draw");
+    // A browser may drop a canvas's pixels (context loss) and hand it back
+    // blank; a settled meter draws nothing new on its own, so repaint.
+    this.canvas.addEventListener("contextrestored", () => this.redraw());
     this.peakValEl = peakValEl ?? null;
     this.clipEl = clipEl ?? null;
 
@@ -77,7 +93,7 @@ export class VUMeter {
       },
       meterFrames,
       {
-        reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
+        reducedMotion: reducedMotionQuery?.matches ?? false,
         now: () => performance.now(),
       },
     );
@@ -103,6 +119,10 @@ export class VUMeter {
     this.controller.redraw();
   }
 
+  public setReducedMotion(reduced: boolean): void {
+    this.controller.setReducedMotion(reduced);
+  }
+
   public destroy(): void {
     liveMeters.delete(this);
     this.controller.destroy();
@@ -119,9 +139,10 @@ export class VUMeter {
   }
 
   private paint(rmsDb: number, peakDb: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
     const w = this.canvas.width;
     const h = this.canvas.height;
-    const ctx = this.ctx;
 
     ctx.clearRect(0, 0, w, h);
 
