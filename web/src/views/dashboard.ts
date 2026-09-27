@@ -597,7 +597,7 @@ export class DashboardView {
     const button = neighbour?.card.querySelector<HTMLElement>(".available-enable");
     if (button) button.focus({ preventScroll: true });
     else this.focusWorkspace();
-    announce(this.announceEl, availableGoneMessage(label, button !== undefined && button !== null));
+    announce(this.announceEl, availableGoneMessage(label, button != null));
   }
 
   // focusWorkspace moves focus to the workspace region when the control
@@ -690,7 +690,13 @@ export class DashboardView {
       // in-flight state), this render rebuilds it idle, since the key changed
       // back. A device no longer listed (the usual success) has no card left.
       this.renderAvailable(store.getState().available);
-      if (lost && focusDropped()) this.focusAvailableNeighbour(lost.index, lost.label);
+      if (lost && focusDropped()) {
+        // Listed again by now (a poll brought it back): its own card takes
+        // focus; otherwise the card now in its place.
+        const own = this.availableCards.get(d.device)?.card.querySelector<HTMLElement>(".available-enable");
+        if (own) own.focus({ preventScroll: true });
+        else this.focusAvailableNeighbour(lost.index, lost.label);
+      }
     }
   }
 

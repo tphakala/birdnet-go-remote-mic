@@ -1,5 +1,6 @@
 // Unit tests for orderChildren (lib/ui.ts): it puts managed nodes in order,
-// moving only the ones out of place, and leaves unmanaged children after them.
+// moves nothing when they already are, and leaves unmanaged children after
+// them.
 // A minimal stand-in for DOM elements keeps the test free of a browser. Run
 // with node:test (see web:test).
 
@@ -59,7 +60,7 @@ test("orderChildren leaves an ordered parent alone", () => {
   assert.equal(p.moves, 0, "steady state must move no node");
 });
 
-test("orderChildren moves only what is out of place, placeholders last", () => {
+test("orderChildren puts managed nodes in order, placeholder last", () => {
   const [a, b, c, empty] = [new FakeNode("a"), new FakeNode("b"), new FakeNode("c"), new FakeNode("placeholder")];
   const p = parentWith(empty, c, a);
   orderChildren(p as unknown as Element, [a, b, c] as unknown as Element[]);

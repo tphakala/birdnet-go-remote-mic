@@ -237,7 +237,7 @@ test("availablePlan builds a new card mid-list and orders it there", () => {
     { id: "c", key: "kc" },
   ]);
   assert.deepEqual(plan.build, ["b"]);
-  assert.deepEqual(plan.order, ["a", "b", "c"], "the view keeps its cards in this order, which is the screen's");
+  assert.deepEqual(plan.order, ["a", "b", "c"], "a new card is ordered by its place in the list, not appended");
 });
 
 test("availablePlan orders cards like the list", () => {
