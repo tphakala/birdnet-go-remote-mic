@@ -51,17 +51,24 @@ export async function triggerApplianceRestart(): Promise<void> {
     return;
   }
 
+  let confirmed = true;
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    // 501: the server has no restart control wired
-    // (internal/mgmtserver/system.go:86), so say what to do instead.
-    const why = err instanceof ApiError && err.status === 501
-      ? "this appliance cannot restart itself. Restart the remote-mic service on its host instead."
-      : apiErrorMessage(err);
-    showToast(`Restart request failed: ${why}`, "error");
-    restarting = false;
-    return;
+    if (err instanceof ApiError) {
+      // 501: the server has no restart control wired
+      // (internal/mgmtserver/system.go:86), so say what to do instead.
+      const why = err.status === 501
+        ? "this appliance cannot restart itself. Restart the remote-mic service on its host instead."
+        : apiErrorMessage(err);
+      showToast(`Restart request failed: ${why}`, "error");
+      restarting = false;
+      return;
+    }
+    // No answer (the connection dropped): the restart may have started, so
+    // wait for the appliance as after a confirmed one rather than invite a
+    // second restart. The page reloads once it answers either way.
+    confirmed = false;
   }
 
   modal.classList.add("open");
@@ -71,7 +78,7 @@ export async function triggerApplianceRestart(): Promise<void> {
 
   // Announce the phase once; the per-second countdown below updates only the
   // aria-hidden visual element, so it is not read out on every tick.
-  say("Restarting the appliance. Reconnecting shortly.");
+  say(confirmed ? "Restarting the appliance. Reconnecting shortly." : "The restart request got no answer. Waiting to see whether the appliance restarts.");
 
   let seconds = 5;
   if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
@@ -83,7 +90,7 @@ export async function triggerApplianceRestart(): Promise<void> {
     } else {
       clearInterval(countdown);
       if (timerEl) timerEl.textContent = "Waiting for the appliance to come back...";
-      say("Checking whether the appliance is back online.");
+      say("Waiting for the appliance to come back.");
       startHealthPolling();
     }
   }, 1000);
@@ -115,7 +122,7 @@ function startHealthPolling(): void {
     if (attempts >= maxAttempts) {
       clearInterval(interval);
       if (timerEl) timerEl.textContent = "Restart timed out.";
-      say("Restart timed out. Use the reload button to try again.");
+      say("Restart timed out. Use the Reload now button to try again.");
       showRetry();
     }
   }, 1000);
@@ -160,7 +167,7 @@ export function showUpdateModal(target: string): UpdateModal | null {
   closeTransientDialogs();
 
   const oldTitle = titleEl?.textContent ?? "";
-  // The restart text holds markup (a code span), so keep its nodes, not its text.
+  // Keep the restart text's nodes, so hide() puts them back as they were.
   const oldText = textEl ? Array.from(textEl.childNodes) : [];
   if (titleEl) titleEl.textContent = "Installing Update";
   if (textEl) {
@@ -182,7 +189,7 @@ export function showUpdateModal(target: string): UpdateModal | null {
     overdue(): void {
       settled = true;
       if (timerEl) timerEl.textContent = "The update has not finished yet.";
-      say("The update has not finished yet. Use the reload button to see where it stands.");
+      say("The update has not finished yet. Use the Reload now button to see where it stands.");
       showRetry();
     },
     reloading(): void {
