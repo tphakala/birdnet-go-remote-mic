@@ -1,6 +1,6 @@
 // Unit tests for the pure Management Certificate card logic. Run with Node's
-// built-in test runner (see the web:test task): no
-// browser, no DOM, no dependencies.
+// built-in test runner (see the web:test task): no browser, no DOM, no
+// dependencies.
 
 import test from "node:test";
 import assert from "node:assert/strict";

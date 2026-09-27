@@ -83,7 +83,8 @@ sudo install -m 0755 remote-mic /usr/local/bin/remote-mic
 
 ### Build from source
 
-Requires Go (version in `go.mod`) and Node (for the web UI):
+Requires Go (version in `go.mod`) and Node 26 (for the web UI; its unit tests
+use Node's built-in TypeScript type stripping):
 
 ```sh
 git clone https://github.com/tphakala/birdnet-go-remote-mic

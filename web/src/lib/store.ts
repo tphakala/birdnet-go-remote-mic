@@ -55,8 +55,8 @@ export interface StoreDeps {
 }
 
 // StoreEvents is what AppStore announces: each event's name and payload.
-// devices, status and system fire only when their data changed (always after
-// a failed read); config and available fire every poll.
+// devices, status and system fire only when their data changed, and again on
+// the first read after a failed one; config and available fire every poll.
 export interface StoreEvents {
   status: ApplianceStatus;
   devices: Device[];

@@ -3,7 +3,7 @@
 // scripts are deferred, so a theme applied only there would paint one frame in
 // the hardcoded dark theme first. It cannot be inline either, since the CSP
 // allows scripts from 'self' only. This file must stay a script (no import or
-// export) with no type syntax (its test runs this source as is), and it must
+// export) with no type syntax (its test runs this source), and it must
 // never throw: the page renders even if it fails.
 //
 // lib/theme.ts initTheme derives the theme again the same way (THEME_KEY and

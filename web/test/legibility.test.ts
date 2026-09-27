@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { group } from "./fixtures.ts";
+import { at, group } from "./fixtures.ts";
 
 const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url).href);
 const INDEX = fileURLToPath(new URL("../static/index.html", import.meta.url).href);
@@ -273,7 +273,7 @@ test("the checker flags literals, unknown tokens, shorthands, and small or thin 
     .ok3 { font-size: var(--font-size-code); }
     .ok5 { font: inherit; }
   `;
-  const got = violations(fontRules(sample)).map((v) => v.split(" ")[1]?.replace(":", ""));
+  const got = violations(fontRules(sample)).map((v) => at(v.split(" "), 1).replace(":", ""));
   // .meter-scale-track is below its own allowance; .notif-badge is within its
   // allowance but thin.
   assert.deepEqual(got, [".a", ".b", ".c", ".e", ".g", ".g", ".h", ".i", ".j", ".k", ".l", ".n", ".o", ".meter-scale-track", ".notif-badge"]);

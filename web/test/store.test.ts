@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
 import { setToken } from "../src/lib/auth.ts";
-import { FakeTimers } from "./fixtures.ts";
+import { at, FakeTimers } from "./fixtures.ts";
 import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
 
 // Outcome is one queued result for an endpoint: a value to resolve with, an
@@ -24,6 +24,8 @@ interface Harness {
   push(endpoint: keyof StoreDeps["api"], outcome: Outcome): void;
   // events counts the store's announcements by name.
   events: Map<string, number>;
+  // last holds the payload of each name's latest announcement.
+  last: Map<string, unknown>;
   // calls counts the requests made per endpoint.
   calls: Map<string, number>;
   sseStarts: () => number;
@@ -78,8 +80,12 @@ function harness(timers?: FakeTimers): Harness {
   };
   const store = new AppStore(deps);
   const events = new Map<string, number>();
+  const last = new Map<string, unknown>();
   for (const name of ANNOUNCED) {
-    store.on(name, () => events.set(name, (events.get(name) ?? 0) + 1));
+    store.on(name, (payload) => {
+      events.set(name, (events.get(name) ?? 0) + 1);
+      last.set(name, payload);
+    });
   }
   const connection: boolean[] = [];
   store.on("connection", (up) => connection.push(up));
@@ -94,6 +100,7 @@ function harness(timers?: FakeTimers): Harness {
       queues.set(endpoint, q);
     },
     events,
+    last,
     calls,
     sseStarts: () => starts,
   };
@@ -124,6 +131,7 @@ test("status announces the first read and then only on change", async () => {
   await h.store.refreshStatus();
   assert.equal(h.events.get("status"), 2);
   assert.deepEqual(h.store.getState().status, status(2));
+  assert.equal(h.last.get("status"), h.store.getState().status, "the announcement carries the applied status");
 });
 
 test("a failed status read re-announces the next read even when unchanged", async () => {
@@ -147,13 +155,14 @@ test("devices announce on change, reset on failure, and normalize channels", asy
   h.push("getDevices", new Error("offline"));
   h.push("getDevices", [{ name: "mic", channels: [] }]);
   await h.store.refreshDevices();
-  assert.deepEqual(h.store.getState().devices[0]?.channels, []);
+  assert.deepEqual(at(h.store.getState().devices, 0).channels, []);
   // The normalized payload equals the next one, so no second announcement.
   await h.store.refreshDevices();
   assert.equal(h.events.get("devices"), 1);
   await h.store.refreshDevices();
   await h.store.refreshDevices();
   assert.equal(h.events.get("devices"), 2);
+  assert.equal(h.last.get("devices"), h.store.getState().devices);
 });
 
 test("system announces on change and re-announces after a failure", async () => {
@@ -169,6 +178,7 @@ test("system announces on change and re-announces after a failure", async () => 
   assert.equal(await h.store.refreshSystem(), false);
   await h.store.refreshSystem();
   assert.equal(h.events.get("system"), 2);
+  assert.equal(h.last.get("system"), sys);
 });
 
 test("config and available announce on every read", async () => {
@@ -184,6 +194,8 @@ test("config and available announce on every read", async () => {
   await h.store.refreshAvailable();
   assert.equal(h.events.get("config"), 2);
   assert.equal(h.events.get("available"), 2);
+  assert.equal(h.last.get("config"), cfg);
+  assert.equal(h.last.get("available"), h.store.getState().available);
 });
 
 test("an older status response landing late does not overwrite a newer one", async () => {
@@ -210,6 +222,7 @@ test("applyConfig wins over a config read already in flight", async () => {
   slow.resolve({ devices: [] } as unknown as Config);
   await read;
   assert.equal(h.store.getState().config, patched);
+  assert.equal(h.last.get("config"), patched, "the applied config is announced");
 });
 
 test("applyUpdateStatus wins over a system read already in flight and announces", async () => {
@@ -222,6 +235,9 @@ test("applyUpdateStatus wins over a system read already in flight and announces"
   const update = { phase: "downloading" } as unknown as UpdateStatus;
   h.store.applyUpdateStatus(update);
   assert.equal(h.events.get("system"), 2, "the applied state announces");
+  const announced = h.last.get("system") as SystemInfo;
+  assert.equal(announced.update, update, "the announcement carries the update");
+  assert.equal(announced, h.store.getState().system);
   slow.resolve({ hostname: "pi", update: { phase: "idle" } } as unknown as SystemInfo);
   await read;
   assert.equal(h.store.getState().system?.update, update, "the older read is dropped");

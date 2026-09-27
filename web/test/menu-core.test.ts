@@ -1,6 +1,6 @@
-// Unit tests for the MenuButton rules and wiring (lib/menu-core.ts): where each key moves
-// focus in an open menu, which item opening starts on, and when focus leaving
-// the menu closes it. Run with node:test (see web:test).
+// Unit tests for the MenuButton rules and wiring (lib/menu-core.ts): where each
+// key moves focus in an open menu, which item opening starts on, and when focus
+// leaving the menu closes it. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";

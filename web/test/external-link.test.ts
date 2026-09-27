@@ -1,5 +1,6 @@
-// Unit tests for externalTailStart (lib/ui.ts): which end of an external
-// link's text stays on one line with its new-tab icon. Run with node:test (see web:test).
+// Unit tests for externalTailStart (lib/ui.ts): which end of an external link's
+// text stays on one line with its new-tab icon. Run with node:test (see
+// web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";

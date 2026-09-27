@@ -17,7 +17,10 @@ The output must stay plain ES modules (plus the one classic script,
   Every step runs through `npx -p <pinned tool>` from `Taskfile.yml`: `tsc`
   (typescript 7), `oxlint --deny-warnings`, and `html-validate` with the
   recommended and a11y presets. Zero warnings is the bar. `task web:verify`
-  runs them all; `task web:test` runs the unit tests.
+  runs them all; `task web:test` runs the unit tests with Node's own type
+  stripping, so it needs a Node that strips types by default (CI pins 26).
+  The sweep's `e2e/tsconfig.json` keeps its own option list and does not
+  enable `noUncheckedIndexedAccess` yet.
 - An indexed read (`arr[i]`, `record[key]`, a regex group) may be
   `undefined`: guard it, or use `.entries()` or `charAt`. No blanket `!`. In
   tests, `at` and `group` from `test/fixtures.ts` fail the test on a missing
@@ -99,8 +102,9 @@ reconcile:
   `config`, `system`, `available`, `levels`, `connection`, `loaderror`,
   `authrequired`, `authok`; `change` on the notification store). The router
   announces `route` the same way. A new event goes in the map first, so a
-  misspelled name or a wrong payload fails `tsc`. `devices`, `status` and `system` fire only when their data changed
-  (always after a failed read); `config` and `available` fire every poll. A
+  misspelled name or a wrong payload fails `tsc`. `devices`, `status` and
+  `system` fire only when their data changed, and again on the first read
+  after a failed one; `config` and `available` fire every poll. A
   mutation flow must not wait for a `devices`, `status` or `system` event,
   which a no-op change never sends: repaint from `config` or the awaited call.
 - Views and components subscribe with `on(name, payload => ...)` and render from
@@ -229,10 +233,10 @@ reconcile:
   `src/theme-init.ts` is a classic (non-module) script loaded in `<head>`
   that applies it before the first paint: the saved choice, else (nothing
   saved, or storage blocked) `prefers-color-scheme`, else dark when
-  `matchMedia` is unavailable. Keep it import-free and non-throwing;
-  `test/theme-init.test.ts` runs it as a classic script and pins its `<head>`
-  tag, its key and its media query against `THEME_KEY` and
-  `PREFERS_LIGHT_QUERY` in `lib/theme.ts`. While nothing is saved,
+  `matchMedia` is unavailable. Keep it import-free, free of type syntax, and
+  non-throwing; `test/theme-init.test.ts` runs the source as a classic script
+  and pins its `<head>` tag, its key and its media query against `THEME_KEY`
+  and `PREFERS_LIGHT_QUERY` in `lib/theme.ts`. While nothing is saved,
   `lib/theme.ts` follows OS changes live in System mode; choosing Light or
   Dark in the header menu saves and wins, and System removes the key.
   `color-scheme` on each theme block keeps native controls in step.

@@ -7,7 +7,7 @@
 import { api, ApiError, type ApiClient } from "./api.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
-import { store, type AppStore, type Timers } from "./store.ts";
+import { store, type Timers } from "./store.ts";
 import { showToast } from "../components/toast.ts";
 import { prefSaveNotice } from "./prefs.ts";
 import {
@@ -34,6 +34,13 @@ const STORAGE_KEY = "remote-mic-notifications";
 // Coalesce the burst of refetches a gap can trigger into one snapshot request.
 const GAP_RELOAD_DELAY_MS = 400;
 
+// ConnectionSource is the one store event the notification store follows.
+// It is spelled out rather than Pick<AppStore, "on">: tsc compares that
+// generic method loosely enough to accept an emitter of any event map.
+export interface ConnectionSource {
+  on(name: "connection", listener: (up: boolean) => void): void;
+}
+
 // NotificationDeps is what the notification store drives: the snapshot
 // endpoint, the event stream, the source of "connection" events (the app
 // store), and the timers. The app uses the shared singletons; a test passes
@@ -41,7 +48,7 @@ const GAP_RELOAD_DELAY_MS = 400;
 export interface NotificationDeps {
   api: Pick<ApiClient, "getNotifications">;
   sse: Pick<SSEClient, "subscribe">;
-  connection: Pick<AppStore, "on">;
+  connection: ConnectionSource;
   timers: Pick<Timers, "setTimeout" | "clearTimeout">;
 }
 

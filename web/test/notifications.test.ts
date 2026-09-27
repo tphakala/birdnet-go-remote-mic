@@ -9,11 +9,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ApiError } from "../src/lib/api.ts";
-import { NotificationStore } from "../src/lib/notifications.ts";
+import { NotificationStore, type ConnectionSource } from "../src/lib/notifications.ts";
 import { prefSaveNotice } from "../src/lib/prefs.ts";
 import { resyncDelay } from "../src/lib/notifications-core.ts";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
+import type { Router } from "../src/lib/router.ts";
+import type { AppStore } from "../src/lib/store.ts";
 import { FakeConnection, FakeTimers, notif } from "./fixtures.ts";
+
+// Compile-time checks, never called: the connection seam takes the app store
+// and the fake, but not an emitter of another event map.
+export function connectionSeamTypes(store: AppStore, router: Router): ConnectionSource[] {
+  // @ts-expect-error: the router emits "route", not "connection".
+  const wrong: ConnectionSource = router;
+  return [store, new FakeConnection(), wrong];
+}
 
 interface Harness {
   ns: NotificationStore;

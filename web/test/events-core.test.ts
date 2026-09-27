@@ -1,6 +1,6 @@
 // Unit tests for the pure Events-page logic (filtering, faceted counts, the
-// onset/clear lifecycle pairing, and the formatters). Run with
-// node:test (see the web:test task).
+// onset/clear lifecycle pairing, and the formatters). Run with node:test (see
+// the web:test task).
 
 import test from "node:test";
 import assert from "node:assert/strict";

@@ -390,8 +390,8 @@ export class DashboardView {
     store.on("connection", (connected) => {
       this.updateConnection(connected);
     });
-    store.on("loaderror", (detail) => {
-      if (detail.coreFailed) this.renderLoadError(detail.message);
+    store.on("loaderror", (failure) => {
+      if (failure.coreFailed) this.renderLoadError(failure.message);
     });
   }
 

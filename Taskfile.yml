@@ -167,8 +167,9 @@ tasks:
     desc: Run the web UI unit tests (node:test) straight from the TypeScript source
     cmds:
       # Node strips the types itself, so there is no compile step; web:typecheck
-      # checks the types.
-      - node --test web/test/
+      # checks the types. The glob names the files, so a Node without type
+      # stripping fails on them instead of passing with no tests found.
+      - node --test web/test/*.test.ts
 
   web:verify:
     desc: Type-check, lint, a11y-audit, unit-test, and rebuild the web UI

@@ -29,6 +29,10 @@ class Source extends Emitter<Events> {
     this.emit("ping", 1);
     // @ts-expect-error: a payload is required.
     this.emit("count");
+    const name: "count" | "ping" = Math.random() < 0.5 ? "count" : "ping";
+    // @ts-expect-error: a union-typed name still takes its own event's payload
+    // (a number fits "count", but "ping" takes none).
+    this.emit(name, 3);
     // @ts-expect-error: "cuont" is not in the event map.
     this.on("cuont", () => {});
     // @ts-expect-error: the listener's parameter type must match the payload.

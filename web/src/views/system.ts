@@ -311,12 +311,12 @@ export class SystemView {
       // "No devices configured".
       if (this.devicesLoaded) this.renderDeviceRows(store.getState().devices);
     });
-    store.on("loaderror", (detail) => {
-      if (detail.systemFailed) this.renderLoadError(detail.message);
+    store.on("loaderror", (failure) => {
+      if (failure.systemFailed) this.renderLoadError(failure.message);
       // A config-only failure leaves the network/access/notification cards hidden
       // with no other signal. Surface it so the miss is not invisible; polling
       // recovers the config on a later tick and the cards then appear.
-      if (detail.configFailed && !detail.systemFailed) {
+      if (failure.configFailed && !failure.systemFailed) {
         showToast("Could not load the network, access and notification settings. Retrying shortly.", "warn");
       }
     });
@@ -1052,9 +1052,9 @@ export class SystemView {
       // copy it, and leaving a saved secret in plain sight is needless exposure.
       this.setAuthReveal(false);
     } catch (err: unknown) {
-      const problem = err instanceof ApiError ? err.errors?.[0] : undefined;
-      if (err instanceof ApiError && problem) {
-        this.setAuthError(problem.reason ?? err.title);
+      const item = err instanceof ApiError ? err.errors?.[0] : undefined;
+      if (err instanceof ApiError && item) {
+        this.setAuthError(item.reason ?? err.title);
       } else {
         // A non-validation failure (network drop, a lost response) is ambiguous:
         // the appliance applies the token BEFORE it finishes writing the PATCH

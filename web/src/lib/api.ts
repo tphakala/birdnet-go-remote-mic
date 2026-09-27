@@ -14,6 +14,7 @@ import type {
   RestartResult,
   SystemInfo,
   UpdateStatus,
+  ValidationErrorItem,
   ValidationProblem,
 } from "./types.ts";
 
@@ -21,9 +22,9 @@ export class ApiError extends Error {
   public status: number;
   public title: string;
   public detail?: string;
-  public errors?: Array<{ field?: string; reason?: string }>;
+  public errors?: ValidationErrorItem[];
 
-  constructor(status: number, title: string, detail?: string, errors?: Array<{ field?: string; reason?: string }>) {
+  constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[]) {
     super(detail || title);
     this.name = "ApiError";
     this.status = status;

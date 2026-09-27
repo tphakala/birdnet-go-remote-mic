@@ -3,8 +3,9 @@
 // node:vm context holding stubs for the browser globals it touches. node:vm
 // runs it with classic-script semantics, as the <head> tag does, so an import
 // or export added to it fails here instead of only in the browser, and so does
-// type syntax, which keeps the source the same statements tsc emits. Run with
-// node:test (see web:test).
+// type syntax. tsc emits the same statements behind a "use strict" prologue
+// (strict is on), which the test prepends so the script runs in the page's
+// mode. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,7 +20,7 @@ import { group } from "./fixtures.ts";
 const THEME_INIT_TS = fileURLToPath(new URL("../src/theme-init.ts", import.meta.url).href);
 const INDEX_HTML = fileURLToPath(new URL("../static/index.html", import.meta.url).href);
 
-const script = new Script(readFileSync(THEME_INIT_TS, "utf8"), { filename: "theme-init.ts" });
+const script = new Script(`"use strict";\n${readFileSync(THEME_INIT_TS, "utf8")}`, { filename: "theme-init.ts" });
 
 interface Env {
   // The stored preference; undefined blocks storage the way Chromium does
@@ -37,7 +38,7 @@ interface Env {
 // "never consulted" from "consulted and its throw swallowed".
 let mediaCalls = 0;
 
-// runThemeInit executes theme-init.js against stubbed globals and returns the
+// runThemeInit runs the theme-init source against stubbed globals and returns the
 // data-theme it set, or null when it set none.
 function runThemeInit(env: Env): string | null {
   let theme: string | null = null;

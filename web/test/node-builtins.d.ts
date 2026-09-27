@@ -1,8 +1,7 @@
-// Minimal ambient declarations for the Node built-in test modules, covering
-// only the surface the notification-core tests use. This keeps the test build
-// dependency-free (no @types/node): the types live under web/test, so they are
-// type-checked only by test/tsconfig.json, never by the dist build or the linter,
-// both of which are scoped to web/src.
+// Minimal ambient declarations for the Node built-ins the tests use, covering
+// only that surface. This keeps the test type check dependency-free (no
+// @types/node): the file lives under web/test, so only test/tsconfig.json
+// reads it, never the dist build.
 
 declare module "node:test" {
   type TestFn = () => void | Promise<void>;
