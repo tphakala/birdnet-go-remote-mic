@@ -85,7 +85,7 @@ test("certTooLargeReason echoes the appliance's problem detail", () => {
 test("certTooLargeReason falls back without a usable detail", () => {
   assert.equal(certTooLargeReason(undefined), CERT_TOO_LARGE_FALLBACK);
   assert.equal(certTooLargeReason("  "), CERT_TOO_LARGE_FALLBACK);
-  // A proxy's HTML error page, or anything long or multi-line, is not echoed.
+  // Markup, or anything long or multi-line, is not echoed.
   assert.equal(certTooLargeReason("<html><body>413</body></html>"), CERT_TOO_LARGE_FALLBACK);
   assert.equal(certTooLargeReason("x".repeat(MAX_ECHOED_DETAIL_LEN)), "x".repeat(MAX_ECHOED_DETAIL_LEN));
   assert.equal(certTooLargeReason("x".repeat(MAX_ECHOED_DETAIL_LEN + 1)), CERT_TOO_LARGE_FALLBACK);

@@ -185,7 +185,7 @@ export class AppStore extends Emitter<StoreEvents> {
     } catch (err: unknown) {
       setToken(null);
       if (err instanceof ApiError && err.status === 401) {
-        return { ok: false, message: "That token was rejected. Check it and try again." };
+        return { ok: false, message: "The access token was not accepted. Check it and try again." };
       }
       return { ok: false, message: `Could not reach the appliance: ${apiErrorMessage(err)}` };
     }
@@ -200,7 +200,7 @@ export class AppStore extends Emitter<StoreEvents> {
     // rejected token is not kept") and leave a dead credential in storage.
     if (this.loginPending) {
       setToken(null);
-      return { ok: false, message: "The appliance rejected the token during load. Try again." };
+      return { ok: false, message: "The access token was not accepted while loading. Try again." };
     }
     this.startPolling();
     return { ok: true, message: "" };

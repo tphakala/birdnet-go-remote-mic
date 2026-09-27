@@ -233,7 +233,7 @@ test("a failure after a newer read applied does not re-announce", async () => {
 test("a login that cannot reach the appliance never shows a response body", async () => {
   const h = harness(new FakeTimers());
   // A proxy in front of the appliance answers with its own HTML page.
-  h.push("getStatus", new ApiError(502, "Bad Gateway", "<html><body>upstream down</body></html>"));
+  h.push("getStatus", new ApiError(502, "Bad Gateway", { detail: "<html><body>upstream down</body></html>" }));
   const res = await h.store.login("typed-token");
   assert.equal(res.ok, false);
   assert.equal(res.message, "Could not reach the appliance: Bad Gateway");

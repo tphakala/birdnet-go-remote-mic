@@ -1,11 +1,11 @@
-import { api, ApiError, problemFor, problemReason } from "../lib/api.ts";
+import { api, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, firstProblem, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
-import { describeUpdate, followEndText, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
+import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
 import { generateToken, setToken } from "../lib/auth.ts";
 import {
@@ -88,12 +88,10 @@ function formatCertTime(iso: string): string {
 // so an obviously invalid token is caught before the round trip.
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 
-// updateErrorText says why an update request failed: the appliance's own
-// reason for a refusal (see refusalText), or the error's message. Only a
-// problem body's detail counts as a reason; any other body (a proxy's page)
-// is not shown. A 401 reads as every other 401 does (apiErrorMessage).
+// updateErrorText says why an update request failed, as a sentence: the
+// appliance's own reason for a refusal (such as an earlier attempt still
+// running), by the same rules as every other failure (apiErrorMessage).
 function updateErrorText(err: unknown): string {
-  if (err instanceof ApiError && err.status !== 401) return refusalText(err.status, err.title, err.problemDetail);
   return sentence(apiErrorMessage(err));
 }
 
@@ -1439,7 +1437,9 @@ export class SystemView {
       // the discovery toggle, the card's editable control.
       this.discoveryEl?.focus();
     } catch (err: unknown) {
-      showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
+      // A validation problem reads by its reason, as on the other forms; its
+      // detail is the raw field path.
+      showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
     } finally {
       if (saveBtn) clearBusy(saveBtn, "Save Changes");
       if (discardBtn) discardBtn.disabled = false;

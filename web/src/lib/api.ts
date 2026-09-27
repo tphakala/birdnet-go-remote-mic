@@ -15,8 +15,15 @@ import type {
   SystemInfo,
   UpdateStatus,
   ValidationErrorItem,
-  ValidationProblem,
 } from "./types.ts";
+
+// ApiErrorBody is what a problem body adds to an ApiError: its detail, its
+// validation items, and whether it was a problem body at all.
+export interface ApiErrorBody {
+  detail?: string;
+  errors?: ValidationErrorItem[];
+  problem?: boolean;
+}
 
 export class ApiError extends Error {
   public status: number;
@@ -25,19 +32,19 @@ export class ApiError extends Error {
   public errors?: ValidationErrorItem[];
   // problem is true when the error came from an RFC 9457 problem body
   // (application/problem+json, what the appliance sends), whose detail is
-  // written for people. Otherwise a non-JSON body's text lands in detail (a
-  // proxy's HTML page, say) and a plain JSON body leaves it empty. Read it
-  // through problemDetail.
+  // written for people. request() keeps no other body: a proxy's page, a
+  // plain JSON error or a body that does not parse leaves only the status.
+  // Read the detail through problemDetail.
   public problem: boolean;
 
-  constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[], problem = false) {
-    super(detail || title);
+  constructor(status: number, title: string, body: ApiErrorBody = {}) {
+    super(body.detail || title);
     this.name = "ApiError";
     this.status = status;
     this.title = title;
-    this.detail = detail;
-    this.errors = errors;
-    this.problem = problem;
+    this.detail = body.detail;
+    this.errors = body.errors;
+    this.problem = body.problem ?? false;
   }
 
   // problemDetail is the problem's detail, or undefined when the body was not
@@ -91,10 +98,42 @@ export function firstProblem(err: unknown): FieldProblem | null {
   return problemFor(err, () => true);
 }
 
-// isValidationItem keeps the entries of a problem's errors list that are
-// objects, so a malformed entry cannot break a caller reading its field.
+// isValidationItem keeps the entries of a problem's errors list shaped as the
+// contract says (field and reason, each a string when present), so a
+// malformed entry cannot break a caller reading them.
 function isValidationItem(e: unknown): e is ValidationErrorItem {
-  return typeof e === "object" && e !== null;
+  if (typeof e !== "object" || e === null) return false;
+  const { field, reason } = e as Record<string, unknown>;
+  return (field === undefined || typeof field === "string") && (reason === undefined || typeof reason === "string");
+}
+
+// problemError builds the ApiError for a failed response. Only a problem
+// body's fields are the appliance's words; any other body, and a problem body
+// that does not parse, keeps nothing but the status.
+async function problemError(res: Response, isProblem: boolean): Promise<ApiError> {
+  const fallback = res.statusText || `HTTP ${res.status}`;
+  let parsed: unknown = null;
+  if (isProblem) {
+    try {
+      parsed = await res.json();
+    } catch {
+      parsed = null;
+    }
+  } else {
+    // Release the unread body; cancel() rejects on an errored stream.
+    void res.body?.cancel().catch(() => {});
+  }
+  if (typeof parsed !== "object" || parsed === null) return new ApiError(res.status, fallback);
+  const prob = parsed as Record<string, unknown>;
+  return new ApiError(
+    typeof prob.status === "number" ? prob.status : res.status,
+    typeof prob.title === "string" && prob.title ? prob.title : fallback,
+    {
+      detail: typeof prob.detail === "string" ? prob.detail : undefined,
+      errors: Array.isArray(prob.errors) ? prob.errors.filter(isValidationItem) : undefined,
+      problem: true,
+    },
+  );
 }
 
 export class ApiClient {
@@ -146,27 +185,16 @@ export class ApiClient {
     const contentType = res.headers.get("Content-Type") || "";
     const isJson = contentType.includes("application/json") || contentType.includes("application/problem+json");
 
-    if (!res.ok) {
-      if (isJson) {
-        const prob = (await res.json()) as ValidationProblem;
-        // Only a problem body's fields are the appliance's words; a plain JSON
-        // error (a proxy's) keeps nothing but its status.
-        const isProblem = contentType.includes("application/problem+json");
-        throw new ApiError(
-          (isProblem && prob.status) || res.status,
-          (isProblem && prob.title) || res.statusText || `HTTP ${res.status}`,
-          isProblem && typeof prob.detail === "string" ? prob.detail : undefined,
-          isProblem && Array.isArray(prob.errors) ? prob.errors.filter(isValidationItem) : undefined,
-          isProblem,
-        );
-      }
-      const text = await res.text();
-      // statusText is empty over HTTP/2, so fall back to the status code.
-      throw new ApiError(res.status, res.statusText || `HTTP ${res.status}`, text);
-    }
+    if (!res.ok) throw await problemError(res, contentType.includes("application/problem+json"));
 
     if (isJson) {
-      return (await res.json()) as T;
+      try {
+        return (await res.json()) as T;
+      } catch {
+        // The parser's message quotes the body, which the appliance did not
+        // write for people (a proxy's page labelled JSON, say).
+        throw new ApiError(res.status, "the response could not be read");
+      }
     }
 
     return (await res.text()) as unknown as T;
