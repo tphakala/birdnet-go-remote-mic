@@ -200,7 +200,7 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) (err error) {
 	}
 	res, err := changeToken(cfgPath, token, func(cur string) error {
 		if cur != "" && !*force {
-			return fmt.Errorf("an access token is already set in %s; show it with `remote-mic token get`, or re-run with --force to replace it", cfgPath)
+			return fmt.Errorf("an access token is already set in %s; show it with `remote-mic token get`, or re-run with --force to replace it", absPath(cfgPath))
 		}
 		return nil
 	})

@@ -235,23 +235,28 @@ Run a command with -h to see its flags.
 `)
 }
 
+// startedBySystemd reports whether systemd started this process: it sets
+// INVOCATION_ID for every unit it starts (systemd.exec(5)), while an ssh
+// login shell and sudo without -E do not carry it (checked on the test
+// appliance). A shell that itself runs under systemd, or sudo -E, does.
+func startedBySystemd() bool { return os.Getenv("INVOCATION_ID") != "" }
+
 // runAppliance starts the appliance. A variable so tests of runServe's
 // checks do not start it.
 var runAppliance = run
 
-// runServe parses the serve flags and starts the appliance. Run by hand
-// (the config did not come from $REMOTEMIC_CONFIG, which is how the unit
-// starts it, nor from a unit's working directory), serve refuses an account
-// other than the config's owner, as the token commands do: it would create a
-// lock, a first config or a certificate the appliance's own account cannot
-// open. A start by systemd is exempt so a User= in a unit or drop-in never
-// turns a start into a restart loop, and --check only reads.
+// runServe parses the serve flags and starts the appliance. Run by hand,
+// serve refuses an account other than the config's owner, as the token
+// commands do: it would create a lock, a first config or a certificate the
+// appliance's own account cannot open. A start by systemd is exempt, however
+// the config was named, so a User= in a unit or drop-in never turns a start
+// into a restart loop, and --check only reads.
 func runServe(args []string, stderr io.Writer) error {
 	ref, ov, check, pprofAddr, err := parseServeFlags(args, stderr)
 	if err != nil {
 		return err
 	}
-	if !check && ref.source != fromEnv && ref.source != fromService {
+	if !check && !startedBySystemd() {
 		if err := checkOwner(ref.path, "serve", args); err != nil {
 			return err
 		}
@@ -301,7 +306,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfg configRef, ov serveOv
 	// themselves (the installer's unit sets the variable), so it keeps the
 	// working directory's config.yaml, as before the installed unit was
 	// consulted: following the installed unit there would stop that unit.
-	if !ov.set["config"] && os.Getenv(configEnv) == "" && os.Getenv("INVOCATION_ID") != "" {
+	if !ov.set["config"] && os.Getenv(configEnv) == "" && startedBySystemd() {
 		return configRef{path: configDefault, source: fromService}, ov, *checkFlag, *pprof, nil
 	}
 	ref, err := resolveConfig(fs, *path, stderr)

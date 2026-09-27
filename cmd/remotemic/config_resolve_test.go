@@ -335,9 +335,9 @@ func stubRunAppliance(t *testing.T) *bool {
 }
 
 // TestServeRefusesAnotherAccount asserts serve run by hand as an account
-// other than the config's owner is refused before anything starts, while
-// --check (read only) and a start whose config came from $REMOTEMIC_CONFIG
-// (the unit's own start, where a drop-in may set another User=) go ahead.
+// other than the config's owner is refused before anything starts, however
+// the config was named, while --check (read only) and a start by systemd
+// (where a drop-in may set another User=) go ahead.
 func TestServeRefusesAnotherAccount(t *testing.T) {
 	path := tempConfig(t)
 	seedConfigWithToken(t, path, tokenOld)
@@ -357,9 +357,14 @@ func TestServeRefusesAnotherAccount(t *testing.T) {
 
 	started = stubRunAppliance(t)
 	t.Setenv(configEnv, path)
-	if code, _, errOut := runCLI(cmdServe); code != 0 || !*started {
-		t.Errorf("serve from $%s: exit %d started %t stderr %q, want it to run", configEnv, code, *started, errOut)
+	if code, _, errOut := runCLI(cmdServe); code != 1 || *started || !strings.Contains(errOut, "run this command as that account") {
+		t.Errorf("serve by hand from $%s: exit %d started %t stderr %q, want the owner refusal", configEnv, code, *started, errOut)
 	}
+	t.Setenv("INVOCATION_ID", "0123456789abcdef")
+	if code, _, errOut := runCLI(cmdServe); code != 0 || !*started {
+		t.Errorf("serve started by systemd: exit %d started %t stderr %q, want it to run", code, *started, errOut)
+	}
+	t.Setenv("INVOCATION_ID", "")
 
 	stubEUID(t, os.Geteuid())
 	started = stubRunAppliance(t)
