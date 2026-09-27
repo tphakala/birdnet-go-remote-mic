@@ -151,7 +151,10 @@ reconcile:
   `components/vu-meter.ts`, a `FrameScheduler` from `lib/meter-core.ts`) that
   runs only while some meter has something new to draw; the dashboard
   suspends it while another view shows. Time-based animation uses elapsed
-  milliseconds, never a frame count, which varies with refresh rate.
+  milliseconds, never a frame count, which varies with refresh rate. A meter
+  with no current level (none yet, levels dropped, or the stream down) sits
+  at the floor and reads `--`, never `-inf`, so missing data does not pass
+  for silence.
 
 ## Components
 
