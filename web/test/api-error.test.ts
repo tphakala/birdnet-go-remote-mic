@@ -5,24 +5,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiClient, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason } from "../src/lib/api.ts";
+import { ApiClient, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason, UnreadableResponseError } from "../src/lib/api.ts";
 
 test("firstProblem returns the first validation problem with its field and reason", () => {
   const err = new ApiError(422, "Invalid configuration", { errors: [
     { field: "network.hostname", reason: "must be a valid hostname" },
     { field: "network.port", reason: "out of range" },
-  ] });
+  ], problem: true });
   assert.deepEqual(firstProblem(err), { field: "network.hostname", reason: "must be a valid hostname" });
 });
 
 test("firstProblem falls back to the problem title when the item has no reason", () => {
-  const err = new ApiError(422, "Invalid configuration", { errors: [{ field: "auth.token" }] });
+  const err = new ApiError(422, "Invalid configuration", { errors: [{ field: "auth.token" }], problem: true });
   assert.deepEqual(firstProblem(err), { field: "auth.token", reason: "Invalid configuration" });
 });
 
 test("firstProblem is null for a failure with no validation problem", () => {
   assert.equal(firstProblem(new ApiError(500, "Internal error")), null);
-  assert.equal(firstProblem(new ApiError(422, "Invalid", { errors: [] })), null);
+  assert.equal(firstProblem(new ApiError(422, "Invalid", { errors: [], problem: true })), null);
   assert.equal(firstProblem(new Error("offline")), null);
   assert.equal(firstProblem("offline"), null);
 });
@@ -100,10 +100,27 @@ test("a problem body that is not an object keeps only its status", async () => {
   assert.equal(apiErrorMessage(err), "HTTP 500");
 });
 
-test("a success body labelled JSON that does not parse is an ApiError that quotes nothing", async () => {
+test("a success body labelled JSON that does not parse is an unknown outcome that quotes nothing", async () => {
   const err = await failWith(new Response("<html>secret</html>", { status: 200, headers: { "Content-Type": "application/json" } }));
-  assert.ok(err instanceof ApiError);
+  // Not an ApiError: the request was accepted, so a caller that tells a
+  // refusal from an unknown outcome (the certificate and restart flows)
+  // must take it as unknown.
+  assert.ok(err instanceof UnreadableResponseError);
+  assert.equal(err instanceof ApiError, false);
   assert.equal(apiErrorMessage(err), "the response could not be read");
+});
+
+test("an ApiError's message never holds a detail that is not a problem's", () => {
+  assert.equal(new ApiError(502, "Bad Gateway", { detail: "<html>secret</html>" }).message, "Bad Gateway");
+  assert.equal(new ApiError(500, "internal error", { detail: "disk full", problem: true }).message, "disk full");
+});
+
+test("the failure's status is the response's, whatever the problem body says", async () => {
+  const err = await failWith(
+    new Response(JSON.stringify({ status: 202, title: "accepted?" }), { status: 409, headers: { "Content-Type": "application/problem+json" } }),
+  );
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.status, 409);
 });
 
 test("a plain JSON error body is not a problem, so its fields are not shown", async () => {

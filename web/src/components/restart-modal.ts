@@ -23,9 +23,12 @@ function sayNow(text: string): void {
   if (region) region.textContent = text;
 }
 
-// UNCONFIRMED_TEXT is what the dialog shows and says when the restart request
-// got no answer.
-const UNCONFIRMED_TEXT = "The restart request got no answer. Waiting to see whether the appliance restarts; this page reloads once it answers.";
+// UNCONFIRMED_TEXT is the dialog's text when the appliance did not confirm
+// the restart request (no answer, or an answer that could not be read).
+const UNCONFIRMED_TEXT = "The appliance did not confirm the restart. This page waits to see whether it restarts.";
+// HEALTH_ATTEMPTS and HEALTH_PROBE_MS bound the wait for the appliance.
+const HEALTH_ATTEMPTS = 30;
+const HEALTH_PROBE_MS = 900;
 
 // confirmRestart asks the user to confirm the disruptive restart before it runs.
 function confirmRestart(): Promise<boolean> {
@@ -59,9 +62,9 @@ export async function triggerApplianceRestart(): Promise<void> {
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    // A 2xx whose body could not be read was accepted: the restart may be
-    // under way, so it waits like a request that got no answer.
-    if (err instanceof ApiError && (err.status < 200 || err.status >= 300)) {
+    // An ApiError is a refusal. Anything else (no answer, or an accepted
+    // request whose body could not be read) leaves the outcome unknown.
+    if (err instanceof ApiError) {
       // 501: the server has no restart control wired
       // (internal/mgmtserver/system.go:86), so say what to do instead.
       const why = err.status === 501
@@ -71,9 +74,8 @@ export async function triggerApplianceRestart(): Promise<void> {
       restarting = false;
       return;
     }
-    // No answer (the connection dropped): the restart may have started, so
-    // wait for the appliance as after a confirmed one rather than invite a
-    // second restart. The page reloads once it answers either way.
+    // The restart may have started, so wait for the appliance as after a
+    // confirmed one rather than invite a second restart.
     confirmed = false;
   }
 
@@ -91,64 +93,66 @@ export async function triggerApplianceRestart(): Promise<void> {
 
   // Announce the phase once; the per-second countdown below updates only the
   // aria-hidden visual element, so it is not read out on every tick.
-  say(confirmed ? "Restarting the appliance. Reconnecting shortly." : UNCONFIRMED_TEXT);
+  // The dialog's description already reads UNCONFIRMED_TEXT on the
+  // unconfirmed path, so the phase line is short.
+  say(confirmed ? "Restarting the appliance. Reconnecting shortly." : "Restart not confirmed. Waiting for the appliance.");
 
   let seconds = 5;
-  if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
+  const countdownText = (s: number) => (confirmed ? `Reconnecting in ${s}s...` : `Checking in ${s}s...`);
+  if (timerEl) timerEl.textContent = countdownText(seconds);
 
   const countdown = window.setInterval(() => {
     seconds -= 1;
     if (seconds > 0) {
-      if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
+      if (timerEl) timerEl.textContent = countdownText(seconds);
     } else {
       clearInterval(countdown);
       if (timerEl) timerEl.textContent = "Waiting for the appliance to come back...";
       say("Waiting for the appliance to come back.");
-      startHealthPolling(confirmed);
+      void pollHealth(confirmed);
     }
   }, 1000);
 }
 
-// startHealthPolling waits for the appliance to answer, then reloads. When
-// the restart request got no answer, an appliance that answers may never
-// have restarted, so the reload message says so.
-function startHealthPolling(confirmed: boolean): void {
+// pollHealth waits for the appliance to answer, once a second for up to
+// HEALTH_ATTEMPTS probes, one at a time, each bounded so a hanging probe
+// cannot outlast its second. After a confirmed restart an answer reloads the
+// page. After an unconfirmed one the appliance may never have restarted, so
+// the dialog says so and offers Reload now instead of reloading under the
+// operator, who would not learn it.
+async function pollHealth(confirmed: boolean): Promise<void> {
   const timerEl = document.getElementById("reconnect-timer");
-  let attempts = 0;
-  const maxAttempts = 30;
-
-  const interval = window.setInterval(async () => {
-    attempts += 1;
-    if (timerEl) timerEl.textContent = `Waiting for the appliance to come back (${attempts}/${maxAttempts})...`;
-
+  for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++) {
+    if (timerEl) timerEl.textContent = `Waiting for the appliance to come back (${attempt}/${HEALTH_ATTEMPTS})...`;
+    let up = false;
     try {
-      const res = await fetch("/api/v1/healthz", { cache: "no-store" });
-      if (res.ok) {
-        clearInterval(interval);
-        const text = confirmed
-          ? "Appliance is back online. Reloading."
-          : "The appliance answers, but may not have restarted: check its uptime after the reload.";
-        if (timerEl) timerEl.textContent = confirmed ? "Appliance online! Reloading..." : text;
-        sayNow(text);
-        window.setTimeout(() => {
-          window.location.reload();
-        }, 600);
-      }
+      const res = await fetch("/api/v1/healthz", { cache: "no-store", signal: AbortSignal.timeout(HEALTH_PROBE_MS) });
+      up = res.ok;
     } catch {
-      // Still rebooting / down
+      // Still restarting, or the probe timed out.
     }
-
-    if (attempts >= maxAttempts) {
-      clearInterval(interval);
-      if (timerEl) timerEl.textContent = "Restart timed out.";
-      say("Restart timed out. Use the Reload now button to try again.");
+    if (up && confirmed) {
+      if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
+      sayNow("Appliance is back online. Reloading.");
+      window.setTimeout(() => window.location.reload(), 600);
+      return;
+    }
+    if (up) {
+      const text = "The appliance answers, but did not confirm the restart. Check its uptime after you reload.";
+      if (timerEl) timerEl.textContent = text;
+      say(text);
       showRetry();
+      return;
     }
-  }, 1000);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
+  }
+  if (timerEl) timerEl.textContent = "Restart timed out.";
+  say("Restart timed out. Use the Reload now button to check on the appliance.");
+  showRetry();
 }
 
-// showRetry reveals the real Retry button (replacing the old "click anywhere"
-// affordance) and focuses it so a keyboard user can reload.
+// showRetry reveals the Reload now button and focuses it so a keyboard user
+// can reload.
 function showRetry(): void {
   const retry = document.getElementById("restart-retry") as HTMLButtonElement | null;
   if (!retry) return;

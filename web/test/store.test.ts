@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
 import { ApiError } from "../src/lib/api.ts";
-import { setToken } from "../src/lib/auth.ts";
+import { getToken, setToken } from "../src/lib/auth.ts";
 import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
 import type { AvailableDevice, ApplianceStatus, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
 
@@ -463,6 +463,39 @@ test("stopping polling reports the stream down", () => {
   h.store.stopPolling();
   assert.equal(h.store.getState().connected, false);
   assert.deepEqual(h.connection, [true, false]);
+});
+
+test("a login whose token is refused says so and keeps no token", async () => {
+  const h = harness(new FakeTimers());
+  h.push("getStatus", new ApiError(401, "unauthorized"));
+  const res = await h.store.login("typed-token");
+  assert.equal(res.ok, false);
+  assert.equal(res.message, "The access token was not accepted. Check it and try again.");
+  assert.equal(getToken(), null);
+});
+
+test("a login whose token is refused during the load says so", async () => {
+  const h = harness(new FakeTimers());
+  const devices = deferred<Device[]>();
+  h.push("getStatus", status(1));
+  h.push("getDevices", devices.promise);
+  h.push("getSystem", {});
+  h.push("getConfig", { devices: [] });
+  h.push("getAvailableDevices", []);
+  try {
+    const login = h.store.login("typed-token");
+    await settle();
+    // The token is revoked while the load is in flight.
+    h.unauthorized();
+    devices.resolve([]);
+    const res = await login;
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "The access token was not accepted while loading. Try again.");
+    assert.equal(getToken(), null);
+  } finally {
+    h.store.stopPolling();
+    setToken(null);
+  }
 });
 
 test("a login fetches /status once and applies the verifying read", async () => {

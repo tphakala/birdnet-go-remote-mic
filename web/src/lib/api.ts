@@ -56,6 +56,21 @@ export class ApiError extends Error {
   }
 }
 
+// UnreadableResponseError is a success response whose body could not be read
+// (it did not parse, or the connection dropped mid-body). It is not an
+// ApiError: the appliance accepted the request, so a caller that separates
+// a refusal (ApiError) from an unknown outcome treats it as unknown. Its
+// message quotes nothing from the body, unlike the parser's.
+export class UnreadableResponseError extends Error {
+  public status: number;
+
+  constructor(status: number) {
+    super("the response could not be read");
+    this.name = "UnreadableResponseError";
+    this.status = status;
+  }
+}
+
 // apiErrorMessage reduces any thrown value to a short human string. An
 // ApiError shows its problem detail, which says what went wrong (problem
 // titles are generic: "bad request", "internal error"), else its title, else
@@ -127,8 +142,10 @@ async function problemError(res: Response, isProblem: boolean): Promise<ApiError
   }
   if (typeof parsed !== "object" || parsed === null) return new ApiError(res.status, fallback);
   const prob = parsed as Record<string, unknown>;
+  // The status is the response's: a body's own status field is not trusted
+  // to classify the failure.
   return new ApiError(
-    typeof prob.status === "number" ? prob.status : res.status,
+    res.status,
     typeof prob.title === "string" && prob.title ? prob.title : fallback,
     {
       detail: typeof prob.detail === "string" ? prob.detail : undefined,
@@ -185,17 +202,16 @@ export class ApiClient {
     }
 
     const contentType = res.headers.get("Content-Type") || "";
-    const isJson = contentType.includes("application/json") || contentType.includes("application/problem+json");
+    const isProblem = contentType.includes("application/problem+json");
+    const isJson = isProblem || contentType.includes("application/json");
 
-    if (!res.ok) throw await problemError(res, contentType.includes("application/problem+json"));
+    if (!res.ok) throw await problemError(res, isProblem);
 
     if (isJson) {
       try {
         return (await res.json()) as T;
       } catch {
-        // The parser's message quotes the body, which the appliance did not
-        // write for people (a proxy's page labelled JSON, say).
-        throw new ApiError(res.status, "the response could not be read");
+        throw new UnreadableResponseError(res.status);
       }
     }
 
