@@ -437,3 +437,16 @@ test("a failed status backs off, doubling up to RECONNECT_MAX_MS", async () => {
   assert.deepEqual(waits, [1000, 2000, 4000, 8000, RECONNECT_MAX_MS, RECONNECT_MAX_MS]);
   h.client.stop();
 });
+
+test("a CRLF split across two chunks is one line break", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send("event: notification\r");
+  await settle();
+  body.send('\ndata: {"c":3}\r\n\r\n');
+  await settle();
+  assert.deepEqual(h.payloads.at(-1), ["notification", { c: 3 }]);
+  h.client.stop();
+});

@@ -98,7 +98,8 @@ export class NotificationStore extends Emitter<{ change: undefined }> {
 
     // Re-sync on every (re)connect: the stream is best effort and may have
     // dropped events while down, so the snapshot is the source of truth. This
-    // also performs the first load, since startPolling fires a "connected" event.
+    // also performs the first load, since the stream startPolling opens
+    // announces "connected" at its first bytes.
     // It goes through resync, so a failed connect-time load retries with the
     // same backoff as any other (a 401 still defers to the login flow). While
     // the stream is down a pending retry is dropped and no new one is armed,

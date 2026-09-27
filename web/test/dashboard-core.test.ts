@@ -383,7 +383,7 @@ class FakeRouter extends Emitter<{ route: ViewName }> {
   }
 }
 
-test("the dashboard follower suspends meters and drops levels off the dashboard", () => {
+test("the dashboard follower suspends meters, drops levels and stops the stale check off the dashboard", () => {
   const router = new FakeRouter();
   const calls: string[] = [];
   followDashboardRoute(router, {

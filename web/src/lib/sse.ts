@@ -189,8 +189,8 @@ export class SSEClient {
             // so stop; the store restarts the stream once a token is accepted.
             this.isRunning = false;
             this.generation++;
-            // A watchdog armed for this connect (setEvents arms one) must not
-            // fire into the stream a later start opens.
+            // The watchdog armed for this connect must not fire into the
+            // stream a later start opens.
             this.clearHeartbeat();
             this.abortController = null;
             this.dispatch("unauthorized", null);
@@ -210,6 +210,9 @@ export class SSEClient {
         const decoder = new TextDecoder();
         let buffer = "";
         let announced = false;
+        // A CR that ends a chunk may be the first half of a CRLF split across
+        // chunks, so it waits for the next one.
+        let heldCR = "";
 
         while (this.isRunning && gen === this.generation) {
           const { done, value } = await reader.read();
@@ -220,6 +223,9 @@ export class SSEClient {
           // connect cannot miss what is raised in between. An older
           // appliance's first bytes are its first event.
           if (!announced) {
+            // A stop or restart that ran while this read was on its way owns
+            // the stream now.
+            if (gen !== this.generation) break;
             announced = true;
             this.resetHeartbeat();
             this.dispatch("connected", null);
@@ -227,7 +233,10 @@ export class SSEClient {
           }
 
           // SSE allows CRLF and CR line endings as well as LF.
-          buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+          let text = heldCR + decoder.decode(value, { stream: true });
+          heldCR = text.endsWith("\r") ? "\r" : "";
+          if (heldCR) text = text.slice(0, -1);
+          buffer += text.replace(/\r\n?/g, "\n");
           const messages = buffer.split("\n\n");
           // Keep trailing incomplete chunk
           buffer = messages.pop() || "";

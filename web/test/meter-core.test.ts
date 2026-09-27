@@ -957,7 +957,7 @@ test("clearing a meter that is already waiting asks for no frame", () => {
   assert.equal(h.frames.running(), false, "a second clear must not wake the loop");
 });
 
-test("a meter's first level shows even before its first frame", () => {
+test("a meter shows the waiting readout at once, and a level given before its first frame", () => {
   // Built while the loop is suspended (a card rebuilt off the dashboard),
   // then given silence: the readout must leave the waiting text on resume.
   const h = meterHarness({ suspended: true });
@@ -981,4 +981,16 @@ test("a meter out of view skips its paint, keeps its readout, and repaints when 
   assert.equal(h.frames.running(), true, "coming back into view asks for a frame");
   h.step();
   assert.deepEqual(h.draws.at(-1), [-20, -10]);
+});
+
+test("a settled meter out of view asks for no frames", () => {
+  const h = meterHarness();
+  h.prime();
+  h.meter.setOffscreen(true);
+  h.meter.setLevels(-20, -99);
+  h.step();
+  // The bar level is now current but unpainted; more of the same asks for
+  // nothing.
+  h.meter.setLevels(-20, -99);
+  assert.equal(h.frames.running(), false);
 });

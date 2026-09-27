@@ -424,14 +424,12 @@ export class MeterController implements Animator {
     this.syncClip();
     const peakDb = this.needle.db;
     if (!this.stale && this.rms === this.drawnRms && peakDb === this.drawnPeak) return;
-    if (this.offscreen) {
-      // Nobody sees it: paint when it is back in view (setOffscreen).
-      this.stale = true;
-      return;
-    }
     this.stale = false;
     this.drawnRms = this.rms;
     this.drawnPeak = peakDb;
+    // Nobody sees it: the values count as drawn, so a settled meter out of
+    // view asks for no frames, and setOffscreen(false) repaints it (redraw).
+    if (this.offscreen) return;
     this.ports.draw(this.rms, peakDb);
   }
 

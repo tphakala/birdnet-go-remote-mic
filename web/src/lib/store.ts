@@ -404,7 +404,7 @@ export class AppStore extends Emitter<StoreEvents> {
 
   // markStreamDown records that the stream went down: every path that says
   // so resets the same state (the levels it carried are not current) and
-  // announces it once.
+  // announces it, once per call.
   private markStreamDown(): void {
     this.state.connected = false;
     this.state.levels.clear();
