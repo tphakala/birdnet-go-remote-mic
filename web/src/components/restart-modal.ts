@@ -1,4 +1,4 @@
-import { api } from "../lib/api.ts";
+import { api, ApiError } from "../lib/api.ts";
 import { showToast } from "./toast.ts";
 import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
 import { announce, apiErrorMessage } from "../lib/ui.ts";
@@ -54,7 +54,12 @@ export async function triggerApplianceRestart(): Promise<void> {
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    showToast(`Restart request failed: ${apiErrorMessage(err)}`, "error");
+    // 501: the server has no restart control wired
+    // (internal/mgmtserver/system.go:86), so say what to do instead.
+    const why = err instanceof ApiError && err.status === 501
+      ? "this appliance cannot restart itself. Restart the remote-mic service on its host instead."
+      : apiErrorMessage(err);
+    showToast(`Restart request failed: ${why}`, "error");
     restarting = false;
     return;
   }
@@ -77,7 +82,7 @@ export async function triggerApplianceRestart(): Promise<void> {
       if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
     } else {
       clearInterval(countdown);
-      if (timerEl) timerEl.textContent = "Probing /healthz...";
+      if (timerEl) timerEl.textContent = "Waiting for the appliance to come back...";
       say("Checking whether the appliance is back online.");
       startHealthPolling();
     }
@@ -91,7 +96,7 @@ function startHealthPolling(): void {
 
   const interval = window.setInterval(async () => {
     attempts += 1;
-    if (timerEl) timerEl.textContent = `Probing /healthz (${attempts}/${maxAttempts})...`;
+    if (timerEl) timerEl.textContent = `Waiting for the appliance to come back (${attempts}/${maxAttempts})...`;
 
     try {
       const res = await fetch("/api/v1/healthz", { cache: "no-store" });

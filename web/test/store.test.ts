@@ -12,6 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
+import { ApiError } from "../src/lib/api.ts";
 import { setToken } from "../src/lib/auth.ts";
 import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
 import type { AvailableDevice, ApplianceStatus, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
@@ -206,21 +207,38 @@ test("available announces only on change, even after a failure", async () => {
 });
 
 test("a failure after a newer read applied does not re-announce", async () => {
-  const h = harness();
-  const slow = deferred<ApplianceStatus>();
-  h.push("getStatus", slow.promise);
-  h.push("getStatus", status(1));
-  h.push("getStatus", status(1));
-  const older = h.store.refreshStatus();
-  await h.store.refreshStatus();
-  assert.equal(h.events.get("status"), 1);
-  // The older read fails after the newer one applied: fresh data is in place.
-  slow.reject(new Error("offline"));
-  assert.equal(await older, true);
-  await h.store.refreshStatus();
-  assert.equal(h.events.get("status"), 1, "a superseded failure must not re-arm the announcement");
+  // The same guard in each refresh that resets its tracker on a failure.
+  const cases = [
+    { name: "status", endpoint: "getStatus", body: status(1), refresh: (h: Harness) => h.store.refreshStatus() },
+    { name: "devices", endpoint: "getDevices", body: [{ name: "mic", channels: [] }], refresh: (h: Harness) => h.store.refreshDevices() },
+    { name: "system", endpoint: "getSystem", body: { hostname: "pi" }, refresh: (h: Harness) => h.store.refreshSystem() },
+  ] as const;
+  for (const c of cases) {
+    const h = harness();
+    const slow = deferred<unknown>();
+    h.push(c.endpoint, slow.promise);
+    h.push(c.endpoint, c.body);
+    h.push(c.endpoint, c.body);
+    const older = c.refresh(h);
+    await c.refresh(h);
+    assert.equal(h.events.get(c.name), 1, `${c.name}: the newer read announces`);
+    // The older read fails after the newer one applied: fresh data is in place.
+    slow.reject(new Error("offline"));
+    assert.equal(await older, true);
+    await c.refresh(h);
+    assert.equal(h.events.get(c.name), 1, `${c.name}: a superseded failure must not re-arm the announcement`);
+  }
 });
 
+test("a login that cannot reach the appliance never shows a response body", async () => {
+  const h = harness(new FakeTimers());
+  // A proxy in front of the appliance answers with its own HTML page.
+  h.push("getStatus", new ApiError(502, "Bad Gateway", "<html><body>upstream down</body></html>"));
+  const res = await h.store.login("typed-token");
+  assert.equal(res.ok, false);
+  assert.equal(res.message, "Could not reach the appliance: Bad Gateway");
+  setToken(null);
+});
 test("an older status response landing late does not overwrite a newer one", async () => {
   const h = harness();
   const slow = deferred<ApplianceStatus>();
