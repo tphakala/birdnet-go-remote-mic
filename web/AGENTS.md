@@ -54,8 +54,13 @@ The output must stay plain ES modules (plus the one classic script,
   9457 problem body only, read through `problemDetail` and `problemFor`,
   handles the Bearer token and 401; the one deliberate bypass is the restart
   modal's raw
-  `fetch("/api/v1/healthz")` probe), `sse.ts` (`sse`, fetch-streaming SSE
-  client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
+  `fetch("/api/v1/healthz")` probe; every request has a
+  `REQUEST_DEADLINE_MS` deadline through `withDeadline` in `deadline.ts`),
+  `sse.ts` (`sse`, fetch-streaming SSE client with reconnect and heartbeat
+  watchdog; it reports `connected` at the stream's first bytes, which the
+  appliance sends as a `: open` comment once it has subscribed),
+  `timers.ts` (the `Timers` seam tests replace with `FakeTimers`),
+  `text.ts` (`sentence`, `deviceIdTitle`), `store.ts` (`store`, app
   state; `applyUpdateStatus` merges an update check or request response and
   drops older system reads), `router.ts` (hash routes `#/dashboard`,
   `#/events`, `#/system`,
@@ -147,6 +152,13 @@ reconcile:
   starves the view on a link slower than the poll. The SSE client uses a
   generation to cancel a superseded connect loop. Do the same for any new
   async write path.
+- Tell a refusal from an unknown outcome. `isRefusal(err)` is true only for
+  an appliance problem body: say what was refused, naming the device.
+  Anything else (a timeout, a proxy error, an unreadable 2xx) may have
+  applied: re-read the resource inside the same queued task, judge the
+  result by the re-read, and report with `showUnconfirmed`. A change that
+  sends a whole array re-reads first after a failed re-read. Toasts quote
+  `failureReason(err)`, never browser error text.
 - High-rate data (levels at 10 Hz) goes straight to the component that draws
   it (the canvas `VUMeter`), not through a view reconcile. Each meter's state
   and sequencing live in `MeterController` (`lib/meter-core.ts`), and every
@@ -161,7 +173,10 @@ reconcile:
   when levels stop: dropped, the stream down, or none for
   `LEVELS_STALE_MS` on a live stream while the dashboard shows; a card also
   clears its own when a levels event lacks its device. The clip latch sees
-  only the levels the page receives.
+  only the levels the page receives. A meter scrolled out of view skips its
+  canvas paint. A reverse proxy must pass the event stream unbuffered (the
+  appliance sends `X-Accel-Buffering: no`); buffered, levels arrive in bursts
+  and the meters clear between them.
 
 ## Components
 
@@ -178,7 +193,8 @@ reconcile:
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
   failure with Retry), `apiErrorMessage`/`firstProblem`/`setFieldError`,
-  `focusDropped`/`focusWorkspace` (focus fallback when a control went away),
+  `focusDropped`/`focusOnOrDropped`/`focusWorkspace` (focus fallback when a
+  control went away), `showUnconfirmed`, `failureReason`,
   `scrollBehavior` (a scripted scroll that follows reduced motion),
   `copyText`, `externalLink` (new-tab link with `rel="noopener"`), `announce` (a
   polite live-region message), `MenuButton` (a single-choice header menu),
@@ -243,7 +259,10 @@ reconcile:
   for notices, assertive `toast-alerts` for errors. When a render must move
   focus the operator did not move (a focused control hides), move it to a
   stable control in the same card and `announce` why in
-  `#dashboard-announce`.
+  `#dashboard-announce`. When the card itself went, focus goes to its
+  nearest neighbour (`neighbourOrder`), else `focusWorkspace()`. An async
+  action (a queued save, an Enable, a Remove) moves focus when it settles
+  only if it is still where the action left it or dropped (`focusDropped`).
 - Honor `prefers-reduced-motion`; every new animation needs a reduced-motion
   fallback in `styles.css`.
 

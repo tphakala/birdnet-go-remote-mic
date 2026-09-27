@@ -37,7 +37,9 @@ not break.
   means open access. `Guard` keeps the token and its generation in one
   `atomic.Pointer`, so a reader never sees a new token with an old generation.
 - `sse`: platform-neutral SSE transport. Producers implement `Source` and
-  import `sse`, never the reverse.
+  import `sse`, never the reverse. A producer that works only while it has
+  a subscriber also implements `Named`, so a request whose `?events=`
+  filter excludes its events never subscribes it (the levels hub does).
 - `levels`: per-device peak/RMS metering, central sampler, fan-out.
 - `notify`: in-memory notification center (bounded ring plus active
   conditions), RAM-only by design. Leaf package; emitters depend on
