@@ -728,3 +728,20 @@ test("switching reduced motion off wakes a falling needle and it glides", () => 
   h.step();
   assert.equal(h.frames.running(), false);
 });
+
+test("clearing levels drops the bar and the needle and keeps the latch", () => {
+  // Reduced motion: the meter asks for no frames of its own, so only the
+  // clear can bring one.
+  const h = meterHarness({ reducedMotion: true });
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-20, -10, true);
+  h.step();
+  assert.equal(h.frames.running(), false);
+  h.meter.clearLevels();
+  assert.equal(h.frames.running(), true, "the cleared meter must be drawn");
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, FLOOR_DB], "the bar and the needle clear");
+  assert.equal(h.readouts.at(-1), "-inf");
+  assert.deepEqual(h.clips, [false, true], "the clip latch stays until the operator clears it");
+});

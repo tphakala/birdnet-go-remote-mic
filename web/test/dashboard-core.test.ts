@@ -6,6 +6,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
+import { Emitter } from "../src/lib/emitter.ts";
+import type { ViewName } from "../src/lib/router-core.ts";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -22,6 +24,7 @@ import {
   bannerIsError,
   deviceFieldLabel,
   rejectionText,
+  followDashboardRoute,
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
@@ -366,4 +369,30 @@ test("judgeUnconfirmedSave judges a lost save by the re-read", () => {
   // A save that changed nothing cannot be told apart by the re-read.
   assert.equal(judgeUnconfirmedSave(true, "a", "a", "a"), "unchanged");
   assert.equal(judgeUnconfirmedSave(true, "a", "c", "a"), "changed");
+});
+
+// FakeRouter announces routes as the app's router does.
+class FakeRouter extends Emitter<{ route: ViewName }> {
+  go(view: ViewName): void {
+    this.emit("route", view);
+  }
+}
+
+test("the dashboard follower suspends meters and drops levels off the dashboard", () => {
+  const router = new FakeRouter();
+  const calls: string[] = [];
+  followDashboardRoute(router, {
+    setFramesSuspended: (s) => calls.push(`frames ${s ? "off" : "on"}`),
+    setLevelsWanted: (w) => calls.push(`levels ${w ? "on" : "off"}`),
+  });
+  router.go("dashboard");
+  router.go("system");
+  router.go("events");
+  router.go("dashboard");
+  assert.deepEqual(calls, [
+    "frames on", "levels on",
+    "frames off", "levels off",
+    "frames off", "levels off",
+    "frames on", "levels on",
+  ]);
 });

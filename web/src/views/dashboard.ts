@@ -5,7 +5,7 @@ import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusOnOrDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage, followDashboardRoute } from "../lib/dashboard-core.ts";
 import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
@@ -418,9 +418,17 @@ export class DashboardView {
     store.on("system", (system) => {
       this.updateTelemetryFromSystem(system);
     });
-    // The meters draw only while the dashboard shows. Levels keep updating
-    // their state meanwhile, so they are current on return.
-    router.on("route", (view) => meterFrames.setSuspended(view !== "dashboard"));
+    // The meters draw only while the dashboard shows, and levels stream only
+    // while it shows or was left less than LEVELS_GRACE_MS ago; until then
+    // they keep the meters' state current, so a quick return shows no stale
+    // needle. When the store drops them, each bar clears to the floor.
+    followDashboardRoute(router, {
+      setFramesSuspended: (suspended) => meterFrames.setSuspended(suspended),
+      setLevelsWanted: (wanted) => store.setLevelsWanted(wanted),
+    });
+    store.on("levelsdropped", () => {
+      for (const entry of this.cards.values()) entry.live?.meters.forEach((m) => m.clearLevels());
+    });
     store.on("levels", (levels) => {
       levels.forEach((dl, name) => {
         const entry = this.byName.get(name);

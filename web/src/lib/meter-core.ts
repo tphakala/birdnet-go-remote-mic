@@ -297,6 +297,18 @@ export class MeterController implements Animator {
     this.frames.remove(this);
   }
 
+  // clearLevels drops the bar and the needle to the floor when the levels
+  // stopped coming (the stream no longer carries them), so neither shows a
+  // stale level until the next one arrives; with reduced motion the needle
+  // would otherwise wait for that next level to step down. The clip latch
+  // keeps what it showed: a latch waits for the operator.
+  public clearLevels(): void {
+    this.rms = FLOOR_DB;
+    this.needle.db = FLOOR_DB;
+    this.needle.holdUntil = 0;
+    if (!this.paused && !this.destroyed) this.frames.wake(this);
+  }
+
   // setReducedMotion follows the viewer's motion preference when it changes.
   // The redraw it asks for also restarts the glide of a needle still falling.
   public setReducedMotion(reduced: boolean): void {

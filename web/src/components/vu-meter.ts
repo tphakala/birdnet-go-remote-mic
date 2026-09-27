@@ -119,6 +119,10 @@ export class VUMeter {
     this.controller.redraw();
   }
 
+  public clearLevels(): void {
+    this.controller.clearLevels();
+  }
+
   public setReducedMotion(reduced: boolean): void {
     this.controller.setReducedMotion(reduced);
   }

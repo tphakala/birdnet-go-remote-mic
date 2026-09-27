@@ -422,21 +422,35 @@ export interface MockServer {
   close(): Promise<void>;
 }
 
+// eventFilter reads a request's ?events= filter as the appliance does
+// (internal/sse/sse.go parseEventFilter): absent or empty means every type,
+// otherwise a comma-separated list of type names.
+function eventFilter(req: IncomingMessage): Set<string> | null {
+  const q = new URL(req.url ?? "/", "http://mock").searchParams.get("events") ?? "";
+  const names = q.split(",").map((n) => n.trim()).filter(Boolean);
+  return names.length === 0 ? null : new Set(names);
+}
+
 // startMockServer serves distDir and the mock API on 127.0.0.1:port (0 picks a
 // free port).
 export async function startMockServer(distDir: string, port: number = DEFAULT_PORT): Promise<MockServer> {
   const root = resolve(distDir);
-  const streams = new Set<ServerResponse>();
+  // Each open event stream, with the event types its ?events= filter asked
+  // for (null for every type), applied as the appliance applies it.
+  const streams = new Map<ServerResponse, Set<string> | null>();
+  const send = (name: string, frame: string): void => {
+    for (const [res, wanted] of streams) if (wanted === null || wanted.has(name)) res.write(frame);
+  };
 
   // One shared 10 Hz ticker drives every open stream, so all pages see the same
   // phase of the level cycle.
   let tick = 0;
   const levelTimer = setInterval(() => {
-    const frame = `event: levels\ndata: ${JSON.stringify(levelsAt(tick++))}\n\n`;
-    for (const res of streams) res.write(frame);
+    send("levels", `event: levels\ndata: ${JSON.stringify(levelsAt(tick++))}\n\n`);
   }, 100);
   const heartbeatTimer = setInterval(() => {
-    for (const res of streams) res.write("event: heartbeat\ndata: {}\n\n");
+    // Heartbeats pass every filter.
+    for (const res of streams.keys()) res.write("event: heartbeat\ndata: {}\n\n");
   }, 15_000);
 
   async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
@@ -484,7 +498,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
           Connection: "keep-alive",
         });
         res.write("event: heartbeat\ndata: {}\n\n");
-        streams.add(res);
+        streams.set(res, eventFilter(req));
         req.on("close", () => streams.delete(res));
         return;
       // Mutations answer with a plausible success and change nothing, so every
@@ -538,8 +552,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
   });
 
   function pushNotification(): void {
-    const frame = `event: notification\ndata: ${JSON.stringify(liveNotification())}\n\n`;
-    for (const res of streams) res.write(frame);
+    send("notification", `event: notification\ndata: ${JSON.stringify(liveNotification())}\n\n`);
   }
 
   await new Promise<void>((ok, fail) => {
@@ -555,7 +568,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
     close(): Promise<void> {
       clearInterval(levelTimer);
       clearInterval(heartbeatTimer);
-      for (const res of streams) res.end();
+      for (const res of streams.keys()) res.end();
       streams.clear();
       return new Promise<void>((ok) => server.close(() => ok()));
     },

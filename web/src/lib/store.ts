@@ -23,6 +23,16 @@ const POLL_INTERVAL_MS = 3000;
 // quick tab switch keeps the stream (and its toasts); a tab left in the
 // background stops holding the appliance's levels feed.
 export const HIDDEN_STREAM_GRACE_MS = 60_000;
+// How long levels keep streaming after the dashboard stops showing. A quick
+// look at another view keeps the stream as it is; a longer stay drops levels
+// from it, so the appliance marshals and sends none for this page (the SSE
+// handler skips a source the filter excludes, internal/sse/sse.go:130).
+export const LEVELS_GRACE_MS = 30_000;
+// NON_LEVEL_EVENTS is every event type the UI consumes except levels, the
+// filter the stream uses while levels are dropped. An event type the UI
+// starts consuming must be added here too, or it stops arriving while no
+// dashboard shows.
+export const NON_LEVEL_EVENTS: readonly string[] = ["notification"];
 
 // Timers is the timer API the stores schedule with: the globals in the app, a
 // fake a test fires by hand.
@@ -51,7 +61,7 @@ export interface StoreDeps {
     ApiClient,
     "onUnauthorized" | "getHealth" | "getStatus" | "getDevices" | "getSystem" | "getConfig" | "getAvailableDevices"
   >;
-  sse: Pick<SSEClient, "subscribe" | "start" | "stop">;
+  sse: Pick<SSEClient, "subscribe" | "start" | "stop" | "setEvents">;
   timers?: Timers;
 }
 
@@ -71,6 +81,9 @@ export interface StoreEvents {
   loaderror: LoadError;
   authrequired: undefined;
   authok: undefined;
+  // levelsdropped: the stream stopped carrying levels (see setLevelsWanted),
+  // so the levels the meters show are no longer current.
+  levelsdropped: undefined;
 }
 
 export class AppStore extends Emitter<StoreEvents> {
@@ -98,6 +111,11 @@ export class AppStore extends Emitter<StoreEvents> {
   // shows again (see setPageHidden).
   private streamStopTimer: ReturnType<typeof setTimeout> | null = null;
   private streamPaused = false;
+  // Levels: whether a view wants them, whether the stream dropped them, and
+  // the grace timer between the two (see setLevelsWanted).
+  private levelsWanted = true;
+  private levelsDropped = false;
+  private levelsTimer: ReturnType<typeof setTimeout> | null = null;
   // One ordering gate per polled resource (see LatestGate). The poll timer does
   // not wait for a tick to finish, and a provision, removal, or save triggers an
   // extra refresh, so reads of one resource overlap and can resolve out of
@@ -341,6 +359,35 @@ export class AppStore extends Emitter<StoreEvents> {
     else this.armPollTimer();
   }
 
+  // setLevelsWanted says whether a view is showing levels (the dashboard).
+  // Levels stop LEVELS_GRACE_MS after the dashboard leaves, by changing the
+  // stream's event filter, and come back at once when one returns; a return
+  // within the grace changes nothing. Dropping them announces levelsdropped.
+  // The filter outlives a stopped stream (a 401, a hidden page), so a restart
+  // keeps it.
+  public setLevelsWanted(wanted: boolean): void {
+    if (wanted === this.levelsWanted) return;
+    this.levelsWanted = wanted;
+    if (wanted) {
+      if (this.levelsTimer !== null) {
+        this.timers.clearTimeout(this.levelsTimer);
+        this.levelsTimer = null;
+      }
+      if (this.levelsDropped) {
+        this.levelsDropped = false;
+        this.sse.setEvents(null);
+      }
+      return;
+    }
+    this.levelsTimer = this.timers.setTimeout(() => {
+      this.levelsTimer = null;
+      this.levelsDropped = true;
+      this.sse.setEvents(NON_LEVEL_EVENTS);
+      this.state.levels.clear();
+      this.emit("levelsdropped");
+    }, LEVELS_GRACE_MS);
+  }
+
   public stopPolling(): void {
     this.polling = false;
     this.clearPollTimer();
@@ -361,11 +408,11 @@ export class AppStore extends Emitter<StoreEvents> {
   // a minimized window): nobody is looking, and every tick costs the appliance
   // five requests. The event stream stays up for HIDDEN_STREAM_GRACE_MS, so a
   // quick tab switch keeps notifications and their toasts arriving, and is then
-  // stopped, so a forgotten tab does not keep the appliance metering and
-  // sending levels for it. On showing again the page refreshes at once, so the
-  // views are current without waiting an interval, and resumes the timer; a
-  // stopped stream restarts, and its connect re-sync recovers any notification
-  // raised meanwhile (toasts for those are not replayed).
+  // stopped, so a forgotten tab does not keep the appliance sending it
+  // levels. On showing again the page refreshes at once, so the views are
+  // current without waiting an interval, and resumes the timer; a stopped
+  // stream restarts, and its connect re-sync recovers any notification raised
+  // meanwhile (toasts for those are not replayed).
   public setPageHidden(hidden: boolean): void {
     if (hidden === this.pageHidden) return;
     this.pageHidden = hidden;

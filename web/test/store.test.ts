@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
+import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents, LEVELS_GRACE_MS, NON_LEVEL_EVENTS } from "../src/lib/store.ts";
 import { ApiError, UnreadableResponseError } from "../src/lib/api.ts";
 import { getToken, setToken } from "../src/lib/auth.ts";
 import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
@@ -35,9 +35,11 @@ interface Harness {
   sseStops: () => number;
   // emit delivers a synthesized event-stream event ("connected", ...) to the
   // store's subscription, as the SSE client would.
-  emit: (name: string) => void;
+  emit: (name: string, data?: unknown) => void;
   // connection records the detail of every "connection" event, in order.
   connection: boolean[];
+  // filters records every event filter the store set on the stream.
+  filters: (readonly string[] | null)[];
   // unauthorized reports a 401 to the store, as the API client would.
   unauthorized: () => void;
 }
@@ -59,6 +61,7 @@ function harness(timers?: FakeTimers): Harness {
   let starts = 0;
   let stops = 0;
   const stream = new FakeStream();
+  const filters: (readonly string[] | null)[] = [];
   const deps: StoreDeps = {
     api: {
       onUnauthorized: null,
@@ -77,6 +80,9 @@ function harness(timers?: FakeTimers): Harness {
       stop: () => {
         stops++;
       },
+      setEvents: (names) => {
+        filters.push(names);
+      },
     },
     timers,
   };
@@ -93,8 +99,9 @@ function harness(timers?: FakeTimers): Harness {
   store.on("connection", (up) => connection.push(up));
   return {
     unauthorized: () => deps.api.onUnauthorized?.(),
+    filters,
     sseStops: () => stops,
-    emit: (name) => stream.deliver(name, null),
+    emit: (name, data = null) => stream.deliver(name, data),
     connection,
     store,
     push(endpoint, outcome) {
@@ -610,4 +617,52 @@ test("a 401 during the initial load leaves the failure to the login prompt", asy
   statusRead.reject(new Error("401"));
   await load;
   assert.deepEqual(errors, [], "a pending login must suppress the load error");
+});
+
+test("levels drop LEVELS_GRACE_MS after leaving the dashboard", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  let dropped = 0;
+  h.store.on("levelsdropped", () => dropped++);
+  h.emit("levels", { devices: [{ name: "mic", channels: [] }] });
+  assert.equal(h.store.getState().levels.size, 1);
+  h.store.setLevelsWanted(false);
+  assert.deepEqual(h.filters, [], "nothing changes before the grace ends");
+  const [grace] = timers.pending(LEVELS_GRACE_MS);
+  assert.ok(grace, "leaving the dashboard must arm the grace");
+  timers.fire(grace);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS], "the stream must drop levels");
+  assert.equal(dropped, 1, "the drop must be announced so the meters clear");
+  assert.equal(h.store.getState().levels.size, 0);
+});
+
+test("returning within the grace keeps the stream untouched", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  h.store.setLevelsWanted(false);
+  h.store.setLevelsWanted(true);
+  assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0, "a return must cancel the grace");
+  assert.deepEqual(h.filters, [], "a quick return must not reconnect the stream");
+});
+
+test("returning after the drop requests levels again at once", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  h.store.setLevelsWanted(false);
+  const [grace] = timers.pending(LEVELS_GRACE_MS);
+  assert.ok(grace);
+  timers.fire(grace);
+  h.store.setLevelsWanted(true);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS, null], "the return must restore every event type");
+  // Staying on the dashboard changes nothing more.
+  h.store.setLevelsWanted(true);
+  assert.equal(h.filters.length, 2);
+});
+
+test("the start-up route on the dashboard changes nothing", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  h.store.setLevelsWanted(true);
+  assert.deepEqual(h.filters, [], "a fresh store already streams levels");
+  assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0);
 });

@@ -4,6 +4,7 @@
 
 import type { FieldProblem } from "./api.ts";
 import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
+import type { ViewName } from "./router-core.ts";
 import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
@@ -347,4 +348,25 @@ export function rejectedFieldKey(field: string, sent: readonly DeviceConfig[], e
     if (path !== undefined && path === (own.streams?.[0]?.path ?? own.path)) return "path";
   }
   return null;
+}
+
+// DashboardShown is what follows whether the dashboard is the active view:
+// the meters' frame loop and the store's levels stream.
+export interface DashboardShown {
+  setFramesSuspended(suspended: boolean): void;
+  setLevelsWanted(wanted: boolean): void;
+}
+
+// followDashboardRoute keeps the meters' frame loop and the levels stream in
+// step with the route: both run while the dashboard shows. The router
+// announces the first route at start-up, so the state is set from the start.
+export function followDashboardRoute(
+  router: { on(name: "route", listener: (view: ViewName) => void): void },
+  shown: DashboardShown,
+): void {
+  router.on("route", (view) => {
+    const onDashboard = view === "dashboard";
+    shown.setFramesSuspended(!onDashboard);
+    shown.setLevelsWanted(onDashboard);
+  });
 }
