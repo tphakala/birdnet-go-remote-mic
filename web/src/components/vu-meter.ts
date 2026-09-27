@@ -1,3 +1,5 @@
+import { clampLevel, decayPeak, FLOOR_DB, FrameScheduler, needleSettled, newNeedle, raisePeak, type Animator } from "../lib/meter-core.ts";
+
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (initTheme's
 // load-time correction, a pick in the header theme menu, an OS change in System
@@ -6,43 +8,55 @@
 // and unlit-segment tints need to swap, since white-on-light was invisible.
 // Shared by every meter instance.
 let meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
+// Every meter not yet destroyed. A settled meter draws nothing until its level
+// changes, so a theme change asks each one to repaint in the new tints.
+const liveMeters = new Set<VUMeter>();
 try {
   new MutationObserver(() => {
     meterLightTheme = document.documentElement.getAttribute("data-theme") === "light";
+    for (const m of liveMeters) m.redraw();
   }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 } catch {
   /* no MutationObserver: keep the theme detected at load */
 }
 
-export interface MeterState {
-  rms: number;
-  peak: number;
-  peakHold: number;
-  peakHoldTimer: number;
-  clipped: boolean;
-}
+// meterFrames is the one frame loop every meter draws on. It runs only while a
+// meter has something to animate, and the dashboard suspends it while another
+// view shows.
+export const meterFrames = new FrameScheduler({
+  request: (cb) => requestAnimationFrame(cb),
+  cancel: (handle) => cancelAnimationFrame(handle),
+});
 
-export class VUMeter {
+export class VUMeter implements Animator {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private peakValEl: HTMLElement | null;
   private clipEl: HTMLElement | null;
 
-  private rmsVal: number = -60;
-  private peakVal: number = -60;
-  private peakHoldVal: number = -60;
-  private peakHoldTimer: number = 0;
+  private rmsVal: number = FLOOR_DB;
+  private readonly needle = newNeedle();
   private isClipped: boolean = false;
-  // The latch state last written to the clip button, so the ~60fps render
-  // touches the DOM only when it changes.
+  // The latch state last written to the clip button, so a draw touches the
+  // DOM only when it changes.
   private shownClip: boolean | null = null;
+  // What the canvas last showed, so a frame with nothing new skips the draw.
+  // stale forces the next draw: a new meter, a resume, a theme change.
+  private stale = true;
+  private drawnRms = FLOOR_DB;
+  private drawnPeak = FLOOR_DB;
+  private shownReadout = "";
 
-  private animFrameId: number | null = null;
+  // The previous animation frame's time, for the needle's decay step. Null
+  // while the meter is not animating, so the first frame after a wake decays
+  // nothing instead of catching up the idle time.
+  private lastFrame: number | null = null;
+  // The previous level event's time, for the reduced-motion decay step.
+  private lastLevels: number | null = null;
   private paused: boolean = false;
-  private lastTime: number = performance.now();
-  // When the viewer prefers reduced motion, skip the free-running rAF loop and
-  // the peak-needle decay animation, redrawing a static bar on each level
-  // update instead.
+  private destroyed = false;
+  // When the viewer prefers reduced motion, the needle does not glide: it
+  // holds and falls in steps, one per level event, and each event draws once.
   private reducedMotion: boolean;
 
   constructor(
@@ -65,37 +79,35 @@ export class VUMeter {
       this.syncClip();
     }
 
-    if (this.reducedMotion) {
-      this.render();
-    } else {
-      this.startLoop();
-    }
+    liveMeters.add(this);
+    // The first frame draws the empty track.
+    meterFrames.wake(this);
   }
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
-    this.rmsVal = isFinite(rms) ? rms : -60;
-    this.peakVal = isFinite(peak) ? peak : -60;
+    const now = performance.now();
+    this.rmsVal = clampLevel(rms);
+    const peakDb = clampLevel(peak);
 
-    if (clipped || this.peakVal >= -0.1) {
+    if (clipped || peakDb >= -0.1) {
       this.isClipped = true;
     }
 
-    if (this.peakVal > this.peakHoldVal) {
-      this.peakHoldVal = this.peakVal;
-      this.peakHoldTimer = 45; // Hold peak needle for ~45 frames before decay
+    raisePeak(this.needle, peakDb, now);
+    // With no animation, the needle falls once per level event (about 10 Hz)
+    // by the time since the last one, so it holds and falls as long as the
+    // animated needle does, and the dB readout holds recent peaks instead of
+    // flickering.
+    if (this.reducedMotion) {
+      if (this.lastLevels !== null) decayPeak(this.needle, now, now - this.lastLevels);
+      this.lastLevels = now;
     }
 
-    // With no animation loop running, ease the peak hold down once per level
-    // event (~10 Hz) rather than pinning it to the instantaneous peak. The peak
-    // rise is already applied above; this keeps the dB readout holding recent
-    // peaks and calm instead of flickering, which matters most in reduced motion.
-    if (this.reducedMotion) {
-      if (this.peakHoldTimer > 0) {
-        this.peakHoldTimer -= 1;
-      } else {
-        this.peakHoldVal = Math.max(-60, this.peakHoldVal - 3);
-      }
-      if (!this.paused) this.render();
+    if (this.paused || this.destroyed) return;
+    // Silence on a settled meter changes nothing on screen: no frame.
+    const moving = !this.reducedMotion && !needleSettled(this.needle);
+    if (moving || this.stale || this.rmsVal !== this.drawnRms || this.needle.db !== this.drawnPeak || this.isClipped !== this.shownClip) {
+      meterFrames.wake(this);
     }
   }
 
@@ -115,49 +127,47 @@ export class VUMeter {
     el.setAttribute("aria-pressed", String(this.isClipped));
   }
 
+  // pause takes the meter off the frame loop while its row is hidden. Levels
+  // still update its state, drawn on resume.
   public pause(): void {
     if (this.paused) return;
     this.paused = true;
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
-    }
+    this.lastFrame = null;
+    meterFrames.remove(this);
   }
 
   public resume(): void {
     if (!this.paused) return;
     this.paused = false;
-    if (this.reducedMotion) {
-      this.render();
-    } else {
-      this.lastTime = performance.now(); // avoid a decay jump after the gap
-      this.startLoop();
-    }
+    this.redraw();
   }
 
-  private startLoop(): void {
-    const loop = (now: number) => {
-      const dt = Math.min((now - this.lastTime) / 1000, 0.1);
-      this.lastTime = now;
-
-      // Peak needle decay
-      if (this.peakHoldTimer > 0) {
-        this.peakHoldTimer -= 1;
-      } else {
-        this.peakHoldVal = Math.max(-60, this.peakHoldVal - 30 * dt);
-      }
-
-      this.render();
-      this.animFrameId = requestAnimationFrame(loop);
-    };
-    this.animFrameId = requestAnimationFrame(loop);
+  // redraw repaints the meter on the next frame even if its levels did not
+  // change, as after a theme change.
+  public redraw(): void {
+    this.stale = true;
+    if (!this.paused && !this.destroyed) meterFrames.wake(this);
   }
 
   public destroy(): void {
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
+    this.destroyed = true;
+    liveMeters.delete(this);
+    meterFrames.remove(this);
+  }
+
+  // frame is the meter's turn on the shared loop: move the needle by the time
+  // since the last frame, draw if anything changed, and ask for another frame
+  // only while the needle still has somewhere to go.
+  public frame(now: number): boolean {
+    if (!this.reducedMotion) {
+      const dt = this.lastFrame === null ? 0 : now - this.lastFrame;
+      this.lastFrame = now;
+      decayPeak(this.needle, now, dt);
     }
+    this.draw();
+    const more = !this.reducedMotion && !needleSettled(this.needle);
+    if (!more) this.lastFrame = null;
+    return more;
   }
 
   private dbToRatio(db: number): number {
@@ -167,7 +177,14 @@ export class VUMeter {
     return (db + 60) / 60;
   }
 
-  private render(): void {
+  private draw(): void {
+    this.syncClip();
+    const peakDb = this.needle.db;
+    if (!this.stale && this.rmsVal === this.drawnRms && peakDb === this.drawnPeak) return;
+    this.stale = false;
+    this.drawnRms = this.rmsVal;
+    this.drawnPeak = peakDb;
+
     const w = this.canvas.width;
     const h = this.canvas.height;
     const ctx = this.ctx;
@@ -213,13 +230,13 @@ export class VUMeter {
     }
 
     // Peak hold needle
-    const peakHoldRatio = this.dbToRatio(this.peakHoldVal);
-    if (peakHoldRatio > 0.02) {
-      const peakX = Math.min(w - 2, Math.max(0, peakHoldRatio * w - 1.5));
+    const needleRatio = this.dbToRatio(peakDb);
+    if (needleRatio > 0.02) {
+      const peakX = Math.min(w - 2, Math.max(0, needleRatio * w - 1.5));
       let needleColor = "#10b981";
-      if (this.peakHoldVal > -12 && this.peakHoldVal <= -3) {
+      if (peakDb > -12 && peakDb <= -3) {
         needleColor = "#f59e0b";
-      } else if (this.peakHoldVal > -3) {
+      } else if (peakDb > -3) {
         needleColor = "#ef4444";
       }
       ctx.fillStyle = needleColor;
@@ -228,10 +245,11 @@ export class VUMeter {
 
     // Update DOM indicators
     if (this.peakValEl) {
-      const formatted = this.peakHoldVal <= -59.9 ? "-inf" : `${this.peakHoldVal.toFixed(1)} dBFS`;
-      this.peakValEl.textContent = formatted;
+      const formatted = peakDb <= -59.9 ? "-inf" : `${peakDb.toFixed(1)} dBFS`;
+      if (formatted !== this.shownReadout) {
+        this.shownReadout = formatted;
+        this.peakValEl.textContent = formatted;
+      }
     }
-
-    this.syncClip();
   }
 }

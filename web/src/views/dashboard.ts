@@ -1,5 +1,6 @@
 import { store } from "../lib/store.ts";
-import { VUMeter } from "../components/vu-meter.ts";
+import { meterFrames, VUMeter } from "../components/vu-meter.ts";
+import { router } from "../lib/router.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
@@ -417,6 +418,9 @@ export class DashboardView {
     store.on("system", (system) => {
       this.updateTelemetryFromSystem(system);
     });
+    // The meters draw only while the dashboard shows. Levels keep updating
+    // their state meanwhile, so they are current on return.
+    router.on("route", (view) => meterFrames.setSuspended(view !== "dashboard"));
     store.on("levels", (levels) => {
       levels.forEach((dl, name) => {
         const entry = this.byName.get(name);
@@ -925,8 +929,8 @@ export class DashboardView {
   private mount(entry: CardEntry, d: Device): void {
     const saved = this.captureFocus(entry);
     const oldArticle = entry.article;
-    // The old serving body's meters own canvas rAF loops; stop them before the
-    // article is discarded.
+    // Take the old serving body's meters off the frame loop before the article
+    // is discarded.
     entry.live?.meters.forEach((m) => m.destroy());
 
     // Refresh the article and its named nodes in one checked assignment, then
@@ -1355,7 +1359,7 @@ export class DashboardView {
         const hide = hidden[i] ?? false;
         if (hide && !row.hidden && holdsFocus(row)) strandedRow = i;
         setHidden(row, hide);
-        // Stop the hidden row's ~60fps canvas loop; resume it when shown again.
+        // A hidden row's meter leaves the frame loop; it redraws when shown again.
         const meter = meters[i];
         if (meter) { if (hide) meter.pause(); else meter.resume(); }
         const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
