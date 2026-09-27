@@ -1,7 +1,7 @@
 import { api, ApiError, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, firstProblem, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, firstProblem, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
@@ -1530,15 +1530,14 @@ export class SystemView {
       if (!want.has(key)) { refs.tile.remove(); this.tileEls.delete(key); }
     }
 
-    let prev: ChildNode | null = null;
+    const tiles: HTMLElement[] = [];
     for (const spec of specs) {
       let refs = this.tileEls.get(spec.key);
       if (!refs) { refs = this.buildTile(spec.label); this.tileEls.set(spec.key, refs); }
       this.updateTile(refs, spec);
-      const target: ChildNode | null = prev ? prev.nextSibling : grid.firstChild;
-      if (refs.tile !== target) grid.insertBefore(refs.tile, target);
-      prev = refs.tile;
+      tiles.push(refs.tile);
     }
+    orderChildren(grid, tiles);
   }
 
   // renderInfo fills the System Information label/value grid, diffed: rows are
@@ -1676,15 +1675,14 @@ export class SystemView {
       if (!want.has(id)) { r.tr.remove(); this.deviceRows.delete(id); }
     }
 
-    let prev: ChildNode | null = null;
+    const rows: HTMLElement[] = [];
     for (const d of devices) {
       let r = this.deviceRows.get(d.device);
       if (!r) { r = this.buildDeviceRow(); this.deviceRows.set(d.device, r); }
       this.updateDeviceRow(r, d);
-      const target: ChildNode | null = prev ? prev.nextSibling : body.firstChild;
-      if (r.tr !== target) body.insertBefore(r.tr, target);
-      prev = r.tr;
+      rows.push(r.tr);
     }
+    orderChildren(body, rows);
   }
 
   private td(text: string, mono = false): HTMLElement {

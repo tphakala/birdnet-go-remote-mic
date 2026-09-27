@@ -287,6 +287,20 @@ export function focusTarget(t: EventTarget | null, popup: Node, opener: Node): F
   return "outside";
 }
 
+// orderChildren puts nodes into parent in the given order, moving only the
+// ones out of place: in steady state nothing moves, so keyboard focus and a
+// screen reader's position inside a node survive the render. It walks element
+// siblings from the first, so a child it does not manage (a placeholder) ends
+// up after the managed ones.
+export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
+  let prev: Element | null = null;
+  for (const node of nodes) {
+    const target: Element | null = prev ? prev.nextElementSibling : parent.firstElementChild;
+    if (node !== target) parent.insertBefore(node, target);
+    prev = node;
+  }
+}
+
 export function setHidden(el: HTMLElement, hidden: boolean): void {
   if (el.hidden !== hidden) el.hidden = hidden;
 }

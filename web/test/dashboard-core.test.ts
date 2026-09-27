@@ -225,6 +225,20 @@ test("availablePlan keeps unchanged cards and rebuilds only changed ones", () =>
   assert.deepEqual(plan.build, ["b", "d"], "only the changed and the new card are built");
 });
 
+test("availablePlan builds a new card mid-list and orders it there", () => {
+  const shown = new Map([
+    ["a", "ka"],
+    ["c", "kc"],
+  ]);
+  const plan = availablePlan(shown, [
+    { id: "a", key: "ka" },
+    { id: "b", key: "kb" },
+    { id: "c", key: "kc" },
+  ]);
+  assert.deepEqual(plan.build, ["b"]);
+  assert.deepEqual(plan.order, ["a", "b", "c"], "the view keeps its cards in this order, which is the screen's");
+});
+
 test("availablePlan orders cards like the list", () => {
   const shown = new Map([
     ["a", "ka"],

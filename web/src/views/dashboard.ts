@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError } from "../lib/api.ts";
-import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, firstProblem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
+import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, firstProblem, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
 import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, deviceFieldLabel, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
@@ -29,6 +29,13 @@ const ICON_SLIDERS =
   svgIcon('<line x1="4" x2="4" y1="21" y2="14"></line><line x1="4" x2="4" y1="10" y2="3"></line><line x1="12" x2="12" y1="21" y2="12"></line><line x1="12" x2="12" y1="8" y2="3"></line><line x1="20" x2="20" y1="21" y2="16"></line><line x1="20" x2="20" y1="12" y2="3"></line><line x1="2" x2="6" y1="14" y2="14"></line><line x1="10" x2="14" y1="8" y2="8"></line><line x1="18" x2="22" y1="16" y2="16"></line>', 13);
 const ICON_CHEVRON =
   svgIcon('<path d="m6 9 6 6 6-6"></path>', 12, 2.2);
+
+// focusDropped reports whether keyboard focus fell to the document body (or
+// nowhere), as it does when the element holding it is removed; a focus move
+// the operator made since then must be left alone.
+function focusDropped(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
+}
 
 // availableLabel names an available device for people: its friendly name,
 // with the ALSA address when there is one to tell two identical units apart,
@@ -321,11 +328,13 @@ export class DashboardView {
   private provisioning: Set<string> = new Set();
   // The Available Devices cards on screen, by device id, each with the key of
   // what it shows (availableCardKey), so a render rebuilds only changed cards.
-  private availableCards: Map<string, { card: HTMLElement; key: string; label: string }> = new Map();
-  // The device whose Available card held keyboard focus when a render removed
-  // it during that device's Enable, so the Enable can move focus to its new
-  // device card. Only set while that Enable is in flight.
-  private availableFocusLost: string | null = null;
+  private availableCards = new Map<string, { card: HTMLElement; key: string; label: string }>();
+  // The Available card that held keyboard focus when a render removed it
+  // during that device's Enable: its device, its place on screen and its
+  // label, so the Enable can move focus when it settles (to the new device
+  // card on success, to the card now in its place on failure). Only set while
+  // that Enable is in flight.
+  private availableFocusLost: { id: string; index: number; label: string } | null = null;
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
   // built from a fresh base only after the previous mutation settled. Prevents a
@@ -497,14 +506,7 @@ export class DashboardView {
     // also holds the hidden #rack-empty placeholder, so an index-based compare was
     // off by one and moved a card every poll. Steady state performs no DOM moves,
     // so focus inside a card is never dropped by re-inserting its node.
-    let prev: Element | null = null;
-    for (const d of devices) {
-      const entry = this.cards.get(d.device);
-      if (!entry) continue;
-      const target: Element | null = prev ? prev.nextElementSibling : rack.firstElementChild;
-      if (entry.article !== target) rack.insertBefore(entry.article, target);
-      prev = entry.article;
-    }
+    orderChildren(rack, devices.flatMap((d) => this.cards.get(d.device)?.article ?? []));
 
     // Rebuild the name index for the levels stream (cards are keyed by id, the
     // levels payload by name; a rename changes the name but not the id).
@@ -539,15 +541,18 @@ export class DashboardView {
 
     // A removed card that held focus: during its own Enable the Enable moves
     // focus once it settles; otherwise (the device went away) focus goes to
-    // the card that takes its place, or the one before it, below.
+    // the card now in its place on screen, below. availableCards is kept in
+    // screen order (see the end of this render), so its index is the card's
+    // place on screen.
     let stranded: { index: number; label: string } | null = null;
     const oldOrder = [...this.availableCards.keys()];
     for (const id of plan.remove) {
       const c = this.availableCards.get(id);
       if (!c) continue;
       if (holdsFocus(c.card)) {
-        if (this.provisioning.has(id)) this.availableFocusLost = id;
-        else stranded = { index: oldOrder.indexOf(id), label: c.label };
+        const lost = { id, index: oldOrder.indexOf(id), label: c.label };
+        if (this.provisioning.has(id)) this.availableFocusLost = lost;
+        else stranded = lost;
       }
       c.card.remove();
       this.availableCards.delete(id);
@@ -563,22 +568,45 @@ export class DashboardView {
       if (refocus) card.querySelector<HTMLElement>(".available-enable")?.focus();
     }
     // Order with a diff, as the device rack does: steady state moves no node.
-    let prev: Element | null = null;
-    for (const id of plan.order) {
+    // The map is rebuilt in the same order, so its order is the screen's.
+    const ordered = new Map(plan.order.flatMap((id) => {
       const c = this.availableCards.get(id);
-      if (!c) continue;
-      const target: Element | null = prev ? prev.nextElementSibling : rack.firstElementChild;
-      if (c.card !== target) rack.insertBefore(c.card, target);
-      prev = c.card;
-    }
+      return c ? [[id, c] as const] : [];
+    }));
+    this.availableCards = ordered;
+    orderChildren(rack, [...ordered.values()].map((c) => c.card));
 
-    if (stranded) {
-      const cards = [...this.availableCards.values()];
-      const neighbour = cards[Math.min(stranded.index, cards.length - 1)];
-      const target = neighbour?.card.querySelector<HTMLElement>(".available-enable") ?? document.getElementById("main-content");
-      target?.focus({ preventScroll: true });
-      announce(this.announceEl, availableGoneMessage(stranded.label, neighbour !== undefined));
-    }
+    if (stranded) this.focusAvailableNeighbour(stranded.index, stranded.label);
+  }
+
+  // takeAvailableFocusLost returns and clears the record of a focused card
+  // that a render removed during this device's Enable, if there is one.
+  private takeAvailableFocusLost(device: string): { id: string; index: number; label: string } | null {
+    const lost = this.availableFocusLost;
+    if (lost?.id !== device) return null;
+    this.availableFocusLost = null;
+    return lost;
+  }
+
+  // focusAvailableNeighbour moves focus, after an Available card holding it
+  // went away, to the Enable button of the card now at index (or the last
+  // one), else to the workspace, and announces which device went.
+  private focusAvailableNeighbour(index: number, label: string): void {
+    const cards = [...this.availableCards.values()];
+    const neighbour = cards[Math.min(index, cards.length - 1)];
+    const button = neighbour?.card.querySelector<HTMLElement>(".available-enable");
+    if (button) button.focus({ preventScroll: true });
+    else this.focusWorkspace();
+    announce(this.announceEl, availableGoneMessage(label, button !== undefined && button !== null));
+  }
+
+  // focusWorkspace moves focus to the workspace region when the control
+  // holding it went away, without scrolling (see web/AGENTS.md), and returns
+  // it.
+  private focusWorkspace(): HTMLElement | null {
+    const main = document.getElementById("main-content");
+    main?.focus({ preventScroll: true });
+    return main;
   }
 
   private buildAvailableCard(d: AvailableDevice): HTMLElement {
@@ -616,7 +644,6 @@ export class DashboardView {
   private async provisionDevice(d: AvailableDevice, btn: HTMLElement): Promise<void> {
     if (this.provisioning.has(d.device)) return;
     this.provisioning.add(d.device);
-    this.availableFocusLost = null;
     setBusy(btn, "Enabling...");
     try {
       // Serialize through the same queue as toggles and settings saves: those
@@ -633,16 +660,16 @@ export class DashboardView {
         // and focus has not moved since (it fell to the document body), hand
         // it to the new device card, else to the workspace region. The toast
         // says what happened; the fallback also says where focus went.
-        const lost = this.availableFocusLost === d.device;
-        this.availableFocusLost = null;
-        const dropped = document.activeElement === null || document.activeElement === document.body;
-        if (lost && dropped) {
+        const lost = this.takeAvailableFocusLost(d.device);
+        if (lost && focusDropped()) {
           this.reconcile();
           const settings = this.cards.get(created.device)?.settingsBtn;
           if (settings) {
+            // The new card is in the device rack above, possibly out of view.
             settings.focus({ preventScroll: true });
+            settings.scrollIntoView({ block: "nearest" });
           } else {
-            document.getElementById("main-content")?.focus({ preventScroll: true });
+            this.focusWorkspace();
             announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
           }
         }
@@ -654,13 +681,16 @@ export class DashboardView {
       if (err instanceof ApiError && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
     } finally {
       this.provisioning.delete(d.device);
-      if (this.availableFocusLost === d.device) this.availableFocusLost = null;
+      // Set only if the Enable failed after a render took its focused card:
+      // focus goes to the card now in its place, as for any card that went.
+      const lost = this.takeAvailableFocusLost(d.device);
       clearBusy(btn, "Enable");
       // clearBusy restores the card built before the click. If a render
       // during the Enable rebuilt the card busy instead (its key includes the
       // in-flight state), this render rebuilds it idle, since the key changed
       // back. A device no longer listed (the usual success) has no card left.
       this.renderAvailable(store.getState().available);
+      if (lost && focusDropped()) this.focusAvailableNeighbour(lost.index, lost.label);
     }
   }
 
@@ -695,8 +725,7 @@ export class DashboardView {
         // region first so a keyboard user keeps a sensible place. preventScroll,
         // as in the login modal: a plain focus() would jump the page to the top
         // of <main>, away from where the removed card was.
-        const main = document.getElementById("main-content");
-        main?.focus({ preventScroll: true });
+        const main = this.focusWorkspace();
         const refreshed = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         if (refreshed.every(Boolean)) showToast(`Removed ${entry.device.name}.`);
         else showToast(`Removed ${entry.device.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
