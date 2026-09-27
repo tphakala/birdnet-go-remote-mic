@@ -8,20 +8,24 @@ export type SSEEventHandler = (eventName: string, data: unknown) => void;
 const RESERVED_EVENTS = new Set(["connected", "disconnected", "unauthorized", "heartbeat"]);
 
 // SSEDeps is what the client needs from the browser, injected so node:test can
-// drive the connect loop with a fake fetch and no real timers. timers is the
-// same seam the stores use (lib/timers.ts).
+// drive the connect loop with a fake fetch, no real timers and a set clock.
+// timers is the same seam the stores use (lib/timers.ts); now is a monotonic
+// clock in milliseconds.
 export interface SSEDeps {
   fetch(url: string, init: RequestInit): Promise<Response>;
   timers: Pick<Timers, "setTimeout" | "clearTimeout">;
+  now(): number;
 }
 
 const browserDeps: SSEDeps = {
   fetch: (url, init) => fetch(url, init),
   timers: globalThis,
+  now: () => performance.now(),
 };
 
 // HEARTBEAT_TIMEOUT_MS is how long a stream may stay silent before the client
-// reconnects; the server sends a heartbeat every 15 s.
+// reconnects; the server sends a heartbeat every 15 s (defaultHeartbeat in
+// internal/sse/sse.go).
 export const HEARTBEAT_TIMEOUT_MS = 30_000;
 // RECONNECT_DELAY_MS is the first backoff after a dropped stream, doubled up
 // to RECONNECT_MAX_MS.
@@ -39,6 +43,9 @@ export class SSEClient {
   private isRunning: boolean = false;
   private reconnectDelayMs: number = RECONNECT_DELAY_MS;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  // When the stream last showed it is alive (deps.now). The watchdog checks
+  // it when it fires, so a message costs no timer calls.
+  private aliveAt = 0;
   private handlers: Set<SSEEventHandler> = new Set();
   // generation invalidates an in-flight connect loop when stop()/start() race:
   // a loop keeps running only while its captured generation is still current.
@@ -50,7 +57,8 @@ export class SSEClient {
   }
 
   // setEvents sets the event types to stream; null or an empty list means
-  // every type, as the server reads an empty filter. A running stream
+  // every type, as the server reads an empty filter (parseEventFilter in
+  // internal/sse/sse.go). A running stream
   // reconnects under the new filter; a stopped one only records it, so this
   // never starts a stream the store stopped (a 401, a hidden page).
   public setEvents(names: readonly string[] | null): void {
@@ -60,9 +68,9 @@ export class SSEClient {
     if (!this.isRunning) return;
     this.stop();
     this.start();
-    // The restart is silent (no disconnected event), so the store still says
-    // connected: arm the watchdog now, or a new connect that hangs on a dead
-    // link would leave the page looking live until the browser gives up.
+    // The restart is silent (no disconnected event), so the store may still
+    // say connected: arm the watchdog now, or a new connect that hangs on a
+    // dead link would leave the page looking live until the browser gives up.
     this.resetHeartbeat();
   }
 
@@ -103,14 +111,28 @@ export class SSEClient {
     }
   }
 
+  // resetHeartbeat marks the stream alive now and makes sure the watchdog is
+  // armed. The watchdog fires at most HEARTBEAT_TIMEOUT_MS after it was set
+  // and re-arms for what is left of the window when data came since, so a
+  // stream carrying levels at 10 Hz does not clear and set a timer per message.
   private resetHeartbeat(): void {
-    this.clearHeartbeat();
+    this.aliveAt = this.deps.now();
+    if (this.heartbeatTimer === null) this.armHeartbeat(HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private armHeartbeat(ms: number): void {
     this.heartbeatTimer = this.deps.timers.setTimeout(() => {
+      this.heartbeatTimer = null;
+      const silent = this.deps.now() - this.aliveAt;
+      if (silent < HEARTBEAT_TIMEOUT_MS) {
+        this.armHeartbeat(HEARTBEAT_TIMEOUT_MS - silent);
+        return;
+      }
       console.warn(`SSE heartbeat timeout exceeded (${HEARTBEAT_TIMEOUT_MS / 1000}s). Reconnecting...`);
       if (this.abortController) {
         this.abortController.abort();
       }
-    }, HEARTBEAT_TIMEOUT_MS);
+    }, ms);
   }
 
   private clearHeartbeat(): void {
@@ -183,7 +205,7 @@ export class SSEClient {
         let buffer = "";
         let received = false;
 
-        while (this.isRunning) {
+        while (this.isRunning && gen === this.generation) {
           const { done, value } = await reader.read();
           if (done) break;
           // The backoff resets on the first data, not on the 200: a server or
@@ -204,8 +226,9 @@ export class SSEClient {
         }
         // The server ended the stream (a proxy timeout, say): the reconnect
         // below runs as after an error, and listeners learn the stream is down
-        // until it comes back. A stop or restart ends the loop here too; the
-        // catch drops those.
+        // until it comes back. A stop or restart that ran during a read also
+        // ends the loop here; the catch drops it, as it drops the aborted read
+        // a restart usually ends in.
         throw new Error("SSE stream closed by the server");
       } catch (err: unknown) {
         if (!this.isRunning || gen !== this.generation) return;
