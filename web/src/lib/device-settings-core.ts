@@ -100,8 +100,8 @@ export function extraStreamsNote(streams: readonly StreamConfig[] | undefined): 
 // plain name.
 export const DEVICE_FIELD_LABELS = {
   name: "Device Name",
-  device: "Device id",
-  format: "Sample format",
+  device: "Device ID",
+  format: "Sample Format",
   rate: "Sample Rate (Hz)",
   streams: "Streams",
   path: "RTSP Path",

@@ -282,12 +282,17 @@ test("deviceFieldLabel names the field and the device a problem points at", () =
   assert.equal(deviceFieldLabel("devices[0].name", names), "Device Name of garden");
   assert.equal(deviceFieldLabel("devices[1].streams[0].path", names), "RTSP Path of bats");
   assert.equal(deviceFieldLabel("devices[0].streams[0].opus.bitrate", names), "Opus Bitrate of garden");
-  assert.equal(deviceFieldLabel("devices[1].rate", names), "Sample Rate (Hz) of bats");
+  assert.equal(deviceFieldLabel("devices[1].rate", names), "Sample Rate of bats", "a unit is dropped mid-sentence");
   assert.equal(deviceFieldLabel("devices[1].streams", names), "Streams of bats");
   // An index past the list the view knows still names the field.
   assert.equal(deviceFieldLabel("devices[5].name", names), "Device Name");
   assert.equal(deviceFieldLabel("devices"), "The device list");
-  assert.equal(deviceFieldLabel("device"), "Device id");
+  assert.equal(deviceFieldLabel("device"), "Device ID");
+  // The form edits only the first stream, so a later one is named.
+  assert.equal(deviceFieldLabel("devices[0].streams[1].path", names), "RTSP Path of garden's stream 2");
+  assert.equal(deviceFieldLabel("devices[5].streams[2].mode", names), "Stream Codec Mode of stream 3");
+  // A key that only an object's prototype has is not a field.
+  assert.equal(deviceFieldLabel("devices[0].constructor", names), "devices[0].constructor");
   assert.equal(deviceFieldLabel("devices[0].streams[0].bogus", names), "devices[0].streams[0].bogus", "an unknown key shows the path");
   assert.equal(deviceFieldLabel("network.hostname"), "network.hostname");
 });

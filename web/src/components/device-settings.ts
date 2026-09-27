@@ -171,7 +171,7 @@ export class DeviceSettingsForm {
     const rateField = elem("div", "form-field");
     rateField.appendChild(this.label(DEVICE_FIELD_LABELS.rate));
     const rateOpts = this.rateOptions(d.rate);
-    const rate = this.buildDropdown("Sample rate", rateOpts, this.pick(rateOpts, String(d.rate)));
+    const rate = this.buildDropdown(DEVICE_FIELD_LABELS.rate, rateOpts, this.pick(rateOpts, String(d.rate)));
     this.rateHidden = rate.hidden;
     this.rateDrop = rate.dropdown;
     rateField.appendChild(rate.container);
@@ -259,7 +259,7 @@ export class DeviceSettingsForm {
     // a saved opus mode is coerced to pcm so the form is never in an unsaveable state.
     const modeField = elem("div", "form-field");
     modeField.appendChild(this.label(DEVICE_FIELD_LABELS.mode));
-    const mode = this.buildDropdown("Stream codec mode", modeOpts, modeInitial);
+    const mode = this.buildDropdown(DEVICE_FIELD_LABELS.mode, modeOpts, modeInitial);
     this.modeHidden = mode.hidden;
     modeField.appendChild(mode.container);
     const opusOffered = modeOpts.some((o) => o.val === "opus");
@@ -296,7 +296,7 @@ export class DeviceSettingsForm {
     const defaultRate = defaultOpusBitrate(Math.min(2, d.channels.length));
     const saved = d.opus?.bitrate || defaultRate;
     this.bitrateFollows = bitrateFollowsDefault(d.opus?.bitrate, d.channels.length);
-    const bitrate = this.buildDropdown("Opus bitrate", this.bitrateOptions(saved), this.selectedBitrate(saved));
+    const bitrate = this.buildDropdown(DEVICE_FIELD_LABELS.bitrate, this.bitrateOptions(saved), this.selectedBitrate(saved));
     this.bitrateHidden = bitrate.hidden;
     this.bitrateDrop = bitrate.dropdown;
     this.bitrateHidden.addEventListener("change", () => {
@@ -375,7 +375,7 @@ export class DeviceSettingsForm {
     }
   }
 
-  // buildIdentity renders the read-only "Device id" row (a focusable, selectable
+  // buildIdentity renders the read-only "Device ID" row (a focusable, selectable
   // mono input plus a Copy button) and a hint that explains the id's stability
   // and, for a card-index id, the remedy (remove and re-add to pin by identity).
   // Read-only: it carries no change listener and is never read by collect().
@@ -401,7 +401,7 @@ export class DeviceSettingsForm {
       icon: ICON_COPY,
       label: "Copy",
       ariaLabel: "Copy device id",
-      onClick: () => copyText(this.device.device, "Device id copied."),
+      onClick: () => copyText(this.device.device, "Device ID copied."),
     });
     row.append(input, copyBtn);
     field.appendChild(row);

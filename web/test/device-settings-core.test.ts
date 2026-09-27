@@ -170,5 +170,5 @@ test("every device config field the appliance validates has a form label", () =>
   const keys = new Set(found.map((m) => group(m, 1).split(".").at(-1) ?? ""));
   assert.ok(keys.size >= 5, `found only ${keys.size} field keys in config.go; did the helpers change?`);
   const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
-  for (const key of keys) assert.ok(labels[key], `config.go validates "${key}" but DEVICE_FIELD_LABELS has no label for it`);
+  for (const key of keys) assert.ok(Object.hasOwn(labels, key) && labels[key], `config.go validates "${key}" but DEVICE_FIELD_LABELS has no label for it`);
 });

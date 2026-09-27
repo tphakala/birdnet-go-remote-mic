@@ -1629,7 +1629,7 @@ export class SystemView {
     // configured id and anything else shows "-". The persisted id is long and
     // goes in the tooltip.
     setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
-    if (r.alsa.title !== `Device id: ${d.device}`) r.alsa.title = `Device id: ${d.device}`;
+    if (r.alsa.title !== `Device ID: ${d.device}`) r.alsa.title = `Device ID: ${d.device}`;
     // By the device id, which a rename does not change.
     const streams = streamSummary(d, store.getState().config?.devices.find((c) => c.device === d.device));
     // One path per line (the cell keeps the line breaks), in stream order.

@@ -246,23 +246,27 @@ export function deviceGoneMessage(name: string, next: string | null): string {
 }
 
 // deviceFieldLabel turns a validation problem's field path into what an
-// operator reads: the field's label, and for a path into the device list the
-// name of the device it points at (names is the device list the request
-// sent, in order), since a save sends every device. It returns the path
+// operator reads: the field's label (without a unit in parentheses, as it
+// reads mid-sentence), and for a path into the device list the name of the
+// device it points at (names is the device list the request sent, in order),
+// since a save sends every device. A field of a stream after the first names
+// that stream, since the form edits only the first. It returns the path
 // itself for one it does not know. The appliance also reports the list as a
 // whole ("devices", config.go:591) and a provision's device id ("device",
 // mgmtserver/devices.go:182).
 export function deviceFieldLabel(path: string, names: readonly string[] = []): string {
   if (path === "devices") return "The device list";
   if (path === "device") return DEVICE_FIELD_LABELS.device;
-  const m = /^devices\[(\d+)\]\.(?:streams\[\d+\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
+  const m = /^devices\[(\d+)\]\.(?:streams\[(\d+)\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
   const index = m?.[1];
-  const key = m?.[2];
+  const stream = Number(m?.[2] ?? 0);
+  const key = m?.[3];
+  if (key === undefined || index === undefined || !Object.hasOwn(DEVICE_FIELD_LABELS, key)) return path;
   const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
-  const label = key !== undefined ? labels[key] : undefined;
-  if (label === undefined || index === undefined) return path;
+  const label = (labels[key] ?? path).replace(/ \([^)]*\)$/, "");
   const name = names[Number(index)];
-  return name ? `${label} of ${name}` : label;
+  const owner = stream > 0 ? (name ? `${name}'s stream ${stream + 1}` : `stream ${stream + 1}`) : name;
+  return owner ? `${label} of ${owner}` : label;
 }
 
 // rejectionText is the toast for a request the appliance refused with a
