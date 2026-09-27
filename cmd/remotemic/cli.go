@@ -84,12 +84,20 @@ func configFlag(fs *flag.FlagSet) *string {
 // on a stray config.yaml. When the unit is installed but its config cannot be
 // known from its files, resolution fails rather than guessing, unless --config
 // or $REMOTEMIC_CONFIG names the file. When the unit wins over a config.yaml
-// that exists here, a note on stderr says which file is used.
+// that exists here, a line written to note says which file is used; a
+// --quiet command passes io.Discard. fs is the command's parsed flag set: a --config
+// given but empty is a usage error rather than a fall through to the
+// appliance's own config (an unset shell variable in a script).
 //
 // The unit is read even when --config or $REMOTEMIC_CONFIG decides the path,
 // because the permission hint compares the chosen path with the unit's.
-func resolveConfig(flagVal string, stderr io.Writer) (configRef, error) {
+func resolveConfig(fs *flag.FlagSet, flagVal string, note io.Writer) (configRef, error) {
 	var ref configRef
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "config" })
+	if given && flagVal == "" {
+		return ref, badUsage(errors.New("--config is empty"))
+	}
 	var unitErr error
 	ref.unitPath, ref.unitUser, unitErr = installedConfig()
 	switch env := os.Getenv(configEnv); {
@@ -102,7 +110,7 @@ func resolveConfig(flagVal string, stderr io.Writer) (configRef, error) {
 	case ref.unitPath != "":
 		ref.path, ref.source = ref.unitPath, fromUnit
 		if _, err := os.Stat(configDefault); err == nil {
-			out(stderr, "remote-mic: using %s (from %s); ./%s is ignored, pass --config to use it\n",
+			out(note, "remote-mic: using %s (from %s); ./%s is ignored, pass --config to use it\n",
 				ref.path, service.DefaultUnitName, configDefault)
 		}
 	default:
@@ -287,7 +295,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfg configRef, ov serveOv
 		set:        make(map[string]bool),
 	}
 	fs.Visit(func(f *flag.Flag) { ov.set[f.Name] = true })
-	ref, err := resolveConfig(*path, stderr)
+	ref, err := resolveConfig(fs, *path, stderr)
 	if err != nil {
 		return configRef{}, serveOverrides{}, false, "", err
 	}

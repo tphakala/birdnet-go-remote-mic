@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
@@ -145,7 +146,7 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, true, stderr)
+	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, specInstall, stderr)
 	if err != nil {
 		return err
 	}
@@ -182,7 +183,11 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, *purge, stderr)
+	mode := specDefaults
+	if *purge {
+		mode = specPurge
+	}
+	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, mode, stderr)
 	if err != nil {
 		return err
 	}
@@ -207,36 +212,59 @@ func installedDefault(def string) string {
 	return " (default: the installed unit's, else " + def + ")"
 }
 
-// specFromFlags completes s, the service flags as given, with defaults. When
-// adopt is set (install, and uninstall --purge), each unset field comes from
-// the installed unit, so a reinstall keeps a custom install's paths and
-// account and a purge removes what the install created; each adopted value
-// is reported on stderr. The installed unit counts only when it is exactly
-// what the installer wrote (service.InstalledSpec): a drop-in or a hand edit
-// never chooses what purge deletes or install chowns, and a hand-edited unit
-// makes the command ask for every flag. Without an installed unit, or
-// without adopt, unset fields take the package defaults.
-func specFromFlags(s service.ServiceSpec, adopt bool, stderr io.Writer) (service.ServiceSpec, error) {
+// specMode says how specFromFlags fills unset service flags.
+type specMode int
+
+const (
+	specDefaults specMode = iota // package defaults (plain uninstall)
+	specInstall                  // the installed unit's values (install)
+	specPurge                    // the installed unit's values only where they are the defaults
+)
+
+// specFromFlags completes s, the service flags as given, with defaults.
+// Install takes each unset field from the installed unit, so a reinstall
+// keeps a custom install's paths and account; each adopted value is
+// reported. Purge adopts only values equal to the package defaults: a custom
+// user may be an existing login account the install merely reused, and a
+// custom directory may hold more than the install put there, so deleting
+// them takes the flag given explicitly. The installed unit counts only when
+// it is exactly what the installer wrote (service.InstalledSpec): a drop-in
+// or a hand edit never chooses what purge deletes or install chowns, and a
+// hand-edited unit makes the command ask for every flag. Without an
+// installed unit, unset fields take the package defaults, and purge says so.
+func specFromFlags(s service.ServiceSpec, mode specMode, stderr io.Writer) (service.ServiceSpec, error) {
+	adopt := mode != specDefaults
 	if adopt && (s.User == "" || s.ConfigPath == "" || s.StateDir == "" || s.BinPath == "") {
 		inst, err := installedSpec()
 		if err != nil {
 			return s, fmt.Errorf("cannot take defaults from the installed %s (%w); pass --user, --config, --state-dir and --bin-path", service.DefaultUnitName, err)
 		}
+		if inst == (service.ServiceSpec{}) && mode == specPurge {
+			out(stderr, "no installed %s; unset flags take the package defaults\n", service.DefaultUnitName)
+		}
 		if inst != (service.ServiceSpec{}) {
+			var custom []string
 			for _, f := range []struct {
-				name      string
-				dst       *string
-				installed string
+				name, installed, def string
+				dst                  *string
 			}{
-				{"user", &s.User, inst.User},
-				{"config", &s.ConfigPath, inst.ConfigPath},
-				{"state-dir", &s.StateDir, inst.StateDir},
-				{"bin-path", &s.BinPath, inst.BinPath},
+				{"user", inst.User, service.DefaultUser, &s.User},
+				{"config", inst.ConfigPath, service.DefaultConfigPath, &s.ConfigPath},
+				{"state-dir", inst.StateDir, service.DefaultStateDir, &s.StateDir},
+				{"bin-path", inst.BinPath, service.DefaultBinPath, &s.BinPath},
 			} {
-				if *f.dst == "" {
+				switch {
+				case *f.dst != "":
+				case mode == specPurge && f.installed != f.def:
+					custom = append(custom, "--"+f.name+"="+f.installed)
+				default:
 					*f.dst = f.installed
 					out(stderr, "using --%s=%s from the installed %s\n", f.name, f.installed, service.DefaultUnitName)
 				}
+			}
+			if len(custom) > 0 {
+				return s, fmt.Errorf("the installed %s uses %s; --purge deletes those only when they are given explicitly",
+					service.DefaultUnitName, strings.Join(custom, " "))
 			}
 		}
 	}

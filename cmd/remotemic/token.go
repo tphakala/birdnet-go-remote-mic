@@ -119,6 +119,15 @@ func newTokenFlags(name, synopsis, summary string, stderr io.Writer) (fs *flag.F
 	return fs, configFlag(fs)
 }
 
+// noteWriter is where a command sends notes: stderr, or nowhere under
+// --quiet.
+func noteWriter(quiet bool, stderr io.Writer) io.Writer {
+	if quiet {
+		return io.Discard
+	}
+	return stderr
+}
+
 // parseNoArgs parses args into fs and rejects stray positional arguments.
 func parseNoArgs(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
@@ -141,7 +150,7 @@ func runTokenGet(args []string, stdout, stderr io.Writer) (err error) {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	ref, err := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(fs, *cfgFlag, stderr)
 	if err != nil {
 		return err
 	}
@@ -176,7 +185,7 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) (err error) {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	ref, err := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(fs, *cfgFlag, noteWriter(*quiet, stderr))
 	if err != nil {
 		return err
 	}
@@ -222,7 +231,7 @@ func runTokenSet(args []string, stderr io.Writer) (err error) {
 	if fs.NArg() > 0 {
 		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
 	}
-	ref, err := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(fs, *cfgFlag, noteWriter(*quiet, stderr))
 	if err != nil {
 		return err
 	}
@@ -300,7 +309,7 @@ func runTokenClear(args []string, stderr io.Writer) (err error) {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	ref, err := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(fs, *cfgFlag, noteWriter(*quiet, stderr))
 	if err != nil {
 		return err
 	}

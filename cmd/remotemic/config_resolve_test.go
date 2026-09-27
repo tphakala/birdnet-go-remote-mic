@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,6 +23,7 @@ const (
 	subSet      = "set"
 	argForce    = "-force"
 	argPurge    = "-purge"
+	argCheck    = "-check"
 	subRemove   = "uninstall"
 )
 
@@ -51,7 +53,16 @@ func TestResolveConfigPrecedence(t *testing.T) {
 			stubInstalledConfig(t, tc.unit, service.DefaultUser)
 			t.Setenv(configEnv, tc.env)
 			t.Chdir(t.TempDir())
-			ref, err := resolveConfig(tc.flag, &bytes.Buffer{})
+			set := flag.NewFlagSet("t", flag.ContinueOnError)
+			path := configFlag(set)
+			var args []string
+			if tc.flag != "" {
+				args = []string{flagConfig, tc.flag}
+			}
+			if err := set.Parse(args); err != nil {
+				t.Fatal(err)
+			}
+			ref, err := resolveConfig(set, *path, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,7 +83,7 @@ func TestParseServeFlagsUsesInstalledConfig(t *testing.T) {
 	stubInstalledConfig(t, unitCfg, service.DefaultUser)
 	t.Setenv(configEnv, "")
 	t.Chdir(t.TempDir())
-	cfg, _, _, _, err := parseServeFlags([]string{"--check"}, &bytes.Buffer{})
+	cfg, _, _, _, err := parseServeFlags([]string{argCheck}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
 	}
@@ -122,6 +133,9 @@ func TestTokenGenerateUsesInstalledConfig(t *testing.T) {
 	}
 	if got := loadToken(t, configDefault); got != "" {
 		t.Errorf("./config.yaml token %q, want it untouched (empty)", got)
+	}
+	if errOut != "" {
+		t.Errorf("stderr %q under -quiet, want nothing (the note too is guidance)", errOut)
 	}
 }
 
@@ -217,13 +231,28 @@ func TestServiceDefaultsFromInstalledUnit(t *testing.T) {
 	}
 
 	var purged service.ServiceSpec
-	uninstallService = func(s service.ServiceSpec, _ bool) error { purged = s; return nil }
+	called := false
+	uninstallService = func(s service.ServiceSpec, _ bool) error { purged, called = s, true; return nil }
 	code, _, errOut = runCLI(cmdService, subRemove, argPurge)
+	if code != 1 || called || !strings.Contains(errOut, "uses --user=mic --config=/srv/rm/config.yaml --state-dir=/srv/rm-state --bin-path=/opt/bin/remote-mic; --purge deletes those only when they are given explicitly") {
+		t.Fatalf("purge of a custom install: exit %d called %t stderr %q, want a refusal naming each custom value", code, called, errOut)
+	}
+	code, _, errOut = runCLI(cmdService, subRemove, argPurge, flagUser, "mic", flagConfig, inst.ConfigPath, "--state-dir", inst.StateDir, "--bin-path", inst.BinPath)
 	if code != 0 || purged != inst {
-		t.Fatalf("purge: exit %d spec %+v stderr %q, want %+v", code, purged, errOut, inst)
+		t.Fatalf("purge with the values given: exit %d spec %+v stderr %q, want %+v", code, purged, errOut, inst)
 	}
 	if !strings.Contains(errOut, "purging config directory /srv/rm, state directory /srv/rm-state, binary /opt/bin/remote-mic, and user mic") {
 		t.Errorf("purge stderr %q, want the paths it removes", errOut)
+	}
+
+	defaults := service.ServiceSpec{User: service.DefaultUser, ConfigPath: service.DefaultConfigPath, StateDir: service.DefaultStateDir, BinPath: service.DefaultBinPath}
+	installedSpec = func() (service.ServiceSpec, error) { return defaults, nil }
+	if code, _, errOut := runCLI(cmdService, subRemove, argPurge); code != 0 || purged != defaults {
+		t.Errorf("purge of a default install: exit %d spec %+v stderr %q, want %+v", code, purged, errOut, defaults)
+	}
+	installedSpec = func() (service.ServiceSpec, error) { return service.ServiceSpec{}, nil }
+	if code, _, errOut := runCLI(cmdService, subRemove, argPurge); code != 0 || !strings.Contains(errOut, "no installed remote-mic.service; unset flags take the package defaults") {
+		t.Errorf("purge with no unit: exit %d stderr %q, want a note that defaults are used", code, errOut)
 	}
 
 	reads = 0
@@ -275,7 +304,7 @@ func TestResolveConfigUnitError(t *testing.T) {
 	want := "cannot tell which config " + service.DefaultUnitName + " uses"
 
 	for _, args := range [][]string{
-		{cmdToken, subGet}, {cmdToken, subGenerate, argForce}, {cmdToken, subSet}, {cmdToken, "clear", "-yes"}, {"serve", "--check"},
+		{cmdToken, subGet}, {cmdToken, subGenerate, argForce}, {cmdToken, subSet}, {cmdToken, "clear", "-yes"}, {cmdServe, argCheck},
 	} {
 		code, out, errOut := runCLI(args...)
 		if code != 1 || out != "" || !strings.Contains(errOut, want) {
@@ -322,7 +351,7 @@ func TestServeRefusesAnotherAccount(t *testing.T) {
 	}
 
 	started = stubRunAppliance(t)
-	if code, _, errOut := runCLI(cmdServe, flagConfig, path, "--check"); code != 0 || !*started {
+	if code, _, errOut := runCLI(cmdServe, flagConfig, path, argCheck); code != 0 || !*started {
 		t.Errorf("serve --check: exit %d started %t stderr %q, want it to run", code, *started, errOut)
 	}
 
@@ -337,5 +366,23 @@ func TestServeRefusesAnotherAccount(t *testing.T) {
 	t.Setenv(configEnv, "")
 	if code, _, errOut := runCLI(cmdServe, flagConfig, path); code != 0 || !*started {
 		t.Errorf("serve as the owner: exit %d started %t stderr %q, want it to run", code, *started, errOut)
+	}
+}
+
+// TestConfigFlagEmptyRefused asserts an explicitly empty --config is a usage
+// error, not a fall through to the installed appliance's config (a script
+// passing an unset variable would otherwise rotate the live token).
+func TestConfigFlagEmptyRefused(t *testing.T) {
+	unitCfg := installedFixture(t)
+	for _, args := range [][]string{
+		{cmdToken, subGet, "--config="}, {cmdToken, subGenerate, argForce, flagConfig, ""}, {cmdServe, argCheck, "--config="},
+	} {
+		code, out, errOut := runCLI(args...)
+		if code != 2 || out != "" || !strings.Contains(errOut, "--config is empty") {
+			t.Errorf("%v: exit %d stdout %q stderr %q, want exit 2 and a usage error", args, code, out, errOut)
+		}
+	}
+	if got := loadToken(t, unitCfg); got != tokenOld {
+		t.Errorf("installed config token %q, want it untouched (%q)", got, tokenOld)
 	}
 }
