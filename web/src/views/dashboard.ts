@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError, apiErrorMessage, firstProblem } from "../lib/api.ts";
-import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
+import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusWorkspace, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
 import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, settingsFocusMessage, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
@@ -29,13 +29,6 @@ const ICON_SLIDERS =
   svgIcon('<line x1="4" x2="4" y1="21" y2="14"></line><line x1="4" x2="4" y1="10" y2="3"></line><line x1="12" x2="12" y1="21" y2="12"></line><line x1="12" x2="12" y1="8" y2="3"></line><line x1="20" x2="20" y1="21" y2="16"></line><line x1="20" x2="20" y1="12" y2="3"></line><line x1="2" x2="6" y1="14" y2="14"></line><line x1="10" x2="14" y1="8" y2="8"></line><line x1="18" x2="22" y1="16" y2="16"></line>', 13);
 const ICON_CHEVRON =
   svgIcon('<path d="m6 9 6 6 6-6"></path>', 12, 2.2);
-
-// focusDropped reports whether keyboard focus fell to the document body (or
-// nowhere), as it does when the element holding it is removed; a focus move
-// the operator made since then must be left alone.
-function focusDropped(): boolean {
-  return document.activeElement === null || document.activeElement === document.body;
-}
 
 // availableLabel names an available device for people: its friendly name,
 // with the ALSA address when there is one to tell two identical units apart,
@@ -527,7 +520,7 @@ export class DashboardView {
       // The card now in the removed one's place, else the one before it.
       const next = ordered[Math.min(Math.max(focusLost.index, 0), ordered.length - 1)];
       if (next) next.settingsBtn.focus({ preventScroll: true });
-      else this.focusWorkspace();
+      else focusWorkspace();
       announce(this.announceEl, deviceGoneMessage(focusLost.name, next?.device.name ?? null));
     }
 
@@ -619,17 +612,8 @@ export class DashboardView {
     const neighbour = cards[Math.min(index, cards.length - 1)];
     const button = neighbour?.card.querySelector<HTMLElement>(".available-enable");
     if (button) button.focus({ preventScroll: true });
-    else this.focusWorkspace();
+    else focusWorkspace();
     announce(this.announceEl, availableGoneMessage(label, button != null));
-  }
-
-  // focusWorkspace moves focus to the workspace region when the control
-  // holding it went away, without scrolling (see web/AGENTS.md), and returns
-  // it.
-  private focusWorkspace(): HTMLElement | null {
-    const main = document.getElementById("main-content");
-    main?.focus({ preventScroll: true });
-    return main;
   }
 
   private buildAvailableCard(d: AvailableDevice): HTMLElement {
@@ -695,7 +679,7 @@ export class DashboardView {
             settings.scrollIntoView({ block: "nearest" });
             announce(this.announceEl, settingsFocusMessage(created.name));
           } else {
-            this.focusWorkspace();
+            focusWorkspace();
             announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
           }
         }
@@ -758,7 +742,7 @@ export class DashboardView {
         // region first so a keyboard user keeps a sensible place. preventScroll,
         // as in the login modal: a plain focus() would jump the page to the top
         // of <main>, away from where the removed card was.
-        const main = this.focusWorkspace();
+        const main = focusWorkspace();
         const refreshed = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         if (refreshed.every(Boolean)) showToast(`Removed ${entry.device.name}.`);
         else showToast(`Removed ${entry.device.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");

@@ -286,6 +286,29 @@ export function focusTarget(t: EventTarget | null, popup: Node, opener: Node): F
   return "outside";
 }
 
+// focusDropped reports whether keyboard focus fell to the document body (or
+// nowhere), as it does when the element holding it is removed; a focus move
+// the operator made since then must be left alone.
+export function focusDropped(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
+}
+
+// focusWorkspace moves focus to the workspace region when the control
+// holding it went away, without scrolling (see web/AGENTS.md), and returns
+// it.
+export function focusWorkspace(): HTMLElement | null {
+  const main = document.getElementById("main-content");
+  main?.focus({ preventScroll: true });
+  return main;
+}
+
+// scrollBehavior is how a scripted scroll moves: smoothly, unless the viewer
+// asked for reduced motion (an explicit "smooth" is not overridden by the
+// stylesheet's reduced-motion rule).
+export function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
 // orderChildren puts nodes into parent in the given order. In steady state
 // nothing moves, so keyboard focus and a screen reader's position inside a
 // node survive the render. It walks element

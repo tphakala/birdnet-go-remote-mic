@@ -234,10 +234,13 @@ test("a login that cannot reach the appliance never shows a response body", asyn
   const h = harness(new FakeTimers());
   // A proxy in front of the appliance answers with its own HTML page.
   h.push("getStatus", new ApiError(502, "Bad Gateway", { detail: "<html><body>upstream down</body></html>" }));
-  const res = await h.store.login("typed-token");
-  assert.equal(res.ok, false);
-  assert.equal(res.message, "Could not reach the appliance: Bad Gateway");
-  setToken(null);
+  try {
+    const res = await h.store.login("typed-token");
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "Could not reach the appliance: Bad Gateway");
+  } finally {
+    setToken(null);
+  }
 });
 
 test("an older status response landing late does not overwrite a newer one", async () => {

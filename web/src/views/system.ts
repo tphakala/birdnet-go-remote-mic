@@ -1,7 +1,7 @@
 import { api, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
@@ -338,9 +338,9 @@ export class SystemView {
   // the control that resolves the warning.
   private focusAuthCard(): void {
     if (!this.authCardEl || this.authCardEl.hidden) return;
-    this.authCardEl.scrollIntoView({ behavior: "smooth", block: "start" });
-    // preventScroll: the smooth scroll above already positions the card; a focus
-    // scroll would fight it with an instant jump.
+    this.authCardEl.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+    // preventScroll: the scroll above already positions the card; a focus
+    // scroll would fight a smooth one with an instant jump.
     this.authTokenEl?.focus({ preventScroll: true });
   }
 
@@ -1585,11 +1585,9 @@ export class SystemView {
       if (!want.has(key)) { pair.dt.remove(); pair.dd.remove(); this.infoRows.delete(key); }
     }
 
-    // Track the trailing node per column so each row is ordered within its own
-    // grid rather than a single shared cursor.
-    const prev: Record<"hw" | "sw", ChildNode | null> = { hw: null, sw: null };
+    // Each column is ordered within its own grid, dt then dd per row.
+    const order: Record<"hw" | "sw", HTMLElement[]> = { hw: [], sw: [] };
     for (const r of rows) {
-      const grid = r.group === "hw" ? hw : sw;
       let pair = this.infoRows.get(r.label);
       if (!pair) {
         const dt = elem("dt", "info-key");
@@ -1599,12 +1597,10 @@ export class SystemView {
       } else {
         setText(pair.dd, r.value);
       }
-      const anchor = prev[r.group];
-      const dtTarget: ChildNode | null = anchor ? anchor.nextSibling : grid.firstChild;
-      if (pair.dt !== dtTarget) grid.insertBefore(pair.dt, dtTarget);
-      if (pair.dd !== pair.dt.nextSibling) grid.insertBefore(pair.dd, pair.dt.nextSibling);
-      prev[r.group] = pair.dd;
+      order[r.group].push(pair.dt, pair.dd);
     }
+    orderChildren(hw, order.hw);
+    orderChildren(sw, order.sw);
     if (this.infoCardEl) this.infoCardEl.hidden = rows.length === 0;
   }
 

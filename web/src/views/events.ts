@@ -12,7 +12,7 @@
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.ts";
-import { button, clearBusy, downloadBlob, elem, iconSpan, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
+import { button, clearBusy, downloadBlob, elem, focusDropped, iconSpan, orderChildren, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
 import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { showToast } from "../components/toast.ts";
 import { FilterChips } from "../components/filter-chips.ts";
@@ -94,15 +94,12 @@ interface FocusMark {
 // is itself removed or rebuilt loses focus; render() puts it back (see
 // restoreFocus). The removal pass runs first so a node dropped from above no
 // longer shifts the survivors' indices, which would otherwise force a needless
-// move. The parent is expected to hold only managed nodes (rows and day headers
-// here), so indexing its children directly is safe.
+// move. The parent is expected to hold only managed nodes (rows and day
+// headers here).
 function syncChildren(parent: HTMLElement, nodes: HTMLElement[]): void {
   const want = new Set(nodes);
   for (const c of Array.from(parent.children)) if (!want.has(c as HTMLElement)) c.remove();
-  for (const [i, node] of nodes.entries()) {
-    if (parent.children[i] !== node) parent.insertBefore(node, parent.children[i] ?? null);
-  }
-  while (parent.children.length > nodes.length) parent.lastElementChild?.remove();
+  orderChildren(parent, nodes);
 }
 
 // RowContext is what every row in one render shares.
@@ -531,8 +528,7 @@ export class EventsView {
           // Success hides the notice (on the change render, which may already
           // have run), so a focused Retry would drop focus to the body. Move it
           // to the log heading without scrolling.
-          const a = document.activeElement;
-          if (a === btn || a === null || a === document.body) this.logTitle.focus({ preventScroll: true });
+          if (document.activeElement === btn || focusDropped()) this.logTitle.focus({ preventScroll: true });
         } else if (this.store.hasFailed()) {
           // Still failing: the notice stayed up, so say it again.
           setText(this.announceEl, NOTICE_TEXT);
@@ -577,7 +573,7 @@ export class EventsView {
   private restoreFocus(mark: FocusMark | null): void {
     if (!mark || (mark.el.isConnected && document.activeElement === mark.el)) return;
     // A user action during the render may have moved focus on purpose.
-    if (document.activeElement && document.activeElement !== document.body) return;
+    if (!focusDropped()) return;
     const row = mark.list.querySelector<HTMLElement>(`.notif-row[data-id="${mark.id}"]`);
     const controls = row ? Array.from(row.querySelectorAll<HTMLElement>("button")) : [];
     const target = controls[mark.index] ?? controls[0] ?? this.logTitle;

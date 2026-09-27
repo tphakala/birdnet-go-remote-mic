@@ -12,7 +12,7 @@ export interface FakeTimer {
   cleared: boolean;
 }
 
-// FakeTimers implements the stores' Timers seam without a clock: a test lists
+// FakeTimers implements the Timers seam without a clock: a test lists
 // what is scheduled and fires it by hand, so a 60 s grace or a backoff runs at
 // once and a cancelled timer is visible as cleared.
 export class FakeTimers implements Timers {
