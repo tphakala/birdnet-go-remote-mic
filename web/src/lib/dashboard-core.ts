@@ -257,16 +257,31 @@ export function deviceGoneMessage(name: string, next: string | null): string {
 export function deviceFieldLabel(path: string, names: readonly string[] = []): string {
   if (path === "devices") return "The device list";
   if (path === "device") return DEVICE_FIELD_LABELS.device;
-  const m = /^devices\[(\d+)\]\.(?:streams\[(\d+)\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
-  const index = m?.[1];
-  const stream = Number(m?.[2] ?? 0);
-  const key = m?.[3];
-  if (key === undefined || index === undefined || !Object.hasOwn(DEVICE_FIELD_LABELS, key)) return path;
-  const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
-  const label = (labels[key] ?? path).replace(/ \([^)]*\)$/, "");
-  const name = names[Number(index)];
-  const owner = stream > 0 ? (name ? `${name}'s stream ${stream + 1}` : `stream ${stream + 1}`) : name;
+  const f = parseDeviceFieldPath(path);
+  if (!f) return path;
+  const label = DEVICE_FIELD_LABELS[f.key].replace(/ \([^)]*\)$/, "");
+  const name = names[f.device];
+  const owner = f.stream > 0 ? (name ? `${name}'s stream ${f.stream + 1}` : `stream ${f.stream + 1}`) : name;
   return owner ? `${label} of ${owner}` : label;
+}
+
+// DeviceFieldPath is a validation path into the device list: the device's
+// index in the list the request sent, the stream's index (0 for a device
+// field), and the field's key in DEVICE_FIELD_LABELS.
+export interface DeviceFieldPath {
+  device: number;
+  stream: number;
+  key: keyof typeof DEVICE_FIELD_LABELS;
+}
+
+// parseDeviceFieldPath reads devices[i].<key>, devices[i].streams[j].<key>
+// and devices[i].streams[j].opus.bitrate, or returns null for any other path
+// or a key with no label.
+export function parseDeviceFieldPath(path: string): DeviceFieldPath | null {
+  const m = /^devices\[(\d+)\]\.(?:streams\[(\d+)\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
+  const key = m?.[3];
+  if (!m || key === undefined || !Object.hasOwn(DEVICE_FIELD_LABELS, key)) return null;
+  return { device: Number(m[1]), stream: Number(m[2] ?? 0), key: key as keyof typeof DEVICE_FIELD_LABELS };
 }
 
 // rejectionText is the toast for a request the appliance refused with a

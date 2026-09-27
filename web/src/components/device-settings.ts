@@ -12,6 +12,7 @@ import {
   otherOpusStream,
 } from "../lib/device-settings-core.ts";
 import { store } from "../lib/store.ts";
+import { sentence } from "../lib/update-core.ts";
 import type { DeviceConfig, StreamMode } from "../lib/types.ts";
 
 const CHEVRON =
@@ -507,6 +508,33 @@ export class DeviceSettingsForm {
     ok = this.markControl(this.chErr, chOk, chMsg) && ok;
     this.channelsGroup.setAttribute("aria-invalid", String(!chOk));
     return ok;
+  }
+
+  // markRejected marks the field the appliance rejected on save with its
+  // reason and moves focus to it, as a failed local check does. It returns
+  // false for a field the form has no error line for (the codec mode, the
+  // Opus bitrate), which the caller's toast covers alone.
+  public markRejected(key: string, reason: string): boolean {
+    const text = sentence(reason);
+    switch (key) {
+      case "name":
+        this.mark(this.nameEl, this.nameErr, false, text);
+        break;
+      case "path":
+        this.mark(this.pathEl, this.pathErr, false, text);
+        break;
+      case "rate":
+        this.markControl(this.rateErr, false, text);
+        break;
+      case "channels":
+        this.markControl(this.chErr, false, text);
+        this.channelsGroup.setAttribute("aria-invalid", "true");
+        break;
+      default:
+        return false;
+    }
+    this.focusFirstInvalid();
+    return true;
   }
 
   // markControl toggles the invalid state on a dropdown field (which has no text

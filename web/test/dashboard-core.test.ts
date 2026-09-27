@@ -12,6 +12,7 @@ import {
   availableCardKey,
   availableGoneMessage,
   deviceGoneMessage,
+  parseDeviceFieldPath,
   settingsFocusMessage,
   availablePlan,
   bannerIsError,
@@ -295,6 +296,15 @@ test("deviceFieldLabel names the field and the device a problem points at", () =
   assert.equal(deviceFieldLabel("devices[0].constructor", names), "devices[0].constructor");
   assert.equal(deviceFieldLabel("devices[0].streams[0].bogus", names), "devices[0].streams[0].bogus", "an unknown key shows the path");
   assert.equal(deviceFieldLabel("network.hostname"), "network.hostname");
+});
+
+test("parseDeviceFieldPath reads the device, the stream and the key", () => {
+  assert.deepEqual(parseDeviceFieldPath("devices[2].name"), { device: 2, stream: 0, key: "name" });
+  assert.deepEqual(parseDeviceFieldPath("devices[0].streams[1].path"), { device: 0, stream: 1, key: "path" });
+  assert.deepEqual(parseDeviceFieldPath("devices[0].streams[0].opus.bitrate"), { device: 0, stream: 0, key: "bitrate" });
+  assert.equal(parseDeviceFieldPath("devices[0].bogus"), null, "a key with no label");
+  assert.equal(parseDeviceFieldPath("devices[0].constructor"), null, "a prototype key");
+  assert.equal(parseDeviceFieldPath("network.hostname"), null);
 });
 
 test("rejectionText says which action failed, on which field of which device", () => {

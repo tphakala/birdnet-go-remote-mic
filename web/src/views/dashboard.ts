@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError, apiErrorMessage, firstProblem } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusWorkspace, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, settingsFocusMessage, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, parseDeviceFieldPath, REMOVED_FOCUS_MESSAGE, settingsFocusMessage, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -1604,6 +1604,13 @@ export class DashboardView {
         entry.settingsBtn.focus();
       } catch (err: unknown) {
         this.apiErrorToast(err, "Save failed", merged);
+        // A problem with a field this form edits (the device's first stream)
+        // is marked on that field too, and focus goes there.
+        const problem = firstProblem(err);
+        const at = problem?.field ? parseDeviceFieldPath(problem.field) : null;
+        if (problem && at && at.stream === 0 && merged[at.device]?.device === edited.device) {
+          entry.settingsForm?.markRejected(at.key, problem.reason);
+        }
       }
       });
     } finally {
