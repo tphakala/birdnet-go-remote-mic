@@ -210,9 +210,9 @@ export class SSEClient {
         const decoder = new TextDecoder();
         let buffer = "";
         let announced = false;
-        // A CR that ends a chunk may be the first half of a CRLF split across
-        // chunks, so it waits for the next one.
-        let heldCR = "";
+        // A CR that ends a chunk ends its line at once; if the next chunk
+        // starts with the LF of a CRLF split across them, that LF is dropped.
+        let skipLF = false;
 
         while (this.isRunning && gen === this.generation) {
           const { done, value } = await reader.read();
@@ -233,9 +233,9 @@ export class SSEClient {
           }
 
           // SSE allows CRLF and CR line endings as well as LF.
-          let text = heldCR + decoder.decode(value, { stream: true });
-          heldCR = text.endsWith("\r") ? "\r" : "";
-          if (heldCR) text = text.slice(0, -1);
+          let text = decoder.decode(value, { stream: true });
+          if (skipLF && text.startsWith("\n")) text = text.slice(1);
+          if (text !== "") skipLF = text.endsWith("\r");
           // The appliance writes LF only, so most chunks skip the scan.
           buffer += text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
           const messages = buffer.split("\n\n");

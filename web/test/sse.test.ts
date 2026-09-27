@@ -254,7 +254,7 @@ test("a stream that ends before any event backs off further (its open comment is
     h.last().stream().end();
     await settle();
     const [backoff] = h.timers.pending(wait);
-    assert.ok(backoff, `an empty stream must wait ${wait} ms before reconnecting`);
+    assert.ok(backoff, `a stream with no event must wait ${wait} ms before reconnecting`);
     h.timers.fire(backoff);
     await settle();
   }
@@ -452,14 +452,23 @@ test("a lone CR ends a line", async () => {
   h.client.start();
   const body = h.last().stream();
   await settle();
+  // A CR that ends a chunk ends its line at once: the event is not held
+  // back until the next bytes.
   body.send('event: levels\rdata: {"a":2}\r\r');
-  // A CR that ends a chunk waits to see whether an LF follows, so the event
-  // completes with the next bytes.
-  body.send("event: heartbeat\rdata: {}\r\r");
   await settle();
-  assert.deepEqual(
-    h.payloads.filter(([name]) => name === "levels").at(-1),
-    ["levels", { a: 2 }],
-  );
+  assert.deepEqual(h.payloads.at(-1), ["levels", { a: 2 }]);
   h.client.stop();
+});
+
+test("a stop that lands with the first bytes announces nothing", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream(false);
+  await settle();
+  // The read resolves with these bytes, but the stop runs before the loop
+  // gets to them.
+  body.send(": open\n\n");
+  h.client.stop();
+  await settle();
+  assert.deepEqual(h.events, [], "a stopped stream must not be announced as connected");
 });

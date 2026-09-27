@@ -988,6 +988,21 @@ test("a meter out of view skips its paint, keeps its readout, and repaints when 
   assert.deepEqual(h.draws.at(-1), [-20, -10]);
 });
 
+test("a meter out of view that settled asks for no more frames", () => {
+  const h = meterHarness();
+  h.prime();
+  h.meter.setOffscreen(true);
+  // A needle change still asks for a frame out of view (the readout).
+  h.meter.setLevels(-99, -40);
+  h.step();
+  h.setClock(PEAK_HOLD_MS + 5_000);
+  h.f.timers.fire(at(h.f.timers.pending(), 0));
+  while (h.frames.running()) h.step();
+  // Settled: the same level again asks for nothing.
+  h.meter.setLevels(-99, -99);
+  assert.equal(h.frames.running(), false);
+});
+
 test("a new bar level out of view asks for no frame", () => {
   const h = meterHarness();
   h.prime();

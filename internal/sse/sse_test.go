@@ -34,8 +34,10 @@ type fakeSource struct {
 	mu           sync.Mutex
 	subs         map[chan Event]struct{}
 	cancelCalled atomic.Bool
-	// subscribed receives on every Subscribe, and cancelled is closed at the
-	// first cancel, so tests wait on them rather than poll.
+	// subscribed is signalled on every Subscribe (the send is dropped when
+	// 16 signals are unread; waitSubscribed re-checks the count, so none is
+	// missed), and cancelled is closed at the first cancel, so tests wait on
+	// them rather than poll.
 	subscribed    chan struct{}
 	cancelled     chan struct{}
 	cancelledOnce sync.Once

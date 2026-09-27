@@ -274,8 +274,9 @@ export class NotificationStore extends Emitter<{ change: undefined }> {
 
   // armClockCheck checks the browser clock every CLOCK_CHECK_MS while the
   // stream is up, so a step is caught even when no frame arrives.
-  // It runs while frames arrive too, although each frame checks the clock:
-  // one timer every CLOCK_CHECK_MS is cheaper than tracking the last frame.
+  // It runs while frames arrive too, although each frame checks the clock
+  // (onSSE): one timer every CLOCK_CHECK_MS is kept rather than tracking the
+  // last frame (the cost of either is NOT MEASURED).
   private armClockCheck(): void {
     if (this.clockTimer !== null) return;
     this.clockTimer = this.timers.setTimeout(() => {

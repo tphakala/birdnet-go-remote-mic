@@ -9,13 +9,15 @@
 //   node web/e2e/mock-server.ts <dist dir> [port]
 //
 // Node runs this file directly (type stripping), so it uses only erasable
-// TypeScript syntax and imports nothing outside the Node built-ins; the API
-// types come from web/src/lib/types.ts as type-only imports, which keeps the
-// fixtures in step with what the UI expects.
+// TypeScript syntax. Besides the Node built-ins it imports the event names
+// from web/src/lib/sse.ts, whose module-level code needs nothing a browser
+// has and Node lacks, and the API types from web/src/lib/types.ts as
+// type-only imports, which keeps the fixtures in step with what the UI
+// expects.
 
 import { createServer } from "node:http";
-import { LEVELS_EVENT, NOTIFICATION_EVENT } from "../src/lib/sse.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { LEVELS_EVENT, NOTIFICATION_EVENT } from "../src/lib/sse.ts";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 
