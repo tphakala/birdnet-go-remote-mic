@@ -224,8 +224,8 @@ export interface MeterPorts {
 // FrameSource is the part of FrameScheduler a MeterController uses.
 export type FrameSource = Pick<FrameScheduler, "wake" | "wakeAfter" | "remove">;
 
-// WAITING_READOUT is the readout while a meter has no levels to show (see
-// MeterController.clearLevels).
+// WAITING_READOUT is the readout while a meter has no levels to show: before
+// its first level and after MeterController.clearLevels.
 export const WAITING_READOUT = "--";
 
 // levelBand is the colour band a level falls in: 0 green, 1 amber above
@@ -262,8 +262,10 @@ export class MeterController implements Animator {
   private drawnRms = FLOOR_DB;
   private drawnPeak = FLOOR_DB;
   private shownReadout = "";
-  // Set by clearLevels until the next level arrives: the readout says so.
-  private waiting = false;
+  // True until a level arrives, and again after clearLevels: the readout
+  // says so, since no data is not silence. A new meter starts here, as one
+  // built while the stream is down or off the dashboard has no level yet.
+  private waiting = true;
   // The needle level behind shownReadout, and the frame time it was written.
   private shownReadoutDb = FLOOR_DB;
   private readoutAt = Number.NEGATIVE_INFINITY;
@@ -288,6 +290,9 @@ export class MeterController implements Animator {
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
     const now = this.now();
+    // Leaving the waiting readout needs a frame even when nothing else moved
+    // (a silent channel stays at the floor).
+    const wasWaiting = this.waiting;
     this.waiting = false;
     this.rms = clampLevel(rms);
     const peakDb = clampLevel(peak);
@@ -303,7 +308,7 @@ export class MeterController implements Animator {
     // Silence on a settled or holding meter changes nothing on screen: no
     // frame. A holding needle has its timed wake for the end of the hold.
     const moving = !this.reducedMotion && !needleSettled(this.needle) && now >= this.needle.holdUntil;
-    if (moving || this.stale || this.rms !== this.drawnRms || this.needle.db !== this.drawnPeak || this.clipped !== this.shownClip) {
+    if (wasWaiting || moving || this.stale || this.rms !== this.drawnRms || this.needle.db !== this.drawnPeak || this.clipped !== this.shownClip) {
       this.frames.wake(this);
     }
   }

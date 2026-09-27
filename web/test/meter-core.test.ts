@@ -457,7 +457,7 @@ test("the first frame draws the empty track", () => {
   assert.equal(h.frames.running(), true);
   h.step();
   assert.deepEqual(h.draws, [[FLOOR_DB, FLOOR_DB]]);
-  assert.deepEqual(h.readouts, ["-inf"]);
+  assert.deepEqual(h.readouts, [WAITING_READOUT], "a meter with no level yet must not read as silence");
   assert.deepEqual(h.clips, [false]);
   assert.equal(h.frames.running(), false, "an empty meter has nothing to animate");
 });
@@ -475,6 +475,10 @@ test("a level change wakes the loop and draws", () => {
 
 test("silence on a settled meter requests no frame", () => {
   const h = meterHarness();
+  h.step();
+  // The first level leaves the waiting readout, which takes one frame.
+  h.setClock(0);
+  h.meter.setLevels(-99, -99);
   h.step();
   for (let i = 1; i <= 5; i++) {
     h.setClock(i * 100);
@@ -852,6 +856,24 @@ test("clearing levels cancels a timed wake for the end of a hold", () => {
   assert.equal(h.f.timers.pending().length, 1);
   h.meter.clearLevels();
   assert.equal(h.f.timers.pending().length, 0, "the cleared needle has no hold left to wait for");
+});
+
+test("a silent channel leaves the waiting readout at its first level", () => {
+  const h = meterHarness();
+  h.step();
+  assert.equal(h.readouts.at(-1), WAITING_READOUT);
+  h.setClock(0);
+  h.meter.setLevels(-99, -99);
+  assert.equal(h.frames.running(), true, "the first level must bring a frame even at the floor");
+  h.step();
+  assert.equal(h.readouts.at(-1), "-inf");
+  h.meter.clearLevels();
+  h.step();
+  assert.equal(h.readouts.at(-1), WAITING_READOUT);
+  h.setClock(5_000);
+  h.meter.setLevels(-99, -99);
+  h.step();
+  assert.equal(h.readouts.at(-1), "-inf", "silence after a clear must replace the waiting readout");
 });
 
 test("a cleared meter shows the waiting readout until the next level", () => {

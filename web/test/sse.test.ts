@@ -13,8 +13,9 @@ import { FakeTimers, settle } from "./fixtures.ts";
 // Call is one fetch the client made: its URL, and hooks to answer it.
 interface Call {
   url: string;
-  // stream answers 200 with a body that stays open until the request aborts.
-  stream(): void;
+  // stream answers 200 with a body that stays open until the request aborts,
+  // and returns end, which closes the body as a server ending the stream would.
+  stream(): () => void;
   // reply answers with a bare status.
   reply(status: number): void;
 }
@@ -31,13 +32,16 @@ function harness() {
         calls.push({
           url,
           stream: () => {
+            let end = () => {};
             const body = new ReadableStream<Uint8Array>({
               start(controller) {
                 // A real fetch errors the body when its request aborts.
                 signal?.addEventListener("abort", () => controller.error(abortError()));
+                end = () => controller.close();
               },
             });
             resolve(new Response(body, { status: 200 }));
+            return end;
           },
           reply: (status) => resolve(new Response(null, { status })),
         });
@@ -179,5 +183,35 @@ test("a filter restart arms the heartbeat watchdog before the new stream answers
   h.timers.fire(watchdog);
   await settle();
   assert.deepEqual(h.events, ["connected", "disconnected"], "the hung restart must be reported once the watchdog fires");
+  h.client.stop();
+});
+
+test("a 401 on a filter restart clears the watchdog the restart armed", async () => {
+  const h = harness();
+  h.client.start();
+  h.calls.at(-1)?.stream();
+  await settle();
+  h.client.setEvents(["notification"]);
+  await settle();
+  assert.equal(h.timers.pending(HEARTBEAT_TIMEOUT_MS).length, 1);
+  h.calls.at(-1)?.reply(401);
+  await settle();
+  assert.deepEqual(h.events, ["connected", "unauthorized"]);
+  assert.deepEqual(h.timers.pending(), [], "a stream stopped by a 401 must leave no watchdog to fire later");
+});
+
+test("a stream the server ends is reported down and reconnects", async () => {
+  const h = harness();
+  h.client.start();
+  const end = h.calls.at(-1)?.stream();
+  await settle();
+  end?.();
+  await settle();
+  assert.deepEqual(h.events, ["connected", "disconnected"], "listeners must learn the stream is down");
+  const [backoff] = h.timers.pending(RECONNECT_DELAY_MS);
+  assert.ok(backoff, "an ended stream must wait out the backoff");
+  h.timers.fire(backoff);
+  await settle();
+  assert.equal(h.calls.length, 2);
   h.client.stop();
 });

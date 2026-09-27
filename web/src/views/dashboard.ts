@@ -1,5 +1,6 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, VUMeter } from "../components/vu-meter.ts";
+import { WAITING_READOUT } from "../lib/meter-core.ts";
 import { router } from "../lib/router.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
@@ -1222,7 +1223,7 @@ export class DashboardView {
       canvas.height = 22;
       canvasContainer.appendChild(canvas);
       const stats = elem("div", "meter-stats");
-      const dbReadout = elem("span", "db-readout mono", "-inf");
+      const dbReadout = elem("span", "db-readout mono", WAITING_READOUT);
       dbReadout.setAttribute("aria-hidden", "true");
       const clipBtn = elem("button", "clip-latch-btn", "CLIP");
       clipBtn.setAttribute("type", "button");

@@ -106,7 +106,7 @@ export class SSEClient {
   private resetHeartbeat(): void {
     this.clearHeartbeat();
     this.heartbeatTimer = this.deps.timers.setTimeout(() => {
-      console.warn("SSE heartbeat timeout exceeded (30s). Reconnecting...");
+      console.warn(`SSE heartbeat timeout exceeded (${HEARTBEAT_TIMEOUT_MS / 1000}s). Reconnecting...`);
       if (this.abortController) {
         this.abortController.abort();
       }
@@ -197,6 +197,10 @@ export class SSEClient {
             this.parseMessage(msg);
           }
         }
+        // The server ended the stream (a restart, a proxy timeout): the
+        // reconnect below runs as after an error, and listeners learn the
+        // stream is down until it comes back.
+        if (this.isRunning && gen === this.generation) throw new Error("SSE stream closed by the server");
       } catch (err: unknown) {
         if (!this.isRunning || gen !== this.generation) return;
         this.dispatch("disconnected", err);

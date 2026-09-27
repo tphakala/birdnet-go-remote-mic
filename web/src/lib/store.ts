@@ -35,7 +35,6 @@ export const LEVELS_GRACE_MS = 30_000;
 // dashboard shows.
 export const NON_LEVEL_EVENTS: readonly string[] = ["notification"];
 
-
 export interface AppState {
   status: ApplianceStatus | null;
   devices: Device[];
