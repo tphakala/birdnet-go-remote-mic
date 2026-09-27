@@ -135,7 +135,7 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 		fs.PrintDefaults()
 	}
 	user := fs.String("user", service.DefaultUser, "system user to create and run the service as")
-	cfg := fs.String("config", service.DefaultConfigPath, "config path baked into the unit")
+	cfg := fs.String("config", "", "config path baked into the unit (default: the installed unit's, else "+service.DefaultConfigPath+")")
 	stateDir := fs.String("state-dir", service.DefaultStateDir, "state directory for the management certificate")
 	binPath := fs.String("bin-path", service.DefaultBinPath, "path to install the binary to")
 	noStart := fs.Bool("no-start", false, "enable at boot but do not start the service now")
@@ -145,7 +145,7 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec := service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}
+	spec := service.ServiceSpec{User: *user, ConfigPath: installedConfigOr(*cfg), StateDir: *stateDir, BinPath: *binPath}
 	if err := installService(spec, !*noStart); err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 		fs.PrintDefaults()
 	}
 	user := fs.String("user", service.DefaultUser, "service user to remove with --purge")
-	cfg := fs.String("config", service.DefaultConfigPath, "config path whose directory --purge removes")
+	cfg := fs.String("config", "", "config path whose directory --purge removes (default: the installed unit's, else "+service.DefaultConfigPath+")")
 	stateDir := fs.String("state-dir", service.DefaultStateDir, "state directory --purge removes")
 	binPath := fs.String("bin-path", service.DefaultBinPath, "installed binary path --purge removes")
 	purge := fs.Bool("purge", false, "also remove the config, state, binary, and service user")
@@ -179,12 +179,26 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec := service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}
+	spec := service.ServiceSpec{User: *user, ConfigPath: installedConfigOr(*cfg), StateDir: *stateDir, BinPath: *binPath}
 	if err := uninstallService(spec, *purge); err != nil {
 		return err
 	}
 	out(stderr, "removed remote-mic.service\n")
 	return nil
+}
+
+// installedConfigOr returns flagVal when --config was given, else the config
+// the installed unit names, else the default config path. A reinstall then
+// keeps a custom config instead of switching the unit to the default, and
+// uninstall --purge removes the directory the appliance actually used.
+func installedConfigOr(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if p, _ := installedConfig(); p != "" {
+		return p
+	}
+	return service.DefaultConfigPath
 }
 
 // runServiceStatus reports the unit's boot enablement and running state. It

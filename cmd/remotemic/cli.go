@@ -14,6 +14,7 @@ import (
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 )
 
 // serveFn and listDevicesFn are the serve and devices list entry points behind a
@@ -34,18 +35,71 @@ var (
 )
 
 // configEnv names the environment variable that supplies the config path when
-// --config is not given, so a service unit can set it once and every command
-// run by hand on the appliance finds the same file.
+// --config is not given. The installed unit sets it for the appliance; a
+// command run by hand finds the same file through the unit (see resolveConfig).
 const configEnv = "REMOTEMIC_CONFIG"
 
-// configFlag registers the shared --config flag on fs. Its default is
-// $REMOTEMIC_CONFIG when set and non-empty, else config.yaml in the working directory.
+// configDefault is the config file a command uses when no flag, environment
+// variable, or installed unit names one: config.yaml in the working directory.
+const configDefault = "config.yaml"
+
+// installedConfig reports the installed appliance unit's config path and
+// account. A variable so tests never read the host's real units.
+var installedConfig = service.InstalledConfig
+
+// configSource says where a command's config path came from.
+type configSource int
+
+const (
+	fromFlag configSource = iota // --config
+	fromEnv                      // $REMOTEMIC_CONFIG
+	fromUnit                     // the installed remote-mic.service
+	fromCwd                      // config.yaml in the working directory
+)
+
+// configRef is the config file a command acts on, where that choice came from,
+// and the installed unit's config path and account ("" when there is no
+// installed unit or it names none), which permission hints use.
+type configRef struct {
+	path     string
+	source   configSource
+	unitPath string
+	unitUser string
+}
+
+// configFlag registers the shared --config flag on fs. It has no default of its
+// own: resolveConfig picks one after parsing, so the help text does not
+// print a path that depends on the environment.
 func configFlag(fs *flag.FlagSet) *string {
-	def := os.Getenv(configEnv)
-	if def == "" {
-		def = "config.yaml"
+	return fs.String("config", "", "path to the YAML config file (default: $"+configEnv+
+		", else the installed service's config, else ./"+configDefault+")")
+}
+
+// resolveConfig picks the config a command acts on: --config (flagVal), then
+// $REMOTEMIC_CONFIG when non-empty, then the config the installed unit names,
+// then config.yaml in the working directory. The unit comes before the working
+// directory so a command run by hand on an installed appliance acts on the
+// file the appliance uses, from any directory and as any account, rather than
+// on a stray config.yaml. When the unit wins over a config.yaml that exists
+// here, a note on stderr says which file is used.
+func resolveConfig(flagVal string, stderr io.Writer) configRef {
+	var ref configRef
+	ref.unitPath, ref.unitUser = installedConfig()
+	switch env := os.Getenv(configEnv); {
+	case flagVal != "":
+		ref.path, ref.source = flagVal, fromFlag
+	case env != "":
+		ref.path, ref.source = env, fromEnv
+	case ref.unitPath != "":
+		ref.path, ref.source = ref.unitPath, fromUnit
+		if _, err := os.Stat(configDefault); err == nil {
+			out(stderr, "remote-mic: using %s (from %s); ./%s is ignored, pass --config to use it\n",
+				ref.path, service.DefaultUnitName, configDefault)
+		}
+	default:
+		ref.path, ref.source = configDefault, fromCwd
 	}
-	return fs.String("config", def, "path to the YAML config file (env "+configEnv+")")
+	return ref
 }
 
 // out writes formatted CLI text to w, discarding the write error: output to
@@ -157,8 +211,9 @@ Usage:
   remote-mic service <command>   install and manage the systemd service (install, uninstall, status)
   remote-mic version             print version and exit
 
-Commands that read the config take --config, which defaults to $`+configEnv+`
-or config.yaml. Run a command with -h to see its flags.
+Commands that read the config take --config, which defaults to $`+configEnv+`,
+then the installed service's config, then config.yaml in the working directory.
+Run a command with -h to see its flags.
 `)
 }
 
@@ -171,10 +226,10 @@ func runServe(args []string, stderr io.Writer) error {
 	return run(cfgPath, ov, check, pprofAddr)
 }
 
-// parseServeFlags parses the serve flags into the config path, the set of config
-// overrides (only the flags actually passed, so precedence is flag > config >
-// default via applyServeOverrides), the --check switch, and the optional pprof
-// listen address. It is separated from
+// parseServeFlags parses the serve flags into the config path (resolved by
+// resolveConfig), the set of config overrides (only the flags actually passed,
+// so precedence is flag > config > default via applyServeOverrides), the
+// --check switch, and the optional pprof listen address. It is separated from
 // runServe so the flag-name-to-override-key mapping is unit-testable without
 // starting the appliance. Stray positional arguments are rejected rather than
 // silently ignored.
@@ -208,7 +263,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 		set:        make(map[string]bool),
 	}
 	fs.Visit(func(f *flag.Flag) { ov.set[f.Name] = true })
-	return *path, ov, *checkFlag, *pprof, nil
+	return resolveConfig(*path, stderr).path, ov, *checkFlag, *pprof, nil
 }
 
 // runDevices routes the devices command group and returns the exit code.
