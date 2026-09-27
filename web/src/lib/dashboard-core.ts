@@ -227,3 +227,41 @@ export function availablePlan(shown: ReadonlyMap<string, string>, next: readonly
 export function availableGoneMessage(label: string, toNeighbour: boolean): string {
   return toNeighbour ? `${label} is no longer available.` : `${label} is no longer available. ${REMOVED_FOCUS_MESSAGE}`;
 }
+
+// DEVICE_FIELD_LABELS names a device config field the way the device settings
+// form labels it (a plain name for the few fields the form has no control
+// for: the sample format and the stream list), keyed by the last part of the
+// field path the appliance
+// reports in a validation problem: internal/config/config.go builds them as
+// devices[i].<key> (config.go:598) and devices[i].streams[j].<key>
+// (config.go:647), the Opus bitrate as streams[j].opus.bitrate.
+const DEVICE_FIELD_LABELS: Readonly<Record<string, string>> = {
+  name: "Device Name",
+  device: "Device id",
+  format: "Sample format",
+  rate: "Sample Rate (Hz)",
+  streams: "Streams",
+  path: "RTSP Path",
+  mode: "Stream Codec Mode",
+  channels: "Channels",
+  bitrate: "Opus Bitrate",
+};
+
+// deviceFieldLabel turns a validation problem's field path into what an
+// operator reads: the field's label, and for a path into the device list the
+// name of the device it points at (names is the device list the request
+// carried, in order), since a save sends every device. It returns the path
+// itself for one it does not know. The appliance also reports the list as a
+// whole ("devices", config.go:591) and a provision's device id ("device",
+// mgmtserver/devices.go:182).
+export function deviceFieldLabel(path: string, names: readonly string[] = []): string {
+  if (path === "devices") return "The device list";
+  if (path === "device") return DEVICE_FIELD_LABELS.device ?? path;
+  const m = /^devices\[(\d+)\]\.(?:streams\[\d+\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
+  const index = m?.[1];
+  const key = m?.[2];
+  const label = key !== undefined ? DEVICE_FIELD_LABELS[key] : undefined;
+  if (label === undefined || index === undefined) return path;
+  const name = names[Number(index)];
+  return name ? `${label} of ${name}` : label;
+}

@@ -2,7 +2,7 @@
 // builder, the uptime formatter (which had diverged between the dashboard and
 // the system view), the load-error/retry pattern, and the per-mode/per-state
 // label maps live in exactly one place.
-import { ApiError } from "./api.ts";
+export { apiErrorMessage, firstProblem, type FieldProblem } from "./api.ts";
 import { showToast } from "../components/toast.ts";
 import type { FocusTarget } from "./menu-core.ts";
 import { svgIcon } from "./svg.ts";
@@ -195,34 +195,6 @@ export function downloadBlob(blob: Blob, filename: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
-}
-
-// apiErrorMessage reduces any thrown value to a short human string: an ApiError
-// shows its problem title, any other Error its message, and anything else its
-// string form. Shared so the several save/PATCH catch blocks map failures the
-// same way instead of re-inlining the ternary.
-export function apiErrorMessage(err: unknown): string {
-  if (err instanceof ApiError) return err.title;
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
-// Problem is one validation problem from a rejected request: the field it
-// names, if any, and why it was refused.
-export interface FieldProblem {
-  field?: string;
-  reason: string;
-}
-
-// firstProblem is the first validation problem an ApiError carries, its
-// reason defaulting to the problem title when the item has none, or null for
-// any other failure. Callers show it on the field or in a toast, so every one
-// keeps the same fallback.
-export function firstProblem(err: unknown): FieldProblem | null {
-  if (!(err instanceof ApiError)) return null;
-  const item = err.errors?.[0];
-  if (!item) return null;
-  return { field: item.field, reason: item.reason ?? err.title };
 }
 
 // setFieldError marks (or clears) a form field's invalid state uniformly: the

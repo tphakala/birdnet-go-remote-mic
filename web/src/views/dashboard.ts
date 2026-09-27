@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError } from "../lib/api.ts";
 import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, firstProblem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, deviceFieldLabel, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -1274,15 +1274,17 @@ export class DashboardView {
     return run;
   }
 
-  // apiErrorToast surfaces a failed PATCH: a validation problem shows the first
-  // field/reason, anything else shows the raw message, both under a prefix.
+  // apiErrorToast surfaces a failed request: a validation problem names the
+  // first field by its form label with the reason, anything else shows the
+  // failure under a prefix.
   private apiErrorToast(err: unknown, prefix: string): void {
     const problem = firstProblem(err);
     if (problem) {
-      showToast(`Rejected: ${problem.field ?? "config"} - ${problem.reason}`, "error");
+      const names = (store.getState().config?.devices ?? []).map((cd) => cd.name);
+      const what = problem.field ? deviceFieldLabel(problem.field, names) : "The configuration";
+      showToast(`${what} was rejected: ${problem.reason}`, "error");
     } else {
-      const msg = err instanceof Error ? err.message : String(err);
-      showToast(`${prefix}: ${msg}`, "error");
+      showToast(`${prefix}: ${apiErrorMessage(err)}`, "error");
     }
   }
 

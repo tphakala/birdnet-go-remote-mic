@@ -1,12 +1,11 @@
-// Unit tests for the error helpers in lib/ui.ts that turn a failed request
+// Unit tests for the error helpers in lib/api.ts that turn a failed request
 // into text: apiErrorMessage for a toast, firstProblem for a field error.
 // Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiError } from "../src/lib/api.ts";
-import { apiErrorMessage, firstProblem } from "../src/lib/ui.ts";
+import { ApiClient, ApiError, apiErrorMessage, firstProblem } from "../src/lib/api.ts";
 
 test("firstProblem returns the first validation problem with its field and reason", () => {
   const err = new ApiError(422, "Invalid configuration", undefined, [
@@ -28,8 +27,55 @@ test("firstProblem is null for a failure with no validation problem", () => {
   assert.equal(firstProblem("offline"), null);
 });
 
-test("apiErrorMessage shows a problem title, an error message, or the value", () => {
-  assert.equal(apiErrorMessage(new ApiError(500, "Internal error", "disk full")), "Internal error");
+test("apiErrorMessage shows a problem's detail, which says what went wrong", () => {
+  assert.equal(apiErrorMessage(new ApiError(500, "internal error", "persist config: disk full", undefined, true)), "persist config: disk full");
+  // A problem with no detail falls back to its title.
+  assert.equal(apiErrorMessage(new ApiError(500, "internal error", "", undefined, true)), "internal error");
+});
+
+test("apiErrorMessage never shows a body that was not a problem", () => {
+  // A proxy's HTML error page lands in detail; only the status text is shown.
+  assert.equal(apiErrorMessage(new ApiError(502, "Bad Gateway", "<html><body>502</body></html>")), "Bad Gateway");
+  assert.equal(apiErrorMessage(new ApiError(502, "", "<html></html>")), "HTTP 502");
+});
+
+test("apiErrorMessage shows an error message, or the value", () => {
   assert.equal(apiErrorMessage(new Error("offline")), "offline");
   assert.equal(apiErrorMessage("offline"), "offline");
+});
+
+// failWith makes the client's next request answer with res.
+async function failWith(res: Response): Promise<unknown> {
+  const g = globalThis as unknown as { fetch: typeof fetch };
+  const saved = g.fetch;
+  g.fetch = () => Promise.resolve(res);
+  try {
+    await new ApiClient().getHealth();
+    return null;
+  } catch (err) {
+    return err;
+  } finally {
+    g.fetch = saved;
+  }
+}
+
+test("a JSON error body is a problem whose detail is shown", async () => {
+  const err = await failWith(
+    new Response(JSON.stringify({ status: 400, title: "bad request", detail: "name must not be empty" }), {
+      status: 400,
+      headers: { "Content-Type": "application/problem+json" },
+    }),
+  );
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.problem, true);
+  assert.equal(apiErrorMessage(err), "name must not be empty");
+});
+
+test("any other error body is not shown, and an empty status text falls back to the code", async () => {
+  // HTTP/2 carries no status text.
+  const err = await failWith(new Response("<html>bad gateway</html>", { status: 502, statusText: "", headers: { "Content-Type": "text/html" } }));
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.problem, false);
+  assert.equal(err.title, "HTTP 502");
+  assert.equal(apiErrorMessage(err), "HTTP 502");
 });

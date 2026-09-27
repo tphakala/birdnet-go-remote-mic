@@ -13,6 +13,7 @@ import {
   availableGoneMessage,
   availablePlan,
   bannerIsError,
+  deviceFieldLabel,
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
@@ -251,4 +252,19 @@ test("availablePlan rebuilds a card whose busy state changed", () => {
 test("availableGoneMessage names the device and says where focus went", () => {
   assert.equal(availableGoneMessage("USB mic (hw:1,0)", true), "USB mic (hw:1,0) is no longer available.");
   assert.equal(availableGoneMessage("hw:2,0", false), "hw:2,0 is no longer available. Focus moved to the dashboard.");
+});
+
+test("deviceFieldLabel names the field and the device a problem points at", () => {
+  const names = ["garden", "bats"];
+  assert.equal(deviceFieldLabel("devices[0].name", names), "Device Name of garden");
+  assert.equal(deviceFieldLabel("devices[1].streams[0].path", names), "RTSP Path of bats");
+  assert.equal(deviceFieldLabel("devices[0].streams[0].opus.bitrate", names), "Opus Bitrate of garden");
+  assert.equal(deviceFieldLabel("devices[1].rate", names), "Sample Rate (Hz) of bats");
+  assert.equal(deviceFieldLabel("devices[1].streams", names), "Streams of bats");
+  // An index past the list the view knows still names the field.
+  assert.equal(deviceFieldLabel("devices[5].name", names), "Device Name");
+  assert.equal(deviceFieldLabel("devices"), "The device list");
+  assert.equal(deviceFieldLabel("device"), "Device id");
+  assert.equal(deviceFieldLabel("devices[0].streams[0].bogus", names), "devices[0].streams[0].bogus", "an unknown key shows the path");
+  assert.equal(deviceFieldLabel("network.hostname"), "network.hostname");
 });

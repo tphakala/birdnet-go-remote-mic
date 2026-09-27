@@ -89,9 +89,11 @@ function formatCertTime(iso: string): string {
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 
 // updateErrorText says why an update request failed: the appliance's own
-// reason for a refusal (see refusalText), or the error's message.
+// reason for a refusal (see refusalText), or the error's message. Only a
+// problem body's detail counts as a reason; any other body (a proxy's page)
+// is not shown.
 function updateErrorText(err: unknown): string {
-  return err instanceof ApiError ? refusalText(err.status, err.title, err.detail) : apiErrorMessage(err);
+  return err instanceof ApiError ? refusalText(err.status, err.title, err.problem ? err.detail : undefined) : apiErrorMessage(err);
 }
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
@@ -857,18 +859,17 @@ export class SystemView {
     const problem = firstProblem(err);
     if (problem) {
       const spec = problem.field ? fieldForServerPath(problem.field) : null;
-      const reason = problem.reason;
       if (spec) {
         this.notifyFields.get(spec.key)?.classList.add("invalid");
         const input = this.notifyInputs.get(spec.key);
         input?.setAttribute("aria-invalid", "true");
         const errEl = document.getElementById(`sys-notify-${spec.key}-err`);
-        if (errEl) errEl.textContent = reason;
+        if (errEl) errEl.textContent = problem.reason;
         input?.focus();
         return;
       }
       if (this.notifyErrorEl) {
-        this.notifyErrorEl.textContent = reason;
+        this.notifyErrorEl.textContent = problem.reason;
         return;
       }
     }

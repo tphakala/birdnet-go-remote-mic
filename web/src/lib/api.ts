@@ -23,15 +23,47 @@ export class ApiError extends Error {
   public title: string;
   public detail?: string;
   public errors?: ValidationErrorItem[];
+  // problem is true when the error came from a JSON error body (the
+  // appliance's RFC 9457 problems), whose detail is written for people;
+  // otherwise detail holds whatever the response body was (a proxy's HTML
+  // error page, say), which apiErrorMessage does not show.
+  public problem: boolean;
 
-  constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[]) {
+  constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[], problem = false) {
     super(detail || title);
     this.name = "ApiError";
     this.status = status;
     this.title = title;
     this.detail = detail;
     this.errors = errors;
+    this.problem = problem;
   }
+}
+
+// apiErrorMessage reduces any thrown value to a short human string. An
+// ApiError shows its problem detail, which says what went wrong (problem
+// titles are generic: "bad request", "internal error"), else its title, else
+// its status; any other Error its message, and anything else its string form.
+// Shared so the save and PATCH catch blocks map failures the same way.
+export function apiErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) return (err.problem && err.detail) || err.title || `HTTP ${err.status}`;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+// FieldProblem is one validation problem from a rejected request: the field
+// it names, if any, and why it was refused.
+export type FieldProblem = ValidationErrorItem & { reason: string };
+
+// firstProblem is the first validation problem an ApiError carries, its
+// reason defaulting to the problem title when the item has none, or null for
+// any other failure. Callers show it on the field, the form or in a toast, so
+// every one keeps the same fallback.
+export function firstProblem(err: unknown): FieldProblem | null {
+  if (!(err instanceof ApiError)) return null;
+  const item = err.errors?.[0];
+  if (!item) return null;
+  return { field: item.field, reason: item.reason ?? err.title };
 }
 
 export class ApiClient {
@@ -88,13 +120,15 @@ export class ApiClient {
         const prob = (await res.json()) as ValidationProblem;
         throw new ApiError(
           prob.status || res.status,
-          prob.title || res.statusText,
+          prob.title || res.statusText || `HTTP ${res.status}`,
           prob.detail,
-          prob.errors
+          prob.errors,
+          true,
         );
       }
       const text = await res.text();
-      throw new ApiError(res.status, res.statusText, text);
+      // statusText is empty over HTTP/2, so fall back to the status code.
+      throw new ApiError(res.status, res.statusText || `HTTP ${res.status}`, text);
     }
 
     if (isJson) {

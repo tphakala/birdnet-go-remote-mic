@@ -1,4 +1,4 @@
-import { api } from "../lib/api.ts";
+import { api, apiErrorMessage } from "../lib/api.ts";
 import { showToast } from "./toast.ts";
 import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
 import { announce } from "../lib/ui.ts";
@@ -54,8 +54,7 @@ export async function triggerApplianceRestart(): Promise<void> {
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    showToast(`Restart request failed: ${errorMsg}`, "error");
+    showToast(`Restart request failed: ${apiErrorMessage(err)}`, "error");
     restarting = false;
     return;
   }

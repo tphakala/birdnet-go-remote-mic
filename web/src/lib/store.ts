@@ -1,4 +1,4 @@
-import { api, ApiError, type ApiClient } from "./api.ts";
+import { api, ApiError, apiErrorMessage, type ApiClient } from "./api.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
 import { getToken, setToken } from "./auth.ts";
@@ -187,8 +187,7 @@ export class AppStore extends Emitter<StoreEvents> {
       if (err instanceof ApiError && err.status === 401) {
         return { ok: false, message: "That token was rejected. Check it and try again." };
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, message: `Could not reach the appliance: ${msg}` };
+      return { ok: false, message: `Could not reach the appliance: ${apiErrorMessage(err)}` };
     }
     this.loginPending = false;
     this.emit("authok");
