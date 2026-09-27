@@ -176,7 +176,8 @@ async function problemError(res: Response, isProblem: boolean): Promise<ApiError
     // Release the unread body; cancel() rejects on an errored stream.
     void res.body?.cancel().catch(() => {});
   }
-  if (typeof parsed !== "object" || parsed === null) return new ApiError(res.status, fallback);
+  // RFC 9457 problem details are a JSON object; an array is not one.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return new ApiError(res.status, fallback);
   const prob = parsed as Record<string, unknown>;
   // The status is the response's: a body's own status field is not trusted
   // to classify the failure.

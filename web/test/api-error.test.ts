@@ -95,10 +95,13 @@ test("an error body labelled JSON that does not parse keeps only its status", as
   assert.equal(apiErrorMessage(unauthorized), "the access token was not accepted", "a 401 reads the same whatever its body");
 });
 
-test("a problem body that is not an object keeps only its status", async () => {
-  const err = await failWith(new Response("null", { status: 500, statusText: "", headers: { "Content-Type": "application/problem+json" } }));
-  assert.ok(err instanceof ApiError);
-  assert.equal(apiErrorMessage(err), "HTTP 500");
+test("a problem body that is not an object keeps only its status and is not a refusal", async () => {
+  for (const body of ["null", "[]", '[{"title":"Refused"}]', '"text"', "42"]) {
+    const err = await failWith(new Response(body, { status: 500, statusText: "", headers: { "Content-Type": "application/problem+json" } }));
+    assert.ok(err instanceof ApiError, body);
+    assert.equal(apiErrorMessage(err), "HTTP 500", body);
+    assert.equal(isRefusal(err), false, body);
+  }
 });
 
 test("a success body labelled JSON that does not parse is an unknown outcome that quotes nothing", async () => {
