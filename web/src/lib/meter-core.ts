@@ -402,8 +402,10 @@ export class MeterController implements Animator {
     if (this.reducedMotion || needleSettled(this.needle)) return false;
     // While the needle holds its peak nothing moves, so rather than a frame
     // per display refresh the meter sleeps until the hold ends. A pending
-    // wake is kept even when a louder peak extends the hold: it then fires
-    // early, and this frame arms the rest, so a peak costs no timer calls.
+    // wake is kept even when a louder peak extends the hold, so a peak
+    // neither clears nor sets a timer when it arrives; the kept wake fires
+    // at the old end, and that frame arms one timer for the latest end,
+    // however many extensions landed before it.
     const holding = this.needle.holdUntil - now;
     if (holding > 0) {
       if (!this.frames.hasTimedWake(this)) this.frames.wakeAfter(this, holding);

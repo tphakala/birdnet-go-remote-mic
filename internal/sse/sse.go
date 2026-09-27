@@ -39,7 +39,7 @@ type Source interface {
 // The Handler subscribes to such a source only when the request's ?events=
 // filter allows at least one of them, so a producer that works only while it
 // has a subscriber (the levels hub marshals and broadcasts only then, see
-// Hub.Run at internal/levels/levels.go:313) stays idle for a client that did
+// Hub.Run at internal/levels/levels.go:313 and :333) stays idle for a client that did
 // not ask for its events. A Source that is not Named is always subscribed.
 type Named interface {
 	EventNames() []string
@@ -110,7 +110,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Ask a reverse proxy not to buffer the stream (nginx documents this
 	// header; other proxies NOT MEASURED): buffered, a quiet stream's
 	// heartbeats never reach the client, whose watchdog then drops a live
-	// connection (web/src/lib/sse.ts:134).
+	// connection (armHeartbeat, web/src/lib/sse.ts:133-146).
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 

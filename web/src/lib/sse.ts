@@ -39,6 +39,13 @@ export const HEARTBEAT_TIMEOUT_MS = 30_000;
 export const RECONNECT_DELAY_MS = 1_000;
 export const RECONNECT_MAX_MS = 10_000;
 
+// discardBody releases a response body the client will not read, so the
+// connection is not left open; cancel() rejects when the stream is already
+// errored, which is swallowed.
+function discardBody(res: Response): void {
+  void res.body?.cancel().catch(() => {});
+}
+
 export class SSEClient {
   private url: string;
   private readonly deps: SSEDeps;
@@ -174,7 +181,7 @@ export class SSEClient {
         // the stream now: this loop must not act on a stale answer (a 401
         // here would stop the new stream).
         if (gen !== this.generation) {
-          void response.body?.cancel().catch(() => {});
+          discardBody(response);
           return;
         }
 
@@ -182,7 +189,7 @@ export class SSEClient {
           // Release the unread body so the rejected connection is not left open.
           // cancel() rejects when the stream is already errored; swallow that so
           // it does not surface as an unhandled rejection.
-          void response.body?.cancel().catch(() => {});
+          discardBody(response);
           if (used === this.token) {
             // The appliance rejects the token in force. Reconnecting on a timer
             // would hammer it with the same rejected credential every 1..10 s,
@@ -229,12 +236,15 @@ export class SSEClient {
             announced = true;
             this.resetHeartbeat();
             this.dispatch("connected", null);
-            if (gen !== this.generation) break;
           }
 
           // SSE allows CRLF and CR line endings as well as LF.
           let text = decoder.decode(value, { stream: true });
-          if (skipLF && text.startsWith("\n")) text = text.slice(1);
+          if (skipLF && text !== "") {
+            // Only the one LF right after the CR belongs to it.
+            if (text.startsWith("\n")) text = text.slice(1);
+            skipLF = false;
+          }
           if (text !== "") skipLF = text.endsWith("\r");
           // The appliance writes LF only, so most chunks skip the scan.
           buffer += text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
@@ -277,8 +287,8 @@ export class SSEClient {
     }
   }
 
-  // parseMessage dispatches one message and reports whether it was an event
-  // (a heartbeat or a data frame) rather than a comment.
+  // parseMessage dispatches one message and reports whether it carried a
+  // heartbeat or data (a comment, or a line with neither, does not count).
   private parseMessage(raw: string): boolean {
     let eventName = "message";
     let dataStr = "";

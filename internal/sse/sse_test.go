@@ -310,15 +310,16 @@ func TestHandlerHeartbeatSurvivesFilter(t *testing.T) {
 func TestHandlerSkipsFilteredNamedSource(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		name      string
 		query     string
 		wantNamed int
 	}{
-		{"?events=" + evNotification, 0},
-		{"?events=" + evLevels, 1},
-		{"", 1},
+		{"other events only", "?events=" + evNotification, 0},
+		{"its event", "?events=" + evLevels, 1},
+		{"no filter", "", 1},
 	}
 	for _, tc := range tests {
-		t.Run(tc.query, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			named := namedSource{newFakeSource(4), []string{evLevels}}
 			h := &handler{sources: []Source{named}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
@@ -425,7 +426,7 @@ func TestHandlerCancelUnsubscribesSources(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, http.NoBody)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -479,9 +480,6 @@ func TestServeHTTPEndsStreamOnEventWriteOrFlushError(t *testing.T) {
 			t.Parallel()
 			fake := newFakeSource(4)
 			h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
-			// ServeHTTP derives its own cancellable context from the request, so
-			// it tears down the forward goroutine on return even for this direct
-			// (server-less) call.
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
 
 			done := make(chan struct{})
@@ -503,26 +501,42 @@ func TestServeHTTPEndsStreamOnEventWriteOrFlushError(t *testing.T) {
 
 func TestServeHTTPEndsStreamWhenTheOpenCommentFails(t *testing.T) {
 	t.Parallel()
-	fake := newFakeSource(1)
-	// The first write after the headers is the open comment.
-	cw := &ctrlWriter{writeErr: errors.New("client gone")}
-	h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
-
-	done := make(chan struct{})
-	go func() { h.ServeHTTP(cw, req); close(done) }()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stream did not end when the open comment failed")
+	tests := []struct {
+		name string
+		cw   *ctrlWriter
+	}{
+		// The first write after the headers is the open comment.
+		{"write", &ctrlWriter{writeErr: errors.New("client gone")}},
+		// The post-header flush succeeds; the open comment's flush fails.
+		{"flush", &ctrlWriter{flushErr: errors.New("flush failed"), flushErrAfter: 1}},
 	}
-	if !fake.wasCancelled() {
-		t.Fatal("source must be unsubscribed when the stream ends")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakeSource(1)
+			h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/events", http.NoBody)
+
+			done := make(chan struct{})
+			go func() { h.ServeHTTP(tc.cw, req); close(done) }()
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("stream did not end when the open comment's %s failed", tc.name)
+			}
+			if !fake.wasCancelled() {
+				t.Fatal("source must be unsubscribed when the stream ends")
+			}
+			if tc.cw.writes > 1 {
+				t.Fatalf("writes = %d, want the open comment at most", tc.cw.writes)
+			}
+		})
 	}
 }
 
 func TestServeHTTPEndsStreamOnHeartbeatWriteError(t *testing.T) {
+	t.Parallel()
 	fake := newFakeSource(1)
 	// The open comment is written; the first heartbeat's write fails.
 	cw := &ctrlWriter{writeErr: errors.New("client gone"), writeErrAfter: 1}
@@ -564,6 +578,7 @@ func TestServeHTTPStopsWhenInitialFlushFails(t *testing.T) {
 }
 
 func TestWriteEventSuccess(t *testing.T) {
+	t.Parallel()
 	cw := &ctrlWriter{}
 	rc := http.NewResponseController(cw)
 	h := &handler{writeTimeout: time.Second}
@@ -584,6 +599,7 @@ func TestWriteEventSuccess(t *testing.T) {
 }
 
 func TestWriteEventReturnsFalseOnError(t *testing.T) {
+	t.Parallel()
 	cw := &ctrlWriter{writeErr: errors.New("boom")}
 	rc := http.NewResponseController(cw)
 	h := &handler{writeTimeout: time.Second}
@@ -597,22 +613,11 @@ func TestWriteEventReturnsFalseOnError(t *testing.T) {
 	}
 }
 
-// discardWriter keeps nothing, so an allocation count sees only the
-// handler's own work. Like net/http's writer it takes a write deadline and
-// reports flush errors, which the ResponseController uses directly.
-type discardWriter struct{ hdr http.Header }
-
-func (d *discardWriter) Header() http.Header              { return d.hdr }
-func (d *discardWriter) Write(b []byte) (int, error)      { return len(b), nil }
-func (d *discardWriter) WriteHeader(int)                  {}
-func (d *discardWriter) FlushError() error                { return nil }
-func (d *discardWriter) SetWriteDeadline(time.Time) error { return nil }
-
 // Pins that writeEvent allocates nothing once its buffer has grown to the
 // event's size. Not parallel: AllocsPerRun counts allocations
 // process-wide.
 func TestWriteEventDoesNotAllocate(t *testing.T) {
-	dw := &discardWriter{hdr: http.Header{}}
+	dw := &probeWriter{hdr: http.Header{}}
 	rc := http.NewResponseController(dw)
 	h := &handler{writeTimeout: time.Second}
 	var buf []byte
@@ -651,7 +656,10 @@ func TestStreamOpensWithACommentAndNoProxyBuffering(t *testing.T) {
 }
 
 // probeWriter is a flushable ResponseWriter (http.Flusher, as the handler
-// requires) that calls onWrite on each write.
+// requires) that keeps nothing, so an allocation count sees only the
+// handler's own work. Like net/http's writer it takes a write deadline and
+// reports flush errors, which the ResponseController uses directly. A
+// non-nil onWrite runs on each write.
 type probeWriter struct {
 	hdr     http.Header
 	onWrite func()
@@ -663,7 +671,9 @@ func (p *probeWriter) Flush()                           {}
 func (p *probeWriter) FlushError() error                { return nil }
 func (p *probeWriter) SetWriteDeadline(time.Time) error { return nil }
 func (p *probeWriter) Write(b []byte) (int, error) {
-	p.onWrite()
+	if p.onWrite != nil {
+		p.onWrite()
+	}
 	return len(b), nil
 }
 

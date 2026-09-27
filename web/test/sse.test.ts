@@ -7,8 +7,17 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import { HEARTBEAT_TIMEOUT_MS, RECONNECT_DELAY_MS, RECONNECT_MAX_MS, SSEClient } from "../src/lib/sse.ts";
+import {
+  HEARTBEAT_TIMEOUT_MS,
+  LEVELS_EVENT,
+  NOTIFICATION_EVENT,
+  RECONNECT_DELAY_MS,
+  RECONNECT_MAX_MS,
+  SSEClient,
+} from "../src/lib/sse.ts";
 import { at, FakeTimers, settle } from "./fixtures.ts";
 
 // Call is one fetch the client made: its URL, and hooks to answer it.
@@ -471,4 +480,36 @@ test("a stop that lands with the first bytes announces nothing", async () => {
   h.client.stop();
   await settle();
   assert.deepEqual(h.events, [], "a stopped stream must not be announced as connected");
+});
+
+test("a CRLF split so its LF arrives alone keeps the blank line after it", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  // CR, then its LF alone, then the blank line's LF that ends the event.
+  body.send('event: levels\r\ndata: {"a":1}\r');
+  body.send("\n");
+  body.send('\nevent: notification\r\ndata: {"c":3}\r\n\r\n');
+  await settle();
+  assert.deepEqual(h.payloads.slice(1), [
+    ["levels", { a: 1 }],
+    ["notification", { c: 3 }],
+  ]);
+  h.client.stop();
+});
+
+// goString reads a string constant from a Go source under internal/, so the
+// event names the UI routes on cannot drift from the ones the appliance sends.
+function goString(file: string, name: string): string {
+  const src = readFileSync(fileURLToPath(new URL(`../../internal/${file}`, import.meta.url)), "utf8");
+  const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(src);
+  if (!m?.[1]) throw new Error(`no string constant ${name} in ${file}`);
+  return m[1];
+}
+
+test("the event names match the appliance's", () => {
+  assert.equal(LEVELS_EVENT, goString("levels/levels.go", "eventName"));
+  assert.equal(NOTIFICATION_EVENT, goString("notify/notify.go", "notificationEvent"));
+  assert.equal("heartbeat", goString("sse/sse.go", "heartbeatName"));
 });

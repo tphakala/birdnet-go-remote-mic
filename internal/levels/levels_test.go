@@ -151,13 +151,14 @@ func (s signalSource) Subscribe() (events <-chan sse.Event, cancel func()) {
 func TestFilteredStreamDoesNotSubscribeTheHub(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
+		name  string
 		query string
 		want  int32
 	}{
-		{"?events=notification", 0},
-		{"", 1},
+		{"other events only", "?events=notification", 0},
+		{"no filter", "", 1},
 	} {
-		t.Run(tc.query, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := NewHub()
 			h.Meter(nameGarden, 1)
