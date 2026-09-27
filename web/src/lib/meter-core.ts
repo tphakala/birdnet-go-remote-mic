@@ -10,6 +10,10 @@ export const FLOOR_DB = -60;
 export const PEAK_HOLD_MS = 750;
 // PEAK_DECAY_DB_PER_S is how fast the needle falls once the hold is over.
 export const PEAK_DECAY_DB_PER_S = 30;
+// READOUT_INTERVAL_MS is the shortest time between two readout changes while
+// the needle falls, so the digits stay readable instead of changing on every
+// display frame.
+export const READOUT_INTERVAL_MS = 100;
 
 // PeakNeedle is the needle's level, the time until which it holds there, and
 // the time it was last brought up to date (null before the first update). All
@@ -220,6 +224,9 @@ export class MeterController implements Animator {
   private drawnRms = FLOOR_DB;
   private drawnPeak = FLOOR_DB;
   private shownReadout = "";
+  // The needle level behind shownReadout, and the frame time it was written.
+  private shownReadoutDb = FLOOR_DB;
+  private readoutAt = Number.NEGATIVE_INFINITY;
 
   private paused = false;
   private destroyed = false;
@@ -296,6 +303,7 @@ export class MeterController implements Animator {
   public frame(now: number): boolean {
     if (!this.reducedMotion) advanceNeedle(this.needle, now);
     this.draw();
+    this.syncReadout(now);
     return !this.reducedMotion && !needleSettled(this.needle);
   }
 
@@ -313,10 +321,21 @@ export class MeterController implements Animator {
     this.drawnRms = this.rms;
     this.drawnPeak = peakDb;
     this.ports.draw(this.rms, peakDb);
-    const text = formatReadout(peakDb);
-    if (text !== this.shownReadout) {
-      this.shownReadout = text;
-      this.ports.showReadout(text);
-    }
+  }
+
+  // syncReadout writes the dB readout when its text changed. A rise shows at
+  // once; a fall while the needle glides waits until READOUT_INTERVAL_MS after
+  // the last write, and the frames of the glide carry it out. The settled value
+  // and every reduced-motion step (already one per level event) show at once.
+  private syncReadout(now: number): void {
+    const db = this.needle.db;
+    const text = formatReadout(db);
+    if (text === this.shownReadout) return;
+    const held = !(db > this.shownReadoutDb) && !this.reducedMotion && !needleSettled(this.needle);
+    if (held && now - this.readoutAt < READOUT_INTERVAL_MS) return;
+    this.shownReadout = text;
+    this.shownReadoutDb = db;
+    this.readoutAt = now;
+    this.ports.showReadout(text);
   }
 }

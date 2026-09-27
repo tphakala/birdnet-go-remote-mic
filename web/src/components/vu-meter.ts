@@ -20,6 +20,16 @@ try {
   /* no MutationObserver: keep the theme detected at load */
 }
 
+// The meter is 36 segments over the scale from FLOOR_DB to 0 dBFS, each lit in
+// the colour of its level band: green, amber from -12, red from -3.
+const SEGMENTS = 36;
+const SEGMENT_COLORS: readonly string[] = Array.from({ length: SEGMENTS }, (_, i) => {
+  const segDb = FLOOR_DB - (i / SEGMENTS) * FLOOR_DB;
+  if (segDb > -3) return "rgba(239, 68, 68, 0.95)"; // Red
+  if (segDb > -12) return "rgba(245, 158, 11, 0.9)"; // Amber
+  return "rgba(16, 185, 129, 0.85)"; // Green
+});
+
 // meterFrames is the one frame loop every meter draws on. It runs only while a
 // meter has something to animate, and the dashboard suspends it while another
 // view shows.
@@ -124,33 +134,21 @@ export class VUMeter {
     ctx.fillStyle = trackBg;
     ctx.fillRect(0, 0, w, h);
 
-    // Segmented meter settings
-    const numSegments = 36;
     const gap = 2;
-    const segWidth = (w - (numSegments - 1) * gap) / numSegments;
+    const segWidth = (w - (SEGMENTS - 1) * gap) / SEGMENTS;
+    const activeSegments = Math.round(levelRatio(rmsDb) * SEGMENTS);
 
-    const rmsRatio = levelRatio(rmsDb);
-    const activeSegments = Math.round(rmsRatio * numSegments);
-
-    for (let i = 0; i < numSegments; i++) {
-      const x = i * (segWidth + gap);
-      const segRatio = i / numSegments;
-      const segDb = FLOOR_DB - segRatio * FLOOR_DB;
-
-      let color = "rgba(16, 185, 129, 0.85)"; // Green
-      if (segDb > -12 && segDb <= -3) {
-        color = "rgba(245, 158, 11, 0.9)"; // Amber
-      } else if (segDb > -3) {
-        color = "rgba(239, 68, 68, 0.95)"; // Red
-      }
-
-      if (i < activeSegments) {
+    // Neighbouring segments mostly share a colour, so fillStyle is set only
+    // when it changes. The last value is local to this paint, so nothing
+    // assumes the context kept it from an earlier one.
+    let fill = "";
+    for (let i = 0; i < SEGMENTS; i++) {
+      const color = i < activeSegments ? (SEGMENT_COLORS[i] ?? unlitSeg) : unlitSeg;
+      if (color !== fill) {
         ctx.fillStyle = color;
-      } else {
-        ctx.fillStyle = unlitSeg;
+        fill = color;
       }
-
-      ctx.fillRect(x, 0, segWidth, h);
+      ctx.fillRect(i * (segWidth + gap), 0, segWidth, h);
     }
 
     // Peak hold needle

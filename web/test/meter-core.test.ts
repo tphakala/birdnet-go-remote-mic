@@ -20,6 +20,7 @@ import {
   PEAK_DECAY_DB_PER_S,
   PEAK_HOLD_MS,
   raisePeak,
+  READOUT_INTERVAL_MS,
   type Animator,
   type FramePorts,
 } from "../src/lib/meter-core.ts";
@@ -637,4 +638,73 @@ test("a meter off the frame loop does not lose a quieter peak to a stale needle"
   h.frames.setSuspended(false);
   h.step();
   assert.deepEqual(h.draws.at(-1), [FLOOR_DB, -40]);
+});
+
+test("the readout updates at most every 100 ms while the needle falls", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  const start = h.readouts.length;
+  // Glide the needle down at 60 Hz for one second past the hold.
+  const writes: number[] = [];
+  for (let t = PEAK_HOLD_MS; t <= PEAK_HOLD_MS + 1000; t += 1000 / 60) {
+    const before = h.readouts.length;
+    h.f.step(t);
+    if (h.readouts.length > before) writes.push(t);
+  }
+  assert.ok(h.readouts.length - start >= 9, `the falling readout must keep updating, got ${h.readouts.length - start} writes`);
+  for (const [i, t] of writes.entries()) {
+    if (i === 0) continue;
+    const gap = t - at(writes, i - 1);
+    assert.ok(gap >= READOUT_INTERVAL_MS - 1e-6, `readout written ${gap.toFixed(1)} ms after the last, want at least ${READOUT_INTERVAL_MS}`);
+  }
+});
+
+test("the settled readout is always written", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, FLOOR_DB + 1);
+  h.step();
+  // Frames 16 ms apart: the needle reaches the floor well inside a throttle
+  // window after the last write.
+  let t = PEAK_HOLD_MS;
+  while (h.frames.running()) {
+    t += 16;
+    h.f.step(t);
+  }
+  assert.equal(h.readouts.at(-1), "-inf", "the final value must be shown even inside the throttle window");
+});
+
+test("a new peak during the throttle window shows at once", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -40);
+  h.step();
+  assert.equal(h.readouts.at(-1), "-40.0 dBFS");
+  // 20 ms later, well inside the window, a louder peak arrives.
+  h.setClock(20);
+  h.meter.setLevels(-99, -10);
+  h.step();
+  assert.equal(h.readouts.at(-1), "-10.0 dBFS");
+});
+
+test("with reduced motion every readout change is written at once", () => {
+  const h = meterHarness({ reducedMotion: true });
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  // Level events 40 ms apart, well inside the throttle window, during the fall.
+  let t = PEAK_HOLD_MS;
+  for (let i = 0; i < 5; i++) {
+    t += 40;
+    h.setClock(t);
+    h.meter.setLevels(-99, -99);
+    if (h.frames.running()) h.step();
+    assert.equal(h.readouts.at(-1), formatReadout(curve(-20, t)), `event at ${t} ms must show its value`);
+  }
 });
