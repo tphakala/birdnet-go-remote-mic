@@ -1,12 +1,11 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, VUMeter } from "../components/vu-meter.ts";
-import { WAITING_READOUT, WAITING_TITLE } from "../lib/meter-core.ts";
 import { router } from "../lib/router.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusOnOrDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
@@ -428,29 +427,16 @@ export class DashboardView {
     // link) clears them too, after LEVELS_STALE_MS (see LevelsWatch).
     const watch = new LevelsWatch({ timers: window, now: () => performance.now(), clear: () => this.clearMeters() });
     followDashboardRoute(router, {
-      setFramesSuspended: (suspended) => {
-        meterFrames.setSuspended(suspended);
-        watch.setShown(!suspended);
-      },
+      setFramesSuspended: (suspended) => meterFrames.setSuspended(suspended),
       setLevelsWanted: (wanted) => store.setLevelsWanted(wanted),
+      setWatched: (shown) => watch.setShown(shown),
     });
     followLevels(store, watch);
     store.on("levels", (levels) => {
-      for (const entry of this.cards.values()) {
-        if (!entry.live) continue;
-        const dl = levels.get(entry.device.name);
-        if (!dl) {
-          // Its meter left the appliance's levels (the pump stopped): its
-          // last level is not current, whatever the card says until the
-          // next poll.
-          entry.live.meters.forEach((m) => m.clearLevels());
-          continue;
-        }
-        for (const ch of dl.channels) {
-          const meter = entry.live.meters[ch.channel];
-          if (meter) meter.setLevels(ch.rmsDbfs, ch.peakDbfs, ch.clipped);
-        }
-      }
+      routeLevels(this.liveTargets(), levels, {
+        set: (m, rms, peak, clipped) => m.setLevels(rms, peak, clipped),
+        clear: (m) => m.clearLevels(),
+      });
     });
     store.on("available", (available) => {
       this.renderAvailable(available);
@@ -463,6 +449,13 @@ export class DashboardView {
     store.on("loaderror", (failure) => {
       if (failure.coreFailed) this.renderLoadError(failure.message);
     });
+  }
+
+  // liveTargets lists the serving cards' meters for routeLevels.
+  private *liveTargets(): Generator<LevelsTarget<VUMeter>> {
+    for (const entry of this.cards.values()) {
+      if (entry.live) yield { name: entry.device.name, meters: entry.live.meters };
+    }
   }
 
   // clearMeters puts every meter in its waiting state when levels stop
@@ -500,7 +493,7 @@ export class DashboardView {
   // when the shape changed, then syncs every field through the one write path. It
   // then removes gone cards, orders the rack with a diff (no DOM move in steady
   // state, which is what keeps keyboard focus from being dropped every poll),
-  // rebuilds the name index for the levels stream, and reconciles open forms.
+  // and reconciles open forms.
   private reconcile(): void {
     if (!this.rack) return;
     // Capture the narrowed rack: the intervening syncCard/mount calls below make
@@ -1231,15 +1224,16 @@ export class DashboardView {
       canvas.height = 22;
       canvasContainer.appendChild(canvas);
       const stats = elem("div", "meter-stats");
-      const dbReadout = elem("span", "db-readout mono", WAITING_READOUT);
-      dbReadout.title = WAITING_TITLE;
+      // The meter writes its readout, the waiting one first (MeterController).
+      const dbReadout = elem("span", "db-readout mono");
       dbReadout.setAttribute("aria-hidden", "true");
       const clipBtn = elem("button", "clip-latch-btn", "CLIP");
       clipBtn.setAttribute("type", "button");
       clipBtn.setAttribute("aria-label", `Channel ${chNum} clip indicator, click to clear`);
       // The latch sees only the levels this page receives, which stop 30 s
-      // after the dashboard does (LEVELS_GRACE_MS).
-      clipBtn.title = "Latches clipping seen while the dashboard is open. Click to clear.";
+      // after another view shows (LEVELS_GRACE_MS) and 60 s after the tab is
+      // hidden (HIDDEN_STREAM_GRACE_MS).
+      clipBtn.title = "Latches clipping seen while the dashboard is showing.";
       // Focus key so a rebuild that moves focus can restore it to the same row.
       clipBtn.dataset.focus = `clip-${c}`;
       stats.appendChild(dbReadout);

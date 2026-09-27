@@ -246,9 +246,7 @@ export class AppStore extends Emitter<StoreEvents> {
         // indicator to "Reconnecting" for it; a genuine drop (swapDepth 0) still
         // shows. endTokenSwap restarts the stream so the recovery is not skipped.
         if (this.swapDepth > 0) return;
-        this.state.connected = false;
-        this.state.levels.clear();
-        this.emit("connection", false);
+        this.markStreamDown();
       } else if (eventName === LEVELS_EVENT) {
         // The map holds this event's devices only: a device missing from it
         // (its meter was removed) must not have its last level replayed.
@@ -404,6 +402,15 @@ export class AppStore extends Emitter<StoreEvents> {
     }
   }
 
+  // markStreamDown records that the stream went down: every path that says
+  // so resets the same state (the levels it carried are not current) and
+  // announces it once.
+  private markStreamDown(): void {
+    this.state.connected = false;
+    this.state.levels.clear();
+    this.emit("connection", false);
+  }
+
   // dropLevels takes levels off the stream and announces it, so the meters
   // stop showing the last ones.
   private dropLevels(): void {
@@ -423,11 +430,7 @@ export class AppStore extends Emitter<StoreEvents> {
     // does: otherwise connected stays true through a login prompt, and the
     // notifications fallback after the login would take a stream that never
     // came back for a live one.
-    if (this.state.connected) {
-      this.state.connected = false;
-      this.state.levels.clear();
-      this.emit("connection", false);
-    }
+    if (this.state.connected) this.markStreamDown();
   }
 
   // setPageHidden pauses the poll while the page is hidden (a background tab or
@@ -470,11 +473,7 @@ export class AppStore extends Emitter<StoreEvents> {
       // stop() is silent, so say the stream is down: the notification store
       // drops a pending re-sync retry (the restart's connect re-syncs), and the
       // indicator reads "Reconnecting" until the restarted stream connects.
-      if (this.state.connected) {
-        this.state.connected = false;
-        this.state.levels.clear();
-        this.emit("connection", false);
-      }
+      if (this.state.connected) this.markStreamDown();
     }, HIDDEN_STREAM_GRACE_MS);
   }
 

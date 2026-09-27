@@ -280,7 +280,11 @@ export class MeterController implements Animator {
   // hold (a new bar level) does not re-arm it.
   private wakeFor = 0;
 
+  // Off the frame loop while its row is hidden (pause).
   private paused = false;
+  // Scrolled out of view (setOffscreen): the meter keeps its state and
+  // readout current but skips the canvas paint, the costly part of a frame.
+  private offscreen = false;
   private destroyed = false;
   // With reduced motion the needle does not glide: it holds and falls in
   // steps, one per level event, and each event that changes it draws once.
@@ -291,9 +295,10 @@ export class MeterController implements Animator {
     this.frames = frames;
     this.now = opts.now;
     this.reducedMotion = opts.reducedMotion;
-    // The latch shows unlatched at once, not at the first frame, which waits
-    // while the dashboard is not showing.
+    // The latch and the waiting readout show at once, not at the first
+    // frame, which waits while the dashboard is not showing.
     this.syncClip();
+    this.syncReadout(this.now());
     // The first frame draws the empty track.
     this.frames.wake(this);
   }
@@ -340,6 +345,14 @@ export class MeterController implements Animator {
     if (!this.paused) return;
     this.paused = false;
     this.redraw();
+  }
+
+  // setOffscreen follows whether the meter is scrolled into view. Out of
+  // view it skips its canvas paint; back in view it repaints at once.
+  public setOffscreen(offscreen: boolean): void {
+    if (this.offscreen === offscreen) return;
+    this.offscreen = offscreen;
+    if (!offscreen) this.redraw();
   }
 
   // redraw repaints the meter on the next frame even if its levels did not
@@ -411,6 +424,11 @@ export class MeterController implements Animator {
     this.syncClip();
     const peakDb = this.needle.db;
     if (!this.stale && this.rms === this.drawnRms && peakDb === this.drawnPeak) return;
+    if (this.offscreen) {
+      // Nobody sees it: paint when it is back in view (setOffscreen).
+      this.stale = true;
+      return;
+    }
     this.stale = false;
     this.drawnRms = this.rms;
     this.drawnPeak = peakDb;
@@ -438,7 +456,7 @@ export class MeterController implements Animator {
     const throttled = !this.reducedMotion && !needleSettled(this.needle) && now >= this.needle.holdUntil;
     if (throttled && now - this.readoutAt < READOUT_INTERVAL_MS) return;
     // The level already shown needs no new text (a frame during a hold).
-    if (db === this.shownReadoutDb && this.shownReadout !== "" && this.shownReadout !== WAITING_READOUT) return;
+    if (db === this.shownReadoutDb && this.shownReadout !== WAITING_READOUT) return;
     const text = formatReadout(db);
     if (text === this.shownReadout) return;
     this.shownReadout = text;

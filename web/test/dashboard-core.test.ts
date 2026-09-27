@@ -27,6 +27,7 @@ import {
   rejectionText,
   followDashboardRoute,
   followLevels,
+  routeLevels,
   LEVELS_STALE_MS,
   LevelsWatch,
   captureFormatLabel,
@@ -388,16 +389,17 @@ test("the dashboard follower suspends meters and drops levels off the dashboard"
   followDashboardRoute(router, {
     setFramesSuspended: (s) => calls.push(`frames ${s ? "off" : "on"}`),
     setLevelsWanted: (w) => calls.push(`levels ${w ? "on" : "off"}`),
+    setWatched: (w) => calls.push(`watch ${w ? "on" : "off"}`),
   });
   router.go("dashboard");
   router.go("system");
   router.go("events");
   router.go("dashboard");
   assert.deepEqual(calls, [
-    "frames on", "levels on",
-    "frames off", "levels off",
-    "frames off", "levels off",
-    "frames on", "levels on",
+    "frames on", "levels on", "watch on",
+    "frames off", "levels off", "watch off",
+    "frames off", "levels off", "watch off",
+    "frames on", "levels on", "watch on",
   ]);
 });
 
@@ -491,4 +493,18 @@ test("followLevels feeds the watch from the store's announcements", () => {
   assert.equal(h.clears(), 2, "levels that stop again clear again");
   events.connection(false);
   assert.equal(h.clears(), 3, "a stream going down clears the meters");
+});
+
+test("routeLevels feeds each channel's meter and clears a card the event lacks", () => {
+  const calls: string[] = [];
+  const cards = [
+    { name: "garden", meters: ["g0", "g1"] },
+    { name: "bats", meters: ["b0"] },
+  ];
+  const ch = (channel: number, rmsDbfs: number) => ({ channel, rmsDbfs, peakDbfs: rmsDbfs + 3, clipped: false });
+  routeLevels(cards, new Map([["garden", { channels: [ch(1, -20), ch(0, -30), ch(5, -1)] }]]), {
+    set: (m, rms) => calls.push(`${m} ${rms}`),
+    clear: (m) => calls.push(`${m} clear`),
+  });
+  assert.deepEqual(calls, ["g1 -20", "g0 -30", "b0 clear"], "a channel with no meter is skipped; bats is missing, so cleared");
 });

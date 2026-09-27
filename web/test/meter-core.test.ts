@@ -666,7 +666,7 @@ test("a meter off the frame loop does not lose a quieter peak to a stale needle"
   assert.deepEqual(h.draws.at(-1), [FLOOR_DB, -40]);
 });
 
-test("the readout updates at most every 100 ms while the needle falls", () => {
+test("the readout updates at most every READOUT_INTERVAL_MS while the needle falls", () => {
   const h = meterHarness();
   h.step();
   h.setClock(0);
@@ -942,7 +942,6 @@ test("a cleared meter shows the waiting readout until the next level", () => {
   assert.equal(h.readouts.at(-1), "-25.0 dBFS");
 });
 
-
 test("clearing a meter that is already waiting asks for no frame", () => {
   const h = meterHarness();
   h.step();
@@ -956,4 +955,30 @@ test("clearing a meter that is already waiting asks for no frame", () => {
   // The dashboard clears a meter on every levels event that lacks its device.
   h.meter.clearLevels();
   assert.equal(h.frames.running(), false, "a second clear must not wake the loop");
+});
+
+test("a meter's first level shows even before its first frame", () => {
+  // Built while the loop is suspended (a card rebuilt off the dashboard),
+  // then given silence: the readout must leave the waiting text on resume.
+  const h = meterHarness({ suspended: true });
+  assert.deepEqual(h.readouts, [WAITING_READOUT], "the waiting readout shows at once");
+  h.meter.setLevels(-99, -99);
+  h.frames.setSuspended(false);
+  h.step();
+  assert.equal(h.readouts.at(-1), "-inf");
+});
+
+test("a meter out of view skips its paint, keeps its readout, and repaints when back", () => {
+  const h = meterHarness();
+  h.prime();
+  const painted = h.draws.length;
+  h.meter.setOffscreen(true);
+  h.meter.setLevels(-20, -10);
+  h.step();
+  assert.equal(h.draws.length, painted, "nothing is painted out of view");
+  assert.equal(h.readouts.at(-1), "-10.0 dBFS", "the readout stays current");
+  h.meter.setOffscreen(false);
+  assert.equal(h.frames.running(), true, "coming back into view asks for a frame");
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [-20, -10]);
 });

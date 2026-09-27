@@ -356,10 +356,13 @@ export function rejectedFieldKey(field: string, sent: readonly DeviceConfig[], e
 export interface DashboardShown {
   setFramesSuspended(suspended: boolean): void;
   setLevelsWanted(wanted: boolean): void;
+  // setWatched turns the stale-levels check (LevelsWatch.setShown) on or off.
+  setWatched(shown: boolean): void;
 }
 
-// followDashboardRoute keeps the meters' frame loop and the levels stream in
-// step with the route: both run while the dashboard shows. The router
+// followDashboardRoute keeps the meters' frame loop, the levels stream and
+// the stale-levels check in step with the route: all run while the dashboard
+// shows. The router
 // announces the first route at start-up (init, router.ts:15, emits it), so
 // the state is set from the start.
 export function followDashboardRoute(
@@ -370,7 +373,37 @@ export function followDashboardRoute(
     const onDashboard = view === "dashboard";
     shown.setFramesSuspended(!onDashboard);
     shown.setLevelsWanted(onDashboard);
+    shown.setWatched(onDashboard);
   });
+}
+
+// LevelsTarget is a card's meters as routeLevels feeds them: the device's
+// name (the levels payload's key) and one meter per captured channel.
+export interface LevelsTarget<M> {
+  name: string;
+  meters: readonly M[];
+}
+
+// routeLevels hands one levels event to the cards' meters: each channel's
+// levels to its meter, and a clear to every meter of a card whose device the
+// event lacks (its meter left the appliance's levels, say its capture
+// stopped), so a frozen level does not read as live until the next poll.
+export function routeLevels<M>(
+  cards: Iterable<LevelsTarget<M>>,
+  levels: ReadonlyMap<string, { channels: readonly { channel: number; rmsDbfs: number; peakDbfs: number; clipped: boolean }[] }>,
+  meter: { set(m: M, rms: number, peak: number, clipped: boolean): void; clear(m: M): void },
+): void {
+  for (const card of cards) {
+    const dl = levels.get(card.name);
+    if (!dl) {
+      for (const m of card.meters) meter.clear(m);
+      continue;
+    }
+    for (const ch of dl.channels) {
+      const m = card.meters[ch.channel];
+      if (m !== undefined) meter.set(m, ch.rmsDbfs, ch.peakDbfs, ch.clipped);
+    }
+  }
 }
 
 // LEVELS_STALE_MS is how long the dashboard waits for levels on a live stream

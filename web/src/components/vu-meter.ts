@@ -43,6 +43,22 @@ reducedMotionQuery?.addEventListener?.("change", (e) => {
   for (const m of liveMeters) m.setReducedMotion(e.matches);
 });
 
+// A meter scrolled out of view (a card off a phone screen, a row inside a
+// scrolled console) skips its canvas paint until it comes back, so it does
+// not repaint at the display rate where nobody sees it; its readout stays
+// current. One observer serves every meter; without IntersectionObserver
+// every meter counts as in view.
+const meterByCanvas = new WeakMap<Element, VUMeter>();
+const viewObserver: IntersectionObserver | null = (() => {
+  try {
+    return new IntersectionObserver((entries) => {
+      for (const e of entries) meterByCanvas.get(e.target)?.setOffscreen(!e.isIntersecting);
+    });
+  } catch {
+    return null;
+  }
+})();
+
 // meterFrames is the one frame loop every meter draws on. It runs only while a
 // meter has something to animate, and the dashboard suspends it while another
 // view shows.
@@ -93,7 +109,9 @@ export class VUMeter {
           if (!this.peakValEl) return;
           this.peakValEl.textContent = text;
           // Say what "--" means to a pointer user; the readout is aria-hidden.
-          this.peakValEl.title = text === WAITING_READOUT ? WAITING_TITLE : "";
+          // Written on change only: the text changes up to ten times a second.
+          const title = text === WAITING_READOUT ? WAITING_TITLE : "";
+          if (this.peakValEl.title !== title) this.peakValEl.title = title;
         },
       },
       meterFrames,
@@ -102,6 +120,8 @@ export class VUMeter {
         now: () => performance.now(),
       },
     );
+    meterByCanvas.set(this.canvas, this);
+    viewObserver?.observe(this.canvas);
   }
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
@@ -134,7 +154,12 @@ export class VUMeter {
 
   public destroy(): void {
     liveMeters.delete(this);
+    viewObserver?.unobserve(this.canvas);
     this.controller.destroy();
+  }
+
+  public setOffscreen(offscreen: boolean): void {
+    this.controller.setOffscreen(offscreen);
   }
 
   // showClip shows the latch on the clip button: the lit style, and
