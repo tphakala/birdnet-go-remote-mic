@@ -341,6 +341,8 @@ export class MeterController implements Animator {
     this.rms = FLOOR_DB;
     this.needle.db = FLOOR_DB;
     this.needle.holdUntil = 0;
+    // The hold is over, so a timed wake for its end has nothing left to do.
+    this.frames.remove(this);
     if (!this.paused && !this.destroyed) this.frames.wake(this);
   }
 
@@ -394,7 +396,9 @@ export class MeterController implements Animator {
     const db = this.needle.db;
     // The throttle is checked before the text is formatted, since most frames
     // of a glide fall inside it.
-    const held = !(db > this.shownReadoutDb) && !this.reducedMotion && !needleSettled(this.needle);
+    // A needle holding its peak is not falling, so its value shows at once:
+    // no frame will come to carry a held-back write out until the hold ends.
+    const held = !(db > this.shownReadoutDb) && !this.reducedMotion && !needleSettled(this.needle) && now >= this.needle.holdUntil;
     if (held && now - this.readoutAt < READOUT_INTERVAL_MS) return;
     const text = formatReadout(db);
     if (text === this.shownReadout) return;

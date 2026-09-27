@@ -816,3 +816,40 @@ test("with reduced motion a silent level on a still needle asks for no frame", (
     assert.equal(h.frames.running(), false, `a silent event at ${t} ms during the hold must not wake the loop`);
   }
 });
+
+test("a readout change inside the throttle window is shown when a hold starts", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -10);
+  h.step();
+  h.endHold();
+  // Glide until a falling value has just been written.
+  let t = PEAK_HOLD_MS;
+  let writes = h.readouts.length;
+  while (h.readouts.length === writes) {
+    t += 16;
+    h.f.step(t);
+  }
+  writes = h.readouts.length;
+  const shown = at(h.readouts, writes - 1);
+  // 16 ms later, inside the throttle window, a peak just under the shown
+  // value starts a new hold: the needle stops there, and so must the text.
+  const peak = Number.parseFloat(shown) - 0.2;
+  h.setClock(t + 16);
+  h.meter.setLevels(-99, peak);
+  h.f.step(t + 16);
+  assert.equal(h.readouts.at(-1), formatReadout(peak), "the held value must show at once, not after the hold");
+});
+
+test("clearing levels cancels a timed wake for the end of a hold", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  assert.equal(h.f.timers.pending().length, 1);
+  h.meter.clearLevels();
+  assert.equal(h.f.timers.pending().length, 0, "the cleared needle has no hold left to wait for");
+});
+
