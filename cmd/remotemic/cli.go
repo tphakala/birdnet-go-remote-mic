@@ -37,14 +37,15 @@ var (
 // configEnv names the environment variable that supplies the config path when
 // --config is not given. The installed unit sets it for the appliance; a
 // command run by hand finds the same file through the unit (see resolveConfig).
-const configEnv = "REMOTEMIC_CONFIG"
+const configEnv = service.ConfigEnv
 
 // configDefault is the config file a command uses when no flag, environment
 // variable, or installed unit names one: config.yaml in the working directory.
 const configDefault = "config.yaml"
 
 // installedConfig reports the installed appliance unit's config path and
-// account. A variable so tests never read the host's real units.
+// account, or why they cannot be known. A variable so tests never read the
+// host's real units.
 var installedConfig = service.InstalledConfig
 
 // configSource says where a command's config path came from.
@@ -80,16 +81,24 @@ func configFlag(fs *flag.FlagSet) *string {
 // then config.yaml in the working directory. The unit comes before the working
 // directory so a command run by hand on an installed appliance acts on the
 // file the appliance uses, from any directory and as any account, rather than
-// on a stray config.yaml. When the unit wins over a config.yaml that exists
-// here, a note on stderr says which file is used.
-func resolveConfig(flagVal string, stderr io.Writer) configRef {
+// on a stray config.yaml. When the unit is installed but its config cannot be
+// known from its files, resolution fails rather than guessing, unless --config
+// or $REMOTEMIC_CONFIG names the file. When the unit wins over a config.yaml
+// that exists here, a note on stderr says which file is used.
+//
+// The unit is read even when --config or $REMOTEMIC_CONFIG decides the path,
+// because the permission hint compares the chosen path with the unit's.
+func resolveConfig(flagVal string, stderr io.Writer) (configRef, error) {
 	var ref configRef
-	ref.unitPath, ref.unitUser = installedConfig()
+	var unitErr error
+	ref.unitPath, ref.unitUser, unitErr = installedConfig()
 	switch env := os.Getenv(configEnv); {
 	case flagVal != "":
 		ref.path, ref.source = flagVal, fromFlag
 	case env != "":
 		ref.path, ref.source = env, fromEnv
+	case unitErr != nil:
+		return ref, fmt.Errorf("cannot tell which config %s uses (%w); pass --config", service.DefaultUnitName, unitErr)
 	case ref.unitPath != "":
 		ref.path, ref.source = ref.unitPath, fromUnit
 		if _, err := os.Stat(configDefault); err == nil {
@@ -99,7 +108,7 @@ func resolveConfig(flagVal string, stderr io.Writer) configRef {
 	default:
 		ref.path, ref.source = configDefault, fromCwd
 	}
-	return ref
+	return ref, nil
 }
 
 // out writes formatted CLI text to w, discarding the write error: output to
@@ -232,7 +241,7 @@ func runServe(args []string, stderr io.Writer) error {
 // --check switch, and the optional pprof listen address. It is separated from
 // runServe so the flag-name-to-override-key mapping is unit-testable without
 // starting the appliance. Stray positional arguments are rejected rather than
-// silently ignored.
+// silently ignored, and a config that cannot be resolved is an error.
 func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveOverrides, check bool, pprofAddr string, err error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -263,7 +272,11 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 		set:        make(map[string]bool),
 	}
 	fs.Visit(func(f *flag.Flag) { ov.set[f.Name] = true })
-	return resolveConfig(*path, stderr).path, ov, *checkFlag, *pprof, nil
+	ref, err := resolveConfig(*path, stderr)
+	if err != nil {
+		return "", serveOverrides{}, false, "", err
+	}
+	return ref.path, ov, *checkFlag, *pprof, nil
 }
 
 // runDevices routes the devices command group and returns the exit code.

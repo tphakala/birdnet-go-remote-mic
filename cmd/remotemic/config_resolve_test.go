@@ -15,11 +15,19 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 )
 
+// Command words the resolution tests run.
+const (
+	subGet      = "get"
+	subGenerate = "generate"
+	subSet      = "set"
+	argForce    = "-force"
+)
+
 // stubInstalledConfig makes the installed unit name path and user.
 func stubInstalledConfig(t *testing.T, path, user string) {
 	t.Helper()
 	prev := installedConfig
-	installedConfig = func() (string, string) { return path, user }
+	installedConfig = func() (string, string, error) { return path, user, nil }
 	t.Cleanup(func() { installedConfig = prev })
 }
 
@@ -41,7 +49,10 @@ func TestResolveConfigPrecedence(t *testing.T) {
 			stubInstalledConfig(t, tc.unit, service.DefaultUser)
 			t.Setenv(configEnv, tc.env)
 			t.Chdir(t.TempDir())
-			ref := resolveConfig(tc.flag, &bytes.Buffer{})
+			ref, err := resolveConfig(tc.flag, &bytes.Buffer{})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if ref.path != tc.wantPath || ref.source != tc.wantSource {
 				t.Errorf("got %q (source %d), want %q (source %d)", ref.path, ref.source, tc.wantPath, tc.wantSource)
 			}
@@ -100,7 +111,7 @@ func TestTokenGetUsesInstalledConfig(t *testing.T) {
 // installed config and leaves the stray ./config.yaml untouched.
 func TestTokenGenerateUsesInstalledConfig(t *testing.T) {
 	unitCfg := installedFixture(t)
-	code, out, errOut := runCLI("token", "generate", "-force", "-quiet")
+	code, out, errOut := runCLI(cmdToken, subGenerate, argForce, "-quiet")
 	if code != 0 {
 		t.Fatalf("exit %d stderr %q", code, errOut)
 	}
@@ -186,5 +197,38 @@ func TestInstalledConfigOr(t *testing.T) {
 	stubInstalledConfig(t, "", "")
 	if got := installedConfigOr(""); got != service.DefaultConfigPath {
 		t.Errorf("without a unit: got %q, want %q", got, service.DefaultConfigPath)
+	}
+}
+
+// TestResolveConfigUnitError asserts an installed unit whose config cannot be
+// known stops every command that has no --config or $REMOTEMIC_CONFIG,
+// instead of falling back to ./config.yaml, and is ignored when either names
+// the file.
+func TestResolveConfigUnitError(t *testing.T) {
+	prev := installedConfig
+	installedConfig = func() (string, string, error) { return "", "", errors.New("ExecStart= is not the installer's") }
+	t.Cleanup(func() { installedConfig = prev })
+	t.Setenv(configEnv, "")
+	t.Chdir(t.TempDir())
+	seedConfigWithToken(t, configDefault, tokenOld)
+	want := "cannot tell which config " + service.DefaultUnitName + " uses"
+
+	for _, args := range [][]string{
+		{cmdToken, subGet}, {cmdToken, subGenerate, argForce}, {cmdToken, subSet}, {cmdToken, "clear", "-yes"}, {"serve", "--check"},
+	} {
+		code, out, errOut := runCLI(args...)
+		if code != 1 || out != "" || !strings.Contains(errOut, want) {
+			t.Errorf("%v: exit %d stdout %q stderr %q, want exit 1 and %q", args, code, out, errOut, want)
+		}
+	}
+	if got := loadToken(t, configDefault); got != tokenOld {
+		t.Errorf("./config.yaml token %q, want it untouched (%q)", got, tokenOld)
+	}
+	if code, out, errOut := runCLI("token", "get", flagConfig, configDefault); code != 0 || out != tokenOld+"\n" {
+		t.Errorf("--config given: exit %d stdout %q stderr %q, want the token", code, out, errOut)
+	}
+	t.Setenv(configEnv, configDefault)
+	if code, out, errOut := runCLI("token", "get"); code != 0 || out != tokenOld+"\n" {
+		t.Errorf("env given: exit %d stdout %q stderr %q, want the token", code, out, errOut)
 	}
 }

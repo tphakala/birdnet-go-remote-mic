@@ -188,14 +188,15 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 }
 
 // installedConfigOr returns flagVal when --config was given, else the config
-// the installed unit names, else the default config path. A reinstall then
+// the installed unit names, else the default config path (also when the
+// unit's config cannot be known from its files). A reinstall then
 // keeps a custom config instead of switching the unit to the default, and
 // uninstall --purge removes the directory the appliance actually used.
 func installedConfigOr(flagVal string) string {
 	if flagVal != "" {
 		return flagVal
 	}
-	if p, _ := installedConfig(); p != "" {
+	if p, _, err := installedConfig(); err == nil && p != "" {
 		return p
 	}
 	return service.DefaultConfigPath

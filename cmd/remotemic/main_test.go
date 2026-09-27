@@ -8,6 +8,6 @@ import "testing"
 // installed appliance would otherwise resolve configs to /etc/remote-mic. Tests
 // that exercise the unit source stub installedConfig themselves.
 func TestMain(m *testing.M) {
-	installedConfig = func() (string, string) { return "", "" }
+	installedConfig = func() (string, string, error) { return "", "", nil }
 	m.Run()
 }

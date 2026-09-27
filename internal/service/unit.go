@@ -4,6 +4,7 @@ package service
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"text/template"
 
@@ -36,7 +37,7 @@ Type=simple
 User={{.User}}
 Group={{.Group}}
 SupplementaryGroups=audio
-Environment=REMOTEMIC_CONFIG={{.ConfigPath}}
+Environment=` + ConfigEnv + `={{.ConfigPath}}
 ExecStartPre=-{{.BinPath}} serve --check --cert-dir={{.StateDir}}
 ExecStart={{.BinPath}} serve --cert-dir={{.StateDir}}
 # Restart on any exit, including the clean exit a UI-initiated or self-update
@@ -53,6 +54,52 @@ ReadWritePaths={{.ConfigDir}} {{.StateDir}}
 [Install]
 WantedBy=multi-user.target
 `
+
+// unitTemplateV010 is the appliance unit v0.1.0 and v0.2.0 installed. A
+// released template stays here after it changes: InstalledSpec accepts an
+// installed unit only when it renders byte for byte from one of them, and
+// self-updated appliances keep the unit their original install wrote.
+const unitTemplateV010 = `[Unit]
+Description=BirdNET-Go remote microphone appliance
+Documentation=https://github.com/tphakala/birdnet-go-remote-mic
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{.User}}
+Group={{.Group}}
+SupplementaryGroups=audio
+Environment=` + ConfigEnv + `={{.ConfigPath}}
+ExecStartPre=-{{.BinPath}} serve --check --cert-dir={{.StateDir}}
+ExecStart={{.BinPath}} serve --cert-dir={{.StateDir}}
+# Restart on any exit, including the clean exit a UI-initiated or self-update
+# restart makes; on-failure would leave the appliance stopped after one.
+Restart=always
+RestartSec=5
+WorkingDirectory={{.StateDir}}
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{.ConfigDir}} {{.StateDir}}
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// releasedUnitTexts holds every appliance unit template a release has
+// installed, the current one first.
+var releasedUnitTexts = []string{unitTemplate, unitTemplateV010}
+
+// parseReleased parses each released template text.
+func parseReleased(texts []string) []*template.Template {
+	out := make([]*template.Template, len(texts))
+	for i, text := range texts {
+		out[i] = template.Must(template.New(fmt.Sprintf("unit-%d", i)).Parse(text))
+	}
+	return out
+}
 
 // updatePathTemplate starts the root updater when the appliance writes an
 // update request into the staging directory, and when an install journal is
@@ -108,7 +155,9 @@ ReadWritePaths={{.BinDir}} {{.StateDir}}
 // The templates are parsed once at package init; their text is a compile-time
 // constant, so a parse failure is a programming error and panicking is correct.
 var (
-	unitTmpl          = template.Must(template.New("unit").Parse(unitTemplate))
+	unitTmpl = template.Must(template.New("unit").Parse(unitTemplate))
+	// releasedUnitTmpls parses releasedUnitTexts, in the same order.
+	releasedUnitTmpls = parseReleased(releasedUnitTexts)
 	updatePathTmpl    = template.Must(template.New("update-path").Parse(updatePathTemplate))
 	updateServiceTmpl = template.Must(template.New("update-service").Parse(updateServiceTemplate))
 )

@@ -141,7 +141,10 @@ func runTokenGet(args []string, stdout, stderr io.Writer) (err error) {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	ref := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(*cfgFlag, stderr)
+	if err != nil {
+		return err
+	}
 	defer func() { err = ref.explain(err, "token get", args) }()
 	cfg, err := config.Load(ref.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -173,7 +176,10 @@ func runTokenGenerate(args []string, stdout, stderr io.Writer) (err error) {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	ref := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(*cfgFlag, stderr)
+	if err != nil {
+		return err
+	}
 	defer func() { err = ref.explain(err, "token generate", args) }()
 	cfgPath := ref.path
 	if err := checkOwner(cfgPath, "token generate", args); err != nil {
@@ -216,7 +222,10 @@ func runTokenSet(args []string, stderr io.Writer) (err error) {
 	if fs.NArg() > 0 {
 		return badUsage(errors.New("token set reads the token from stdin, not the command line (keeping it out of shell history); for example: remote-mic token set < token.txt"))
 	}
-	ref := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(*cfgFlag, stderr)
+	if err != nil {
+		return err
+	}
 	defer func() { err = ref.explain(err, "token set", args) }()
 	cfgPath := ref.path
 	if err := checkOwner(cfgPath, "token set", args); err != nil {
@@ -291,7 +300,10 @@ func runTokenClear(args []string, stderr io.Writer) (err error) {
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	ref := resolveConfig(*cfgFlag, stderr)
+	ref, err := resolveConfig(*cfgFlag, stderr)
+	if err != nil {
+		return err
+	}
 	defer func() { err = ref.explain(err, "token clear", args) }()
 	cfgPath := ref.path
 	if err := checkOwner(cfgPath, "token clear", args); err != nil {
