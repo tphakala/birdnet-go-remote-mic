@@ -1,4 +1,4 @@
-import { FLOOR_DB, FrameScheduler, levelBand, levelRatio, MeterController } from "../lib/meter-core.ts";
+import { FLOOR_DB, FrameScheduler, levelBand, levelRatio, MeterController, WAITING_READOUT, WAITING_TITLE } from "../lib/meter-core.ts";
 
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (initTheme's
@@ -89,7 +89,10 @@ export class VUMeter {
         draw: (rms, peak) => this.paint(rms, peak),
         showClip: (clipped) => this.showClip(clipped),
         showReadout: (text) => {
-          if (this.peakValEl) this.peakValEl.textContent = text;
+          if (!this.peakValEl) return;
+          this.peakValEl.textContent = text;
+          // Say what "--" means to a pointer user; the readout is aria-hidden.
+          this.peakValEl.title = text === WAITING_READOUT ? WAITING_TITLE : "";
         },
       },
       meterFrames,

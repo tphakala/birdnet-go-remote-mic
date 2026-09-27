@@ -7,3 +7,6 @@ export interface Timers {
   setInterval(fn: () => void, ms: number): ReturnType<typeof setInterval>;
   clearInterval(handle: ReturnType<typeof setInterval>): void;
 }
+
+// OneShotTimers is the part of Timers for code that only sets timeouts.
+export type OneShotTimers = Pick<Timers, "setTimeout" | "clearTimeout">;

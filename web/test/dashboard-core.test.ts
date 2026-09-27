@@ -9,6 +9,7 @@ import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
 import { Emitter } from "../src/lib/emitter.ts";
 import type { ViewName } from "../src/lib/router-core.ts";
 import { fileURLToPath } from "node:url";
+import { at, FakeTimers } from "./fixtures.ts";
 
 import {
   availableCardKey,
@@ -25,6 +26,9 @@ import {
   deviceFieldLabel,
   rejectionText,
   followDashboardRoute,
+  followLevels,
+  LEVELS_STALE_MS,
+  LevelsWatch,
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
@@ -395,4 +399,96 @@ test("the dashboard follower suspends meters and drops levels off the dashboard"
     "frames off", "levels off",
     "frames on", "levels on",
   ]);
+});
+
+// watchHarness builds a LevelsWatch on fake timers and a clock the test sets,
+// counting how often it clears the meters.
+function watchHarness() {
+  const timers = new FakeTimers();
+  let clock = 0;
+  let clears = 0;
+  const watch = new LevelsWatch({ timers, now: () => clock, clear: () => clears++ });
+  return {
+    watch,
+    timers,
+    clears: () => clears,
+    setClock: (t: number) => {
+      clock = t;
+    },
+    // tick runs the check interval once.
+    tick: () => at(timers.intervals(), 0).fn(),
+  };
+}
+
+test("LevelsWatch clears the meters once when levels stop on a live stream", () => {
+  const h = watchHarness();
+  h.watch.setShown(true);
+  h.watch.setConnected(true);
+  h.watch.levels();
+  h.setClock(LEVELS_STALE_MS);
+  h.tick();
+  assert.equal(h.clears(), 0, "a gap of the full window is still current");
+  h.setClock(LEVELS_STALE_MS + 1);
+  h.tick();
+  assert.equal(h.clears(), 1, "a longer gap clears the meters");
+  h.setClock(LEVELS_STALE_MS * 3);
+  h.tick();
+  assert.equal(h.clears(), 1, "a long gap clears them once");
+  h.watch.levels();
+  h.setClock(LEVELS_STALE_MS * 4 + 1);
+  h.tick();
+  assert.equal(h.clears(), 2, "levels that came back and stopped again clear again");
+});
+
+test("LevelsWatch runs its check only while the dashboard shows on a live stream", () => {
+  const h = watchHarness();
+  h.watch.setConnected(true);
+  assert.equal(h.timers.intervals().length, 0, "the dashboard is not showing");
+  h.watch.setShown(true);
+  assert.equal(h.timers.intervals().length, 1);
+  h.watch.setShown(false);
+  assert.equal(h.timers.intervals().length, 0, "leaving the dashboard stops the check");
+  h.watch.setShown(true);
+  // Showing again starts a new window rather than judging the time away.
+  h.setClock(LEVELS_STALE_MS * 10);
+  h.watch.setShown(false);
+  h.watch.setShown(true);
+  h.tick();
+  assert.equal(h.clears(), 0);
+});
+
+test("LevelsWatch clears at once when the stream goes down and stops its check", () => {
+  const h = watchHarness();
+  h.watch.setShown(true);
+  h.watch.setConnected(true);
+  h.watch.setConnected(false);
+  assert.equal(h.clears(), 1);
+  assert.equal(h.timers.intervals().length, 0);
+});
+
+// FakeLevelsEvents announces what the store does about levels.
+class FakeLevelsEvents extends Emitter<{ levels: undefined; levelsdropped: undefined; connection: boolean }> {
+  fire(name: "levels" | "levelsdropped"): void {
+    this.emit(name);
+  }
+  connection(up: boolean): void {
+    this.emit("connection", up);
+  }
+}
+
+test("followLevels feeds the watch from the store's announcements", () => {
+  const h = watchHarness();
+  const events = new FakeLevelsEvents();
+  followLevels(events, h.watch);
+  h.watch.setShown(true);
+  events.connection(true);
+  assert.equal(h.timers.intervals().length, 1, "a live stream starts the check");
+  events.fire("levelsdropped");
+  assert.equal(h.clears(), 1, "dropped levels clear the meters");
+  events.fire("levels");
+  h.setClock(LEVELS_STALE_MS + 1);
+  h.tick();
+  assert.equal(h.clears(), 2, "levels that stop again clear again");
+  events.connection(false);
+  assert.equal(h.clears(), 3, "a stream going down clears the meters");
 });

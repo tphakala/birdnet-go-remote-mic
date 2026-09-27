@@ -1,12 +1,12 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, VUMeter } from "../components/vu-meter.ts";
-import { WAITING_READOUT } from "../lib/meter-core.ts";
+import { WAITING_READOUT, WAITING_TITLE } from "../lib/meter-core.ts";
 import { router } from "../lib/router.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusOnOrDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage, followDashboardRoute } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch } from "../lib/dashboard-core.ts";
 import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
@@ -331,10 +331,9 @@ function deviceConfigKey(cd: DeviceConfig | undefined): string {
 }
 
 export class DashboardView {
-  // Cards keyed by immutable device id (the stable identity). byName maps
-  // device name to entry for the levels stream, whose payload is keyed by name.
+  // Cards keyed by immutable device id (the stable identity). The levels
+  // payload is keyed by name, which the levels handler reads from each card.
   private cards: Map<string, CardEntry> = new Map();
-  private byName: Map<string, CardEntry> = new Map();
   private rack: HTMLElement | null;
   private emptyEl: HTMLElement | null;
   private availableSection: HTMLElement | null;
@@ -425,28 +424,42 @@ export class DashboardView {
     // needle. When the store drops them, or the stream goes down, every meter
     // clears its bar and needle and shows a waiting readout until levels come
     // back (a clip latch stays for the operator).
+    // A live stream that stops carrying levels without an error (a dead
+    // link) clears them too, after LEVELS_STALE_MS (see LevelsWatch).
+    const watch = new LevelsWatch({ timers: window, now: () => performance.now(), clear: () => this.clearMeters() });
     followDashboardRoute(router, {
-      setFramesSuspended: (suspended) => meterFrames.setSuspended(suspended),
+      setFramesSuspended: (suspended) => {
+        meterFrames.setSuspended(suspended);
+        watch.setShown(!suspended);
+      },
       setLevelsWanted: (wanted) => store.setLevelsWanted(wanted),
     });
-    store.on("levelsdropped", () => this.clearMeters());
+    followLevels(store, watch);
     store.on("levels", (levels) => {
-      levels.forEach((dl, name) => {
-        const entry = this.byName.get(name);
-        if (!entry?.live) return;
+      for (const entry of this.cards.values()) {
+        if (!entry.live) continue;
+        const dl = levels.get(entry.device.name);
+        if (!dl) {
+          // Its meter left the appliance's levels (the pump stopped): its
+          // last level is not current, whatever the card says until the
+          // next poll.
+          entry.live.meters.forEach((m) => m.clearLevels());
+          continue;
+        }
         for (const ch of dl.channels) {
           const meter = entry.live.meters[ch.channel];
           if (meter) meter.setLevels(ch.rmsDbfs, ch.peakDbfs, ch.clipped);
         }
-      });
+      }
     });
     store.on("available", (available) => {
       this.renderAvailable(available);
     });
-    store.on("connection", (connected) => {
-      this.updateConnection(connected);
-      if (!connected) this.clearMeters();
-    });
+    // A drop reads "Reconnecting" at once, even for a proxy that recycles
+    // the stream and reconnects within a second: the meters clear with it
+    // (the watch above), and an indicator that said "Online" over cleared
+    // meters would contradict them.
+    store.on("connection", (connected) => this.updateConnection(connected));
     store.on("loaderror", (failure) => {
       if (failure.coreFailed) this.renderLoadError(failure.message);
     });
@@ -567,11 +580,6 @@ export class DashboardView {
       const own = this.removing.has(id);
       this.focusNeighbour(focusLost.neighbours, (nid) => this.settingsTarget(nid), (next) => (own ? focusMovedMessage(next) : deviceGoneMessage(name, next)));
     }
-
-    // Rebuild the name index for the levels stream (cards are keyed by id, the
-    // levels payload by name; a rename changes the name but not the id).
-    this.byName.clear();
-    for (const entry of this.cards.values()) this.byName.set(entry.device.name, entry);
 
     // Reconcile any open settings form against the (possibly refreshed) config.
     for (const entry of this.cards.values()) {
@@ -1224,11 +1232,14 @@ export class DashboardView {
       canvasContainer.appendChild(canvas);
       const stats = elem("div", "meter-stats");
       const dbReadout = elem("span", "db-readout mono", WAITING_READOUT);
+      dbReadout.title = WAITING_TITLE;
       dbReadout.setAttribute("aria-hidden", "true");
       const clipBtn = elem("button", "clip-latch-btn", "CLIP");
       clipBtn.setAttribute("type", "button");
       clipBtn.setAttribute("aria-label", `Channel ${chNum} clip indicator, click to clear`);
-      clipBtn.title = "Click to clear clip latch";
+      // The latch sees only the levels this page receives, which stop 30 s
+      // after the dashboard does (LEVELS_GRACE_MS).
+      clipBtn.title = "Latches clipping seen while the dashboard is open. Click to clear.";
       // Focus key so a rebuild that moves focus can restore it to the same row.
       clipBtn.dataset.focus = `clip-${c}`;
       stats.appendChild(dbReadout);

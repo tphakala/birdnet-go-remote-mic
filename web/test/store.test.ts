@@ -640,6 +640,25 @@ test("levels drop LEVELS_GRACE_MS after leaving the dashboard", () => {
   assert.equal(h.store.getState().levels.size, 0);
 });
 
+test("the dropped-levels filter keeps notifications and leaves levels out", () => {
+  // Compared with the wire names, not the constant itself, so an entry lost
+  // from the list fails here.
+  assert.ok(NON_LEVEL_EVENTS.includes("notification"), "notifications must keep arriving off the dashboard");
+  assert.equal(NON_LEVEL_EVENTS.includes("levels"), false);
+  assert.ok(NON_LEVEL_EVENTS.length > 0, "an empty filter would mean every event, levels included");
+});
+
+test("levels hold only the latest event's devices, and a disconnect clears them", () => {
+  const h = harness(new FakeTimers());
+  h.emit("levels", { devices: [{ name: "mic", channels: [] }, { name: "bat", channels: [] }] });
+  // The bat detector's meter left the appliance's levels.
+  h.emit("levels", { devices: [{ name: "mic", channels: [] }] });
+  assert.deepEqual([...h.store.getState().levels.keys()], ["mic"], "a device missing from the event must not keep its level");
+  h.emit("connected");
+  h.emit("disconnected", new Error("gone"));
+  assert.equal(h.store.getState().levels.size, 0, "levels from before a drop are not current");
+});
+
 test("returning within the grace keeps the stream untouched", () => {
   const timers = new FakeTimers();
   const h = harness(timers);

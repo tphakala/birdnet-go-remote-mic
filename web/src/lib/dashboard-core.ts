@@ -5,6 +5,7 @@
 import type { FieldProblem } from "./api.ts";
 import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
 import type { ViewName } from "./router-core.ts";
+import type { Timers } from "./timers.ts";
 import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
@@ -359,7 +360,8 @@ export interface DashboardShown {
 
 // followDashboardRoute keeps the meters' frame loop and the levels stream in
 // step with the route: both run while the dashboard shows. The router
-// announces the first route at start-up, so the state is set from the start.
+// announces the first route at start-up (init, router.ts:15, emits it), so
+// the state is set from the start.
 export function followDashboardRoute(
   router: { on(name: "route", listener: (view: ViewName) => void): void },
   shown: DashboardShown,
@@ -369,4 +371,91 @@ export function followDashboardRoute(
     shown.setFramesSuspended(!onDashboard);
     shown.setLevelsWanted(onDashboard);
   });
+}
+
+// LEVELS_STALE_MS is how long the dashboard waits for levels on a live stream
+// before it clears the meters. The appliance sends them at 10 Hz while a
+// client streams them, with zero devices too (Hub.Run in
+// internal/levels/levels.go), so a gap this long means the link died without
+// an error, which the stream's own watchdog takes 30 s to notice.
+export const LEVELS_STALE_MS = 2_000;
+
+// LevelsWatchDeps is what a LevelsWatch needs: an interval timer and a
+// monotonic clock (fakes in tests), and what clears the meters.
+export interface LevelsWatchDeps {
+  timers: Pick<Timers, "setInterval" | "clearInterval">;
+  now(): number;
+  clear(): void;
+}
+
+// LevelsWatch clears the meters whenever their levels stop being current: at
+// once when the store drops levels or the stream goes down, and when levels
+// stop arriving for LEVELS_STALE_MS on a stream that looks live. Its check
+// runs only while the dashboard shows and the stream is up, so an unwatched
+// page runs no timer for it.
+export class LevelsWatch {
+  private readonly deps: LevelsWatchDeps;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private lastAt = 0;
+  // Set once the meters are cleared, so a long gap clears them once.
+  private cleared = false;
+  private shown = false;
+  private connected = false;
+
+  constructor(deps: LevelsWatchDeps) {
+    this.deps = deps;
+  }
+
+  // levels notes that levels arrived.
+  levels(): void {
+    this.lastAt = this.deps.now();
+    this.cleared = false;
+  }
+
+  // stopped clears the meters for a known stop (levels dropped, stream down).
+  stopped(): void {
+    this.cleared = true;
+    this.deps.clear();
+  }
+
+  setShown(shown: boolean): void {
+    this.shown = shown;
+    this.sync();
+  }
+
+  setConnected(connected: boolean): void {
+    this.connected = connected;
+    if (!connected) this.stopped();
+    this.sync();
+  }
+
+  private sync(): void {
+    const active = this.shown && this.connected;
+    if (active && this.timer === null) {
+      // The window starts now: the dashboard just showed or the stream came up.
+      this.lastAt = this.deps.now();
+      this.timer = this.deps.timers.setInterval(() => this.check(), LEVELS_STALE_MS / 2);
+    } else if (!active && this.timer !== null) {
+      this.deps.timers.clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private check(): void {
+    if (!this.cleared && this.deps.now() - this.lastAt > LEVELS_STALE_MS) this.stopped();
+  }
+}
+
+// LevelsWatchEvents is the part of the store a LevelsWatch follows.
+export interface LevelsWatchEvents {
+  on(name: "levels", listener: () => void): void;
+  on(name: "levelsdropped", listener: () => void): void;
+  on(name: "connection", listener: (connected: boolean) => void): void;
+}
+
+// followLevels feeds a LevelsWatch from the store's announcements.
+export function followLevels(events: LevelsWatchEvents, watch: LevelsWatch): void {
+  events.on("levels", () => watch.levels());
+  events.on("levelsdropped", () => watch.stopped());
+  events.on("connection", (connected) => watch.setConnected(connected));
 }

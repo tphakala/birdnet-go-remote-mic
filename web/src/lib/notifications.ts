@@ -6,9 +6,9 @@
 
 import { api, ApiError, type ApiClient } from "./api.ts";
 import { Emitter } from "./emitter.ts";
-import { sse, type SSEClient } from "./sse.ts";
+import { NOTIFICATION_EVENT, sse, type SSEClient } from "./sse.ts";
 import { store } from "./store.ts";
-import type { Timers } from "./timers.ts";
+import type { OneShotTimers } from "./timers.ts";
 import { showToast } from "../components/toast.ts";
 import { prefSaveNotice } from "./prefs.ts";
 import {
@@ -54,7 +54,7 @@ export interface NotificationDeps {
   api: Pick<ApiClient, "getNotifications">;
   sse: Pick<SSEClient, "subscribe">;
   connection: ConnectionSource;
-  timers: Pick<Timers, "setTimeout" | "clearTimeout">;
+  timers: OneShotTimers;
 }
 
 export class NotificationStore extends Emitter<{ change: undefined }> {
@@ -205,7 +205,7 @@ export class NotificationStore extends Emitter<{ change: undefined }> {
     // Every frame (the 15 s heartbeat included) is a cheap moment to check the
     // browser clock, so a step during a long connection is caught promptly.
     this.checkClock();
-    if (name !== "notification") return;
+    if (name !== NOTIFICATION_EVENT) return;
     // Reject a malformed frame outright: every field the UI renders or keys on
     // must be present and well-typed, or it would render "undefined" labels or
     // break the condition logic.

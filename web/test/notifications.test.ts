@@ -45,10 +45,18 @@ interface Harness {
 }
 
 // reloads lists the pending re-sync timers: every timer but the periodic
-// clock check the store arms while connected.
+// clock check the store arms while connected. It tells them apart by delay:
+// a gap reload waits GAP_RELOAD_DELAY_MS (400, notifications.ts:36) and a
+// retry resyncDelay, which the next test keeps apart from CLOCK_CHECK_MS.
 function reloads(h: Harness): FakeTimer[] {
   return h.timers.pending().filter((t) => t.ms !== CLOCK_CHECK_MS);
 }
+
+test("no re-sync delay equals the clock check's, so reloads() sees every re-sync", () => {
+  for (let attempt = 1; attempt <= 20; attempt++) {
+    assert.notEqual(resyncDelay(attempt), CLOCK_CHECK_MS, `retry ${attempt}`);
+  }
+});
 
 function harness(): Harness {
   const timers = new FakeTimers();

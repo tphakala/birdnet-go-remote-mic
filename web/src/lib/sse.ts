@@ -1,6 +1,13 @@
-import type { Timers } from "./timers.ts";
+import type { OneShotTimers } from "./timers.ts";
 
 export type SSEEventHandler = (eventName: string, data: unknown) => void;
+
+// The wire event types the UI consumes (the appliance's names: eventName in
+// internal/levels/levels.go, notificationEvent in internal/notify/notify.go).
+// Every consumer compares against these, so a filter built from them cannot
+// drift from what the consumers read.
+export const LEVELS_EVENT = "levels";
+export const NOTIFICATION_EVENT = "notification";
 
 // Event names the client synthesizes internally (from the connect loop) and the
 // store routes on. A server event reusing one would be misrouted into the
@@ -13,7 +20,7 @@ const RESERVED_EVENTS = new Set(["connected", "disconnected", "unauthorized", "h
 // clock in milliseconds.
 export interface SSEDeps {
   fetch(url: string, init: RequestInit): Promise<Response>;
-  timers: Pick<Timers, "setTimeout" | "clearTimeout">;
+  timers: OneShotTimers;
   now(): number;
 }
 

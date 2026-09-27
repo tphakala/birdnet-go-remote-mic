@@ -942,3 +942,18 @@ test("a cleared meter shows the waiting readout until the next level", () => {
   assert.equal(h.readouts.at(-1), "-25.0 dBFS");
 });
 
+
+test("clearing a meter that is already waiting asks for no frame", () => {
+  const h = meterHarness();
+  h.step();
+  // A new meter waits for its first level.
+  h.meter.clearLevels();
+  assert.equal(h.frames.running(), false, "a new meter has nothing to clear");
+  h.meter.setLevels(-20, -10);
+  h.step();
+  h.meter.clearLevels();
+  h.step();
+  // The dashboard clears a meter on every levels event that lacks its device.
+  h.meter.clearLevels();
+  assert.equal(h.frames.running(), false, "a second clear must not wake the loop");
+});

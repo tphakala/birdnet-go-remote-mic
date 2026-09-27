@@ -4,7 +4,7 @@
 // MeterController, each meter's state and sequencing. No DOM here: the frame
 // source and the drawing are injected, so node:test drives them.
 
-import type { Timers } from "./timers.ts";
+import type { OneShotTimers } from "./timers.ts";
 
 // FLOOR_DB is the bottom of the meter scale; anything quieter draws as silence.
 export const FLOOR_DB = -60;
@@ -94,7 +94,7 @@ export interface Animator {
 export interface FramePorts {
   request(cb: (now: number) => void): number;
   cancel(handle: number): void;
-  timers: Pick<Timers, "setTimeout" | "clearTimeout">;
+  timers: OneShotTimers;
 }
 
 // FrameScheduler runs one frame loop for every animator that asked for one,
@@ -232,6 +232,8 @@ export type FrameSource = Pick<FrameScheduler, "wake" | "wakeAfter" | "hasTimedW
 // WAITING_READOUT is the readout while a meter has no levels to show: before
 // its first level and after MeterController.clearLevels.
 export const WAITING_READOUT = "--";
+// WAITING_TITLE explains the waiting readout on hover.
+export const WAITING_TITLE = "Waiting for levels";
 
 // levelBand is the colour band a level falls in: 0 green, 1 amber above
 // -12 dBFS, 2 red above -3 dBFS. The segments and the needle share it.
@@ -358,6 +360,9 @@ export class MeterController implements Animator {
   // the next level arrives, so no data does not read as silence. The clip
   // latch keeps what it showed: a latch waits for the operator.
   public clearLevels(): void {
+    // Already waiting: nothing to clear, and no frame to ask for (the
+    // dashboard clears a meter on every levels event that lacks its device).
+    if (this.waiting) return;
     this.waiting = true;
     this.rms = FLOOR_DB;
     this.needle.db = FLOOR_DB;
