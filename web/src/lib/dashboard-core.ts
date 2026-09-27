@@ -2,7 +2,7 @@
 // view and the app's notifications fallback, split out so they can be unit tested with node:test (see
 // web/test/dashboard-core.test.ts) without a DOM.
 
-import type { Device, DeviceConfig, StreamMode } from "./types.ts";
+import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
 // "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.
@@ -191,3 +191,39 @@ export function controlGoneMessage(device: string, key: string, serving: boolean
 // Said after a device is removed, following the "Removed" toast: its card and
 // the Remove button that held focus are gone, so focus moved to the dashboard.
 export const REMOVED_FOCUS_MESSAGE = "Focus moved to the dashboard.";
+
+// availableCardKey is what an Available Devices card shows: the device's data
+// and whether an Enable is in flight for it. A card is rebuilt only when this
+// changes. A render during an Enable therefore builds the card busy, and the
+// render after it settles builds it idle again.
+export function availableCardKey(d: AvailableDevice, enabling: boolean): string {
+  return JSON.stringify([d, enabling]);
+}
+
+// AvailablePlan is how to turn the cards on screen into the ones for a new
+// list: which to remove, which to build (new, or changed since shown), and the
+// order to show them in.
+export interface AvailablePlan {
+  remove: string[];
+  build: string[];
+  order: string[];
+}
+
+// availablePlan diffs the shown cards (device id to card key) against the
+// next list, so an unchanged card keeps its node, and with it the operator's
+// focus and text selection.
+export function availablePlan(shown: ReadonlyMap<string, string>, next: readonly { id: string; key: string }[]): AvailablePlan {
+  const nextIds = new Set(next.map((c) => c.id));
+  return {
+    remove: [...shown.keys()].filter((id) => !nextIds.has(id)),
+    build: next.filter((c) => shown.get(c.id) !== c.key).map((c) => c.id),
+    order: next.map((c) => c.id),
+  };
+}
+
+// availableGoneMessage is announced when a poll takes away the Available
+// Devices card that held keyboard focus: which device went, and where focus
+// went when no other card was left to take it.
+export function availableGoneMessage(label: string, toNeighbour: boolean): string {
+  return toNeighbour ? `${label} is no longer available.` : `${label} is no longer available. ${REMOVED_FOCUS_MESSAGE}`;
+}

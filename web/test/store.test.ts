@@ -204,7 +204,7 @@ test("available announces only on change, even after a failure", async () => {
   assert.equal(await h.store.refreshAvailable(), false);
   await h.store.refreshAvailable();
   // No view swaps the list for a load error, so an unchanged list after a
-  // failure must not rebuild it under the operator's focus.
+  // failure has nothing to repair and must not announce.
   assert.equal(h.events.get("available"), 2, "an unchanged list after a failure must not announce");
 });
 

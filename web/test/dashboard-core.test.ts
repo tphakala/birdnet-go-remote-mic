@@ -5,9 +5,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { AvailableDevice } from "../src/lib/types.ts";
 import { fileURLToPath } from "node:url";
 
 import {
+  availableCardKey,
+  availableGoneMessage,
+  availablePlan,
   bannerIsError,
   captureFormatLabel,
   channelHiddenMessage,
@@ -203,4 +207,48 @@ test("focus messages name the device, the control and why it went", () => {
   );
   assert.equal(controlGoneMessage("Garden", "other", true), "Garden: the control is no longer shown. Focus moved to its device settings.");
   assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
+});
+
+test("availablePlan keeps unchanged cards and rebuilds only changed ones", () => {
+  const shown = new Map([
+    ["a", "ka"],
+    ["b", "kb"],
+    ["c", "kc"],
+  ]);
+  const plan = availablePlan(shown, [
+    { id: "a", key: "ka" },
+    { id: "b", key: "kb2" },
+    { id: "d", key: "kd" },
+  ]);
+  assert.deepEqual(plan.remove, ["c"]);
+  assert.deepEqual(plan.build, ["b", "d"], "only the changed and the new card are built");
+});
+
+test("availablePlan orders cards like the list", () => {
+  const shown = new Map([
+    ["a", "ka"],
+    ["b", "kb"],
+  ]);
+  const plan = availablePlan(shown, [
+    { id: "b", key: "kb" },
+    { id: "a", key: "ka" },
+  ]);
+  assert.deepEqual(plan.order, ["b", "a"]);
+  assert.deepEqual(plan.build, [], "a reorder rebuilds nothing");
+  assert.deepEqual(plan.remove, []);
+});
+
+test("availablePlan rebuilds a card whose busy state changed", () => {
+  const d = { device: "hw:1,0", friendlyName: "USB mic" } as unknown as AvailableDevice;
+  const shown = new Map([[d.device, availableCardKey(d, true)]]);
+  // The Enable settled: the same device, no longer in flight.
+  const plan = availablePlan(shown, [{ id: d.device, key: availableCardKey(d, false) }]);
+  assert.deepEqual(plan.build, [d.device], "a card left busy must be rebuilt idle");
+  assert.notEqual(availableCardKey(d, true), availableCardKey(d, false));
+  assert.equal(availableCardKey(d, false), availableCardKey({ ...d }, false), "equal data gives equal keys");
+});
+
+test("availableGoneMessage names the device and says where focus went", () => {
+  assert.equal(availableGoneMessage("USB mic (hw:1,0)", true), "USB mic (hw:1,0) is no longer available.");
+  assert.equal(availableGoneMessage("hw:2,0", false), "hw:2,0 is no longer available. Focus moved to the dashboard.");
 });

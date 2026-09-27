@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError } from "../lib/api.ts";
 import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, firstProblem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -29,6 +29,13 @@ const ICON_SLIDERS =
   svgIcon('<line x1="4" x2="4" y1="21" y2="14"></line><line x1="4" x2="4" y1="10" y2="3"></line><line x1="12" x2="12" y1="21" y2="12"></line><line x1="12" x2="12" y1="8" y2="3"></line><line x1="20" x2="20" y1="21" y2="16"></line><line x1="20" x2="20" y1="12" y2="3"></line><line x1="2" x2="6" y1="14" y2="14"></line><line x1="10" x2="14" y1="8" y2="8"></line><line x1="18" x2="22" y1="16" y2="16"></line>', 13);
 const ICON_CHEVRON =
   svgIcon('<path d="m6 9 6 6 6-6"></path>', 12, 2.2);
+
+// availableLabel names an available device for people: its friendly name,
+// with the ALSA address when there is one to tell two identical units apart,
+// else the address, else the device id.
+function availableLabel(d: AvailableDevice): string {
+  return d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+}
 
 // capsSummary renders a short human summary of a device's probed capabilities
 // (channel support and top sample rate) for the available-devices list.
@@ -312,6 +319,13 @@ export class DashboardView {
   // Device ids with a provisioning request in flight, so the Enable button shows
   // progress and a second click cannot double-provision.
   private provisioning: Set<string> = new Set();
+  // The Available Devices cards on screen, by device id, each with the key of
+  // what it shows (availableCardKey), so a render rebuilds only changed cards.
+  private availableCards: Map<string, { card: HTMLElement; key: string; label: string }> = new Map();
+  // The device whose Available card held keyboard focus when a render removed
+  // it during that device's Enable, so the Enable can move focus to its new
+  // device card. Only set while that Enable is in flight.
+  private availableFocusLost: string | null = null;
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
   // built from a fresh base only after the previous mutation settled. Prevents a
@@ -508,16 +522,62 @@ export class DashboardView {
 
   // renderAvailable lists the host's detected-but-unconfigured capture devices,
   // each with an Enable button that provisions it. The whole section hides when
-  // nothing is available, so a fully configured host shows no empty panel. The
-  // store announces the list only when it changed, so an unchanged poll keeps
-  // the operator's text selection (the device id is there to be copied) and
-  // keyboard focus on an Enable button.
+  // nothing is available, so a fully configured host shows no empty panel.
+  // Cards are keyed by device id and rebuilt only when what they show changed
+  // (availablePlan), so a render keeps the operator's text selection (the
+  // device id is there to be copied) and keyboard focus on the cards it leaves
+  // alone. A rebuilt card that held focus hands it to its new Enable button.
   private renderAvailable(available: AvailableDevice[]): void {
     if (!this.availableRack || !this.availableSection) return;
+    const rack = this.availableRack;
     this.availableSection.hidden = available.length === 0;
-    this.availableRack.textContent = "";
-    for (const d of available) {
-      this.availableRack.appendChild(this.buildAvailableCard(d));
+    const next = available.map((d) => ({ d, id: d.device, key: availableCardKey(d, this.provisioning.has(d.device)) }));
+    const shown = new Map([...this.availableCards].map(([id, c]) => [id, c.key]));
+    const plan = availablePlan(shown, next);
+    const active = document.activeElement;
+    const holdsFocus = (el: HTMLElement): boolean => active instanceof Node && el.contains(active);
+
+    // A removed card that held focus: during its own Enable the Enable moves
+    // focus once it settles; otherwise (the device went away) focus goes to
+    // the card that takes its place, or the one before it, below.
+    let stranded: { index: number; label: string } | null = null;
+    const oldOrder = [...this.availableCards.keys()];
+    for (const id of plan.remove) {
+      const c = this.availableCards.get(id);
+      if (!c) continue;
+      if (holdsFocus(c.card)) {
+        if (this.provisioning.has(id)) this.availableFocusLost = id;
+        else stranded = { index: oldOrder.indexOf(id), label: c.label };
+      }
+      c.card.remove();
+      this.availableCards.delete(id);
+    }
+    const build = new Set(plan.build);
+    for (const { d, id, key } of next) {
+      if (!build.has(id)) continue;
+      const old = this.availableCards.get(id);
+      const card = this.buildAvailableCard(d);
+      const refocus = old !== undefined && holdsFocus(old.card);
+      if (old) old.card.replaceWith(card);
+      this.availableCards.set(id, { card, key, label: availableLabel(d) });
+      if (refocus) card.querySelector<HTMLElement>(".available-enable")?.focus();
+    }
+    // Order with a diff, as the device rack does: steady state moves no node.
+    let prev: Element | null = null;
+    for (const id of plan.order) {
+      const c = this.availableCards.get(id);
+      if (!c) continue;
+      const target: Element | null = prev ? prev.nextElementSibling : rack.firstElementChild;
+      if (c.card !== target) rack.insertBefore(c.card, target);
+      prev = c.card;
+    }
+
+    if (stranded) {
+      const cards = [...this.availableCards.values()];
+      const neighbour = cards[Math.min(stranded.index, cards.length - 1)];
+      const target = neighbour?.card.querySelector<HTMLElement>(".available-enable") ?? document.getElementById("main-content");
+      target?.focus({ preventScroll: true });
+      announce(this.announceEl, availableGoneMessage(stranded.label, neighbour !== undefined));
     }
   }
 
@@ -545,8 +605,7 @@ export class DashboardView {
     // available device, so a bare "Enable" is ambiguous to a screen-reader user.
     // Two identical units share a friendly name, so add the address to tell
     // their buttons apart.
-    const which = d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
-    enableBtn.setAttribute("aria-label", `Enable ${which}`);
+    enableBtn.setAttribute("aria-label", `Enable ${availableLabel(d)}`);
     if (this.provisioning.has(d.device)) setBusy(enableBtn, "Enabling...");
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
@@ -557,6 +616,7 @@ export class DashboardView {
   private async provisionDevice(d: AvailableDevice, btn: HTMLElement): Promise<void> {
     if (this.provisioning.has(d.device)) return;
     this.provisioning.add(d.device);
+    this.availableFocusLost = null;
     setBusy(btn, "Enabling...");
     try {
       // Serialize through the same queue as toggles and settings saves: those
@@ -569,6 +629,23 @@ export class DashboardView {
         await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
         const ch = created.channels.length === 1 ? ` on channel ${created.channels[0]}` : "";
         showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
+        // The refresh removed this device's Available card. If it held focus
+        // and focus has not moved since (it fell to the document body), hand
+        // it to the new device card, else to the workspace region. The toast
+        // says what happened; the fallback also says where focus went.
+        const lost = this.availableFocusLost === d.device;
+        this.availableFocusLost = null;
+        const dropped = document.activeElement === null || document.activeElement === document.body;
+        if (lost && dropped) {
+          this.reconcile();
+          const settings = this.cards.get(created.device)?.settingsBtn;
+          if (settings) {
+            settings.focus({ preventScroll: true });
+          } else {
+            document.getElementById("main-content")?.focus({ preventScroll: true });
+            announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
+          }
+        }
       });
     } catch (err: unknown) {
       this.apiErrorToast(err, "Enable failed");
@@ -577,14 +654,13 @@ export class DashboardView {
       if (err instanceof ApiError && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
     } finally {
       this.provisioning.delete(d.device);
+      if (this.availableFocusLost === d.device) this.availableFocusLost = null;
       clearBusy(btn, "Enable");
-      // A poll that changed the list meanwhile rebuilt the card with a fresh
-      // busy button, which btn no longer is; re-render so it is not left stuck
-      // on "Enabling..." while an unchanged list announces nothing. A device
-      // no longer listed (the usual success) has no card left to fix.
-      if (!btn.isConnected && store.getState().available.some((a) => a.device === d.device)) {
-        this.renderAvailable(store.getState().available);
-      }
+      // clearBusy restores the card built before the click. If a render
+      // during the Enable rebuilt the card busy instead (its key includes the
+      // in-flight state), this render rebuilds it idle, since the key changed
+      // back. A device no longer listed (the usual success) has no card left.
+      this.renderAvailable(store.getState().available);
     }
   }
 

@@ -450,8 +450,8 @@ export class AppStore extends Emitter<StoreEvents> {
   // returns data a view showed before swapping in a load error; that is what
   // repairs the view. A failure that a newer applied read already superseded
   // resets nothing (the view kept fresh data), and available never resets,
-  // since no view replaces the list with a load error: re-announcing an
-  // unchanged list would only rebuild it under the operator's focus.
+  // since no view replaces the list with a load error, so there is nothing for
+  // a re-announcement to repair.
 
   // prefetched, when given, is a status the caller just fetched (the boot and
   // login token check), applied through the same gate instead of a second GET.
