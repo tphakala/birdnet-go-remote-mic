@@ -1,4 +1,4 @@
-import { FLOOR_DB, FrameScheduler, levelRatio, MeterController } from "../lib/meter-core.ts";
+import { FLOOR_DB, FrameScheduler, levelBand, levelRatio, MeterController } from "../lib/meter-core.ts";
 
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (initTheme's
@@ -21,14 +21,13 @@ try {
 }
 
 // The meter is 36 segments over the scale from FLOOR_DB to 0 dBFS, each lit in
-// the colour of its level band: green, amber from -12, red from -3.
+// the colour of its level band (levelBand): green, amber, red. The needle
+// takes the same band's colour, opaque.
 const SEGMENTS = 36;
-const SEGMENT_COLORS: readonly string[] = Array.from({ length: SEGMENTS }, (_, i) => {
-  const segDb = FLOOR_DB - (i / SEGMENTS) * FLOOR_DB;
-  if (segDb > -3) return "rgba(239, 68, 68, 0.95)"; // Red
-  if (segDb > -12) return "rgba(245, 158, 11, 0.9)"; // Amber
-  return "rgba(16, 185, 129, 0.85)"; // Green
-});
+const SEGMENT_PALETTE = ["rgba(16, 185, 129, 0.85)", "rgba(245, 158, 11, 0.9)", "rgba(239, 68, 68, 0.95)"] as const;
+const NEEDLE_PALETTE = ["#10b981", "#f59e0b", "#ef4444"] as const;
+const SEGMENT_COLORS: readonly string[] = Array.from({ length: SEGMENTS }, (_, i) =>
+  SEGMENT_PALETTE[levelBand(FLOOR_DB - (i / SEGMENTS) * FLOOR_DB)]);
 
 // The viewer's motion preference, followed live: every live meter switches
 // between the gliding needle and the per-event steps when it changes.
@@ -49,6 +48,8 @@ reducedMotionQuery?.addEventListener?.("change", (e) => {
 export const meterFrames = new FrameScheduler({
   request: (cb) => requestAnimationFrame(cb),
   cancel: (handle) => cancelAnimationFrame(handle),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle),
 });
 
 // VUMeter is one channel's meter on the dashboard: the canvas, the dB readout
@@ -180,13 +181,7 @@ export class VUMeter {
     const needleRatio = levelRatio(peakDb);
     if (needleRatio > 0.02) {
       const peakX = Math.min(w - 2, Math.max(0, needleRatio * w - 1.5));
-      let needleColor = "#10b981";
-      if (peakDb > -12 && peakDb <= -3) {
-        needleColor = "#f59e0b";
-      } else if (peakDb > -3) {
-        needleColor = "#ef4444";
-      }
-      ctx.fillStyle = needleColor;
+      ctx.fillStyle = NEEDLE_PALETTE[levelBand(peakDb)];
       ctx.fillRect(peakX, 0, 2, h);
     }
   }

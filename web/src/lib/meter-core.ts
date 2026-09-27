@@ -86,11 +86,14 @@ export interface Animator {
   frame(now: number): boolean;
 }
 
-// FramePorts is the frame source: requestAnimationFrame and
-// cancelAnimationFrame in the browser, a fake in tests.
+// FramePorts is the frame source (requestAnimationFrame and
+// cancelAnimationFrame in the browser) and a one-shot timer for timed wakes
+// (setTimeout and clearTimeout), fakes in tests.
 export interface FramePorts {
   request(cb: (now: number) => void): number;
   cancel(handle: number): void;
+  setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
 }
 
 // FrameScheduler runs one frame loop for every animator that asked for one,
@@ -112,6 +115,8 @@ export class FrameScheduler {
   private batch: Set<Animator> | null = null;
   private handle: number | null = null;
   private suspended = false;
+  // Pending timed wakes (wakeAfter), at most one per animator.
+  private readonly timed = new Map<Animator, ReturnType<typeof setTimeout>>();
   // Animators whose frame threw, logged once each: a meter that throws on
   // every frame is woken again by the next level that changes it, and must
   // not log at that rate.
@@ -128,12 +133,32 @@ export class FrameScheduler {
     this.arm();
   }
 
+  // wakeAfter wakes a once ms from now, replacing any timed wake a already
+  // has: an animator with nothing to draw until then (a needle holding its
+  // peak) asks for no frames meanwhile.
+  wakeAfter(a: Animator, ms: number): void {
+    this.cancelTimed(a);
+    this.timed.set(a, this.ports.setTimeout(() => {
+      this.timed.delete(a);
+      this.wake(a);
+    }, ms));
+  }
+
   // remove drops a from the loop, as when its meter hides or goes away, also
-  // from the frame running now if a has not had its turn yet.
+  // from the frame running now if a has not had its turn yet, and cancels its
+  // timed wake.
   remove(a: Animator): void {
     this.active.delete(a);
     this.batch?.delete(a);
+    this.cancelTimed(a);
     if (this.active.size === 0) this.disarm();
+  }
+
+  private cancelTimed(a: Animator): void {
+    const handle = this.timed.get(a);
+    if (handle === undefined) return;
+    this.ports.clearTimeout(handle);
+    this.timed.delete(a);
   }
 
   setSuspended(suspended: boolean): void {
@@ -196,7 +221,15 @@ export interface MeterPorts {
 }
 
 // FrameSource is the part of FrameScheduler a MeterController uses.
-export type FrameSource = Pick<FrameScheduler, "wake" | "remove">;
+export type FrameSource = Pick<FrameScheduler, "wake" | "wakeAfter" | "remove">;
+
+// levelBand is the colour band a level falls in: 0 green, 1 amber above
+// -12 dBFS, 2 red above -3 dBFS. The segments and the needle share it.
+export function levelBand(db: number): 0 | 1 | 2 {
+  if (db > -3) return 2;
+  if (db > -12) return 1;
+  return 0;
+}
 
 // formatReadout is the dB readout text for a needle level: "-inf" at the
 // floor and within the last 0.1 dB above it.
@@ -259,8 +292,9 @@ export class MeterController implements Animator {
     raisePeak(this.needle, peakDb, now);
 
     if (this.paused || this.destroyed) return;
-    // Silence on a settled meter changes nothing on screen: no frame.
-    const moving = !this.reducedMotion && !needleSettled(this.needle);
+    // Silence on a settled or holding meter changes nothing on screen: no
+    // frame. A holding needle has its timed wake for the end of the hold.
+    const moving = !this.reducedMotion && !needleSettled(this.needle) && now >= this.needle.holdUntil;
     if (moving || this.stale || this.rms !== this.drawnRms || this.needle.db !== this.drawnPeak || this.clipped !== this.shownClip) {
       this.frames.wake(this);
     }
@@ -324,7 +358,15 @@ export class MeterController implements Animator {
     if (!this.reducedMotion) advanceNeedle(this.needle, now);
     this.draw();
     this.syncReadout(now);
-    return !this.reducedMotion && !needleSettled(this.needle);
+    if (this.reducedMotion || needleSettled(this.needle)) return false;
+    // While the needle holds its peak nothing moves, so rather than a frame
+    // per display refresh the meter sleeps until the hold ends.
+    const holding = this.needle.holdUntil - now;
+    if (holding > 0) {
+      this.frames.wakeAfter(this, holding);
+      return false;
+    }
+    return true;
   }
 
   private syncClip(): void {
@@ -349,10 +391,12 @@ export class MeterController implements Animator {
   // and every reduced-motion step (already one per level event) show at once.
   private syncReadout(now: number): void {
     const db = this.needle.db;
-    const text = formatReadout(db);
-    if (text === this.shownReadout) return;
+    // The throttle is checked before the text is formatted, since most frames
+    // of a glide fall inside it.
     const held = !(db > this.shownReadoutDb) && !this.reducedMotion && !needleSettled(this.needle);
     if (held && now - this.readoutAt < READOUT_INTERVAL_MS) return;
+    const text = formatReadout(db);
+    if (text === this.shownReadout) return;
     this.shownReadout = text;
     this.shownReadoutDb = db;
     this.readoutAt = now;

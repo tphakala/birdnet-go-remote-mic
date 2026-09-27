@@ -24,7 +24,7 @@ import {
   type Animator,
   type FramePorts,
 } from "../src/lib/meter-core.ts";
-import { at } from "./fixtures.ts";
+import { at, FakeTimers } from "./fixtures.ts";
 
 // curve is where a needle raised to peak at time 0 should be at t on the
 // continuous hold-then-fall curve.
@@ -163,6 +163,10 @@ class FakeFrames implements FramePorts {
   private next = 1;
   readonly pending = new Map<number, (now: number) => void>();
   requests = 0;
+  // The scheduler's timed wakes, fired by hand.
+  readonly timers = new FakeTimers();
+  readonly setTimeout = (fn: () => void, ms: number): ReturnType<typeof setTimeout> => this.timers.setTimeout(fn, ms);
+  readonly clearTimeout = (h: ReturnType<typeof setTimeout>): void => this.timers.clearTimeout(h);
 
   request(cb: (now: number) => void): number {
     this.requests++;
@@ -439,6 +443,13 @@ function meterHarness(opts: { reducedMotion?: boolean; suspended?: boolean } = {
     },
     // step runs the requested frame at the current clock.
     step: () => f.step(clock),
+    // endHold fires the timed wake a holding needle set for the end of its
+    // hold, as the timer would.
+    endHold: () => {
+      const [wake] = f.timers.pending();
+      assert.ok(wake, "no timed wake set for the end of the hold");
+      f.timers.fire(wake);
+    },
   };
 }
 
@@ -528,10 +539,11 @@ test("the clip latch is shown once and clears", () => {
   h.meter.setLevels(-20, -20, true);
   h.step();
   assert.deepEqual(h.clips, [false, true]);
-  // Later events leave the latch shown without repainting it.
+  // Later events leave the latch shown without repainting it; with nothing
+  // else changed while the needle holds, they ask for no frame at all.
   h.setClock(20);
   h.meter.setLevels(-20, -20);
-  h.step();
+  assert.equal(h.frames.running(), false);
   assert.deepEqual(h.clips, [false, true]);
   h.meter.clearClip();
   assert.deepEqual(h.clips, [false, true, false]);
@@ -608,6 +620,7 @@ test("levels and frames both advance the needle, and an earlier frame time does 
   h.setClock(0);
   h.meter.setLevels(-99, -20);
   h.step();
+  h.endHold();
   // Frames glide the needle by real elapsed time.
   h.f.step(PEAK_HOLD_MS + 50);
   assert.deepEqual(h.draws.at(-1), [FLOOR_DB, curve(-20, PEAK_HOLD_MS + 50)]);
@@ -646,6 +659,7 @@ test("the readout updates at most every 100 ms while the needle falls", () => {
   h.setClock(0);
   h.meter.setLevels(-99, -20);
   h.step();
+  h.endHold();
   const start = h.readouts.length;
   // Glide the needle down at 60 Hz for one second past the hold.
   const writes: number[] = [];
@@ -668,6 +682,7 @@ test("the settled readout is always written", () => {
   h.setClock(0);
   h.meter.setLevels(-99, FLOOR_DB + 1);
   h.step();
+  h.endHold();
   // Frames 16 ms apart: the needle reaches the floor well inside a throttle
   // window after the last write.
   let t = PEAK_HOLD_MS;
@@ -744,4 +759,62 @@ test("clearing levels drops the bar and the needle and keeps the latch", () => {
   assert.deepEqual(h.draws.at(-1), [FLOOR_DB, FLOOR_DB], "the bar and the needle clear");
   assert.equal(h.readouts.at(-1), "-inf");
   assert.deepEqual(h.clips, [false, true], "the clip latch stays until the operator clears it");
+});
+
+test("a holding needle requests no frames until the hold ends", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  assert.equal(h.frames.running(), false, "nothing moves during the hold, so no frames");
+  const [wake] = h.f.timers.pending(PEAK_HOLD_MS);
+  assert.ok(wake, "the meter must wake itself when the hold ends");
+  // A silent level during the hold changes nothing and asks for no frame.
+  h.setClock(300);
+  h.meter.setLevels(-99, -99);
+  assert.equal(h.frames.running(), false);
+  h.f.timers.fire(wake);
+  assert.equal(h.frames.running(), true, "the glide starts when the hold ends");
+  h.f.step(PEAK_HOLD_MS + 100);
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, curve(-20, PEAK_HOLD_MS + 100)]);
+  assert.equal(h.frames.running(), true, "the glide keeps its frames");
+});
+
+test("a louder peak during the hold moves the timed wake to the new hold's end", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  h.setClock(400);
+  h.meter.setLevels(-99, -10);
+  h.step();
+  const pending = h.f.timers.pending();
+  assert.equal(pending.length, 1, "one timed wake per meter");
+  assert.equal(at(pending, 0).ms, PEAK_HOLD_MS, "the new hold runs from the new peak");
+});
+
+test("removing an animator cancels its timed wake", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  assert.equal(h.f.timers.pending().length, 1);
+  h.meter.pause();
+  assert.equal(h.f.timers.pending().length, 0, "a hidden meter must not wake itself");
+});
+
+test("with reduced motion a silent level on a still needle asks for no frame", () => {
+  const h = meterHarness({ reducedMotion: true });
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  for (let t = 100; t < PEAK_HOLD_MS; t += 100) {
+    h.setClock(t);
+    h.meter.setLevels(-99, -99);
+    assert.equal(h.frames.running(), false, `a silent event at ${t} ms during the hold must not wake the loop`);
+  }
 });
