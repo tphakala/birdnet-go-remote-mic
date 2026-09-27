@@ -203,8 +203,11 @@ later update is refused or rolled back for good:
 - the staging file names in `internal/update/files.go` and the JSON fields
   of `health.json`, `status.json` and `request.json`;
 - the install journal (`<bin>.pending`) and its fields;
-- the appliance unit's `Environment=REMOTEMIC_CONFIG=` and `User=` lines,
-  which the CLI reads to find the installed config and its account.
+- the appliance unit's text: the CLI accepts an installed unit only when it
+  renders byte for byte from a template in `releasedUnitTexts`
+  (`internal/service/unit.go`). A released template is never edited or
+  removed, a template change adds an entry, and `unitData` keeps its field
+  names, or existing installs stop resolving their config.
 
 ## Build, test, and the gate
 

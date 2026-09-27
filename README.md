@@ -168,13 +168,27 @@ remote-mic version
 `remote-mic help` lists the commands; add `-h` to `serve` or to a `token` or
 `devices` command for its flags. Commands that read the config take
 `--config`, which defaults to the `REMOTEMIC_CONFIG` environment variable,
-then to the config of the installed service (the `REMOTEMIC_CONFIG` line in
-`remote-mic.service` and its drop-ins), then to `config.yaml` in the working
-directory. On an installed appliance every command therefore acts on the
-service's config from any directory without `--config`; when that means a
+then to the config of the installed service, then to `config.yaml` in the
+working directory. On an installed appliance every command therefore acts on
+the service's config from any directory without `--config`; when that means a
 `config.yaml` in the working directory is ignored, the command says so on
-stderr. `service install` and `service uninstall` also default `--config` to
-the installed service's config, so a reinstall keeps a custom path.
+stderr (not with `--quiet`). An empty `--config` is an error.
+
+The installed service's config is read from `remote-mic.service` and its
+drop-ins only where that is certain: the unit must be exactly what `service
+install` wrote, and a drop-in that changes the environment, the account, the
+program or how paths resolve must be a plain override in
+`/etc/systemd/system/remote-mic.service.d/` (or another `remote-mic.service.d`
+directory) holding only `[Service]`, `Environment=REMOTEMIC_CONFIG=/path` and
+`User=name` lines. Anything else, such as a unit edited with `systemctl edit
+--full`, an `EnvironmentFile=`, or a config under `/tmp`, `/home` or `/run`,
+makes a command stop and ask for `--config` rather than guess. The files are
+what count, so an override takes effect for the commands at once, while the
+running appliance picks it up only when it restarts.
+
+Run by hand as an account other than the config's owner, `serve` refuses, as
+the token commands do, and names the command to run instead; the service's
+own start is not checked.
 
 ### Run at boot (systemd service)
 
@@ -202,7 +216,12 @@ appliance offers the one-button update.
 Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
 your password for the privileged steps. Flags override the defaults (`--user`,
 `--config`, `--state-dir`, `--bin-path`, and `--no-start` to enable without
-starting). Manage it afterwards:
+starting). Re-running `install` without them keeps the values of the unit it
+installed before, and says which it kept; if that unit was edited by hand, it
+asks for all four flags. `uninstall --purge` prints what it removes first, and
+removes a user, config, state directory or binary other than the defaults
+only when the flag names it, since `install` may have reused an existing
+account or directory. Manage it afterwards:
 
 ```bash
 remote-mic service status                    # enabled at boot? running now?

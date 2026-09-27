@@ -665,9 +665,9 @@ func withPermHint(err error) error {
 
 // explain replaces the generic advice of a permission failure with the command
 // to run as the appliance account, when the config is the one the installed
-// unit names and the unit names its account. /etc/remote-mic is not readable
-// by other accounts, so checkOwner cannot see the file's owner there and the
-// unit is the only place that says who it is. A permission error wrapped in
+// unit names and the unit names its account. /etc/remote-mic is not
+// searchable by other accounts, so checkOwner cannot stat the file there; the
+// unit names the account directly. A permission error wrapped in
 // further context is left alone: the rewrite would drop that context.
 func (c configRef) explain(err error, command string, args []string) error {
 	pe, ok := err.(*permError) //nolint:errorlint // only an unwrapped one: a wrapped one carries context this rewrite would drop
