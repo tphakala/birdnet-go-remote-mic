@@ -29,9 +29,8 @@ export interface UpdateView {
   busy: boolean;
 }
 
-// sentence (lib/text.ts) makes the card's sentences; the update card's hints
-// are left as sent, since they end in commands and paths an operator copies.
-export { sentence };
+// The card's sentences come from sentence (lib/text.ts); its hints are left
+// as sent, since they end in commands and paths an operator copies.
 
 const RESTART_NOTE =
   "The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start.";
@@ -317,9 +316,10 @@ export class UpdateFollow {
 
 // followEndText says why a follow ended without a restart, from the status and
 // whether the install was reached: a failure carries its reason (lowercase
-// after the colon, like every failure toast); checks turned off (here or in another tab) stop a download but
-// not an install already handed over; anything else ended before installing
-// (a restart during the download, say), which not every path notifies about.
+// after the colon, like the other failure toasts); checks turned off (here
+// or in another tab) stop a download but not an install already handed over;
+// anything else ended before installing (a restart during the download,
+// say), which not every path notifies about.
 export function followEndText(u: UpdateStatus, reachedInstall: boolean): { text: string; tone: "warn" | "error" } {
   if (u.phase === "failed") return { text: `Update failed: ${u.phaseMessage?.trim() || "the attempt did not finish"}`, tone: "error" };
   if (!u.checkEnabled && !reachedInstall) return { text: "The update stopped because update checks were turned off.", tone: "warn" };

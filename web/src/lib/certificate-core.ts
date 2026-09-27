@@ -89,8 +89,8 @@ export const CERT_TOO_LARGE_FALLBACK = "the request is larger than the appliance
 // certTooLargeReason is the reason clause of the certificate-install 413 toast:
 // the problem detail the appliance sent (which names its body limit), or a
 // generic clause when there is none. Its caller passes only a problem body's
-// detail, which every toast shows as sent (apiErrorMessage). A trailing
-// period is dropped because the toast continues the sentence.
+// detail, which it shows as given apart from a trailing period, dropped
+// because the toast continues the sentence.
 export function certTooLargeReason(detail: string | undefined): string {
   const d = (detail ?? "").trim().replace(/\.+$/, "");
   if (d === "") return CERT_TOO_LARGE_FALLBACK;

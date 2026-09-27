@@ -28,7 +28,9 @@ export interface ApiErrorBody {
 export class ApiError extends Error {
   public status: number;
   public title: string;
-  public detail?: string;
+  // Private: read it through problemDetail, so no caller shows a body that
+  // was not a problem.
+  private readonly detail?: string;
   public errors?: ValidationErrorItem[];
   // problem is true when the error came from an RFC 9457 problem body
   // (application/problem+json, what the appliance sends), whose detail is
@@ -71,18 +73,40 @@ export class UnreadableResponseError extends Error {
   }
 }
 
+// isRefusal reports whether a failed request was refused by the appliance
+// (an ApiError), so the change did not happen. Anything else (no answer, or
+// an answer that could not be read) leaves the outcome unknown: the caller
+// reconciles from the appliance instead of reporting a failure, and says so
+// with unconfirmedText.
+export function isRefusal(err: unknown): err is ApiError {
+  return err instanceof ApiError;
+}
+
+// unconfirmedText is the toast for a change whose outcome is unknown: what
+// could not be confirmed, then what the page does about it. It quotes no
+// error text, which for a dropped connection is the browser's and differs by
+// engine.
+export function unconfirmedText(what: string, next: string): string {
+  return `Could not confirm ${what}; ${next}.`;
+}
+
+// TOKEN_NOT_ACCEPTED is how every message says a 401: the login prompt and
+// the failure toasts.
+export const TOKEN_NOT_ACCEPTED = "the access token was not accepted";
+
 // apiErrorMessage reduces any thrown value to a short human string. An
 // ApiError shows its problem detail, which says what went wrong (problem
 // titles are generic: "bad request", "internal error"), else its title, else
 // its status; a 401 says the token was not accepted, because the login
 // prompt opens with it and the problem's detail names an HTTP header. The
-// text is lowercase with no final period, like the appliance's details,
-// since callers build sentences around it. Any other Error shows its
-// message, and anything else its string form. Shared so every failure toast
-// maps errors the same way.
+// appliance's details and titles, and the 401 text, are lowercase with no
+// final period, since callers build sentences around them; a status text (a
+// proxy's) keeps its own case. Any other Error shows its message, and
+// anything else its string form. Shared so every failure toast maps errors
+// the same way.
 export function apiErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 401) return "the access token was not accepted";
+    if (err.status === 401) return TOKEN_NOT_ACCEPTED;
     return err.problemDetail || err.title || `HTTP ${err.status}`;
   }
   if (err instanceof Error) return err.message;

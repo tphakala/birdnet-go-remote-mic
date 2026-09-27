@@ -1,4 +1,4 @@
-import { api, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason } from "../lib/api.ts";
+import { api, ApiError, apiErrorMessage, firstProblem, isRefusal, problemFor, problemReason, unconfirmedText } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
 import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
@@ -88,13 +88,6 @@ function formatCertTime(iso: string): string {
 // TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
 // so an obviously invalid token is caught before the round trip.
 const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
-
-// updateErrorText says why an update request failed: the appliance's own
-// reason for a refusal (such as an earlier attempt still running), by the
-// same rules as every other failure toast (apiErrorMessage).
-function updateErrorText(err: unknown): string {
-  return apiErrorMessage(err);
-}
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
 // enough to be seen by someone who comes back to the tab.
@@ -552,12 +545,12 @@ export class SystemView {
       void this.loadCertificate();
       showToast("Certificate regenerated and applied to new connections. Download and trust the new certificate where needed.");
     } catch (err: unknown) {
-      if (!(err instanceof ApiError)) {
+      if (!isRefusal(err)) {
         // Anything but a refusal (a dropped connection, or an answer that
         // could not be read) says nothing about whether the appliance applied
         // the change; reconcile from the server instead of reporting a failure
         // that may not be one.
-        showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
+        showToast(unconfirmedText("the certificate change", "refreshing the current certificate"), "warn");
         void this.loadCertificate();
         return;
       }
@@ -612,11 +605,11 @@ export class SystemView {
       void this.loadCertificate();
       showToast("Custom certificate installed and applied to new connections.");
     } catch (err: unknown) {
-      if (!(err instanceof ApiError)) {
+      if (!isRefusal(err)) {
         // Same as regenerate: anything but a refusal leaves the outcome
         // unknown, so reconcile rather than claim a failure. The key textarea is still
         // cleared in finally.
-        showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
+        showToast(unconfirmedText("the certificate change", "refreshing the current certificate"), "warn");
         void this.loadCertificate();
         return;
       }
@@ -874,7 +867,13 @@ export class SystemView {
         return;
       }
     }
-    showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
+    if (isRefusal(err)) {
+      showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
+      return;
+    }
+    // It may have applied: re-read, and say so rather than claim a failure.
+    showToast(unconfirmedText("the notification settings", "refreshing; check them before saving again"), "warn");
+    void store.refreshConfig();
   }
 
   // setAuthReveal shows or hides the token field and keeps the reveal button's
@@ -1285,8 +1284,14 @@ export class SystemView {
       if (cur) store.applyUpdateStatus(withChecksSetting(cur, want));
       showToast(want ? "Daily update check turned on." : "Daily update check turned off.");
     } catch (err: unknown) {
-      input.checked = !want;
-      showToast(`Could not change the update check: ${updateErrorText(err)}`, "error");
+      if (isRefusal(err)) {
+        input.checked = !want;
+        showToast(`Could not change the update check: ${apiErrorMessage(err)}`, "error");
+      } else {
+        // It may have applied: the refresh below sets the switch from the
+        // appliance.
+        showToast(unconfirmedText("the update check change", "refreshing"), "warn");
+      }
     } finally {
       this.updateToggling = false;
       input.removeAttribute("aria-busy");
@@ -1310,7 +1315,9 @@ export class SystemView {
       else if (status.lastError) showToast(`Update check failed: ${status.lastError.trim()}`, "warn");
       else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
-      showToast(`Update check failed: ${updateErrorText(err)}`, "error");
+      // Any failure reads the same: a check changes no setting, so a lost
+      // answer only hides a result the next status read brings.
+      showToast(`Update check failed: ${apiErrorMessage(err)}`, "error");
     } finally {
       this.updateChecking = false;
       clearBusy(btn, "Check Now");
@@ -1346,8 +1353,10 @@ export class SystemView {
         showToast("An update is already under way; following it here.", "warn");
         this.startFollow(now.currentVersion);
         this.followStatus(now);
+      } else if (isRefusal(err)) {
+        showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
       } else {
-        showToast(`Update did not start: ${updateErrorText(err)}`, "error");
+        showToast(unconfirmedText("that the update started", "no update is under way yet; try again if none begins"), "warn");
       }
     } finally {
       this.updateApplying = false;
@@ -1439,9 +1448,14 @@ export class SystemView {
       // the discovery toggle, the card's editable control.
       this.discoveryEl?.focus();
     } catch (err: unknown) {
-      // A validation problem reads by its reason, as on the other forms; its
-      // detail repeats the raw field path.
-      showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
+      if (isRefusal(err)) {
+        // A validation problem reads by its reason, as on the other forms;
+        // its detail repeats the raw field path.
+        showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
+      } else {
+        showToast(unconfirmedText("the discovery setting", "refreshing; check it before saving again"), "warn");
+        void store.refreshConfig();
+      }
     } finally {
       if (saveBtn) clearBusy(saveBtn, "Save Changes");
       if (discardBtn) discardBtn.disabled = false;

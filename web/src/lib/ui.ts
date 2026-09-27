@@ -293,6 +293,12 @@ export function focusDropped(): boolean {
   return document.activeElement === null || document.activeElement === document.body;
 }
 
+// holdsFocus reports whether keyboard focus is on el or inside it.
+export function holdsFocus(el: Element): boolean {
+  const active = document.activeElement;
+  return active !== null && el.contains(active);
+}
+
 // focusWorkspace moves focus to the workspace region when the control
 // holding it went away, without scrolling (see web/AGENTS.md), and returns
 // it.

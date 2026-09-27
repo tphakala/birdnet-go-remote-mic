@@ -11,7 +11,6 @@ import {
   INSTALL_WAIT_TIMEOUT_MS,
   lastCheckText,
   safeNotesUrl,
-  sentence,
   withChecksSetting,
   TICK_GAP_MS,
   TICK_HOLD_MS,
@@ -168,15 +167,6 @@ test("describeUpdate: neutral states are info toned", () => {
   assert.equal(describeUpdate(status({ supported: false })).tone, "info");
   assert.equal(describeUpdate(status({ checkEnabled: false })).tone, "info");
   assert.equal(describeUpdate(status({ lastCheck: undefined })).tone, "info");
-});
-
-test("sentence capitalises and ends a backend message once", () => {
-  assert.equal(sentence("timeout"), "Timeout.");
-  assert.equal(sentence("already ends."), "Already ends.");
-  assert.equal(sentence("asks?"), "Asks?");
-  assert.equal(sentence("dangles:"), "Dangles.");
-  assert.equal(sentence("  "), "");
-  assert.equal(sentence(undefined), "");
 });
 
 test("withChecksSetting mirrors what the appliance does to its update state", () => {

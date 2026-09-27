@@ -512,9 +512,9 @@ export class DeviceSettingsForm {
 
   // markRejected marks the field the appliance rejected on save with its
   // reason and, when moveFocus is set, moves focus to it, as a failed local
-  // check does. It returns false for any field other than name, path, rate
-  // and channels, which have no error line, so the caller's toast covers
-  // them alone. The mark lasts until the next local check (validate), as the
+  // check does. Only name, path, rate and channels have an error line; for
+  // any other field it returns false, and the caller's toast covers it
+  // alone. The mark lasts until the next local check (validate), as the
   // form's own marks do.
   public markRejected(key: keyof typeof DEVICE_FIELD_LABELS, reason: string, moveFocus: boolean): boolean {
     const text = sentence(reason);

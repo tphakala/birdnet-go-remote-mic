@@ -1,11 +1,12 @@
-// Unit tests for the error helpers in lib/api.ts that turn a failed request
-// into text: apiErrorMessage for a toast, firstProblem for a field error.
+// Unit tests for lib/api.ts's error handling: how request() maps a failed or
+// unreadable response (ApiError, UnreadableResponseError), and the helpers
+// that turn one into text (apiErrorMessage, firstProblem, problemFor).
 // Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiClient, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason, UnreadableResponseError } from "../src/lib/api.ts";
+import { ApiClient, ApiError, apiErrorMessage, firstProblem, isRefusal, problemFor, problemReason, unconfirmedText, UnreadableResponseError } from "../src/lib/api.ts";
 
 test("firstProblem returns the first validation problem with its field and reason", () => {
   const err = new ApiError(422, "Invalid configuration", { errors: [
@@ -102,9 +103,8 @@ test("a problem body that is not an object keeps only its status", async () => {
 
 test("a success body labelled JSON that does not parse is an unknown outcome that quotes nothing", async () => {
   const err = await failWith(new Response("<html>secret</html>", { status: 200, headers: { "Content-Type": "application/json" } }));
-  // Not an ApiError: the request was accepted, so a caller that tells a
-  // refusal from an unknown outcome (the certificate and restart flows)
-  // must take it as unknown.
+  // Not an ApiError: the request was accepted, so every caller that tells a
+  // refusal from an unknown outcome (isRefusal) takes it as unknown.
   assert.ok(err instanceof UnreadableResponseError);
   assert.equal(err instanceof ApiError, false);
   assert.equal(apiErrorMessage(err), "the response could not be read");
@@ -177,4 +177,11 @@ test("a malformed entry in a problem's errors list is dropped", async () => {
   assert.ok(err instanceof ApiError);
   assert.deepEqual(err.errors, [{ field: "certPem", reason: "bad" }]);
   assert.deepEqual(problemFor(err, (e) => e.field === "certPem"), { field: "certPem", reason: "bad" });
+});
+
+test("only an ApiError is a refusal; an unknown outcome is said without error text", () => {
+  assert.equal(isRefusal(new ApiError(409, "conflict")), true);
+  assert.equal(isRefusal(new UnreadableResponseError(200)), false);
+  assert.equal(isRefusal(new TypeError("Failed to fetch")), false);
+  assert.equal(unconfirmedText("the save", "refreshing"), "Could not confirm the save; refreshing.");
 });

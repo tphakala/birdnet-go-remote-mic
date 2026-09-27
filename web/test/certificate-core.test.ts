@@ -80,7 +80,7 @@ test("certTooLargeReason echoes the appliance's problem detail", () => {
   assert.equal(certTooLargeReason("the request body exceeds the 256 KiB limit"), "the request body exceeds the 256 KiB limit");
   // A trailing period is dropped, since the toast continues the sentence.
   assert.equal(certTooLargeReason("the request body exceeds the 512 KiB limit."), "the request body exceeds the 512 KiB limit");
-  // A problem detail is shown as sent, as every toast shows one.
+  // A long detail is shown as given; only the trailing period goes.
   assert.equal(certTooLargeReason("x".repeat(300)), "x".repeat(300));
 });
 

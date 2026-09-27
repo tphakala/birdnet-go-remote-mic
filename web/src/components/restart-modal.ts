@@ -1,4 +1,5 @@
 import { api, ApiError, apiErrorMessage } from "../lib/api.ts";
+import { withDeadline } from "../lib/deadline.ts";
 import { showToast } from "./toast.ts";
 import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
 import { announce } from "../lib/ui.ts";
@@ -28,7 +29,9 @@ function sayNow(text: string): void {
 const UNCONFIRMED_TEXT = "The appliance did not confirm the restart. This page waits to see whether it restarts.";
 // HEALTH_ATTEMPTS and HEALTH_PROBE_MS bound the wait for the appliance.
 const HEALTH_ATTEMPTS = 30;
-const HEALTH_PROBE_MS = 900;
+// A probe gets 4 s: the first one after a restart may need a fresh TLS
+// handshake with a busy appliance (its duration NOT MEASURED).
+const HEALTH_PROBE_MS = 4_000;
 
 // confirmRestart asks the user to confirm the disruptive restart before it runs.
 function confirmRestart(): Promise<boolean> {
@@ -91,11 +94,12 @@ export async function triggerApplianceRestart(): Promise<void> {
   trapFocus(modal);
   modal.querySelector<HTMLElement>(".modal-card")?.focus();
 
-  // Announce the phase once; the per-second countdown below updates only the
-  // aria-hidden visual element, so it is not read out on every tick.
-  // The dialog's description already reads UNCONFIRMED_TEXT on the
-  // unconfirmed path, so the phase line is short.
-  say(confirmed ? "Restarting the appliance. Reconnecting shortly." : "Restart not confirmed. Waiting for the appliance.");
+  // The per-second countdown below updates only the aria-hidden visual
+  // element, so it is not read out on every tick. The dialog's title and
+  // description are read as focus enters it, so the phase line adds only
+  // what they lack: when it reconnects (the unconfirmed description already
+  // says it waits).
+  if (confirmed) say("Reconnecting in 5 seconds.");
 
   let seconds = 5;
   const countdownText = (s: number) => (confirmed ? `Reconnecting in ${s}s...` : `Checking in ${s}s...`);
@@ -107,34 +111,29 @@ export async function triggerApplianceRestart(): Promise<void> {
       if (timerEl) timerEl.textContent = countdownText(seconds);
     } else {
       clearInterval(countdown);
-      if (timerEl) timerEl.textContent = "Waiting for the appliance to come back...";
-      say("Waiting for the appliance to come back.");
-      void pollHealth(confirmed);
+      const phase = confirmed ? "Waiting for the appliance to come back" : "Checking whether the appliance answers";
+      if (timerEl) timerEl.textContent = `${phase}...`;
+      say(`${phase}.`);
+      void pollHealth(confirmed, phase);
     }
   }, 1000);
 }
 
-// pollHealth waits for the appliance to answer: up to HEALTH_ATTEMPTS probes,
-// one at a time with a second between them, each bounded by HEALTH_PROBE_MS. After a confirmed restart an answer reloads the
-// page. After an unconfirmed one the appliance may never have restarted, so
-// the dialog says so and offers Reload now instead of reloading under the
-// operator, who would not learn it.
-async function pollHealth(confirmed: boolean): Promise<void> {
+// pollHealth waits for the appliance to answer: up to HEALTH_ATTEMPTS
+// probes, one at a time with a second between them, each bounded by
+// HEALTH_PROBE_MS. After a confirmed restart an answer reloads the page.
+// After an unconfirmed one the appliance may never have restarted, so the
+// dialog says so and offers Reload now instead of reloading under the
+// operator, who would not learn it. phase is the waiting text.
+async function pollHealth(confirmed: boolean, phase: string): Promise<void> {
   const timerEl = document.getElementById("reconnect-timer");
   for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++) {
-    if (timerEl) timerEl.textContent = `Waiting for the appliance to come back (${attempt}/${HEALTH_ATTEMPTS})...`;
+    if (timerEl) timerEl.textContent = `${phase} (${attempt}/${HEALTH_ATTEMPTS})...`;
     let up = false;
-    // A timer and an AbortController rather than AbortSignal.timeout, which
-    // is missing before Safari 16 (as in about.ts).
-    const abort = new AbortController();
-    const timer = window.setTimeout(() => abort.abort(), HEALTH_PROBE_MS);
     try {
-      const res = await fetch("/api/v1/healthz", { cache: "no-store", signal: abort.signal });
-      up = res.ok;
+      up = await withDeadline(HEALTH_PROBE_MS, async (signal) => (await fetch("/api/v1/healthz", { cache: "no-store", signal })).ok);
     } catch {
       // Still restarting, or the probe timed out.
-    } finally {
-      window.clearTimeout(timer);
     }
     if (up && confirmed) {
       if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
@@ -143,21 +142,24 @@ async function pollHealth(confirmed: boolean): Promise<void> {
       return;
     }
     if (up) {
-      const text = "The appliance answers, but did not confirm the restart. Check its uptime after you reload.";
-      // The dialog's description and spinner said it was waiting.
-      const textEl = document.getElementById("modal-text");
-      if (textEl) textEl.textContent = text;
-      const spinner = document.querySelector<HTMLElement>("#restart-modal .spinner-ring");
-      if (spinner) spinner.hidden = true;
-      if (timerEl) timerEl.textContent = "";
-      say(text);
-      showRetry();
+      endWait("The appliance answers, but did not confirm the restart. Check its uptime after you reload.");
       return;
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
   }
   if (timerEl) timerEl.textContent = "Restart timed out.";
-  say("Restart timed out. Use the Reload now button to check on the appliance.");
+  endWait("The appliance did not answer in time. Use the Reload now button to check on it.");
+}
+
+// endWait ends the dialog's wait without a reload: the description says why
+// (it said the page was waiting), the spinner stops, and Reload now takes
+// focus.
+function endWait(text: string): void {
+  const textEl = document.getElementById("modal-text");
+  if (textEl) textEl.textContent = text;
+  const spinner = document.querySelector<HTMLElement>("#restart-modal .spinner-ring");
+  if (spinner) spinner.hidden = true;
+  say(text);
   showRetry();
 }
 

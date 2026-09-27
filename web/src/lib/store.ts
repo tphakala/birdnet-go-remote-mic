@@ -1,4 +1,5 @@
-import { api, ApiError, apiErrorMessage, UnreadableResponseError, type ApiClient } from "./api.ts";
+import { api, ApiError, apiErrorMessage, TOKEN_NOT_ACCEPTED, UnreadableResponseError, type ApiClient } from "./api.ts";
+import { sentence } from "./text.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
 import { getToken, setToken } from "./auth.ts";
@@ -185,9 +186,12 @@ export class AppStore extends Emitter<StoreEvents> {
     } catch (err: unknown) {
       setToken(null);
       if (err instanceof ApiError && err.status === 401) {
-        return { ok: false, message: "The access token was not accepted. Check it and try again." };
+        return { ok: false, message: `${sentence(TOKEN_NOT_ACCEPTED)} Check it and try again.` };
       }
       if (err instanceof UnreadableResponseError) return { ok: false, message: "The appliance answered, but its reply could not be read. Try again." };
+      // A problem body is the appliance's own answer; any other failure (a
+      // proxy's page, no answer) did not reach it.
+      if (err instanceof ApiError && err.problem) return { ok: false, message: `The appliance refused the sign-in: ${apiErrorMessage(err)}` };
       return { ok: false, message: `Could not reach the appliance: ${apiErrorMessage(err)}` };
     }
     this.loginPending = false;
@@ -201,7 +205,7 @@ export class AppStore extends Emitter<StoreEvents> {
     // rejected token is not kept") and leave a dead credential in storage.
     if (this.loginPending) {
       setToken(null);
-      return { ok: false, message: "The access token was not accepted while loading. Try again." };
+      return { ok: false, message: `${sentence(`${TOKEN_NOT_ACCEPTED} while loading`)} Try again.` };
     }
     this.startPolling();
     return { ok: true, message: "" };
