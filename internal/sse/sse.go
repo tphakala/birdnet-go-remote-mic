@@ -106,9 +106,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Content-Type", "text/event-stream")
 	hdr.Set("Cache-Control", "no-cache")
 	hdr.Set("Connection", "keep-alive")
-	// Ask a reverse proxy not to buffer the stream (nginx honours this):
-	// buffered, a quiet stream's heartbeats never reach the client, whose
-	// watchdog then drops a live connection.
+	// Ask a reverse proxy not to buffer the stream (nginx documents this
+	// header; other proxies NOT MEASURED): buffered, a quiet stream's
+	// heartbeats never reach the client, whose watchdog then drops a live
+	// connection.
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
@@ -192,7 +193,8 @@ func forward(ctx context.Context, in <-chan Event, out chan<- Event) {
 }
 
 // writeEvent formats one event into buf, reused across the connection's
-// events so a write allocates nothing, and writes it (see write).
+// events so a write allocates only when an event outgrows every earlier one,
+// and writes it (see write).
 func (h *handler) writeEvent(w http.ResponseWriter, rc *http.ResponseController, buf *[]byte, ev Event) bool {
 	*buf = append((*buf)[:0], "event: "...)
 	*buf = append(*buf, ev.Name...)

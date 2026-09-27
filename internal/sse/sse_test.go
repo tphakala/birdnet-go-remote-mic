@@ -583,18 +583,24 @@ func (d *discardWriter) WriteHeader(int)                  {}
 func (d *discardWriter) FlushError() error                { return nil }
 func (d *discardWriter) SetWriteDeadline(time.Time) error { return nil }
 
-// Pins the reused event buffer: a write per event per client allocated
-// before (fmt boxing its arguments). Not parallel: AllocsPerRun counts
-// allocations process-wide.
+// Pins that writeEvent allocates nothing once its buffer has grown to the
+// event's size. Not parallel: AllocsPerRun counts allocations
+// process-wide.
 func TestWriteEventDoesNotAllocate(t *testing.T) {
 	dw := &discardWriter{hdr: http.Header{}}
 	rc := http.NewResponseController(dw)
 	h := &handler{writeTimeout: time.Second}
 	var buf []byte
 	ev := Event{Name: evLevels, Data: []byte(`{"devices":[]}`)}
-	h.writeEvent(dw, rc, &buf, ev) // grow buf once
-	if n := testing.AllocsPerRun(100, func() { h.writeEvent(dw, rc, &buf, ev) }); n != 0 {
+	if !h.writeEvent(dw, rc, &buf, ev) { // grow buf once
+		t.Fatal("writeEvent failed")
+	}
+	ok := true
+	if n := testing.AllocsPerRun(100, func() { ok = h.writeEvent(dw, rc, &buf, ev) && ok }); n != 0 {
 		t.Fatalf("writeEvent allocs = %v, want 0", n)
+	}
+	if !ok {
+		t.Fatal("a measured writeEvent failed, so it may have skipped the write")
 	}
 }
 

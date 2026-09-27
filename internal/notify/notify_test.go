@@ -310,8 +310,8 @@ func TestCenterEventNamesMatchEmitted(t *testing.T) {
 			return sse.Event{}
 		}
 	}
-	// Both emit sites: a new entry (Publish, and Onset through it) and an
-	// active entry's new text (Update).
+	// Both emit sites: a new entry (publishLocked, reached from Publish,
+	// Onset, Clear and Resolve) and an active entry's new text (Update).
 	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "one"})
 	ev := next("Publish")
 	c.Onset(Notification{Category: CategoryDevice, Key: testDeviceKey, Title: testDownTitle})
