@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 
 import { AppStore, HIDDEN_STREAM_GRACE_MS, type StoreDeps, type StoreEvents } from "../src/lib/store.ts";
 import { setToken } from "../src/lib/auth.ts";
-import { at, deferred, FakeTimers } from "./fixtures.ts";
+import { at, deferred, FakeStream, FakeTimers, settle } from "./fixtures.ts";
 import type { AvailableDevice, ApplianceStatus, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
 
 // Outcome is one queued result for an endpoint: a value to resolve with, an
@@ -57,7 +57,7 @@ function harness(timers?: FakeTimers): Harness {
   };
   let starts = 0;
   let stops = 0;
-  let handler: ((name: string, data: unknown) => void) | null = null;
+  const stream = new FakeStream();
   const deps: StoreDeps = {
     api: {
       onUnauthorized: null,
@@ -69,10 +69,7 @@ function harness(timers?: FakeTimers): Harness {
       getAvailableDevices: next("getAvailableDevices"),
     },
     sse: {
-      subscribe: (h) => {
-        handler = h;
-        return () => true;
-      },
+      subscribe: stream.subscribe,
       start: () => {
         starts++;
       },
@@ -96,7 +93,7 @@ function harness(timers?: FakeTimers): Harness {
   return {
     unauthorized: () => deps.api.onUnauthorized?.(),
     sseStops: () => stops,
-    emit: (name) => handler?.(name, null),
+    emit: (name) => stream.deliver(name, null),
     connection,
     store,
     push(endpoint, outcome) {
@@ -474,7 +471,7 @@ test("a token-gated boot fetches /status once and applies the verifying read", a
     });
     assert.equal(await h.store.start(), true);
     // loadInitial runs detached from start(); let its refreshes settle.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
     assert.equal(h.calls.get("getStatus"), 1);
     assert.deepEqual(h.store.getState().status, status(1));
     assert.equal(h.events.get("status"), 1);
@@ -527,11 +524,19 @@ test("a failed initial load announces which views' data is missing", async () =>
   }
 });
 
-test("a failed initial load announces no loaderror while a login is pending", async () => {
-  const h = harness(new FakeTimers());
-  // A 401 raises the login prompt; the reads that follow fail behind it.
+test("a 401 during the initial load leaves the failure to the login prompt", async () => {
+  const h = harness();
+  const statusRead = deferred<ApplianceStatus>();
+  h.push("getStatus", statusRead.promise);
+  for (const ep of ["getDevices", "getSystem", "getConfig"] as const) h.push(ep, new Error("offline"));
+  h.push("getAvailableDevices", []);
+  const errors: LoadError[] = [];
+  h.store.on("loaderror", (e) => errors.push(e));
+  const load = h.store.loadInitial();
+  // The reads are in flight when one is rejected with a 401, which raises the
+  // login prompt; the load then finishes with every core read failed.
   h.unauthorized();
-  const got = await loadFailing(h, ["getStatus", "getDevices", "getSystem", "getConfig"]);
-  assert.deepEqual(got, []);
-  assert.equal(h.events.get("loaderror") ?? 0, 0);
+  statusRead.reject(new Error("401"));
+  await load;
+  assert.deepEqual(errors, [], "a pending login must suppress the load error");
 });

@@ -109,6 +109,13 @@ export function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; r
   return { promise, resolve, reject };
 }
 
+// settle lets awaited work (a fetch answered by a fake, the follow-up that
+// awaits it) run to completion: it resolves after the current macrotask, by
+// which time every microtask queued before it has run.
+export function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // at is items[i] for a test that knows the index is in range: an index past
 // the end fails the test with a message instead of reading a property of
 // undefined.
@@ -124,6 +131,22 @@ export function group(m: RegExpMatchArray, i: number): string {
   const g = m[i];
   if (g === undefined) throw new Error(`capture group ${i} did not take part in ${JSON.stringify(m[0])}`);
   return g;
+}
+
+// FakeStream stands in for the SSE client's subscription: a store under test
+// subscribes to it, and deliver hands that subscriber an event-stream frame
+// as the client would.
+export class FakeStream {
+  private handler: ((name: string, data: unknown) => void) | null = null;
+
+  readonly subscribe = (h: (name: string, data: unknown) => void): (() => boolean) => {
+    this.handler = h;
+    return () => true;
+  };
+
+  deliver(name: string, data: unknown): void {
+    this.handler?.(name, data);
+  }
 }
 
 // FakeConnection stands in for the app store as a NotificationStore's

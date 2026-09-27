@@ -720,9 +720,8 @@ async function sweep(flags: Flags, browser: Browser, serverUrl: string): Promise
     // Transitions are off, so a check never reads a fade half way. The
     // contrast audit settles CSS animations itself: a one-shot one (an
     // entrance) is finished, and a looping one (a pulse) is judged at its
-    // lowest keyframe opacity. Reduced motion is deliberately not emulated: it
-    // also stops the meters' animation loop, whose peak-hold ballistics the
-    // stability check depends on.
+    // lowest keyframe opacity. Reduced motion is not emulated, so the meters
+    // run their animated path, the one most viewers see.
     await page.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
         const style = document.createElement("style");

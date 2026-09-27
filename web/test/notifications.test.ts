@@ -16,7 +16,7 @@ import { resyncDelay } from "../src/lib/notifications-core.ts";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
 import type { Router } from "../src/lib/router.ts";
 import type { AppStore } from "../src/lib/store.ts";
-import { FakeConnection, FakeTimers, notif, snap } from "./fixtures.ts";
+import { FakeConnection, FakeStream, FakeTimers, notif, settle, snap } from "./fixtures.ts";
 
 // Compile-time checks, never called: the connection seam takes the app store
 // and the fake, but not an emitter of another event map.
@@ -48,7 +48,7 @@ function harness(): Harness {
   const timers = new FakeTimers();
   const queue: (NotificationSnapshot | Error)[] = [];
   let calls = 0;
-  let handler: ((name: string, data: unknown) => void) | null = null;
+  const stream = new FakeStream();
   const connection = new FakeConnection();
   const ns = new NotificationStore({
     api: {
@@ -58,12 +58,7 @@ function harness(): Harness {
         return o instanceof Error ? Promise.reject(o) : Promise.resolve(o);
       },
     },
-    sse: {
-      subscribe: (h) => {
-        handler = h;
-        return () => true;
-      },
-    },
+    sse: { subscribe: stream.subscribe },
     connection,
     timers,
   });
@@ -76,15 +71,10 @@ function harness(): Harness {
     calls: () => calls,
     connect: () => connection.set(true),
     disconnect: () => connection.set(false),
-    live: (n) => handler?.("notification", n),
-    frame: (name, data) => handler?.(name, data),
+    live: (n) => stream.deliver("notification", n),
+    frame: (name, data) => stream.deliver(name, data),
     changes: () => changes,
   };
-}
-
-// settle lets the store's awaited fetch and its follow-up run to completion.
-function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 test("a failed load on connect retries with backoff until it applies", async () => {
@@ -214,8 +204,7 @@ test("change fires after a snapshot, a live event, mark-all-read, clear-all and 
   assert.equal(h.changes(), 3, "mark-all-read must announce");
   h.ns.clearAll();
   assert.equal(h.changes(), 4, "clear-all must announce");
-  // An applied snapshot announces even when it holds nothing new: the Events
-  // page leaves its loading state on it.
+  // An applied snapshot announces even when it holds nothing new.
   h.push(snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] }));
   await h.ns.load();
   assert.equal(h.changes(), 5);
@@ -231,14 +220,30 @@ test("change does not fire for a frame the store does not apply", async () => {
   h.connect();
   await settle();
   const before = h.changes();
-  h.frame("heartbeat", null);
-  h.frame("notification", { id: 2 });
+  // A frame of another type is ignored even when its data would be a valid
+  // notification.
+  h.frame("heartbeat", notif({ id: 2 }));
+  // A malformed notification from the current boot is rejected outright; it
+  // must not be folded in, nor mistaken for another boot and re-synced.
+  h.frame("notification", { id: 2, bootId: "boot-a" });
   assert.equal(h.changes(), before, "a heartbeat or a malformed frame must not announce");
+  assert.equal(h.timers.pending().length, 0, "a malformed frame must not schedule a re-sync");
   // A frame from another boot is not folded in; the re-sync it schedules
   // announces instead.
   h.live(notif({ id: 2, bootId: "boot-b" }));
   assert.equal(h.changes(), before, "a frame from another boot must not announce");
   assert.equal(h.timers.pending().length, 1, "a frame from another boot schedules a re-sync");
+});
+
+test("an empty first snapshot announces", async () => {
+  const h = harness();
+  h.push(snap({ notifications: [] }));
+  h.connect();
+  await settle();
+  // The Events page leaves its loading state on this announcement, even with
+  // nothing in the log.
+  assert.equal(h.changes(), 1);
+  assert.equal(h.ns.hasLoaded(), true);
 });
 
 // This test sets the page-wide notice handler, so it must stay the last in the
