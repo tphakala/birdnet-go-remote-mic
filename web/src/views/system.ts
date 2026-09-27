@@ -1,4 +1,4 @@
-import { api, ApiError } from "../lib/api.ts";
+import { api, ApiError, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
 import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, firstProblem, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
@@ -93,7 +93,7 @@ const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 // problem body's detail counts as a reason; any other body (a proxy's page)
 // is not shown.
 function updateErrorText(err: unknown): string {
-  return err instanceof ApiError ? refusalText(err.status, err.title, err.problem ? err.detail : undefined) : apiErrorMessage(err);
+  return err instanceof ApiError ? refusalText(err.status, err.title, err.problemDetail) : apiErrorMessage(err);
 }
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
@@ -560,9 +560,9 @@ export class SystemView {
         void this.loadCertificate();
         return;
       }
-      const item = err.errors?.find((e) => e.field?.startsWith("extraSans"));
+      const item = problemFor(err, (e) => e.field?.startsWith("extraSans") ?? false);
       if (item) {
-        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, item.reason ?? apiErrorMessage(err));
+        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, item.reason);
         this.certSansEl?.focus();
       } else {
         showToast(`Regenerate failed: ${apiErrorMessage(err)}`, "error");
@@ -624,14 +624,14 @@ export class SystemView {
       // than echoing the bare "payload too large". The limit itself comes from
       // the problem detail, so this text cannot drift from the server's value.
       if (err.status === 413) {
-        showToast(`Install failed: ${certTooLargeReason(err.detail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
+        showToast(`Install failed: ${certTooLargeReason(err.problemDetail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
         return;
       }
       let pemBad = false;
       let keyBad = false;
       if (err.errors) {
         for (const item of err.errors) {
-          const reason = item.reason ?? apiErrorMessage(err);
+          const reason = problemReason(err, item);
           if (item.field === "certPem") {
             this.setCertFieldError(this.certPemEl, this.certPemErrorEl, reason);
             pemBad = true;

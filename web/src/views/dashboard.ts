@@ -1274,15 +1274,17 @@ export class DashboardView {
     return run;
   }
 
-  // apiErrorToast surfaces a failed request: a validation problem names the
-  // first field by its form label with the reason, anything else shows the
-  // failure under a prefix.
-  private apiErrorToast(err: unknown, prefix: string): void {
+  // apiErrorToast surfaces a failed request under a prefix that says which
+  // action failed. A validation problem names the first field by its form
+  // label, and the device by its name in sent, the device list the request
+  // carried (the stored config when the request carried none), since a field
+  // path indexes that list.
+  private apiErrorToast(err: unknown, prefix: string, sent?: readonly DeviceConfig[]): void {
     const problem = firstProblem(err);
     if (problem) {
-      const names = (store.getState().config?.devices ?? []).map((cd) => cd.name);
-      const what = problem.field ? deviceFieldLabel(problem.field, names) : "The configuration";
-      showToast(`${what} was rejected: ${problem.reason}`, "error");
+      const names = (sent ?? store.getState().config?.devices ?? []).map((cd) => cd.name);
+      const what = problem.field ? deviceFieldLabel(problem.field, names) : "the configuration";
+      showToast(`${prefix}: ${what} was rejected: ${problem.reason}`, "error");
     } else {
       showToast(`${prefix}: ${apiErrorMessage(err)}`, "error");
     }
@@ -1336,7 +1338,7 @@ export class DashboardView {
       } catch (err: unknown) {
         // Only a failed PATCH reverts the toggle: the mutation did not persist.
         input.checked = !want;
-        this.apiErrorToast(err, "Toggle failed");
+        this.apiErrorToast(err, "Toggle failed", merged);
       } finally {
         // Re-read the current toggle: a poll may have rebuilt the card during the
         // PATCH (a serving<->idle flip, or a captured-channel change) and replaced
@@ -1556,7 +1558,7 @@ export class DashboardView {
         // Cancel and reload paths so a keyboard user is not stranded at the top.
         entry.settingsBtn.focus();
       } catch (err: unknown) {
-        this.apiErrorToast(err, "Save failed");
+        this.apiErrorToast(err, "Save failed", merged);
       }
       });
     } finally {

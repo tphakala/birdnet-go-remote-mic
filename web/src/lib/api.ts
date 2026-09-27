@@ -23,10 +23,10 @@ export class ApiError extends Error {
   public title: string;
   public detail?: string;
   public errors?: ValidationErrorItem[];
-  // problem is true when the error came from a JSON error body (the
-  // appliance's RFC 9457 problems), whose detail is written for people;
-  // otherwise detail holds whatever the response body was (a proxy's HTML
-  // error page, say), which apiErrorMessage does not show.
+  // problem is true when the error came from an RFC 9457 problem body
+  // (application/problem+json, what the appliance sends), whose detail is
+  // written for people; otherwise detail holds whatever the response body was
+  // (a proxy's HTML or JSON error page, say). Read it through problemDetail.
   public problem: boolean;
 
   constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[], problem = false) {
@@ -38,15 +38,26 @@ export class ApiError extends Error {
     this.errors = errors;
     this.problem = problem;
   }
+
+  // problemDetail is the problem's detail, or undefined when the body was not
+  // a problem, so no caller shows a body the appliance did not write.
+  get problemDetail(): string | undefined {
+    return this.problem ? this.detail : undefined;
+  }
 }
 
 // apiErrorMessage reduces any thrown value to a short human string. An
 // ApiError shows its problem detail, which says what went wrong (problem
 // titles are generic: "bad request", "internal error"), else its title, else
-// its status; any other Error its message, and anything else its string form.
-// Shared so the save and PATCH catch blocks map failures the same way.
+// its status; a 401 says the token was not accepted, since the login prompt
+// opens with it and the problem's detail names an HTTP header. Any other
+// Error shows its message, and anything else its string form. Shared so
+// every failure toast maps errors the same way.
 export function apiErrorMessage(err: unknown): string {
-  if (err instanceof ApiError) return (err.problem && err.detail) || err.title || `HTTP ${err.status}`;
+  if (err instanceof ApiError) {
+    if (err.status === 401) return "The access token was not accepted.";
+    return err.problemDetail || err.title || `HTTP ${err.status}`;
+  }
   if (err instanceof Error) return err.message;
   return String(err);
 }
@@ -55,15 +66,26 @@ export function apiErrorMessage(err: unknown): string {
 // it names, if any, and why it was refused.
 export type FieldProblem = ValidationErrorItem & { reason: string };
 
-// firstProblem is the first validation problem an ApiError carries, its
-// reason defaulting to the problem title when the item has none, or null for
-// any other failure. Callers show it on the field, the form or in a toast, so
-// every one keeps the same fallback.
-export function firstProblem(err: unknown): FieldProblem | null {
+// problemReason is why a validation item was refused: its own reason, else
+// the problem title. Every site that shows a validation problem uses it, so
+// they all fall back the same way.
+export function problemReason(err: ApiError, item: ValidationErrorItem): string {
+  return item.reason ?? err.title;
+}
+
+// problemFor is the first validation problem an ApiError carries that match
+// accepts, with its reason (problemReason), or null for any other failure.
+export function problemFor(err: unknown, match: (item: ValidationErrorItem) => boolean): FieldProblem | null {
   if (!(err instanceof ApiError)) return null;
-  const item = err.errors?.[0];
+  const item = err.errors?.find(match);
   if (!item) return null;
-  return { field: item.field, reason: item.reason ?? err.title };
+  return { field: item.field, reason: problemReason(err, item) };
+}
+
+// firstProblem is the first validation problem an ApiError carries, or null
+// for any other failure.
+export function firstProblem(err: unknown): FieldProblem | null {
+  return problemFor(err, () => true);
 }
 
 export class ApiClient {
@@ -118,12 +140,15 @@ export class ApiClient {
     if (!res.ok) {
       if (isJson) {
         const prob = (await res.json()) as ValidationProblem;
+        // Only a problem body's fields are the appliance's words; a plain JSON
+        // error (a proxy's) keeps nothing but its status.
+        const isProblem = contentType.includes("application/problem+json");
         throw new ApiError(
-          prob.status || res.status,
-          prob.title || res.statusText || `HTTP ${res.status}`,
-          prob.detail,
-          prob.errors,
-          true,
+          (isProblem && prob.status) || res.status,
+          (isProblem && prob.title) || res.statusText || `HTTP ${res.status}`,
+          isProblem && typeof prob.detail === "string" ? prob.detail : undefined,
+          isProblem && Array.isArray(prob.errors) ? prob.errors : undefined,
+          isProblem,
         );
       }
       const text = await res.text();

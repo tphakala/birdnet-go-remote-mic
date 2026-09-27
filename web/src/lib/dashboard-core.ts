@@ -250,7 +250,7 @@ const DEVICE_FIELD_LABELS: Readonly<Record<string, string>> = {
 // deviceFieldLabel turns a validation problem's field path into what an
 // operator reads: the field's label, and for a path into the device list the
 // name of the device it points at (names is the device list the request
-// carried, in order), since a save sends every device. It returns the path
+// sent, in order), since a save sends every device. It returns the path
 // itself for one it does not know. The appliance also reports the list as a
 // whole ("devices", config.go:591) and a provision's device id ("device",
 // mgmtserver/devices.go:182).

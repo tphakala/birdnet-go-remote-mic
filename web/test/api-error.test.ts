@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiClient, ApiError, apiErrorMessage, firstProblem } from "../src/lib/api.ts";
+import { ApiClient, ApiError, apiErrorMessage, firstProblem, problemFor, problemReason } from "../src/lib/api.ts";
 
 test("firstProblem returns the first validation problem with its field and reason", () => {
   const err = new ApiError(422, "Invalid configuration", undefined, [
@@ -78,4 +78,48 @@ test("any other error body is not shown, and an empty status text falls back to 
   assert.equal(err.problem, false);
   assert.equal(err.title, "HTTP 502");
   assert.equal(apiErrorMessage(err), "HTTP 502");
+});
+
+test("a plain JSON error body is not a problem, so its fields are not shown", async () => {
+  // A proxy answering with its own JSON error.
+  const err = await failWith(
+    new Response(JSON.stringify({ title: "proxy says no", detail: "upstream timed out", errors: [{ field: "x", reason: "y" }] }), {
+      status: 504,
+      statusText: "Gateway Timeout",
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.problem, false);
+  assert.equal(err.problemDetail, undefined);
+  assert.equal(apiErrorMessage(err), "Gateway Timeout");
+  assert.equal(firstProblem(err), null, "a non-problem body carries no validation problems");
+});
+
+test("a problem whose detail is not a string shows its title", async () => {
+  const err = await failWith(
+    new Response(JSON.stringify({ status: 500, title: "internal error", detail: { nested: true } }), {
+      status: 500,
+      headers: { "Content-Type": "application/problem+json" },
+    }),
+  );
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.problemDetail, undefined);
+  assert.equal(apiErrorMessage(err), "internal error");
+});
+
+test("a 401 says the token was not accepted instead of the problem detail", () => {
+  const err = new ApiError(401, "unauthorized", "a valid access token is required (Authorization: Bearer <token>)", undefined, true);
+  assert.equal(apiErrorMessage(err), "The access token was not accepted.");
+});
+
+test("problemFor finds the first matching problem with the shared fallback", () => {
+  const err = new ApiError(422, "invalid request", undefined, [
+    { field: "certPem", reason: "not a certificate" },
+    { field: "extraSans[1]" },
+  ], true);
+  assert.deepEqual(problemFor(err, (e) => e.field?.startsWith("extraSans") ?? false), { field: "extraSans[1]", reason: "invalid request" });
+  assert.equal(problemFor(err, (e) => e.field === "keyPem"), null);
+  assert.equal(problemReason(err, { field: "keyPem" }), "invalid request");
+  assert.equal(problemReason(err, { reason: "too long" }), "too long");
 });
