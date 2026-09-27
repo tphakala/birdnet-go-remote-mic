@@ -316,12 +316,12 @@ export class UpdateFollow {
 }
 
 // followEndText says why a follow ended without a restart, from the status and
-// whether the install was reached: a failure carries its reason (as a
-// sentence); checks turned off (here or in another tab) stop a download but
+// whether the install was reached: a failure carries its reason (lowercase
+// after the colon, like every failure toast); checks turned off (here or in another tab) stop a download but
 // not an install already handed over; anything else ended before installing
 // (a restart during the download, say), which not every path notifies about.
 export function followEndText(u: UpdateStatus, reachedInstall: boolean): { text: string; tone: "warn" | "error" } {
-  if (u.phase === "failed") return { text: `Update failed: ${sentence(u.phaseMessage) || "The attempt did not finish."}`, tone: "error" };
+  if (u.phase === "failed") return { text: `Update failed: ${u.phaseMessage?.trim() || "the attempt did not finish"}`, tone: "error" };
   if (!u.checkEnabled && !reachedInstall) return { text: "The update stopped because update checks were turned off.", tone: "warn" };
   return { text: `The update did not install; still running ${u.currentVersion}.`, tone: "warn" };
 }

@@ -310,7 +310,7 @@ export function scrollBehavior(): ScrollBehavior {
 }
 
 // REDUCED_MOTION_QUERY is the media query for the viewer's reduced-motion
-// preference, for every script that follows it.
+// preference, shared by the scripts that follow it.
 export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
 // orderChildren puts nodes into parent in the given order. In steady state

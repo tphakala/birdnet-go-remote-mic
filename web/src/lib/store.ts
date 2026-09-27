@@ -1,4 +1,4 @@
-import { api, ApiError, apiErrorMessage, type ApiClient } from "./api.ts";
+import { api, ApiError, apiErrorMessage, UnreadableResponseError, type ApiClient } from "./api.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
 import { getToken, setToken } from "./auth.ts";
@@ -187,6 +187,7 @@ export class AppStore extends Emitter<StoreEvents> {
       if (err instanceof ApiError && err.status === 401) {
         return { ok: false, message: "The access token was not accepted. Check it and try again." };
       }
+      if (err instanceof UnreadableResponseError) return { ok: false, message: "The appliance answered, but its reply could not be read. Try again." };
       return { ok: false, message: `Could not reach the appliance: ${apiErrorMessage(err)}` };
     }
     this.loginPending = false;

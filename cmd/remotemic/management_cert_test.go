@@ -267,7 +267,11 @@ func TestProviderCertificateReturnsDefensiveCopies(t *testing.T) {
 	if again.DNSNames[0] == "tampered" {
 		t.Error("Certificate did not return a defensive copy of DNSNames")
 	}
-	if fresh := prov.CertificatePEM(); len(fresh) == 0 || fresh[0] == 'X' {
+	fresh := prov.CertificatePEM()
+	if len(fresh) == 0 {
+		t.Fatal("CertificatePEM returned nothing")
+	}
+	if fresh[0] == 'X' {
 		t.Error("CertificatePEM did not return a defensive copy")
 	}
 }

@@ -500,7 +500,7 @@ export class DashboardView {
     for (const [id, entry] of this.cards) {
       if (!seen.has(id)) {
         if (entry.article.contains(document.activeElement)) {
-          // The screen order, read only here and before any card is removed.
+          // The screen order, read only when a removed card held focus.
           const idOf = new Map([...this.cards].map(([cid, e]) => [e.article, cid] as const));
           const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
           focusLost = { neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: entry.device.name };
@@ -1411,9 +1411,16 @@ export class DashboardView {
             : `${verb} ${name}.`,
         );
       } catch (err: unknown) {
-        // Only a failed PATCH reverts the toggle: the mutation did not persist.
-        input.checked = !want;
-        this.apiErrorToast(err, "Toggle failed", merged);
+        if (err instanceof ApiError) {
+          // A refusal did not persist, so the toggle reverts.
+          input.checked = !want;
+          this.apiErrorToast(err, "Toggle failed", merged);
+        } else {
+          // No answer, or one that could not be read: the change may have
+          // persisted, so the config is re-read rather than guessed.
+          showToast(`Could not confirm the change: ${apiErrorMessage(err)}. Refreshing.`, "warn");
+          void Promise.all([store.refreshConfig(), store.refreshDevices()]);
+        }
       } finally {
         // Re-read the current toggle: a poll may have rebuilt the card during the
         // PATCH (a serving<->idle flip, or a captured-channel change) and replaced
@@ -1423,7 +1430,10 @@ export class DashboardView {
         const toggle = entry.toggleInput;
         toggle.disabled = false;
         toggle.removeAttribute("aria-busy");
-        if (hadFocus) (toggle.isConnected ? toggle : entry.settingsBtn).focus();
+        // Only if focus is still on the toggle or dropped: the operator may
+        // have moved on while the change was queued.
+        const stillThere = toggle.isConnected && document.activeElement === toggle;
+        if (hadFocus && (stillThere || focusDropped())) (toggle.isConnected ? toggle : entry.settingsBtn).focus();
       }
     });
   }
@@ -1646,8 +1656,16 @@ export class DashboardView {
         const key = problem?.field ? rejectedFieldKey(problem.field, merged, edited.device) : null;
         const moveFocus = btn.contains(document.activeElement) || focusDropped();
         const marked = problem !== null && key !== null && entry.settingsForm === form && form.markRejected(key, problem.reason, moveFocus);
-        if (marked) showToast("Save failed: fix the highlighted field.", "error");
-        else this.apiErrorToast(err, "Save failed", merged);
+        // The short toast only when focus went to the marked field, which
+        // then reads the reason; otherwise the toast says it all.
+        if (marked && moveFocus) showToast("Save failed: fix the highlighted field.", "error");
+        else if (err instanceof ApiError) this.apiErrorToast(err, "Save failed", merged);
+        else {
+          // No answer, or one that could not be read: the save may have
+          // persisted, so the config is re-read rather than guessed.
+          showToast(`Could not confirm the save: ${apiErrorMessage(err)}. Refreshing the settings.`, "warn");
+          void store.refreshConfig();
+        }
       }
       });
     } finally {

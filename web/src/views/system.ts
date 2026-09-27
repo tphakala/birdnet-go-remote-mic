@@ -6,7 +6,7 @@ import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { deviceIdTitle } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
-import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
+import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
 import { generateToken, setToken } from "../lib/auth.ts";
 import {
@@ -553,9 +553,10 @@ export class SystemView {
       showToast("Certificate regenerated and applied to new connections. Download and trust the new certificate where needed.");
     } catch (err: unknown) {
       if (!(err instanceof ApiError)) {
-        // A transport failure (the connection dropped mid-request) says nothing
-        // about whether the appliance already applied the change; reconcile
-        // from the server instead of reporting a failure that may not be one.
+        // Anything but a refusal (a dropped connection, or an answer that
+        // could not be read) says nothing about whether the appliance applied
+        // the change; reconcile from the server instead of reporting a failure
+        // that may not be one.
         showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
         void this.loadCertificate();
         return;
@@ -612,8 +613,8 @@ export class SystemView {
       showToast("Custom certificate installed and applied to new connections.");
     } catch (err: unknown) {
       if (!(err instanceof ApiError)) {
-        // Same as regenerate: a dropped connection leaves the outcome unknown,
-        // so reconcile rather than claim a failure. The key textarea is still
+        // Same as regenerate: anything but a refusal leaves the outcome
+        // unknown, so reconcile rather than claim a failure. The key textarea is still
         // cleared in finally.
         showToast("Could not confirm the certificate change; refreshing the current certificate.", "warn");
         void this.loadCertificate();
@@ -1306,7 +1307,7 @@ export class SystemView {
       // Checks turned off while it ran (here or in another tab) stop a check
       // without a result; an old error must not read as this check's.
       if (!status.checkEnabled) showToast("The check stopped because update checks were turned off.", "warn");
-      else if (status.lastError) showToast(`Update check failed: ${sentence(status.lastError)}`, "warn");
+      else if (status.lastError) showToast(`Update check failed: ${status.lastError.trim()}`, "warn");
       else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
       showToast(`Update check failed: ${updateErrorText(err)}`, "error");

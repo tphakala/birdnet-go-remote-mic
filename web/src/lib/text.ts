@@ -12,7 +12,7 @@ export function sentence(msg: string | undefined): string {
   return /[.!?]$/.test(s) ? s : `${s}.`;
 }
 
-// deviceIdTitle is the hover text that names a device's stable id.
+// deviceIdTitle names a device's stable id, as a title or a visible label.
 export function deviceIdTitle(id: string): string {
   return `Device ID: ${id}`;
 }

@@ -114,9 +114,8 @@ export async function triggerApplianceRestart(): Promise<void> {
   }, 1000);
 }
 
-// pollHealth waits for the appliance to answer, once a second for up to
-// HEALTH_ATTEMPTS probes, one at a time, each bounded so a hanging probe
-// cannot outlast its second. After a confirmed restart an answer reloads the
+// pollHealth waits for the appliance to answer: up to HEALTH_ATTEMPTS probes,
+// one at a time with a second between them, each bounded by HEALTH_PROBE_MS. After a confirmed restart an answer reloads the
 // page. After an unconfirmed one the appliance may never have restarted, so
 // the dialog says so and offers Reload now instead of reloading under the
 // operator, who would not learn it.
@@ -125,11 +124,17 @@ async function pollHealth(confirmed: boolean): Promise<void> {
   for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++) {
     if (timerEl) timerEl.textContent = `Waiting for the appliance to come back (${attempt}/${HEALTH_ATTEMPTS})...`;
     let up = false;
+    // A timer and an AbortController rather than AbortSignal.timeout, which
+    // is missing before Safari 16 (as in about.ts).
+    const abort = new AbortController();
+    const timer = window.setTimeout(() => abort.abort(), HEALTH_PROBE_MS);
     try {
-      const res = await fetch("/api/v1/healthz", { cache: "no-store", signal: AbortSignal.timeout(HEALTH_PROBE_MS) });
+      const res = await fetch("/api/v1/healthz", { cache: "no-store", signal: abort.signal });
       up = res.ok;
     } catch {
       // Still restarting, or the probe timed out.
+    } finally {
+      window.clearTimeout(timer);
     }
     if (up && confirmed) {
       if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
@@ -139,7 +144,12 @@ async function pollHealth(confirmed: boolean): Promise<void> {
     }
     if (up) {
       const text = "The appliance answers, but did not confirm the restart. Check its uptime after you reload.";
-      if (timerEl) timerEl.textContent = text;
+      // The dialog's description and spinner said it was waiting.
+      const textEl = document.getElementById("modal-text");
+      if (textEl) textEl.textContent = text;
+      const spinner = document.querySelector<HTMLElement>("#restart-modal .spinner-ring");
+      if (spinner) spinner.hidden = true;
+      if (timerEl) timerEl.textContent = "";
       say(text);
       showRetry();
       return;

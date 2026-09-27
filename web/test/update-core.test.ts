@@ -351,8 +351,8 @@ test("UpdateFollow times out once, only after showing, at the install deadline",
 });
 
 test("followEndText says why from the status and the stage reached", () => {
-  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" }), false), { text: "Update failed: Signature.", tone: "error" });
-  assert.equal(followEndText(status({ phase: "failed" }), true).text, "Update failed: The attempt did not finish.");
+  assert.deepEqual(followEndText(status({ phase: "failed", phaseMessage: "signature" }), false), { text: "Update failed: signature", tone: "error" });
+  assert.equal(followEndText(status({ phase: "failed" }), true).text, "Update failed: the attempt did not finish");
   // A failure outranks checks being off.
   assert.equal(followEndText(status({ phase: "failed", checkEnabled: false, phaseMessage: "x" }), false).tone, "error");
   assert.deepEqual(followEndText(status({ phase: "idle", checkEnabled: false }), false), { text: "The update stopped because update checks were turned off.", tone: "warn" });
