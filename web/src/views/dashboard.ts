@@ -695,12 +695,13 @@ export class DashboardView {
   }
 
   // refreshDeviceViews re-reads what a device change affects (devices,
-  // available, config) and reports whether all three reads succeeded. A
+  // available, config) and reports whether the device list was read, which
+  // alone decides whether a device is listed, and whether all three were. A
   // failed config read marks the cached base stale (see freshBase).
-  private async refreshDeviceViews(): Promise<boolean> {
+  private async refreshDeviceViews(): Promise<{ devices: boolean; all: boolean }> {
     const [devices, available, config] = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
     this.baseStale = !config;
-    return devices && available && config;
+    return { devices, all: devices && available && config };
   }
 
   // refreshConfigViews re-reads config and devices after a config PATCH, as
@@ -738,22 +739,25 @@ export class DashboardView {
       // from the post-provision config.
       await this.enqueue(async () => {
         let created: Device | undefined;
+        let read: { devices: boolean; all: boolean } | undefined;
         try {
           created = await api.provisionDevice({ device: d.device });
         } catch (err: unknown) {
           if (isRefusal(err)) throw err;
           // No readable answer: re-read inside the queue, so the next queued
           // change builds from what the appliance now holds, and judge by it.
-          const read = await this.refreshDeviceViews();
+          read = await this.refreshDeviceViews();
           created = store.getState().devices.find((dv) => dv.device === d.device);
           if (!created) {
-            if (read) showToast(`${availableLabel(d)} does not appear to have been enabled; check again shortly.`, "warn");
+            if (read.devices) showToast(`${availableLabel(d)} does not appear to have been enabled; check again shortly.`, "warn");
             else showUnconfirmed(`that ${availableLabel(d)} was enabled`, "the device list could not be read; check it before trying again");
             return;
           }
         }
-        if (!(await this.refreshDeviceViews())) {
-          showToast(`Enabled ${created.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
+        // A re-read that found the device already refreshed everything.
+        read ??= await this.refreshDeviceViews();
+        if (!read.all) {
+          showToast(`Enabled ${created.name}. The dashboard could not be refreshed; it updates on the next poll.`, "warn");
         } else {
           const ch = created.channels.length === 1 ? ` on channel ${created.channels[0]}` : "";
           showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
@@ -834,36 +838,37 @@ export class DashboardView {
         // readable answer at all.
         let notFound: unknown = null;
         let unknown = false;
-        try {
-          await api.deleteDevice(name);
-        } catch (err: unknown) {
-          if (!isRefusal(err)) unknown = true;
-          else if (err.status === 404) notFound = err;
-          else throw err;
-        }
-        // The re-read removes the card, and the render hands focus to its
-        // nearest neighbour, saying only where focus went (see reconcile):
-        // the toast below says what went.
+        // A render that removes the card (the re-read below, or a poll that
+        // lands while the DELETE is in flight) hands focus to its nearest
+        // neighbour, saying only where focus went (see reconcile): the toast
+        // below says what went.
         this.removing.add(id);
-        let read: boolean;
+        let read: { devices: boolean; all: boolean };
         try {
+          try {
+            await api.deleteDevice(name);
+          } catch (err: unknown) {
+            if (!isRefusal(err)) unknown = true;
+            else if (err.status === 404) notFound = err;
+            else throw err;
+          }
           read = await this.refreshDeviceViews();
         } finally {
           this.removing.delete(id);
         }
         const listed = store.getState().devices.some((dv) => dv.device === id);
-        if (read && listed) {
+        if (read.devices && listed) {
           if (notFound !== null) throw notFound;
           showToast(`${name} does not appear to have been removed; check again shortly.`, "warn");
           return;
         }
-        if (!read && (unknown || notFound !== null)) {
+        if (!read.devices && (unknown || notFound !== null)) {
           showUnconfirmed(`that ${name} was removed`, "the device list could not be read; check it before trying again");
           return;
         }
         removed = true;
-        if (read) showToast(`Removed ${name}.`);
-        else showToast(`Removed ${name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
+        if (read.all) showToast(`Removed ${name}.`);
+        else showToast(`Removed ${name}. The dashboard could not be refreshed; it updates on the next poll.`, "warn");
         // Focus that had already fallen to the page (the confirm returned it
         // to a Remove button a poll had just removed) goes to the dashboard.
         if (focusDropped()) {

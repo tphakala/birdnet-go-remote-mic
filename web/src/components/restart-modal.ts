@@ -125,7 +125,8 @@ export async function triggerApplianceRestart(): Promise<void> {
 
 // pollHealth waits for the appliance to answer for up to HEALTH_WAIT_MS:
 // probes one at a time with a second between them, each bounded by
-// HEALTH_PROBE_MS, so a hanging probe cannot stretch the wait. After a confirmed restart an answer reloads the page.
+// HEALTH_PROBE_MS and by the time left, so a hanging probe cannot stretch
+// the wait. After a confirmed restart an answer reloads the page.
 // After an unconfirmed one the appliance may never have restarted, so the
 // dialog says so and offers Reload now instead of reloading under the
 // operator, who would not learn it. phase is the waiting text.
@@ -136,7 +137,8 @@ async function pollHealth(confirmed: boolean, phase: string): Promise<void> {
     if (timerEl) timerEl.textContent = `${phase} (${attempt})...`;
     let up = false;
     try {
-      up = await withDeadline(HEALTH_PROBE_MS, async (signal) => (await fetch("/api/v1/healthz", { cache: "no-store", signal })).ok);
+      const left = Math.max(0, until - performance.now());
+      up = await withDeadline(Math.min(HEALTH_PROBE_MS, left), async (signal) => (await fetch("/api/v1/healthz", { cache: "no-store", signal })).ok);
     } catch {
       // Still restarting, or the probe timed out.
     }
@@ -150,7 +152,8 @@ async function pollHealth(confirmed: boolean, phase: string): Promise<void> {
       endWait("The appliance answers, but did not confirm the restart. Check its uptime after you reload.");
       return;
     }
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
+    const pause = Math.min(1000, Math.max(0, until - performance.now()));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, pause));
   }
   if (timerEl) timerEl.textContent = confirmed ? "Restart timed out." : "No answer from the appliance.";
   endWait("The appliance did not answer in time. Use the Reload now button to check on it.");

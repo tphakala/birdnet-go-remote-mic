@@ -191,7 +191,8 @@ async function problemError(res: Response, isProblem: boolean): Promise<ApiError
   );
 }
 
-// REQUEST_DEADLINE_MS bounds one API request's wait for its response headers.
+// REQUEST_DEADLINE_MS bounds one API request, from sending it to reading its
+// body.
 export const REQUEST_DEADLINE_MS = 30_000;
 
 export class ApiClient {
@@ -227,34 +228,37 @@ export class ApiClient {
       headers.set("Content-Type", "application/json");
     }
 
-    // Every request ends within REQUEST_DEADLINE_MS: one that hangs on a
-    // dead connection would otherwise hold the view's queue of changes. An
-    // aborted change is an unknown outcome to its caller (isRefusal).
-    const res = await withDeadline(REQUEST_DEADLINE_MS, (signal) => fetch(`${this.baseUrl}${path}`, { ...options, headers, signal }));
+    // Every request, its body included, ends within REQUEST_DEADLINE_MS: one
+    // that hangs on a dead connection would otherwise hold the view's queue
+    // of changes. An aborted change is an unknown outcome to its caller
+    // (isRefusal).
+    return withDeadline(REQUEST_DEADLINE_MS, async (signal) => {
+      const res = await fetch(`${this.baseUrl}${path}`, { ...options, headers, signal });
 
-    if (res.status === 401 && used === this.token) {
-      this.onUnauthorized?.();
-    }
-
-    if (res.status === 204) {
-      return {} as T;
-    }
-
-    const contentType = res.headers.get("Content-Type") || "";
-    const isProblem = contentType.includes("application/problem+json");
-    const isJson = isProblem || contentType.includes("application/json");
-
-    if (!res.ok) throw await problemError(res, isProblem);
-
-    if (isJson) {
-      try {
-        return (await res.json()) as T;
-      } catch {
-        throw new UnreadableResponseError(res.status);
+      if (res.status === 401 && used === this.token) {
+        this.onUnauthorized?.();
       }
-    }
 
-    return (await res.text()) as unknown as T;
+      if (res.status === 204) {
+        return {} as T;
+      }
+
+      const contentType = res.headers.get("Content-Type") || "";
+      const isProblem = contentType.includes("application/problem+json");
+      const isJson = isProblem || contentType.includes("application/json");
+
+      if (!res.ok) throw await problemError(res, isProblem);
+
+      if (isJson) {
+        try {
+          return (await res.json()) as T;
+        } catch {
+          throw new UnreadableResponseError(res.status);
+        }
+      }
+
+      return (await res.text()) as unknown as T;
+    });
   }
 
   public async getHealth(): Promise<Health> {

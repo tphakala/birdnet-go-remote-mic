@@ -187,3 +187,52 @@ test("only an ApiError from a problem body is a refusal; an unknown outcome is s
   assert.equal(isRefusal(new TypeError("Failed to fetch")), false);
   assert.equal(unconfirmedText("the save", "refreshing"), "Could not confirm the save; refreshing.");
 });
+
+test("the request deadline covers the body: a body that stalls after its headers ends as an unknown outcome", async () => {
+  const g = globalThis as unknown as {
+    fetch: typeof fetch;
+    setTimeout: typeof setTimeout;
+    clearTimeout: typeof clearTimeout;
+  };
+  const saved = { fetch: g.fetch, setTimeout: g.setTimeout, clearTimeout: g.clearTimeout };
+  const realSetTimeout = g.setTimeout;
+  let fire: (() => void) | null = null;
+  let cleared = false;
+  // The deadline's timer is held here and fired by hand; nothing else in
+  // this test schedules one.
+  g.setTimeout = ((fn: () => void) => {
+    fire = fn;
+    return 0;
+  }) as unknown as typeof setTimeout;
+  g.clearTimeout = (() => {
+    cleared = true;
+  }) as typeof clearTimeout;
+  // Headers arrive at once; the body sends nothing until the request is
+  // aborted, as a connection that died mid-body would.
+  g.fetch = (_input, init) => {
+    const signal = init?.signal;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        signal?.addEventListener("abort", () => c.error(signal.reason));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+  try {
+    const pending = new ApiClient().getHealth().then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+    assert.equal(cleared, false, "the deadline must stay armed while the body is read");
+    assert.ok(fire, "no deadline was armed");
+    (fire as () => void)();
+    const err = await pending;
+    assert.ok(err instanceof UnreadableResponseError, `got ${String(err)}, want an unreadable response`);
+    assert.equal(isRefusal(err), false);
+  } finally {
+    g.fetch = saved.fetch;
+    g.setTimeout = saved.setTimeout;
+    g.clearTimeout = saved.clearTimeout;
+  }
+});
