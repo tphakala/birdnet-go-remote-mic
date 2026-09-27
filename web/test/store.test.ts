@@ -2,8 +2,8 @@
 // store wires its refresh helpers (store-core.ts, tested on their own):
 // status, devices, system and available announce only on change; status,
 // devices and system re-announce after a failed read that nothing newer
-// superseded; config announces on every read; a failed
-// initial load announces which views' data is missing; an older response
+// superseded; config announces on every read; a failed initial load
+// announces which views' data is missing; an older response
 // never overwrites a newer one; polling pauses while the page is hidden; the
 // event stream stops after the hidden-page grace and restarts on showing; and
 // levels leave the stream LEVELS_GRACE_MS after the dashboard does (at once
@@ -657,6 +657,17 @@ test("levels hold only the latest event's devices, and a disconnect clears them"
   h.emit("connected");
   h.emit("disconnected", new Error("gone"));
   assert.equal(h.store.getState().levels.size, 0, "levels from before a drop are not current");
+});
+
+test("a stream that keeps failing to reconnect is announced down once", () => {
+  const h = harness(new FakeTimers());
+  const seen: boolean[] = [];
+  h.store.on("connection", (up) => seen.push(up));
+  h.emit("disconnected", new Error("gone"));
+  h.emit("disconnected", new Error("still gone"));
+  h.emit("connected");
+  h.emit("disconnected", new Error("gone again"));
+  assert.deepEqual(seen, [false, true, false], "once per outage, the first before any connect included");
 });
 
 test("returning within the grace keeps the stream untouched", () => {

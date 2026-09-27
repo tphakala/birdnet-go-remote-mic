@@ -14,6 +14,7 @@
 // fixtures in step with what the UI expects.
 
 import { createServer } from "node:http";
+import { LEVELS_EVENT, NOTIFICATION_EVENT } from "../src/lib/sse.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -446,7 +447,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
   // phase of the level cycle.
   let tick = 0;
   const levelTimer = setInterval(() => {
-    send("levels", `event: levels\ndata: ${JSON.stringify(levelsAt(tick++))}\n\n`);
+    send(LEVELS_EVENT, `event: ${LEVELS_EVENT}\ndata: ${JSON.stringify(levelsAt(tick++))}\n\n`);
   }, 100);
   const heartbeatTimer = setInterval(() => {
     // Heartbeats pass every filter.
@@ -555,7 +556,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
   });
 
   function pushNotification(): void {
-    send("notification", `event: notification\ndata: ${JSON.stringify(liveNotification())}\n\n`);
+    send(NOTIFICATION_EVENT, `event: ${NOTIFICATION_EVENT}\ndata: ${JSON.stringify(liveNotification())}\n\n`);
   }
 
   await new Promise<void>((ok, fail) => {

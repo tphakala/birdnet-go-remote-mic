@@ -113,6 +113,8 @@ export class AppStore extends Emitter<StoreEvents> {
   // Whether a view has said yet whether it wants levels (the first route).
   private levelsDecided = false;
   private levelsTimer: ReturnType<typeof setTimeout> | null = null;
+  // Whether the current outage was announced (see markStreamDown).
+  private downAnnounced = false;
   // One ordering gate per polled resource (see LatestGate). The poll timer does
   // not wait for a tick to finish, and a provision, removal, or save triggers an
   // extra refresh, so reads of one resource overlap and can resolve out of
@@ -238,6 +240,7 @@ export class AppStore extends Emitter<StoreEvents> {
         this.onUnauthorized();
       } else if (eventName === "connected") {
         this.state.connected = true;
+        this.downAnnounced = false;
         this.emit("connection", true);
       } else if (eventName === "disconnected") {
         // During a deliberate token rotation the SSE connection carrying the old
@@ -404,10 +407,14 @@ export class AppStore extends Emitter<StoreEvents> {
 
   // markStreamDown records that the stream went down: every path that says
   // so resets the same state (the levels it carried are not current) and
-  // announces it, once per call.
+  // announces it once per outage, not once per failed reconnect. The first
+  // failure before any connect announces too, so "Connecting" becomes
+  // "Reconnecting".
   private markStreamDown(): void {
     this.state.connected = false;
     this.state.levels.clear();
+    if (this.downAnnounced) return;
+    this.downAnnounced = true;
     this.emit("connection", false);
   }
 

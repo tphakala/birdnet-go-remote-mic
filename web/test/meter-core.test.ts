@@ -794,20 +794,25 @@ test("a holding needle requests no frames until the hold ends", () => {
   assert.equal(h.frames.running(), true, "the glide keeps its frames");
 });
 
-test("a louder peak during the hold moves the timed wake to the new hold's end", () => {
+test("a louder peak during the hold keeps its wake, which then arms the rest of the new hold", () => {
   const h = meterHarness();
   h.step();
   h.setClock(0);
   h.meter.setLevels(-99, -20);
   h.step();
+  const first = at(h.f.timers.pending(), 0);
   h.setClock(400);
   h.meter.setLevels(-99, -10);
   h.step();
-  const pending = h.f.timers.pending();
-  assert.equal(pending.length, 1, "one timed wake per meter");
-  assert.equal(at(h.f.timers.all, 0).cleared, true, "the first hold's wake must be cancelled");
-  assert.notEqual(at(pending, 0), at(h.f.timers.all, 0));
-  assert.equal(at(pending, 0).ms, PEAK_HOLD_MS, "the new hold runs from the new peak");
+  assert.deepEqual(h.f.timers.pending(), [first], "a new peak must not clear and set a timer");
+  // The kept wake fires at the old hold's end; the frame then arms the rest.
+  h.setClock(PEAK_HOLD_MS);
+  h.f.timers.fire(first);
+  h.step();
+  const rest = h.f.timers.pending();
+  assert.equal(rest.length, 1);
+  assert.equal(at(rest, 0).ms, 400, "the new hold ends 400 ms later");
+  assert.equal(h.frames.running(), false, "nothing moves until then");
 });
 
 test("a bar level during the hold keeps the timed wake it has", () => {
@@ -957,7 +962,7 @@ test("clearing a meter that is already waiting asks for no frame", () => {
   assert.equal(h.frames.running(), false, "a second clear must not wake the loop");
 });
 
-test("a meter shows the waiting readout at once, and a level given before its first frame", () => {
+test("a meter shows the waiting readout at once, and on resume a level given while suspended", () => {
   // Built while the loop is suspended (a card rebuilt off the dashboard),
   // then given silence: the readout must leave the waiting text on resume.
   const h = meterHarness({ suspended: true });
@@ -983,14 +988,26 @@ test("a meter out of view skips its paint, keeps its readout, and repaints when 
   assert.deepEqual(h.draws.at(-1), [-20, -10]);
 });
 
-test("a settled meter out of view asks for no frames", () => {
+test("a new bar level out of view asks for no frame", () => {
   const h = meterHarness();
   h.prime();
   h.meter.setOffscreen(true);
   h.meter.setLevels(-20, -99);
+  assert.equal(h.frames.running(), false, "nothing is painted out of view");
+  h.meter.setOffscreen(false);
   h.step();
-  // The bar level is now current but unpainted; more of the same asks for
-  // nothing.
-  h.meter.setLevels(-20, -99);
-  assert.equal(h.frames.running(), false);
+  assert.deepEqual(h.draws.at(-1), [-20, FLOOR_DB], "back in view it paints the current bar");
+});
+
+test("a meter hidden and shown again during a hold still wakes at its end", () => {
+  const h = meterHarness();
+  h.prime();
+  h.meter.setLevels(-99, -20);
+  h.step();
+  h.meter.pause();
+  assert.equal(h.f.timers.pending().length, 0, "hiding the row cancels the wake");
+  h.setClock(100);
+  h.meter.resume();
+  h.step();
+  assert.equal(h.f.timers.pending(PEAK_HOLD_MS - 100).length, 1, "the rest of the hold is armed again");
 });

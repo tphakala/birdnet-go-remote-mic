@@ -424,7 +424,7 @@ function watchHarness() {
 
 test("LevelsWatch clears the meters once when levels stop on a live stream", () => {
   const h = watchHarness();
-  h.watch.setShown(true);
+  h.watch.setWatched(true);
   h.watch.setConnected(true);
   h.watch.levels();
   h.setClock(LEVELS_STALE_MS);
@@ -437,6 +437,10 @@ test("LevelsWatch clears the meters once when levels stop on a live stream", () 
   h.tick();
   assert.equal(h.clears(), 1, "a long gap clears them once");
   h.watch.levels();
+  // Levels arrived at 3x: half a window later they are still current.
+  h.setClock(LEVELS_STALE_MS * 3 + LEVELS_STALE_MS / 2);
+  h.tick();
+  assert.equal(h.clears(), 1, "levels() must restart the window, not only allow another clear");
   h.setClock(LEVELS_STALE_MS * 4 + 1);
   h.tick();
   assert.equal(h.clears(), 2, "levels that came back and stopped again clear again");
@@ -446,22 +450,22 @@ test("LevelsWatch runs its check only while the dashboard shows on a live stream
   const h = watchHarness();
   h.watch.setConnected(true);
   assert.equal(h.timers.intervals().length, 0, "the dashboard is not showing");
-  h.watch.setShown(true);
+  h.watch.setWatched(true);
   assert.equal(h.timers.intervals().length, 1);
-  h.watch.setShown(false);
+  h.watch.setWatched(false);
   assert.equal(h.timers.intervals().length, 0, "leaving the dashboard stops the check");
-  h.watch.setShown(true);
+  h.watch.setWatched(true);
   // Showing again starts a new window rather than judging the time away.
   h.setClock(LEVELS_STALE_MS * 10);
-  h.watch.setShown(false);
-  h.watch.setShown(true);
+  h.watch.setWatched(false);
+  h.watch.setWatched(true);
   h.tick();
   assert.equal(h.clears(), 0);
 });
 
 test("LevelsWatch clears at once when the stream goes down and stops its check", () => {
   const h = watchHarness();
-  h.watch.setShown(true);
+  h.watch.setWatched(true);
   h.watch.setConnected(true);
   h.watch.setConnected(false);
   assert.equal(h.clears(), 1);
@@ -482,7 +486,7 @@ test("followLevels feeds the watch from the store's announcements", () => {
   const h = watchHarness();
   const events = new FakeLevelsEvents();
   followLevels(events, h.watch);
-  h.watch.setShown(true);
+  h.watch.setWatched(true);
   events.connection(true);
   assert.equal(h.timers.intervals().length, 1, "a live stream starts the check");
   events.fire("levelsdropped");
@@ -501,10 +505,18 @@ test("routeLevels feeds each channel's meter and clears a card the event lacks",
     { name: "garden", meters: ["g0", "g1"] },
     { name: "bats", meters: ["b0"] },
   ];
-  const ch = (channel: number, rmsDbfs: number) => ({ channel, rmsDbfs, peakDbfs: rmsDbfs + 3, clipped: false });
-  routeLevels(cards, new Map([["garden", { channels: [ch(1, -20), ch(0, -30), ch(5, -1)] }]]), {
-    set: (m, rms) => calls.push(`${m} ${rms}`),
+  const channels = [
+    { channel: 1, rmsDbfs: -20, peakDbfs: -6, clipped: false },
+    { channel: 0, rmsDbfs: -30, peakDbfs: -0.05, clipped: true },
+    { channel: 5, rmsDbfs: -1, peakDbfs: -1, clipped: false },
+  ];
+  routeLevels(cards, new Map([["garden", { channels }]]), {
+    set: (m, rms, peak, clipped) => calls.push(`${m} ${rms} ${peak} ${clipped}`),
     clear: (m) => calls.push(`${m} clear`),
   });
-  assert.deepEqual(calls, ["g1 -20", "g0 -30", "b0 clear"], "a channel with no meter is skipped; bats is missing, so cleared");
+  assert.deepEqual(
+    calls,
+    ["g1 -20 -6 false", "g0 -30 -0.05 true", "b0 clear"],
+    "each channel's own levels and latch reach its meter; a channel with no meter is skipped; bats is missing, so cleared",
+  );
 });

@@ -356,15 +356,14 @@ export function rejectedFieldKey(field: string, sent: readonly DeviceConfig[], e
 export interface DashboardShown {
   setFramesSuspended(suspended: boolean): void;
   setLevelsWanted(wanted: boolean): void;
-  // setWatched turns the stale-levels check (LevelsWatch.setShown) on or off.
+  // setWatched turns the stale-levels check (LevelsWatch.setWatched) on or off.
   setWatched(shown: boolean): void;
 }
 
 // followDashboardRoute keeps the meters' frame loop, the levels stream and
 // the stale-levels check in step with the route: all run while the dashboard
-// shows. The router
-// announces the first route at start-up (init, router.ts:15, emits it), so
-// the state is set from the start.
+// shows. The router announces the first route at start-up (init,
+// router.ts:15, emits it), so the state is set from the start.
 export function followDashboardRoute(
   router: { on(name: "route", listener: (view: ViewName) => void): void },
   shown: DashboardShown,
@@ -452,7 +451,8 @@ export class LevelsWatch {
     this.deps.clear();
   }
 
-  setShown(shown: boolean): void {
+  // setWatched says whether the dashboard shows, which the check needs.
+  setWatched(shown: boolean): void {
     this.shown = shown;
     this.sync();
   }

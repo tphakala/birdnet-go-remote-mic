@@ -35,6 +35,12 @@ const ICON_CHEVRON =
 // STALE_BASE_TEXT is said when a change must build on the appliance's config
 // and a re-read of it failed (see freshBase).
 const STALE_BASE_TEXT = "Could not read the current configuration; nothing was changed. Try again in a moment.";
+// METER_LEVELS is how routeLevels feeds a VUMeter, built once rather than
+// per levels event.
+const METER_LEVELS = {
+  set: (m: VUMeter, rms: number, peak: number, clipped: boolean) => m.setLevels(rms, peak, clipped),
+  clear: (m: VUMeter) => m.clearLevels(),
+};
 
 // FIX_FIELDS_TEXT is the toast for a save stopped by a marked field, found by
 // the form's own check or by the appliance: the field carries the reason.
@@ -429,14 +435,11 @@ export class DashboardView {
     followDashboardRoute(router, {
       setFramesSuspended: (suspended) => meterFrames.setSuspended(suspended),
       setLevelsWanted: (wanted) => store.setLevelsWanted(wanted),
-      setWatched: (shown) => watch.setShown(shown),
+      setWatched: (shown) => watch.setWatched(shown),
     });
     followLevels(store, watch);
     store.on("levels", (levels) => {
-      routeLevels(this.liveTargets(), levels, {
-        set: (m, rms, peak, clipped) => m.setLevels(rms, peak, clipped),
-        clear: (m) => m.clearLevels(),
-      });
+      routeLevels(this.liveTargets(), levels, METER_LEVELS);
     });
     store.on("available", (available) => {
       this.renderAvailable(available);

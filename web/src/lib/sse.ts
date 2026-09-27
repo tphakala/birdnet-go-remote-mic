@@ -236,7 +236,8 @@ export class SSEClient {
           let text = heldCR + decoder.decode(value, { stream: true });
           heldCR = text.endsWith("\r") ? "\r" : "";
           if (heldCR) text = text.slice(0, -1);
-          buffer += text.replace(/\r\n?/g, "\n");
+          // The appliance writes LF only, so most chunks skip the scan.
+          buffer += text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
           const messages = buffer.split("\n\n");
           // Keep trailing incomplete chunk
           buffer = messages.pop() || "";

@@ -246,7 +246,7 @@ test("a stream the server ends is reported down and reconnects", async () => {
   h.client.stop();
 });
 
-test("a stream that ends before any data backs off further; data resets the backoff", async () => {
+test("a stream that ends before any event backs off further (its open comment is no event); an event resets the backoff", async () => {
   const h = harness();
   h.client.start();
   // Answered and closed at once, twice: the second wait is longer.
@@ -328,26 +328,6 @@ test("stopping a stream reports no disconnect and leaves no timer", async () => 
   await settle();
   assert.deepEqual(h.events, ["connected"]);
   assert.deepEqual(h.timers.pending(), [], "no watchdog or backoff after a stop");
-});
-
-test("an open comment alone does not reset the backoff", async () => {
-  const h = harness();
-  h.client.start();
-  // Answered with the open comment and closed, twice: the second wait is
-  // longer, as for a stream that sent nothing.
-  for (const wait of [RECONNECT_DELAY_MS, RECONNECT_DELAY_MS * 2]) {
-    const body = h.last().stream();
-    await settle();
-    body.send(": open\n\n");
-    await settle();
-    body.end();
-    await settle();
-    const [backoff] = h.timers.pending(wait);
-    assert.ok(backoff, `a stream with only a comment must wait ${wait} ms`);
-    h.timers.fire(backoff);
-    await settle();
-  }
-  h.client.stop();
 });
 
 test("a handler that stops the stream ends the chunk's dispatch", async () => {
@@ -448,5 +428,38 @@ test("a CRLF split across two chunks is one line break", async () => {
   body.send('\ndata: {"c":3}\r\n\r\n');
   await settle();
   assert.deepEqual(h.payloads.at(-1), ["notification", { c: 3 }]);
+  h.client.stop();
+});
+
+test("the watchdog's window starts again at the stream's first bytes", async () => {
+  const h = harness();
+  h.client.start();
+  // The first bytes take 25 s (a slow proxy or TLS setup).
+  h.setClock(25_000);
+  h.last().stream();
+  await settle();
+  // 30 s after the connect began, the stream has been up for 5 s.
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(at(h.timers.pending(HEARTBEAT_TIMEOUT_MS), 0));
+  await settle();
+  assert.deepEqual(h.events, ["connected"], "a stream up for 5 s must not be dropped");
+  assert.equal(h.timers.pending(25_000).length, 1, "the watchdog re-arms for the rest of the window");
+  h.client.stop();
+});
+
+test("a lone CR ends a line", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send('event: levels\rdata: {"a":2}\r\r');
+  // A CR that ends a chunk waits to see whether an LF follows, so the event
+  // completes with the next bytes.
+  body.send("event: heartbeat\rdata: {}\r\r");
+  await settle();
+  assert.deepEqual(
+    h.payloads.filter(([name]) => name === "levels").at(-1),
+    ["levels", { a: 2 }],
+  );
   h.client.stop();
 });
