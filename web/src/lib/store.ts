@@ -27,12 +27,14 @@ export const HIDDEN_STREAM_GRACE_MS = 60_000;
 // How long levels keep streaming after the dashboard stops showing. A quick
 // look at another view keeps the stream as it is; a longer stay drops levels
 // from it, so the appliance marshals and sends none for this page (the SSE
-// handler skips a source the filter excludes, internal/sse/sse.go:130).
+// handler skips a source the filter excludes: the Named check in
+// handler.ServeHTTP, internal/sse/sse.go).
 export const LEVELS_GRACE_MS = 30_000;
 // NON_LEVEL_EVENTS is every event type the UI consumes except levels, the
 // filter the stream uses while levels are dropped. An event type the UI
 // starts consuming gets a constant in lib/sse.ts and goes here too, or it
-// stops arriving while no dashboard shows.
+// stops arriving while no dashboard shows. It must not be empty: an empty
+// filter means every event type, levels included (a test checks both).
 export const NON_LEVEL_EVENTS: readonly string[] = [NOTIFICATION_EVENT];
 
 export interface AppState {

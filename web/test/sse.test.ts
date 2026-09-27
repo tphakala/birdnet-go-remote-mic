@@ -8,16 +8,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { HEARTBEAT_TIMEOUT_MS, RECONNECT_DELAY_MS, SSEClient } from "../src/lib/sse.ts";
+import { HEARTBEAT_TIMEOUT_MS, RECONNECT_DELAY_MS, RECONNECT_MAX_MS, SSEClient } from "../src/lib/sse.ts";
 import { at, FakeTimers, settle } from "./fixtures.ts";
 
 // Call is one fetch the client made: its URL, and hooks to answer it.
 interface Call {
   url: string;
-  // stream answers 200 with a body that stays open until the request aborts.
+  // headers are the request's headers.
+  headers: Headers;
+  // stream answers 200 with a body that opens with the appliance's open
+  // comment (unless open is false) and stays open until the request aborts.
   // Its send writes to the body, and end closes it as a server ending the
   // stream would.
-  stream(): { send(text: string): void; end(): void };
+  stream(open?: boolean): { send(text: string): void; end(): void };
   // reply answers with a bare status.
   reply(status: number): void;
 }
@@ -34,11 +37,13 @@ function harness() {
         signal?.addEventListener("abort", () => reject(abortError()));
         calls.push({
           url,
-          stream: () => {
+          headers: new Headers(init.headers),
+          stream: (open = true) => {
             let ctl: ReadableStreamDefaultController<Uint8Array> | undefined;
             const body = new ReadableStream<Uint8Array>({
               start(controller) {
                 ctl = controller;
+                if (open) controller.enqueue(new TextEncoder().encode(": open\n\n"));
                 // A real fetch errors the body when its request aborts.
                 signal?.addEventListener("abort", () => controller.error(abortError()));
               },
@@ -271,19 +276,20 @@ test("data inside the window keeps the stream and costs no timer calls", async (
   const body = h.last().stream();
   await settle();
   const armed = h.timers.all.length;
-  for (let t = 100; t <= 1000; t += 100) {
+  for (let t = 100; t <= 1300; t += 100) {
     h.setClock(t);
     body.send(`event: levels\ndata: {"t":${t}}\n\n`);
     await settle();
   }
   assert.equal(h.timers.all.length, armed, "a message must not clear and set a timer");
-  // At the end of the window the stream was last heard from 1 s ago: the
-  // watchdog re-arms for what is left instead of dropping the stream.
+  // At the end of the window the stream was last heard from 1.3 s ago: the
+  // watchdog re-arms for what is left instead of dropping the stream. The
+  // remainder (1300 ms) is no backoff delay, so it can only be the watchdog.
   h.setClock(HEARTBEAT_TIMEOUT_MS);
   h.timers.fire(at(h.timers.pending(HEARTBEAT_TIMEOUT_MS), 0));
   await settle();
   assert.deepEqual(h.events.filter((e) => e !== "levels"), ["connected"]);
-  assert.equal(h.timers.pending(1000).length, 1, "the watchdog must re-arm for the rest of the window");
+  assert.equal(h.timers.pending(1300).length, 1, "the watchdog must re-arm for the rest of the window");
   h.client.stop();
 });
 
@@ -356,4 +362,78 @@ test("a handler that stops the stream ends the chunk's dispatch", async () => {
   await settle();
   assert.deepEqual(h.events, ["connected", "levels"], "nothing after the stop may be dispatched");
   assert.deepEqual(h.timers.pending(), [], "no watchdog armed on a stopped client");
+});
+
+test("heartbeats alone keep a quiet stream up", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  // A notifications-only stream carries nothing but heartbeats.
+  h.setClock(15_000);
+  body.send("event: heartbeat\ndata: {}\n\n");
+  await settle();
+  h.setClock(HEARTBEAT_TIMEOUT_MS);
+  h.timers.fire(at(h.timers.pending(HEARTBEAT_TIMEOUT_MS), 0));
+  await settle();
+  assert.deepEqual(h.events, ["connected", "heartbeat"], "a heartbeat must keep the watchdog from dropping the stream");
+  assert.equal(h.timers.pending(15_000).length, 1, "the watchdog re-arms for the rest of the heartbeat's window");
+  h.client.stop();
+});
+
+test("the stream counts as connected at its first bytes, not at the 200", async () => {
+  const h = harness();
+  h.client.start();
+  // A 200 whose body has sent nothing yet: the server may not have
+  // subscribed its sources.
+  const body = h.last().stream(false);
+  await settle();
+  assert.deepEqual(h.events, [], "headers alone must not count as connected");
+  body.send(": open\n\n");
+  await settle();
+  assert.deepEqual(h.events, ["connected"]);
+  h.client.stop();
+});
+
+test("CRLF line endings are read like LF", async () => {
+  const h = harness();
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send('event: levels\r\ndata: {"a":1}\r\n\r\n');
+  await settle();
+  assert.deepEqual(h.payloads.at(-1), ["levels", { a: 1 }]);
+  h.client.stop();
+});
+
+test("a 401 against a token rotated in flight reconnects under the new token", async () => {
+  const h = harness();
+  h.client.setToken("old");
+  h.client.start();
+  assert.equal(h.last().headers.get("Authorization"), "Bearer old", "the token goes in the header");
+  h.client.setToken("new");
+  h.last().reply(401);
+  await settle();
+  assert.deepEqual(h.events, ["disconnected"], "a stale 401 must not prompt for a token");
+  h.timers.fire(at(h.timers.pending(RECONNECT_DELAY_MS), 0));
+  await settle();
+  assert.equal(h.last().headers.get("Authorization"), "Bearer new");
+  h.client.stop();
+});
+
+test("a failed status backs off, doubling up to RECONNECT_MAX_MS", async () => {
+  const h = harness();
+  h.client.start();
+  const waits: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    h.last().reply(503);
+    await settle();
+    const [backoff] = h.timers.pending().filter((t) => t.ms !== HEARTBEAT_TIMEOUT_MS);
+    assert.ok(backoff, `attempt ${i + 1} must back off`);
+    waits.push(backoff.ms);
+    h.timers.fire(backoff);
+    await settle();
+  }
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, RECONNECT_MAX_MS, RECONNECT_MAX_MS]);
+  h.client.stop();
 });

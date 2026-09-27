@@ -1,3 +1,4 @@
+import { REDUCED_MOTION_QUERY } from "../lib/ui.ts";
 import { FLOOR_DB, FrameScheduler, levelBand, levelRatio, MeterController, WAITING_READOUT, WAITING_TITLE } from "../lib/meter-core.ts";
 
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
@@ -33,7 +34,7 @@ const SEGMENT_COLORS: readonly string[] = Array.from({ length: SEGMENTS }, (_, i
 // between the gliding needle and the per-event steps when it changes.
 const reducedMotionQuery: MediaQueryList | null = (() => {
   try {
-    return window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
+    return window.matchMedia?.(REDUCED_MOTION_QUERY) ?? null;
   } catch {
     return null;
   }

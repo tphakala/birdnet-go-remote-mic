@@ -65,9 +65,9 @@ export class SSEClient {
 
   // setEvents sets the event types to stream; null or an empty list means
   // every type, as the server reads an empty filter (parseEventFilter in
-  // internal/sse/sse.go). A running stream
-  // reconnects under the new filter; a stopped one only records it, so this
-  // never starts a stream the store stopped (a 401, a hidden page).
+  // internal/sse/sse.go). A running stream reconnects under the new filter;
+  // a stopped one only records it, so this never starts a stream the store
+  // stopped (a 401, a hidden page).
   public setEvents(names: readonly string[] | null): void {
     const events = names === null || names.length === 0 ? null : names.map(encodeURIComponent).join(",");
     if (events === this.events) return;
@@ -75,10 +75,6 @@ export class SSEClient {
     if (!this.isRunning) return;
     this.stop();
     this.start();
-    // The restart is silent (no disconnected event), so the store may still
-    // say connected: arm the watchdog now, or a new connect that hangs on a
-    // dead link would leave the page looking live until the browser gives up.
-    this.resetHeartbeat();
   }
 
   public setToken(token: string | null): void {
@@ -162,6 +158,12 @@ export class SSEClient {
         headers.set("Authorization", `Bearer ${used}`);
       }
 
+      // Every connect runs under the watchdog: a restart is silent (a filter
+      // change, the end of a token swap), so the store may still say
+      // connected, and a connect that hangs on a dead link must not leave
+      // the page looking live, or parked, until the browser gives up.
+      this.resetHeartbeat();
+
       try {
         const url = this.events === null ? this.url : `${this.url}?events=${this.events}`;
         const response = await this.deps.fetch(url, {
@@ -204,18 +206,28 @@ export class SSEClient {
           throw new Error(`SSE HTTP error: ${response.status} ${response.statusText}`);
         }
 
-        this.dispatch("connected", null);
-        this.resetHeartbeat();
-
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let announced = false;
 
         while (this.isRunning && gen === this.generation) {
           const { done, value } = await reader.read();
           if (done) break;
+          // The stream counts as connected at its first bytes, not at the
+          // 200: the appliance writes its open comment once its sources are
+          // subscribed (openComment in internal/sse/sse.go), so a re-sync on
+          // connect cannot miss what is raised in between. An older
+          // appliance's first bytes are its first event.
+          if (!announced) {
+            announced = true;
+            this.resetHeartbeat();
+            this.dispatch("connected", null);
+            if (gen !== this.generation) break;
+          }
 
-          buffer += decoder.decode(value, { stream: true });
+          // SSE allows CRLF and CR line endings as well as LF.
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
           const messages = buffer.split("\n\n");
           // Keep trailing incomplete chunk
           buffer = messages.pop() || "";
