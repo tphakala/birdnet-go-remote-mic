@@ -98,7 +98,7 @@ func TestPutSystemCertificateMapsValidationErrorTo422(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutSystemCertificate: %v", err)
 	}
-	// Pins the errors.As(*mgmtcert.ValidationError) branch. Without it
+	// Pins the errors.AsType[*mgmtcert.ValidationError] branch. Without it
 	// the error falls through to a 500 default response, not this 422.
 	vp, ok := resp.(mgmtapi.PutSystemCertificate422ApplicationProblemPlusJSONResponse)
 	if !ok {
@@ -111,7 +111,7 @@ func TestPutSystemCertificateMapsValidationErrorTo422(t *testing.T) {
 
 func TestPutSystemCertificateMapsGenericErrorTo500(t *testing.T) {
 	// A non-ValidationError from Install must map to 500, not 422.
-	// Pins the errors.As branch (deleting it would return this error
+	// Pins the errors.AsType branch (deleting it would return this error
 	// through the 422 path or panic on the type assertion).
 	mgr := &fakeCertManager{installErr: errors.New("disk full")}
 	s := New(&fakeProvider{}, WithCertificateManager(mgr))

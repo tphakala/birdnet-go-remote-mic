@@ -237,7 +237,7 @@ func TestInstallPersistsChainWithoutKeyMaterial(t *testing.T) {
 	// A certPEM that (by operator mistake) also contains a PRIVATE KEY block must
 	// never be written verbatim to the 0644 cert file. Install persists the
 	// re-encoded chain, so the cert file carries only certificate blocks.
-	// Pins writing the raw certPEM, not ChainPEM(&cert).
+	// Pins writing ChainPEM(&cert), not the raw certPEM.
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "mgmt-cert.pem")
 	keyPath := filepath.Join(dir, "mgmt-key.pem")

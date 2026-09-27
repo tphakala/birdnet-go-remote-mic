@@ -155,7 +155,8 @@ func TestStartManagementKeepsInstalledCertAcrossRestart(t *testing.T) {
 	}()
 
 	// Second run over the same cert dir: Ensure must reuse the pinned custom pair,
-	// not regenerate it (it pins the pinned early return in mgmtcert.Ensure).
+	// not regenerate it (it pins the early return for a pinned pair in
+	// mgmtcert.Ensure).
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: certDir}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

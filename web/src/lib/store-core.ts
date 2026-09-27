@@ -59,10 +59,9 @@ export class ChangeTracker {
 
   // reset forgets the last value, so the next one announces. The store calls it
   // for status, devices and system after a failed read with no newer data in
-  // place, because a view may have
-  // replaced its content with a load error that only the next announcement
-  // clears, even when the data that comes back matches what was shown before
-  // the failure.
+  // place, because a view may have replaced its content with a load error that
+  // only the next announcement clears, even when the data that comes back
+  // matches what was shown before the failure.
   reset(): void {
     this.seen = false;
     this.last = "";
