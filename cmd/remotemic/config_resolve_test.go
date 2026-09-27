@@ -386,3 +386,29 @@ func TestConfigFlagEmptyRefused(t *testing.T) {
 		t.Errorf("installed config token %q, want it untouched (%q)", got, tokenOld)
 	}
 }
+
+// TestServeStartedBySystemdKeepsWorkingDirectory asserts a serve that systemd
+// started with no --config and no $REMOTEMIC_CONFIG (a unit someone wrote)
+// reads config.yaml in its working directory, even when the installed unit
+// cannot be read or names another config, and is not owner-checked.
+func TestServeStartedBySystemdKeepsWorkingDirectory(t *testing.T) {
+	prev := installedConfig
+	installedConfig = func() (string, string, error) { return "", "", errors.New("not the unit the installer writes") }
+	t.Cleanup(func() { installedConfig = prev })
+	t.Setenv(configEnv, "")
+	t.Setenv("INVOCATION_ID", "0123456789abcdef")
+	t.Chdir(t.TempDir())
+	stubEUID(t, os.Geteuid()+1)
+	var gotPath string
+	prevRun := runAppliance
+	runAppliance = func(p string, _ serveOverrides, _ bool, _ string) error { gotPath = p; return nil }
+	t.Cleanup(func() { runAppliance = prevRun })
+
+	if code, _, errOut := runCLI(cmdServe); code != 0 || gotPath != configDefault {
+		t.Errorf("serve under systemd: exit %d path %q stderr %q, want %q", code, gotPath, errOut, configDefault)
+	}
+	t.Setenv("INVOCATION_ID", "")
+	if code, _, errOut := runCLI(cmdServe); code != 1 || !strings.Contains(errOut, "cannot tell which config") {
+		t.Errorf("serve by hand: exit %d stderr %q, want the unit error", code, errOut)
+	}
+}

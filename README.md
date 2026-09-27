@@ -179,16 +179,18 @@ drop-ins only where that is certain: the unit must be exactly what `service
 install` wrote, and a drop-in that changes the environment, the account, the
 program or how paths resolve must be a plain override in
 `/etc/systemd/system/remote-mic.service.d/` (or another `remote-mic.service.d`
-directory) holding only `[Service]`, `Environment=REMOTEMIC_CONFIG=/path` and
-`User=name` lines. Anything else, such as a unit edited with `systemctl edit
+directory) holding only `[Service]`, `Environment=` lines of plain words (no
+quotes, `$`, `%` or backslashes) and `User=name` lines. Anything else, such as a unit edited with `systemctl edit
 --full`, an `EnvironmentFile=`, or a config under `/tmp`, `/home` or `/run`,
 makes a command stop and ask for `--config` rather than guess. The files are
 what count, so an override takes effect for the commands at once, while the
 running appliance picks it up only when it restarts.
 
 Run by hand as an account other than the config's owner, `serve` refuses, as
-the token commands do, and names the command to run instead; the service's
-own start is not checked.
+the token commands do, and names the command to run instead; a start by
+systemd is not checked. A unit you wrote yourself that sets neither
+`--config` nor `REMOTEMIC_CONFIG` still reads `config.yaml` in its
+`WorkingDirectory=`.
 
 ### Run at boot (systemd service)
 

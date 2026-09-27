@@ -52,10 +52,11 @@ var installedConfig = service.InstalledConfig
 type configSource int
 
 const (
-	fromFlag configSource = iota // --config
-	fromEnv                      // $REMOTEMIC_CONFIG
-	fromUnit                     // the installed remote-mic.service
-	fromCwd                      // config.yaml in the working directory
+	fromFlag    configSource = iota // --config
+	fromEnv                         // $REMOTEMIC_CONFIG
+	fromUnit                        // the installed remote-mic.service
+	fromCwd                         // config.yaml in the working directory
+	fromService                     // config.yaml in the working directory of a serve systemd started
 )
 
 // configRef is the config file a command acts on, where that choice came from,
@@ -240,17 +241,17 @@ var runAppliance = run
 
 // runServe parses the serve flags and starts the appliance. Run by hand
 // (the config did not come from $REMOTEMIC_CONFIG, which is how the unit
-// starts it), serve refuses an account other than the config's owner, as the
-// token commands do: it would create a lock, a first config or a certificate
-// the appliance's own account cannot open. The unit's own start is exempt so
-// a drop-in User= never turns a start into a restart loop, and --check only
-// reads.
+// starts it, nor from a unit's working directory), serve refuses an account
+// other than the config's owner, as the token commands do: it would create a
+// lock, a first config or a certificate the appliance's own account cannot
+// open. A start by systemd is exempt so a User= in a unit or drop-in never
+// turns a start into a restart loop, and --check only reads.
 func runServe(args []string, stderr io.Writer) error {
 	ref, ov, check, pprofAddr, err := parseServeFlags(args, stderr)
 	if err != nil {
 		return err
 	}
-	if !check && ref.source != fromEnv {
+	if !check && ref.source != fromEnv && ref.source != fromService {
 		if err := checkOwner(ref.path, "serve", args); err != nil {
 			return err
 		}
@@ -295,6 +296,14 @@ func parseServeFlags(args []string, stderr io.Writer) (cfg configRef, ov serveOv
 		set:        make(map[string]bool),
 	}
 	fs.Visit(func(f *flag.Flag) { ov.set[f.Name] = true })
+	// A serve that systemd started (it sets INVOCATION_ID) with neither
+	// --config nor $REMOTEMIC_CONFIG runs from a unit someone wrote
+	// themselves (the installer's unit sets the variable), so it keeps the
+	// working directory's config.yaml, as before the installed unit was
+	// consulted: following the installed unit there would stop that unit.
+	if !ov.set["config"] && os.Getenv(configEnv) == "" && os.Getenv("INVOCATION_ID") != "" {
+		return configRef{path: configDefault, source: fromService}, ov, *checkFlag, *pprof, nil
+	}
 	ref, err := resolveConfig(fs, *path, stderr)
 	if err != nil {
 		return configRef{}, serveOverrides{}, false, "", err
