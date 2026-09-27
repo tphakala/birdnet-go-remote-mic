@@ -23,6 +23,10 @@ function sayNow(text: string): void {
   if (region) region.textContent = text;
 }
 
+// UNCONFIRMED_TEXT is what the dialog shows and says when the restart request
+// got no answer.
+const UNCONFIRMED_TEXT = "The restart request got no answer. Waiting to see whether the appliance restarts; this page reloads once it answers.";
+
 // confirmRestart asks the user to confirm the disruptive restart before it runs.
 function confirmRestart(): Promise<boolean> {
   return confirmDialog({
@@ -55,7 +59,9 @@ export async function triggerApplianceRestart(): Promise<void> {
   try {
     await api.postSystemRestart();
   } catch (err: unknown) {
-    if (err instanceof ApiError) {
+    // A 2xx whose body could not be read was accepted: the restart may be
+    // under way, so it waits like a request that got no answer.
+    if (err instanceof ApiError && (err.status < 200 || err.status >= 300)) {
       // 501: the server has no restart control wired
       // (internal/mgmtserver/system.go:86), so say what to do instead.
       const why = err.status === 501
@@ -71,6 +77,13 @@ export async function triggerApplianceRestart(): Promise<void> {
     confirmed = false;
   }
 
+  if (!confirmed) {
+    const titleEl = document.getElementById("modal-title");
+    const textEl = document.getElementById("modal-text");
+    if (titleEl) titleEl.textContent = "Restart Not Confirmed";
+    if (textEl) textEl.textContent = UNCONFIRMED_TEXT;
+  }
+
   modal.classList.add("open");
   setAppInert(true);
   trapFocus(modal);
@@ -78,7 +91,7 @@ export async function triggerApplianceRestart(): Promise<void> {
 
   // Announce the phase once; the per-second countdown below updates only the
   // aria-hidden visual element, so it is not read out on every tick.
-  say(confirmed ? "Restarting the appliance. Reconnecting shortly." : "The restart request got no answer. Waiting to see whether the appliance restarts.");
+  say(confirmed ? "Restarting the appliance. Reconnecting shortly." : UNCONFIRMED_TEXT);
 
   let seconds = 5;
   if (timerEl) timerEl.textContent = `Reconnecting in ${seconds}s...`;
@@ -91,12 +104,15 @@ export async function triggerApplianceRestart(): Promise<void> {
       clearInterval(countdown);
       if (timerEl) timerEl.textContent = "Waiting for the appliance to come back...";
       say("Waiting for the appliance to come back.");
-      startHealthPolling();
+      startHealthPolling(confirmed);
     }
   }, 1000);
 }
 
-function startHealthPolling(): void {
+// startHealthPolling waits for the appliance to answer, then reloads. When
+// the restart request got no answer, an appliance that answers may never
+// have restarted, so the reload message says so.
+function startHealthPolling(confirmed: boolean): void {
   const timerEl = document.getElementById("reconnect-timer");
   let attempts = 0;
   const maxAttempts = 30;
@@ -109,8 +125,11 @@ function startHealthPolling(): void {
       const res = await fetch("/api/v1/healthz", { cache: "no-store" });
       if (res.ok) {
         clearInterval(interval);
-        if (timerEl) timerEl.textContent = "Appliance online! Reloading...";
-        sayNow("Appliance is back online. Reloading.");
+        const text = confirmed
+          ? "Appliance is back online. Reloading."
+          : "The appliance answers, but may not have restarted: check its uptime after the reload.";
+        if (timerEl) timerEl.textContent = confirmed ? "Appliance online! Reloading..." : text;
+        sayNow(text);
         window.setTimeout(() => {
           window.location.reload();
         }, 600);

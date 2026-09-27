@@ -34,7 +34,8 @@ test("apiErrorMessage shows a problem's detail, which says what went wrong", () 
 });
 
 test("apiErrorMessage never shows a body that was not a problem", () => {
-  // A proxy's HTML error page lands in detail; only the status text is shown.
+  // An ApiError that is not a problem shows its status text, whatever its
+  // detail holds (request() keeps none, see the client tests below).
   assert.equal(apiErrorMessage(new ApiError(502, "Bad Gateway", { detail: "<html><body>502</body></html>" })), "Bad Gateway");
   assert.equal(apiErrorMessage(new ApiError(502, "", { detail: "<html></html>" })), "HTTP 502");
 });

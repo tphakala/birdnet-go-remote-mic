@@ -87,15 +87,12 @@ interface FocusMark {
   index: number;
 }
 
-// syncChildren reconciles parent's children with nodes in place. Nodes that stay
-// in the list and keep their relative order are never detached: they are an
-// in-order subsequence once the stale nodes are gone, so the insert walk finds
-// each already at its index and leaves it (and its focus) untouched. A node that
-// is itself removed or rebuilt loses focus; render() puts it back (see
-// restoreFocus). The removal pass runs first so a node dropped from above no
-// longer shifts the survivors' indices, which would otherwise force a needless
-// move. The parent is expected to hold only managed nodes (rows and day
-// headers here).
+// syncChildren reconciles parent's children with nodes in place: it removes
+// the stale ones, then orders the rest with orderChildren, which moves only a
+// node that is out of order, so a row that stays keeps its node and its focus.
+// A node that is itself removed or rebuilt loses focus; render() puts it back
+// (see restoreFocus). The parent is expected to hold only managed nodes (rows
+// and day headers here).
 function syncChildren(parent: HTMLElement, nodes: HTMLElement[]): void {
   const want = new Set(nodes);
   for (const c of Array.from(parent.children)) if (!want.has(c as HTMLElement)) c.remove();

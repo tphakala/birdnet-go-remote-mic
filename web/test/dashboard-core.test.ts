@@ -5,14 +5,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { AvailableDevice } from "../src/lib/types.ts";
+import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
 import { fileURLToPath } from "node:url";
 
 import {
   availableCardKey,
   availableGoneMessage,
   deviceGoneMessage,
+  neighbourOrder,
   parseDeviceFieldPath,
+  rejectedFieldKey,
   settingsFocusMessage,
   availablePlan,
   bannerIsError,
@@ -267,6 +269,16 @@ test("availablePlan rebuilds a card whose busy state changed", () => {
   assert.equal(availableCardKey(d, false), availableCardKey({ ...d }, false), "equal data gives equal keys");
 });
 
+test("neighbourOrder prefers the nearest item after, then the nearest before", () => {
+  assert.deepEqual(neighbourOrder(["a", "b", "c", "d"], 1), ["c", "d", "a"]);
+  assert.deepEqual(neighbourOrder(["a", "b", "c", "d"], 3), ["c", "b", "a"]);
+  // Several items going at once: the caller takes the first still shown, so
+  // with a and b gone focus leaves b for c, the card now in its place.
+  assert.equal(neighbourOrder(["a", "b", "c", "d"], 1).find((id) => id !== "a"), "c");
+  assert.deepEqual(neighbourOrder(["a"], 0), []);
+  assert.deepEqual(neighbourOrder(["a", "b"], -1), ["a", "b"], "an item not on screen leaves every item as a candidate");
+});
+
 test("deviceGoneMessage names the removed device and where focus went", () => {
   assert.equal(deviceGoneMessage("garden", "porch"), "garden was removed. Focus moved to porch settings.");
   assert.equal(deviceGoneMessage("garden", null), "garden was removed. Focus moved to the dashboard.");
@@ -313,4 +325,26 @@ test("rejectionText says which action failed, on which field of which device", (
     "Save failed: RTSP Path of bats was rejected: must be at most 128 characters",
   );
   assert.equal(rejectionText("Toggle failed", { reason: "invalid config" }, []), "Toggle failed: the configuration was rejected: invalid config");
+});
+
+test("rejectedFieldKey marks the edited device's field, and a duplicate of it reported elsewhere", () => {
+  const dev = (name: string, device: string, path: string, extra: string[] = []): DeviceConfig => ({
+    name, device, path, mode: "pcm", rate: 48000, channels: [1], format: "s16",
+    streams: [{ path, mode: "pcm", channels: [1] }, ...extra.map((p) => ({ path: p, mode: "pcm" as const, channels: [1] }))],
+  });
+  const sent = [dev("garden", "hw:1", "/bats"), dev("bats", "hw:2", "/bats", ["/garden2"])];
+  // The edited device's own first stream.
+  assert.equal(rejectedFieldKey("devices[0].streams[0].path", sent, "hw:1"), "path");
+  assert.equal(rejectedFieldKey("devices[0].rate", sent, "hw:1"), "rate");
+  // garden's new path collides with bats', reported at bats (the later one).
+  assert.equal(rejectedFieldKey("devices[1].streams[0].path", sent, "hw:1"), "path");
+  // A problem with another device's own field is not garden's to fix.
+  assert.equal(rejectedFieldKey("devices[1].rate", sent, "hw:1"), null);
+  assert.equal(rejectedFieldKey("devices[1].streams[1].path", sent, "hw:1"), null, "a different path");
+  // A duplicate name reported at the other device.
+  const named = [dev("porch", "hw:1", "/a"), dev("porch", "hw:2", "/b")];
+  assert.equal(rejectedFieldKey("devices[1].name", named, "hw:1"), "name");
+  // The edited device's second stream is not in the form.
+  assert.equal(rejectedFieldKey("devices[1].streams[1].mode", sent, "hw:2"), null);
+  assert.equal(rejectedFieldKey("network.hostname", sent, "hw:1"), null);
 });

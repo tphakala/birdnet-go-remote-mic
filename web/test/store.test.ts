@@ -232,7 +232,8 @@ test("a failure after a newer read applied does not re-announce", async () => {
 
 test("a login that cannot reach the appliance never shows a response body", async () => {
   const h = harness(new FakeTimers());
-  // A proxy in front of the appliance answers with its own HTML page.
+  // A non-problem error with a body in its detail, which request() no longer
+  // keeps: the message must show the status text alone either way.
   h.push("getStatus", new ApiError(502, "Bad Gateway", { detail: "<html><body>upstream down</body></html>" }));
   try {
     const res = await h.store.login("typed-token");

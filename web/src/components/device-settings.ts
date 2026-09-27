@@ -513,7 +513,8 @@ export class DeviceSettingsForm {
   // markRejected marks the field the appliance rejected on save with its
   // reason and moves focus to it, as a failed local check does. It returns
   // false for a field the form has no error line for (the codec mode, the
-  // Opus bitrate), which the caller's toast covers alone.
+  // Opus bitrate), which the caller's toast covers alone. The mark lasts
+  // until the next local check (validate), as the form's own marks do.
   public markRejected(key: string, reason: string): boolean {
     const text = sentence(reason);
     switch (key) {

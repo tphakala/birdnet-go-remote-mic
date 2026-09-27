@@ -230,6 +230,16 @@ export function availableGoneMessage(label: string, toNeighbour: boolean): strin
   return toNeighbour ? `${label} is no longer available.` : `${label} is no longer available. ${REMOVED_FOCUS_MESSAGE}`;
 }
 
+// neighbourOrder lists where focus goes, in order of preference, when the
+// item at index of order (the ids on screen before a render) goes away: the
+// items after it, nearest first, then those before it, nearest first. The
+// caller takes the first one still on screen, so several items going at once
+// still leave focus next to where it was.
+export function neighbourOrder(order: readonly string[], index: number): string[] {
+  if (index < 0) return [...order];
+  return [...order.slice(index + 1), ...order.slice(0, index).reverse()];
+}
+
 // settingsFocusMessage is said when focus moves to a device card's settings
 // button the operator did not choose: after an Enable, or when the card that
 // held focus went away.
@@ -291,4 +301,26 @@ export function parseDeviceFieldPath(path: string): DeviceFieldPath | null {
 export function rejectionText(prefix: string, problem: FieldProblem, names: readonly string[]): string {
   const what = problem.field ? deviceFieldLabel(problem.field, names) : "the configuration";
   return `${prefix}: ${what} was rejected: ${problem.reason}`;
+}
+
+// rejectedFieldKey is the settings form field to mark for a validation
+// problem on a save of the device edited (its id), sent being the device list
+// the save sent: the problem's own field when it points at that device's
+// first stream, the one the form edits. A duplicate name or path is reported
+// at its later occurrence (internal/config/config.go:624 and :681), which may
+// be another device or stream, so a duplicate of the edited device's name or
+// path marks that field too. It returns null for a problem the form cannot
+// show.
+export function rejectedFieldKey(field: string, sent: readonly DeviceConfig[], edited: string): keyof typeof DEVICE_FIELD_LABELS | null {
+  const at = parseDeviceFieldPath(field);
+  const own = sent.find((d) => d.device === edited);
+  if (!at || !own) return null;
+  const there = sent[at.device];
+  if (there?.device === edited && at.stream === 0) return at.key;
+  if (at.key === "name" && there?.name === own.name) return "name";
+  if (at.key === "path") {
+    const path = there?.streams?.[at.stream]?.path ?? (at.stream === 0 ? there?.path : undefined);
+    if (path !== undefined && path === (own.streams?.[0]?.path ?? own.path)) return "path";
+  }
+  return null;
 }

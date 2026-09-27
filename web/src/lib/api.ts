@@ -33,12 +33,14 @@ export class ApiError extends Error {
   // problem is true when the error came from an RFC 9457 problem body
   // (application/problem+json, what the appliance sends), whose detail is
   // written for people. request() keeps no other body: a proxy's page, a
-  // plain JSON error or a body that does not parse leaves only the status.
-  // Read the detail through problemDetail.
+  // plain JSON error or a body that does not parse leaves only the status and
+  // a title. Read the detail through problemDetail.
   public problem: boolean;
 
   constructor(status: number, title: string, body: ApiErrorBody = {}) {
-    super(body.detail || title);
+    // The message, like problemDetail, never carries a detail that is not a
+    // problem's.
+    super((body.problem && body.detail) || title);
     this.name = "ApiError";
     this.status = status;
     this.title = title;
