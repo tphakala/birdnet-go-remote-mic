@@ -1,7 +1,8 @@
 // A harness for AppStore with a fake API and event stream, pinning how the
 // store wires its refresh helpers (store-core.ts, tested on their own):
-// status, devices, system and available announce only on change and
-// re-announce after a failed read; config announces on every read; a failed
+// status, devices, system and available announce only on change; status,
+// devices and system re-announce after a failed read that nothing newer
+// superseded; config announces on every read; a failed
 // initial load announces which views' data is missing; an older response
 // never overwrites a newer one; polling pauses while the page is hidden; and
 // the event stream stops after the hidden-page grace and restarts on showing.
@@ -186,7 +187,7 @@ test("config announces on every read", async () => {
   assert.equal(h.last.get("config"), cfg);
 });
 
-test("available announces on change and re-announces after a failure", async () => {
+test("available announces only on change, even after a failure", async () => {
   const h = harness();
   const one = [{ device: "hw:1,0" }] as unknown as AvailableDevice[];
   h.push("getAvailableDevices", []);
@@ -202,7 +203,25 @@ test("available announces on change and re-announces after a failure", async () 
   assert.equal(h.last.get("available"), h.store.getState().available);
   assert.equal(await h.store.refreshAvailable(), false);
   await h.store.refreshAvailable();
-  assert.equal(h.events.get("available"), 3, "the first read after a failure must announce");
+  // No view swaps the list for a load error, so an unchanged list after a
+  // failure must not rebuild it under the operator's focus.
+  assert.equal(h.events.get("available"), 2, "an unchanged list after a failure must not announce");
+});
+
+test("a failure after a newer read applied does not re-announce", async () => {
+  const h = harness();
+  const slow = deferred<ApplianceStatus>();
+  h.push("getStatus", slow.promise);
+  h.push("getStatus", status(1));
+  h.push("getStatus", status(1));
+  const older = h.store.refreshStatus();
+  await h.store.refreshStatus();
+  assert.equal(h.events.get("status"), 1);
+  // The older read fails after the newer one applied: fresh data is in place.
+  slow.reject(new Error("offline"));
+  assert.equal(await older, true);
+  await h.store.refreshStatus();
+  assert.equal(h.events.get("status"), 1, "a superseded failure must not re-arm the announcement");
 });
 
 test("an older status response landing late does not overwrite a newer one", async () => {

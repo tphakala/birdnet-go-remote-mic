@@ -55,8 +55,10 @@ export interface StoreDeps {
 }
 
 // StoreEvents is what AppStore announces: each event's name and payload.
-// devices, status, system and available fire only when their data changed, and
-// again on the first read after a failed one; config fires every poll.
+// devices, status, system and available fire only when their data changed;
+// devices, status and system also fire again on the first read after a failed
+// one (available does not: no view shows a load error for it). config fires
+// every poll.
 export interface StoreEvents {
   status: ApplianceStatus;
   devices: Device[];
@@ -443,9 +445,13 @@ export class AppStore extends Emitter<StoreEvents> {
   // and network counters, so both still announce nearly every tick (which the
   // System view's certificate refresh and the uptime displays rely on). config
   // announces every poll, because mutation flows repaint from it. The first
-  // applied value always announces, and a failed read resets its tracker, so the
-  // next successful read announces even when it returns data a view showed
-  // before swapping in a load error; that is what repairs the view.
+  // applied value always announces. A failed read of status, devices or system
+  // resets its tracker, so the next successful read announces even when it
+  // returns data a view showed before swapping in a load error; that is what
+  // repairs the view. A failure that a newer applied read already superseded
+  // resets nothing (the view kept fresh data), and available never resets,
+  // since no view replaces the list with a load error: re-announcing an
+  // unchanged list would only rebuild it under the operator's focus.
 
   // prefetched, when given, is a status the caller just fetched (the boot and
   // login token check), applied through the same gate instead of a second GET.
@@ -459,9 +465,9 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("status", status);
         }
       },
-      (err) => {
+      (err, superseded) => {
         console.warn("Failed to refresh status:", err);
-        this.statusChange.reset();
+        if (!superseded) this.statusChange.reset();
       },
     );
   }
@@ -476,10 +482,7 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("available", this.state.available);
         }
       },
-      (err) => {
-        console.warn("Failed to refresh available devices:", err);
-        this.availableChange.reset();
-      },
+      (err) => console.warn("Failed to refresh available devices:", err),
     );
   }
 
@@ -511,9 +514,9 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("devices", this.state.devices);
         }
       },
-      (err) => {
+      (err, superseded) => {
         console.warn("Failed to refresh devices:", err);
-        this.devicesChange.reset();
+        if (!superseded) this.devicesChange.reset();
       },
     );
   }
@@ -528,8 +531,11 @@ export class AppStore extends Emitter<StoreEvents> {
           this.emit("system", system);
         }
       },
-      // System info is optional, non-fatal: no warning, just re-arm the tracker.
-      () => this.systemChange.reset(),
+      // System info is optional, non-fatal: no warning, just re-arm the tracker
+      // unless a newer read already applied.
+      (_err, superseded) => {
+        if (!superseded) this.systemChange.reset();
+      },
     );
   }
 
