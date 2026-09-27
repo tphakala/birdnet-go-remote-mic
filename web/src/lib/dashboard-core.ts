@@ -2,6 +2,7 @@
 // view and the app's notifications fallback, split out so they can be unit tested with node:test (see
 // web/test/dashboard-core.test.ts) without a DOM.
 
+import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
 import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
@@ -228,25 +229,6 @@ export function availableGoneMessage(label: string, toNeighbour: boolean): strin
   return toNeighbour ? `${label} is no longer available.` : `${label} is no longer available. ${REMOVED_FOCUS_MESSAGE}`;
 }
 
-// DEVICE_FIELD_LABELS names a device config field the way the device settings
-// form labels it (a plain name for the few fields the form has no control
-// for: the sample format and the stream list), keyed by the last part of the
-// field path the appliance
-// reports in a validation problem: internal/config/config.go builds them as
-// devices[i].<key> (config.go:598) and devices[i].streams[j].<key>
-// (config.go:647), the Opus bitrate as streams[j].opus.bitrate.
-const DEVICE_FIELD_LABELS: Readonly<Record<string, string>> = {
-  name: "Device Name",
-  device: "Device id",
-  format: "Sample format",
-  rate: "Sample Rate (Hz)",
-  streams: "Streams",
-  path: "RTSP Path",
-  mode: "Stream Codec Mode",
-  channels: "Channels",
-  bitrate: "Opus Bitrate",
-};
-
 // deviceFieldLabel turns a validation problem's field path into what an
 // operator reads: the field's label, and for a path into the device list the
 // name of the device it points at (names is the device list the request
@@ -256,11 +238,12 @@ const DEVICE_FIELD_LABELS: Readonly<Record<string, string>> = {
 // mgmtserver/devices.go:182).
 export function deviceFieldLabel(path: string, names: readonly string[] = []): string {
   if (path === "devices") return "The device list";
-  if (path === "device") return DEVICE_FIELD_LABELS.device ?? path;
+  if (path === "device") return DEVICE_FIELD_LABELS.device;
   const m = /^devices\[(\d+)\]\.(?:streams\[\d+\]\.)?(?:opus\.)?([a-z_]+)$/.exec(path);
   const index = m?.[1];
   const key = m?.[2];
-  const label = key !== undefined ? DEVICE_FIELD_LABELS[key] : undefined;
+  const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
+  const label = key !== undefined ? labels[key] : undefined;
   if (label === undefined || index === undefined) return path;
   const name = names[Number(index)];
   return name ? `${label} of ${name}` : label;

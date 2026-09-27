@@ -1,6 +1,7 @@
 import { CustomDropdown } from "./custom-dropdown.ts";
 import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.ts";
 import {
+  DEVICE_FIELD_LABELS,
   MAX_NAME_LEN,
   MAX_PATH_LEN,
   bitrateFollowsDefault,
@@ -168,7 +169,7 @@ export class DeviceSettingsForm {
 
     // Rate
     const rateField = elem("div", "form-field");
-    rateField.appendChild(this.label("Sample Rate (Hz)"));
+    rateField.appendChild(this.label(DEVICE_FIELD_LABELS.rate));
     const rateOpts = this.rateOptions(d.rate);
     const rate = this.buildDropdown("Sample rate", rateOpts, this.pick(rateOpts, String(d.rate)));
     this.rateHidden = rate.hidden;
@@ -187,7 +188,7 @@ export class DeviceSettingsForm {
     // three or more is a multi-channel PCM stream. The number of selectable
     // channels is the largest probed channel count, defaulting to stereo when unknown.
     const chField = elem("div", "form-field");
-    chField.appendChild(this.label("Channels"));
+    chField.appendChild(this.label(DEVICE_FIELD_LABELS.channels));
     const chGroup = this.buildChannelSelect(this.maxChannels(), d.channels);
     this.channelsGroup = chGroup;
     chField.appendChild(chGroup);
@@ -241,13 +242,13 @@ export class DeviceSettingsForm {
 
     // Name, defaulting from the sound card's friendly label when blank.
     const initialName = d.name || this.hardware.friendlyName || "";
-    const name = this.field(grid, `set-${uid}-name`, "Device Name", initialName, "text",
+    const name = this.field(grid, `set-${uid}-name`, DEVICE_FIELD_LABELS.name, initialName, "text",
       `DNS-SD instance name and log label. Must be unique. Up to ${MAX_NAME_LEN} characters.`);
     this.nameEl = name.input;
     this.nameErr = name.error;
     this.nameEl.maxLength = inputMaxLength(MAX_NAME_LEN);
 
-    const path = this.field(grid, `set-${uid}-path`, "RTSP Path", d.path, "text",
+    const path = this.field(grid, `set-${uid}-path`, DEVICE_FIELD_LABELS.path, d.path, "text",
       `Unique endpoint path on the RTSP server, e.g. /stream. Up to ${MAX_PATH_LEN} characters.`);
     this.pathEl = path.input;
     this.pathErr = path.error;
@@ -257,7 +258,7 @@ export class DeviceSettingsForm {
     // codec, mono or stereo). On a device that cannot, only PCM L16 is offered and
     // a saved opus mode is coerced to pcm so the form is never in an unsaveable state.
     const modeField = elem("div", "form-field");
-    modeField.appendChild(this.label("Stream Codec Mode"));
+    modeField.appendChild(this.label(DEVICE_FIELD_LABELS.mode));
     const mode = this.buildDropdown("Stream codec mode", modeOpts, modeInitial);
     this.modeHidden = mode.hidden;
     modeField.appendChild(mode.container);
@@ -287,7 +288,7 @@ export class DeviceSettingsForm {
 
     // Bitrate
     this.bitrateField = elem("div", "form-field");
-    this.bitrateField.appendChild(this.label("Opus Bitrate"));
+    this.bitrateField.appendChild(this.label(DEVICE_FIELD_LABELS.bitrate));
     // An unset bitrate (absent or 0) is the per-channel default, and so is a
     // saved value that equals it: both keep following the channel count. Opus
     // carries at most two channels, so the default is seeded from at most two
@@ -381,7 +382,7 @@ export class DeviceSettingsForm {
   private buildIdentity(grid: HTMLElement, uid: number): void {
     const field = elem("div", "form-field device-identity");
     const inputId = `set-${uid}-devid`;
-    const label = this.label("Device id");
+    const label = this.label(DEVICE_FIELD_LABELS.device);
     label.setAttribute("for", inputId);
     field.appendChild(label);
 
