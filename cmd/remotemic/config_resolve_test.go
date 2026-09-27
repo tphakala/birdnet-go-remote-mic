@@ -72,12 +72,12 @@ func TestParseServeFlagsUsesInstalledConfig(t *testing.T) {
 	stubInstalledConfig(t, unitCfg, service.DefaultUser)
 	t.Setenv(configEnv, "")
 	t.Chdir(t.TempDir())
-	cfgPath, _, _, _, err := parseServeFlags([]string{"--check"}, &bytes.Buffer{})
+	cfg, _, _, _, err := parseServeFlags([]string{"--check"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
 	}
-	if cfgPath != unitCfg {
-		t.Errorf("cfgPath = %q, want %q", cfgPath, unitCfg)
+	if cfg.path != unitCfg {
+		t.Errorf("cfgPath = %q, want %q", cfg.path, unitCfg)
 	}
 }
 
@@ -291,5 +291,51 @@ func TestResolveConfigUnitError(t *testing.T) {
 	t.Setenv(configEnv, configDefault)
 	if code, out, errOut := runCLI("token", "get"); code != 0 || out != tokenOld+"\n" {
 		t.Errorf("env given: exit %d stdout %q stderr %q, want the token", code, out, errOut)
+	}
+}
+
+// stubRunAppliance replaces the appliance start with a recorder, so a test of
+// serve's checks never starts it. It returns whether the start was reached.
+func stubRunAppliance(t *testing.T) *bool {
+	t.Helper()
+	prev := runAppliance
+	started := new(bool)
+	runAppliance = func(string, serveOverrides, bool, string) error { *started = true; return nil }
+	t.Cleanup(func() { runAppliance = prev })
+	return started
+}
+
+// TestServeRefusesAnotherAccount asserts serve run by hand as an account
+// other than the config's owner is refused before anything starts, while
+// --check (read only) and a start whose config came from $REMOTEMIC_CONFIG
+// (the unit's own start, where a drop-in may set another User=) go ahead.
+func TestServeRefusesAnotherAccount(t *testing.T) {
+	path := tempConfig(t)
+	seedConfigWithToken(t, path, tokenOld)
+	stubEUID(t, os.Geteuid()+1)
+	t.Setenv(configEnv, "")
+
+	started := stubRunAppliance(t)
+	code, _, errOut := runCLI(cmdServe, flagConfig, path)
+	if code != 1 || *started || !strings.Contains(errOut, "run this command as that account") || !strings.Contains(errOut, "remote-mic serve --config "+path) {
+		t.Errorf("serve --config as another account: exit %d started %t stderr %q, want a refusal naming the command", code, *started, errOut)
+	}
+
+	started = stubRunAppliance(t)
+	if code, _, errOut := runCLI(cmdServe, flagConfig, path, "--check"); code != 0 || !*started {
+		t.Errorf("serve --check: exit %d started %t stderr %q, want it to run", code, *started, errOut)
+	}
+
+	started = stubRunAppliance(t)
+	t.Setenv(configEnv, path)
+	if code, _, errOut := runCLI(cmdServe); code != 0 || !*started {
+		t.Errorf("serve from $%s: exit %d started %t stderr %q, want it to run", configEnv, code, *started, errOut)
+	}
+
+	stubEUID(t, os.Geteuid())
+	started = stubRunAppliance(t)
+	t.Setenv(configEnv, "")
+	if code, _, errOut := runCLI(cmdServe, flagConfig, path); code != 0 || !*started {
+		t.Errorf("serve as the owner: exit %d started %t stderr %q, want it to run", code, *started, errOut)
 	}
 }

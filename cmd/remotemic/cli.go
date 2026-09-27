@@ -226,23 +226,38 @@ Run a command with -h to see its flags.
 `)
 }
 
-// runServe parses the serve flags and starts the appliance.
+// runAppliance starts the appliance. A variable so tests of runServe's
+// checks do not start it.
+var runAppliance = run
+
+// runServe parses the serve flags and starts the appliance. Run by hand
+// (the config did not come from $REMOTEMIC_CONFIG, which is how the unit
+// starts it), serve refuses an account other than the config's owner, as the
+// token commands do: it would create a lock, a first config or a certificate
+// the appliance's own account cannot open. The unit's own start is exempt so
+// a drop-in User= never turns a start into a restart loop, and --check only
+// reads.
 func runServe(args []string, stderr io.Writer) error {
-	cfgPath, ov, check, pprofAddr, err := parseServeFlags(args, stderr)
+	ref, ov, check, pprofAddr, err := parseServeFlags(args, stderr)
 	if err != nil {
 		return err
 	}
-	return run(cfgPath, ov, check, pprofAddr)
+	if !check && ref.source != fromEnv {
+		if err := checkOwner(ref.path, "serve", args); err != nil {
+			return err
+		}
+	}
+	return runAppliance(ref.path, ov, check, pprofAddr)
 }
 
-// parseServeFlags parses the serve flags into the config path (resolved by
+// parseServeFlags parses the serve flags into the config (resolved by
 // resolveConfig), the set of config overrides (only the flags actually passed,
 // so precedence is flag > config > default via applyServeOverrides), the
 // --check switch, and the optional pprof listen address. It is separated from
 // runServe so the flag-name-to-override-key mapping is unit-testable without
 // starting the appliance. Stray positional arguments are rejected rather than
 // silently ignored, and a config that cannot be resolved is an error.
-func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveOverrides, check bool, pprofAddr string, err error) {
+func parseServeFlags(args []string, stderr io.Writer) (cfg configRef, ov serveOverrides, check bool, pprofAddr string, err error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -261,7 +276,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	checkFlag := fs.Bool("check", false, "validate the config and configured devices, then exit without serving")
 	pprof := fs.String("pprof", "", "serve net/http/pprof diagnostics on host:port with no authentication (off by default; bind to loopback such as 127.0.0.1:6060, it exposes profiles and stack dumps)")
 	if err := parseNoArgs(fs, args); err != nil {
-		return "", serveOverrides{}, false, "", err
+		return configRef{}, serveOverrides{}, false, "", err
 	}
 	ov = serveOverrides{
 		listen:     *listen,
@@ -274,9 +289,9 @@ func parseServeFlags(args []string, stderr io.Writer) (cfgPath string, ov serveO
 	fs.Visit(func(f *flag.Flag) { ov.set[f.Name] = true })
 	ref, err := resolveConfig(*path, stderr)
 	if err != nil {
-		return "", serveOverrides{}, false, "", err
+		return configRef{}, serveOverrides{}, false, "", err
 	}
-	return ref.path, ov, *checkFlag, *pprof, nil
+	return ref, ov, *checkFlag, *pprof, nil
 }
 
 // runDevices routes the devices command group and returns the exit code.
