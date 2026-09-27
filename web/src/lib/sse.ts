@@ -1,3 +1,5 @@
+import type { Timers } from "./store.ts";
+
 export type SSEEventHandler = (eventName: string, data: unknown) => void;
 
 // Event names the client synthesizes internally (from the connect loop) and the
@@ -6,17 +8,16 @@ export type SSEEventHandler = (eventName: string, data: unknown) => void;
 const RESERVED_EVENTS = new Set(["connected", "disconnected", "unauthorized", "heartbeat"]);
 
 // SSEDeps is what the client needs from the browser, injected so node:test can
-// drive the connect loop with a fake fetch and no real timers.
+// drive the connect loop with a fake fetch and no real timers. timers is the
+// same seam the stores use (store.ts Timers).
 export interface SSEDeps {
   fetch(url: string, init: RequestInit): Promise<Response>;
-  setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
-  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+  timers: Pick<Timers, "setTimeout" | "clearTimeout">;
 }
 
 const browserDeps: SSEDeps = {
   fetch: (url, init) => fetch(url, init),
-  setTimeout: (fn, ms) => setTimeout(fn, ms),
-  clearTimeout: (handle) => clearTimeout(handle),
+  timers: globalThis,
 };
 
 export class SSEClient {
@@ -53,6 +54,10 @@ export class SSEClient {
     if (!this.isRunning) return;
     this.stop();
     this.start();
+    // The restart is silent (no disconnected event), so the store still says
+    // connected: arm the watchdog now, or a new connect that hangs on a dead
+    // link would leave the page looking live until the browser gives up.
+    this.resetHeartbeat();
   }
 
   public setToken(token: string | null): void {
@@ -94,7 +99,7 @@ export class SSEClient {
 
   private resetHeartbeat(): void {
     this.clearHeartbeat();
-    this.heartbeatTimer = this.deps.setTimeout(() => {
+    this.heartbeatTimer = this.deps.timers.setTimeout(() => {
       console.warn("SSE heartbeat timeout exceeded (30s). Reconnecting...");
       if (this.abortController) {
         this.abortController.abort();
@@ -104,7 +109,7 @@ export class SSEClient {
 
   private clearHeartbeat(): void {
     if (this.heartbeatTimer !== null) {
-      this.deps.clearTimeout(this.heartbeatTimer);
+      this.deps.timers.clearTimeout(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
   }
@@ -194,7 +199,7 @@ export class SSEClient {
       }
 
       if (this.isRunning && gen === this.generation) {
-        await new Promise<void>((resolve) => this.deps.setTimeout(resolve, this.reconnectDelayMs));
+        await new Promise<void>((resolve) => this.deps.timers.setTimeout(resolve, this.reconnectDelayMs));
         // Re-check after the delay: a stop()+start() during it must not let this
         // stale loop double the new generation's shared backoff.
         if (!this.isRunning || gen !== this.generation) return;

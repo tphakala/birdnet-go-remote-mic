@@ -165,8 +165,6 @@ class FakeFrames implements FramePorts {
   requests = 0;
   // The scheduler's timed wakes, fired by hand.
   readonly timers = new FakeTimers();
-  readonly setTimeout = (fn: () => void, ms: number): ReturnType<typeof setTimeout> => this.timers.setTimeout(fn, ms);
-  readonly clearTimeout = (h: ReturnType<typeof setTimeout>): void => this.timers.clearTimeout(h);
 
   request(cb: (now: number) => void): number {
     this.requests++;

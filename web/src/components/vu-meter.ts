@@ -48,8 +48,7 @@ reducedMotionQuery?.addEventListener?.("change", (e) => {
 export const meterFrames = new FrameScheduler({
   request: (cb) => requestAnimationFrame(cb),
   cancel: (handle) => cancelAnimationFrame(handle),
-  setTimeout: (fn, ms) => setTimeout(fn, ms),
-  clearTimeout: (handle) => clearTimeout(handle),
+  timers: globalThis,
 });
 
 // VUMeter is one channel's meter on the dashboard: the canvas, the dB readout

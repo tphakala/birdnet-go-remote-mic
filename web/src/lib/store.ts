@@ -115,6 +115,8 @@ export class AppStore extends Emitter<StoreEvents> {
   // the grace timer between the two (see setLevelsWanted).
   private levelsWanted = true;
   private levelsDropped = false;
+  // Whether a view has said yet whether it wants levels (the first route).
+  private levelsDecided = false;
   private levelsTimer: ReturnType<typeof setTimeout> | null = null;
   // One ordering gate per polled resource (see LatestGate). The poll timer does
   // not wait for a tick to finish, and a provision, removal, or save triggers an
@@ -363,9 +365,24 @@ export class AppStore extends Emitter<StoreEvents> {
   // Levels stop LEVELS_GRACE_MS after the dashboard leaves, by changing the
   // stream's event filter, and come back at once when one returns; a return
   // within the grace changes nothing. Dropping them announces levelsdropped.
+  // Each filter change reconnects the stream once, and the connect re-sync
+  // reloads the notifications snapshot, as on any reconnect.
   // The filter outlives a stopped stream (a 401, a hidden page), so a restart
   // keeps it.
   public setLevelsWanted(wanted: boolean): void {
+    // The first call comes from the start-up route, before the stream opens:
+    // a page that starts on another view never shows levels, so it opens the
+    // stream without them rather than streaming them for the grace and then
+    // reconnecting.
+    if (!this.levelsDecided) {
+      this.levelsDecided = true;
+      this.levelsWanted = wanted;
+      if (!wanted) {
+        this.levelsDropped = true;
+        this.sse.setEvents(NON_LEVEL_EVENTS);
+      }
+      return;
+    }
     if (wanted === this.levelsWanted) return;
     this.levelsWanted = wanted;
     if (wanted) {

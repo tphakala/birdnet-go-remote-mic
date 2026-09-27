@@ -42,8 +42,7 @@ function harness() {
           reply: (status) => resolve(new Response(null, { status })),
         });
       }),
-    setTimeout: (fn, ms) => timers.setTimeout(fn, ms),
-    clearTimeout: (h) => timers.clearTimeout(h),
+    timers,
   });
   const events: string[] = [];
   client.subscribe((name) => events.push(name));
@@ -164,5 +163,21 @@ test("the heartbeat watchdog and the reconnect backoff use the injected timers",
   await settle();
   assert.equal(h.calls.length, 2);
   assert.equal(h.calls.at(-1)?.url, "/api/v1/events?events=notification", "the reconnect keeps the filter");
+  h.client.stop();
+});
+
+test("a filter restart arms the heartbeat watchdog before the new stream answers", async () => {
+  const h = harness();
+  h.client.start();
+  h.calls.at(-1)?.stream();
+  await settle();
+  h.client.setEvents(["notification"]);
+  await settle();
+  // The new request hangs (a dead link); the watchdog must still be armed.
+  const [watchdog] = h.timers.pending(30_000);
+  assert.ok(watchdog, "a silent restart must arm the watchdog");
+  h.timers.fire(watchdog);
+  await settle();
+  assert.deepEqual(h.events, ["connected", "disconnected"], "the hung restart must be reported once the watchdog fires");
   h.client.stop();
 });

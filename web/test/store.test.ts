@@ -622,6 +622,8 @@ test("a 401 during the initial load leaves the failure to the login prompt", asy
 test("levels drop LEVELS_GRACE_MS after leaving the dashboard", () => {
   const timers = new FakeTimers();
   const h = harness(timers);
+  // The start-up route is the dashboard.
+  h.store.setLevelsWanted(true);
   let dropped = 0;
   h.store.on("levelsdropped", () => dropped++);
   h.emit("levels", { devices: [{ name: "mic", channels: [] }] });
@@ -639,6 +641,8 @@ test("levels drop LEVELS_GRACE_MS after leaving the dashboard", () => {
 test("returning within the grace keeps the stream untouched", () => {
   const timers = new FakeTimers();
   const h = harness(timers);
+  // The start-up route is the dashboard.
+  h.store.setLevelsWanted(true);
   h.store.setLevelsWanted(false);
   h.store.setLevelsWanted(true);
   assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0, "a return must cancel the grace");
@@ -648,6 +652,8 @@ test("returning within the grace keeps the stream untouched", () => {
 test("returning after the drop requests levels again at once", () => {
   const timers = new FakeTimers();
   const h = harness(timers);
+  // The start-up route is the dashboard.
+  h.store.setLevelsWanted(true);
   h.store.setLevelsWanted(false);
   const [grace] = timers.pending(LEVELS_GRACE_MS);
   assert.ok(grace);
@@ -665,4 +671,16 @@ test("the start-up route on the dashboard changes nothing", () => {
   h.store.setLevelsWanted(true);
   assert.deepEqual(h.filters, [], "a fresh store already streams levels");
   assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0);
+});
+
+test("a start-up route off the dashboard filters levels at once", () => {
+  const timers = new FakeTimers();
+  const h = harness(timers);
+  // A deep link to another view: the stream has not opened yet.
+  h.store.setLevelsWanted(false);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS], "the first connect must already leave levels out");
+  assert.equal(timers.pending(LEVELS_GRACE_MS).length, 0, "no grace for levels never shown");
+  // Moving to the dashboard brings them in at once.
+  h.store.setLevelsWanted(true);
+  assert.deepEqual(h.filters, [NON_LEVEL_EVENTS, null]);
 });

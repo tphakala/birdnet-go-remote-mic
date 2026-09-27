@@ -4,6 +4,8 @@
 // MeterController, each meter's state and sequencing. No DOM here: the frame
 // source and the drawing are injected, so node:test drives them.
 
+import type { Timers } from "./store.ts";
+
 // FLOOR_DB is the bottom of the meter scale; anything quieter draws as silence.
 export const FLOOR_DB = -60;
 // PEAK_HOLD_MS is how long the needle stays at a new peak before it falls.
@@ -87,13 +89,12 @@ export interface Animator {
 }
 
 // FramePorts is the frame source (requestAnimationFrame and
-// cancelAnimationFrame in the browser) and a one-shot timer for timed wakes
-// (setTimeout and clearTimeout), fakes in tests.
+// cancelAnimationFrame in the browser) and the timers for timed wakes (the
+// stores' Timers seam, globalThis in the browser), fakes in tests.
 export interface FramePorts {
   request(cb: (now: number) => void): number;
   cancel(handle: number): void;
-  setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
-  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+  timers: Pick<Timers, "setTimeout" | "clearTimeout">;
 }
 
 // FrameScheduler runs one frame loop for every animator that asked for one,
@@ -138,7 +139,7 @@ export class FrameScheduler {
   // peak) asks for no frames meanwhile.
   wakeAfter(a: Animator, ms: number): void {
     this.cancelTimed(a);
-    this.timed.set(a, this.ports.setTimeout(() => {
+    this.timed.set(a, this.ports.timers.setTimeout(() => {
       this.timed.delete(a);
       this.wake(a);
     }, ms));
@@ -157,7 +158,7 @@ export class FrameScheduler {
   private cancelTimed(a: Animator): void {
     const handle = this.timed.get(a);
     if (handle === undefined) return;
-    this.ports.clearTimeout(handle);
+    this.ports.timers.clearTimeout(handle);
     this.timed.delete(a);
   }
 

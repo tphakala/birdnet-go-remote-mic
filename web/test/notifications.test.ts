@@ -10,13 +10,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ApiError } from "../src/lib/api.ts";
-import { NotificationStore, type ConnectionSource } from "../src/lib/notifications.ts";
+import { CLOCK_CHECK_MS, NotificationStore, type ConnectionSource } from "../src/lib/notifications.ts";
 import { prefSaveNotice } from "../src/lib/prefs.ts";
 import { resyncDelay } from "../src/lib/notifications-core.ts";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
 import type { Router } from "../src/lib/router.ts";
 import type { AppStore } from "../src/lib/store.ts";
-import { FakeConnection, FakeStream, FakeTimers, notif, settle, snap } from "./fixtures.ts";
+import { FakeConnection, FakeStream, FakeTimers, notif, settle, snap, type FakeTimer } from "./fixtures.ts";
 
 // Compile-time checks, never called: the connection seam takes the app store
 // and the fake, but not an emitter of another event map.
@@ -42,6 +42,12 @@ interface Harness {
   frame(name: string, data: unknown): void;
   // changes counts the store's "change" announcements.
   changes: () => number;
+}
+
+// reloads lists the pending re-sync timers: every timer but the periodic
+// clock check the store arms while connected.
+function reloads(h: Harness): FakeTimer[] {
+  return h.timers.pending().filter((t) => t.ms !== CLOCK_CHECK_MS);
 }
 
 function harness(): Harness {
@@ -98,7 +104,7 @@ test("a failed load on connect retries with backoff until it applies", async () 
   await settle();
   assert.equal(h.ns.hasLoaded(), true);
   assert.equal(h.ns.hasFailed(), false);
-  assert.equal(h.timers.pending().length, 0);
+  assert.equal(reloads(h).length, 0);
 });
 
 test("a 401 on connect defers to the login flow instead of retrying", async () => {
@@ -107,7 +113,7 @@ test("a 401 on connect defers to the login flow instead of retrying", async () =
   h.connect();
   await settle();
   assert.equal(h.ns.hasFailed(), true);
-  assert.equal(h.timers.pending().length, 0);
+  assert.equal(reloads(h).length, 0);
 });
 
 test("an applied load clears a pending backoff retry and resets the backoff", async () => {
@@ -119,7 +125,7 @@ test("an applied load clears a pending backoff retry and resets the backoff", as
   // A Retry (or any other load) lands first.
   h.push(snap({ notifications: [notif({ id: 1 })] }));
   assert.equal(await h.ns.load(), true);
-  assert.equal(h.timers.pending().length, 0);
+  assert.equal(reloads(h).length, 0);
   // The attempt count restarted: the next failure waits the first delay again.
   h.push(new Error("offline"));
   h.connect();
@@ -135,13 +141,13 @@ test("an applied load keeps a pending gap re-sync", async () => {
   await settle();
   // Ids 2 to 4 were dropped: the gap schedules a re-sync.
   h.live(notif({ id: 5 }));
-  const pending = h.timers.pending();
+  const pending = reloads(h);
   assert.equal(pending.length, 1);
   // A load that started before the gap may not hold the dropped events, so
   // the re-sync must survive it.
   h.push(snap({ notifications: [notif({ id: 1 })] }));
   await h.ns.load();
-  assert.deepEqual(h.timers.pending(), pending);
+  assert.deepEqual(reloads(h), pending);
 });
 
 test("a gap absorbed into a pending backoff retry survives an applied load", async () => {
@@ -157,7 +163,7 @@ test("a gap absorbed into a pending backoff retry survives an applied load", asy
   h.live(notif({ id: 5 }));
   h.push(snap({ notifications: [notif({ id: 1 })] }));
   await h.ns.load();
-  assert.deepEqual(h.timers.pending(), pending);
+  assert.deepEqual(reloads(h), pending);
 });
 
 test("the stream going down drops a pending retry", async () => {
@@ -165,9 +171,9 @@ test("the stream going down drops a pending retry", async () => {
   h.push(new Error("offline"));
   h.connect();
   await settle();
-  assert.equal(h.timers.pending().length, 1);
+  assert.equal(reloads(h).length, 1);
   h.disconnect();
-  assert.equal(h.timers.pending().length, 0);
+  assert.equal(reloads(h).length, 0);
 });
 
 test("a load failing after the stream went down arms no retry until it is back", async () => {
@@ -180,7 +186,7 @@ test("a load failing after the stream went down arms no retry until it is back",
   await settle();
   assert.equal(h.calls(), 1);
   assert.equal(h.ns.hasFailed(), true);
-  assert.equal(h.timers.pending().length, 0);
+  assert.equal(reloads(h).length, 0);
   // Nothing else asks for the snapshot while the stream is down.
   await settle();
   assert.equal(h.calls(), 1);
@@ -227,12 +233,12 @@ test("change does not fire for a frame the store does not apply", async () => {
   // must not be folded in, nor mistaken for another boot and re-synced.
   h.frame("notification", { id: 2, bootId: "boot-a" });
   assert.equal(h.changes(), before, "a heartbeat or a malformed frame must not announce");
-  assert.equal(h.timers.pending().length, 0, "a malformed frame must not schedule a re-sync");
+  assert.equal(reloads(h).length, 0, "a malformed frame must not schedule a re-sync");
   // A frame from another boot is not folded in; the re-sync it schedules
   // announces instead.
   h.live(notif({ id: 2, bootId: "boot-b" }));
   assert.equal(h.changes(), before, "a frame from another boot must not announce");
-  assert.equal(h.timers.pending().length, 1, "a frame from another boot schedules a re-sync");
+  assert.equal(reloads(h).length, 1, "a frame from another boot schedules a re-sync");
 });
 
 test("an empty first snapshot announces", async () => {
@@ -244,6 +250,28 @@ test("an empty first snapshot announces", async () => {
   // nothing in the log.
   assert.equal(h.changes(), 1);
   assert.equal(h.ns.hasLoaded(), true);
+});
+
+test("a clock step is caught without a stream frame", async () => {
+  const h = harness();
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
+  h.connect();
+  await settle();
+  assert.equal(reloads(h).length, 0);
+  const [check] = h.timers.pending(CLOCK_CHECK_MS);
+  assert.ok(check, "a connected store must check the clock on its own");
+  // The browser clock jumps an hour; no frame arrives on a quiet stream.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 3_600_000;
+  try {
+    h.timers.fire(check);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(reloads(h).length, 1, "the step must schedule a re-sync");
+  assert.equal(h.timers.pending(CLOCK_CHECK_MS).length, 1, "the check re-arms while connected");
+  h.disconnect();
+  assert.equal(h.timers.pending(CLOCK_CHECK_MS).length, 0, "the check stops with the stream");
 });
 
 // This test sets the page-wide notice handler, so it must stay the last in the

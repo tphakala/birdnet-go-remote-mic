@@ -33,6 +33,10 @@ import {
 const STORAGE_KEY = "remote-mic-notifications";
 // Coalesce the burst of refetches a gap can trigger into one snapshot request.
 const GAP_RELOAD_DELAY_MS = 400;
+// CLOCK_CHECK_MS is how often the browser clock is checked for a step while
+// the stream is up. Every stream frame checks it too, but a stream carrying
+// only notifications and heartbeats (no levels) may be quiet for 15 s.
+export const CLOCK_CHECK_MS = 5_000;
 
 // ConnectionSource is the one store event the notification store follows.
 // It is spelled out rather than Pick<AppStore, "on">: tsc compares that
@@ -57,6 +61,8 @@ export class NotificationStore extends Emitter<{ change: undefined }> {
   private readonly timers: NotificationDeps["timers"];
   private state: CoreState;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  // The periodic clock check while the stream is up (see armClockCheck).
+  private clockTimer: ReturnType<typeof setTimeout> | null = null;
   // Whether the pending reloadTimer is only a backoff retry (see scheduleReload).
   private reloadIsBackoff = false;
   // Whether the event stream is up, as the last "connection" event said. While
@@ -100,8 +106,13 @@ export class NotificationStore extends Emitter<{ change: undefined }> {
     // must not keep loading.
     deps.connection.on("connection", (up) => {
       this.connected = up;
-      if (this.connected) void this.resync();
-      else this.clearReload();
+      if (this.connected) {
+        void this.resync();
+        this.armClockCheck();
+      } else {
+        this.clearReload();
+        this.clearClockCheck();
+      }
     });
   }
 
@@ -257,6 +268,23 @@ export class NotificationStore extends Emitter<{ change: undefined }> {
       this.reloadTimer = null;
       void this.resync();
     }, delayMs);
+  }
+
+  // armClockCheck checks the browser clock every CLOCK_CHECK_MS while the
+  // stream is up, so a step is caught even when no frame arrives.
+  private armClockCheck(): void {
+    if (this.clockTimer !== null) return;
+    this.clockTimer = this.timers.setTimeout(() => {
+      this.clockTimer = null;
+      this.checkClock();
+      if (this.connected) this.armClockCheck();
+    }, CLOCK_CHECK_MS);
+  }
+
+  private clearClockCheck(): void {
+    if (this.clockTimer === null) return;
+    this.timers.clearTimeout(this.clockTimer);
+    this.clockTimer = null;
   }
 
   // clearReload cancels a pending re-sync, if any.
