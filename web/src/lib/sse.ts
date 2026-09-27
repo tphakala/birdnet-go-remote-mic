@@ -175,18 +175,23 @@ export class SSEClient {
           throw new Error(`SSE HTTP error: ${response.status} ${response.statusText}`);
         }
 
-        // Successfully connected, reset backoff delay
-        this.reconnectDelayMs = RECONNECT_DELAY_MS;
         this.dispatch("connected", null);
         this.resetHeartbeat();
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let received = false;
 
         while (this.isRunning) {
           const { done, value } = await reader.read();
           if (done) break;
+          // The backoff resets on the first data, not on the 200: a server or
+          // proxy that answers and closes at once must still back off.
+          if (!received) {
+            received = true;
+            this.reconnectDelayMs = RECONNECT_DELAY_MS;
+          }
 
           buffer += decoder.decode(value, { stream: true });
           const messages = buffer.split("\n\n");
@@ -197,10 +202,11 @@ export class SSEClient {
             this.parseMessage(msg);
           }
         }
-        // The server ended the stream (a restart, a proxy timeout): the
-        // reconnect below runs as after an error, and listeners learn the
-        // stream is down until it comes back.
-        if (this.isRunning && gen === this.generation) throw new Error("SSE stream closed by the server");
+        // The server ended the stream (a proxy timeout, say): the reconnect
+        // below runs as after an error, and listeners learn the stream is down
+        // until it comes back. A stop or restart ends the loop here too; the
+        // catch drops those.
+        throw new Error("SSE stream closed by the server");
       } catch (err: unknown) {
         if (!this.isRunning || gen !== this.generation) return;
         this.dispatch("disconnected", err);

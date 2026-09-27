@@ -1,6 +1,7 @@
-// Unit tests for the SSE client's event filter (lib/sse.ts): the filter goes
-// in the stream URL, changing it reconnects a running stream without
-// reporting a disconnect, and it never starts a stopped one. A fake fetch
+// Unit tests for the SSE client (lib/sse.ts): the event filter goes in the
+// stream URL, changing it reconnects a running stream without reporting a
+// disconnect, and it never starts a stopped one; the heartbeat watchdog and
+// the reconnect backoff, including a stream the server ends. A fake fetch
 // stands in for the network and FakeTimers for the heartbeat and backoff.
 // Run with node:test (see web:test).
 
@@ -13,9 +14,10 @@ import { FakeTimers, settle } from "./fixtures.ts";
 // Call is one fetch the client made: its URL, and hooks to answer it.
 interface Call {
   url: string;
-  // stream answers 200 with a body that stays open until the request aborts,
-  // and returns end, which closes the body as a server ending the stream would.
-  stream(): () => void;
+  // stream answers 200 with a body that stays open until the request aborts.
+  // Its send writes to the body, and end closes it as a server ending the
+  // stream would.
+  stream(): { send(text: string): void; end(): void };
   // reply answers with a bare status.
   reply(status: number): void;
 }
@@ -32,16 +34,19 @@ function harness() {
         calls.push({
           url,
           stream: () => {
-            let end = () => {};
+            let ctl: ReadableStreamDefaultController<Uint8Array> | undefined;
             const body = new ReadableStream<Uint8Array>({
               start(controller) {
+                ctl = controller;
                 // A real fetch errors the body when its request aborts.
                 signal?.addEventListener("abort", () => controller.error(abortError()));
-                end = () => controller.close();
               },
             });
             resolve(new Response(body, { status: 200 }));
-            return end;
+            return {
+              send: (text) => ctl?.enqueue(new TextEncoder().encode(text)),
+              end: () => ctl?.close(),
+            };
           },
           reply: (status) => resolve(new Response(null, { status })),
         });
@@ -203,9 +208,9 @@ test("a 401 on a filter restart clears the watchdog the restart armed", async ()
 test("a stream the server ends is reported down and reconnects", async () => {
   const h = harness();
   h.client.start();
-  const end = h.calls.at(-1)?.stream();
+  const body = h.calls.at(-1)?.stream();
   await settle();
-  end?.();
+  body?.end();
   await settle();
   assert.deepEqual(h.events, ["connected", "disconnected"], "listeners must learn the stream is down");
   const [backoff] = h.timers.pending(RECONNECT_DELAY_MS);
@@ -213,5 +218,29 @@ test("a stream the server ends is reported down and reconnects", async () => {
   h.timers.fire(backoff);
   await settle();
   assert.equal(h.calls.length, 2);
+  h.client.stop();
+});
+
+test("a stream that ends before any data backs off further; data resets the backoff", async () => {
+  const h = harness();
+  h.client.start();
+  // Answered and closed at once, twice: the second wait is longer.
+  for (const wait of [RECONNECT_DELAY_MS, RECONNECT_DELAY_MS * 2]) {
+    h.calls.at(-1)?.stream().end();
+    await settle();
+    const [backoff] = h.timers.pending(wait);
+    assert.ok(backoff, `an empty stream must wait ${wait} ms before reconnecting`);
+    h.timers.fire(backoff);
+    await settle();
+  }
+  // This stream carries a heartbeat before it ends, so the next wait is the
+  // shortest again.
+  const body = h.calls.at(-1)?.stream();
+  await settle();
+  body?.send("event: heartbeat\ndata: {}\n\n");
+  await settle();
+  body?.end();
+  await settle();
+  assert.equal(h.timers.pending(RECONNECT_DELAY_MS).length, 1, "a stream that carried data must reset the backoff");
   h.client.stop();
 });
