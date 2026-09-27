@@ -374,7 +374,8 @@ export function followDashboardRoute(
 }
 
 // LEVELS_STALE_MS is how long the dashboard waits for levels on a live stream
-// before it clears the meters. The appliance sends them at 10 Hz while a
+// before it clears the meters (checked every half of it, so they clear
+// within one and a half times it). The appliance sends them at 10 Hz while a
 // client streams them, with zero devices too (Hub.Run in
 // internal/levels/levels.go), so a gap this long means the link died without
 // an error, which the stream's own watchdog takes 30 s to notice.
@@ -391,8 +392,8 @@ export interface LevelsWatchDeps {
 // LevelsWatch clears the meters whenever their levels stop being current: at
 // once when the store drops levels or the stream goes down, and when levels
 // stop arriving for LEVELS_STALE_MS on a stream that looks live. Its check
-// runs only while the dashboard shows and the stream is up, so an unwatched
-// page runs no timer for it.
+// runs only while the dashboard is the route and the stream is up, so a page
+// on another view runs no timer for it.
 export class LevelsWatch {
   private readonly deps: LevelsWatchDeps;
   private timer: ReturnType<typeof setInterval> | null = null;

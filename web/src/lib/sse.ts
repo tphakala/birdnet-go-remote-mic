@@ -210,17 +210,10 @@ export class SSEClient {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let received = false;
 
         while (this.isRunning && gen === this.generation) {
           const { done, value } = await reader.read();
           if (done) break;
-          // The backoff resets on the first data, not on the 200: a server or
-          // proxy that answers and closes at once must still back off.
-          if (!received) {
-            received = true;
-            this.reconnectDelayMs = RECONNECT_DELAY_MS;
-          }
 
           buffer += decoder.decode(value, { stream: true });
           const messages = buffer.split("\n\n");
@@ -228,7 +221,12 @@ export class SSEClient {
           buffer = messages.pop() || "";
 
           for (const msg of messages) {
-            this.parseMessage(msg);
+            // A handler may have stopped or restarted the stream.
+            if (gen !== this.generation) break;
+            // The backoff resets on the first event, not on the 200 or the
+            // open comment: a server or proxy that answers and closes at once
+            // must still back off.
+            if (this.parseMessage(msg)) this.reconnectDelayMs = RECONNECT_DELAY_MS;
           }
         }
         // The server ended the stream (a proxy timeout, say): the reconnect
@@ -257,7 +255,9 @@ export class SSEClient {
     }
   }
 
-  private parseMessage(raw: string): void {
+  // parseMessage dispatches one message and reports whether it was an event
+  // (a heartbeat or a data frame) rather than a comment.
+  private parseMessage(raw: string): boolean {
     let eventName = "message";
     let dataStr = "";
 
@@ -273,7 +273,7 @@ export class SSEClient {
     if (eventName === "heartbeat") {
       this.resetHeartbeat();
       this.dispatch("heartbeat", {});
-      return;
+      return true;
     }
 
     // Any other named event that carries a JSON data payload is dispatched under
@@ -287,7 +287,7 @@ export class SSEClient {
       this.resetHeartbeat();
       if (RESERVED_EVENTS.has(eventName)) {
         console.warn(`Ignoring SSE event with reserved name "${eventName}"`);
-        return;
+        return true;
       }
       try {
         const payload: unknown = JSON.parse(dataStr);
@@ -295,7 +295,9 @@ export class SSEClient {
       } catch (err) {
         console.error(`Failed to parse SSE payload for event "${eventName}":`, err);
       }
+      return true;
     }
+    return false;
   }
 }
 

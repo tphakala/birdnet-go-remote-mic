@@ -323,3 +323,37 @@ test("stopping a stream reports no disconnect and leaves no timer", async () => 
   assert.deepEqual(h.events, ["connected"]);
   assert.deepEqual(h.timers.pending(), [], "no watchdog or backoff after a stop");
 });
+
+test("an open comment alone does not reset the backoff", async () => {
+  const h = harness();
+  h.client.start();
+  // Answered with the open comment and closed, twice: the second wait is
+  // longer, as for a stream that sent nothing.
+  for (const wait of [RECONNECT_DELAY_MS, RECONNECT_DELAY_MS * 2]) {
+    const body = h.last().stream();
+    await settle();
+    body.send(": open\n\n");
+    await settle();
+    body.end();
+    await settle();
+    const [backoff] = h.timers.pending(wait);
+    assert.ok(backoff, `a stream with only a comment must wait ${wait} ms`);
+    h.timers.fire(backoff);
+    await settle();
+  }
+  h.client.stop();
+});
+
+test("a handler that stops the stream ends the chunk's dispatch", async () => {
+  const h = harness();
+  h.client.subscribe((name) => {
+    if (name === "levels") h.client.stop();
+  });
+  h.client.start();
+  const body = h.last().stream();
+  await settle();
+  body.send('event: levels\ndata: {}\n\nevent: notification\ndata: {}\n\n');
+  await settle();
+  assert.deepEqual(h.events, ["connected", "levels"], "nothing after the stop may be dispatched");
+  assert.deepEqual(h.timers.pending(), [], "no watchdog armed on a stopped client");
+});
