@@ -1284,8 +1284,8 @@ textarea {
 }
 
 /* Respect a reduced-motion preference: stop the pulsing status dots, the
-   restart spinner, and other animation/transition motion. The VU meter also
-   checks this in script and renders a static bar. */
+   restart spinner, and other animation/transition motion. The VU meter
+   follows it in script: its needle steps once per level instead of gliding. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

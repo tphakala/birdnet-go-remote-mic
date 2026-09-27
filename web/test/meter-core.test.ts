@@ -12,6 +12,7 @@ import {
   FLOOR_DB,
   formatReadout,
   FrameScheduler,
+  levelBand,
   levelRatio,
   MeterController,
   type MeterPorts,
@@ -442,6 +443,15 @@ function meterHarness(opts: { reducedMotion?: boolean; suspended?: boolean } = {
     },
     // step runs the requested frame at the current clock.
     step: () => f.step(clock),
+    // prime draws the new meter and gives it a first, silent level, so a
+    // test of one wake condition is not woken by the meter leaving its
+    // waiting readout, which any first level does.
+    prime: () => {
+      f.step(clock);
+      meter.setLevels(-99, -99);
+      f.step(clock);
+      assert.equal(frames.running(), false, "a primed meter must be settled");
+    },
     // endHold fires the timed wake a holding needle set for the end of its
     // hold, as the timer would.
     endHold: () => {
@@ -464,7 +474,7 @@ test("the first frame draws the empty track", () => {
 
 test("a level change wakes the loop and draws", () => {
   const h = meterHarness();
-  h.step();
+  h.prime();
   h.setClock(10);
   h.meter.setLevels(-20, -10);
   assert.equal(h.frames.running(), true, "new levels must request a frame");
@@ -554,7 +564,7 @@ test("the clip latch is shown once and clears", () => {
 
 test("a latched clip on a settled, silent meter wakes the loop once", () => {
   const h = meterHarness();
-  h.step();
+  h.prime();
   h.setClock(10);
   h.meter.setLevels(-99, -99, true);
   assert.equal(h.frames.running(), true, "a new latch must be shown");
@@ -566,7 +576,7 @@ test("a latched clip on a settled, silent meter wakes the loop once", () => {
 
 test("an RMS change alone wakes a settled meter", () => {
   const h = meterHarness();
-  h.step();
+  h.prime();
   h.setClock(10);
   h.meter.setLevels(-30, -99);
   assert.equal(h.frames.running(), true, "a new bar level must be drawn");
@@ -576,7 +586,7 @@ test("an RMS change alone wakes a settled meter", () => {
 
 test("a needle change alone wakes the meter", () => {
   const h = meterHarness();
-  h.step();
+  h.prime();
   h.setClock(10);
   h.meter.setLevels(-99, -40);
   assert.equal(h.frames.running(), true, "a new peak must be drawn");
@@ -696,7 +706,7 @@ test("the settled readout is always written", () => {
   assert.equal(h.readouts.at(-1), "-inf", "the final value must be shown even inside the throttle window");
 });
 
-test("a new peak during the throttle window shows at once", () => {
+test("a new peak starts a hold, whose value shows at once inside the throttle window", () => {
   const h = meterHarness();
   h.step();
   h.setClock(0);
@@ -795,7 +805,48 @@ test("a louder peak during the hold moves the timed wake to the new hold's end",
   h.step();
   const pending = h.f.timers.pending();
   assert.equal(pending.length, 1, "one timed wake per meter");
+  assert.equal(at(h.f.timers.all, 0).cleared, true, "the first hold's wake must be cancelled");
+  assert.notEqual(at(pending, 0), at(h.f.timers.all, 0));
   assert.equal(at(pending, 0).ms, PEAK_HOLD_MS, "the new hold runs from the new peak");
+});
+
+test("a bar level during the hold keeps the timed wake it has", () => {
+  const h = meterHarness();
+  h.prime();
+  h.meter.setLevels(-99, -20);
+  h.step();
+  const armed = h.f.timers.all.length;
+  for (let t = 100; t < PEAK_HOLD_MS; t += 100) {
+    h.setClock(t);
+    h.meter.setLevels(-40 - t / 100, -99);
+    h.step();
+  }
+  assert.equal(h.f.timers.all.length, armed, "the same hold end must not re-arm its wake");
+  assert.equal(h.f.timers.pending(PEAK_HOLD_MS).length, 1);
+  h.endHold();
+  assert.equal(h.frames.running(), true, "the kept wake still ends the hold");
+});
+
+test("with reduced motion a repeated level at the same time asks for no frame", () => {
+  const h = meterHarness({ reducedMotion: true });
+  h.prime();
+  h.meter.setLevels(-99, -20);
+  h.step();
+  // Past the hold, the needle steps down on the next event and is drawn.
+  h.setClock(PEAK_HOLD_MS + 100);
+  h.meter.setLevels(-99, -99);
+  h.step();
+  // Nothing moved since, and a reduced-motion needle does not glide.
+  h.meter.setLevels(-99, -99);
+  assert.equal(h.frames.running(), false);
+});
+
+test("levelBand puts a level in the band above each threshold", () => {
+  assert.equal(levelBand(-12), 0);
+  assert.equal(levelBand(-11.9), 1);
+  assert.equal(levelBand(-3), 1);
+  assert.equal(levelBand(-2.9), 2);
+  assert.equal(levelBand(FLOOR_DB), 0);
 });
 
 test("removing an animator cancels its timed wake", () => {

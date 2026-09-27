@@ -78,8 +78,8 @@ const SMALL_TEXT_TOKENS = ["--text-secondary", "--text-muted"];
 const SCALE_TOLERANCE = 0.95;
 
 // Meter rows are sampled for at least one full level cycle of the mock (4 s),
-// and on until every row has shown its narrowest (-inf) and widest (-xx.x dBFS)
-// readout, up to two cycles.
+// and on until every row has shown both its silent (-inf) and its widest
+// (-xx.x dBFS) readout, up to two cycles.
 const STABILITY_MIN_MS = 4300;
 const STABILITY_MAX_MS = 8600;
 

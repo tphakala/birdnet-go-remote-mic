@@ -155,6 +155,11 @@ export class FrameScheduler {
     if (this.active.size === 0) this.disarm();
   }
 
+  // hasTimedWake reports whether a has a timed wake still to fire.
+  hasTimedWake(a: Animator): boolean {
+    return this.timed.has(a);
+  }
+
   private cancelTimed(a: Animator): void {
     const handle = this.timed.get(a);
     if (handle === undefined) return;
@@ -222,7 +227,7 @@ export interface MeterPorts {
 }
 
 // FrameSource is the part of FrameScheduler a MeterController uses.
-export type FrameSource = Pick<FrameScheduler, "wake" | "wakeAfter" | "remove">;
+export type FrameSource = Pick<FrameScheduler, "wake" | "wakeAfter" | "hasTimedWake" | "remove">;
 
 // WAITING_READOUT is the readout while a meter has no levels to show: before
 // its first level and after MeterController.clearLevels.
@@ -269,11 +274,14 @@ export class MeterController implements Animator {
   // The needle level behind shownReadout, and the frame time it was written.
   private shownReadoutDb = FLOOR_DB;
   private readoutAt = Number.NEGATIVE_INFINITY;
+  // The hold end the pending timed wake is for, so a frame during the same
+  // hold (a new bar level) does not re-arm it.
+  private wakeFor = 0;
 
   private paused = false;
   private destroyed = false;
   // With reduced motion the needle does not glide: it holds and falls in
-  // steps, one per level event, and each event draws once.
+  // steps, one per level event, and each event that changes it draws once.
   private reducedMotion: boolean;
 
   constructor(ports: MeterPorts, frames: FrameSource, opts: { reducedMotion: boolean; now: () => number }) {
@@ -379,7 +387,10 @@ export class MeterController implements Animator {
     // per display refresh the meter sleeps until the hold ends.
     const holding = this.needle.holdUntil - now;
     if (holding > 0) {
-      this.frames.wakeAfter(this, holding);
+      if (this.wakeFor !== this.needle.holdUntil || !this.frames.hasTimedWake(this)) {
+        this.wakeFor = this.needle.holdUntil;
+        this.frames.wakeAfter(this, holding);
+      }
       return false;
     }
     return true;
@@ -415,11 +426,14 @@ export class MeterController implements Animator {
     }
     const db = this.needle.db;
     // The throttle is checked before the text is formatted, since most frames
-    // of a glide fall inside it.
-    // A needle holding its peak is not falling, so its value shows at once:
-    // no frame will come to carry a held-back write out until the hold ends.
-    const held = !(db > this.shownReadoutDb) && !this.reducedMotion && !needleSettled(this.needle) && now >= this.needle.holdUntil;
-    if (held && now - this.readoutAt < READOUT_INTERVAL_MS) return;
+    // of a glide fall inside it. A needle holding its peak is not falling, so
+    // its value shows at once: no frame will come to carry a held-back write
+    // out until the hold ends. A rise always starts a hold (raisePeak), so it
+    // shows at once too.
+    const throttled = !this.reducedMotion && !needleSettled(this.needle) && now >= this.needle.holdUntil;
+    if (throttled && now - this.readoutAt < READOUT_INTERVAL_MS) return;
+    // The level already shown needs no new text (a frame during a hold).
+    if (db === this.shownReadoutDb && this.shownReadout !== "" && this.shownReadout !== WAITING_READOUT) return;
     const text = formatReadout(db);
     if (text === this.shownReadout) return;
     this.shownReadout = text;

@@ -53,7 +53,8 @@ export const meterFrames = new FrameScheduler({
 
 // VUMeter is one channel's meter on the dashboard: the canvas, the dB readout
 // and the clip latch button. Its state and sequencing live in a
-// MeterController (lib/meter-core.ts); this class only paints.
+// MeterController (lib/meter-core.ts); this class paints and wires the DOM
+// (the clip button, a restored canvas context, theme and motion changes).
 export class VUMeter {
   private canvas: HTMLCanvasElement;
   // Null when the browser gives no 2D context: the meter then paints nothing,
