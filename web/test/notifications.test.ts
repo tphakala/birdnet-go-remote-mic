@@ -1,8 +1,9 @@
 // A harness for NotificationStore with a fake snapshot endpoint, event stream,
 // connection source and timers, pinning its re-sync wiring: a failed load on
 // connect retries with backoff, a 401 defers to the login flow, an applied load
-// clears a pending backoff retry but not a pending gap re-sync, and the stream
-// going down drops a pending retry and arms no new one until it is back. Run
+// clears a pending backoff retry but not a pending gap re-sync, the stream
+// going down drops a pending retry and arms no new one until it is back, and
+// the store announces "change" after everything the views render from. Run
 // with node:test (see web:test).
 
 import test from "node:test";
@@ -15,7 +16,7 @@ import { resyncDelay } from "../src/lib/notifications-core.ts";
 import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
 import type { Router } from "../src/lib/router.ts";
 import type { AppStore } from "../src/lib/store.ts";
-import { FakeConnection, FakeTimers, notif } from "./fixtures.ts";
+import { FakeConnection, FakeTimers, notif, snap } from "./fixtures.ts";
 
 // Compile-time checks, never called: the connection seam takes the app store
 // and the fake, but not an emitter of another event map.
@@ -37,6 +38,10 @@ interface Harness {
   disconnect(): void;
   // live delivers a "notification" frame, as the event stream would.
   live(n: Notification): void;
+  // frame delivers any event-stream frame.
+  frame(name: string, data: unknown): void;
+  // changes counts the store's "change" announcements.
+  changes: () => number;
 }
 
 function harness(): Harness {
@@ -62,6 +67,8 @@ function harness(): Harness {
     connection,
     timers,
   });
+  let changes = 0;
+  ns.on("change", () => changes++);
   return {
     ns,
     timers,
@@ -70,17 +77,8 @@ function harness(): Harness {
     connect: () => connection.set(true),
     disconnect: () => connection.set(false),
     live: (n) => handler?.("notification", n),
-  };
-}
-
-function snap(notifications: Notification[]): NotificationSnapshot {
-  return {
-    bootId: "boot-a",
-    serverTime: "2026-09-12T14:00:05Z",
-    uptimeMs: 5_000,
-    capacity: 500,
-    nextId: notifications.length ? Math.max(...notifications.map((n) => n.id)) + 1 : 1,
-    notifications,
+    frame: (name, data) => handler?.(name, data),
+    changes: () => changes,
   };
 }
 
@@ -105,7 +103,7 @@ test("a failed load on connect retries with backoff until it applies", async () 
   assert.equal(h.calls(), 2);
   const [second] = h.timers.pending(resyncDelay(2));
   assert.ok(second, "no longer backoff after a second failure");
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   h.timers.fire(second);
   await settle();
   assert.equal(h.ns.hasLoaded(), true);
@@ -129,7 +127,7 @@ test("an applied load clears a pending backoff retry and resets the backoff", as
   await settle();
   assert.equal(h.timers.pending(resyncDelay(1)).length, 1);
   // A Retry (or any other load) lands first.
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   assert.equal(await h.ns.load(), true);
   assert.equal(h.timers.pending().length, 0);
   // The attempt count restarted: the next failure waits the first delay again.
@@ -142,7 +140,7 @@ test("an applied load clears a pending backoff retry and resets the backoff", as
 
 test("an applied load keeps a pending gap re-sync", async () => {
   const h = harness();
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   h.connect();
   await settle();
   // Ids 2 to 4 were dropped: the gap schedules a re-sync.
@@ -151,14 +149,14 @@ test("an applied load keeps a pending gap re-sync", async () => {
   assert.equal(pending.length, 1);
   // A load that started before the gap may not hold the dropped events, so
   // the re-sync must survive it.
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   await h.ns.load();
   assert.deepEqual(h.timers.pending(), pending);
 });
 
 test("a gap absorbed into a pending backoff retry survives an applied load", async () => {
   const h = harness();
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   h.connect();
   await settle();
   h.push(new Error("offline"));
@@ -167,7 +165,7 @@ test("a gap absorbed into a pending backoff retry survives an applied load", asy
   const pending = h.timers.pending(resyncDelay(1));
   assert.equal(pending.length, 1);
   h.live(notif({ id: 5 }));
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   await h.ns.load();
   assert.deepEqual(h.timers.pending(), pending);
 });
@@ -197,11 +195,50 @@ test("a load failing after the stream went down arms no retry until it is back",
   await settle();
   assert.equal(h.calls(), 1);
   // Connecting again re-syncs at once.
-  h.push(snap([notif({ id: 1 })]));
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
   h.connect();
   await settle();
   assert.equal(h.calls(), 2);
   assert.equal(h.ns.hasLoaded(), true);
+});
+
+test("change fires after a snapshot, a live event, mark-all-read, clear-all and a failed load", async () => {
+  const h = harness();
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
+  h.connect();
+  await settle();
+  assert.equal(h.changes(), 1, "an applied snapshot must announce");
+  h.live(notif({ id: 2 }));
+  assert.equal(h.changes(), 2, "a live event must announce");
+  h.ns.markAllRead();
+  assert.equal(h.changes(), 3, "mark-all-read must announce");
+  h.ns.clearAll();
+  assert.equal(h.changes(), 4, "clear-all must announce");
+  // An applied snapshot announces even when it holds nothing new: the Events
+  // page leaves its loading state on it.
+  h.push(snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] }));
+  await h.ns.load();
+  assert.equal(h.changes(), 5);
+  // A failed load announces, so a page can offer Retry.
+  h.push(new Error("offline"));
+  await h.ns.load();
+  assert.equal(h.changes(), 6, "a failed load must announce");
+});
+
+test("change does not fire for a frame the store does not apply", async () => {
+  const h = harness();
+  h.push(snap({ notifications: [notif({ id: 1 })] }));
+  h.connect();
+  await settle();
+  const before = h.changes();
+  h.frame("heartbeat", null);
+  h.frame("notification", { id: 2 });
+  assert.equal(h.changes(), before, "a heartbeat or a malformed frame must not announce");
+  // A frame from another boot is not folded in; the re-sync it schedules
+  // announces instead.
+  h.live(notif({ id: 2, bootId: "boot-b" }));
+  assert.equal(h.changes(), before, "a frame from another boot must not announce");
+  assert.equal(h.timers.pending().length, 1, "a frame from another boot schedules a re-sync");
 });
 
 // This test sets the page-wide notice handler, so it must stay the last in the
@@ -217,7 +254,7 @@ test("a failed automatic save stays silent; a failed mark-all-read reports once"
     let shown = 0;
     prefSaveNotice.setHandler(() => shown++);
     const h = harness();
-    h.push(snap([notif({ id: 1 }), notif({ id: 2 })]));
+    h.push(snap({ notifications: [notif({ id: 1 }), notif({ id: 2 })] }));
     h.connect();
     await settle();
     // The snapshot's write (it records the boot id) fails, unprompted.

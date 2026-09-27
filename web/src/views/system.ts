@@ -1,7 +1,7 @@
 import { api, ApiError } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, firstProblem, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
@@ -854,10 +854,10 @@ export class SystemView {
   // the named input (or the form-level region when the path is not one the card
   // owns) and refocuses it; any other failure is a toast.
   private showNotifyError(err: unknown): void {
-    const item = err instanceof ApiError ? err.errors?.[0] : undefined;
-    if (err instanceof ApiError && item) {
-      const spec = item.field ? fieldForServerPath(item.field) : null;
-      const reason = item.reason ?? err.title;
+    const problem = firstProblem(err);
+    if (problem) {
+      const spec = problem.field ? fieldForServerPath(problem.field) : null;
+      const reason = problem.reason;
       if (spec) {
         this.notifyFields.get(spec.key)?.classList.add("invalid");
         const input = this.notifyInputs.get(spec.key);
@@ -872,8 +872,7 @@ export class SystemView {
         return;
       }
     }
-    const msg = err instanceof ApiError ? err.title : err instanceof Error ? err.message : String(err);
-    showToast(`Save failed: ${msg}`, "error");
+    showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
   }
 
   // setAuthReveal shows or hides the token field and keeps the reveal button's
@@ -1052,9 +1051,9 @@ export class SystemView {
       // copy it, and leaving a saved secret in plain sight is needless exposure.
       this.setAuthReveal(false);
     } catch (err: unknown) {
-      const item = err instanceof ApiError ? err.errors?.[0] : undefined;
-      if (err instanceof ApiError && item) {
-        this.setAuthError(item.reason ?? err.title);
+      const problem = firstProblem(err);
+      if (problem) {
+        this.setAuthError(problem.reason);
       } else {
         // A non-validation failure (network drop, a lost response) is ambiguous:
         // the appliance applies the token BEFORE it finishes writing the PATCH

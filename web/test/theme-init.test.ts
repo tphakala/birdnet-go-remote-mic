@@ -17,8 +17,8 @@ import { PREFERS_LIGHT_QUERY, THEME_KEY } from "../src/lib/theme.ts";
 import { group } from "./fixtures.ts";
 
 // Resolve from import.meta.url rather than process.cwd().
-const THEME_INIT_TS = fileURLToPath(new URL("../src/theme-init.ts", import.meta.url).href);
-const INDEX_HTML = fileURLToPath(new URL("../static/index.html", import.meta.url).href);
+const THEME_INIT_TS = fileURLToPath(new URL("../src/theme-init.ts", import.meta.url));
+const INDEX_HTML = fileURLToPath(new URL("../static/index.html", import.meta.url));
 
 const script = new Script(`"use strict";\n${readFileSync(THEME_INIT_TS, "utf8")}`, { filename: "theme-init.ts" });
 

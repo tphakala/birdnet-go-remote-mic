@@ -57,7 +57,7 @@ test("downCauseTitle names each cause as its notification does and falls back", 
 // The banner titles promise to match the notification titles the appliance
 // raises for the same cause; this reads the Go source so a title renamed on
 // one side only fails here instead of silently drifting.
-const APPLIANCE_GO = fileURLToPath(new URL("../../cmd/remotemic/appliance.go", import.meta.url).href);
+const APPLIANCE_GO = fileURLToPath(new URL("../../cmd/remotemic/appliance.go", import.meta.url));
 
 test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go", () => {
   const src = readFileSync(APPLIANCE_GO, "utf8");

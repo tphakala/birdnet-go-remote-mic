@@ -12,7 +12,7 @@ import { componentTitle, parseLicenseDoc, supportDetails } from "../src/lib/abou
 import type { ApplianceStatus, Device, DeviceConfig, StreamConfig, SystemInfo } from "../src/lib/types.ts";
 import { at } from "./fixtures.ts";
 
-const LICENSES_JSON = fileURLToPath(new URL("../static/licenses.json", import.meta.url).href);
+const LICENSES_JSON = fileURLToPath(new URL("../static/licenses.json", import.meta.url));
 
 const entry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   name: "example.com/a",

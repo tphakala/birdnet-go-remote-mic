@@ -2,7 +2,7 @@
 
 import { Emitter } from "../src/lib/emitter.ts";
 import type { Timers } from "../src/lib/store.ts";
-import type { Notification } from "../src/lib/types.ts";
+import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
 
 // FakeTimer is one timer a FakeTimers has handed out.
 export interface FakeTimer {
@@ -79,6 +79,34 @@ export function notif(over: Partial<Notification> & { id: number }): Notificatio
     title: over.title ?? "Title",
     message: over.message ?? "Message",
   };
+}
+
+// snap builds a notifications snapshot around the given entries, every other
+// field defaulted and nextId one past the highest id.
+export function snap(
+  over: Partial<NotificationSnapshot> & { notifications: Notification[] },
+): NotificationSnapshot {
+  const ids = over.notifications.map((n) => n.id);
+  return {
+    bootId: over.bootId ?? "boot-a",
+    serverTime: over.serverTime ?? "2026-09-12T14:00:05Z",
+    uptimeMs: over.uptimeMs ?? 5_000,
+    capacity: over.capacity ?? 500,
+    nextId: over.nextId ?? (ids.length ? Math.max(...ids) + 1 : 1),
+    notifications: over.notifications,
+  };
+}
+
+// deferred returns a promise with its resolve and reject exposed, so a test
+// controls when, and in which order, overlapping requests settle.
+export function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 // at is items[i] for a test that knows the index is in range: an index past

@@ -29,25 +29,10 @@ import {
   unreadCount,
   uptimeToMs,
 } from "../src/lib/notifications-core.ts";
-import type { Notification, NotificationSnapshot } from "../src/lib/types.ts";
-import { notif } from "./fixtures.ts";
+import { notif, snap } from "./fixtures.ts";
 
 // A fixed browser clock reading, so anchor arithmetic is exact.
 const NOW = Date.parse("2026-09-12T14:00:05Z");
-
-function snap(
-  over: Partial<NotificationSnapshot> & { notifications: Notification[] },
-): NotificationSnapshot {
-  const ids = over.notifications.map((n) => n.id);
-  return {
-    bootId: over.bootId ?? "boot-a",
-    serverTime: over.serverTime ?? "2026-09-12T14:00:05Z",
-    uptimeMs: over.uptimeMs ?? 5_000,
-    capacity: over.capacity ?? 500,
-    nextId: over.nextId ?? (ids.length ? Math.max(...ids) + 1 : 1),
-    notifications: over.notifications,
-  };
-}
 
 test("a fresh snapshot seeds items and bootId, and the started entry reads as unread", () => {
   const s = initialState();

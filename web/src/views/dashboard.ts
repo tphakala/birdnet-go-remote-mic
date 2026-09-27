@@ -3,7 +3,7 @@ import { VUMeter } from "../components/vu-meter.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError } from "../lib/api.ts";
-import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
+import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, firstProblem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
 import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
@@ -312,9 +312,6 @@ export class DashboardView {
   // Device ids with a provisioning request in flight, so the Enable button shows
   // progress and a second click cannot double-provision.
   private provisioning: Set<string> = new Set();
-  // The last available-device list rendered, serialized, so an unchanged poll
-  // skips the rebuild.
-  private availableKey = "";
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
   // built from a fresh base only after the previous mutation settled. Prevents a
@@ -511,16 +508,13 @@ export class DashboardView {
 
   // renderAvailable lists the host's detected-but-unconfigured capture devices,
   // each with an Enable button that provisions it. The whole section hides when
-  // nothing is available, so a fully configured host shows no empty panel.
+  // nothing is available, so a fully configured host shows no empty panel. The
+  // store announces the list only when it changed, so an unchanged poll keeps
+  // the operator's text selection (the device id is there to be copied) and
+  // keyboard focus on an Enable button.
   private renderAvailable(available: AvailableDevice[]): void {
     if (!this.availableRack || !this.availableSection) return;
     this.availableSection.hidden = available.length === 0;
-    // The store announces this list on every poll. Rebuild only when it
-    // changed, so an unchanged list keeps the operator's text selection (the
-    // device id is there to be copied) and keyboard focus on an Enable button.
-    const key = JSON.stringify(available);
-    if (key === this.availableKey) return;
-    this.availableKey = key;
     this.availableRack.textContent = "";
     for (const d of available) {
       this.availableRack.appendChild(this.buildAvailableCard(d));
@@ -586,10 +580,9 @@ export class DashboardView {
       clearBusy(btn, "Enable");
       // A poll that changed the list meanwhile rebuilt the card with a fresh
       // busy button, which btn no longer is; re-render so it is not left stuck
-      // on "Enabling..." while an unchanged list skips the rebuild. A device
+      // on "Enabling..." while an unchanged list announces nothing. A device
       // no longer listed (the usual success) has no card left to fix.
       if (!btn.isConnected && store.getState().available.some((a) => a.device === d.device)) {
-        this.availableKey = "";
         this.renderAvailable(store.getState().available);
       }
     }
@@ -1208,9 +1201,9 @@ export class DashboardView {
   // apiErrorToast surfaces a failed PATCH: a validation problem shows the first
   // field/reason, anything else shows the raw message, both under a prefix.
   private apiErrorToast(err: unknown, prefix: string): void {
-    const first = err instanceof ApiError ? err.errors?.[0] : undefined;
-    if (err instanceof ApiError && first) {
-      showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
+    const problem = firstProblem(err);
+    if (problem) {
+      showToast(`Rejected: ${problem.field ?? "config"} - ${problem.reason}`, "error");
     } else {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`${prefix}: ${msg}`, "error");

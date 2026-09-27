@@ -85,7 +85,7 @@ test("lengthError enforces the stream path limit", () => {
 
 // Resolve from import.meta.url rather than process.cwd(), so the test finds
 // the file whatever directory the runner is invoked from.
-const CONFIG_GO = fileURLToPath(new URL("../../internal/config/config.go", import.meta.url).href);
+const CONFIG_GO = fileURLToPath(new URL("../../internal/config/config.go", import.meta.url));
 
 // goConst reads an integer constant from the Go config source, so the UI limits
 // cannot drift from the ones the appliance enforces.

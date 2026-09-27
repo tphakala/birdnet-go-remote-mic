@@ -207,6 +207,24 @@ export function apiErrorMessage(err: unknown): string {
   return String(err);
 }
 
+// Problem is one validation problem from a rejected request: the field it
+// names, if any, and why it was refused.
+export interface FieldProblem {
+  field?: string;
+  reason: string;
+}
+
+// firstProblem is the first validation problem an ApiError carries, its
+// reason defaulting to the problem title when the item has none, or null for
+// any other failure. Callers show it on the field or in a toast, so every one
+// keeps the same fallback.
+export function firstProblem(err: unknown): FieldProblem | null {
+  if (!(err instanceof ApiError)) return null;
+  const item = err.errors?.[0];
+  if (!item) return null;
+  return { field: item.field, reason: item.reason ?? err.title };
+}
+
 // setFieldError marks (or clears) a form field's invalid state uniformly: the
 // red border/background via .invalid on the wrapper, aria-invalid on the input
 // so a screen reader announces it, and the rule text in the error element. An

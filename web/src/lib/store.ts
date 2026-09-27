@@ -55,8 +55,8 @@ export interface StoreDeps {
 }
 
 // StoreEvents is what AppStore announces: each event's name and payload.
-// devices, status and system fire only when their data changed, and again on
-// the first read after a failed one; config and available fire every poll.
+// devices, status, system and available fire only when their data changed, and
+// again on the first read after a failed one; config fires every poll.
 export interface StoreEvents {
   status: ApplianceStatus;
   devices: Device[];
@@ -116,6 +116,7 @@ export class AppStore extends Emitter<StoreEvents> {
   private statusChange = new ChangeTracker();
   private devicesChange = new ChangeTracker();
   private systemChange = new ChangeTracker();
+  private availableChange = new ChangeTracker();
   // loginPending is set from the first 401 until a token is accepted, so a
   // burst of rejected requests (the initial load fires five) opens one prompt
   // and the generic load-error state is suppressed in favor of it.
@@ -436,12 +437,12 @@ export class AppStore extends Emitter<StoreEvents> {
   // success: fresher data is in place, so loadInitial must not raise a load
   // error for it.
   //
-  // status, devices and system announce only when the applied data changed (a
-  // ChangeTracker each). In practice this saves work on devices: status carries
-  // uptimeSeconds and system carries live CPU, memory and network counters, so
-  // both still announce nearly every tick (which the System view's certificate
-  // refresh and the uptime displays rely on). config and available announce
-  // every poll, because mutation flows repaint from the config event. The first
+  // status, devices, system and available announce only when the applied data
+  // changed (a ChangeTracker each). In practice this saves work on devices and
+  // available: status carries uptimeSeconds and system carries live CPU, memory
+  // and network counters, so both still announce nearly every tick (which the
+  // System view's certificate refresh and the uptime displays rely on). config
+  // announces every poll, because mutation flows repaint from it. The first
   // applied value always announces, and a failed read resets its tracker, so the
   // next successful read announces even when it returns data a view showed
   // before swapping in a load error; that is what repairs the view.
@@ -471,9 +472,14 @@ export class AppStore extends Emitter<StoreEvents> {
       () => this.api.getAvailableDevices(),
       (available) => {
         this.state.available = available;
-        this.emit("available", this.state.available);
+        if (this.availableChange.changed(available)) {
+          this.emit("available", this.state.available);
+        }
       },
-      (err) => console.warn("Failed to refresh available devices:", err),
+      (err) => {
+        console.warn("Failed to refresh available devices:", err);
+        this.availableChange.reset();
+      },
     );
   }
 

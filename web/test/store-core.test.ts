@@ -7,18 +7,7 @@ import assert from "node:assert/strict";
 
 import { LatestGate } from "../src/lib/latest-core.ts";
 import { ChangeTracker, gatedRefresh } from "../src/lib/store-core.ts";
-
-// deferred returns a promise with its resolve and reject exposed, so a test
-// controls the order in which overlapping reads land.
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred } from "./fixtures.ts";
 
 test("gatedRefresh applies a response and reports success", async () => {
   const gate = new LatestGate();

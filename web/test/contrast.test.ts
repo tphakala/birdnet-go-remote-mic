@@ -27,7 +27,7 @@ import { group } from "./fixtures.ts";
 
 // Resolving from import.meta.url rather than process.cwd() keeps the test
 // correct whatever directory the runner is invoked from.
-const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url).href);
+const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url));
 
 interface RGBA {
   r: number;
