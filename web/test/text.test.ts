@@ -17,5 +17,6 @@ test("sentence capitalises and ends a backend message once", () => {
 });
 
 test("deviceIdTitle names the id under the form's label", () => {
-  assert.equal(deviceIdTitle("usb-Mic_123-00"), `${DEVICE_FIELD_LABELS.device}: usb-Mic_123-00`);
+  assert.equal(deviceIdTitle("usb-Mic_123-00"), "Device ID: usb-Mic_123-00");
+  assert.ok(deviceIdTitle("x").startsWith(DEVICE_FIELD_LABELS.device), "the label is the form's");
 });

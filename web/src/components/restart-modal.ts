@@ -1,4 +1,4 @@
-import { api, ApiError, apiErrorMessage } from "../lib/api.ts";
+import { api, apiErrorMessage, isRefusal } from "../lib/api.ts";
 import { withDeadline } from "../lib/deadline.ts";
 import { showToast } from "./toast.ts";
 import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
@@ -67,7 +67,7 @@ export async function triggerApplianceRestart(): Promise<void> {
   } catch (err: unknown) {
     // An ApiError is a refusal. Anything else (no answer, or an accepted
     // request whose body could not be read) leaves the outcome unknown.
-    if (err instanceof ApiError) {
+    if (isRefusal(err)) {
       // 501: the server has no restart control wired
       // (internal/mgmtserver/system.go:86), so say what to do instead.
       const why = err.status === 501
@@ -96,7 +96,8 @@ export async function triggerApplianceRestart(): Promise<void> {
 
   // The per-second countdown below updates only the aria-hidden visual
   // element, so it is not read out on every tick. The dialog's title and
-  // description are read as focus enters it, so the phase line adds only
+  // description (aria-describedby, static/index.html:470) are read as focus
+  // enters it, so the phase line adds only
   // what they lack: when it reconnects (the unconfirmed description already
   // says it waits).
   if (confirmed) say("Reconnecting in 5 seconds.");
@@ -147,18 +148,21 @@ async function pollHealth(confirmed: boolean, phase: string): Promise<void> {
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
   }
-  if (timerEl) timerEl.textContent = "Restart timed out.";
+  if (timerEl) timerEl.textContent = confirmed ? "Restart timed out." : "No answer from the appliance.";
   endWait("The appliance did not answer in time. Use the Reload now button to check on it.");
 }
 
 // endWait ends the dialog's wait without a reload: the description says why
-// (it said the page was waiting), the spinner stops, and Reload now takes
-// focus.
+// (it said the page was waiting), the spinner stops, the status line drops
+// its probe count, and Reload now takes focus.
 function endWait(text: string): void {
   const textEl = document.getElementById("modal-text");
   if (textEl) textEl.textContent = text;
   const spinner = document.querySelector<HTMLElement>("#restart-modal .spinner-ring");
   if (spinner) spinner.hidden = true;
+  // The status line still showed the probe count; a timeout sets its own.
+  const timerEl = document.getElementById("reconnect-timer");
+  if (timerEl?.textContent?.endsWith("...")) timerEl.textContent = "";
   say(text);
   showRetry();
 }

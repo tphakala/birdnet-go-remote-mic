@@ -871,9 +871,9 @@ export class SystemView {
       showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
       return;
     }
-    // It may have applied: re-read, and say so rather than claim a failure.
-    showToast(unconfirmedText("the notification settings", "refreshing; check them before saving again"), "warn");
-    void store.refreshConfig();
+    // It may have applied. The form keeps the edits (a refresh would not
+    // show over a dirty form), and saving the same values again is safe.
+    showToast(unconfirmedText("the notification settings", "save again to be sure"), "warn");
   }
 
   // setAuthReveal shows or hides the token field and keeps the reveal button's
@@ -1055,12 +1055,16 @@ export class SystemView {
       const problem = firstProblem(err);
       if (problem) {
         this.setAuthError(problem.reason);
+      } else if (isRefusal(err)) {
+        // The appliance refused before applying the token
+        // (internal/mgmtserver/config.go:159-166 returns before guard.Set at
+        // :190), so the old token is still in force.
+        showToast(`Token change failed: ${apiErrorMessage(err)}. The current token is unchanged.`, "error");
       } else {
-        // A non-validation failure (network drop, a lost response) is ambiguous:
-        // the appliance applies the token BEFORE it finishes writing the PATCH
-        // response, so the new credential may already be in force even though this
-        // call looks failed. Warn rather than imply nothing changed.
-        showToast(`Could not confirm the token change: ${apiErrorMessage(err)}. The new token may already be in force; if this UI locks you out, reload and sign in with it.`, "warn");
+        // No answer is ambiguous: the appliance applies the token BEFORE it
+        // finishes writing the PATCH response, so the new credential may
+        // already be in force. Warn rather than imply nothing changed.
+        showToast(unconfirmedText("the token change", "the new token may already be in force; if this page locks you out, reload and sign in with it"), "warn");
       }
     } finally {
       store.endTokenSwap();
@@ -1355,8 +1359,10 @@ export class SystemView {
         this.followStatus(now);
       } else if (isRefusal(err)) {
         showToast(`Update did not start: ${apiErrorMessage(err)}`, "error");
-      } else {
+      } else if (now) {
         showToast(unconfirmedText("that the update started", "no update is under way yet; try again if none begins"), "warn");
+      } else {
+        showToast(unconfirmedText("that the update started", "its status could not be read either; check it before trying again"), "warn");
       }
     } finally {
       this.updateApplying = false;
@@ -1453,8 +1459,9 @@ export class SystemView {
         // its detail repeats the raw field path.
         showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
       } else {
-        showToast(unconfirmedText("the discovery setting", "refreshing; check it before saving again"), "warn");
-        void store.refreshConfig();
+        // As for the notification settings: the form keeps the edit, and a
+        // second save is safe.
+        showToast(unconfirmedText("the discovery setting", "save again to be sure"), "warn");
       }
     } finally {
       if (saveBtn) clearBusy(saveBtn, "Save Changes");

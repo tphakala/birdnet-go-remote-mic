@@ -180,7 +180,8 @@ test("a malformed entry in a problem's errors list is dropped", async () => {
 });
 
 test("only an ApiError is a refusal; an unknown outcome is said without error text", () => {
-  assert.equal(isRefusal(new ApiError(409, "conflict")), true);
+  assert.equal(isRefusal(new ApiError(409, "conflict", { problem: true })), true);
+  assert.equal(isRefusal(new ApiError(504, "Gateway Timeout")), false, "a proxy's error says nothing about the appliance");
   assert.equal(isRefusal(new UnreadableResponseError(200)), false);
   assert.equal(isRefusal(new TypeError("Failed to fetch")), false);
   assert.equal(unconfirmedText("the save", "refreshing"), "Could not confirm the save; refreshing.");

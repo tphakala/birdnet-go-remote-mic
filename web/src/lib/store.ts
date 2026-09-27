@@ -1,4 +1,4 @@
-import { api, ApiError, apiErrorMessage, TOKEN_NOT_ACCEPTED, UnreadableResponseError, type ApiClient } from "./api.ts";
+import { api, ApiError, apiErrorMessage, isRefusal, TOKEN_NOT_ACCEPTED, UnreadableResponseError, type ApiClient } from "./api.ts";
 import { sentence } from "./text.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
@@ -191,7 +191,7 @@ export class AppStore extends Emitter<StoreEvents> {
       if (err instanceof UnreadableResponseError) return { ok: false, message: "The appliance answered, but its reply could not be read. Try again." };
       // A problem body is the appliance's own answer; any other failure (a
       // proxy's page, no answer) did not reach it.
-      if (err instanceof ApiError && err.problem) return { ok: false, message: `The appliance refused the sign-in: ${apiErrorMessage(err)}` };
+      if (isRefusal(err)) return { ok: false, message: `The appliance refused the sign-in: ${apiErrorMessage(err)}.` };
       return { ok: false, message: `Could not reach the appliance: ${apiErrorMessage(err)}` };
     }
     this.loginPending = false;

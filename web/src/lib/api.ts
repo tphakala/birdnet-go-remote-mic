@@ -74,12 +74,14 @@ export class UnreadableResponseError extends Error {
 }
 
 // isRefusal reports whether a failed request was refused by the appliance
-// (an ApiError), so the change did not happen. Anything else (no answer, or
-// an answer that could not be read) leaves the outcome unknown: the caller
-// reconciles from the appliance instead of reporting a failure, and says so
-// with unconfirmedText.
+// itself (an ApiError from a problem body, which the appliance writes for
+// every failure), so the change did not happen. Anything else (no answer, an
+// answer that could not be read, or a proxy's error page, which says nothing
+// about whether the appliance applied it) leaves the outcome unknown: the
+// caller reconciles from the appliance instead of reporting a failure, and
+// says so with unconfirmedText.
 export function isRefusal(err: unknown): err is ApiError {
-  return err instanceof ApiError;
+  return err instanceof ApiError && err.problem;
 }
 
 // unconfirmedText is the toast for a change whose outcome is unknown: what

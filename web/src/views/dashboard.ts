@@ -633,10 +633,10 @@ export class DashboardView {
     );
   }
 
-  // focusNeighbour is the one hand-off for a card that held focus and went
-  // away: focus moves to the control of the first neighbour still shown
-  // (neighbourOrder), else to the workspace, and message(the neighbour's
-  // name, or null) is announced.
+  // focusNeighbour moves focus to the control of the first of ids still
+  // shown (for a card that went, its neighbours from neighbourOrder; after
+  // an Enable, the new card), else to the workspace, and announces
+  // message(that card's name, or null).
   private focusNeighbour(
     neighbours: readonly string[],
     find: (id: string) => { control: HTMLElement; name: string } | undefined,
@@ -777,20 +777,30 @@ export class DashboardView {
       // one of those must not run interleaved with this delete and restore the
       // removed device (or drop a concurrently provisioned one).
       await this.enqueue(async () => {
+        let notFound: unknown = null;
         try {
           await api.deleteDevice(entry.device.name);
         } catch (err: unknown) {
-          // A 404 means it is already gone (an earlier attempt whose answer
-          // was lost, or another tab): that is the outcome asked for.
+          // A 404 means no device by that name: gone already (an earlier
+          // attempt whose answer was lost, another tab), or renamed, which
+          // the refresh below tells apart by the device's id.
           if (!(isRefusal(err) && err.status === 404)) throw err;
+          notFound = err;
         }
-        removed = true;
         // The refresh removes the card, and the render hands focus to its
         // nearest neighbour and says so, as for any card that went (see
         // reconcile), if focus is still in it.
         const refreshed = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
+        if (notFound !== null && store.getState().devices.some((dv) => dv.device === entry.device.device)) throw notFound;
+        removed = true;
         if (refreshed.every(Boolean)) showToast(`Removed ${entry.device.name}.`);
         else showToast(`Removed ${entry.device.name}. The device list could not be refreshed; it updates on the next poll.`, "warn");
+        // Focus that had already fallen to the page (the confirm returned it
+        // to a Remove button a poll had just removed) goes to the dashboard.
+        if (focusDropped()) {
+          focusWorkspace();
+          announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
+        }
       });
     } catch (err: unknown) {
       if (removed) {
@@ -1418,8 +1428,9 @@ export class DashboardView {
       // Build merged from a FRESH base inside the queued task, after any prior
       // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
       // a concurrent change with a stale base.
-      const merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
+      let merged: DeviceConfig[] = [];
       try {
+        merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
         const res = await api.patchConfig({ devices: merged });
         // The PATCH persisted. Seed the cached config with the authoritative
         // response before the refresh, so a later queued mutation rebuilds its
@@ -1453,6 +1464,9 @@ export class DashboardView {
         // the live node, falling back to the settings button if the toggle is gone, so a
         // keyboard user is never stranded on the document body.
         entry.togglePending = false;
+        // A card rebuilt while the change was pending skipped the sync, so
+        // render once more to set its toggle from the config.
+        this.render();
         const toggle = entry.toggleInput;
         toggle.disabled = false;
         toggle.removeAttribute("aria-busy");
@@ -1695,12 +1709,17 @@ export class DashboardView {
           const after = store.getState().config?.devices.find((cd) => cd.device === edited.device);
           if (!read) {
             showToast(unconfirmedText("the save", "check the settings before saving again"), "warn");
-          } else if (deviceConfigKey(after) !== before) {
-            if (entry.settingsForm === form) this.closeSettings(entry);
-            showToast("Device settings applied.");
-            if (focusDropped()) entry.settingsBtn.focus();
-          } else {
+          } else if (deviceConfigKey(after) === before) {
             showToast("The save did not apply; the settings are unchanged.", "warn");
+          } else if (deviceConfigKey(after) === deviceConfigKey(toSave)) {
+            const same = entry.settingsForm === form;
+            if (same) this.closeSettings(entry);
+            showToast("Device settings applied.");
+            if (same && focusDropped()) entry.settingsBtn.focus();
+          } else {
+            // Neither as before nor as sent: the appliance filled in a value,
+            // or another tab changed the device meanwhile.
+            showToast(unconfirmedText("the save", "the settings changed; check them before saving again"), "warn");
           }
         }
       }
