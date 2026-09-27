@@ -134,10 +134,10 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 			"appliance. Re-runs itself under sudo when not already root.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	user := fs.String("user", service.DefaultUser, "system user to create and run the service as")
-	cfg := fs.String("config", "", "config path baked into the unit (default: the installed unit's, else "+service.DefaultConfigPath+")")
-	stateDir := fs.String("state-dir", service.DefaultStateDir, "state directory for the management certificate")
-	binPath := fs.String("bin-path", service.DefaultBinPath, "path to install the binary to")
+	user := fs.String("user", "", "system user to create and run the service as"+installedDefault(service.DefaultUser))
+	cfg := fs.String("config", "", "config path baked into the unit"+installedDefault(service.DefaultConfigPath))
+	stateDir := fs.String("state-dir", "", "state directory for the management certificate"+installedDefault(service.DefaultStateDir))
+	binPath := fs.String("bin-path", "", "path to install the binary to"+installedDefault(service.DefaultBinPath))
 	noStart := fs.Bool("no-start", false, "enable at boot but do not start the service now")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
@@ -145,7 +145,10 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec := service.ServiceSpec{User: *user, ConfigPath: installedConfigOr(*cfg), StateDir: *stateDir, BinPath: *binPath}
+	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, true, stderr)
+	if err != nil {
+		return err
+	}
 	if err := installService(spec, !*noStart); err != nil {
 		return err
 	}
@@ -168,10 +171,10 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 			"when not already root. Config and certificates are kept unless --purge.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	user := fs.String("user", service.DefaultUser, "service user to remove with --purge")
-	cfg := fs.String("config", "", "config path whose directory --purge removes (default: the installed unit's, else "+service.DefaultConfigPath+")")
-	stateDir := fs.String("state-dir", service.DefaultStateDir, "state directory --purge removes")
-	binPath := fs.String("bin-path", service.DefaultBinPath, "installed binary path --purge removes")
+	user := fs.String("user", "", "service user to remove with --purge"+installedDefault(service.DefaultUser))
+	cfg := fs.String("config", "", "config path whose directory --purge removes"+installedDefault(service.DefaultConfigPath))
+	stateDir := fs.String("state-dir", "", "state directory --purge removes"+installedDefault(service.DefaultStateDir))
+	binPath := fs.String("bin-path", "", "installed binary path --purge removes"+installedDefault(service.DefaultBinPath))
 	purge := fs.Bool("purge", false, "also remove the config, state, binary, and service user")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
@@ -179,7 +182,14 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec := service.ServiceSpec{User: *user, ConfigPath: installedConfigOr(*cfg), StateDir: *stateDir, BinPath: *binPath}
+	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, *purge, stderr)
+	if err != nil {
+		return err
+	}
+	if *purge {
+		out(stderr, "purging config directory %s, state directory %s, binary %s, and user %s\n",
+			spec.ConfigDir(), spec.StateDir, spec.BinPath, spec.User)
+	}
 	if err := uninstallService(spec, *purge); err != nil {
 		return err
 	}
@@ -187,19 +197,63 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 	return nil
 }
 
-// installedConfigOr returns flagVal when --config was given, else the config
-// the installed unit names, else the default config path (also when the
-// unit's config cannot be known from its files). A reinstall then
-// keeps a custom config instead of switching the unit to the default, and
-// uninstall --purge removes the directory the appliance actually used.
-func installedConfigOr(flagVal string) string {
-	if flagVal != "" {
-		return flagVal
+// installedSpec reports the spec the installed unit was written from. A
+// variable so tests never read the host's real units.
+var installedSpec = service.InstalledSpec
+
+// installedDefault is the flag help suffix for a service flag that defaults
+// to the installed unit's value.
+func installedDefault(def string) string {
+	return " (default: the installed unit's, else " + def + ")"
+}
+
+// specFromFlags completes s, the service flags as given, with defaults. When
+// adopt is set (install, and uninstall --purge), each unset field comes from
+// the installed unit, so a reinstall keeps a custom install's paths and
+// account and a purge removes what the install created; each adopted value
+// is reported on stderr. The installed unit counts only when it is exactly
+// what the installer wrote (service.InstalledSpec): a drop-in or a hand edit
+// never chooses what purge deletes or install chowns, and a hand-edited unit
+// makes the command ask for every flag. Without an installed unit, or
+// without adopt, unset fields take the package defaults.
+func specFromFlags(s service.ServiceSpec, adopt bool, stderr io.Writer) (service.ServiceSpec, error) {
+	if adopt && (s.User == "" || s.ConfigPath == "" || s.StateDir == "" || s.BinPath == "") {
+		inst, err := installedSpec()
+		if err != nil {
+			return s, fmt.Errorf("cannot take defaults from the installed %s (%w); pass --user, --config, --state-dir and --bin-path", service.DefaultUnitName, err)
+		}
+		if inst != (service.ServiceSpec{}) {
+			for _, f := range []struct {
+				name      string
+				dst       *string
+				installed string
+			}{
+				{"user", &s.User, inst.User},
+				{"config", &s.ConfigPath, inst.ConfigPath},
+				{"state-dir", &s.StateDir, inst.StateDir},
+				{"bin-path", &s.BinPath, inst.BinPath},
+			} {
+				if *f.dst == "" {
+					*f.dst = f.installed
+					out(stderr, "using --%s=%s from the installed %s\n", f.name, f.installed, service.DefaultUnitName)
+				}
+			}
+		}
 	}
-	if p, _, err := installedConfig(); err == nil && p != "" {
-		return p
+	for _, f := range []struct {
+		dst *string
+		def string
+	}{
+		{&s.User, service.DefaultUser},
+		{&s.ConfigPath, service.DefaultConfigPath},
+		{&s.StateDir, service.DefaultStateDir},
+		{&s.BinPath, service.DefaultBinPath},
+	} {
+		if *f.dst == "" {
+			*f.dst = f.def
+		}
 	}
-	return service.DefaultConfigPath
+	return s, nil
 }
 
 // runServiceStatus reports the unit's boot enablement and running state. It

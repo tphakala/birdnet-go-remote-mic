@@ -21,6 +21,8 @@ const (
 	subGenerate = "generate"
 	subSet      = "set"
 	argForce    = "-force"
+	argPurge    = "-purge"
+	subRemove   = "uninstall"
 )
 
 // stubInstalledConfig makes the installed unit name path and user.
@@ -184,19 +186,78 @@ func TestConfigRefExplain(t *testing.T) {
 	}
 }
 
-// TestInstalledConfigOr asserts service install and uninstall default --config
-// to the installed unit's config, then to the package default.
-func TestInstalledConfigOr(t *testing.T) {
-	stubInstalledConfig(t, "/srv/rm/config.yaml", "mic")
-	if got := installedConfigOr(""); got != "/srv/rm/config.yaml" {
-		t.Errorf("with a unit: got %q", got)
+// TestServiceDefaultsFromInstalledUnit asserts service install and
+// uninstall --purge take every unset flag from the installed unit, report
+// each one, and keep a flag the operator gave; a plain uninstall does not
+// read the unit.
+func TestServiceDefaultsFromInstalledUnit(t *testing.T) {
+	saveServiceSeams(t)
+	geteuid = func() int { return 0 }
+	inst := service.ServiceSpec{User: "mic", ConfigPath: "/srv/rm/config.yaml", StateDir: "/srv/rm-state", BinPath: "/opt/bin/remote-mic"}
+	prev := installedSpec
+	reads := 0
+	installedSpec = func() (service.ServiceSpec, error) { reads++; return inst, nil }
+	t.Cleanup(func() { installedSpec = prev })
+
+	var got service.ServiceSpec
+	installService = func(s service.ServiceSpec, _ bool) error { got = s; return nil }
+	code, _, errOut := runCLI(cmdService, cmdInstall, "--state-dir", "/srv/other", "--no-start")
+	want := inst
+	want.StateDir = "/srv/other"
+	if code != 0 || got != want {
+		t.Fatalf("install: exit %d spec %+v stderr %q, want %+v", code, got, errOut, want)
 	}
-	if got := installedConfigOr(cfgPathX); got != cfgPathX {
-		t.Errorf("explicit flag: got %q", got)
+	for _, line := range []string{"using --user=mic", "using --config=/srv/rm/config.yaml", "using --bin-path=/opt/bin/remote-mic"} {
+		if !strings.Contains(errOut, line) {
+			t.Errorf("install stderr %q, want %q", errOut, line)
+		}
 	}
-	stubInstalledConfig(t, "", "")
-	if got := installedConfigOr(""); got != service.DefaultConfigPath {
-		t.Errorf("without a unit: got %q, want %q", got, service.DefaultConfigPath)
+	if strings.Contains(errOut, "using --state-dir") {
+		t.Errorf("install stderr %q reports a flag the operator gave", errOut)
+	}
+
+	var purged service.ServiceSpec
+	uninstallService = func(s service.ServiceSpec, _ bool) error { purged = s; return nil }
+	code, _, errOut = runCLI(cmdService, subRemove, argPurge)
+	if code != 0 || purged != inst {
+		t.Fatalf("purge: exit %d spec %+v stderr %q, want %+v", code, purged, errOut, inst)
+	}
+	if !strings.Contains(errOut, "purging config directory /srv/rm, state directory /srv/rm-state, binary /opt/bin/remote-mic, and user mic") {
+		t.Errorf("purge stderr %q, want the paths it removes", errOut)
+	}
+
+	reads = 0
+	code, _, errOut = runCLI(cmdService, subRemove)
+	if code != 0 || reads != 0 || purged != (service.ServiceSpec{User: service.DefaultUser, ConfigPath: service.DefaultConfigPath, StateDir: service.DefaultStateDir, BinPath: service.DefaultBinPath}) {
+		t.Errorf("plain uninstall: exit %d, %d unit reads, spec %+v, stderr %q; want the package defaults and no read", code, reads, purged, errOut)
+	}
+}
+
+// TestServiceDefaultsRefuseHandEditedUnit asserts a unit that is not exactly
+// what the installer wrote never supplies what purge deletes or install
+// chowns: the command asks for the flags instead, and runs once they are
+// all given.
+func TestServiceDefaultsRefuseHandEditedUnit(t *testing.T) {
+	saveServiceSeams(t)
+	geteuid = func() int { return 0 }
+	prev := installedSpec
+	installedSpec = func() (service.ServiceSpec, error) {
+		return service.ServiceSpec{}, errors.New("/etc/systemd/system/remote-mic.service is not the unit the installer writes")
+	}
+	t.Cleanup(func() { installedSpec = prev })
+	called := false
+	uninstallService = func(service.ServiceSpec, bool) error { called = true; return nil }
+	installService = func(service.ServiceSpec, bool) error { called = true; return nil }
+
+	for _, args := range [][]string{{cmdService, subRemove, argPurge}, {cmdService, cmdInstall}} {
+		code, _, errOut := runCLI(args...)
+		if code != 1 || called || !strings.Contains(errOut, "pass --user, --config, --state-dir and --bin-path") {
+			t.Errorf("%v: exit %d called %t stderr %q, want a refusal before any change", args, code, called, errOut)
+		}
+	}
+	all := []string{cmdService, subRemove, argPurge, flagUser, "mic", flagConfig, "/srv/rm/config.yaml", "--state-dir", "/srv/s", "--bin-path", "/opt/rm"}
+	if code, _, errOut := runCLI(all...); code != 0 || !called {
+		t.Errorf("all flags given: exit %d called %t stderr %q, want it to run", code, called, errOut)
 	}
 }
 
