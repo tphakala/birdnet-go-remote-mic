@@ -274,8 +274,8 @@ paths:
           in: query
           required: false
           description: >
-            Event types to subscribe to, comma-separated. Absent means
-            all types. Heartbeats are always sent.
+            Event types to subscribe to, comma-separated. Absent or empty
+            means all types. Heartbeats are always sent.
           style: form
           explode: false
           schema:

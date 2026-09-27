@@ -1,6 +1,7 @@
 package levels
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"math"
@@ -165,7 +166,11 @@ func TestFilteredStreamDoesNotSubscribeTheHub(t *testing.T) {
 			reached := make(signalSource, 1)
 			srv := httptest.NewServer(sse.Handler(h, reached))
 			defer srv.Close()
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+tc.query, http.NoBody)
+			// A bounded request, so a handler that blocks before its header
+			// flush fails the test instead of hanging it.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+tc.query, http.NoBody)
 			if err != nil {
 				t.Fatal(err)
 			}

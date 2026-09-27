@@ -496,8 +496,11 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-store",
           Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
         });
-        res.write("event: heartbeat\ndata: {}\n\n");
+        // The open comment the appliance writes once the stream is set up
+        // (openComment in internal/sse/sse.go).
+        res.write(": open\n\n");
         streams.set(res, eventFilter(req));
         req.on("close", () => streams.delete(res));
         return;

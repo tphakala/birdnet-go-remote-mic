@@ -82,7 +82,7 @@ test("the event filter goes in the stream URL", async () => {
   assert.equal(h.last().url, "/api/v1/events?events=notification");
   h.client.setEvents(["levels", "notification"]);
   await settle();
-  assert.equal(h.last().url, "/api/v1/events?events=levels%2Cnotification");
+  assert.equal(h.last().url, "/api/v1/events?events=levels,notification");
   h.client.setEvents(null);
   await settle();
   assert.equal(h.last().url, "/api/v1/events", "no filter means every event type");

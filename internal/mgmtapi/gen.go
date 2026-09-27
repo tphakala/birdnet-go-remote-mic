@@ -1073,7 +1073,7 @@ type ValidationProblem struct {
 
 // StreamEventsParams defines parameters for StreamEvents.
 type StreamEventsParams struct {
-	// Events Event types to subscribe to, comma-separated. Absent means all types. Heartbeats are always sent.
+	// Events Event types to subscribe to, comma-separated. Absent or empty means all types. Heartbeats are always sent.
 	Events *[]string `form:"events,omitempty" json:"events,omitempty"`
 }
 

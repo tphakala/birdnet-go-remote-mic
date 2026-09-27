@@ -300,12 +300,27 @@ func TestCenterEventNamesMatchEmitted(t *testing.T) {
 	c := NewCenter()
 	ch, cancel := c.Subscribe()
 	defer cancel()
+	next := func(what string) sse.Event {
+		t.Helper()
+		select {
+		case ev := <-ch:
+			return ev
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no event delivered for %s", what)
+			return sse.Event{}
+		}
+	}
+	// Both emit sites: a new entry (Publish, and Onset through it) and an
+	// active entry's new text (Update).
 	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "one"})
-	var ev sse.Event
-	select {
-	case ev = <-ch:
-	case <-time.After(2 * time.Second):
-		t.Fatal("no event delivered")
+	ev := next("Publish")
+	c.Onset(Notification{Category: CategoryDevice, Key: testDeviceKey, Title: testDownTitle})
+	next("Onset")
+	if !c.Update(testDeviceKey, "waiting", "new") {
+		t.Fatal("Update of an active condition must emit")
+	}
+	if upd := next("Update"); upd.Name != ev.Name {
+		t.Errorf("Update emits %q, Publish %q", upd.Name, ev.Name)
 	}
 	if got := c.EventNames(); !slices.Equal(got, []string{ev.Name}) {
 		t.Errorf("EventNames() = %v, want [%s], the name the center emits", got, ev.Name)

@@ -35,8 +35,8 @@ export const RECONNECT_MAX_MS = 10_000;
 export class SSEClient {
   private url: string;
   private readonly deps: SSEDeps;
-  // The ?events= filter, its names joined by commas before URL encoding, or
-  // null for every event type.
+  // The ?events= value, each name URL-encoded and joined by literal commas
+  // (the spec's form style, explode false), or null for every event type.
   private events: string | null = null;
   private token: string | null = null;
   private abortController: AbortController | null = null;
@@ -62,7 +62,7 @@ export class SSEClient {
   // reconnects under the new filter; a stopped one only records it, so this
   // never starts a stream the store stopped (a 401, a hidden page).
   public setEvents(names: readonly string[] | null): void {
-    const events = names === null || names.length === 0 ? null : names.join(",");
+    const events = names === null || names.length === 0 ? null : names.map(encodeURIComponent).join(",");
     if (events === this.events) return;
     this.events = events;
     if (!this.isRunning) return;
@@ -156,7 +156,7 @@ export class SSEClient {
       }
 
       try {
-        const url = this.events === null ? this.url : `${this.url}?events=${encodeURIComponent(this.events)}`;
+        const url = this.events === null ? this.url : `${this.url}?events=${this.events}`;
         const response = await this.deps.fetch(url, {
           headers,
           signal: this.abortController.signal,
