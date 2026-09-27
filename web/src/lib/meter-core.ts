@@ -1,7 +1,8 @@
 // Pure logic for the VU meters (components/vu-meter.ts): the peak needle's
 // hold and decay, measured in milliseconds so they look the same on every
-// display refresh rate, and the one animation-frame loop every meter shares.
-// No DOM here: the frame source is injected, so node:test drives it.
+// display refresh rate, the one animation-frame loop every meter shares, and
+// MeterController, each meter's state and sequencing. No DOM here: the frame
+// source and the drawing are injected, so node:test drives them.
 
 // FLOOR_DB is the bottom of the meter scale; anything quieter draws as silence.
 export const FLOOR_DB = -60;
@@ -160,5 +161,158 @@ export class FrameScheduler {
     batch.clear();
     this.batch = null;
     this.arm();
+  }
+}
+
+// MeterPorts is what a MeterController shows through: the canvas bar and
+// needle, the clip latch button and the dB readout. VUMeter implements them
+// on the DOM; tests record the calls.
+export interface MeterPorts {
+  draw(rmsDb: number, peakDb: number): void;
+  showClip(clipped: boolean): void;
+  showReadout(text: string): void;
+}
+
+// FrameSource is the part of FrameScheduler a MeterController uses.
+export type FrameSource = Pick<FrameScheduler, "wake" | "remove">;
+
+// formatReadout is the dB readout text for a needle level.
+export function formatReadout(db: number): string {
+  return db <= -59.9 ? "-inf" : `${db.toFixed(1)} dBFS`;
+}
+
+// MeterController is one VU meter's state and sequencing, with no DOM: the
+// levels it was given, the peak needle, the clip latch, what it last showed,
+// and when it needs a frame. VUMeter owns the canvas and elements and drives
+// it; the dashboard never talks to it directly.
+export class MeterController implements Animator {
+  private readonly ports: MeterPorts;
+  private readonly frames: FrameSource;
+  private readonly now: () => number;
+
+  private rms = FLOOR_DB;
+  private readonly needle = newNeedle();
+  private clipped = false;
+  // The latch state last shown, so a draw touches the button only on change.
+  private shownClip: boolean | null = null;
+  // What the canvas last showed, so a frame with nothing new skips the draw.
+  // stale forces the next draw: a new meter, a resume, a theme change.
+  private stale = true;
+  private drawnRms = FLOOR_DB;
+  private drawnPeak = FLOOR_DB;
+  private shownReadout = "";
+
+  // The previous animation frame's time, for the needle's decay step. Null
+  // while the meter is not animating, so the first frame after a wake decays
+  // nothing instead of catching up the idle time.
+  private lastFrame: number | null = null;
+  // The previous level event's time, for the reduced-motion decay step.
+  private lastLevels: number | null = null;
+  private paused = false;
+  private destroyed = false;
+  // With reduced motion the needle does not glide: it holds and falls in
+  // steps, one per level event, and each event draws once.
+  private reducedMotion: boolean;
+
+  constructor(ports: MeterPorts, frames: FrameSource, opts: { reducedMotion: boolean; now: () => number }) {
+    this.ports = ports;
+    this.frames = frames;
+    this.now = opts.now;
+    this.reducedMotion = opts.reducedMotion;
+    // The latch shows unlatched at once, not at the first frame, which waits
+    // while the dashboard is not showing.
+    this.syncClip();
+    // The first frame draws the empty track.
+    this.frames.wake(this);
+  }
+
+  public setLevels(rms: number, peak: number, clipped: boolean = false): void {
+    const now = this.now();
+    this.rms = clampLevel(rms);
+    const peakDb = clampLevel(peak);
+    if (clipped || peakDb >= -0.1) this.clipped = true;
+
+    raisePeak(this.needle, peakDb, now);
+    // With no animation, the needle falls once per level event by the time
+    // since the last one.
+    if (this.reducedMotion) {
+      if (this.lastLevels !== null) decayPeak(this.needle, now, now - this.lastLevels);
+      this.lastLevels = now;
+    }
+
+    if (this.paused || this.destroyed) return;
+    // Silence on a settled meter changes nothing on screen: no frame.
+    const moving = !this.reducedMotion && !needleSettled(this.needle);
+    if (moving || this.stale || this.rms !== this.drawnRms || this.needle.db !== this.drawnPeak || this.clipped !== this.shownClip) {
+      this.frames.wake(this);
+    }
+  }
+
+  public clearClip(): void {
+    this.clipped = false;
+    this.syncClip();
+  }
+
+  // pause takes the meter off the frame loop while its row is hidden. Levels
+  // still update its state, drawn on resume.
+  public pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.lastFrame = null;
+    this.frames.remove(this);
+  }
+
+  public resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.redraw();
+  }
+
+  // redraw repaints the meter on the next frame even if its levels did not
+  // change, as after a theme change.
+  public redraw(): void {
+    this.stale = true;
+    if (!this.paused && !this.destroyed) this.frames.wake(this);
+  }
+
+  public destroy(): void {
+    this.destroyed = true;
+    this.frames.remove(this);
+  }
+
+  // frame is the meter's turn on the shared loop: move the needle by the time
+  // since the last frame, draw if anything changed, and ask for another frame
+  // only while the needle still has somewhere to go.
+  public frame(now: number): boolean {
+    if (!this.reducedMotion) {
+      const dt = this.lastFrame === null ? 0 : now - this.lastFrame;
+      this.lastFrame = now;
+      decayPeak(this.needle, now, dt);
+    }
+    this.draw();
+    const more = !this.reducedMotion && !needleSettled(this.needle);
+    if (!more) this.lastFrame = null;
+    return more;
+  }
+
+  private syncClip(): void {
+    if (this.shownClip === this.clipped) return;
+    this.shownClip = this.clipped;
+    this.ports.showClip(this.clipped);
+  }
+
+  private draw(): void {
+    this.syncClip();
+    const peakDb = this.needle.db;
+    if (!this.stale && this.rms === this.drawnRms && peakDb === this.drawnPeak) return;
+    this.stale = false;
+    this.drawnRms = this.rms;
+    this.drawnPeak = peakDb;
+    this.ports.draw(this.rms, peakDb);
+    const text = formatReadout(peakDb);
+    if (text !== this.shownReadout) {
+      this.shownReadout = text;
+      this.ports.showReadout(text);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { clampLevel, decayPeak, FLOOR_DB, FrameScheduler, needleSettled, newNeedle, raisePeak, type Animator } from "../lib/meter-core.ts";
+import { FrameScheduler, MeterController } from "../lib/meter-core.ts";
 
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (initTheme's
@@ -28,36 +28,15 @@ export const meterFrames = new FrameScheduler({
   cancel: (handle) => cancelAnimationFrame(handle),
 });
 
-export class VUMeter implements Animator {
+// VUMeter is one channel's meter on the dashboard: the canvas, the dB readout
+// and the clip latch button. Its state and sequencing live in a
+// MeterController (lib/meter-core.ts); this class only paints.
+export class VUMeter {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private peakValEl: HTMLElement | null;
   private clipEl: HTMLElement | null;
-
-  private rmsVal: number = FLOOR_DB;
-  private readonly needle = newNeedle();
-  private isClipped: boolean = false;
-  // The latch state last written to the clip button, so a draw touches the
-  // DOM only when it changes.
-  private shownClip: boolean | null = null;
-  // What the canvas last showed, so a frame with nothing new skips the draw.
-  // stale forces the next draw: a new meter, a resume, a theme change.
-  private stale = true;
-  private drawnRms = FLOOR_DB;
-  private drawnPeak = FLOOR_DB;
-  private shownReadout = "";
-
-  // The previous animation frame's time, for the needle's decay step. Null
-  // while the meter is not animating, so the first frame after a wake decays
-  // nothing instead of catching up the idle time.
-  private lastFrame: number | null = null;
-  // The previous level event's time, for the reduced-motion decay step.
-  private lastLevels: number | null = null;
-  private paused: boolean = false;
-  private destroyed = false;
-  // When the viewer prefers reduced motion, the needle does not glide: it
-  // holds and falls in steps, one per level event, and each event draws once.
-  private reducedMotion: boolean;
+  private readonly controller: MeterController;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -72,102 +51,61 @@ export class VUMeter implements Animator {
     this.ctx = context;
     this.peakValEl = peakValEl ?? null;
     this.clipEl = clipEl ?? null;
-    this.reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
     if (this.clipEl) {
       this.clipEl.addEventListener("click", () => this.clearClip());
-      this.syncClip();
     }
 
     liveMeters.add(this);
-    // The first frame draws the empty track.
-    meterFrames.wake(this);
+    this.controller = new MeterController(
+      {
+        draw: (rms, peak) => this.paint(rms, peak),
+        showClip: (clipped) => this.showClip(clipped),
+        showReadout: (text) => {
+          if (this.peakValEl) this.peakValEl.textContent = text;
+        },
+      },
+      meterFrames,
+      {
+        reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
+        now: () => performance.now(),
+      },
+    );
   }
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
-    const now = performance.now();
-    this.rmsVal = clampLevel(rms);
-    const peakDb = clampLevel(peak);
-
-    if (clipped || peakDb >= -0.1) {
-      this.isClipped = true;
-    }
-
-    raisePeak(this.needle, peakDb, now);
-    // With no animation, the needle falls once per level event (about 10 Hz)
-    // by the time since the last one, so it holds and falls as long as the
-    // animated needle does, and the dB readout holds recent peaks instead of
-    // flickering.
-    if (this.reducedMotion) {
-      if (this.lastLevels !== null) decayPeak(this.needle, now, now - this.lastLevels);
-      this.lastLevels = now;
-    }
-
-    if (this.paused || this.destroyed) return;
-    // Silence on a settled meter changes nothing on screen: no frame.
-    const moving = !this.reducedMotion && !needleSettled(this.needle);
-    if (moving || this.stale || this.rmsVal !== this.drawnRms || this.needle.db !== this.drawnPeak || this.isClipped !== this.shownClip) {
-      meterFrames.wake(this);
-    }
+    this.controller.setLevels(rms, peak, clipped);
   }
 
   public clearClip(): void {
-    this.isClipped = false;
-    this.syncClip();
+    this.controller.clearClip();
   }
 
-  // syncClip shows the latch on the clip button: the lit style, and
-  // aria-pressed so a screen reader hears whether it is latched (pressing it
-  // clears the latch, which releases the button).
-  private syncClip(): void {
-    const el = this.clipEl;
-    if (!el || this.shownClip === this.isClipped) return;
-    this.shownClip = this.isClipped;
-    el.classList.toggle("clipped", this.isClipped);
-    el.setAttribute("aria-pressed", String(this.isClipped));
-  }
-
-  // pause takes the meter off the frame loop while its row is hidden. Levels
-  // still update its state, drawn on resume.
   public pause(): void {
-    if (this.paused) return;
-    this.paused = true;
-    this.lastFrame = null;
-    meterFrames.remove(this);
+    this.controller.pause();
   }
 
   public resume(): void {
-    if (!this.paused) return;
-    this.paused = false;
-    this.redraw();
+    this.controller.resume();
   }
 
-  // redraw repaints the meter on the next frame even if its levels did not
-  // change, as after a theme change.
   public redraw(): void {
-    this.stale = true;
-    if (!this.paused && !this.destroyed) meterFrames.wake(this);
+    this.controller.redraw();
   }
 
   public destroy(): void {
-    this.destroyed = true;
     liveMeters.delete(this);
-    meterFrames.remove(this);
+    this.controller.destroy();
   }
 
-  // frame is the meter's turn on the shared loop: move the needle by the time
-  // since the last frame, draw if anything changed, and ask for another frame
-  // only while the needle still has somewhere to go.
-  public frame(now: number): boolean {
-    if (!this.reducedMotion) {
-      const dt = this.lastFrame === null ? 0 : now - this.lastFrame;
-      this.lastFrame = now;
-      decayPeak(this.needle, now, dt);
-    }
-    this.draw();
-    const more = !this.reducedMotion && !needleSettled(this.needle);
-    if (!more) this.lastFrame = null;
-    return more;
+  // showClip shows the latch on the clip button: the lit style, and
+  // aria-pressed so a screen reader hears whether it is latched (pressing it
+  // clears the latch, which releases the button).
+  private showClip(clipped: boolean): void {
+    const el = this.clipEl;
+    if (!el) return;
+    el.classList.toggle("clipped", clipped);
+    el.setAttribute("aria-pressed", String(clipped));
   }
 
   private dbToRatio(db: number): number {
@@ -177,14 +115,7 @@ export class VUMeter implements Animator {
     return (db + 60) / 60;
   }
 
-  private draw(): void {
-    this.syncClip();
-    const peakDb = this.needle.db;
-    if (!this.stale && this.rmsVal === this.drawnRms && peakDb === this.drawnPeak) return;
-    this.stale = false;
-    this.drawnRms = this.rmsVal;
-    this.drawnPeak = peakDb;
-
+  private paint(rmsDb: number, peakDb: number): void {
     const w = this.canvas.width;
     const h = this.canvas.height;
     const ctx = this.ctx;
@@ -205,7 +136,7 @@ export class VUMeter implements Animator {
     const gap = 2;
     const segWidth = (w - (numSegments - 1) * gap) / numSegments;
 
-    const rmsRatio = this.dbToRatio(this.rmsVal);
+    const rmsRatio = this.dbToRatio(rmsDb);
     const activeSegments = Math.round(rmsRatio * numSegments);
 
     for (let i = 0; i < numSegments; i++) {
@@ -241,15 +172,6 @@ export class VUMeter implements Animator {
       }
       ctx.fillStyle = needleColor;
       ctx.fillRect(peakX, 0, 2, h);
-    }
-
-    // Update DOM indicators
-    if (this.peakValEl) {
-      const formatted = peakDb <= -59.9 ? "-inf" : `${peakDb.toFixed(1)} dBFS`;
-      if (formatted !== this.shownReadout) {
-        this.shownReadout = formatted;
-        this.peakValEl.textContent = formatted;
-      }
     }
   }
 }

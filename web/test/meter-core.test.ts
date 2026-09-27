@@ -11,6 +11,8 @@ import {
   FLOOR_DB,
   FrameScheduler,
   MAX_STEP_MS,
+  MeterController,
+  type MeterPorts,
   needleSettled,
   newNeedle,
   PEAK_DECAY_DB_PER_S,
@@ -20,6 +22,7 @@ import {
   type FramePorts,
   type PeakNeedle,
 } from "../src/lib/meter-core.ts";
+import { at } from "./fixtures.ts";
 
 // EPS absorbs float rounding in the summed frame times.
 const EPS = 1e-6;
@@ -368,4 +371,195 @@ test("an animator that throws on every frame is logged once", () => {
     console.error = saved;
   }
   assert.equal(logged.length, 1, "a repeating failure must be logged once, not per frame");
+});
+
+// meterHarness builds a MeterController on a real FrameScheduler over
+// FakeFrames, with a clock the test sets and ports that record every call.
+function meterHarness(opts: { reducedMotion?: boolean; suspended?: boolean } = {}) {
+  const f = new FakeFrames();
+  const frames = new FrameScheduler(f);
+  if (opts.suspended) frames.setSuspended(true);
+  let clock = 0;
+  const draws: [number, number][] = [];
+  const clips: boolean[] = [];
+  const readouts: string[] = [];
+  const ports: MeterPorts = {
+    draw: (rms, peak) => draws.push([rms, peak]),
+    showClip: (on) => clips.push(on),
+    showReadout: (text) => readouts.push(text),
+  };
+  const meter = new MeterController(ports, frames, { reducedMotion: opts.reducedMotion ?? false, now: () => clock });
+  return {
+    meter,
+    frames,
+    f,
+    draws,
+    clips,
+    readouts,
+    setClock: (t: number) => {
+      clock = t;
+    },
+    // step runs the requested frame at the current clock.
+    step: () => f.step(clock),
+  };
+}
+
+test("the first frame draws the empty track", () => {
+  const h = meterHarness();
+  assert.equal(h.frames.running(), true);
+  h.step();
+  assert.deepEqual(h.draws, [[FLOOR_DB, FLOOR_DB]]);
+  assert.deepEqual(h.readouts, ["-inf"]);
+  assert.deepEqual(h.clips, [false]);
+  assert.equal(h.frames.running(), false, "an empty meter has nothing to animate");
+});
+
+test("a level change wakes the loop and draws", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-20, -10);
+  assert.equal(h.frames.running(), true, "new levels must request a frame");
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [-20, -10]);
+  assert.equal(h.readouts.at(-1), "-10.0 dBFS");
+});
+
+test("silence on a settled meter requests no frame", () => {
+  const h = meterHarness();
+  h.step();
+  for (let i = 1; i <= 5; i++) {
+    h.setClock(i * 100);
+    h.meter.setLevels(-99, -99);
+    assert.equal(h.frames.running(), false, `silent event ${i} must not wake the loop`);
+  }
+  assert.equal(h.draws.length, 1);
+});
+
+test("a paused meter leaves the loop and redraws on resume", () => {
+  const h = meterHarness();
+  h.step();
+  h.meter.pause();
+  h.setClock(10);
+  h.meter.setLevels(-20, -30);
+  assert.equal(h.frames.running(), false, "a paused meter must not request frames");
+  h.meter.resume();
+  assert.equal(h.frames.running(), true);
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [-20, -30], "resume shows the levels that arrived while paused");
+});
+
+test("pause takes a moving meter off the loop", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-20, -10);
+  assert.equal(h.frames.running(), true);
+  h.meter.pause();
+  assert.equal(h.frames.running(), false, "pause must cancel the meter's frame");
+});
+
+test("a destroyed meter never draws again", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-20, -10);
+  h.meter.destroy();
+  assert.equal(h.frames.running(), false);
+  h.meter.redraw();
+  h.meter.resume();
+  h.meter.setLevels(-10, -5);
+  assert.equal(h.frames.running(), false, "nothing may wake a destroyed meter");
+  assert.equal(h.draws.length, 1);
+});
+
+test("a meter created while the loop is suspended draws on resume", () => {
+  const h = meterHarness({ suspended: true });
+  assert.equal(h.frames.running(), false);
+  assert.deepEqual(h.clips, [false], "the latch shows unlatched before any frame");
+  h.frames.setSuspended(false);
+  assert.equal(h.frames.running(), true);
+  h.step();
+  assert.deepEqual(h.draws, [[FLOOR_DB, FLOOR_DB]]);
+});
+
+test("the clip latch is shown once and clears", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-20, -20, true);
+  h.step();
+  assert.deepEqual(h.clips, [false, true]);
+  // Later events leave the latch shown without repainting it.
+  h.setClock(20);
+  h.meter.setLevels(-20, -20);
+  h.step();
+  assert.deepEqual(h.clips, [false, true]);
+  h.meter.clearClip();
+  assert.deepEqual(h.clips, [false, true, false]);
+});
+
+test("a latched clip on a settled, silent meter wakes the loop once", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-99, -99, true);
+  assert.equal(h.frames.running(), true, "a new latch must be shown");
+  h.step();
+  h.setClock(20);
+  h.meter.setLevels(-99, -99);
+  assert.equal(h.frames.running(), false, "a latch already shown must not wake the loop again");
+});
+
+test("an RMS change alone wakes a settled meter", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-30, -99);
+  assert.equal(h.frames.running(), true, "a new bar level must be drawn");
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [-30, FLOOR_DB]);
+});
+
+test("a needle change alone wakes the meter", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(10);
+  h.meter.setLevels(-99, -40);
+  assert.equal(h.frames.running(), true, "a new peak must be drawn");
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, -40]);
+});
+
+test("redraw repaints unchanged levels", () => {
+  const h = meterHarness();
+  h.step();
+  h.meter.redraw();
+  assert.equal(h.frames.running(), true);
+  h.step();
+  assert.equal(h.draws.length, 2, "a theme change must repaint even with no new levels");
+  h.meter.pause();
+  h.meter.resume();
+  h.step();
+  assert.equal(h.draws.length, 3, "a resumed row must repaint even with no new levels");
+});
+
+test("with reduced motion the needle steps once per level event and asks for no more frames", () => {
+  const h = meterHarness({ reducedMotion: true });
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  assert.equal(h.frames.running(), false, "reduced motion draws once per event, no animation");
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, -20]);
+  // After the hold, each event lowers the needle by the time since the last.
+  let t = 0;
+  while (t < PEAK_HOLD_MS + 500) {
+    t += 100;
+    h.setClock(t);
+    h.meter.setLevels(-99, -99);
+    if (h.frames.running()) h.step();
+  }
+  const peak = at(h.draws, h.draws.length - 1)[1];
+  assert.ok(peak < -20 && peak > FLOOR_DB, `needle at ${peak} dB, want it falling from -20`);
 });
