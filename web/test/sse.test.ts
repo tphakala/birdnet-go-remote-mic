@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { SSEClient } from "../src/lib/sse.ts";
+import { HEARTBEAT_TIMEOUT_MS, RECONNECT_DELAY_MS, SSEClient } from "../src/lib/sse.ts";
 import { FakeTimers, settle } from "./fixtures.ts";
 
 // Call is one fetch the client made: its URL, and hooks to answer it.
@@ -151,13 +151,13 @@ test("the heartbeat watchdog and the reconnect backoff use the injected timers",
   h.client.start();
   h.calls.at(-1)?.stream();
   await settle();
-  const [watchdog] = h.timers.pending(30_000);
+  const [watchdog] = h.timers.pending(HEARTBEAT_TIMEOUT_MS);
   assert.ok(watchdog, "a connected stream must arm the heartbeat watchdog");
   // The watchdog firing aborts the silent stream, which then backs off.
   h.timers.fire(watchdog);
   await settle();
   assert.deepEqual(h.events, ["connected", "disconnected"]);
-  const [backoff] = h.timers.pending(1000);
+  const [backoff] = h.timers.pending(RECONNECT_DELAY_MS);
   assert.ok(backoff, "a dropped stream must wait out the backoff");
   h.timers.fire(backoff);
   await settle();
@@ -174,7 +174,7 @@ test("a filter restart arms the heartbeat watchdog before the new stream answers
   h.client.setEvents(["notification"]);
   await settle();
   // The new request hangs (a dead link); the watchdog must still be armed.
-  const [watchdog] = h.timers.pending(30_000);
+  const [watchdog] = h.timers.pending(HEARTBEAT_TIMEOUT_MS);
   assert.ok(watchdog, "a silent restart must arm the watchdog");
   h.timers.fire(watchdog);
   await settle();

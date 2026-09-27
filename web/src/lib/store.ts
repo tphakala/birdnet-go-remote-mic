@@ -2,6 +2,7 @@ import { api, ApiError, apiErrorMessage, isRefusal, TOKEN_NOT_ACCEPTED, Unreadab
 import { sentence } from "./text.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
+import type { Timers } from "./timers.ts";
 import { getToken, setToken } from "./auth.ts";
 import { LatestGate } from "./latest-core.ts";
 import { ChangeTracker, gatedRefresh } from "./store-core.ts";
@@ -34,14 +35,6 @@ export const LEVELS_GRACE_MS = 30_000;
 // dashboard shows.
 export const NON_LEVEL_EVENTS: readonly string[] = ["notification"];
 
-// Timers is the timer API the stores schedule with: the globals in the app, a
-// fake a test fires by hand.
-export interface Timers {
-  setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
-  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
-  setInterval(fn: () => void, ms: number): ReturnType<typeof setInterval>;
-  clearInterval(handle: ReturnType<typeof setInterval>): void;
-}
 
 export interface AppState {
   status: ApplianceStatus | null;
@@ -377,10 +370,7 @@ export class AppStore extends Emitter<StoreEvents> {
     if (!this.levelsDecided) {
       this.levelsDecided = true;
       this.levelsWanted = wanted;
-      if (!wanted) {
-        this.levelsDropped = true;
-        this.sse.setEvents(NON_LEVEL_EVENTS);
-      }
+      if (!wanted) this.dropLevels();
       return;
     }
     if (wanted === this.levelsWanted) return;
@@ -398,11 +388,17 @@ export class AppStore extends Emitter<StoreEvents> {
     }
     this.levelsTimer = this.timers.setTimeout(() => {
       this.levelsTimer = null;
-      this.levelsDropped = true;
-      this.sse.setEvents(NON_LEVEL_EVENTS);
-      this.state.levels.clear();
-      this.emit("levelsdropped");
+      this.dropLevels();
     }, LEVELS_GRACE_MS);
+  }
+
+  // dropLevels takes levels off the stream and announces it, so the meters
+  // stop showing the last ones.
+  private dropLevels(): void {
+    this.levelsDropped = true;
+    this.sse.setEvents(NON_LEVEL_EVENTS);
+    this.state.levels.clear();
+    this.emit("levelsdropped");
   }
 
   public stopPolling(): void {

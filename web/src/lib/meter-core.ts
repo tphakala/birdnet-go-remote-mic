@@ -4,7 +4,7 @@
 // MeterController, each meter's state and sequencing. No DOM here: the frame
 // source and the drawing are injected, so node:test drives them.
 
-import type { Timers } from "./store.ts";
+import type { Timers } from "./timers.ts";
 
 // FLOOR_DB is the bottom of the meter scale; anything quieter draws as silence.
 export const FLOOR_DB = -60;
@@ -90,7 +90,7 @@ export interface Animator {
 
 // FramePorts is the frame source (requestAnimationFrame and
 // cancelAnimationFrame in the browser) and the timers for timed wakes (the
-// stores' Timers seam, globalThis in the browser), fakes in tests.
+// Timers seam in lib/timers.ts, globalThis in the browser), fakes in tests.
 export interface FramePorts {
   request(cb: (now: number) => void): number;
   cancel(handle: number): void;
@@ -224,6 +224,10 @@ export interface MeterPorts {
 // FrameSource is the part of FrameScheduler a MeterController uses.
 export type FrameSource = Pick<FrameScheduler, "wake" | "wakeAfter" | "remove">;
 
+// WAITING_READOUT is the readout while a meter has no levels to show (see
+// MeterController.clearLevels).
+export const WAITING_READOUT = "--";
+
 // levelBand is the colour band a level falls in: 0 green, 1 amber above
 // -12 dBFS, 2 red above -3 dBFS. The segments and the needle share it.
 export function levelBand(db: number): 0 | 1 | 2 {
@@ -258,6 +262,8 @@ export class MeterController implements Animator {
   private drawnRms = FLOOR_DB;
   private drawnPeak = FLOOR_DB;
   private shownReadout = "";
+  // Set by clearLevels until the next level arrives: the readout says so.
+  private waiting = false;
   // The needle level behind shownReadout, and the frame time it was written.
   private shownReadoutDb = FLOOR_DB;
   private readoutAt = Number.NEGATIVE_INFINITY;
@@ -282,6 +288,7 @@ export class MeterController implements Animator {
 
   public setLevels(rms: number, peak: number, clipped: boolean = false): void {
     const now = this.now();
+    this.waiting = false;
     this.rms = clampLevel(rms);
     const peakDb = clampLevel(peak);
     if (clipped || peakDb >= -0.1) this.clipped = true;
@@ -333,11 +340,12 @@ export class MeterController implements Animator {
   }
 
   // clearLevels drops the bar and the needle to the floor when the levels
-  // stopped coming (the stream no longer carries them), so neither shows a
-  // stale level until the next one arrives; with reduced motion the needle
-  // would otherwise wait for that next level to step down. The clip latch
-  // keeps what it showed: a latch waits for the operator.
+  // stopped coming (the stream dropped them or went down), so neither shows a
+  // stale level, and the readout shows WAITING_READOUT instead of "-inf" until
+  // the next level arrives, so no data does not read as silence. The clip
+  // latch keeps what it showed: a latch waits for the operator.
   public clearLevels(): void {
+    this.waiting = true;
     this.rms = FLOOR_DB;
     this.needle.db = FLOOR_DB;
     this.needle.holdUntil = 0;
@@ -393,6 +401,13 @@ export class MeterController implements Animator {
   // the last write, and the frames of the glide carry it out. The settled value
   // and every reduced-motion step (already one per level event) show at once.
   private syncReadout(now: number): void {
+    if (this.waiting) {
+      if (this.shownReadout !== WAITING_READOUT) {
+        this.shownReadout = WAITING_READOUT;
+        this.ports.showReadout(WAITING_READOUT);
+      }
+      return;
+    }
     const db = this.needle.db;
     // The throttle is checked before the text is formatted, since most frames
     // of a glide fall inside it.

@@ -7,7 +7,8 @@
 import { api, ApiError, type ApiClient } from "./api.ts";
 import { Emitter } from "./emitter.ts";
 import { sse, type SSEClient } from "./sse.ts";
-import { store, type Timers } from "./store.ts";
+import { store } from "./store.ts";
+import type { Timers } from "./timers.ts";
 import { showToast } from "../components/toast.ts";
 import { prefSaveNotice } from "./prefs.ts";
 import {

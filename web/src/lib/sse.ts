@@ -1,4 +1,4 @@
-import type { Timers } from "./store.ts";
+import type { Timers } from "./timers.ts";
 
 export type SSEEventHandler = (eventName: string, data: unknown) => void;
 
@@ -9,7 +9,7 @@ const RESERVED_EVENTS = new Set(["connected", "disconnected", "unauthorized", "h
 
 // SSEDeps is what the client needs from the browser, injected so node:test can
 // drive the connect loop with a fake fetch and no real timers. timers is the
-// same seam the stores use (store.ts Timers).
+// same seam the stores use (lib/timers.ts).
 export interface SSEDeps {
   fetch(url: string, init: RequestInit): Promise<Response>;
   timers: Pick<Timers, "setTimeout" | "clearTimeout">;
@@ -20,6 +20,14 @@ const browserDeps: SSEDeps = {
   timers: globalThis,
 };
 
+// HEARTBEAT_TIMEOUT_MS is how long a stream may stay silent before the client
+// reconnects; the server sends a heartbeat every 15 s.
+export const HEARTBEAT_TIMEOUT_MS = 30_000;
+// RECONNECT_DELAY_MS is the first backoff after a dropped stream, doubled up
+// to RECONNECT_MAX_MS.
+export const RECONNECT_DELAY_MS = 1_000;
+export const RECONNECT_MAX_MS = 10_000;
+
 export class SSEClient {
   private url: string;
   private readonly deps: SSEDeps;
@@ -29,9 +37,7 @@ export class SSEClient {
   private token: string | null = null;
   private abortController: AbortController | null = null;
   private isRunning: boolean = false;
-  private reconnectDelayMs: number = 1000;
-  private maxReconnectDelayMs: number = 10000;
-  private heartbeatTimeoutMs: number = 30000;
+  private reconnectDelayMs: number = RECONNECT_DELAY_MS;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private handlers: Set<SSEEventHandler> = new Set();
   // generation invalidates an in-flight connect loop when stop()/start() race:
@@ -104,7 +110,7 @@ export class SSEClient {
       if (this.abortController) {
         this.abortController.abort();
       }
-    }, this.heartbeatTimeoutMs);
+    }, HEARTBEAT_TIMEOUT_MS);
   }
 
   private clearHeartbeat(): void {
@@ -152,6 +158,9 @@ export class SSEClient {
             // so stop; the store restarts the stream once a token is accepted.
             this.isRunning = false;
             this.generation++;
+            // A watchdog armed for this connect (setEvents arms one) must not
+            // fire into the stream a later start opens.
+            this.clearHeartbeat();
             this.abortController = null;
             this.dispatch("unauthorized", null);
             return;
@@ -167,7 +176,7 @@ export class SSEClient {
         }
 
         // Successfully connected, reset backoff delay
-        this.reconnectDelayMs = 1000;
+        this.reconnectDelayMs = RECONNECT_DELAY_MS;
         this.dispatch("connected", null);
         this.resetHeartbeat();
 
@@ -203,7 +212,7 @@ export class SSEClient {
         // Re-check after the delay: a stop()+start() during it must not let this
         // stale loop double the new generation's shared backoff.
         if (!this.isRunning || gen !== this.generation) return;
-        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.maxReconnectDelayMs);
+        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, RECONNECT_MAX_MS);
       }
     }
   }

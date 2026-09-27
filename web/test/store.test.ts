@@ -4,8 +4,10 @@
 // devices and system re-announce after a failed read that nothing newer
 // superseded; config announces on every read; a failed
 // initial load announces which views' data is missing; an older response
-// never overwrites a newer one; polling pauses while the page is hidden; and
-// the event stream stops after the hidden-page grace and restarts on showing.
+// never overwrites a newer one; polling pauses while the page is hidden; the
+// event stream stops after the hidden-page grace and restarts on showing; and
+// levels leave the stream LEVELS_GRACE_MS after the dashboard does (at once
+// for a start-up route elsewhere) and come back at once.
 // Run with node:test (see web:test).
 
 import test from "node:test";

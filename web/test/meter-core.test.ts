@@ -21,6 +21,7 @@ import {
   PEAK_HOLD_MS,
   raisePeak,
   READOUT_INTERVAL_MS,
+  WAITING_READOUT,
   type Animator,
   type FramePorts,
 } from "../src/lib/meter-core.ts";
@@ -755,7 +756,7 @@ test("clearing levels drops the bar and the needle and keeps the latch", () => {
   assert.equal(h.frames.running(), true, "the cleared meter must be drawn");
   h.step();
   assert.deepEqual(h.draws.at(-1), [FLOOR_DB, FLOOR_DB], "the bar and the needle clear");
-  assert.equal(h.readouts.at(-1), "-inf");
+  assert.equal(h.readouts.at(-1), WAITING_READOUT);
   assert.deepEqual(h.clips, [false, true], "the clip latch stays until the operator clears it");
 });
 
@@ -851,5 +852,20 @@ test("clearing levels cancels a timed wake for the end of a hold", () => {
   assert.equal(h.f.timers.pending().length, 1);
   h.meter.clearLevels();
   assert.equal(h.f.timers.pending().length, 0, "the cleared needle has no hold left to wait for");
+});
+
+test("a cleared meter shows the waiting readout until the next level", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-20, -10);
+  h.step();
+  h.meter.clearLevels();
+  h.step();
+  assert.equal(h.readouts.at(-1), WAITING_READOUT, "no levels must not read as silence");
+  h.setClock(5_000);
+  h.meter.setLevels(-30, -25);
+  h.step();
+  assert.equal(h.readouts.at(-1), "-25.0 dBFS");
 });
 

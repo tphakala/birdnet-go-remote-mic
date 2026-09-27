@@ -301,7 +301,12 @@ func TestCenterEventNamesMatchEmitted(t *testing.T) {
 	ch, cancel := c.Subscribe()
 	defer cancel()
 	c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "one"})
-	ev := <-ch
+	var ev sse.Event
+	select {
+	case ev = <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event delivered")
+	}
 	if got := c.EventNames(); !slices.Equal(got, []string{ev.Name}) {
 		t.Errorf("EventNames() = %v, want [%s], the name the center emits", got, ev.Name)
 	}

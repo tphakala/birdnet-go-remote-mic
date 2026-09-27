@@ -421,14 +421,14 @@ export class DashboardView {
     // The meters draw only while the dashboard shows, and levels stream only
     // while it shows or was left less than LEVELS_GRACE_MS ago; until then
     // they keep the meters' state current, so a quick return shows no stale
-    // needle. When the store drops them, each bar clears to the floor.
+    // needle. When the store drops them, or the stream goes down, every meter
+    // clears its bar and needle and shows a waiting readout until levels come
+    // back (a clip latch stays for the operator).
     followDashboardRoute(router, {
       setFramesSuspended: (suspended) => meterFrames.setSuspended(suspended),
       setLevelsWanted: (wanted) => store.setLevelsWanted(wanted),
     });
-    store.on("levelsdropped", () => {
-      for (const entry of this.cards.values()) entry.live?.meters.forEach((m) => m.clearLevels());
-    });
+    store.on("levelsdropped", () => this.clearMeters());
     store.on("levels", (levels) => {
       levels.forEach((dl, name) => {
         const entry = this.byName.get(name);
@@ -444,10 +444,17 @@ export class DashboardView {
     });
     store.on("connection", (connected) => {
       this.updateConnection(connected);
+      if (!connected) this.clearMeters();
     });
     store.on("loaderror", (failure) => {
       if (failure.coreFailed) this.renderLoadError(failure.message);
     });
+  }
+
+  // clearMeters puts every meter in its waiting state when levels stop
+  // arriving, so a stale bar does not pass for live signal.
+  private clearMeters(): void {
+    for (const entry of this.cards.values()) entry.live?.meters.forEach((m) => m.clearLevels());
   }
 
   // renderLoadError replaces the "Loading..." placeholder with the failure cause
