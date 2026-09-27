@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError, apiErrorMessage, firstProblem } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, settingsFocusMessage, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -42,6 +42,14 @@ function focusDropped(): boolean {
 // else the address, else the device id.
 function availableLabel(d: AvailableDevice): string {
   return d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+}
+
+// setEnableBusy shows an Enable button's progress, and keeps its accessible
+// name (which names the device) saying the same as its visible text.
+function setEnableBusy(btn: HTMLElement, d: AvailableDevice, busy: boolean): void {
+  if (busy) setBusy(btn, "Enabling...");
+  else clearBusy(btn, "Enable");
+  btn.setAttribute("aria-label", `${busy ? "Enabling" : "Enable"} ${availableLabel(d)}`);
 }
 
 // capsSummary renders a short human summary of a device's probed capabilities
@@ -332,8 +340,8 @@ export class DashboardView {
   // The Available card that held keyboard focus when a render removed it
   // during that device's Enable: its device, its place on screen and its
   // label, so the Enable can move focus when it settles (to the new device
-  // card on success, to the card now in its place on failure). Only set while
-  // that Enable is in flight.
+  // card on success; on failure to its own card when it is listed again,
+  // else the card now in its place). Only set while that Enable is in flight.
   private availableFocusLost: { id: string; index: number; label: string } | null = null;
   private status: ApplianceStatus | null = null;
   // Serializes config mutations (device toggle + settings save) so each PATCH is
@@ -491,9 +499,16 @@ export class DashboardView {
       this.syncCard(entry, d, cfgByDevice);
     }
 
-    // Remove cards for devices that are gone.
+    // Remove cards for devices that are gone. A removed card that held
+    // keyboard focus (another tab removed the device, or a reload dropped it)
+    // hands it on below, as Available Devices does.
+    const shown = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")];
+    let focusLost: { index: number; name: string } | null = null;
     for (const [id, entry] of this.cards) {
       if (!seen.has(id)) {
+        if (entry.article.contains(document.activeElement)) {
+          focusLost = { index: shown.indexOf(entry.article), name: entry.device.name };
+        }
         entry.live?.meters.forEach((m) => m.destroy());
         entry.settingsForm?.destroy();
         entry.article.remove();
@@ -506,7 +521,15 @@ export class DashboardView {
     // also holds the hidden #rack-empty placeholder, so an index-based compare was
     // off by one and moved a card every poll. Steady state performs no DOM moves,
     // so focus inside a card is never dropped by re-inserting its node.
-    orderChildren(rack, devices.flatMap((d) => this.cards.get(d.device)?.article ?? []));
+    const ordered = devices.flatMap((d) => this.cards.get(d.device) ?? []);
+    orderChildren(rack, ordered.map((e) => e.article));
+    if (focusLost && focusDropped()) {
+      // The card now in the removed one's place, else the one before it.
+      const next = ordered[Math.min(Math.max(focusLost.index, 0), ordered.length - 1)];
+      if (next) next.settingsBtn.focus({ preventScroll: true });
+      else this.focusWorkspace();
+      announce(this.announceEl, deviceGoneMessage(focusLost.name, next?.device.name ?? null));
+    }
 
     // Rebuild the name index for the levels stream (cards are keyed by id, the
     // levels payload by name; a rename changes the name but not the id).
@@ -634,7 +657,7 @@ export class DashboardView {
     // Two identical units share a friendly name, so add the address to tell
     // their buttons apart.
     enableBtn.setAttribute("aria-label", `Enable ${availableLabel(d)}`);
-    if (this.provisioning.has(d.device)) setBusy(enableBtn, "Enabling...");
+    if (this.provisioning.has(d.device)) setEnableBusy(enableBtn, d, true);
     enableBtn.addEventListener("click", () => void this.provisionDevice(d, enableBtn));
 
     card.append(info, enableBtn);
@@ -644,7 +667,7 @@ export class DashboardView {
   private async provisionDevice(d: AvailableDevice, btn: HTMLElement): Promise<void> {
     if (this.provisioning.has(d.device)) return;
     this.provisioning.add(d.device);
-    setBusy(btn, "Enabling...");
+    setEnableBusy(btn, d, true);
     try {
       // Serialize through the same queue as toggles and settings saves: those
       // submit a full-array PATCH built from the cached config, so a provision
@@ -658,16 +681,19 @@ export class DashboardView {
         showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
         // The refresh removed this device's Available card. If it held focus
         // and focus has not moved since (it fell to the document body), hand
-        // it to the new device card, else to the workspace region. The toast
-        // says what happened; the fallback also says where focus went.
+        // it to the new device card, else to the workspace region, and say
+        // where it went.
         const lost = this.takeAvailableFocusLost(d.device);
         if (lost && focusDropped()) {
+          // Reconcile now rather than rely on the render the refresh queued:
+          // the new card's settings button must exist before focus moves.
           this.reconcile();
           const settings = this.cards.get(created.device)?.settingsBtn;
           if (settings) {
             // The new card is in the device rack above, possibly out of view.
             settings.focus({ preventScroll: true });
             settings.scrollIntoView({ block: "nearest" });
+            announce(this.announceEl, settingsFocusMessage(created.name));
           } else {
             this.focusWorkspace();
             announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
@@ -682,9 +708,10 @@ export class DashboardView {
     } finally {
       this.provisioning.delete(d.device);
       // Set only if the Enable failed after a render took its focused card:
-      // focus goes to the card now in its place, as for any card that went.
+      // focus goes to its own card when it is listed again, else to the card
+      // now in its place, as for any card that went.
       const lost = this.takeAvailableFocusLost(d.device);
-      clearBusy(btn, "Enable");
+      setEnableBusy(btn, d, false);
       // clearBusy restores the card built before the click. If a render
       // during the Enable rebuilt the card busy instead (its key includes the
       // in-flight state), this render rebuilds it idle, since the key changed

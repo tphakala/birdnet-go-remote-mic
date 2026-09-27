@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import {
   availableCardKey,
   availableGoneMessage,
+  deviceGoneMessage,
+  settingsFocusMessage,
   availablePlan,
   bannerIsError,
   deviceFieldLabel,
@@ -262,6 +264,12 @@ test("availablePlan rebuilds a card whose busy state changed", () => {
   assert.deepEqual(plan.build, [d.device], "a card left busy must be rebuilt idle");
   assert.notEqual(availableCardKey(d, true), availableCardKey(d, false));
   assert.equal(availableCardKey(d, false), availableCardKey({ ...d }, false), "equal data gives equal keys");
+});
+
+test("deviceGoneMessage names the removed device and where focus went", () => {
+  assert.equal(deviceGoneMessage("garden", "porch"), "garden was removed. Focus moved to porch settings.");
+  assert.equal(deviceGoneMessage("garden", null), "garden was removed. Focus moved to the dashboard.");
+  assert.equal(settingsFocusMessage("porch"), "Focus moved to porch settings.");
 });
 
 test("availableGoneMessage names the device and says where focus went", () => {

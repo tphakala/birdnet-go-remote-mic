@@ -230,6 +230,21 @@ export function availableGoneMessage(label: string, toNeighbour: boolean): strin
   return toNeighbour ? `${label} is no longer available.` : `${label} is no longer available. ${REMOVED_FOCUS_MESSAGE}`;
 }
 
+// settingsFocusMessage is said when focus moves to a device card's settings
+// button the operator did not choose: after an Enable, or when the card that
+// held focus went away.
+export function settingsFocusMessage(name: string): string {
+  return `Focus moved to ${name} settings.`;
+}
+
+// deviceGoneMessage is said when a render removes the configured device card
+// that held keyboard focus (another tab removed it, or a config reload
+// dropped it): which device went, and where focus went (the next card's
+// settings, or the dashboard when no card is left).
+export function deviceGoneMessage(name: string, next: string | null): string {
+  return `${name} was removed. ${next === null ? REMOVED_FOCUS_MESSAGE : settingsFocusMessage(next)}`;
+}
+
 // deviceFieldLabel turns a validation problem's field path into what an
 // operator reads: the field's label, and for a path into the device list the
 // name of the device it points at (names is the device list the request
