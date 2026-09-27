@@ -2,6 +2,7 @@
 // view and the app's notifications fallback, split out so they can be unit tested with node:test (see
 // web/test/dashboard-core.test.ts) without a DOM.
 
+import type { FieldProblem } from "./api.ts";
 import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
 import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
 
@@ -247,4 +248,13 @@ export function deviceFieldLabel(path: string, names: readonly string[] = []): s
   if (label === undefined || index === undefined) return path;
   const name = names[Number(index)];
   return name ? `${label} of ${name}` : label;
+}
+
+// rejectionText is the toast for a request the appliance refused with a
+// validation problem: the action that failed, the field by its form label and
+// the device by its name in names (the device list the request sent), and the
+// reason: "Save failed: RTSP Path of garden was rejected: ...".
+export function rejectionText(prefix: string, problem: FieldProblem, names: readonly string[]): string {
+  const what = problem.field ? deviceFieldLabel(problem.field, names) : "the configuration";
+  return `${prefix}: ${what} was rejected: ${problem.reason}`;
 }

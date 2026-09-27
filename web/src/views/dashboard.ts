@@ -4,7 +4,7 @@ import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, ApiError } from "../lib/api.ts";
 import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, firstProblem, formatUptime, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, deviceFieldLabel, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
@@ -1312,8 +1312,7 @@ export class DashboardView {
     const problem = firstProblem(err);
     if (problem) {
       const names = (sent ?? store.getState().config?.devices ?? []).map((cd) => cd.name);
-      const what = problem.field ? deviceFieldLabel(problem.field, names) : "the configuration";
-      showToast(`${prefix}: ${what} was rejected: ${problem.reason}`, "error");
+      showToast(rejectionText(prefix, problem, names), "error");
     } else {
       showToast(`${prefix}: ${apiErrorMessage(err)}`, "error");
     }

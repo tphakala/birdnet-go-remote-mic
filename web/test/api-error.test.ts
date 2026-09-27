@@ -59,7 +59,7 @@ async function failWith(res: Response): Promise<unknown> {
   }
 }
 
-test("a JSON error body is a problem whose detail is shown", async () => {
+test("a problem+json error body is a problem whose detail is shown", async () => {
   const err = await failWith(
     new Response(JSON.stringify({ status: 400, title: "bad request", detail: "name must not be empty" }), {
       status: 400,
@@ -110,7 +110,7 @@ test("a problem whose detail is not a string shows its title", async () => {
 
 test("a 401 says the token was not accepted instead of the problem detail", () => {
   const err = new ApiError(401, "unauthorized", "a valid access token is required (Authorization: Bearer <token>)", undefined, true);
-  assert.equal(apiErrorMessage(err), "The access token was not accepted.");
+  assert.equal(apiErrorMessage(err), "the access token was not accepted");
 });
 
 test("problemFor finds the first matching problem with the shared fallback", () => {
@@ -122,4 +122,16 @@ test("problemFor finds the first matching problem with the shared fallback", () 
   assert.equal(problemFor(err, (e) => e.field === "keyPem"), null);
   assert.equal(problemReason(err, { field: "keyPem" }), "invalid request");
   assert.equal(problemReason(err, { reason: "too long" }), "too long");
+});
+
+test("a malformed entry in a problem's errors list is dropped", async () => {
+  const err = await failWith(
+    new Response(JSON.stringify({ status: 422, title: "invalid request", errors: [null, "x", { field: "certPem", reason: "bad" }] }), {
+      status: 422,
+      headers: { "Content-Type": "application/problem+json" },
+    }),
+  );
+  assert.ok(err instanceof ApiError);
+  assert.deepEqual(err.errors, [{ field: "certPem", reason: "bad" }]);
+  assert.deepEqual(problemFor(err, (e) => e.field === "certPem"), { field: "certPem", reason: "bad" });
 });

@@ -25,8 +25,9 @@ export class ApiError extends Error {
   public errors?: ValidationErrorItem[];
   // problem is true when the error came from an RFC 9457 problem body
   // (application/problem+json, what the appliance sends), whose detail is
-  // written for people; otherwise detail holds whatever the response body was
-  // (a proxy's HTML or JSON error page, say). Read it through problemDetail.
+  // written for people. Otherwise a non-JSON body's text lands in detail (a
+  // proxy's HTML page, say) and a plain JSON body leaves it empty. Read it
+  // through problemDetail.
   public problem: boolean;
 
   constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[], problem = false) {
@@ -49,13 +50,15 @@ export class ApiError extends Error {
 // apiErrorMessage reduces any thrown value to a short human string. An
 // ApiError shows its problem detail, which says what went wrong (problem
 // titles are generic: "bad request", "internal error"), else its title, else
-// its status; a 401 says the token was not accepted, since the login prompt
-// opens with it and the problem's detail names an HTTP header. Any other
+// its status; a 401 says the token was not accepted (lowercase with no final
+// period, like the appliance's details, since callers build sentences around
+// it), because the login prompt opens with it and the problem's detail names
+// an HTTP header. Any other
 // Error shows its message, and anything else its string form. Shared so
 // every failure toast maps errors the same way.
 export function apiErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 401) return "The access token was not accepted.";
+    if (err.status === 401) return "the access token was not accepted";
     return err.problemDetail || err.title || `HTTP ${err.status}`;
   }
   if (err instanceof Error) return err.message;
@@ -86,6 +89,12 @@ export function problemFor(err: unknown, match: (item: ValidationErrorItem) => b
 // for any other failure.
 export function firstProblem(err: unknown): FieldProblem | null {
   return problemFor(err, () => true);
+}
+
+// isValidationItem keeps the entries of a problem's errors list that are
+// objects, so a malformed entry cannot break a caller reading its field.
+function isValidationItem(e: unknown): e is ValidationErrorItem {
+  return typeof e === "object" && e !== null;
 }
 
 export class ApiClient {
@@ -147,7 +156,7 @@ export class ApiClient {
           (isProblem && prob.status) || res.status,
           (isProblem && prob.title) || res.statusText || `HTTP ${res.status}`,
           isProblem && typeof prob.detail === "string" ? prob.detail : undefined,
-          isProblem && Array.isArray(prob.errors) ? prob.errors : undefined,
+          isProblem && Array.isArray(prob.errors) ? prob.errors.filter(isValidationItem) : undefined,
           isProblem,
         );
       }

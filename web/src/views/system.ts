@@ -93,7 +93,8 @@ const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 // problem body's detail counts as a reason; any other body (a proxy's page)
 // is not shown.
 function updateErrorText(err: unknown): string {
-  return err instanceof ApiError ? refusalText(err.status, err.title, err.problemDetail) : apiErrorMessage(err);
+  if (err instanceof ApiError && err.status !== 401) return refusalText(err.status, err.title, err.problemDetail);
+  return sentence(apiErrorMessage(err));
 }
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long

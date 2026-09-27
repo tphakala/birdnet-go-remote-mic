@@ -150,8 +150,8 @@ export function withChecksSetting(u: UpdateStatus, on: boolean): UpdateStatus {
 // refusalText is what a refused update request shows: the problem detail the
 // appliance gave (why it refused, such as an earlier attempt still running) as
 // a sentence, when it reads as a message; else the problem title, else the
-// HTTP status. A body that was not a problem (a proxy's HTML error page, a
-// long plain-text dump) arrives as the detail too and is not shown.
+// HTTP status. Its caller passes only a problem body's detail, and a detail
+// too long or holding markup is not shown either.
 export function refusalText(status: number, title: string, detail: string | undefined): string {
   const d = (detail ?? "").trim();
   if (d && d.length <= 300 && !d.includes("<")) return sentence(d);

@@ -14,6 +14,7 @@ import {
   availablePlan,
   bannerIsError,
   deviceFieldLabel,
+  rejectionText,
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
@@ -281,4 +282,12 @@ test("deviceFieldLabel names the field and the device a problem points at", () =
   assert.equal(deviceFieldLabel("device"), "Device id");
   assert.equal(deviceFieldLabel("devices[0].streams[0].bogus", names), "devices[0].streams[0].bogus", "an unknown key shows the path");
   assert.equal(deviceFieldLabel("network.hostname"), "network.hostname");
+});
+
+test("rejectionText says which action failed, on which field of which device", () => {
+  assert.equal(
+    rejectionText("Save failed", { field: "devices[1].streams[0].path", reason: "must be at most 128 characters" }, ["garden", "bats"]),
+    "Save failed: RTSP Path of bats was rejected: must be at most 128 characters",
+  );
+  assert.equal(rejectionText("Toggle failed", { reason: "invalid config" }, []), "Toggle failed: the configuration was rejected: invalid config");
 });
