@@ -1,16 +1,18 @@
 // Unit tests for lib/meter-core.ts: the peak needle's hold and decay in
-// milliseconds, and the shared frame loop that runs only while a meter has
-// something to animate. Run with node:test (see web:test).
+// milliseconds, the shared frame loop that runs only while a meter has
+// something to animate, and MeterController, each meter's state and
+// sequencing. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  advanceNeedle,
   clampLevel,
-  decayPeak,
   FLOOR_DB,
+  formatReadout,
   FrameScheduler,
-  MAX_STEP_MS,
+  levelRatio,
   MeterController,
   type MeterPorts,
   needleSettled,
@@ -20,57 +22,93 @@ import {
   raisePeak,
   type Animator,
   type FramePorts,
-  type PeakNeedle,
 } from "../src/lib/meter-core.ts";
 import { at } from "./fixtures.ts";
 
-// EPS absorbs float rounding in the summed frame times.
-const EPS = 1e-6;
-
-// runFrames advances a needle through frames every stepMs from start until
-// it settles (or a safety cap), and returns when the hold ended (the first
-// frame the needle moved) and when it settled.
-function runFrames(stepMs: number, peak: number): { released: number; settled: number } {
-  const n: PeakNeedle = newNeedle();
-  raisePeak(n, peak, 0);
-  let released = -1;
-  let now = 0;
-  while (!needleSettled(n) && now < 60_000) {
-    now += stepMs;
-    const before = n.db;
-    decayPeak(n, now, stepMs);
-    if (released < 0 && n.db < before) released = now;
-  }
-  return { released, settled: now };
+// curve is where a needle raised to peak at time 0 should be at t on the
+// continuous hold-then-fall curve.
+function curve(peak: number, t: number): number {
+  if (t <= PEAK_HOLD_MS) return peak;
+  return Math.max(FLOOR_DB, peak - (PEAK_DECAY_DB_PER_S * (t - PEAK_HOLD_MS)) / 1000);
 }
 
-test("the hold lasts the same time at 60, 120 and 144 Hz", () => {
-  for (const hz of [60, 120, 144]) {
-    const step = 1000 / hz;
-    const { released } = runFrames(step, -20);
-    // The first frame past the hold moves the needle, so release lands within
-    // one frame after PEAK_HOLD_MS.
-    assert.ok(released > PEAK_HOLD_MS && released <= PEAK_HOLD_MS + step + EPS, `${hz} Hz released at ${released} ms, want just after ${PEAK_HOLD_MS} ms`);
+// UPDATE_PATTERNS are the gaps between updates a needle sees: display frames
+// at common refresh rates, level events at their 10 Hz cadence, and the same
+// events arriving with delivery jitter.
+const UPDATE_PATTERNS: [string, number[]][] = [
+  ["144 Hz frames", [1000 / 144]],
+  ["120 Hz frames", [1000 / 120]],
+  ["60 Hz frames", [1000 / 60]],
+  ["10 Hz events", [100]],
+  ["jittered events 80/120 ms", [80, 120]],
+  ["jittered events 60/140 ms", [60, 140]],
+  ["bunched events 199/1 ms", [199, 1]],
+];
+
+test("the needle follows the same curve at every update pattern", () => {
+  const peak = -20;
+  const end = PEAK_HOLD_MS + ((peak - FLOOR_DB) / PEAK_DECAY_DB_PER_S) * 1000 + 500;
+  for (const [name, gaps] of UPDATE_PATTERNS) {
+    const n = newNeedle();
+    advanceNeedle(n, 0);
+    raisePeak(n, peak, 0);
+    let t = 0;
+    for (let i = 0; t < end; i++) {
+      t += at(gaps, i % gaps.length);
+      advanceNeedle(n, t);
+      const want = curve(peak, t);
+      assert.ok(Math.abs(n.db - want) < 1e-9, `${name}: at ${t.toFixed(1)} ms the needle is at ${n.db}, want ${want}`);
+    }
+    assert.equal(needleSettled(n), true, `${name}: the needle must end on the floor`);
   }
 });
 
-test("the needle falls at the same rate at every refresh rate", () => {
-  // From -20 dBFS the fall to the floor is 40 dB at PEAK_DECAY_DB_PER_S.
-  const want = PEAK_HOLD_MS + (40 / PEAK_DECAY_DB_PER_S) * 1000;
-  for (const hz of [60, 120, 144]) {
-    const step = 1000 / hz;
-    const { settled } = runFrames(step, -20);
-    // It settles on the first frame at or after the target.
-    assert.ok(settled >= want - EPS && settled <= want + step + EPS, `${hz} Hz settled at ${settled} ms, want within a frame after ${want} ms`);
-  }
+test("a long gap drops the needle by the whole gap", () => {
+  const n = newNeedle();
+  advanceNeedle(n, 0);
+  raisePeak(n, -20, 0);
+  // A stalled tab, or a meter off the frame loop, updates again 1 s after the
+  // hold ended.
+  advanceNeedle(n, PEAK_HOLD_MS + 1000);
+  assert.equal(n.db, -20 - PEAK_DECAY_DB_PER_S);
+  advanceNeedle(n, 60_000);
+  assert.equal(n.db, FLOOR_DB, "the fall must stop at the floor");
+  assert.equal(needleSettled(n), true);
 });
 
-test("reduced motion steps at about 10 Hz hold and fall like the animated needle", () => {
-  // One decay step per level event, by the time since the previous one.
-  const { released, settled } = runFrames(100, -20);
-  assert.ok(released > PEAK_HOLD_MS && released <= PEAK_HOLD_MS + 100, `released at ${released} ms`);
-  const want = PEAK_HOLD_MS + (40 / PEAK_DECAY_DB_PER_S) * 1000;
-  assert.ok(settled >= want - EPS && settled <= want + 100 + EPS, `settled at ${settled} ms, want within a step after ${want} ms`);
+test("a step that straddles the hold falls only for its tail", () => {
+  const n = newNeedle();
+  advanceNeedle(n, 0);
+  raisePeak(n, -20, 0);
+  advanceNeedle(n, PEAK_HOLD_MS - 40);
+  assert.equal(n.db, -20, "the needle holds until the hold ends");
+  advanceNeedle(n, PEAK_HOLD_MS + 10);
+  assert.equal(n.db, -20 - (PEAK_DECAY_DB_PER_S * 10) / 1000);
+});
+
+test("a reading not after the last one leaves the needle alone", () => {
+  const n = newNeedle();
+  advanceNeedle(n, 0);
+  raisePeak(n, -20, 0);
+  advanceNeedle(n, PEAK_HOLD_MS + 100);
+  const db = n.db;
+  // An animation frame stamped before a level event taken in the same frame.
+  advanceNeedle(n, PEAK_HOLD_MS + 97);
+  assert.equal(n.db, db);
+  // The next reading falls only for the time since the latest one.
+  advanceNeedle(n, PEAK_HOLD_MS + 200);
+  assert.equal(n.db, curve(-20, PEAK_HOLD_MS + 200));
+});
+
+test("a non-finite time leaves the needle alone", () => {
+  const n = newNeedle();
+  advanceNeedle(n, 0);
+  raisePeak(n, -20, 0);
+  advanceNeedle(n, Number.NaN);
+  advanceNeedle(n, Number.POSITIVE_INFINITY);
+  assert.equal(n.db, -20);
+  advanceNeedle(n, PEAK_HOLD_MS + 100);
+  assert.equal(n.db, curve(-20, PEAK_HOLD_MS + 100), "a bad reading must not poison later ones");
 });
 
 test("a louder peak raises the needle and restarts the hold; a quieter one does not", () => {
@@ -86,30 +124,13 @@ test("a louder peak raises the needle and restarts the hold; a quieter one does 
   assert.equal(n.holdUntil, 500 + PEAK_HOLD_MS);
 });
 
-test("one decay step is capped, and only the part after the hold falls", () => {
-  const n = newNeedle();
-  raisePeak(n, -20, 0);
-  // A 5 s gap (a stalled tab) moves the needle by one capped step.
-  decayPeak(n, 5_000, 5_000);
-  assert.equal(n.db, -20 - (PEAK_DECAY_DB_PER_S * MAX_STEP_MS) / 1000);
-  // A step that straddles the end of the hold falls only for its tail.
-  const m = newNeedle();
-  raisePeak(m, -20, 0);
-  decayPeak(m, PEAK_HOLD_MS + 10, 50);
-  assert.equal(m.db, -20 - (PEAK_DECAY_DB_PER_S * 10) / 1000);
-});
-
-test("the needle stops at the floor and settles there", () => {
+test("the needle settles only on the floor", () => {
   const n = newNeedle();
   assert.equal(needleSettled(n), true, "a fresh needle rests on the floor");
   raisePeak(n, FLOOR_DB + 1, 0);
   assert.equal(needleSettled(n), false);
-  // Still holding just above the floor: not settled.
-  decayPeak(n, PEAK_HOLD_MS, MAX_STEP_MS);
-  assert.equal(needleSettled(n), false);
-  decayPeak(n, PEAK_HOLD_MS + MAX_STEP_MS, MAX_STEP_MS);
-  assert.equal(n.db, FLOOR_DB, "the fall must stop at the floor");
-  assert.equal(needleSettled(n), true);
+  n.db = Number.NaN;
+  assert.equal(needleSettled(n), true, "a needle that is not above the floor has nowhere to fall");
 });
 
 test("clampLevel maps silence and bad readings to the floor", () => {
@@ -118,6 +139,22 @@ test("clampLevel maps silence and bad readings to the floor", () => {
   assert.equal(clampLevel(Number.NaN), FLOOR_DB);
   assert.equal(clampLevel(-12.5), -12.5);
   assert.equal(clampLevel(0.4), 0.4);
+});
+
+test("levelRatio places a level on the scale from the floor to 0 dBFS", () => {
+  assert.equal(levelRatio(FLOOR_DB), 0);
+  assert.equal(levelRatio(-99), 0);
+  assert.equal(levelRatio(Number.NaN), 0);
+  assert.equal(levelRatio(FLOOR_DB / 2), 0.5);
+  assert.equal(levelRatio(0), 1);
+  assert.equal(levelRatio(3), 1);
+});
+
+test("formatReadout shows -inf at the floor and one decimal above it", () => {
+  assert.equal(formatReadout(FLOOR_DB), "-inf");
+  assert.equal(formatReadout(FLOOR_DB + 0.05), "-inf");
+  assert.equal(formatReadout(FLOOR_DB + 0.2), "-59.8 dBFS");
+  assert.equal(formatReadout(-3.21), "-3.2 dBFS");
 });
 
 // FakeFrames is a frame source a test steps by hand.
@@ -562,4 +599,42 @@ test("with reduced motion the needle steps once per level event and asks for no 
   }
   const peak = at(h.draws, h.draws.length - 1)[1];
   assert.ok(peak < -20 && peak > FLOOR_DB, `needle at ${peak} dB, want it falling from -20`);
+});
+
+test("levels and frames both advance the needle, and an earlier frame time does not", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  // Frames glide the needle by real elapsed time.
+  h.f.step(PEAK_HOLD_MS + 50);
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, curve(-20, PEAK_HOLD_MS + 50)]);
+  // A level event during the fall brings it up to date at its own time, and
+  // the frame that follows is stamped a little earlier: that frame must not
+  // move the needle, and the next one falls only from the level event's time.
+  h.setClock(PEAK_HOLD_MS + 100);
+  h.meter.setLevels(-30, -99);
+  h.f.step(PEAK_HOLD_MS + 97);
+  assert.deepEqual(h.draws.at(-1), [-30, curve(-20, PEAK_HOLD_MS + 100)]);
+  h.f.step(PEAK_HOLD_MS + 116);
+  assert.deepEqual(h.draws.at(-1), [-30, curve(-20, PEAK_HOLD_MS + 116)]);
+});
+
+test("a meter off the frame loop does not lose a quieter peak to a stale needle", () => {
+  const h = meterHarness();
+  h.step();
+  h.setClock(0);
+  h.meter.setLevels(-99, -20);
+  h.step();
+  // Another view shows: the loop is suspended while levels keep arriving.
+  h.frames.setSuspended(true);
+  h.setClock(2000);
+  // By now the -20 peak has fallen to about -57.5 dB, so a -40 peak is louder
+  // and must raise the needle; a needle not brought up to date first would
+  // still read -20 and ignore it.
+  h.meter.setLevels(-99, -40);
+  h.frames.setSuspended(false);
+  h.step();
+  assert.deepEqual(h.draws.at(-1), [FLOOR_DB, -40]);
 });

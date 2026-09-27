@@ -1,4 +1,4 @@
-import { FrameScheduler, MeterController } from "../lib/meter-core.ts";
+import { FLOOR_DB, FrameScheduler, levelRatio, MeterController } from "../lib/meter-core.ts";
 
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
 // attribute cache refreshed whenever html[data-theme] changes (initTheme's
@@ -108,13 +108,6 @@ export class VUMeter {
     el.setAttribute("aria-pressed", String(clipped));
   }
 
-  private dbToRatio(db: number): number {
-    // Calibrate -60 dBFS to 0.0 and 0 dBFS to 1.0
-    if (db <= -60) return 0;
-    if (db >= 0) return 1;
-    return (db + 60) / 60;
-  }
-
   private paint(rmsDb: number, peakDb: number): void {
     const w = this.canvas.width;
     const h = this.canvas.height;
@@ -136,13 +129,13 @@ export class VUMeter {
     const gap = 2;
     const segWidth = (w - (numSegments - 1) * gap) / numSegments;
 
-    const rmsRatio = this.dbToRatio(rmsDb);
+    const rmsRatio = levelRatio(rmsDb);
     const activeSegments = Math.round(rmsRatio * numSegments);
 
     for (let i = 0; i < numSegments; i++) {
       const x = i * (segWidth + gap);
       const segRatio = i / numSegments;
-      const segDb = -60 + segRatio * 60;
+      const segDb = FLOOR_DB - segRatio * FLOOR_DB;
 
       let color = "rgba(16, 185, 129, 0.85)"; // Green
       if (segDb > -12 && segDb <= -3) {
@@ -161,7 +154,7 @@ export class VUMeter {
     }
 
     // Peak hold needle
-    const needleRatio = this.dbToRatio(peakDb);
+    const needleRatio = levelRatio(peakDb);
     if (needleRatio > 0.02) {
       const peakX = Math.min(w - 2, Math.max(0, needleRatio * w - 1.5));
       let needleColor = "#10b981";

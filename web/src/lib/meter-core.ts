@@ -10,20 +10,18 @@ export const FLOOR_DB = -60;
 export const PEAK_HOLD_MS = 750;
 // PEAK_DECAY_DB_PER_S is how fast the needle falls once the hold is over.
 export const PEAK_DECAY_DB_PER_S = 30;
-// MAX_STEP_MS caps one decay step, so a long gap between frames (a stalled
-// tab, a resume) lowers the needle by one short step instead of dropping it
-// to the floor at once.
-export const MAX_STEP_MS = 100;
 
-// PeakNeedle is the needle's level and the time (on the caller's clock, in
-// ms) until which it holds there.
+// PeakNeedle is the needle's level, the time until which it holds there, and
+// the time it was last brought up to date (null before the first update). All
+// three are on the caller's clock, in ms.
 export interface PeakNeedle {
   db: number;
   holdUntil: number;
+  at: number | null;
 }
 
 export function newNeedle(): PeakNeedle {
-  return { db: FLOOR_DB, holdUntil: 0 };
+  return { db: FLOOR_DB, holdUntil: 0, at: null };
 }
 
 // clampLevel maps a level from the levels stream onto the drawn range: a
@@ -41,21 +39,41 @@ export function raisePeak(n: PeakNeedle, peakDb: number, now: number): void {
   }
 }
 
-// decayPeak lowers the needle for the dtMs that ended at now: nothing while
-// it holds (now - holdUntil is not positive), then PEAK_DECAY_DB_PER_S for the
-// part of the step after the hold, never below the floor. The step is capped
-// at MAX_STEP_MS.
-export function decayPeak(n: PeakNeedle, now: number, dtMs: number): void {
-  const falling = Math.min(dtMs, now - n.holdUntil, MAX_STEP_MS);
-  if (falling <= 0) return;
+// advanceNeedle brings the needle up to date at now: it falls at
+// PEAK_DECAY_DB_PER_S for the part of the time since the last update that is
+// past the hold, never below the floor. The fall depends only on elapsed time,
+// so any mix of level events and animation frames, at any rate and after any
+// gap, puts the needle where it would be on a continuous curve. A reading not
+// after the last one changes nothing, so a caller that mixes clocks
+// (animation-frame timestamps and performance.now()) cannot move it backwards
+// or count the same time twice.
+export function advanceNeedle(n: PeakNeedle, now: number): void {
+  if (!Number.isFinite(now)) return;
+  if (n.at === null) {
+    n.at = now;
+    return;
+  }
+  if (!(now > n.at)) return;
+  const falling = now - Math.max(n.at, n.holdUntil);
+  n.at = now;
+  if (!(falling > 0)) return;
   n.db = Math.max(FLOOR_DB, n.db - (PEAK_DECAY_DB_PER_S * falling) / 1000);
 }
 
-// needleSettled reports whether the needle has nowhere left to move: it rests
-// on the floor. Only raisePeak lifts it above the floor, and it falls back only
-// after the hold, so a needle on the floor is never holding.
+// needleSettled reports whether the needle has nowhere left to move: it is not
+// above the floor (a NaN level counts as settled, so it cannot keep the frame
+// loop running). Only raisePeak lifts it above the floor, and it falls back
+// only after the hold, so a needle on the floor is never holding.
 export function needleSettled(n: PeakNeedle): boolean {
-  return n.db <= FLOOR_DB;
+  return !(n.db > FLOOR_DB);
+}
+
+// levelRatio places a level on the meter scale: 0 at the floor or below, 1 at
+// 0 dBFS or above.
+export function levelRatio(db: number): number {
+  if (!(db > FLOOR_DB)) return 0;
+  if (db >= 0) return 1;
+  return (db - FLOOR_DB) / -FLOOR_DB;
 }
 
 // Animator is one thing drawn on the shared frame loop. frame draws for the
@@ -176,9 +194,10 @@ export interface MeterPorts {
 // FrameSource is the part of FrameScheduler a MeterController uses.
 export type FrameSource = Pick<FrameScheduler, "wake" | "remove">;
 
-// formatReadout is the dB readout text for a needle level.
+// formatReadout is the dB readout text for a needle level: "-inf" at the
+// floor and within the last 0.1 dB above it.
 export function formatReadout(db: number): string {
-  return db <= -59.9 ? "-inf" : `${db.toFixed(1)} dBFS`;
+  return db <= FLOOR_DB + 0.1 ? "-inf" : `${db.toFixed(1)} dBFS`;
 }
 
 // MeterController is one VU meter's state and sequencing, with no DOM: the
@@ -202,12 +221,6 @@ export class MeterController implements Animator {
   private drawnPeak = FLOOR_DB;
   private shownReadout = "";
 
-  // The previous animation frame's time, for the needle's decay step. Null
-  // while the meter is not animating, so the first frame after a wake decays
-  // nothing instead of catching up the idle time.
-  private lastFrame: number | null = null;
-  // The previous level event's time, for the reduced-motion decay step.
-  private lastLevels: number | null = null;
   private paused = false;
   private destroyed = false;
   // With reduced motion the needle does not glide: it holds and falls in
@@ -232,13 +245,11 @@ export class MeterController implements Animator {
     const peakDb = clampLevel(peak);
     if (clipped || peakDb >= -0.1) this.clipped = true;
 
+    // Every level event brings the needle up to date first, so it is current
+    // even while the meter is off the frame loop (a hidden row, another view)
+    // and, with reduced motion, steps down once per event.
+    advanceNeedle(this.needle, now);
     raisePeak(this.needle, peakDb, now);
-    // With no animation, the needle falls once per level event by the time
-    // since the last one.
-    if (this.reducedMotion) {
-      if (this.lastLevels !== null) decayPeak(this.needle, now, now - this.lastLevels);
-      this.lastLevels = now;
-    }
 
     if (this.paused || this.destroyed) return;
     // Silence on a settled meter changes nothing on screen: no frame.
@@ -258,7 +269,6 @@ export class MeterController implements Animator {
   public pause(): void {
     if (this.paused) return;
     this.paused = true;
-    this.lastFrame = null;
     this.frames.remove(this);
   }
 
@@ -280,19 +290,13 @@ export class MeterController implements Animator {
     this.frames.remove(this);
   }
 
-  // frame is the meter's turn on the shared loop: move the needle by the time
-  // since the last frame, draw if anything changed, and ask for another frame
-  // only while the needle still has somewhere to go.
+  // frame is the meter's turn on the shared loop: bring the needle up to date
+  // (it glides only without reduced motion), draw if anything changed, and ask
+  // for another frame only while the needle still has somewhere to go.
   public frame(now: number): boolean {
-    if (!this.reducedMotion) {
-      const dt = this.lastFrame === null ? 0 : now - this.lastFrame;
-      this.lastFrame = now;
-      decayPeak(this.needle, now, dt);
-    }
+    if (!this.reducedMotion) advanceNeedle(this.needle, now);
     this.draw();
-    const more = !this.reducedMotion && !needleSettled(this.needle);
-    if (!more) this.lastFrame = null;
-    return more;
+    return !this.reducedMotion && !needleSettled(this.needle);
   }
 
   private syncClip(): void {
