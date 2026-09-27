@@ -494,7 +494,7 @@ export class DeviceSettingsForm {
     let rateMsg = "Rate must be 8000-384000 Hz.";
     if (mode === "opus") {
       rateOk = rate === 48000;
-      rateMsg = `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch Stream Codec Mode to PCM L16, which supports the other rates this device offers.`;
+      rateMsg = `Opus runs at 48000 Hz only. To capture at ${rate.toLocaleString("en-US")} Hz, switch ${DEVICE_FIELD_LABELS.mode} to PCM L16, which supports the other rates this device offers.`;
       chOk = channels.length >= 1 && channels.length <= 2;
       chMsg = "Opus requires one or two channels.";
     } else if (otherOpusStream(store.getState().config?.devices.find((c) => c.device === this.device.device)?.streams ?? this.device.streams)) {

@@ -91,7 +91,7 @@ const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 // updateErrorText says why an update request failed: the appliance's own
 // reason for a refusal (see refusalText), or the error's message. Only a
 // problem body's detail counts as a reason; any other body (a proxy's page)
-// is not shown.
+// is not shown. A 401 reads as every other 401 does (apiErrorMessage).
 function updateErrorText(err: unknown): string {
   if (err instanceof ApiError && err.status !== 401) return refusalText(err.status, err.title, err.problemDetail);
   return sentence(apiErrorMessage(err));

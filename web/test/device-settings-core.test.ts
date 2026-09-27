@@ -160,9 +160,14 @@ test("extraStreamsNote speaks only for a multi-stream device", () => {
 
 test("every device config field the appliance validates has a form label", () => {
   // The rejection toast names a field by the last part of its path; config.go
-  // builds the paths with field("x") and sfield("x").
+  // builds most paths with field("x") and sfield("x").
+  // The length checks spell the path out in a Sprintf, devices[%d].<key>.
   const src = readFileSync(CONFIG_GO, "utf8");
-  const keys = new Set([...src.matchAll(/\bs?field\("([a-z_.]+)"\)/g)].map((m) => group(m, 1).split(".").at(-1) ?? ""));
+  const found = [
+    ...src.matchAll(/\bs?field\("([a-z_.]+)"\)/g),
+    ...src.matchAll(/"devices\[%d\]\.(?:streams\[%d\]\.)?([a-z_.]+)"/g),
+  ];
+  const keys = new Set(found.map((m) => group(m, 1).split(".").at(-1) ?? ""));
   assert.ok(keys.size >= 5, `found only ${keys.size} field keys in config.go; did the helpers change?`);
   const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
   for (const key of keys) assert.ok(labels[key], `config.go validates "${key}" but DEVICE_FIELD_LABELS has no label for it`);

@@ -239,6 +239,7 @@ test("a login that cannot reach the appliance never shows a response body", asyn
   assert.equal(res.message, "Could not reach the appliance: Bad Gateway");
   setToken(null);
 });
+
 test("an older status response landing late does not overwrite a newer one", async () => {
   const h = harness();
   const slow = deferred<ApplianceStatus>();
