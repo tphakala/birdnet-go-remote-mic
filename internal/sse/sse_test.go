@@ -34,10 +34,20 @@ type fakeSource struct {
 	mu           sync.Mutex
 	subs         map[chan Event]struct{}
 	cancelCalled atomic.Bool
+	// subscribed receives on every Subscribe, and cancelled is closed at the
+	// first cancel, so tests wait on them rather than poll.
+	subscribed    chan struct{}
+	cancelled     chan struct{}
+	cancelledOnce sync.Once
 }
 
 func newFakeSource(buf int) *fakeSource {
-	return &fakeSource{buf: buf, subs: make(map[chan Event]struct{})}
+	return &fakeSource{
+		buf:        buf,
+		subs:       make(map[chan Event]struct{}),
+		subscribed: make(chan struct{}, 16),
+		cancelled:  make(chan struct{}),
+	}
 }
 
 func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
@@ -45,6 +55,10 @@ func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
 	f.mu.Lock()
 	f.subs[ch] = struct{}{}
 	f.mu.Unlock()
+	select {
+	case f.subscribed <- struct{}{}:
+	default:
+	}
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
@@ -52,6 +66,7 @@ func (f *fakeSource) Subscribe() (events <-chan Event, cancel func()) {
 			delete(f.subs, ch)
 			f.mu.Unlock()
 			f.cancelCalled.Store(true)
+			f.cancelledOnce.Do(func() { close(f.cancelled) })
 		})
 	}
 }
@@ -92,7 +107,24 @@ func (f *fakeSource) subCount() int {
 // the client's GET).
 func (f *fakeSource) waitSubscribed(t *testing.T, n int) {
 	t.Helper()
-	waitFor(t, func() bool { return f.subCount() >= n }, 2*time.Second)
+	deadline := time.After(2 * time.Second)
+	for f.subCount() < n {
+		select {
+		case <-f.subscribed:
+		case <-deadline:
+			t.Fatalf("%d subscriptions live, want %d", f.subCount(), n)
+		}
+	}
+}
+
+// waitCancelled blocks until a subscription was cancelled.
+func (f *fakeSource) waitCancelled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no subscription was cancelled")
+	}
 }
 
 var _ Source = (*fakeSource)(nil)
@@ -199,24 +231,12 @@ func (s *sseReader) next(t *testing.T) (name, data string) {
 	return "", ""
 }
 
-func waitFor(t *testing.T, cond func() bool, d time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("condition not met within timeout")
-}
-
 // openStream issues the GET, checks the content type, and returns the response
 // for the caller to read and close (returning the *http.Response keeps the body
 // the caller's to close, which bodyclose is happy with).
 func openStream(t *testing.T, url string) *http.Response {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	t.Cleanup(cancel)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	resp, err := http.DefaultClient.Do(req)
@@ -417,7 +437,7 @@ func TestHandlerCancelUnsubscribesSources(t *testing.T) {
 	cancel()
 	_ = resp.Body.Close()
 
-	waitFor(t, fake.wasCancelled, time.Second)
+	fake.waitCancelled(t)
 }
 
 func TestServeHTTPNonFlusherWritesProblem(t *testing.T) {
@@ -441,6 +461,7 @@ func TestServeHTTPNonFlusherWritesProblem(t *testing.T) {
 }
 
 func TestServeHTTPEndsStreamOnEventWriteOrFlushError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cw   *ctrlWriter
@@ -453,6 +474,7 @@ func TestServeHTTPEndsStreamOnEventWriteOrFlushError(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fake := newFakeSource(4)
 			h := &handler{sources: []Source{fake}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
 			// ServeHTTP derives its own cancellable context from the request, so
@@ -478,6 +500,7 @@ func TestServeHTTPEndsStreamOnEventWriteOrFlushError(t *testing.T) {
 }
 
 func TestServeHTTPEndsStreamWhenTheOpenCommentFails(t *testing.T) {
+	t.Parallel()
 	fake := newFakeSource(1)
 	// The first write after the headers is the open comment.
 	cw := &ctrlWriter{writeErr: errors.New("client gone")}
@@ -622,6 +645,60 @@ func TestStreamOpensWithACommentAndNoProxyBuffering(t *testing.T) {
 	}
 	if line != ": open\n" {
 		t.Fatalf("first line = %q, want the open comment", line)
+	}
+}
+
+// probeWriter is a flushable ResponseWriter (http.Flusher, as the handler
+// requires) that calls onWrite on each write.
+type probeWriter struct {
+	hdr     http.Header
+	onWrite func()
+}
+
+func (p *probeWriter) Header() http.Header              { return p.hdr }
+func (p *probeWriter) WriteHeader(int)                  {}
+func (p *probeWriter) Flush()                           {}
+func (p *probeWriter) FlushError() error                { return nil }
+func (p *probeWriter) SetWriteDeadline(time.Time) error { return nil }
+func (p *probeWriter) Write(b []byte) (int, error) {
+	p.onWrite()
+	return len(b), nil
+}
+
+// Pins the order the web client relies on: the open comment, the stream's
+// first bytes, is written only once every source is subscribed.
+func TestOpenCommentFollowsEverySubscription(t *testing.T) {
+	t.Parallel()
+	a, b := newFakeSource(1), newFakeSource(1)
+	var early atomic.Bool
+	wrote := make(chan struct{}, 1)
+	w := &probeWriter{hdr: http.Header{}, onWrite: func() {
+		if a.subCount() == 0 || b.subCount() == 0 {
+			early.Store(true)
+		}
+		select {
+		case wrote <- struct{}{}:
+		default:
+		}
+	}}
+	h := &handler{sources: []Source{a, b}, heartbeat: time.Hour, writeTimeout: time.Second, mergeBuffer: 8}
+	ctx, cancel := context.WithCancel(t.Context())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/events", http.NoBody)
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(w, req); close(done) }()
+	select {
+	case <-wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing was written")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return")
+	}
+	if early.Load() {
+		t.Fatal("the first bytes were written before every source was subscribed")
 	}
 }
 

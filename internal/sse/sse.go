@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,8 +39,8 @@ type Source interface {
 // The Handler subscribes to such a source only when the request's ?events=
 // filter allows at least one of them, so a producer that works only while it
 // has a subscriber (the levels hub marshals and broadcasts only then, see
-// Hub.Run in internal/levels/levels.go) stays idle for a client that did not
-// ask for its events. A Source that is not Named is always subscribed.
+// Hub.Run at internal/levels/levels.go:313) stays idle for a client that did
+// not ask for its events. A Source that is not Named is always subscribed.
 type Named interface {
 	EventNames() []string
 }
@@ -109,7 +110,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Ask a reverse proxy not to buffer the stream (nginx documents this
 	// header; other proxies NOT MEASURED): buffered, a quiet stream's
 	// heartbeats never reach the client, whose watchdog then drops a live
-	// connection.
+	// connection (web/src/lib/sse.ts:134).
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
@@ -125,6 +126,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// goroutine is torn down when ServeHTTP exits, regardless of how the caller
 	// manages r.Context(). Under net/http the request context is already
 	// cancelled on return; deriving our own also covers a direct ServeHTTP call.
+	// The forwarders are waited for on return, after cancelForward (defers
+	// run last first), so none outlives the request.
+	var forwarders sync.WaitGroup
+	defer forwarders.Wait()
 	ctx, cancelForward := context.WithCancel(r.Context())
 	defer cancelForward()
 	merged := make(chan Event, h.mergeBuffer)
@@ -143,7 +148,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		ch, cancel := src.Subscribe()
 		cancels = append(cancels, cancel)
-		go forward(ctx, ch, merged)
+		forwarders.Go(func() { forward(ctx, ch, merged) })
 	}
 
 	// buf is reused for every event this connection writes.
@@ -193,8 +198,8 @@ func forward(ctx context.Context, in <-chan Event, out chan<- Event) {
 }
 
 // writeEvent formats one event into buf, reused across the connection's
-// events so a write allocates only when an event outgrows every earlier one,
-// and writes it (see write).
+// events so formatting allocates only when an event outgrows every earlier
+// one, and writes it (see write). The write itself may allocate in net/http.
 func (h *handler) writeEvent(w http.ResponseWriter, rc *http.ResponseController, buf *[]byte, ev Event) bool {
 	*buf = append((*buf)[:0], "event: "...)
 	*buf = append(*buf, ev.Name...)
