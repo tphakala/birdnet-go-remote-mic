@@ -156,7 +156,7 @@ tasks:
   web:lint:
     desc: Lint web UI TypeScript and JavaScript
     cmds:
-      - npx -p oxlint@1.80.0 oxlint --deny-warnings web/src web/e2e
+      - npx -p oxlint@1.80.0 oxlint --deny-warnings web/src web/test web/e2e
 
   web:a11y:
     desc: Audit HTML markup and accessibility rules

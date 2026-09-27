@@ -19,8 +19,8 @@ The output must stay plain ES modules (plus the one classic script,
   recommended and a11y presets. Zero warnings is the bar. `task web:verify`
   runs them all; `task web:test` runs the unit tests with Node's own type
   stripping, so it needs a Node that strips types by default (CI pins 26).
-  The sweep's `e2e/tsconfig.json` keeps its own option list and does not
-  enable `noUncheckedIndexedAccess` yet.
+  `test/tsconfig.json` and the sweep's `e2e/tsconfig.json` extend
+  `tsconfig.json`, so a new strictness flag reaches all three.
 - An indexed read (`arr[i]`, `record[key]`, a regex group) may be
   `undefined`: guard it, or use `.entries()` or `charAt`. No blanket `!`. In
   tests, `at` and `group` from `test/fixtures.ts` fail the test on a missing
@@ -61,8 +61,9 @@ The output must stay plain ES modules (plus the one classic script,
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
   formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow
   and cross-tab sync, with the browser objects injected so `node:test` covers
-  it), `prefs.ts` (per-browser boolean preferences, `readBoolPref`/`writeBoolPref`,
-  `onPrefChange` (every cross-tab preference listener), the hide-inactive
+  it), `prefs.ts` (per-browser boolean preferences,
+  `readBoolPref`/`writeBoolPref`, `onPrefChange` (every cross-tab
+  preference listener), the hide-inactive
   keys, and the once-per-page "preferences not saved" notice),
   `update-core.ts` (the update status text in System Information,
   `UpdateFollow` for an update this tab started, and `VersionWatch`, which
@@ -99,14 +100,17 @@ reconcile:
   own all server state. They poll the REST API, consume SSE, and announce
   changes as typed events: they extend `Emitter` (`lib/emitter.ts`), whose
   event map fixes each name and payload (`StoreEvents`: `devices`, `status`,
-  `config`, `system`, `available`, `levels`, `connection`, `loaderror`,
-  `authrequired`, `authok`; `change` on the notification store). The router
+  `config`, `system`, `available`, `levels`, `levelsdropped`, `connection`,
+  `loaderror`, `authrequired`, `authok`; `change` on the notification
+  store). The router
   announces `route` the same way. A new event goes in the map first, so a
-  misspelled name or a wrong payload fails `tsc`. `devices`, `status` and
-  `system` fire only when their data changed, and again on the first read
-  after a failed one; `config` and `available` fire every poll. A
-  mutation flow must not wait for a `devices`, `status` or `system` event,
-  which a no-op change never sends: repaint from `config` or the awaited call.
+  misspelled name or a wrong payload fails `tsc`. `devices`, `status`,
+  `system` and `available` fire only when their data changed; the first
+  three fire again on the first read after a failed one (unless a newer read
+  had already applied), `available` does not. `config` fires every poll. A
+  mutation flow must not wait for a `devices`, `status`, `system` or
+  `available` event, which a no-op change never sends: repaint from `config`
+  or the awaited call.
 - Views and components subscribe with `on(name, payload => ...)` and render from
   `store.getState()`. They never keep a second copy of server state or fetch
   on their own; mutations go through store or `api` methods, then the view
@@ -122,7 +126,12 @@ reconcile:
   restarts it, and the connect re-sync recovers the notifications raised
   meanwhile (without toasts). Anything that runs per status tick inherits the
   pause, and work for one view also checks the route (the System view reloads
-  the certificate only while it is the active view).
+  the certificate only while it is the active view). Levels stream only
+  while the dashboard shows or was left less than `LEVELS_GRACE_MS` (30 s)
+  ago: `store.setLevelsWanted` then sets the stream's `?events=` filter to
+  `NON_LEVEL_EVENTS`, so the appliance sends none, and announces
+  `levelsdropped`. A new event type the UI consumes goes in
+  `NON_LEVEL_EVENTS` too.
 - Never clobber user input: a form being edited is not repopulated from a
   store event (`SystemView` tracks `netDirty`, `authDirty`, `notifyDirty`).
 - Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries,
@@ -138,7 +147,13 @@ reconcile:
   generation to cancel a superseded connect loop. Do the same for any new
   async write path.
 - High-rate data (levels at 10 Hz) goes straight to the component that draws
-  it (the canvas `VUMeter`), not through a view reconcile.
+  it (the canvas `VUMeter`), not through a view reconcile. Each meter's state
+  and sequencing live in `MeterController` (`lib/meter-core.ts`), and every
+  meter draws on one shared frame loop (`meterFrames` in
+  `components/vu-meter.ts`, a `FrameScheduler` from `lib/meter-core.ts`) that
+  runs only while some meter has something new to draw; the dashboard
+  suspends it while another view shows. Time-based animation uses elapsed
+  milliseconds, never a frame count, which varies with refresh rate.
 
 ## Components
 
@@ -154,16 +169,15 @@ reconcile:
 - Ids for `aria-labelledby`/`aria-describedby` come from a module-level
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
-  failure with Retry), `apiErrorMessage`/`setFieldError`, `copyText`,
-  `externalLink` (new-tab link with `rel="noopener"`), `announce` (a polite
-  live-region message), `MenuButton` (a single-choice header menu),
+  failure with Retry), `apiErrorMessage`/`firstProblem`/`setFieldError`,
+  `copyText`, `externalLink` (new-tab link with `rel="noopener"`), `announce` (a
+  polite live-region message), `MenuButton` (a single-choice header menu),
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
   switch; the static ones in `index.html` copy its markup, `role="switch"`
-  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size and
-  stroke width; every stroked icon uses it, from `lib/svg.ts`, a leaf module
-  `ui.ts` re-exports), `focusTarget` (where focus or a click went relative to
-  a popup and its opener), and icon constants such as `ICON_COPY` and
-  `TOAST_ICONS`.
+  included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size and stroke
+  width; every stroked icon uses it, from `lib/svg.ts`, a leaf module `ui.ts`
+  re-exports), `focusTarget` (where focus or a click went relative to a popup
+  and its opener), and icon constants such as `ICON_COPY` and `TOAST_ICONS`.
 - A component with non-trivial event wiring keeps its state and sequencing in
   a DOM-free controller in `lib/*-core.ts` that drives injected ports (see
   `MenuController` and `PopoverController` in `lib/menu-core.ts`), so
@@ -226,9 +240,9 @@ reconcile:
 ## Styling
 
 - Colors, radii, control heights and type come from CSS custom properties on
-  `:root` (dark is the default) overridden in `:root[data-theme="light"]`. Use the
-  tokens; no hard-coded colors or one-off per-theme overrides. If a token pair
-  fails contrast, fix the token.
+  `:root` (dark is the default) overridden in `:root[data-theme="light"]`.
+  Use the tokens; no hard-coded colors or one-off per-theme overrides. If a
+  token pair fails contrast, fix the token.
 - Theme is the `data-theme` attribute on `<html>`, persisted per browser.
   `src/theme-init.ts` is a classic (non-module) script loaded in `<head>`
   that applies it before the first paint: the saved choice, else (nothing
