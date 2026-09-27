@@ -73,13 +73,26 @@ export interface FramePorts {
 // FrameScheduler runs one frame loop for every animator that asked for one,
 // and only while some animator wants frames: an animator that returns false
 // drops out until it is woken again, and the loop stops when none is left.
-// Suspending it (the dashboard is not the active view) stops the loop but
-// keeps the woken animators, which get their frame on resume.
+// Each frame runs the animators woken before it, once each; a wake made during
+// a frame (by the animator itself or another) lands in the next frame, so two
+// animators that wake each other cannot spin inside one frame. Suspending it
+// (the dashboard is not the active view) stops the loop but keeps the woken
+// animators, which get their frame on resume.
 export class FrameScheduler {
   private readonly ports: FramePorts;
-  private readonly active = new Set<Animator>();
+  // The animators due at the next frame. tick swaps it with spare, so a wake
+  // during a frame goes to the next one.
+  private active = new Set<Animator>();
+  private spare = new Set<Animator>();
+  // The animators being run by the current tick, so remove can skip a peer
+  // not yet reached; null outside a tick.
+  private batch: Set<Animator> | null = null;
   private handle: number | null = null;
   private suspended = false;
+  // Animators whose frame threw, logged once each: a meter that throws on
+  // every frame is woken again by the next level that changes it, and must
+  // not log at that rate.
+  private readonly reported = new WeakSet<Animator>();
   private readonly onFrame = (now: number): void => this.tick(now);
 
   constructor(ports: FramePorts) {
@@ -92,9 +105,11 @@ export class FrameScheduler {
     this.arm();
   }
 
-  // remove drops a from the loop, as when its meter hides or goes away.
+  // remove drops a from the loop, as when its meter hides or goes away, also
+  // from the frame running now if a has not had its turn yet.
   remove(a: Animator): void {
     this.active.delete(a);
+    this.batch?.delete(a);
     if (this.active.size === 0) this.disarm();
   }
 
@@ -123,17 +138,27 @@ export class FrameScheduler {
 
   private tick(now: number): void {
     this.handle = null;
-    for (const a of this.active) {
+    const batch = this.active;
+    this.active = this.spare;
+    this.spare = batch;
+    this.batch = batch;
+    for (const a of batch) {
       let more = false;
       // One meter that throws must not stop the others, or the loop: it only
       // drops out until its next wake.
       try {
         more = a.frame(now);
       } catch (err) {
-        console.error("meter: frame failed:", err);
+        if (!this.reported.has(a)) {
+          this.reported.add(a);
+          console.error("meter: frame failed:", err);
+        }
       }
-      if (!more) this.active.delete(a);
+      // Still in the batch unless removed during its own frame.
+      if (more && batch.has(a)) this.active.add(a);
     }
+    batch.clear();
+    this.batch = null;
     this.arm();
   }
 }

@@ -185,13 +185,16 @@ test("suspending stops the loop and resuming gives the woken animators their fra
   s.setSuspended(true);
   assert.equal(s.running(), false);
   assert.equal(f.pending.size, 0, "the requested frame must be cancelled");
-  // A wake while suspended requests nothing.
-  s.wake(countdown(1));
+  // A wake while suspended requests nothing, as for a meter built while
+  // another view shows.
+  const late = countdown(1);
+  s.wake(late);
   assert.equal(f.pending.size, 0);
   s.setSuspended(false);
   assert.equal(s.running(), true);
   f.step(100);
   assert.deepEqual(a.frames, [100]);
+  assert.deepEqual(late.frames, [100], "an animator woken while suspended must get its frame on resume");
 });
 
 test("removing the last animator cancels the pending frame", () => {
@@ -204,18 +207,117 @@ test("removing the last animator cancels the pending frame", () => {
   assert.equal(f.pending.size, 0);
 });
 
+test("removing one animator keeps the loop for the other", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const a = countdown(5);
+  const b = countdown(5);
+  s.wake(a);
+  s.wake(b);
+  s.remove(a);
+  assert.equal(s.running(), true, "the other animator still wants its frame");
+  f.step(1);
+  assert.deepEqual(b.frames, [1]);
+  assert.deepEqual(a.frames, []);
+});
+
+test("a wake during a frame runs in the next frame, not again in this one", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const order: string[] = [];
+  // a and b wake each other on every frame: without the next-frame rule they
+  // would spin inside one tick.
+  let b: Animator;
+  const a: Animator = {
+    frame(now: number): boolean {
+      order.push(`a@${now}`);
+      s.wake(b);
+      return false;
+    },
+  };
+  b = {
+    frame(now: number): boolean {
+      order.push(`b@${now}`);
+      s.wake(a);
+      return false;
+    },
+  };
+  s.wake(a);
+  s.wake(b);
+  f.step(1);
+  assert.deepEqual(order, ["a@1", "b@1"], "each animator runs once per frame");
+  assert.equal(s.running(), true, "the wakes made during the frame want the next one");
+  f.step(2);
+  // Frame 2 runs them in the order they were woken during frame 1.
+  assert.deepEqual(order, ["a@1", "b@1", "b@2", "a@2"]);
+});
+
+test("an animator that wakes itself and returns false gets the next frame", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const frames: number[] = [];
+  const a: Animator = {
+    frame(now: number): boolean {
+      frames.push(now);
+      if (frames.length === 1) s.wake(a);
+      return false;
+    },
+  };
+  s.wake(a);
+  f.step(1);
+  assert.equal(s.running(), true, "the self-wake must not be lost");
+  f.step(2);
+  assert.deepEqual(frames, [1, 2]);
+  assert.equal(s.running(), false);
+});
+
+test("removing a peer during a frame skips it", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const b = countdown(5);
+  const a: Animator = {
+    frame(): boolean {
+      s.remove(b);
+      return false;
+    },
+  };
+  s.wake(a);
+  s.wake(b);
+  f.step(1);
+  assert.deepEqual(b.frames, [], "a peer removed before its turn must not run");
+  assert.equal(s.running(), false);
+});
+
+test("a wake then remove during a frame leaves no frame requested", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const c = countdown(1);
+  const a: Animator = {
+    frame(): boolean {
+      s.wake(c);
+      s.remove(c);
+      return false;
+    },
+  };
+  s.wake(a);
+  f.step(1);
+  assert.equal(s.running(), false);
+  assert.equal(f.pending.size, 0, "no frame may stay requested with nothing to run");
+});
+
 test("an animator that throws drops out without stopping the others", () => {
   const f = new FakeFrames();
   const s = new FrameScheduler(f);
+  let badFrames = 0;
   const bad: Animator = {
     frame(): boolean {
+      badFrames++;
       throw new Error("boom");
     },
   };
   const good = countdown(3);
-  const logged: unknown[] = [];
   const saved = console.error;
-  console.error = (...args: unknown[]) => logged.push(args);
+  console.error = () => {};
   try {
     s.wake(bad);
     s.wake(good);
@@ -225,5 +327,45 @@ test("an animator that throws drops out without stopping the others", () => {
     console.error = saved;
   }
   assert.deepEqual(good.frames, [1, 2]);
-  assert.equal(logged.length, 1, "the bad animator runs once, then waits for its next wake");
+  assert.equal(badFrames, 1, "the bad animator runs once, then waits for its next wake");
+});
+
+test("an animator that removes itself during its frame leaves the loop", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const frames: number[] = [];
+  const a: Animator = {
+    frame(now: number): boolean {
+      frames.push(now);
+      s.remove(a);
+      return true;
+    },
+  };
+  s.wake(a);
+  f.step(1);
+  assert.equal(s.running(), false, "a self-removed animator must not stay on the loop");
+  assert.deepEqual(frames, [1]);
+});
+
+test("an animator that throws on every frame is logged once", () => {
+  const f = new FakeFrames();
+  const s = new FrameScheduler(f);
+  const bad: Animator = {
+    frame(): boolean {
+      throw new Error("boom");
+    },
+  };
+  const logged: unknown[] = [];
+  const saved = console.error;
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    for (let i = 1; i <= 3; i++) {
+      // A level event wakes it again each time.
+      s.wake(bad);
+      f.step(i);
+    }
+  } finally {
+    console.error = saved;
+  }
+  assert.equal(logged.length, 1, "a repeating failure must be logged once, not per frame");
 });
