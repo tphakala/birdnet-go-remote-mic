@@ -98,19 +98,17 @@ reconcile:
 
 - `AppStore` (`lib/store.ts`) and `NotificationStore` (`lib/notifications.ts`)
   own all server state. They poll the REST API, consume SSE, and announce
-  changes as typed events: they extend `Emitter` (`lib/emitter.ts`), whose
-  event map fixes each name and payload (`StoreEvents`: `devices`, `status`,
-  `config`, `system`, `available`, `levels`, `levelsdropped`, `connection`,
-  `loaderror`, `authrequired`, `authok`; `change` on the notification
-  store). The router
+  changes as typed events: they extend `Emitter` (`lib/emitter.ts`), whose event
+  map fixes each name and payload (`StoreEvents`: `devices`, `status`, `config`,
+  `system`, `available`, `levels`, `levelsdropped`, `connection`, `loaderror`,
+  `authrequired`, `authok`; `change` on the notification store). The router
   announces `route` the same way. A new event goes in the map first, so a
-  misspelled name or a wrong payload fails `tsc`. `devices`, `status`,
-  `system` and `available` fire only when their data changed; the first
-  three fire again on the first read after a failed one (unless a newer read
-  had already applied), `available` does not. `config` fires every poll. A
-  mutation flow must not wait for a `devices`, `status`, `system` or
-  `available` event, which a no-op change never sends: repaint from `config`
-  or the awaited call.
+  misspelled name or a wrong payload fails `tsc`. `devices`, `status`, `system`
+  and `available` fire only when their data changed; the first three fire again
+  on the first read after a failed one (unless a newer read had already
+  applied), `available` does not. `config` fires every poll. A mutation flow
+  must not wait for a `devices`, `status`, `system` or `available` event, which
+  a no-op change never sends: repaint from `config` or the awaited call.
 - Views and components subscribe with `on(name, payload => ...)` and render from
   `store.getState()`. They never keep a second copy of server state or fetch
   on their own; mutations go through store or `api` methods, then the view
