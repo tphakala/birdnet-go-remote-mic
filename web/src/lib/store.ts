@@ -1,8 +1,9 @@
-import { api, ApiError, type ApiClient } from "./api.js";
-import { sse, type SSEClient } from "./sse.js";
-import { getToken, setToken } from "./auth.js";
-import { LatestGate } from "./latest-core.js";
-import { ChangeTracker, gatedRefresh } from "./store-core.js";
+import { api, ApiError, type ApiClient } from "./api.ts";
+import { Emitter } from "./emitter.ts";
+import { sse, type SSEClient } from "./sse.ts";
+import { getToken, setToken } from "./auth.ts";
+import { LatestGate } from "./latest-core.ts";
+import { ChangeTracker, gatedRefresh } from "./store-core.ts";
 import type {
   ApplianceStatus,
   AvailableDevice,
@@ -10,9 +11,10 @@ import type {
   Device,
   DeviceLevels,
   LevelsEvent,
+  LoadError,
   SystemInfo,
   UpdateStatus,
-} from "./types.js";
+} from "./types.ts";
 
 // How often the REST resources are polled while the page is visible.
 const POLL_INTERVAL_MS = 3000;
@@ -52,7 +54,23 @@ export interface StoreDeps {
   timers?: Timers;
 }
 
-export class AppStore extends EventTarget {
+// StoreEvents is what AppStore announces: each event's name and payload.
+// devices, status and system fire only when their data changed, and again on
+// the first read after a failed one; config and available fire every poll.
+export interface StoreEvents {
+  status: ApplianceStatus;
+  devices: Device[];
+  available: AvailableDevice[];
+  levels: Map<string, DeviceLevels>;
+  system: SystemInfo;
+  config: Config;
+  connection: boolean;
+  loaderror: LoadError;
+  authrequired: undefined;
+  authok: undefined;
+}
+
+export class AppStore extends Emitter<StoreEvents> {
   private readonly api: StoreDeps["api"];
   private readonly sse: StoreDeps["sse"];
   private readonly timers: Timers;
@@ -151,7 +169,7 @@ export class AppStore extends EventTarget {
     if (this.loginPending) return;
     this.loginPending = true;
     this.stopPolling();
-    this.dispatchEvent(new CustomEvent("authrequired"));
+    this.emit("authrequired");
   }
 
   // login stores token, verifies it against /status, and on success reloads
@@ -170,7 +188,7 @@ export class AppStore extends EventTarget {
       return { ok: false, message: `Could not reach the appliance: ${msg}` };
     }
     this.loginPending = false;
-    this.dispatchEvent(new CustomEvent("authok"));
+    this.emit("authok");
     await this.loadInitial(status);
     // loadInitial may have hit a fresh 401 (the token was revoked between the
     // verifying getStatus and the bulk load), which re-arms loginPending via
@@ -196,7 +214,7 @@ export class AppStore extends EventTarget {
         this.onUnauthorized();
       } else if (eventName === "connected") {
         this.state.connected = true;
-        this.dispatchEvent(new CustomEvent("connection", { detail: true }));
+        this.emit("connection", true);
       } else if (eventName === "disconnected") {
         // During a deliberate token rotation the SSE connection carrying the old
         // token is dropped and reconnects under the new one within a backoff
@@ -205,13 +223,13 @@ export class AppStore extends EventTarget {
         // shows. endTokenSwap restarts the stream so the recovery is not skipped.
         if (this.swapDepth > 0) return;
         this.state.connected = false;
-        this.dispatchEvent(new CustomEvent("connection", { detail: false }));
+        this.emit("connection", false);
       } else if (eventName === "levels") {
         const payload = data as LevelsEvent;
         for (const dl of payload.devices) {
           this.state.levels.set(dl.name, dl);
         }
-        this.dispatchEvent(new CustomEvent("levels", { detail: this.state.levels }));
+        this.emit("levels", this.state.levels);
       }
     });
   }
@@ -247,9 +265,7 @@ export class AppStore extends EventTarget {
     // A rejected token is handled by the login prompt, not the retry state.
     if (this.loginPending) return;
     if (coreFailed || systemFailed || configFailed) {
-      this.dispatchEvent(new CustomEvent("loaderror", {
-        detail: { coreFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." },
-      }));
+      this.emit("loaderror", { coreFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." });
     }
   }
 
@@ -328,7 +344,7 @@ export class AppStore extends EventTarget {
     // came back for a live one.
     if (this.state.connected) {
       this.state.connected = false;
-      this.dispatchEvent(new CustomEvent("connection", { detail: false }));
+      this.emit("connection", false);
     }
   }
 
@@ -374,7 +390,7 @@ export class AppStore extends EventTarget {
       // indicator reads "Reconnecting" until the restarted stream connects.
       if (this.state.connected) {
         this.state.connected = false;
-        this.dispatchEvent(new CustomEvent("connection", { detail: false }));
+        this.emit("connection", false);
       }
     }, HIDDEN_STREAM_GRACE_MS);
   }
@@ -439,7 +455,7 @@ export class AppStore extends EventTarget {
       (status) => {
         this.state.status = status;
         if (this.statusChange.changed(status)) {
-          this.dispatchEvent(new CustomEvent("status", { detail: this.state.status }));
+          this.emit("status", status);
         }
       },
       (err) => {
@@ -455,7 +471,7 @@ export class AppStore extends EventTarget {
       () => this.api.getAvailableDevices(),
       (available) => {
         this.state.available = available;
-        this.dispatchEvent(new CustomEvent("available", { detail: this.state.available }));
+        this.emit("available", this.state.available);
       },
       (err) => console.warn("Failed to refresh available devices:", err),
     );
@@ -486,7 +502,7 @@ export class AppStore extends EventTarget {
           if (!present.has(name)) this.state.levels.delete(name);
         }
         if (this.devicesChange.changed(devices)) {
-          this.dispatchEvent(new CustomEvent("devices", { detail: this.state.devices }));
+          this.emit("devices", this.state.devices);
         }
       },
       (err) => {
@@ -503,7 +519,7 @@ export class AppStore extends EventTarget {
       (system) => {
         this.state.system = system;
         if (this.systemChange.changed(system)) {
-          this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
+          this.emit("system", system);
         }
       },
       // System info is optional, non-fatal: no warning, just re-arm the tracker.
@@ -519,7 +535,7 @@ export class AppStore extends EventTarget {
       () => this.api.getConfig(),
       (config) => {
         this.state.config = config;
-        this.dispatchEvent(new CustomEvent("config", { detail: this.state.config }));
+        this.emit("config", config);
       },
       (err) => console.warn("Failed to refresh config:", err),
     );
@@ -540,7 +556,7 @@ export class AppStore extends EventTarget {
     // resolves later.
     this.configGate.invalidate();
     this.state.config = config;
-    this.dispatchEvent(new CustomEvent("config", { detail: config }));
+    this.emit("config", config);
   }
 
   // applyUpdateStatus records the update state an update check or an update
@@ -554,10 +570,9 @@ export class AppStore extends EventTarget {
     this.systemGate.invalidate();
     const system = this.state.system;
     if (!system) return;
-    this.state.system = { ...system, update };
-    if (this.systemChange.changed(this.state.system)) {
-      this.dispatchEvent(new CustomEvent("system", { detail: this.state.system }));
-    }
+    const next = { ...system, update };
+    this.state.system = next;
+    if (this.systemChange.changed(next)) this.emit("system", next);
   }
 }
 

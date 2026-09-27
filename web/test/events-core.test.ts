@@ -1,6 +1,6 @@
 // Unit tests for the pure Events-page logic (filtering, faceted counts, the
-// onset/clear lifecycle pairing, and the formatters). Run with node:test over the
-// compiled output (see the web:test task).
+// onset/clear lifecycle pairing, and the formatters). Run with node:test (see
+// the web:test task).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -20,9 +20,9 @@ import {
   oldestCaption,
   resultCountLabel,
   rowSignature,
-} from "../src/lib/events-core.js";
-import type { Notification } from "../src/lib/types.js";
-import { notif } from "./fixtures.js";
+} from "../src/lib/events-core.ts";
+import type { Notification } from "../src/lib/types.ts";
+import { at, notif } from "./fixtures.ts";
 
 
 const sample: Notification[] = [
@@ -126,13 +126,13 @@ interface ExportedLog {
 }
 
 test("exportJSON writes a chronological log", () => {
-  const out = JSON.parse(exportJSON([sample[2], sample[0]], "boot-a", "2026-09-22T11:00:00Z")) as ExportedLog;
+  const out = JSON.parse(exportJSON([at(sample, 2), at(sample, 0)], "boot-a", "2026-09-22T11:00:00Z")) as ExportedLog;
   assert.equal(out.bootId, "boot-a");
   assert.equal(out.exportedAt, "2026-09-22T11:00:00Z");
   assert.deepEqual(out.events.map((n) => n.id), [1, 3]);
   // No anchor yet: the export says so rather than inventing a time.
   assert.equal(out.clockAnchor, null);
-  assert.equal(out.events[0].anchoredTime, null);
+  assert.equal(at(out.events, 0).anchoredTime, null);
 });
 
 test("exportJSON carries the clock anchor and a corrected time per entry", () => {
@@ -143,9 +143,9 @@ test("exportJSON carries the clock anchor and a corrected time per entry", () =>
   const early = notif({ id: 1, uptimeMs: 40_000, time: "1970-01-01T00:00:40Z" });
   const out = JSON.parse(exportJSON([early], "boot-a", "2026-09-22T12:01:00Z", anchor)) as ExportedLog;
   assert.deepEqual(out.clockAnchor, { browserTime: "2026-09-22T12:00:00.000Z", uptimeMs: 100_000 });
-  assert.equal(out.events[0].anchoredTime, "2026-09-22T11:59:00.000Z");
+  assert.equal(at(out.events, 0).anchoredTime, "2026-09-22T11:59:00.000Z");
   // The raw wall-clock time is kept as the appliance sent it.
-  assert.equal(out.events[0].time, "1970-01-01T00:00:40Z");
+  assert.equal(at(out.events, 0).time, "1970-01-01T00:00:40Z");
 });
 
 // withTZ runs fn with the process time zone set to tz, restoring it after.
@@ -353,7 +353,7 @@ test("query matches the title alone", () => {
 });
 
 test("filterEvents returns newest first regardless of input order", () => {
-  const shuffled = [sample[1], sample[3], sample[0], sample[2]];
+  const shuffled = [1, 3, 0, 2].map((i) => at(sample, i));
   assert.deepEqual(filterEvents(shuffled, emptyFilter()).map((n) => n.id), [4, 3, 2, 1]);
 });
 
@@ -366,7 +366,7 @@ test("formatDuration crosses unit boundaries cleanly", () => {
 });
 
 test("exportJSON leaves its input untouched and carries whole events", () => {
-  const input = [sample[1], sample[0]];
+  const input = [at(sample, 1), at(sample, 0)];
   const out = JSON.parse(exportJSON(input, "boot-a", "2026-09-22T11:00:00Z")) as {
     events: Notification[];
   };

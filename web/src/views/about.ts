@@ -17,11 +17,11 @@ import {
   supportDetails,
   type LicenseDoc,
   type LicenseEntry,
-} from "../lib/about-core.js";
-import { router } from "../lib/router.js";
-import { store } from "../lib/store.js";
-import type { ApplianceStatus, Config, Device, DeviceConfig, SystemInfo } from "../lib/types.js";
-import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.js";
+} from "../lib/about-core.ts";
+import { router } from "../lib/router.ts";
+import { store } from "../lib/store.ts";
+import type { ApplianceStatus, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
+import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.ts";
 
 // Section and link icons: static, trusted markup.
 const ICON_INFO = svgIcon('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>');
@@ -111,26 +111,26 @@ export class AboutView {
     // live details if About is the page shown.
     root.appendChild(this.build());
 
-    store.addEventListener("status", (e: Event) => {
-      this.status = (e as CustomEvent<ApplianceStatus>).detail;
+    store.on("status", (status) => {
+      this.status = status;
       this.renderLive();
     });
-    store.addEventListener("system", (e: Event) => {
-      this.system = (e as CustomEvent<SystemInfo>).detail;
+    store.on("system", (system) => {
+      this.system = system;
       this.renderLive();
     });
-    store.addEventListener("devices", (e: Event) => {
-      this.devices = (e as CustomEvent<Device[]>).detail;
+    store.on("devices", (devices) => {
+      this.devices = devices;
       this.renderLive();
     });
     // config fires on every poll; renderLive rebuilds only while About shows,
     // and setText writes only on change.
-    store.addEventListener("config", (e: Event) => {
-      this.configs = (e as CustomEvent<Config | null>).detail?.devices;
+    store.on("config", (config) => {
+      this.configs = config.devices;
       this.renderLive();
     });
-    router.addEventListener("route", (e: Event) => {
-      this.visible = (e as CustomEvent<string>).detail === "about";
+    router.on("route", (view) => {
+      this.visible = view === "about";
       if (!this.visible) return;
       this.renderLive();
       void this.loadLicenses();

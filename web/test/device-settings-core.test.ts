@@ -1,6 +1,6 @@
 // Unit tests for the pure device-settings bitrate helpers. Run with Node's
-// built-in test runner over the compiled output (see the web:test task): no
-// browser, no DOM, no dependencies.
+// built-in test runner (see the web:test task): no browser, no DOM, no
+// dependencies.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -20,8 +20,8 @@ import {
   extraStreamsNote,
   otherOpusStream,
   withFirstStream,
-} from "../src/lib/device-settings-core.js";
-import type { DeviceConfig } from "../src/lib/types.js";
+} from "../src/lib/device-settings-core.ts";
+import type { DeviceConfig } from "../src/lib/types.ts";
 
 test("defaultOpusBitrate scales per channel, floors at one, and caps at the Opus ceiling", () => {
   assert.equal(defaultOpusBitrate(1), OPUS_BITRATE_PER_CHANNEL); // 128000
@@ -83,9 +83,9 @@ test("lengthError enforces the stream path limit", () => {
   );
 });
 
-// The compiled test runs from web/.test-out/test/, three levels below the
-// repository root; resolve from import.meta.url rather than process.cwd().
-const CONFIG_GO = fileURLToPath(new URL("../../../internal/config/config.go", import.meta.url).href);
+// Resolve from import.meta.url rather than process.cwd(), so the test finds
+// the file whatever directory the runner is invoked from.
+const CONFIG_GO = fileURLToPath(new URL("../../internal/config/config.go", import.meta.url).href);
 
 // goConst reads an integer constant from the Go config source, so the UI limits
 // cannot drift from the ones the appliance enforces.
@@ -136,7 +136,7 @@ test("withFirstStream takes the other streams from the list it is given, not the
   };
   const now = [{ path: "/a", mode: "pcm" as const, channels: [1] }, { path: "/new", mode: "pcm" as const, channels: [2] }];
   assert.deepEqual(withFirstStream(edited, now).streams?.map((st) => st.path), ["/a", "/new"]);
-  assert.equal(withFirstStream(edited, [now[0]]).streams, undefined, "down to one stream, the edit goes flat");
+  assert.equal(withFirstStream(edited, now.slice(0, 1)).streams, undefined, "down to one stream, the edit goes flat");
 });
 
 test("otherOpusStream looks only past the first stream", () => {

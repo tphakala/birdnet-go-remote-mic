@@ -1,22 +1,22 @@
-import { api, ApiError } from "../lib/api.js";
-import { store } from "../lib/store.js";
-import { router } from "../lib/router.js";
-import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.js";
-import { confirmDialog } from "../lib/modal.js";
-import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.js";
-import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.js";
-import { describeUpdate, followEndText, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.js";
-import { showToast } from "../components/toast.js";
-import { generateToken, setToken } from "../lib/auth.js";
+import { api, ApiError } from "../lib/api.ts";
+import { store } from "../lib/store.ts";
+import { router } from "../lib/router.ts";
+import { apiErrorMessage, clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, renderLoadError, setBusy, setButtonLabel, setFieldError, setHidden, setText, svgIcon } from "../lib/ui.ts";
+import { confirmDialog } from "../lib/modal.ts";
+import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
+import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
+import { describeUpdate, followEndText, lastCheckText, refusalText, safeNotesUrl, sentence, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
+import { showToast } from "../components/toast.ts";
+import { generateToken, setToken } from "../lib/auth.ts";
 import {
   NOTIFY_FIELDS,
   buildNotificationsPatch,
   fieldForServerPath,
   unparsedThresholds,
   type NotifyFieldSpec,
-} from "../lib/notification-settings-core.js";
-import type { ApplianceStatus, CertificateInfo, Config, Device, LoadError, SystemInfo, UpdateStatus } from "../lib/types.js";
-import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.js";
+} from "../lib/notification-settings-core.ts";
+import type { ApplianceStatus, CertificateInfo, Config, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
+import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.ts";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
 // into a Hardware column (physical machine) and a Software column (OS + build).
@@ -268,14 +268,14 @@ export class SystemView {
     if (btn) btn.addEventListener("click", () => triggerApplianceRestart());
     this.bindCertificate();
 
-    store.addEventListener("system", (e: Event) => {
-      this.system = (e as CustomEvent<SystemInfo>).detail;
+    store.on("system", (system) => {
+      this.system = system;
       this.renderTiles();
       this.renderInfo();
       this.renderUpdate();
     });
-    store.addEventListener("status", (e: Event) => {
-      this.status = (e as CustomEvent<ApplianceStatus>).detail;
+    store.on("status", (status) => {
+      this.status = status;
       this.watchVersion(this.status.version, this.status.uptimeSeconds);
       this.renderTiles();
       this.renderInfo();
@@ -294,31 +294,29 @@ export class SystemView {
     // the next status tick. Only once a status event has arrived: that is when
     // access (the token, if any) is settled, so an early route event at boot
     // does not send a request the login prompt would have to absorb.
-    router.addEventListener("route", (e: Event) => {
-      if ((e as CustomEvent<string>).detail === "system" && this.status !== null) this.maybeLoadCertificate();
+    router.on("route", (view) => {
+      if (view === "system" && this.status !== null) this.maybeLoadCertificate();
     });
-    store.addEventListener("devices", (e: Event) => {
+    store.on("devices", (devices) => {
       this.devicesLoaded = true;
-      this.renderDeviceRows((e as CustomEvent<Device[]>).detail);
+      this.renderDeviceRows(devices);
     });
-    store.addEventListener("config", (e: Event) => {
-      const cfg = (e as CustomEvent<Config>).detail;
-      if (!this.netDirty && cfg) this.populateNetwork(cfg);
-      if (!this.authDirty && cfg) this.populateAuth(cfg);
-      if (!this.notifyDirty && cfg) this.populateNotifications(cfg);
+    store.on("config", (cfg) => {
+      if (!this.netDirty) this.populateNetwork(cfg);
+      if (!this.authDirty) this.populateAuth(cfg);
+      if (!this.notifyDirty) this.populateNotifications(cfg);
       // The table lists every configured stream, which only the config holds.
       // config fires on every poll, but the rows write only what changed.
       // Only once the devices loaded, or a config arriving first would flash
       // "No devices configured".
       if (this.devicesLoaded) this.renderDeviceRows(store.getState().devices);
     });
-    store.addEventListener("loaderror", (e: Event) => {
-      const detail = (e as CustomEvent<LoadError>).detail;
-      if (detail.systemFailed) this.renderLoadError(detail.message);
+    store.on("loaderror", (failure) => {
+      if (failure.systemFailed) this.renderLoadError(failure.message);
       // A config-only failure leaves the network/access/notification cards hidden
       // with no other signal. Surface it so the miss is not invisible; polling
       // recovers the config on a later tick and the cards then appear.
-      if (detail.configFailed && !detail.systemFailed) {
+      if (failure.configFailed && !failure.systemFailed) {
         showToast("Could not load the network, access and notification settings. Retrying shortly.", "warn");
       }
     });
@@ -814,7 +812,8 @@ export class SystemView {
       if (this.notifyErrorEl) {
         this.notifyErrorEl.textContent = "Some thresholds are blank or not whole numbers.";
       }
-      this.notifyInputs.get(invalid[0])?.focus();
+      const firstInvalid = invalid[0];
+      if (firstInvalid !== undefined) this.notifyInputs.get(firstInvalid)?.focus();
       return;
     }
     const patch = buildNotificationsPatch(this.notifyEnabledEl?.checked ?? true, values);
@@ -855,8 +854,8 @@ export class SystemView {
   // the named input (or the form-level region when the path is not one the card
   // owns) and refocuses it; any other failure is a toast.
   private showNotifyError(err: unknown): void {
-    if (err instanceof ApiError && err.errors && err.errors.length > 0) {
-      const item = err.errors[0];
+    const item = err instanceof ApiError ? err.errors?.[0] : undefined;
+    if (err instanceof ApiError && item) {
       const spec = item.field ? fieldForServerPath(item.field) : null;
       const reason = item.reason ?? err.title;
       if (spec) {
@@ -1053,8 +1052,9 @@ export class SystemView {
       // copy it, and leaving a saved secret in plain sight is needless exposure.
       this.setAuthReveal(false);
     } catch (err: unknown) {
-      if (err instanceof ApiError && err.errors && err.errors.length > 0) {
-        this.setAuthError(err.errors[0].reason ?? err.title);
+      const item = err instanceof ApiError ? err.errors?.[0] : undefined;
+      if (err instanceof ApiError && item) {
+        this.setAuthError(item.reason ?? err.title);
       } else {
         // A non-validation failure (network drop, a lost response) is ambiguous:
         // the appliance applies the token BEFORE it finishes writing the PATCH

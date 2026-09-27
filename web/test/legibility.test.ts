@@ -26,8 +26,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const STYLES = fileURLToPath(new URL("../../static/styles.css", import.meta.url).href);
-const INDEX = fileURLToPath(new URL("../../static/index.html", import.meta.url).href);
+import { at, group } from "./fixtures.ts";
+
+const STYLES = fileURLToPath(new URL("../static/styles.css", import.meta.url).href);
+const INDEX = fileURLToPath(new URL("../static/index.html", import.meta.url).href);
 
 const MIN_PX = 12;
 const BODY_PX = 13;
@@ -65,15 +67,16 @@ const ROOT_PX = 16;
 function scaleTokens(css: string): Map<string, number | null> {
   const tokens = new Map<string, number | null>();
   for (const m of css.matchAll(TOKEN_DECL)) {
-    const v = Number(m[2]);
-    tokens.set(m[1], m[3] === "px" ? v : m[3] === "rem" ? v * ROOT_PX : null);
+    const v = Number(group(m, 2));
+    const unit = group(m, 3);
+    tokens.set(group(m, 1), unit === "px" ? v : unit === "rem" ? v * ROOT_PX : null);
   }
   return tokens;
 }
 
 // scaleUnits maps each type scale token to the unit it is declared in.
 function scaleUnits(css: string): Map<string, string> {
-  return new Map([...css.matchAll(TOKEN_DECL)].map((m) => [m[1], m[3]]));
+  return new Map([...css.matchAll(TOKEN_DECL)].map((m) => [group(m, 1), group(m, 3)]));
 }
 
 function blankComments(source: string): string {
@@ -89,8 +92,8 @@ function declared(body: string, prop: string): string | null {
   let value: string | null = null;
   let important: string | null = null;
   for (const m of body.matchAll(re)) {
-    value = m[1];
-    if (m[2]) important = m[1];
+    value = group(m, 1);
+    if (m[2]) important = value;
   }
   return important ?? value;
 }
@@ -100,10 +103,11 @@ function resolve(value: string, tokens: Map<string, number | null>): Pick<Rule, 
   if (!ref) {
     return { px: null, problem: `font-size ${value} is not a type scale token; use var(--font-size-*)` };
   }
-  if (!tokens.has(ref[1])) {
-    return { px: null, problem: `${ref[1]} is not a defined type scale token` };
+  const name = group(ref, 1);
+  if (!tokens.has(name)) {
+    return { px: null, problem: `${name} is not a defined type scale token` };
   }
-  return { px: tokens.get(ref[1]) ?? null, problem: null };
+  return { px: tokens.get(name) ?? null, problem: null };
 }
 
 // With comments blanked (newlines kept, so line numbers stay true), every
@@ -117,13 +121,15 @@ function fontRules(source: string): Rule[] {
   const block = /([^{}]+)\{([^{}]*)\}/g;
   let m: RegExpExecArray | null;
   while ((m = block.exec(css)) !== null) {
-    const size = declared(m[2], "font-size");
-    const shorthand = declared(m[2], "font");
+    const selector = group(m, 1);
+    const body = group(m, 2);
+    const size = declared(body, "font-size");
+    const shorthand = declared(body, "font");
     if (size === null && shorthand === null) continue;
-    const weight = declared(m[2], "font-weight");
-    const selectorStart = m.index + (m[1].length - m[1].trimStart().length);
+    const weight = declared(body, "font-weight");
+    const selectorStart = m.index + (selector.length - selector.trimStart().length);
     const base = {
-      selector: m[1].trim().replace(/\s+/g, " "),
+      selector: selector.trim().replace(/\s+/g, " "),
       line: css.slice(0, selectorStart).split("\n").length,
       weight: weight !== null && /^\d+$/.test(weight) ? Number(weight) : null,
     };
@@ -267,7 +273,7 @@ test("the checker flags literals, unknown tokens, shorthands, and small or thin 
     .ok3 { font-size: var(--font-size-code); }
     .ok5 { font: inherit; }
   `;
-  const got = violations(fontRules(sample)).map((v) => v.split(" ")[1].replace(":", ""));
+  const got = violations(fontRules(sample)).map((v) => at(v.split(" "), 1).replace(":", ""));
   // .meter-scale-track is below its own allowance; .notif-badge is within its
   // allowance but thin.
   assert.deepEqual(got, [".a", ".b", ".c", ".e", ".g", ".g", ".h", ".i", ".j", ".k", ".l", ".n", ".o", ".meter-scale-track", ".notif-badge"]);

@@ -3,7 +3,8 @@
 // scripts are deferred, so a theme applied only there would paint one frame in
 // the hardcoded dark theme first. It cannot be inline either, since the CSP
 // allows scripts from 'self' only. This file must stay a script (no import or
-// export), and it must never throw: the page renders even if it fails.
+// export) with no type syntax (its test runs this source), and it must
+// never throw: the page renders even if it fails.
 //
 // lib/theme.ts initTheme derives the theme again the same way (THEME_KEY and
 // PREFERS_LIGHT_QUERY; a test pins both), so it corrects an OS change between
@@ -12,12 +13,13 @@
 // sets (app.ts binds the menu): a Light or Dark choice is saved under the same
 // key, System removes it, and it follows later OS changes.
 (() => {
-  let saved: string | null = null;
-  try {
-    saved = localStorage.getItem("remote-mic-theme");
-  } catch {
-    /* storage blocked: treat as no saved choice */
-  }
+  const saved = (() => {
+    try {
+      return localStorage.getItem("remote-mic-theme");
+    } catch {
+      return null; // storage blocked: treat as no saved choice
+    }
+  })();
   let theme = "dark";
   if (saved === "light" || saved === "dark") {
     theme = saved;

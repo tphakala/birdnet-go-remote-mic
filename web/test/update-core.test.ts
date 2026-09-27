@@ -21,8 +21,8 @@ import {
   updateUnderway,
   VERSION_SETTLE_S,
   VersionWatch,
-} from "../src/lib/update-core.js";
-import type { UpdatePhase, UpdateStatus } from "../src/lib/types.js";
+} from "../src/lib/update-core.ts";
+import type { UpdatePhase, UpdateStatus } from "../src/lib/types.ts";
 
 // status builds an up-to-date, checked service install; a test overrides what
 // it is about.
@@ -193,7 +193,7 @@ test("withChecksSetting mirrors what the appliance does to its update state", ()
 
 test("refusalText shows the appliance's reason, never a stray body", () => {
   const busy = "an update is already in progress: an earlier update attempt may still be running (it counts as abandoned at most 15 minutes after it started); try again later";
-  assert.equal(refusalText(409, "update not possible", busy), `${busy[0].toUpperCase()}${busy.slice(1)}.`);
+  assert.equal(refusalText(409, "update not possible", busy), `${busy.charAt(0).toUpperCase()}${busy.slice(1)}.`);
   assert.equal(refusalText(409, "cannot check for updates", "update checks are turned off"), "Update checks are turned off.");
   assert.equal(refusalText(502, "Bad Gateway", "<html><body>502</body></html>"), "Bad Gateway.", "HTML is not shown");
   assert.equal(refusalText(500, "update failed", "x".repeat(301)), "Update failed.", "a long dump is not shown");

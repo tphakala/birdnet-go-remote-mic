@@ -34,8 +34,7 @@ function isIPv6(s: string): boolean {
     if (half !== "") groups.push(...half.split(":"));
   }
   let count = 0;
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
+  for (const [i, g] of groups.entries()) {
     if (g.includes(".")) {
       // The dotted quad must be the last group AND end the input: "::" splitting
       // drops an empty trailing half, so "192.0.2.1::" would otherwise pass.

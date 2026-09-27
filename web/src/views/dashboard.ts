@@ -1,15 +1,15 @@
-import { store } from "../lib/store.js";
-import { VUMeter } from "../components/vu-meter.js";
-import { DeviceSettingsForm } from "../components/device-settings.js";
-import { showToast } from "../components/toast.js";
-import { api, ApiError } from "../lib/api.js";
-import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.js";
-import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.js";
-import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.js";
-import { confirmDialog } from "../lib/modal.js";
-import { getToken } from "../lib/auth.js";
-import { withFirstStream } from "../lib/device-settings-core.js";
-import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, DeviceLevels, LoadError, SystemInfo } from "../lib/types.js";
+import { store } from "../lib/store.ts";
+import { VUMeter } from "../components/vu-meter.ts";
+import { DeviceSettingsForm } from "../components/device-settings.ts";
+import { showToast } from "../components/toast.ts";
+import { api, ApiError } from "../lib/api.ts";
+import { announce, apiErrorMessage, button, clearBusy, deviceStateBadge, elem, formatUptime, ICON_COPY, iconSpan, modeLabel, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, switchControl, writeToClipboard } from "../lib/ui.ts";
+import { bannerIsError, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, downCauseTitle, focusFallbackRow, footerMetrics, hiddenRows, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage } from "../lib/dashboard-core.ts";
+import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
+import { confirmDialog } from "../lib/modal.ts";
+import { getToken } from "../lib/auth.ts";
+import { withFirstStream } from "../lib/device-settings-core.ts";
+import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC =
@@ -364,18 +364,17 @@ export class DashboardView {
     // patching its own subset of the DOM. status is stored first because URLs
     // and the lock tag depend on it; config now arrives on every poll (see the
     // store) so an out-of-band change reflects within one interval.
-    store.addEventListener("devices", () => this.render());
-    store.addEventListener("config", () => this.render());
-    store.addEventListener("status", (e: Event) => {
-      this.status = (e as CustomEvent<ApplianceStatus>).detail;
+    store.on("devices", () => this.render());
+    store.on("config", () => this.render());
+    store.on("status", (status) => {
+      this.status = status;
       this.updateTelemetryFromStatus();
       this.render();
     });
-    store.addEventListener("system", (e: Event) => {
-      this.updateTelemetryFromSystem((e as CustomEvent<SystemInfo>).detail);
+    store.on("system", (system) => {
+      this.updateTelemetryFromSystem(system);
     });
-    store.addEventListener("levels", (e: Event) => {
-      const levels = (e as CustomEvent<Map<string, DeviceLevels>>).detail;
+    store.on("levels", (levels) => {
       levels.forEach((dl, name) => {
         const entry = this.byName.get(name);
         if (!entry?.live) return;
@@ -385,15 +384,14 @@ export class DashboardView {
         }
       });
     });
-    store.addEventListener("available", (e: Event) => {
-      this.renderAvailable((e as CustomEvent<AvailableDevice[]>).detail);
+    store.on("available", (available) => {
+      this.renderAvailable(available);
     });
-    store.addEventListener("connection", (e: Event) => {
-      this.updateConnection((e as CustomEvent<boolean>).detail);
+    store.on("connection", (connected) => {
+      this.updateConnection(connected);
     });
-    store.addEventListener("loaderror", (e: Event) => {
-      const detail = (e as CustomEvent<LoadError>).detail;
-      if (detail.coreFailed) this.renderLoadError(detail.message);
+    store.on("loaderror", (failure) => {
+      if (failure.coreFailed) this.renderLoadError(failure.message);
     });
   }
 
@@ -1104,10 +1102,10 @@ export class DashboardView {
       const active = document.activeElement;
       let strandedRow = -1;
       entry.live.rows.forEach((row, i) => {
-        const on = states[i];
+        const on = states[i] ?? false;
         row.classList.toggle("ch-live", on);
         row.classList.toggle("ch-off", !on);
-        const hide = hidden[i];
+        const hide = hidden[i] ?? false;
         if (hide && !row.hidden && active instanceof Node && row.contains(active)) strandedRow = i;
         setHidden(row, hide);
         // Stop the hidden row's ~60fps canvas loop; resume it when shown again.
@@ -1210,8 +1208,8 @@ export class DashboardView {
   // apiErrorToast surfaces a failed PATCH: a validation problem shows the first
   // field/reason, anything else shows the raw message, both under a prefix.
   private apiErrorToast(err: unknown, prefix: string): void {
-    if (err instanceof ApiError && err.errors && err.errors.length > 0) {
-      const first = err.errors[0];
+    const first = err instanceof ApiError ? err.errors?.[0] : undefined;
+    if (err instanceof ApiError && first) {
       showToast(`Rejected: ${first.field ?? "config"} - ${first.reason ?? err.title}`, "error");
     } else {
       const msg = err instanceof Error ? err.message : String(err);

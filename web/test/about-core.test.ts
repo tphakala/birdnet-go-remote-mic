@@ -1,18 +1,18 @@
 // Unit tests for the About page's pure helpers (lib/about-core.ts): the
 // licenses.json validator, including against the committed file that
 // tools/licensegen writes, the component title, and the copyable system
-// details. Run with node:test over the compiled output (see web:test).
+// details. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { componentTitle, parseLicenseDoc, supportDetails } from "../src/lib/about-core.js";
-import type { ApplianceStatus, Device, DeviceConfig, StreamConfig, SystemInfo } from "../src/lib/types.js";
+import { componentTitle, parseLicenseDoc, supportDetails } from "../src/lib/about-core.ts";
+import type { ApplianceStatus, Device, DeviceConfig, StreamConfig, SystemInfo } from "../src/lib/types.ts";
+import { at } from "./fixtures.ts";
 
-// The compiled test runs from web/.test-out/test/, so web/ is two levels up.
-const LICENSES_JSON = fileURLToPath(new URL("../../static/licenses.json", import.meta.url).href);
+const LICENSES_JSON = fileURLToPath(new URL("../static/licenses.json", import.meta.url).href);
 
 const entry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   name: "example.com/a",
@@ -39,8 +39,8 @@ test("parseLicenseDoc keeps a valid document and drops an empty version", () => 
   const doc = parseLicenseDoc({ project: entry({ name: "remote-mic", version: undefined }), components: [entry(), entry({ version: "" })] });
   assert.ok(doc);
   assert.equal(doc.project.version, undefined);
-  assert.equal(doc.components[0].version, "v1.0.0");
-  assert.equal("version" in doc.components[1], false);
+  assert.equal(at(doc.components, 0).version, "v1.0.0");
+  assert.equal("version" in at(doc.components, 1), false);
 });
 
 test("parseLicenseDoc rejects anything but the generator's shape", () => {
@@ -172,9 +172,10 @@ test("supportDetails lists each capture device, ordered by name, without identif
 test("supportDetails lists every configured stream without its path", () => {
   // Configs match their device by id; the names differ on purpose (a rename
   // the runtime record has not caught up with).
-  const cfg = (device: string, streams: StreamConfig[]): DeviceConfig => ({
-    name: "renamed", device, path: streams[0].path, mode: streams[0].mode, rate: 48000, channels: streams[0].channels, format: "s16", streams,
-  });
+  const cfg = (device: string, streams: StreamConfig[]): DeviceConfig => {
+    const first = at(streams, 0);
+    return { name: "renamed", device, path: first.path, mode: first.mode, rate: 48000, channels: first.channels, format: "s16", streams };
+  };
   const live = { ...usbMic, streams: [
     { path: "/k7Qp2ZxTOKENPATH", clientConnected: true, droppedFrames: 12 },
     { path: "/second-SECRET", clientConnected: false, droppedFrames: 0 },

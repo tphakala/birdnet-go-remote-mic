@@ -1,5 +1,5 @@
-import { closesOnFocusOut } from "../lib/menu-core.js";
-import { focusTarget } from "../lib/ui.js";
+import { closesOnFocusOut } from "../lib/menu-core.ts";
+import { focusTarget } from "../lib/ui.ts";
 
 let dropdownSeq = 0;
 // Each container's dropdown, so opening one closes the others through close(),
@@ -150,11 +150,11 @@ export class CustomDropdown {
   // setActive moves the roving highlight to index (clamped), updates
   // aria-activedescendant, and scrolls the option into view.
   private setActive(index: number): void {
-    if (this.items.length === 0) return;
     const i = Math.max(0, Math.min(index, this.items.length - 1));
+    const active = this.items[i];
+    if (!active) return; // no items
     this.items.forEach((item, n) => item.classList.toggle("active", n === i));
     this.activeIndex = i;
-    const active = this.items[i];
     this.trigger.setAttribute("aria-activedescendant", active.id);
     active.scrollIntoView({ block: "nearest" });
   }

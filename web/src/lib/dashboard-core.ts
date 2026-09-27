@@ -2,7 +2,7 @@
 // view and the app's notifications fallback, split out so they can be unit tested with node:test (see
 // web/test/dashboard-core.test.ts) without a DOM.
 
-import type { Device, DeviceConfig, StreamMode } from "./types.js";
+import type { Device, DeviceConfig, StreamMode } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
 // "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.

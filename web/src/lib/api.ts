@@ -14,18 +14,23 @@ import type {
   RestartResult,
   SystemInfo,
   UpdateStatus,
+  ValidationErrorItem,
   ValidationProblem,
-} from "./types.js";
+} from "./types.ts";
 
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public title: string,
-    public detail?: string,
-    public errors?: Array<{ field?: string; reason?: string }>
-  ) {
+  public status: number;
+  public title: string;
+  public detail?: string;
+  public errors?: ValidationErrorItem[];
+
+  constructor(status: number, title: string, detail?: string, errors?: ValidationErrorItem[]) {
     super(detail || title);
     this.name = "ApiError";
+    this.status = status;
+    this.title = title;
+    this.detail = detail;
+    this.errors = errors;
   }
 }
 

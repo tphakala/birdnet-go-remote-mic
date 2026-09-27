@@ -1,7 +1,7 @@
 // Shared modal primitives: a focus trap, an app-background inert toggle, and a
 // generic confirm dialog. Kept in one place so every dialog traps focus, hides
 // the background from assistive tech, and behaves consistently.
-import { button, elem } from "./ui.js";
+import { button, elem } from "./ui.ts";
 
 // Monotonic counter giving each confirmDialog invocation unique element ids, so
 // two dialogs cannot collide on aria-labelledby/aria-describedby targets.
@@ -39,12 +39,12 @@ export function trapFocus(container: HTMLElement): () => void {
     const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
       (el) => !el.hidden && el.offsetParent !== null,
     );
-    if (items.length === 0) {
+    const first = items[0];
+    const last = items.at(-1);
+    if (!first || !last) {
       e.preventDefault();
       return;
     }
-    const first = items[0];
-    const last = items[items.length - 1];
     const active = document.activeElement as HTMLElement | null;
     if (!active || items.indexOf(active) === -1) {
       // Focus escaped the focusable set: pull it back rather than let Tab leave.

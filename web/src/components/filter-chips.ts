@@ -5,8 +5,8 @@
 // counts and selection back in. The component keeps only a mirror of the current
 // selection, used to drive its own pressed and dimmed styling.
 
-import { elem, setText } from "../lib/ui.js";
-import type { ToastType } from "./toast.js";
+import { elem, setText } from "../lib/ui.ts";
+import type { ToastType } from "./toast.ts";
 
 // Module counter for unique label ids, so each group's aria-labelledby points at
 // its own label (mirrors custom-dropdown's dropdownSeq).

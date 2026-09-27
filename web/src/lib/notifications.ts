@@ -2,13 +2,14 @@
 // core deliberately avoids: fetching the snapshot, subscribing to the SSE
 // stream and the app store's connection events, the debounced re-sync on a
 // detected gap, the error toast, and localStorage persistence. The component
-// renders from the "change" event this dispatches.
+// renders from the "change" event this emits.
 
-import { api, ApiError, type ApiClient } from "./api.js";
-import { sse, type SSEClient } from "./sse.js";
-import { store, type Timers } from "./store.js";
-import { showToast } from "../components/toast.js";
-import { prefSaveNotice } from "./prefs.js";
+import { api, ApiError, type ApiClient } from "./api.ts";
+import { Emitter } from "./emitter.ts";
+import { sse, type SSEClient } from "./sse.ts";
+import { store, type Timers } from "./store.ts";
+import { showToast } from "../components/toast.ts";
+import { prefSaveNotice } from "./prefs.ts";
 import {
   LoadTracker,
   applyLive,
@@ -25,13 +26,20 @@ import {
   serialize,
   type ClockReference,
   type CoreState,
-} from "./notifications-core.js";
+} from "./notifications-core.ts";
 
 // Persisted per browser. Only the read state is stored (see serialize); the
 // items are always rebuilt from the server, so the key stays small.
 const STORAGE_KEY = "remote-mic-notifications";
 // Coalesce the burst of refetches a gap can trigger into one snapshot request.
 const GAP_RELOAD_DELAY_MS = 400;
+
+// ConnectionSource is the one store event the notification store follows.
+// It is spelled out rather than Pick<AppStore, "on">: tsc compares that
+// generic method loosely enough to accept an emitter of any event map.
+export interface ConnectionSource {
+  on(name: "connection", listener: (up: boolean) => void): void;
+}
 
 // NotificationDeps is what the notification store drives: the snapshot
 // endpoint, the event stream, the source of "connection" events (the app
@@ -40,11 +48,11 @@ const GAP_RELOAD_DELAY_MS = 400;
 export interface NotificationDeps {
   api: Pick<ApiClient, "getNotifications">;
   sse: Pick<SSEClient, "subscribe">;
-  connection: EventTarget;
+  connection: ConnectionSource;
   timers: Pick<Timers, "setTimeout" | "clearTimeout">;
 }
 
-export class NotificationStore extends EventTarget {
+export class NotificationStore extends Emitter<{ change: undefined }> {
   private readonly api: NotificationDeps["api"];
   private readonly timers: NotificationDeps["timers"];
   private state: CoreState;
@@ -90,8 +98,8 @@ export class NotificationStore extends EventTarget {
     // not even by a load already in flight when it went down that then fails:
     // the next connect re-syncs anyway, and a stream stopped for a hidden page
     // must not keep loading.
-    deps.connection.addEventListener("connection", (e: Event) => {
-      this.connected = (e as CustomEvent<boolean>).detail;
+    deps.connection.on("connection", (up) => {
+      this.connected = up;
       if (this.connected) void this.resync();
       else this.clearReload();
     });
@@ -305,6 +313,6 @@ export class NotificationStore extends EventTarget {
   }
 
   private emitChange(): void {
-    this.dispatchEvent(new CustomEvent("change"));
+    this.emit("change");
   }
 }

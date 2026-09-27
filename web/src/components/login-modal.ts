@@ -2,8 +2,8 @@
 // rejected the UI's credentials (or it has none), traps focus like the other
 // modals, and closes once a token is accepted. There is deliberately no Escape
 // or backdrop dismissal: nothing on the page works without a token.
-import { store } from "../lib/store.js";
-import { closeTransientDialogs, setAppInert, trapFocus } from "../lib/modal.js";
+import { store } from "../lib/store.ts";
+import { closeTransientDialogs, setAppInert, trapFocus } from "../lib/modal.ts";
 
 export function initLoginModal(): void {
   const overlay = document.getElementById("login-modal");
@@ -87,6 +87,6 @@ export function initLoginModal(): void {
     })();
   });
 
-  store.addEventListener("authrequired", show);
-  store.addEventListener("authok", hide);
+  store.on("authrequired", show);
+  store.on("authok", hide);
 }

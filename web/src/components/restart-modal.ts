@@ -1,8 +1,8 @@
-import { api } from "../lib/api.js";
-import { showToast } from "./toast.js";
-import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.js";
-import { announce } from "../lib/ui.js";
-import { formatElapsed } from "../lib/update-core.js";
+import { api } from "../lib/api.ts";
+import { showToast } from "./toast.ts";
+import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
+import { announce } from "../lib/ui.ts";
+import { formatElapsed } from "../lib/update-core.ts";
 
 // restarting guards against a double click starting two restart flows (and thus
 // two countdown/health-poll intervals), and against the update's install modal

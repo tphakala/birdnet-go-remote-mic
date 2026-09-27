@@ -5,7 +5,7 @@
 // (setText), so a tile can be re-synced on every store change without churning the
 // DOM.
 
-import { elem, setText } from "../lib/ui.js";
+import { elem, setText } from "../lib/ui.ts";
 
 // ok is "all clear", distinct from info (a severity) even where the two share a
 // colour, so the intent reads in the markup and the stylesheet.

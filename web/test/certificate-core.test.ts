@@ -1,11 +1,11 @@
 // Unit tests for the pure Management Certificate card logic. Run with Node's
-// built-in test runner over the compiled output (see the web:test task): no
-// browser, no DOM, no dependencies.
+// built-in test runner (see the web:test task): no browser, no DOM, no
+// dependencies.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CERT_TOO_LARGE_FALLBACK, MAX_ECHOED_DETAIL_LEN, certTooLargeReason, describeManaged, parseExtraSans } from "../src/lib/certificate-core.js";
+import { CERT_TOO_LARGE_FALLBACK, MAX_ECHOED_DETAIL_LEN, certTooLargeReason, describeManaged, parseExtraSans } from "../src/lib/certificate-core.ts";
 
 test("parseExtraSans splits on commas and whitespace, trims, and drops empties", () => {
   const r = parseExtraSans("  mic.lan,  192.168.1.20 \n\tsensor.local ,, ");

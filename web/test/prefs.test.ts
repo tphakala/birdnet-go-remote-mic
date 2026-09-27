@@ -1,11 +1,11 @@
 // Unit tests for OnceNotice (lib/prefs.ts), the once-per-page "preferences not
-// saved" notice shared by every per-browser preference. Run with node:test
-// over the compiled output (see web:test).
+// saved" notice shared by every per-browser preference. Run with node:test (see
+// web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { OnceNotice } from "../src/lib/prefs.js";
+import { OnceNotice } from "../src/lib/prefs.ts";
 
 test("the notice shows on the first report only", () => {
   const n = new OnceNotice();

@@ -2,7 +2,7 @@
 // for an update to install, split out so node:test covers it
 // (web/test/update-core.test.ts).
 
-import type { UpdateStatus } from "./types.js";
+import type { UpdateStatus } from "./types.ts";
 
 // UpdateTone colours the card's headline: ok for up to date, info for a neutral
 // state, accent for an update on offer, warn for a failed check, and error for
@@ -36,7 +36,7 @@ export interface UpdateView {
 export function sentence(msg: string | undefined): string {
   const t = (msg ?? "").trim().replace(/:$/, "");
   if (!t) return "";
-  const s = t[0].toUpperCase() + t.slice(1);
+  const s = t.charAt(0).toUpperCase() + t.slice(1);
   return /[.!?]$/.test(s) ? s : `${s}.`;
 }
 
@@ -279,8 +279,11 @@ export class UpdateFollow {
   private installSeen = false;
   private timedOut = false;
   private deadline = 0;
+  private readonly fromVersion: string;
 
-  constructor(private readonly fromVersion: string) {}
+  constructor(fromVersion: string) {
+    this.fromVersion = fromVersion;
+  }
 
   // reachedInstall reports whether the root updater was seen with the release,
   // after which turning checks off no longer stops the update.

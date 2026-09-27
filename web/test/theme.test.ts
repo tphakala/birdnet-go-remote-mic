@@ -4,12 +4,12 @@
 // mode follows OS preference changes live and Light or Dark ignores them;
 // setMode saves Light or Dark and clears the key for System; a mode chosen in
 // another tab arrives through the storage event; and a save that fails is
-// reported once. Run with node:test over the compiled output (see web:test).
+// reported once. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { initTheme, parseMode, THEME_KEY, type Theme, type ThemeController, type ThemeEnv, type ThemeMode, type ThemeStorageChange } from "../src/lib/theme.js";
+import { initTheme, parseMode, THEME_KEY, type Theme, type ThemeController, type ThemeEnv, type ThemeMode, type ThemeStorageChange } from "../src/lib/theme.ts";
 
 interface Harness {
   ctl: ThemeController;

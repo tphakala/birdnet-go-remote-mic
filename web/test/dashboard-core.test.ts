@@ -1,6 +1,6 @@
-// Unit tests for the pure dashboard helpers (channel label + tally mapping). Run
-// with Node's built-in test runner over the compiled output (see the web:test
-// task): no browser, no DOM, no dependencies.
+// Unit tests for the pure dashboard helpers (channel label + tally mapping).
+// Run with Node's built-in test runner (see the web:test task): no browser, no
+// DOM, no dependencies.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,8 +22,8 @@ import {
   streamSummary,
   tallyStates,
   tokenHiddenMessage,
-} from "../src/lib/dashboard-core.js";
-import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.js";
+} from "../src/lib/dashboard-core.ts";
+import { hideInactiveKey, hideInactivePrefDevice, parseBoolPref } from "../src/lib/prefs.ts";
 
 test("needsNotificationsFallback loads when nothing loaded or the stream is down", () => {
   assert.equal(needsNotificationsFallback(true, true), false); // healthy: the connect re-sync loaded it
@@ -57,7 +57,7 @@ test("downCauseTitle names each cause as its notification does and falls back", 
 // The banner titles promise to match the notification titles the appliance
 // raises for the same cause; this reads the Go source so a title renamed on
 // one side only fails here instead of silently drifting.
-const APPLIANCE_GO = fileURLToPath(new URL("../../../cmd/remotemic/appliance.go", import.meta.url).href);
+const APPLIANCE_GO = fileURLToPath(new URL("../../cmd/remotemic/appliance.go", import.meta.url).href);
 
 test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go", () => {
   const src = readFileSync(APPLIANCE_GO, "utf8");

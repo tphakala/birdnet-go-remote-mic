@@ -2,14 +2,14 @@
 // "preferences not saved" notice. It is its own file because the notice fires
 // once per page (per process here): node:test runs each file in its own
 // process, so the notice starts unfired, and no earlier report can mask this
-// one. Run with node:test over the compiled output (see web:test).
+// one. Run with node:test (see web:test).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { NotificationStore } from "../src/lib/notifications.js";
-import { prefSaveNotice } from "../src/lib/prefs.js";
-import { FakeTimers, notif } from "./fixtures.js";
+import { NotificationStore } from "../src/lib/notifications.ts";
+import { prefSaveNotice } from "../src/lib/prefs.ts";
+import { FakeConnection, FakeTimers, notif } from "./fixtures.ts";
 
 test("a failed clear-all write reports the notice", async () => {
   // Every write fails, as in a browser with site data blocked (set here rather
@@ -20,7 +20,7 @@ test("a failed clear-all write reports the notice", async () => {
   try {
     let shown = 0;
     prefSaveNotice.setHandler(() => shown++);
-    const connection = new EventTarget();
+    const connection = new FakeConnection();
     const ns = new NotificationStore({
       api: {
         getNotifications: () =>
@@ -37,7 +37,7 @@ test("a failed clear-all write reports the notice", async () => {
       connection,
       timers: new FakeTimers(),
     });
-    connection.dispatchEvent(new CustomEvent("connection", { detail: true }));
+    connection.set(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     // The snapshot's write failed too, silently.
     assert.equal(shown, 0);

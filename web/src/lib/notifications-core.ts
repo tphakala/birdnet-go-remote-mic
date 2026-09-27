@@ -10,8 +10,8 @@
 // and the dismissed set) is per browser and survives reloads, but is reset when
 // the appliance restarts (a new bootId), because ids restart from 1 each boot.
 
-import { LatestGate } from "./latest-core.js";
-import type { Notification, NotificationSnapshot } from "./types.js";
+import { LatestGate } from "./latest-core.ts";
+import type { Notification, NotificationSnapshot } from "./types.ts";
 
 // CoreState is the full client state. items is keyed by id (the server assigns
 // monotonic per-boot ids starting at 1). readWatermark is the highest id the
