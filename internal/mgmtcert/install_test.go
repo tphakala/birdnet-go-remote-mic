@@ -377,7 +377,7 @@ func TestEnsureUnpinsUnloadablePinnedPair(t *testing.T) {
 	if _, err := Ensure(certPath, keyPath, []string{localhost}); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	// Pins the os.Remove(PinPath) in the stale-pin fallthrough.
+	// Pins the unpin call in the stale-pin fallthrough.
 	if Pinned(certPath) {
 		t.Error("stale pin marker was not dropped after regenerating an unloadable pinned pair")
 	}
@@ -585,7 +585,7 @@ func TestRegenerateUnpinsAndCoversHosts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
-	// Pins the os.Remove(PinPath) in Regenerate.
+	// Pins the unpin call in Regenerate.
 	if Pinned(certPath) {
 		t.Error("Regenerate did not clear the pin marker")
 	}

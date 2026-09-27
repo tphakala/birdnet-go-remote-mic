@@ -111,8 +111,8 @@ func TestPutSystemCertificateMapsValidationErrorTo422(t *testing.T) {
 
 func TestPutSystemCertificateMapsGenericErrorTo500(t *testing.T) {
 	// A non-ValidationError from Install must map to 500, not 422.
-	// Pins the errors.AsType branch (deleting it would return this error
-	// through the 422 path or panic on the type assertion).
+	// Pins the ok check on the errors.AsType branch: mapping every Install
+	// error to 422 fails here.
 	mgr := &fakeCertManager{installErr: errors.New("disk full")}
 	s := New(&fakeProvider{}, WithCertificateManager(mgr))
 	resp, err := s.PutSystemCertificate(context.Background(), mgmtapi.PutSystemCertificateRequestObject{
