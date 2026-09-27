@@ -50,8 +50,10 @@ The output must stay plain ES modules (plus the one classic script,
 - `src/theme-init.ts`: the one non-module script; applies the theme before
   the first paint (see Styling).
 - `src/lib/`: singletons and shared helpers. `api.ts` (`api`, the REST client;
-  raises `ApiError` from RFC 9457 problem bodies, handles the Bearer token and
-  401; the one deliberate bypass is the restart modal's raw
+  raises `ApiError` for every failed response, keeping the fields of an RFC
+  9457 problem body only, read through `problemDetail` and `problemFor`,
+  handles the Bearer token and 401; the one deliberate bypass is the restart
+  modal's raw
   `fetch("/api/v1/healthz")` probe), `sse.ts` (`sse`, fetch-streaming SSE
   client with reconnect and heartbeat watchdog), `store.ts` (`store`, app
   state; `applyUpdateStatus` merges an update check or request response and
@@ -128,7 +130,8 @@ reconcile:
   while the dashboard shows or was left less than `LEVELS_GRACE_MS` (30 s)
   ago: `store.setLevelsWanted` then sets the stream's `?events=` filter to
   `NON_LEVEL_EVENTS`, so the appliance sends none, and announces
-  `levelsdropped`. A new event type the UI consumes goes in
+  `levelsdropped`. A new event type the UI consumes gets a constant in
+  `lib/sse.ts` (as `LEVELS_EVENT` and `NOTIFICATION_EVENT` do) and goes in
   `NON_LEVEL_EVENTS` too.
 - Never clobber user input: a form being edited is not repopulated from a
   store event (`SystemView` tracks `netDirty`, `authDirty`, `notifyDirty`).
@@ -154,7 +157,11 @@ reconcile:
   milliseconds, never a frame count, which varies with refresh rate. A meter
   with no current level (none yet, levels dropped, or the stream down) sits
   at the floor and reads `--`, never `-inf`, so missing data does not pass
-  for silence.
+  for silence. `LevelsWatch` (`lib/dashboard-core.ts`) clears the meters
+  when levels stop: dropped, the stream down, or none for
+  `LEVELS_STALE_MS` on a live stream while the dashboard shows; a card also
+  clears its own when a levels event lacks its device. The clip latch sees
+  only the levels the page receives.
 
 ## Components
 
@@ -171,6 +178,8 @@ reconcile:
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
   failure with Retry), `apiErrorMessage`/`firstProblem`/`setFieldError`,
+  `focusDropped`/`focusWorkspace` (focus fallback when a control went away),
+  `scrollBehavior` (a scripted scroll that follows reduced motion),
   `copyText`, `externalLink` (new-tab link with `rel="noopener"`), `announce` (a
   polite live-region message), `MenuButton` (a single-choice header menu),
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
