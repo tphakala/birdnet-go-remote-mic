@@ -25,7 +25,7 @@ func fixedClock(t time.Time) func() time.Time { return func() time.Time { return
 
 func TestCenterAssignsMonotonicGaplessIDs(t *testing.T) {
 	c := NewCenter()
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "x"})
 	}
 	snap := c.Snapshot()
@@ -431,7 +431,7 @@ func TestBroadcastDropsOnFullWithoutBlocking(t *testing.T) {
 	defer cancel()
 	// Publish more than the subscriber buffer without draining. Publish must not
 	// block, and the channel fills to exactly its capacity with the rest dropped.
-	for i := 0; i < subscriberBuffer+10; i++ {
+	for range subscriberBuffer + 10 {
 		c.Publish(Notification{Category: CategorySystem, Kind: KindEvent, Title: "x"})
 	}
 	if got := len(ch); got != subscriberBuffer {

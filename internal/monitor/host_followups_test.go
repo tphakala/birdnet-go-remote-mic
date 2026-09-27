@@ -85,7 +85,7 @@ func TestHostMemFreeMiBClampedToHalf(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := hostSettings()
-	s.Host.MemFreeMiB = p(4096) // 4 GiB floor on a 512 MiB host: clamps to 256 MiB
+	s.Host.MemFreeMiB = new(4096) // 4 GiB floor on a 512 MiB host: clamps to 256 MiB
 	h := newHostT(r, nil, rec, s, c)
 
 	// Genuinely low (16 MiB free on a 512 MiB host) onsets.

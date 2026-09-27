@@ -183,7 +183,7 @@ func TestFlapDenseBurstStaysBoundedAndClears(t *testing.T) {
 	t0 := time.Unix(2_000_000, 0)
 	f := NewFlap(3, 60*time.Second, 5*time.Minute)
 	// Onset on the 4th event within the window.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if got := f.Event(t0.Add(time.Duration(i) * time.Second)); got != TransitionNone {
 			t.Fatalf("event %d: got %s, want none", i, transitionName(got))
 		}
@@ -195,7 +195,7 @@ func TestFlapDenseBurstStaysBoundedAndClears(t *testing.T) {
 	// A dense burst while active: every event is suppressed and the sliding
 	// window does not grow (regression guard for the active-flap window leak).
 	last := t0.Add(3 * time.Second)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		last = t0.Add(4*time.Second + time.Duration(i)*time.Millisecond)
 		if got := f.Event(last); got != TransitionNone {
 			t.Fatalf("burst event %d: got %s, want none", i, transitionName(got))
@@ -238,7 +238,7 @@ func TestHysteresisActiveAndSetEnterAfter(t *testing.T) {
 func TestFlapSweepClearsIdleFlap(t *testing.T) {
 	t0 := time.Unix(2_000_000, 0)
 	f := NewFlap(3, 60*time.Second, 5*time.Minute)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		f.Event(t0.Add(time.Duration(i) * time.Second))
 	}
 	if got := f.Event(t0.Add(3 * time.Second)); got != TransitionOnset {

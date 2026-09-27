@@ -303,8 +303,7 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1, writerDone: make(chan struct{})}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); cs.runWriter() }()
+	wg.Go(func() { ; cs.runWriter() })
 	for i := range 50 {
 		cs.write(&rtsp.Response{StatusCode: 200, Reason: "OK", CSeq: i})
 	}

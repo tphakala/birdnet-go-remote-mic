@@ -310,7 +310,7 @@ func TestPatchConfigPersistsDisabledDevice(t *testing.T) {
 	devs := []mgmtapi.DeviceConfig{{
 		Name: devGarden, Device: devHW1, Path: pathGarden,
 		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
-		Opus:    &mgmtapi.OpusSettings{Bitrate: ptr(96000)},
+		Opus:    &mgmtapi.OpusSettings{Bitrate: new(96000)},
 		Enabled: &off,
 	}}
 	body := &mgmtapi.ConfigPatch{Devices: &devs}
@@ -417,7 +417,7 @@ func TestPatchConfigNotificationsPartialMerge(t *testing.T) {
 	// A partial block touches only host.cpuPercent; audio and every other host
 	// field stay at their defaults, and no device is affected.
 	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
-		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(95)},
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: new(95)},
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
 	if err != nil {
@@ -468,21 +468,21 @@ func TestPatchConfigNotificationsMergesEveryField(t *testing.T) {
 	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
 		Enabled: &on,
 		Audio: &mgmtapi.AudioAlertSettings{
-			QuietDbfs:         ptr(-50),
-			QuietSeconds:      ptr(1200),
-			ZeroSeconds:       ptr(45),
-			ClipPercent:       ptr(30),
-			ClipWindowSeconds: ptr(15),
+			QuietDbfs:         new(-50),
+			QuietSeconds:      new(1200),
+			ZeroSeconds:       new(45),
+			ClipPercent:       new(30),
+			ClipWindowSeconds: new(15),
 		},
 		Host: &mgmtapi.HostAlertSettings{
-			CpuPercent:       ptr(85),
-			CpuClearPercent:  ptr(70),
-			TempCelsius:      ptr(75),
-			TempClearCelsius: ptr(70),
-			DiskPercent:      ptr(88),
-			DiskClearPercent: ptr(80),
-			MemFreePercent:   ptr(15),
-			MemFreeMiB:       ptr(128),
+			CpuPercent:       new(85),
+			CpuClearPercent:  new(70),
+			TempCelsius:      new(75),
+			TempClearCelsius: new(70),
+			DiskPercent:      new(88),
+			DiskClearPercent: new(80),
+			MemFreePercent:   new(15),
+			MemFreeMiB:       new(128),
 		},
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
@@ -552,7 +552,7 @@ func TestPatchConfigNotificationsClearNotBelowOnsetYields422(t *testing.T) {
 	s := New(&fakeProvider{}, WithConfigStore(store))
 
 	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
-		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(50), CpuClearPercent: ptr(60)},
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: new(50), CpuClearPercent: new(60)},
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
 	if err != nil {
@@ -579,7 +579,7 @@ func TestPatchConfigRejectsExplicitZeroThreshold(t *testing.T) {
 	// 1..100, so a present 0 is invalid and its presence must survive the merge
 	// and ApplyDefaults to reach Validate.
 	body := &mgmtapi.ConfigPatch{Notifications: &mgmtapi.NotificationSettings{
-		Host: &mgmtapi.HostAlertSettings{CpuPercent: ptr(0)},
+		Host: &mgmtapi.HostAlertSettings{CpuPercent: new(0)},
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: body})
 	if err != nil {
@@ -632,7 +632,7 @@ func TestPatchConfigQuietAlertPersists(t *testing.T) {
 	devs := []mgmtapi.DeviceConfig{{
 		Name: devGarden, Device: devHW1, Path: pathGarden,
 		Mode: mgmtapi.Opus, Format: mgmtapi.DeviceConfigFormatS16, Rate: 48000, Channels: []int{1},
-		Opus:       &mgmtapi.OpusSettings{Bitrate: ptr(96000)},
+		Opus:       &mgmtapi.OpusSettings{Bitrate: new(96000)},
 		QuietAlert: &off,
 	}}
 	resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
@@ -786,16 +786,14 @@ func TestPatchConfigPersistErrorYields500(t *testing.T) {
 func TestFileConfigStoreUpdateIsSerialized(t *testing.T) {
 	store, _ := tempStore(t)
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			_ = store.Update(func(c config.Config) (config.Config, error) {
 				c.ApplyDefaults()
 				verr := c.Validate()
 				return c, verr
 			})
-		}()
+		})
 	}
 	wg.Wait()
 	// A concurrent GET must never observe a torn config.

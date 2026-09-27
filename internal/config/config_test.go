@@ -386,9 +386,6 @@ func TestDeviceQuietAlertEnabled(t *testing.T) {
 	}
 }
 
-// ptrInt returns a pointer to n, for building presence-aware threshold fields.
-func ptrInt(n int) *int { return &n }
-
 // wantInt fails unless p is non-nil and *p == want.
 func wantInt(t *testing.T, label string, p *int, want int) {
 	t.Helper()
@@ -440,8 +437,8 @@ func TestApplyDefaultsFillsNotifications(t *testing.T) {
 func TestValidateRejectsExplicitZeroAfterDefaults(t *testing.T) {
 	t.Parallel()
 	c := validBase()
-	c.Notifications.Host.CPUPercent = ptrInt(0) // explicit, out of range
-	c.ApplyDefaults()                           // must NOT overwrite the explicit 0
+	c.Notifications.Host.CPUPercent = new(0) // explicit, out of range
+	c.ApplyDefaults()                        // must NOT overwrite the explicit 0
 	if c.Notifications.Host.CPUPercent == nil || *c.Notifications.Host.CPUPercent != 0 {
 		t.Fatalf("ApplyDefaults overwrote an explicit 0: %v", c.Notifications.Host.CPUPercent)
 	}

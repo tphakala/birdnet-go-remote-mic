@@ -173,9 +173,9 @@ func (s *Server) ProvisionDevice(ctx context.Context, request mgmtapi.ProvisionD
 	}
 	if req == nil || req.Device == "" {
 		return mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse(mgmtapi.ValidationProblem{
-			Status: ptr(http.StatusUnprocessableEntity),
-			Title:  ptr("invalid request"),
-			Detail: ptr("device is required"),
+			Status: new(http.StatusUnprocessableEntity),
+			Title:  new("invalid request"),
+			Detail: new("device is required"),
 			Errors: &[]struct {
 				Field  string `json:"field"`
 				Reason string `json:"reason"`
@@ -608,13 +608,13 @@ func mapAvailableDevice(d *AvailableDevice) mgmtapi.AvailableDevice {
 	out := mgmtapi.AvailableDevice{
 		Device:   d.ID,
 		State:    mgmtapi.Available,
-		IdStable: ptr(d.IDStable),
+		IdStable: new(d.IDStable),
 	}
 	if d.HWAddr != "" {
-		out.HwAddr = ptr(d.HWAddr)
+		out.HwAddr = new(d.HWAddr)
 	}
 	if d.FriendlyName != "" {
-		out.FriendlyName = ptr(d.FriendlyName)
+		out.FriendlyName = new(d.FriendlyName)
 	}
 	if len(d.SupportedRates) > 0 {
 		rates := append([]int(nil), d.SupportedRates...)
@@ -640,7 +640,7 @@ func configDeviceToWireDevice(d *config.Device) mgmtapi.Device {
 		Format:   mgmtapi.DeviceFormat(d.Format),
 		Rate:     d.Rate,
 		State:    mgmtapi.DeviceStateSkipped,
-		IdStable: ptr(!config.IsCardIndexID(d.Device)),
+		IdStable: new(!config.IsCardIndexID(d.Device)),
 	}
 	// A freshly provisioned device is single-stream, so the flat projection of its
 	// first stream is complete; no per-stream runtime status exists yet.

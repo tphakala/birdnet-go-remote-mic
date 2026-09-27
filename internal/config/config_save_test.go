@@ -107,7 +107,7 @@ func TestCloneIsDeep(t *testing.T) {
 func TestValidateDeviceCountBoundary(t *testing.T) {
 	mkDevices := func(n int) []Device {
 		devs := make([]Device, 0, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			devs = append(devs, Device{
 				Name:    "dev" + strconv.Itoa(i),
 				Device:  "hw:" + strconv.Itoa(i) + ",0",

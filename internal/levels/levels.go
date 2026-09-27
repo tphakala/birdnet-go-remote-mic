@@ -98,11 +98,11 @@ func (m *Meter) Observe(pcm []byte) {
 	if frames == 0 {
 		return
 	}
-	for c := 0; c < nch; c++ {
+	for c := range nch {
 		var peak uint32
 		var sumSq uint64
 		clipped := false
-		for f := 0; f < frames; f++ {
+		for f := range frames {
 			s := int16(binary.LittleEndian.Uint16(pcm[(f*nch+c)*2:]))
 			if a := abs16(s); a > peak {
 				peak = a
@@ -483,8 +483,8 @@ func NewAccumulator(channels int) *Accumulator {
 func (a *Accumulator) Add(pcm []byte) {
 	nch := len(a.sumSq)
 	frames := (len(pcm) / 2) / nch
-	for f := 0; f < frames; f++ {
-		for c := 0; c < nch; c++ {
+	for f := range frames {
+		for c := range nch {
 			s := int64(int16(binary.LittleEndian.Uint16(pcm[(f*nch+c)*2:])))
 			a.sumSq[c] += uint64(s * s)
 		}

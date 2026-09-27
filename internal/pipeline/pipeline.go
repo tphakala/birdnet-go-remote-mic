@@ -107,13 +107,7 @@ func NewPCM() Stage { return pcmStage{} }
 func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 	rate, ch := src.Negotiated()
 	frameBytes := 2 * ch
-	maxBytes := (rate / 50) * frameBytes // 20 ms
-	if maxBytes > maxL16Payload {
-		maxBytes = maxL16Payload
-	}
-	if maxBytes < frameBytes {
-		maxBytes = frameBytes
-	}
+	maxBytes := max(min((rate/50)*frameBytes, maxL16Payload), frameBytes) // 20 ms
 	pk := &l16.Packetizer{Channels: ch, MaxBytes: maxBytes}
 
 	for {

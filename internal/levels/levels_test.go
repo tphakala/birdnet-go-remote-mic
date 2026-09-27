@@ -1,7 +1,6 @@
 package levels
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"math"
@@ -209,8 +208,7 @@ func TestRunBroadcastsLevels(t *testing.T) {
 	h.interval = 5 * time.Millisecond
 	m := h.Meter(nameGarden, 1)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go h.Run(ctx)
 
 	// Subscribing flips subs to 1, so the sampler starts broadcasting; before
@@ -246,7 +244,7 @@ func TestMeterPerChannel(t *testing.T) {
 	// Interleaved L,R frames: left at half scale (16384), right silent.
 	const frames = 300
 	samples := make([]int16, 0, frames*2)
-	for i := 0; i < frames; i++ {
+	for range frames {
 		samples = append(samples, 16384, 0)
 	}
 	m.Observe(pcm(samples...))
@@ -326,8 +324,7 @@ func TestRunIdleGateActivatesOnlyWithConsumer(t *testing.T) {
 	h.interval = 2 * time.Millisecond
 	h.Meter("x", 1)
 	var calls atomic.Int32
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go h.Run(ctx)
 
 	// Phase 1: no consumer. Many ticks fire against the subs==0 idle gate and do
@@ -355,8 +352,7 @@ func TestTapPanicIsolationKeepsSamplerAlive(t *testing.T) {
 	m := h.Meter(nameGarden, 1)
 	var panicked atomic.Int32
 	got := make(chan LevelsEvent, 8)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go h.Run(ctx)
 
 	badCancel := h.Tap(func(LevelsEvent) { panicked.Add(1); panic("boom") })
@@ -398,8 +394,7 @@ func TestTapDrivesSamplerWithoutSSEClient(t *testing.T) {
 	m := h.Meter(nameGarden, 1)
 
 	got := make(chan LevelsEvent, 8)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go h.Run(ctx)
 
 	// No Subscribe: the only consumer is the tap. It must still make subs>0 so the
@@ -481,7 +476,7 @@ func TestLevelsEventMultiChannelContract(t *testing.T) {
 	h.subs.Store(1)
 	// Interleaved left half-scale, right silent.
 	samples := make([]int16, 0, 200)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		samples = append(samples, 16384, 0)
 	}
 	m.Observe(pcm(samples...))
@@ -520,7 +515,7 @@ func (h *Hub) levelsEvent() Event {
 func TestAccumulatorPerChannelRMS(t *testing.T) {
 	const frames = 480
 	pcm := make([]byte, frames*2*2)
-	for f := 0; f < frames; f++ {
+	for f := range frames {
 		v := int16(math.MaxInt16)
 		if f%2 == 1 {
 			v = -math.MaxInt16

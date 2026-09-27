@@ -208,7 +208,7 @@ func parseEventFilter(q string) eventFilter {
 		return eventFilter{all: true}
 	}
 	names := make(map[string]bool)
-	for _, p := range strings.Split(q, ",") {
+	for p := range strings.SplitSeq(q, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			names[p] = true
 		}

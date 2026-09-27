@@ -382,16 +382,16 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		out.Streams = &ss
 	}
 	if d.NegotiatedRate > 0 {
-		out.NegotiatedRate = ptr(d.NegotiatedRate)
+		out.NegotiatedRate = new(d.NegotiatedRate)
 	}
 	if d.NegotiatedChannels > 0 {
-		out.NegotiatedChannels = ptr(d.NegotiatedChannels)
+		out.NegotiatedChannels = new(d.NegotiatedChannels)
 	}
 	if d.NegotiatedFormat != "" {
-		out.NegotiatedFormat = ptr(d.NegotiatedFormat)
+		out.NegotiatedFormat = new(d.NegotiatedFormat)
 	}
 	if d.Error != "" {
-		out.Error = ptr(d.Error)
+		out.Error = new(d.Error)
 	}
 	// Only a device that is not serving carries a cause. The appliance builds a
 	// fresh record when a device starts serving, so this guard is defensive: a
@@ -400,12 +400,12 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		out.DownCause = new(mgmtapi.DeviceDownCause(d.DownCause))
 	}
 	if d.FriendlyName != "" {
-		out.FriendlyName = ptr(d.FriendlyName)
+		out.FriendlyName = new(d.FriendlyName)
 	}
 	if d.HWAddr != "" {
-		out.HwAddr = ptr(d.HWAddr)
+		out.HwAddr = new(d.HWAddr)
 	}
-	out.IdStable = ptr(d.IDStable)
+	out.IdStable = new(d.IDStable)
 	if len(d.SupportedRates) > 0 {
 		rates := append([]int(nil), d.SupportedRates...)
 		out.SupportedRates = &rates
@@ -446,17 +446,14 @@ func projectFirstStream(out *mgmtapi.Device, cfg *config.Device) {
 		return
 	}
 	out.Path, out.Mode, out.Channels, out.Opus = flat.Path, flat.Mode, flat.Channels, flat.Opus
-	out.StreamedChannels = ptr(cfg.StreamChannelUnion())
+	out.StreamedChannels = new(cfg.StreamChannelUnion())
 }
 
 // problem builds an RFC 9457 problem detail.
 func problem(status int, title, detail string) mgmtapi.Problem {
 	return mgmtapi.Problem{
-		Status: ptr(status),
-		Title:  ptr(title),
-		Detail: ptr(detail),
+		Status: new(status),
+		Title:  new(title),
+		Detail: new(detail),
 	}
 }
-
-// ptr returns a pointer to v.
-func ptr[T any](v T) *T { return &v }

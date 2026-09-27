@@ -162,7 +162,7 @@ func TestOpusStageStereo(t *testing.T) {
 		if n != 960 {
 			t.Errorf("decoded %d samples per channel, want 960", n)
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			l, r := float64(pcm[i*2]), float64(pcm[i*2+1])
 			sumL2 += l * l
 			sumR2 += r * r

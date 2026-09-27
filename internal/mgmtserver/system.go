@@ -132,7 +132,7 @@ func systemToWire(si *SystemInfo) mgmtapi.SystemInfo {
 			TxBytes:   n.TxBytes,
 		}
 		if n.MAC != "" {
-			iface.Mac = ptr(n.MAC)
+			iface.Mac = new(n.MAC)
 		}
 		nets = append(nets, iface)
 	}
@@ -149,13 +149,13 @@ func systemToWire(si *SystemInfo) mgmtapi.SystemInfo {
 		Network:        nets,
 	}
 	if si.OS != "" {
-		out.Os = ptr(si.OS)
+		out.Os = new(si.OS)
 	}
 	if si.Kernel != "" {
-		out.Kernel = ptr(si.Kernel)
+		out.Kernel = new(si.Kernel)
 	}
 	if si.CPUModel != "" {
-		out.CpuModel = ptr(si.CPUModel)
+		out.CpuModel = new(si.CPUModel)
 	}
 	return out
 }

@@ -76,10 +76,10 @@ func hostSettings() Settings {
 	return Settings{
 		Enabled: true,
 		Host: config.HostAlerts{
-			CPUPercent: p(90), CPUClearPercent: p(75),
-			TempCelsius: p(80), TempClearCelsius: p(75),
-			DiskPercent: p(90), DiskClearPercent: p(85),
-			MemFreePercent: p(10), MemFreeMiB: p(64),
+			CPUPercent: new(90), CPUClearPercent: new(75),
+			TempCelsius: new(80), TempClearCelsius: new(75),
+			DiskPercent: new(90), DiskClearPercent: new(85),
+			MemFreePercent: new(10), MemFreeMiB: new(64),
 		},
 	}
 }
@@ -347,7 +347,7 @@ func TestHostMemClearReachableWithHighFreePercent(t *testing.T) {
 	rec := newRecPub()
 	c := newClk()
 	s := hostSettings()
-	s.Host.MemFreePercent = p(85) // limit = 870 MiB; 1.25x = 1088 MiB > 1 GiB total
+	s.Host.MemFreePercent = new(85) // limit = 870 MiB; 1.25x = 1088 MiB > 1 GiB total
 	h := newHostT(r, nil, rec, s, c)
 
 	// Raise: 1 GiB host with 50% available (below the 85% limit).
@@ -452,7 +452,7 @@ func TestHostApplyThresholdChange(t *testing.T) {
 		t.Fatal("cpu active at 85% with a 90% threshold")
 	}
 	s := hostSettings()
-	s.Host.CPUPercent = p(80)
+	s.Host.CPUPercent = new(80)
 	h.Apply(&s)
 	pollEvery(h, c, 10*time.Second, 1) // run starts under the new threshold
 	pollEvery(h, c, 10*time.Second, 6)

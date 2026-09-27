@@ -193,7 +193,7 @@ func TestPatchConfigUpdatesCheck(t *testing.T) {
 		reloaded = c
 		return nil
 	}))
-	resp, err := s.PatchConfig(t.Context(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Updates: &mgmtapi.UpdateSettings{Check: ptr(false)}}})
+	resp, err := s.PatchConfig(t.Context(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Updates: &mgmtapi.UpdateSettings{Check: new(false)}}})
 	if err != nil {
 		t.Fatal(err)
 	}

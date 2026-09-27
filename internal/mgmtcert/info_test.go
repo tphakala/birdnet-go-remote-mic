@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -126,10 +127,5 @@ func TestChainPEMErrors(t *testing.T) {
 }
 
 func contains(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, want)
 }

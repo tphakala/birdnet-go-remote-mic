@@ -285,13 +285,13 @@ func TestHandlerTwoSourcesInterleaveWithoutLoss(t *testing.T) {
 	a.waitSubscribed(t, 1)
 	b.waitSubscribed(t, 1)
 	const each = 4
-	for i := 0; i < each; i++ {
+	for range each {
 		a.emit(Event{Name: evLevels, Data: []byte("{}")})
 		b.emit(Event{Name: evNotification, Data: []byte("{}")})
 	}
 
 	counts := map[string]int{}
-	for i := 0; i < each*2; i++ {
+	for range each * 2 {
 		n, _ := rd.next(t)
 		counts[n]++
 	}
@@ -321,10 +321,10 @@ func TestHandlerFansOutToConcurrentConnections(t *testing.T) {
 	fake.waitSubscribed(t, 2)
 
 	const n = 3
-	for i := 0; i < n; i++ {
+	for range n {
 		fake.emit(Event{Name: evLevels, Data: []byte("{}")})
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if name, _ := rdA.next(t); name != evLevels {
 			t.Fatalf("connection A event %d = %q, want levels", i, name)
 		}
