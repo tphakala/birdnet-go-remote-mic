@@ -161,13 +161,15 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
     if (s === "transparent") return TRANSPARENT;
     let m = /^rgba?\(([^)]+)\)$/.exec(s);
     if (m) {
-      const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
-      return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+      const [r, g, b, a = 1] = (m[1] ?? "").split(/[\s,/]+/).filter(Boolean).map(Number);
+      if (r === undefined || g === undefined || b === undefined) return null;
+      return { r, g, b, a };
     }
     m = /^color\(srgb ([^)]+)\)$/.exec(s);
     if (m) {
-      const p = m[1].split(/[\s/]+/).filter(Boolean).map(Number);
-      return { r: p[0] * 255, g: p[1] * 255, b: p[2] * 255, a: p.length > 3 ? p[3] : 1 };
+      const [r, g, b, a = 1] = (m[1] ?? "").split(/[\s/]+/).filter(Boolean).map(Number);
+      if (r === undefined || g === undefined || b === undefined) return null;
+      return { r: r * 255, g: g * 255, b: b * 255, a };
     }
     return null;
   }
@@ -382,6 +384,7 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
     let opaqueAbove = false;
     for (let i = styles.length - 1; i >= 0 && !unmodelled; i--) {
       const s = styles[i];
+      if (!s) continue;
       const opaque = (parse(s.backgroundColor)?.a ?? 0) >= 1 && Number(s.opacity) >= 1;
       if (s.filter !== "none" || s.mixBlendMode !== "normal") unmodelled = true;
       else if (s.backdropFilter && s.backdropFilter !== "none" && !opaqueAbove && !opaque) unmodelled = true;
@@ -392,9 +395,13 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
       continue;
     }
     const paint = styles.map(paintLayers);
-    const opacity = styles.map((s, i) => lowestOpacity(path[i], Number(s.opacity)));
+    const opacity = styles.map((s, i) => {
+      const e = path[i];
+      return e ? lowestOpacity(e, Number(s.opacity)) : Number(s.opacity);
+    });
 
-    const cs = styles[styles.length - 1];
+    const cs = styles.at(-1);
+    if (!cs) continue;
     const fgRaw = parse(cs.color);
     if (!fgRaw) {
       skip(`unparsed colour ${cs.color}`);
@@ -415,18 +422,19 @@ function auditContrast(opts: { scope: string | null; smallTokens: string[]; aa: 
     for (let k = 0; k < total; k++) {
       let rem = k;
       const choice = slots.map((s) => {
-        const c = s[rem % s.length];
+        // The fallback never applies: an empty slot makes total 0.
+        const c = s[rem % s.length] ?? TRANSPARENT;
         rem = Math.floor(rem / s.length);
         return c;
       });
       let idx = 0;
-      const chosen = paint.map((lv) => lv.map(() => choice[idx++]));
+      const chosen = paint.map((lv) => lv.map(() => choice[idx++] ?? TRANSPARENT));
       const render = (i: number, withText: boolean): Pre => {
         let acc: Pre = pre(TRANSPARENT);
-        for (const c of chosen[i]) acc = over(pre(c), acc);
+        for (const c of chosen[i] ?? []) acc = over(pre(c), acc);
         if (i < path.length - 1) acc = over(render(i + 1, withText), acc);
         else if (withText) acc = over(pre(fgRaw), acc);
-        return scale(acc, opacity[i]);
+        return scale(acc, opacity[i] ?? 1);
       };
       const bg = unpre(over(render(0, false), canvas));
       const fg = unpre(over(render(0, true), canvas));
@@ -514,32 +522,33 @@ function sampleStability(opts: { minMs: number; maxMs: number }): Promise<Stabil
     const name = card?.querySelector("h3, .device-name, [class*='title']")?.textContent?.trim() ?? `card`;
     return el.tagName === "ARTICLE" ? `card "${name}"` : `card "${name}" meter row ${i + 1}`;
   };
-  const rowHeights = rows.map(() => new Map<number, string>());
-  const readouts = rows.map(() => new Set<string>());
-  const cardHeights = cards.map(() => new Set<number>());
+  // Each row's heights (with the readout first seen at each) and readouts,
+  // and each card's heights, kept beside the element they sample.
+  const rowSeen = rows.map((el) => ({ el, heights: new Map<number, string>(), readouts: new Set<string>() }));
+  const cardSeen = cards.map((el) => ({ el, heights: new Set<number>() }));
   return new Promise((done) => {
     const t0 = performance.now();
     const tick = (): void => {
-      rows.forEach((r, i) => {
-        const h = Math.round(r.getBoundingClientRect().height * 10) / 10;
-        const ro = r.querySelector(".db-readout")?.textContent ?? "";
-        if (!rowHeights[i].has(h)) rowHeights[i].set(h, ro);
-        if (ro) readouts[i].add(ro);
-      });
-      cards.forEach((c, i) => cardHeights[i].add(Math.round(c.getBoundingClientRect().height * 10) / 10));
+      for (const r of rowSeen) {
+        const h = Math.round(r.el.getBoundingClientRect().height * 10) / 10;
+        const ro = r.el.querySelector(".db-readout")?.textContent ?? "";
+        if (!r.heights.has(h)) r.heights.set(h, ro);
+        if (ro) r.readouts.add(ro);
+      }
+      for (const c of cardSeen) c.heights.add(Math.round(c.el.getBoundingClientRect().height * 10) / 10);
       const elapsed = performance.now() - t0;
-      const covered = readouts.every((seen) => seen.has("-inf") && [...seen].some((t) => /^-\d\d\.\d dBFS$/.test(t)));
+      const covered = rowSeen.every(({ readouts }) => readouts.has("-inf") && [...readouts].some((t) => /^-\d\d\.\d dBFS$/.test(t)));
       if (elapsed < opts.minMs || (!covered && elapsed < opts.maxMs)) setTimeout(tick, 40);
       else {
         const perCard = new Map<HTMLElement, number>();
         done({
-          rows: rows.map((r, i) => {
-            const card = r.closest("article") as HTMLElement;
+          rows: rowSeen.map((r) => {
+            const card = r.el.closest("article") as HTMLElement;
             const n = perCard.get(card) ?? 0;
             perCard.set(card, n + 1);
-            return { selector: label(r, n), heights: [...rowHeights[i]], readouts: [...readouts[i]] };
+            return { selector: label(r.el, n), heights: [...r.heights], readouts: [...r.readouts] };
           }),
-          cards: cards.map((c, i) => ({ selector: label(c, 0), heights: [...cardHeights[i]] })),
+          cards: cardSeen.map((c) => ({ selector: label(c.el, 0), heights: [...c.heights] })),
         });
       }
     };
@@ -571,6 +580,7 @@ function parseFlags(argv: string[]): Flags {
   const f: Flags = { dist: "", onlyView: null, onlyTheme: null, onlyWidth: null, onlyFont: null, headed: false, keepOpen: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     const val = (): string => {
       const v = argv[++i];
       if (v === undefined) throw new Error(`${a} needs a value`);
