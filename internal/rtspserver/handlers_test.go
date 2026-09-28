@@ -24,6 +24,8 @@ const testPath = "/stream"
 func baseURL(addr string) string  { return "rtsp://" + addr + testPath }
 func trackURL(addr string) string { return baseURL(addr) + "/trackID=0" }
 
+// defaultTrack is a track over a fresh Feed, so a PLAY subscribes, starts the
+// writer and makes the listener see a connect.
 func defaultTrack() *Track {
 	return &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: NewFeed()}
 }
@@ -190,8 +192,7 @@ func TestSetupRejectsUDP(t *testing.T) {
 // TestTwoClientsPlayOnePath pins the multi-consumer contract: two connections
 // SETUP and PLAY the same path and both receive the frames pushed to it.
 func TestTwoClientsPlayOnePath(t *testing.T) {
-	track := defaultTrack()
-	feed := track.Feed.(*Feed) //nolint:forcetypeassert // defaultTrack builds a *Feed
+	track, feed := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour}, track)
 
 	c1, c2 := dial(t, addr), dial(t, addr)
@@ -394,12 +395,6 @@ func waitFor(t *testing.T, cond func() bool, timeout time.Duration, what string)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// playingTrack is a track with a live frame source, so a PLAY starts the writer
-// and the listener sees a connect.
-func playingTrack() *Track {
-	return &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: NewFeed()}
-}
-
 // setupAndPlay runs SETUP then PLAY on c and returns the session header, failing
 // the test on any non-200.
 func setupAndPlay(t *testing.T, c *client, addr string) rtsp.Header {
@@ -418,7 +413,7 @@ func setupAndPlay(t *testing.T, c *client, addr string) rtsp.Header {
 
 func TestListenerConnectThenTeardown(t *testing.T) {
 	rec := &recordingListener{}
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, playingTrack())
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, defaultTrack())
 	c := dial(t, addr)
 
 	sess := setupAndPlay(t, c, addr)
@@ -445,7 +440,7 @@ func TestListenerConnectThenTeardown(t *testing.T) {
 
 func TestListenerDisconnectOnConnectionDrop(t *testing.T) {
 	rec := &recordingListener{}
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, playingTrack())
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, defaultTrack())
 	c := dial(t, addr)
 
 	setupAndPlay(t, c, addr)
@@ -469,8 +464,7 @@ func TestListenerDisconnectOnConnectionDrop(t *testing.T) {
 func TestListenerDisconnectOnEviction(t *testing.T) {
 	rec := &recordingListener{}
 	g := auth.NewGuard("")
-	frames := NewFeed()
-	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: frames}
+	track, frames := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g, Listener: rec}, track)
 	c := dial(t, addr)
 
@@ -498,8 +492,7 @@ func TestListenerDisconnectOnEviction(t *testing.T) {
 
 func TestListenerSetupOnlyEmitsNothing(t *testing.T) {
 	rec := &recordingListener{}
-	track := playingTrack()
-	feed := track.Feed.(*Feed) //nolint:forcetypeassert // playingTrack builds a *Feed
+	track, feed := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, track)
 	c := dial(t, addr)
 
@@ -512,8 +505,11 @@ func TestListenerSetupOnlyEmitsNothing(t *testing.T) {
 	_ = c.conn.Close()
 
 	// A second connection plays and drops after the first was closed. Its
-	// disconnect is the only event either connection may produce, and seeing it
-	// means the first connection's cleanup has had its turn.
+	// disconnect is the only event either connection may produce. The first
+	// connection's cleanup runs on its own goroutine and nothing orders it before
+	// the second connection's events, so a late event from it could still slip
+	// past this check; it catches one that arrives before the second
+	// connection's disconnect.
 	c2 := dial(t, addr)
 	setupAndPlay(t, c2, addr)
 	wantRemote := c2.conn.LocalAddr().String()

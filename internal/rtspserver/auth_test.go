@@ -279,8 +279,7 @@ func pumpFrames(t *testing.T, feed *Feed) {
 // client count check fail.
 func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 	g := auth.NewGuard("")
-	frames := NewFeed()
-	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: frames}
+	track, frames := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
 
 	c1 := dial(t, addr)
@@ -306,8 +305,7 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 // client playing a path, each one independently.
 func TestAuthRotationEvictsEveryPlayingClient(t *testing.T) {
 	g := auth.NewGuard("")
-	frames := NewFeed()
-	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: frames}
+	track, frames := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
 
 	clients := []*client{dial(t, addr), dial(t, addr), dial(t, addr)}
@@ -330,8 +328,7 @@ func TestAuthRotationEvictsEveryPlayingClient(t *testing.T) {
 // authenticated client took at PLAY is released when its TCP connection simply
 // drops (no TEARDOWN).
 func TestAuthenticatedClientTCPDropUnsubscribes(t *testing.T) {
-	frames := NewFeed()
-	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: frames}
+	track, frames := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: auth.NewGuard(testAuthToken)}, track)
 	c := dial(t, addr)
 	ch := challengeOf(t, c.do(t, methodDesc, baseURL(addr), nil))
