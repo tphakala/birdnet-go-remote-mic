@@ -5,10 +5,10 @@
 import { ERROR_TTL_MS, showToast } from "../components/toast.ts";
 import { unconfirmedText } from "./api.ts";
 import type { FocusTarget } from "./menu-core.ts";
+import { h } from "./h.ts";
 import { svgIcon } from "./svg.ts";
 
-export { h } from "./h.ts";
-export { svgIcon };
+export { h, svgIcon };
 
 // elem creates an element with an optional class and text content. New code
 // builds with h() (lib/h.ts); elem remains for the call sites not moved yet.
@@ -44,6 +44,27 @@ export function iconSpan(markup: string, className?: string): HTMLElement {
   // Static trusted markup only; never runtime/user data.
   s.innerHTML = markup;
   return s;
+}
+
+// infoRow builds one key and value pair of an .info-grid: the key with an
+// optional leading icon, the value as text or an element (a link). mono sets
+// the value in the monospace face, for ids, versions and addresses. The caller
+// places both and keeps dd to update the value.
+export function infoRow(key: string, value: Node | string, opts: { icon?: string; mono?: boolean } = {}): { dt: HTMLElement; dd: HTMLElement } {
+  return {
+    dt: h("dt", { class: "info-key" }, opts.icon && iconSpan(opts.icon, "info-key-icon"), key),
+    dd: h("dd", { class: opts.mono ? "info-val mono" : "info-val" }, value),
+  };
+}
+
+// sectionHead builds a card heading in the System view's style: an icon title
+// and a one-line description on the left. className adds a modifier to the
+// head; a caller with actions appends them to head.
+export function sectionHead(icon: string, title: string, desc: string, className?: string): { head: HTMLElement; titleEl: HTMLElement; descEl: HTMLElement } {
+  const titleEl = h("h2", { class: "section-title" }, iconSpan(icon), h("span", title));
+  const descEl = h("span", { class: "section-desc" }, desc);
+  const head = h("div", { class: className ? `section-head ${className}` : "section-head" }, h("div", titleEl, descEl));
+  return { head, titleEl, descEl };
 }
 
 // button builds a .btn control: variant fill, an optional leading icon, a label,

@@ -12,7 +12,7 @@
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.ts";
-import { button, clearBusy, downloadBlob, elem, focusDropped, focusOnOrDropped, iconSpan, orderChildren, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
+import { button, clearBusy, downloadBlob, elem, focusDropped, focusOnOrDropped, h, iconSpan, orderChildren, sectionHead, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
 import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { showToast } from "../components/toast.ts";
 import { FilterChips } from "../components/filter-chips.ts";
@@ -236,22 +236,11 @@ export class EventsView {
     this.root.append(tilesEl, this.buildActiveCard(), this.buildLogCard());
   }
 
-  private sectionHead(icon: string, title: string, desc: string): { head: HTMLElement; titleEl: HTMLElement; descEl: HTMLElement; actions: HTMLElement } {
-    const head = elem("div", "section-head ev-section-head");
-    const left = elem("div");
-    const titleEl = elem("h2", "section-title");
-    titleEl.append(iconSpan(icon), elem("span", undefined, title));
-    const descEl = elem("span", "section-desc", desc);
-    left.append(titleEl, descEl);
-    const actions = elem("div", "ev-head-actions");
-    head.append(left, actions);
-    return { head, titleEl, descEl, actions };
-  }
-
   private buildActiveCard(): HTMLElement {
     const card = elem("section", "config-section-card ev-active-card");
     card.setAttribute("aria-label", "Active Issues");
-    const { head, descEl } = this.sectionHead(ICON_ALERT, "Active Issues", "");
+    const { head, descEl } = sectionHead(ICON_ALERT, "Active Issues", "", "ev-section-head");
+    head.append(h("div", { class: "ev-head-actions" }));
     this.activeDesc = descEl;
     this.activeList = elem("div", "ev-list ev-active-list");
     card.append(head, this.activeList);
@@ -263,10 +252,11 @@ export class EventsView {
   private buildLogCard(): HTMLElement {
     const card = elem("section", "config-section-card ev-log-card");
     card.setAttribute("aria-label", "Event Log");
-    const { head, titleEl, actions } = this.sectionHead(
+    const { head, titleEl } = sectionHead(
       ICON_LOG,
       "Event Log",
       "Recent events from this boot, including those cleared from the bell.",
+      "ev-section-head",
     );
     // Focus lands here when the row holding keyboard focus disappears (a
     // condition clears, or the ring trims it); see restoreFocus.
@@ -276,10 +266,10 @@ export class EventsView {
     this.unreadPill.hidden = true;
     titleEl.append(this.unreadPill);
 
-    actions.append(
+    head.append(h("div", { class: "ev-head-actions" },
       button({ variant: "secondary", icon: ICON_CHECK, label: "Mark all read", onClick: () => this.store.markAllRead() }),
       button({ variant: "secondary", icon: ICON_DOWNLOAD, label: "Export", title: "Download the shown events as JSON", onClick: () => this.exportShown() }),
-    );
+    ));
 
     // Toolbar: search plus the two facet groups.
     const toolbar = elem("div", "ev-toolbar");

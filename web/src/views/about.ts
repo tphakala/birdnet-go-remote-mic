@@ -22,7 +22,7 @@ import {
 import { router } from "../lib/router.ts";
 import { store } from "../lib/store.ts";
 import type { ApplianceStatus, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
-import { button, copyText, externalLink, h, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.ts";
+import { button, copyText, externalLink, h, ICON_COPY, ICON_VERSION, infoRow, renderLoadError, sectionHead, setText, svgIcon } from "../lib/ui.ts";
 
 // Section and link icons: static, trusted markup.
 const ICON_INFO = svgIcon('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>');
@@ -46,15 +46,7 @@ const LICENSES_TIMEOUT_MS = 15_000;
 // description, and a body the caller fills.
 function section(icon: string, title: string, desc: string): { card: HTMLElement; body: HTMLElement } {
   const body = h("div", { class: "about-body" });
-  const card = h("section", { class: "config-section-card about-card" },
-    h("div", { class: "section-head" },
-      h("div",
-        h("h2", { class: "section-title" }, iconSpan(icon), h("span", title)),
-        h("span", { class: "section-desc" }, desc),
-      ),
-    ),
-    body,
-  );
+  const card = h("section", { class: "config-section-card about-card" }, sectionHead(icon, title, desc).head, body);
   return { card, body };
 }
 
@@ -140,10 +132,10 @@ export class AboutView {
 
   private buildProject(): HTMLElement {
     const { card, body } = section(ICON_INFO, "About Remote Mic", "A remote microphone streaming appliance for BirdNET-Go.");
-    const row = (icon: string, key: string, val: HTMLElement): Node[] => [
-      h("dt", { class: "info-key" }, iconSpan(icon, "info-key-icon"), key),
-      h("dd", { class: "info-val" }, val),
-    ];
+    const row = (icon: string, key: string, val: HTMLElement): Node[] => {
+      const { dt, dd } = infoRow(key, val, { icon });
+      return [dt, dd];
+    };
     this.versionEl = h("span", { class: "mono" }, "-");
     body.append(
       h("p", { class: "about-text" },

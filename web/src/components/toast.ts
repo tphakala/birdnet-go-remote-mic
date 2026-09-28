@@ -1,3 +1,4 @@
+import { h } from "../lib/h.ts";
 import { svgIcon } from "../lib/svg.ts";
 
 export type ToastType = "info" | "warn" | "error";
@@ -32,19 +33,12 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
   if (!container) return;
   const ttl = durationMs ?? (isError ? ERROR_TTL_MS : INFO_TTL_MS);
 
-  const toast = document.createElement("div");
-  // sev-* drives the shared severity surface (badge fill, border and wash).
-  toast.className = `toast sev-${type}`;
-
-  const icon = document.createElement("span");
-  icon.className = "toast-icon sev-badge";
+  const icon = h("span", { class: "toast-icon sev-badge" });
   // Fall back to ICON_OK so an off-contract type cannot render "undefined"
   // (the replaced ternary had a default; the lookup must keep one).
   icon.innerHTML = TOAST_ICONS[type] ?? ICON_OK; // static, trusted markup
-  const msg = document.createElement("span");
-  msg.className = "toast-msg";
-  msg.textContent = message;
-  toast.append(icon, msg);
+  // sev-* drives the shared severity surface (badge fill, border and wash).
+  const toast = h("div", { class: `toast sev-${type}` }, icon, h("span", { class: "toast-msg" }, message));
 
   let timer = 0;
   let removed = false;
@@ -76,10 +70,7 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
   // anyone close the toast by hand, and a keyboard user can focus it to hold the
   // toast open.
   if (isError || ttl >= ERROR_TTL_MS) {
-    const dismiss = document.createElement("button");
-    dismiss.type = "button";
-    dismiss.className = "toast-dismiss";
-    dismiss.setAttribute("aria-label", "Dismiss notification");
+    const dismiss = h("button", { type: "button", class: "toast-dismiss", "aria-label": "Dismiss notification" });
     dismiss.innerHTML = ICON_CLOSE; // static, trusted markup
     dismiss.addEventListener("click", remove);
     toast.appendChild(dismiss);
