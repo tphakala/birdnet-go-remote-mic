@@ -322,9 +322,9 @@ remote-mic --config config.yaml --check   # validate config, show what each devi
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
 `rtsp://<host>:8554/garden`. A single-device config is just a one-entry list.
 Several clients can play one stream at once, up to 8 per stream, for example two
-BirdNET-Go instances or a BirdNET-Go stream test alongside its capture. The
-stream is encoded once and shared, so each extra client costs only its
-bandwidth; a client that falls behind loses its own frames, not the others'.
+BirdNET-Go instances. The stream is encoded once and shared: an extra client
+adds no encoding work, only its own packetizing, sending, a bounded queue and
+bandwidth. A client that falls behind loses its own frames, not the others'.
 
 ## Updates
 

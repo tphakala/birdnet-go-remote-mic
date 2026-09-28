@@ -938,8 +938,9 @@ components:
           format: int64
           minimum: 0
           description: >
-            Frames dropped because a connected client was not keeping up
-            (counted once per client per dropped frame). Zero for devices that
+            Audio dropped because a client or the encoder was not keeping up
+            (a client's drop counts once per client per dropped frame; the
+            encoder's once per dropped capture period). Zero for devices that
             never served.
         overruns:
           type: integer
@@ -1050,8 +1051,9 @@ components:
           minimum: 0
           description: >
             Audio dropped for this stream because a client or the encoder was
-            not keeping up (counted once per client per dropped frame). Zero
-            when it never fell behind.
+            not keeping up (a client's drop counts once per client per dropped
+            frame; the encoder's once per dropped capture period). Zero when it
+            never fell behind.
 
     DeviceState:
       type: string

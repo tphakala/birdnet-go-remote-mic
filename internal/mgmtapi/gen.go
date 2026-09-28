@@ -534,7 +534,7 @@ type Device struct {
 	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
 	DownCause *DeviceDownCause `json:"downCause,omitempty"`
 
-	// DroppedFrames Frames dropped because a connected client was not keeping up (counted once per client per dropped frame). Zero for devices that never served.
+	// DroppedFrames Audio dropped because a client or the encoder was not keeping up (a client's drop counts once per client per dropped frame; the encoder's once per dropped capture period). Zero for devices that never served.
 	DroppedFrames int64 `json:"droppedFrames"`
 
 	// Error Why the device is skipped or failed. Absent when serving.
@@ -939,7 +939,7 @@ type StreamStatus struct {
 	// ClientCount How many RTSP clients are playing this stream right now, up to 8.
 	ClientCount int `json:"clientCount"`
 
-	// DroppedFrames Audio dropped for this stream because a client or the encoder was not keeping up (counted once per client per dropped frame). Zero when it never fell behind.
+	// DroppedFrames Audio dropped for this stream because a client or the encoder was not keeping up (a client's drop counts once per client per dropped frame; the encoder's once per dropped capture period). Zero when it never fell behind.
 	DroppedFrames int64 `json:"droppedFrames"`
 
 	// Path RTSP path serving this stream.
