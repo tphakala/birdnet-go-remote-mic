@@ -317,9 +317,11 @@ textarea {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .brand-icon {
+  flex: none;
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
@@ -337,6 +339,7 @@ textarea {
 .brand-titles {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .brand-row {
@@ -370,14 +373,28 @@ textarea {
   border: 1px solid var(--border-subtle);
 }
 
+/* One line at every width: the address is filled in after the first paint and
+   the connection text changes length when the event stream connects, so a line
+   that wrapped would move the whole page each time. A long address is cut
+   short instead. */
 .brand-sub {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: var(--font-size-caption);
   font-weight: 500;
   color: var(--text-muted);
+}
+
+.brand-sub > * {
+  flex: none;
+  white-space: nowrap;
+}
+.brand-sub > .brand-address {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .live-indicator {
@@ -1956,6 +1973,32 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* ==================== SYSTEM VIEW ==================== */
+/* Loading placeholders. A System card is laid out before its first read
+   (setLoading in lib/ui.ts adds .is-loading), so the read fills values in
+   place instead of growing the page. Each value still to come holds one line
+   of its own text size with a muted bar. */
+.is-loading .info-val:empty::before,
+.is-loading .tile-value > span:first-child:empty::before,
+.is-loading .update-headline:empty::before,
+.is-loading .update-detail:empty::before,
+.is-loading .auth-state:empty::before {
+  content: "\00a0";
+  display: inline-block;
+  width: min(12em, 100%);
+  border-radius: var(--radius-xs);
+  background: var(--border-base);
+}
+.is-loading .tile-value > span:first-child:empty::before {
+  width: 3em;
+}
+.is-loading .update-detail:empty::before {
+  width: min(28em, 100%);
+}
+/* A placeholder tile's bar shows its empty track, not a full reading. */
+.is-loading .progress-bar-fill {
+  width: 0;
+}
+
 .system-matrix {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

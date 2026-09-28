@@ -23,11 +23,20 @@ export class StreamStatus {
   private readonly bodyEl: HTMLElement | null;
   // Rows keyed by the immutable device id.
   private readonly rows = new Map<string, DeviceRowRefs>();
-  private emptyRow: HTMLElement | null = null;
+  // The one full-width row shown instead of device rows: loading, then "No
+  // devices configured." once a read lists none. It holds the table's first
+  // row height from the first paint.
+  private readonly messageRow: HTMLElement;
+  private readonly messageCell: HTMLElement;
   private loaded = false;
 
   constructor(body: HTMLElement | null) {
     this.bodyEl = body;
+    this.messageRow = document.createElement("tr");
+    this.messageCell = elem("td", undefined, "Loading streams...");
+    this.messageCell.setAttribute("colspan", "6");
+    this.messageRow.appendChild(this.messageCell);
+    body?.replaceChildren(this.messageRow);
   }
 
   // devices renders a devices read.
@@ -44,6 +53,12 @@ export class StreamStatus {
     if (this.loaded) this.render(devices, cfg);
   }
 
+  // loadFailed says so in place of the loading row when the first devices
+  // read failed; a later read that succeeds fills the table.
+  public loadFailed(): void {
+    if (!this.loaded) setText(this.messageCell, "Stream status could not be loaded. Retrying shortly.");
+  }
+
   // render fills the table, diffed: rows are keyed by the immutable device id,
   // cells updated in place, and rows added, removed and ordered only on change
   // rather than rebuilding the whole tbody every poll.
@@ -54,18 +69,12 @@ export class StreamStatus {
     if (devices.length === 0) {
       for (const r of this.rows.values()) r.tr.remove();
       this.rows.clear();
-      if (!this.emptyRow) {
-        const tr = document.createElement("tr");
-        const td = elem("td", undefined, "No devices configured.");
-        td.setAttribute("colspan", "6");
-        tr.appendChild(td);
-        this.emptyRow = tr;
-      }
-      if (this.emptyRow.parentNode !== body) body.appendChild(this.emptyRow);
+      setText(this.messageCell, "No devices configured.");
+      if (this.messageRow.parentNode !== body) body.appendChild(this.messageRow);
       return;
     }
-    // Non-empty: drop the placeholder row if it is showing.
-    if (this.emptyRow?.parentNode) this.emptyRow.remove();
+    // Non-empty: drop the message row if it is showing.
+    if (this.messageRow.parentNode) this.messageRow.remove();
 
     const want = new Set(devices.map((d) => d.device));
     for (const [id, r] of this.rows) {

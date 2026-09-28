@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, elem, part, setBusy, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, elem, part, setBusy, setLoading, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { overrideLines, overridesSignature } from "../../lib/system-core.ts";
 import { showToast } from "../../components/toast.ts";
@@ -24,6 +24,9 @@ export class NetworkCard {
     this.actionsEl = part(root, "sys-network-actions");
     this.discoveryEl = part<HTMLInputElement>(root, "sys-discovery-enabled");
     this.overridesEl = part(root, "sys-overrides");
+    // Laid out from the first paint, and usable once the first config read
+    // fills it.
+    if (root) setLoading(root, true);
     this.bind();
   }
 
@@ -89,7 +92,7 @@ export class NetworkCard {
   }
 
   private populate(cfg: Config): void {
-    if (this.cardEl) this.cardEl.hidden = false;
+    if (this.cardEl) setLoading(this.cardEl, false);
     // Config is polled every 3 s, so only write an input when its value actually
     // changes: a redundant assignment is wasteful and could disturb a field the
     // operator is reading. These run only while the form is not dirty (guarded by

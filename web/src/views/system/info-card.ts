@@ -1,5 +1,5 @@
-import { elem, formatRelative, formatUptime, ICON_VERSION, iconSpan, orderChildren, part, setText, svgIcon } from "../../lib/ui.ts";
-import { infoRows, type InfoLabel } from "../../lib/system-core.ts";
+import { elem, formatRelative, formatUptime, ICON_VERSION, iconSpan, orderChildren, part, setLoading, setText, svgIcon } from "../../lib/ui.ts";
+import { infoRows, withPlaceholders, type InfoLabel } from "../../lib/system-core.ts";
 import type { ApplianceStatus, SystemInfo } from "../../lib/types.ts";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
@@ -50,23 +50,43 @@ export class InfoCard {
   // Rows keyed by label. Built once, updated in place, added and removed only
   // when the present set changes.
   private readonly rows = new Map<InfoLabel, { dt: HTMLElement; dd: HTMLElement }>();
+  // Set once the first reads have settled, arrived or failed: from then on the
+  // card shows only the rows it has values for.
+  private settled = false;
+  private system: SystemInfo | null = null;
+  private status: ApplianceStatus | null = null;
 
   constructor(root: HTMLElement | null) {
     this.cardEl = root;
     this.hwEl = part(root, "sys-info-hw");
     this.swEl = part(root, "sys-info-sw");
+    // Until both reads are in, every row is laid out with an empty value, so
+    // each read fills rows in place instead of growing the card.
+    if (root) setLoading(root, true);
+    this.render(null, null);
+  }
+
+  // settle ends the wait after a failed first load: the card keeps the rows
+  // that arrived and drops the placeholders.
+  public settle(): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.render(this.system, this.status);
   }
 
   // render fills the grid, diffed: rows are keyed by label, values updated in
   // place, and dt/dd pairs added, removed and ordered only on change rather
   // than clearing the grid every poll.
   public render(sys: SystemInfo | null, st: ApplianceStatus | null): void {
+    this.system = sys;
+    this.status = st;
     const hw = this.hwEl;
     const sw = this.swEl;
     if (!hw || !sw) return;
-    if (!sys && !st) return;
+    if (sys && st) this.settled = true;
 
-    const rows = infoRows(sys, st, Date.now(), formatUptime, formatRelative);
+    const read = infoRows(sys, st, Date.now(), formatUptime, formatRelative);
+    const rows = this.settled ? read : withPlaceholders(read);
     const want = new Set(rows.map((r) => r.label));
     for (const [key, pair] of this.rows) {
       if (!want.has(key)) { pair.dt.remove(); pair.dd.remove(); this.rows.delete(key); }
@@ -88,6 +108,9 @@ export class InfoCard {
     }
     orderChildren(hw, order.hw);
     orderChildren(sw, order.sw);
-    if (this.cardEl) this.cardEl.hidden = rows.length === 0;
+    if (this.cardEl) {
+      if (this.settled) setLoading(this.cardEl, false);
+      this.cardEl.hidden = rows.length === 0;
+    }
   }
 }

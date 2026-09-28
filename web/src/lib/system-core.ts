@@ -25,6 +25,16 @@ export interface TileSpec {
   barPct: number | undefined;
 }
 
+// TILE_SLOTS are the gauges a host usually reports, in display order. The grid
+// lays them out before the first system read, so the read fills them in place
+// instead of growing the page.
+export const TILE_SLOTS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "cpu", label: "CPU Utilization" },
+  { key: "mem", label: "Memory" },
+  { key: "temp", label: "SoC Temperature" },
+  { key: "disk", label: "Disk" },
+];
+
 // tileSpecs lists the live resource gauges in display order. Memory and Disk
 // are left out when the host reports no total for them.
 export function tileSpecs(sys: SystemInfo): TileSpec[] {
@@ -107,6 +117,30 @@ export function infoRows(
   }
   if (st) rows.push({ group: "sw", label: "Uptime", value: formatUptime(st.uptimeSeconds) });
   return rows;
+}
+
+// INFO_ORDER is every System Information row in display order: the rows a
+// release build on a host that reports every fact shows.
+export const INFO_ORDER: readonly InfoRow[] = [
+  { group: "hw", label: "Platform", value: "" },
+  { group: "hw", label: "CPU", value: "" },
+  { group: "hw", label: "Memory", value: "" },
+  { group: "hw", label: "Storage", value: "" },
+  { group: "sw", label: "Hostname", value: "" },
+  { group: "sw", label: "OS", value: "" },
+  { group: "sw", label: "Kernel", value: "" },
+  { group: "sw", label: "Version", value: "" },
+  { group: "sw", label: "Latest Release", value: "" },
+  { group: "sw", label: "Last Check", value: "" },
+  { group: "sw", label: "Uptime", value: "" },
+];
+
+// withPlaceholders fills the rows a read has not supplied yet with empty
+// values, in display order, so the card keeps the height it will have once
+// both reads are in.
+export function withPlaceholders(rows: readonly InfoRow[]): InfoRow[] {
+  const have = new Map(rows.map((r) => [r.label, r]));
+  return INFO_ORDER.map((slot) => have.get(slot.label) ?? slot);
 }
 
 // OVERRIDE_LABELS maps a serve-override's dotted config field to an operator-

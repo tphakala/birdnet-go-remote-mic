@@ -353,6 +353,18 @@ export function part<T extends HTMLElement = HTMLElement>(root: HTMLElement | nu
   return root?.querySelector<T>(`#${id}`) ?? null;
 }
 
+// setLoading marks a region that is laid out before its first read arrives:
+// .is-loading draws the placeholders, aria-busy tells assistive technology the
+// content is not there yet, and inert keeps its controls from being used or
+// focused before their values are known.
+export function setLoading(el: HTMLElement, loading: boolean): void {
+  if (el.classList.contains("is-loading") === loading) return;
+  el.classList.toggle("is-loading", loading);
+  el.inert = loading;
+  if (loading) el.setAttribute("aria-busy", "true");
+  else el.removeAttribute("aria-busy");
+}
+
 export function setHidden(el: HTMLElement, hidden: boolean): void {
   if (el.hidden !== hidden) el.hidden = hidden;
 }

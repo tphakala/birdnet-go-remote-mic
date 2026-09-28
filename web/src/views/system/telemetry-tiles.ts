@@ -1,6 +1,6 @@
 import { store } from "../../lib/store.ts";
-import { elem, orderChildren, renderLoadError, setHidden, setText } from "../../lib/ui.ts";
-import { tileSpecs, type TileSpec } from "../../lib/system-core.ts";
+import { elem, orderChildren, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
+import { TILE_SLOTS, tileSpecs, type TileSpec } from "../../lib/system-core.ts";
 import type { SystemInfo } from "../../lib/types.ts";
 
 // TileRefs are the stable nodes a tile reuses across polls, so render updates
@@ -25,6 +25,18 @@ export class TelemetryTiles {
 
   constructor(grid: HTMLElement | null) {
     this.gridEl = grid;
+    if (!grid) return;
+    // Lay the usual tiles out before the first read, with empty values, so the
+    // read fills them in place (they are keyed as the read's tiles are)
+    // instead of growing the page.
+    const tiles: HTMLElement[] = [];
+    for (const slot of TILE_SLOTS) {
+      const refs = this.build(slot.label);
+      this.tiles.set(slot.key, refs);
+      tiles.push(refs.tile);
+    }
+    grid.replaceChildren(...tiles);
+    setLoading(grid, true);
   }
 
   // render draws the gauges with the diffed convention: tiles are keyed by a
@@ -33,6 +45,7 @@ export class TelemetryTiles {
   public render(sys: SystemInfo): void {
     const grid = this.gridEl;
     if (!grid) return;
+    setLoading(grid, false);
 
     // Remove a load-error placeholder loadError may have left in the grid, so a
     // recovered poll does not strand it among the gauges: the diffed pass below
@@ -60,6 +73,8 @@ export class TelemetryTiles {
   // unreachable. A successful retry re-renders via the system event.
   public loadError(message: string): void {
     if (!this.gridEl) return;
+    // Retry must be usable.
+    setLoading(this.gridEl, false);
     this.gridEl.textContent = "";
     // The tiles were just detached, so drop their stale refs; otherwise a later
     // render would reuse detached nodes and the diffed pass would not rebuild.

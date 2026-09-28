@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { formatByteSize, infoRows, overrideLines, overridesSignature, tileSpecs } from "../src/lib/system-core.ts";
+import { formatByteSize, INFO_ORDER, infoRows, overrideLines, overridesSignature, TILE_SLOTS, tileSpecs, withPlaceholders } from "../src/lib/system-core.ts";
 import { CERT_LABELS, certRows } from "../src/lib/certificate-core.ts";
 import type { ApplianceStatus, CertificateInfo, SystemInfo, UpdateStatus } from "../src/lib/types.ts";
 
@@ -79,6 +79,13 @@ test("tileSpecs lists CPU, Memory, Temperature and Disk in order", () => {
   assert.equal(disk?.barPct, 25);
 });
 
+test("TILE_SLOTS lays out the tiles a full host reports, with their labels", () => {
+  assert.deepEqual(
+    tileSpecs(sysInfo()).map((s) => ({ key: s.key, label: s.label })),
+    TILE_SLOTS.map((s) => ({ ...s })),
+  );
+});
+
 test("tileSpecs drops Memory and Disk without a total and shows n/a without a reading", () => {
   const specs = tileSpecs(sysInfo({ memTotalBytes: 0, diskTotalBytes: 0, cpuPercent: undefined, tempCelsius: undefined, cpuCores: 0 }));
   assert.deepEqual(specs.map((s) => s.key), ["cpu", "temp"]);
@@ -114,6 +121,20 @@ test("infoRows shows what arrived: status alone, or system alone", () => {
   assert.deepEqual(sysOnly.map((r) => r.label), ["Platform", "CPU", "Memory", "Storage", "Hostname"]);
   assert.equal(sysOnly.find((r) => r.label === "CPU")?.value, "4 cores");
   assert.deepEqual(infoRows(null, null, 0, uptime, relative), []);
+});
+
+test("INFO_ORDER is the order infoRows uses for a release build on a full host", () => {
+  const rows = infoRows(sysInfo({ update }), status(), 0, uptime, relative);
+  assert.deepEqual(rows.map((r) => [r.group, r.label]), INFO_ORDER.map((r) => [r.group, r.label]));
+});
+
+test("withPlaceholders keeps the rows that arrived and fills the rest with empty values in order", () => {
+  const partial = infoRows(null, status(), 0, uptime, relative);
+  const merged = withPlaceholders(partial);
+  assert.deepEqual(merged.map((r) => r.label), INFO_ORDER.map((r) => r.label));
+  assert.equal(merged.find((r) => r.label === "Version")?.value, "v1.2.3");
+  assert.equal(merged.find((r) => r.label === "Uptime")?.value, "up 3600");
+  assert.equal(merged.filter((r) => r.value === "").length, INFO_ORDER.length - 2);
 });
 
 test("overrideLines names known fields and shows an empty persisted value as the default", () => {

@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, elem, part, setBusy, setFieldError, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, elem, part, setBusy, setFieldError, setLoading, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { sentence } from "../../lib/text.ts";
 import {
@@ -32,6 +32,9 @@ export class NotificationsCard {
     this.actionsEl = part(root, "sys-notify-actions");
     this.enabledEl = part<HTMLInputElement>(root, "sys-notify-enabled");
     this.errorEl = part(root, "sys-notify-error");
+    // Laid out from the first paint, and usable once the first config read
+    // fills it.
+    if (root) setLoading(root, true);
     this.bind();
   }
 
@@ -82,8 +85,8 @@ export class NotificationsCard {
   private bind(): void {
     const audioEl = part(this.cardEl, "sys-notify-audio-fields");
     const hostEl = part(this.cardEl, "sys-notify-host-fields");
-    // Build the inputs once. Without both containers the card cannot render, so
-    // leave it hidden rather than half-built.
+    // Build the inputs once, and only into both containers, never half the
+    // form.
     if (audioEl && hostEl) {
       for (const spec of NOTIFY_FIELDS) {
         this.buildField(spec.group === "audio" ? audioEl : hostEl, spec);
@@ -132,7 +135,7 @@ export class NotificationsCard {
   }
 
   private populate(cfg: Config): void {
-    if (this.cardEl) this.cardEl.hidden = false;
+    if (this.cardEl) setLoading(this.cardEl, false);
     const n = cfg.notifications;
     const enabled = n?.enabled ?? true;
     if (this.enabledEl && this.enabledEl.checked !== enabled) {

@@ -1,7 +1,7 @@
 import { api, ApiError, apiErrorMessage, failureReason, isRefusal, problemFor, problemReason } from "../../lib/api.ts";
-import { clearBusy, copyText, downloadBlob, elem, part, renderLoadError, setBusy, setFieldError, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, copyText, downloadBlob, elem, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
-import { certRows, certTooLargeReason, parseExtraSans } from "../../lib/certificate-core.ts";
+import { CERT_LABELS, certRows, certTooLargeReason, parseExtraSans, type CertLabel } from "../../lib/certificate-core.ts";
 import { sentence } from "../../lib/text.ts";
 import { showToast } from "../../components/toast.ts";
 import type { CertificateInfo } from "../../lib/types.ts";
@@ -26,6 +26,9 @@ export class CertificateCard {
   private readonly pemErrorEl: HTMLElement | null;
   private readonly keyEl: HTMLTextAreaElement | null;
   private readonly keyErrorEl: HTMLElement | null;
+  // The value cell of each metadata row, laid out once for the fixed set of
+  // rows and filled in place.
+  private readonly values = new Map<CertLabel, HTMLElement>();
   // cert is the management certificate metadata. It changes at runtime: the
   // card fetches it on every status poll (a regenerate, an install, or an
   // external change swaps the certificate live, no restart) and re-fetches
@@ -57,6 +60,14 @@ export class CertificateCard {
     this.pemErrorEl = part(root, "sys-cert-pem-error");
     this.keyEl = part<HTMLTextAreaElement>(root, "sys-cert-key");
     this.keyErrorEl = part(root, "sys-cert-key-error");
+    for (const label of CERT_LABELS) {
+      const dd = elem("dd", "info-val mono");
+      this.infoEl?.append(elem("dt", "info-key", label), dd);
+      this.values.set(label, dd);
+    }
+    // Laid out from the first paint, and usable once the first load fills it
+    // or fails for good.
+    if (root) setLoading(root, true);
     this.bind();
   }
 
@@ -136,12 +147,13 @@ export class CertificateCard {
       // proxy's says nothing about it.
       if (isRefusal(err) && err.status === 501) {
         this.unavailable = true;
+        if (this.cardEl) this.cardEl.hidden = true;
         return;
       }
       this.failures++;
       if (this.failures >= CERT_LOAD_ERROR_THRESHOLD && !this.errorShown && this.errorEl) {
         this.errorShown = true;
-        if (this.cardEl) this.cardEl.hidden = false;
+        if (this.cardEl) setLoading(this.cardEl, false);
         if (this.infoEl) this.infoEl.hidden = true;
         renderLoadError(this.errorEl, "Certificate details could not be loaded.", "Loading certificate...", () => {
           // The Retry button swapped the alert for its loading text; let a
@@ -156,19 +168,17 @@ export class CertificateCard {
     }
   }
 
-  // render fills the card. It runs on every successful load (the certificate
-  // changes on a regenerate or install) and rebuilds the small grid outright
-  // rather than diffing it: it is not a per-poll render.
+  // render fills the card's values in place. It runs on every successful load
+  // (the certificate changes on a regenerate or install).
   private render(): void {
     const cert = this.cert;
-    if (!cert || !this.cardEl || !this.infoEl) return;
-    this.cardEl.hidden = false;
-    this.infoEl.textContent = "";
-    for (const [k, v] of certRows(cert)) {
-      this.infoEl.appendChild(elem("dt", "info-key", k));
-      this.infoEl.appendChild(elem("dd", "info-val mono", v));
+    if (!cert || !this.cardEl) return;
+    setLoading(this.cardEl, false);
+    for (const [label, value] of certRows(cert)) {
+      const dd = this.values.get(label);
+      if (dd) setText(dd, value);
     }
-    if (this.fingerprintEl) this.fingerprintEl.value = cert.fingerprintSha256;
+    if (this.fingerprintEl && this.fingerprintEl.value !== cert.fingerprintSha256) this.fingerprintEl.value = cert.fingerprintSha256;
   }
 
   // download fetches the PEM (bearer-authenticated, so a bare link could not)

@@ -79,10 +79,16 @@ export class SystemView {
       this.streams.config(cfg, store.getState().devices);
     });
     store.on("loaderror", (failure) => {
-      if (failure.systemFailed) this.tiles.loadError(failure.message);
-      // A config-only failure leaves the network/access/notification cards hidden
-      // with no other signal. Surface it so the miss is not invisible; polling
-      // recovers the config on a later tick and the cards then appear.
+      if (failure.systemFailed) {
+        this.tiles.loadError(failure.message);
+        this.update.settle();
+      }
+      // System Information shows what the first load brought.
+      this.info.settle();
+      if (failure.coreFailed) this.streams.loadFailed();
+      // A config-only failure leaves the network/access/notification cards
+      // loading with no other signal. Surface it so the miss is not invisible;
+      // polling recovers the config on a later tick and fills the cards.
       if (failure.configFailed && !failure.systemFailed) {
         showToast("Could not load the network, access and notification settings. Retrying shortly.", "warn");
       }

@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, copyText, part, scrollBehavior, setBusy, setButtonLabel, setFieldError, setText, showUnconfirmed, svgIcon } from "../../lib/ui.ts";
+import { clearBusy, copyText, part, scrollBehavior, setBusy, setButtonLabel, setFieldError, setLoading, setText, showUnconfirmed, svgIcon } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { sentence } from "../../lib/text.ts";
 import { generateToken, setToken } from "../../lib/auth.ts";
@@ -35,6 +35,9 @@ export class AccessCard {
     this.tokenEl = part<HTMLInputElement>(root, "sys-auth-token");
     this.errorEl = part(root, "sys-auth-error");
     this.actionsEl = part(root, "sys-auth-actions");
+    // Laid out from the first paint, and usable once the first config read
+    // fills it.
+    if (root) setLoading(root, true);
     this.bind();
   }
 
@@ -47,7 +50,7 @@ export class AccessCard {
   // Used by the open-access banner link so following it lands on the control
   // that resolves the warning.
   public focusToken(): void {
-    if (!this.cardEl || this.cardEl.hidden) return;
+    if (!this.cardEl || this.cardEl.inert) return;
     this.cardEl.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
     // preventScroll: the scroll above already positions the card; a focus
     // scroll would fight a smooth one with an instant jump.
@@ -124,7 +127,7 @@ export class AccessCard {
   }
 
   private populate(cfg: Config): void {
-    if (this.cardEl) this.cardEl.hidden = false;
+    if (this.cardEl) setLoading(this.cardEl, false);
     const token = cfg.auth?.token ?? "";
     // Only write when changed: this runs on every 3 s config poll (while not
     // dirty) and a redundant assignment to a field the operator has revealed is
