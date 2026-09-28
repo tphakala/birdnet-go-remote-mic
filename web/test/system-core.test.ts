@@ -157,6 +157,8 @@ test("overridesSignature changes with any field and is empty for no overrides", 
   assert.equal(overridesSignature([]), "");
   assert.equal(overridesSignature(a), overridesSignature(a.map((o) => ({ ...o }))));
   assert.notEqual(overridesSignature(a), overridesSignature([{ field: "listen", effective: ":9554", persisted: "" }]));
+  assert.notEqual(overridesSignature(a), overridesSignature([{ field: "listen", effective: ":7554", persisted: ":8554" }]));
+  assert.notEqual(overridesSignature(a), overridesSignature([{ field: "management.listen", effective: ":9554", persisted: ":8554" }]));
 });
 
 test("certRows follows CERT_LABELS and falls back to a dash for empty name lists", () => {
