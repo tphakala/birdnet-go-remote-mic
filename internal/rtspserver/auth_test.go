@@ -307,26 +307,46 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 }
 
 // TestAuthRotationEvictsEveryPlayingClient pins that a token change ends every
-// client playing a path, each one independently.
+// client playing a path, each one independently, both when a token is enabled
+// on an open appliance and when one token is rotated to another. The rotated
+// case is the one that needs Digest: the clients authenticate first, and the
+// writer must see their generation go stale.
 func TestAuthRotationEvictsEveryPlayingClient(t *testing.T) {
-	g := auth.NewGuard("")
-	track, frames := feedTrack()
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
+	for _, tt := range []struct {
+		name    string
+		initial string // the guard's token before the change; empty is open access
+		next    string
+	}{
+		{"enable", "", testAuthToken},
+		{"rotate", testAuthToken, "rotated-token-0001"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := auth.NewGuard(tt.initial)
+			track, frames := feedTrack()
+			addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
 
-	clients := []*client{dial(t, addr), dial(t, addr), dial(t, addr)}
-	for _, c := range clients {
-		setupAndPlay(t, c, addr)
-	}
-	waitFor(t, func() bool { return frames.Clients() == len(clients) }, 2*time.Second, "every client to subscribe")
-	pumpFrames(t, frames)
+			clients := []*client{dial(t, addr), dial(t, addr), dial(t, addr)}
+			for _, c := range clients {
+				if tt.initial != "" {
+					ch := challengeOf(t, c.do(t, methodDesc, baseURL(addr), nil))
+					if resp := c.do(t, methodDesc, baseURL(addr), answer(t, ch, tt.initial, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
+						t.Fatalf("auth: status = %d, want 200", resp.StatusCode)
+					}
+				}
+				setupAndPlay(t, c, addr)
+			}
+			waitFor(t, func() bool { return frames.Clients() == len(clients) }, 2*time.Second, "every client to subscribe")
+			pumpFrames(t, frames)
 
-	g.Set(testAuthToken)
-	for i, c := range clients {
-		if !drainUntilClosed(t, c.conn, 3*time.Second) {
-			t.Errorf("client %d kept streaming after the token was enabled", i+1)
-		}
+			g.Set(tt.next)
+			for i, c := range clients {
+				if !drainUntilClosed(t, c.conn, 3*time.Second) {
+					t.Errorf("client %d kept streaming after the token changed", i+1)
+				}
+			}
+			waitFor(t, func() bool { return frames.Clients() == 0 }, 3*time.Second, "every evicted client to unsubscribe")
+		})
 	}
-	waitFor(t, func() bool { return frames.Clients() == 0 }, 3*time.Second, "every evicted client to unsubscribe")
 }
 
 // TestAuthenticatedClientTCPDropUnsubscribes proves the subscription an
