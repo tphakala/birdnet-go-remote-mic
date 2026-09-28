@@ -1,14 +1,13 @@
 import { api, ApiError, apiErrorMessage, failureReason, firstProblem, isRefusal, problemFor, problemReason } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, scrollBehavior, setBusy, setButtonLabel, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { deviceIdTitle, sentence } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
 import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
-import { generateToken, setToken } from "../lib/auth.ts";
 import {
   NOTIFY_FIELDS,
   buildNotificationsPatch,
@@ -18,6 +17,7 @@ import {
 } from "../lib/notification-settings-core.ts";
 import type { ApplianceStatus, CertificateInfo, Config, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
 import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.ts";
+import { AccessCard } from "./system/access-card.ts";
 import { NetworkCard } from "./system/network-card.ts";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
@@ -44,13 +44,6 @@ const ICON_RELEASE =
 const ICON_HISTORY =
   svgIcon('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path>', 14);
 
-// Access-token reveal toggle glyphs, swapped by setAuthReveal. 12px to sit on the
-// .btn control beside the token field, matching the copy button's glyph size.
-const ICON_EYE =
-  svgIcon('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>', 12);
-const ICON_EYE_OFF =
-  svgIcon('<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>', 12);
-
 // InfoRow is one System Information line: which column it belongs to, its label,
 // the leading icon markup, and the value string.
 interface InfoRow {
@@ -75,10 +68,6 @@ function formatCertTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
-
-// TOKEN_RULE mirrors the appliance's auth.token validation (auth.ValidToken)
-// so an obviously invalid token is caught before the round trip.
-const TOKEN_RULE = /^(|[A-Za-z0-9._~-]{12,128})$/;
 
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
 // enough to be seen by someone who comes back to the tab.
@@ -172,13 +161,7 @@ export class SystemView {
   private certFailures = 0;
   private certErrorShown = false;
 
-  private authCardEl: HTMLElement | null;
-  private authStateEl: HTMLElement | null;
-  private authTokenEl: HTMLInputElement | null;
-  private authErrorEl: HTMLElement | null;
-  private authActionsEl: HTMLElement | null;
-  private authDirty = false;
-  private authSaving = false;
+  private readonly access: AccessCard;
 
   private notifyCardEl: HTMLElement | null;
   private notifyActionsEl: HTMLElement | null;
@@ -218,11 +201,7 @@ export class SystemView {
     this.infoCardEl = document.getElementById("sys-info-card");
     this.rowsEl = document.getElementById("sys-device-rows");
     this.network = new NetworkCard(document.getElementById("sys-network-card"));
-    this.authCardEl = document.getElementById("sys-auth-card");
-    this.authStateEl = document.getElementById("sys-auth-state");
-    this.authTokenEl = document.getElementById("sys-auth-token") as HTMLInputElement | null;
-    this.authErrorEl = document.getElementById("sys-auth-error");
-    this.authActionsEl = document.getElementById("sys-auth-actions");
+    this.access = new AccessCard(document.getElementById("sys-auth-card"));
     this.notifyCardEl = document.getElementById("sys-notifications-card");
     this.notifyActionsEl = document.getElementById("sys-notify-actions");
     this.notifyEnabledEl = document.getElementById("sys-notify-enabled") as HTMLInputElement | null;
@@ -279,7 +258,7 @@ export class SystemView {
     });
     store.on("config", (cfg) => {
       this.network.config(cfg);
-      if (!this.authDirty) this.populateAuth(cfg);
+      this.access.config(cfg);
       if (!this.notifyDirty) this.populateNotifications(cfg);
       // The table lists every configured stream, which only the config holds.
       // config fires on every poll, but the rows write only what changed.
@@ -300,22 +279,10 @@ export class SystemView {
     // the Access Control card into view and focus its token field so a keyboard
     // user lands on the action rather than at the top of the page.
     document.querySelector<HTMLAnchorElement>("#open-access-banner a")?.addEventListener("click", () => {
-      requestAnimationFrame(() => this.focusAuthCard());
+      requestAnimationFrame(() => this.access.focusToken());
     });
-    this.bindAuth();
     this.bindNotifications();
     this.bindUpdate();
-  }
-
-  // focusAuthCard scrolls the Access Control card into view and moves focus to
-  // the token field. Used by the open-access banner link so following it lands on
-  // the control that resolves the warning.
-  private focusAuthCard(): void {
-    if (!this.authCardEl || this.authCardEl.hidden) return;
-    this.authCardEl.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
-    // preventScroll: the scroll above already positions the card; a focus
-    // scroll would fight a smooth one with an instant jump.
-    this.authTokenEl?.focus({ preventScroll: true });
   }
 
   private bindCertificate(): void {
@@ -826,210 +793,6 @@ export class SystemView {
     // It may have applied. The form keeps the edits (a refresh would not
     // show over a dirty form), and saving the same values again is safe.
     showUnconfirmed("that the notification settings were saved", "save again to be sure");
-  }
-
-  // setAuthReveal shows or hides the token field and keeps the reveal button's
-  // label and accessible name in step. It is the single source of the reveal
-  // state, used by the reveal toggle, Generate (reveals), and a successful save
-  // (re-hides), so the state is never written in two places that could diverge.
-  private setAuthReveal(show: boolean): void {
-    if (this.authTokenEl) this.authTokenEl.type = show ? "text" : "password";
-    const reveal = document.getElementById("btn-auth-reveal");
-    if (reveal) {
-      // The visible label and the accessible name both swap Show/Hide; there is
-      // no aria-pressed, so the state is carried by the label rather than by a
-      // pressed toggle contradicting a changing label.
-      setButtonLabel(reveal, show ? "Hide" : "Show");
-      const icon = reveal.querySelector<HTMLElement>(".btn-icon");
-      if (icon) icon.innerHTML = show ? ICON_EYE_OFF : ICON_EYE; // trusted static markup
-      reveal.setAttribute("aria-label", show ? "Hide access token" : "Show access token");
-    }
-  }
-
-  private bindAuth(): void {
-    const input = this.authTokenEl;
-    if (!input) return;
-    input.addEventListener("input", () => {
-      this.authDirty = true;
-      this.setAuthError("");
-      if (this.authActionsEl) this.authActionsEl.hidden = false;
-    });
-    // The card is not a <form>, so Enter in the token field would do nothing.
-    // Wire it to Save, matching the muscle memory of a single-field form.
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        void this.saveAuth();
-      }
-    });
-    document.getElementById("btn-auth-reveal")?.addEventListener("click", () => {
-      this.setAuthReveal(input.type === "password");
-    });
-    document.getElementById("btn-auth-copy")?.addEventListener("click", () => {
-      const value = input.value.trim();
-      if (!value) {
-        // An empty field the operator just cleared is not (yet) open access; only
-        // a saved empty token is. Distinguish the two so the message is accurate.
-        showToast(this.authDirty
-          ? "Nothing to copy: the token field is empty. Save to switch to open access."
-          : "No token to copy: the appliance is on open access.", "warn");
-        return;
-      }
-      // Flag an unsaved value: Generate hands out a token before it is saved,
-      // and copying it into BirdNET-Go before saving here would lock players out.
-      copyText(value, this.authDirty
-        ? "Access token copied. It is not saved yet: save it here before the players use it."
-        : "Access token copied.");
-    });
-    document.getElementById("btn-auth-generate")?.addEventListener("click", () => {
-      input.value = generateToken();
-      // Reveal the generated value: the operator needs to see it to copy it into
-      // BirdNET-Go, and a masked random string cannot be verified by eye.
-      this.setAuthReveal(true);
-      input.dispatchEvent(new Event("input"));
-      input.focus();
-    });
-    document.getElementById("btn-auth-save")?.addEventListener("click", () => void this.saveAuth());
-    document.getElementById("btn-auth-discard")?.addEventListener("click", () => void this.discardAuth());
-  }
-
-  private setAuthError(message: string): void {
-    setFieldError(this.authTokenEl?.closest(".form-field") ?? null, this.authTokenEl, this.authErrorEl, message);
-  }
-
-  private populateAuth(cfg: Config): void {
-    if (this.authCardEl) this.authCardEl.hidden = false;
-    const token = cfg.auth?.token ?? "";
-    // Only write when changed: this runs on every 3 s config poll (while not
-    // dirty) and a redundant assignment to a field the operator has revealed is
-    // needless churn.
-    if (this.authTokenEl && this.authTokenEl.value !== token) this.authTokenEl.value = token;
-    if (this.authStateEl) {
-      const stateText = token
-        ? "Token required: the API, this UI and the RTSP streams ask for credentials."
-        : "Open access: anyone on the network can listen and change settings.";
-      // #sys-auth-state is a role=status region rewritten on every config event;
-      // setText only writes when the text actually changes so a steady state is
-      // not re-announced to screen readers each poll.
-      setText(this.authStateEl, stateText);
-      this.authStateEl.classList.toggle("locked", !!token);
-      this.authStateEl.classList.toggle("open", !token);
-    }
-    this.setAuthError("");
-    this.authDirty = false;
-    if (this.authActionsEl) this.authActionsEl.hidden = true;
-  }
-
-  // discardAuth reverts the token field to the saved value, confirming first
-  // when there are unsaved edits so a stray click cannot drop a generated token.
-  private async discardAuth(): Promise<void> {
-    if (this.authDirty) {
-      const ok = await confirmDialog({
-        title: "Discard changes?",
-        body: "The access token has unsaved changes that will be lost.",
-        confirmLabel: "Discard",
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    const cfg = store.getState().config;
-    if (cfg) this.populateAuth(cfg);
-    // Re-mask the token: Generate reveals it as plaintext, and discarding must not
-    // leave the restored saved secret on screen.
-    this.setAuthReveal(false);
-    // populateAuth hid the actions bar holding the Discard button focus was on,
-    // dropping it to <body>; return focus to the token field, matching saveAuth.
-    this.authTokenEl?.focus();
-  }
-
-  // saveAuth persists the token. Clearing it opens the appliance to the network,
-  // so that path confirms first. On success the UI's own stored token is swapped
-  // synchronously before any follow-up request, so the next poll already carries
-  // the new value and cannot be rejected by the freshly rotated appliance.
-  private async saveAuth(): Promise<void> {
-    if (this.authSaving || !this.authTokenEl) return;
-    const token = this.authTokenEl.value.trim();
-    if (!TOKEN_RULE.test(token)) {
-      this.setAuthError("Use 12 to 128 characters: letters, digits, and . _ ~ - only.");
-      this.authTokenEl.focus();
-      return;
-    }
-    if (!token) {
-      const ok = await confirmDialog({
-        title: "Allow open access?",
-        body: "Removing the token lets anyone on the network listen to the microphones and change settings.",
-        confirmLabel: "Allow open access",
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    const saveBtn = document.getElementById("btn-auth-save") as HTMLButtonElement | null;
-    const discardBtn = document.getElementById("btn-auth-discard") as HTMLButtonElement | null;
-    this.authSaving = true;
-    // Busy affordance that keeps Save focusable (aria-disabled, not disabled), so
-    // it does not steal keyboard focus; the authSaving guard blocks re-entry.
-    if (saveBtn) setBusy(saveBtn, "Saving...");
-    if (discardBtn) discardBtn.disabled = true;
-    // Open the store's rotation window so an in-flight poll rejected while the
-    // appliance is switching tokens (it enforces the new one before the PATCH
-    // response is fully written) does not pop the login prompt over a working
-    // page. It is closed in the finally, after setToken has run.
-    store.beginTokenSwap();
-    try {
-      const res = await api.patchConfig({ auth: { token } });
-      this.authDirty = false;
-      store.applyConfig(res.config);
-      // The appliance enforces a patched token immediately, before the reload:
-      // mgmtserver PatchConfig calls guard.Set(token) unconditionally right
-      // after persisting and BEFORE invoking the reloader, so the new token is
-      // live regardless of the outcome. restartRequired is computed only from
-      // whether the reloader succeeded; it says nothing about the token, only
-      // that the rest of the reload did not take effect. So adopt the new token
-      // on both branches, before anything else runs (see setToken): skipping it
-      // would leave the UI holding a credential the appliance no longer accepts.
-      setToken(token || null);
-      // applyConfig above already seeded the authoritative config, so only
-      // refreshStatus is needed (it carries authRequired).
-      await store.refreshStatus();
-      if (res.restartRequired) {
-        // The token is already live; it is the rest of the configuration that
-        // needs a restart before it takes effect.
-        showToast(token
-          ? "Access token saved and active. Restart the appliance to finish applying the configuration."
-          : "Open access saved and active. Restart the appliance to finish applying the configuration.", "warn");
-      } else {
-        showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
-      }
-      // Re-hide the token after a successful save: it may have been revealed to
-      // copy it, and leaving a saved secret in plain sight is needless exposure.
-      this.setAuthReveal(false);
-    } catch (err: unknown) {
-      const problem = firstProblem(err);
-      if (problem) {
-        this.setAuthError(sentence(problem.reason));
-      } else if (isRefusal(err)) {
-        // The appliance refused before applying the token
-        // (internal/mgmtserver/config.go:159-166 returns before guard.Set at
-        // :190), so the old token is still in force.
-        showToast(`Token change failed: ${apiErrorMessage(err)}. The current token is unchanged.`, "error");
-      } else {
-        // No answer is ambiguous: the appliance applies the token BEFORE it
-        // finishes writing the PATCH response, so the new credential may
-        // already be in force. Warn rather than imply nothing changed.
-        showUnconfirmed("the token change", "the new token may already be in force; if this page locks you out, reload and sign in with it");
-      }
-    } finally {
-      store.endTokenSwap();
-      this.authSaving = false;
-      if (saveBtn) clearBusy(saveBtn, "Save Token");
-      if (discardBtn) discardBtn.disabled = false;
-      // Disabling the Save button the user just activated dropped keyboard focus
-      // to <body>; re-enabling does not restore it. After a successful save the
-      // actions bar is hidden, so the token input is the sensible landing spot in
-      // every case. Restore focus explicitly, matching the convention the toggle
-      // and settings paths in dashboard.ts already follow.
-      this.authTokenEl?.focus();
-    }
   }
 
   // bindUpdate wires the update switch and buttons in the System Information
