@@ -83,47 +83,50 @@ func TestFeedEverySubscriberGetsTheSameSequence(t *testing.T) {
 func TestFeedSlowSubscriberDropsOnlyItsOwn(t *testing.T) {
 	t.Parallel()
 	f := NewFeed()
-	slow, fast := mustSubscribe(t, f), mustSubscribe(t, f)
-	_ = slow // never read
-	const total = subQueueDepth + 10
-	var drops int
-	for i := range total {
-		drops += f.Push(pipeline.Frame{Payload: []byte{byte(i)}, Duration: 1})
+	mustSubscribe(t, f) // never read
+	mustSubscribe(t, f) // never read
+	fast := mustSubscribe(t, f)
+	for i := range subQueueDepth + 10 {
+		// Each slow queue takes the first subQueueDepth frames, then refuses each
+		// one, and only the slow queues' refusals are counted, one per queue.
+		want := 0
+		if i >= subQueueDepth {
+			want = 2
+		}
+		if got := f.Push(pipeline.Frame{Payload: []byte{byte(i)}, Duration: 1}); got != want {
+			t.Errorf("Push %d reported %d drops, want %d", i, got, want)
+		}
 		// The fast subscriber reads every frame as it is pushed.
 		if got := nextPayload(t, fast); got != byte(i) {
 			t.Fatalf("fast subscriber: frame %d = %d, want a gap-free sequence", i, got)
 		}
-	}
-	if want := total - subQueueDepth; drops != want {
-		t.Errorf("Push reported %d drops, want %d (one per frame the slow queue refused)", drops, want)
 	}
 }
 
 func TestFeedEpoch(t *testing.T) {
 	t.Parallel()
 	f := NewFeed()
-	sessionOf := func() (bool, uint64) { return f.Session() }
 
 	a := mustSubscribe(t, f)
-	on, first := sessionOf()
+	on, first := f.Session()
 	if !on || first == 0 {
 		t.Fatalf("after the first join: Session() = (%v, %d), want active in a session numbered from 1", on, first)
 	}
 	b := mustSubscribe(t, f)
-	if on, s := sessionOf(); !on || s != first {
+	if on, s := f.Session(); !on || s != first {
 		t.Errorf("second join: Session() = (%v, %d), want (true, %d): a join keeps the session", on, s, first)
 	}
 	a.Close()
-	if on, s := sessionOf(); !on || s != first {
+	if on, s := f.Session(); !on || s != first {
 		t.Errorf("non-last leave: Session() = (%v, %d), want (true, %d)", on, s, first)
 	}
 	b.Close()
-	if on, s := sessionOf(); on || s != first {
+	if on, s := f.Session(); on || s != first {
 		t.Errorf("last leave: Session() = (%v, %d), want (false, %d): inactive, session kept", on, s, first)
 	}
 	c := mustSubscribe(t, f)
 	defer c.Close()
-	if on, s := sessionOf(); !on || s != first+1 {
+	if on, s := f.Session(); !on || s != first+1 {
 		t.Errorf("join after idle: Session() = (%v, %d), want (true, %d)", on, s, first+1)
 	}
 }
@@ -178,15 +181,21 @@ func TestFeedNeverDeliversAnEarlierSession(t *testing.T) {
 
 func TestFeedClose(t *testing.T) {
 	t.Parallel()
+	// Closure wins over a frame that is still queued. Without the pre-check in
+	// Next, a select over two ready cases picks one at random, so a single
+	// attempt would miss that regression half the time: repeat on fresh feeds.
+	for range 64 {
+		f := NewFeed()
+		b := mustSubscribe(t, f)
+		f.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1})
+		f.Close()
+		if _, err := b.Next(t.Context()); !errors.Is(err, ErrSourceClosed) {
+			t.Fatalf("Next with a queued frame after Close: err = %v, want ErrSourceClosed", err)
+		}
+	}
 	f := NewFeed()
-	b := mustSubscribe(t, f)
-	f.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1})
 	f.Close()
 	f.Close() // idempotent
-	// Closure wins over a frame that is still queued.
-	if _, err := b.Next(t.Context()); !errors.Is(err, ErrSourceClosed) {
-		t.Errorf("Next with a queued frame after Close: err = %v, want ErrSourceClosed", err)
-	}
 	if _, err := f.Subscribe(); !errors.Is(err, ErrSourceClosed) {
 		t.Errorf("Subscribe after Close: err = %v, want ErrSourceClosed", err)
 	}
@@ -280,33 +289,58 @@ func TestFeedConcurrent(t *testing.T) {
 	}
 }
 
-// TestFeedPushAllocs pins the allocation contract: none while idle, exactly the
-// one payload copy per frame with one or more clients.
+// TestFeedPushAllocs pins the allocation contract: none while idle or for a
+// frame of an earlier session, exactly the one payload copy per frame with one
+// or more clients.
 func TestFeedPushAllocs(t *testing.T) {
 	// Not parallel: AllocsPerRun counts process-wide allocations.
 	for _, tt := range []struct {
-		name    string
-		clients int
-		want    float64
+		name     string
+		clients  int
+		staleTag bool // tag the frame with the session before the current one
+		want     float64
 	}{
-		{"no clients", 0, 0},
-		{"one client", 1, 1},
-		{"three clients", 3, 1},
+		{"no clients", 0, false, 0},
+		{"one client", 1, false, 1},
+		{"three clients", 3, false, 1},
+		{"stale tag", 3, true, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := NewFeed()
+			if tt.staleTag {
+				// One earlier stretch of playing, so the clients below join a
+				// session numbered at least 2 and the tag before it is a real
+				// session, not the untagged zero.
+				mustSubscribe(t, f).Close()
+			}
 			subs := make([]Subscription, tt.clients)
 			for i := range subs {
 				subs[i] = mustSubscribe(t, f)
 			}
-			_, epoch := f.Session()
-			fr := pipeline.Frame{Payload: make([]byte, 320), Duration: 960, Session: epoch}
+			_, tag := f.Session()
+			if tt.staleTag {
+				tag--
+			}
+			fr := pipeline.Frame{Payload: make([]byte, 320), Duration: 960, Session: tag}
+			// A delivery that never arrives fails the test after the deadline
+			// instead of hanging it inside the measured loop.
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var lost error
 			got := testing.AllocsPerRun(100, func() {
 				f.Push(fr)
+				if tt.staleTag {
+					return // nothing is queued for a stale frame
+				}
 				for _, s := range subs {
-					_, _ = s.Next(t.Context())
+					if _, err := s.Next(ctx); err != nil {
+						lost = err
+					}
 				}
 			})
+			if lost != nil {
+				t.Fatalf("a subscriber was not delivered the frame: %v", lost)
+			}
 			if got != tt.want {
 				t.Errorf("allocs per Push = %v, want %v", got, tt.want)
 			}
