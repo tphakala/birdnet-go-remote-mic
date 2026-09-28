@@ -1,18 +1,17 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
-import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
-import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
-import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusOnOrDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, footerMetrics, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
+import { api, isRefusal } from "../lib/api.ts";
+import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, captureFormatLabel, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, footerMetrics, neighbourOrder, runtimeEnabled, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
-import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
-import { withFirstStream } from "../lib/device-settings-core.ts";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
+import { apiErrorToast, ConfigQueue, STALE_BASE_TEXT } from "./dashboard/config-queue.ts";
 import { MeterConsole } from "./dashboard/meter-console.ts";
+import { SettingsPanel } from "./dashboard/settings-panel.ts";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC =
@@ -33,19 +32,12 @@ const ICON_SLIDERS =
 const ICON_CHEVRON =
   svgIcon('<path d="m6 9 6 6 6-6"></path>', 12, 2.2);
 
-// STALE_BASE_TEXT is said when a change must build on the appliance's config
-// and a re-read of it failed (see freshBase).
-const STALE_BASE_TEXT = "Could not read the current configuration; nothing was changed. Try again in a moment.";
 // METER_LEVELS is how routeLevels feeds a VUMeter, built once rather than
 // per levels event.
 const METER_LEVELS = {
   set: (m: VUMeter, rms: number, peak: number, clipped: boolean) => m.setLevels(rms, peak, clipped),
   clear: (m: VUMeter) => m.clearLevels(),
 };
-
-// FIX_FIELDS_TEXT is the toast for a save stopped by a marked field, found by
-// the form's own check or by the appliance: the field carries the reason.
-const FIX_FIELDS_TEXT = "Save failed: fix the highlighted fields.";
 
 // availableLabel names an available device for people: its friendly name,
 // with the ALSA address when there is one to tell two identical units apart,
@@ -149,20 +141,7 @@ interface CardEntry extends ArticleParts {
   shape: string; // shapeKey of the currently mounted article
   // Settings panel: owned by the entry and moved between article renders, so an
   // open form survives a card rebuild rather than being torn down under the user.
-  settingsWrap: HTMLElement;
-  settingsForm: DeviceSettingsForm | null;
-  // The config entry the open form was built from, used to detect an out-of-band
-  // change while the form is open. Excludes enabled (see deviceConfigKey).
-  formSource: DeviceConfig | null;
-  // Cached deviceConfigKey(formSource), computed once when the form opens rather
-  // than re-serialised on every render while the form is open (formSource does
-  // not change until the form is rebuilt).
-  formSourceKey: string;
-  // "Changed elsewhere" notice in the open form's actions bar, shown by
-  // syncSettings when formSource has drifted from the current config.
-  staleNote: HTMLElement | null;
-  expanded: boolean;
-  dirty: boolean;
+  panel: SettingsPanel;
   // The per-device "hide inactive channels" display preference. Read from
   // storage once when the entry is created, rather than on every poll; the
   // settings switch and a change saved in another tab (the storage event)
@@ -170,13 +149,6 @@ interface CardEntry extends ArticleParts {
   // the browser cannot persist it, the choice holds until the device leaves
   // the list.
   hideInactive: boolean;
-}
-
-// runtimeEnabled reports whether a device is on at runtime. A disabled device is
-// off; anything else (serving, or a failed/skipped device that was configured
-// to stream) is on until the operator changes it.
-function runtimeEnabled(state: string): boolean {
-  return state !== "disabled";
 }
 
 // pendingStop reports that a device is currently serving while the config now
@@ -266,28 +238,8 @@ function metricItem(label: string, description?: string): { item: HTMLElement; v
   return { item, value };
 }
 
-// Sequence for the settings panels' element ids (aria-controls targets).
-let settingsSeq = 0;
-
 // Sequence for the token tag's description element ids (aria-describedby targets).
 let tokenDescSeq = 0;
-
-// The runtime device carries the runtime-visible configured fields; project it
-// to the config shape as a fallback base for the device-list patch.
-function deviceToConfig(d: Device): DeviceConfig {
-  const c: DeviceConfig = {
-    name: d.name, device: d.device, path: d.path, mode: d.mode,
-    rate: d.rate, channels: d.channels, format: d.format,
-    enabled: runtimeEnabled(d.state),
-  };
-  if (d.opus) c.opus = d.opus;
-  // quietAlert is intentionally omitted: the runtime Device carries no such
-  // field, so there is no value to project. This projection is a render/seed
-  // fallback only; the mutating device PATCH paths (handleToggleEnabled,
-  // saveDevice) refuse to run until GET /config has loaded, so quietAlert is
-  // never persisted from this fallback and an existing opt-out cannot be reset.
-  return c;
-}
 
 function rtspPort(listen: string | undefined): string {
   if (!listen) return "8554";
@@ -309,27 +261,6 @@ function meterCount(d: Device): number {
 // chips are synced, not rebuilt.
 function shapeKey(d: Device): string {
   return d.state === "serving" ? `serving:${meterCount(d)}` : "idle";
-}
-
-// deviceConfigKey serialises the settings-relevant fields of a device config in
-// a fixed order so an out-of-band change to an open form can be detected by
-// comparison. It deliberately EXCLUDES enabled: the settings form does not edit
-// the enable flag (the card toggle does, and saveDevice sources it fresh), so a
-// same-tab toggle must not flag the operator's own open form as changed
-// elsewhere. quietAlert IS included: the settings form edits it, so an
-// out-of-band change to it should raise the "changed elsewhere" notice like
-// every other form field. It is normalised with `?? true` (the backend
-// absent-default) so an absent value and an explicit true hash identically.
-function deviceConfigKey(cd: DeviceConfig | undefined): string {
-  if (!cd) return "";
-  return JSON.stringify([
-    cd.name, cd.path, cd.mode, cd.rate,
-    // Guard the spread: the runtime devices payload is normalized to always
-    // carry a channels array (see the store), but a config payload is not, so a
-    // missing or null channels field must not throw here and crash the pass.
-    [...(cd.channels ?? [])], cd.format, cd.opus?.bitrate ?? null,
-    cd.quietAlert ?? true,
-  ]);
 }
 
 export class DashboardView {
@@ -355,17 +286,8 @@ export class DashboardView {
   // else its nearest neighbour still listed). Only set while that Enable is in flight.
   private availableFocusLost: { id: string; neighbours: string[]; label: string } | null = null;
   private status: ApplianceStatus | null = null;
-  // Serializes config mutations (device toggle + settings save) so each PATCH is
-  // built from a fresh base only after the previous mutation settled. Prevents a
-  // full-array PATCH from a stale base from clobbering a concurrent change.
-  private mutationQueue: Promise<void> = Promise.resolve();
-  // Set when the cached config may not match the appliance: a change's
-  // outcome was unknown and its re-read failed. The next full-array PATCH
-  // re-reads first (freshBase).
-  private baseStale = false;
-  // Device ids this view is removing, so the render that removes the card
-  // announces only where focus went: the Remove's own toast says what went.
-  private removing = new Set<string>();
+  // Serializes the device mutations of every card (see ConfigQueue).
+  private readonly queue = new ConfigQueue();
   // Set while a reconcile() is queued on the microtask, so the several store
   // events a single poll tick fires collapse into one pass (see render()).
   private renderScheduled = false;
@@ -400,7 +322,7 @@ export class DashboardView {
         if (id !== null && entry.device.device !== id) continue;
         if (entry.hideInactive === hide) continue;
         entry.hideInactive = hide;
-        entry.settingsForm?.setHideInactive(hide);
+        entry.panel.setHideInactive(hide);
         changed = true;
       }
       if (changed) this.render();
@@ -543,17 +465,17 @@ export class DashboardView {
     // Remove cards for devices that are gone. A removed card that held
     // keyboard focus (another tab removed the device, or a reload dropped it)
     // hands it on below, as Available Devices does.
-    let focusLost: { id: string; neighbours: string[]; name: string } | null = null;
+    let focusLost: { neighbours: string[]; name: string; own: boolean } | null = null;
     for (const [id, entry] of this.cards) {
       if (!seen.has(id)) {
         if (holdsFocus(entry.article)) {
           // The screen order, read only when a removed card held focus.
           const idOf = new Map([...this.cards].map(([cid, e]) => [e.article, cid] as const));
           const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
-          focusLost = { id, neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: entry.device.name };
+          focusLost = { neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: entry.device.name, own: entry.panel.removing };
         }
         entry.live?.meterConsole.destroy();
-        entry.settingsForm?.destroy();
+        entry.panel.destroy();
         entry.article.remove();
         this.cards.delete(id);
       }
@@ -567,16 +489,15 @@ export class DashboardView {
     const ordered = devices.flatMap((d) => this.cards.get(d.device) ?? []);
     orderChildren(rack, ordered.map((e) => e.article));
     if (focusLost && focusDropped()) {
-      const { name, id } = focusLost;
-      // The view's own Remove says what went in its toast, so this says
+      // The card's own Remove says what went in its toast, so this says
       // only where focus went.
-      const own = this.removing.has(id);
+      const { name, own } = focusLost;
       this.focusNeighbour(focusLost.neighbours, (nid) => this.settingsTarget(nid), (next) => (own ? focusMovedMessage(next) : deviceGoneMessage(name, next)));
     }
 
     // Reconcile any open settings form against the (possibly refreshed) config.
     for (const entry of this.cards.values()) {
-      if (entry.expanded) this.syncSettings(entry, cfgByDevice);
+      if (entry.panel.expanded) entry.panel.sync(cfgByDevice.get(entry.device.device));
     }
 
     const clientsEl = document.getElementById("total-clients-display");
@@ -715,33 +636,6 @@ export class DashboardView {
     return card;
   }
 
-  // refreshDeviceViews re-reads what a device change affects (devices,
-  // available, config) and reports whether the device list was read, which
-  // alone decides whether a device is listed, and whether all three were. A
-  // failed config read marks the cached base stale (see freshBase).
-  private async refreshDeviceViews(): Promise<{ devices: boolean; all: boolean }> {
-    const [devices, available, config] = await Promise.all([store.refreshDevices(), store.refreshAvailable(), store.refreshConfig()]);
-    this.baseStale = !config;
-    return { devices, all: devices && available && config };
-  }
-
-  // refreshConfigViews re-reads config and devices after a config PATCH, as
-  // refreshDeviceViews does.
-  private async refreshConfigViews(): Promise<boolean> {
-    const [config, devices] = await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-    this.baseStale = !config;
-    return config && devices;
-  }
-
-  // freshBase makes sure a full-array PATCH builds from the appliance's
-  // config: after a change whose outcome is unknown and whose re-read failed
-  // (baseStale), it reads the config first, and reports false if it cannot.
-  private async freshBase(): Promise<boolean> {
-    if (!this.baseStale) return true;
-    this.baseStale = !(await store.refreshConfig());
-    return !this.baseStale;
-  }
-
   // settingsTarget is a device card's settings button as a focus target.
   private settingsTarget(id: string): { control: HTMLElement; name: string } | undefined {
     const e = this.cards.get(id);
@@ -758,7 +652,7 @@ export class DashboardView {
       // running concurrently could be clobbered by a stale PATCH (or vice versa).
       // The refreshes run inside the task so the next queued mutation rebuilds
       // from the post-provision config.
-      await this.enqueue(async () => {
+      await this.queue.enqueue(async () => {
         let created: Device | undefined;
         let read: { devices: boolean; all: boolean } | undefined;
         try {
@@ -767,7 +661,7 @@ export class DashboardView {
           if (isRefusal(err)) throw err;
           // No readable answer: re-read inside the queue, so the next queued
           // change builds from what the appliance now holds, and judge by it.
-          read = await this.refreshDeviceViews();
+          read = await this.queue.refreshDeviceViews();
           created = store.getState().devices.find((dv) => dv.device === d.device);
           if (!created) {
             if (read.devices) showToast(`${availableLabel(d)} does not appear to have been enabled; check again shortly.`, "warn");
@@ -776,7 +670,7 @@ export class DashboardView {
           }
         }
         // A re-read that found the device already refreshed everything.
-        read ??= await this.refreshDeviceViews();
+        read ??= await this.queue.refreshDeviceViews();
         if (!read.all) {
           showToast(`Enabled ${created.name}. The dashboard could not be refreshed; it updates on the next poll.`, "warn");
         } else {
@@ -798,7 +692,7 @@ export class DashboardView {
       });
     } catch (err: unknown) {
       // Only a refusal reaches here: an unknown outcome is settled in the task.
-      this.apiErrorToast(err, `Could not enable ${availableLabel(d)}`);
+      apiErrorToast(err, `Could not enable ${availableLabel(d)}`);
       // A 404 (the device left or was re-detected) or 409 (already set up)
       // means this card is stale; refresh now rather than at the next poll.
       if (isRefusal(err) && (err.status === 404 || err.status === 409)) void store.refreshAvailable();
@@ -824,90 +718,6 @@ export class DashboardView {
     }
   }
 
-  // removeDevice deletes a configured device after confirmation, returning its
-  // hardware to the available list. On success the card disappears via the device
-  // refresh; on failure the button is restored so it can be retried. A refresh
-  // that fails after the delete succeeded is reported as such, not as a failed
-  // removal: the next poll takes the card away.
-  private async removeDevice(entry: CardEntry, btn: HTMLElement): Promise<void> {
-    // aria-disabled keeps the button focusable while busy, so guard against a
-    // keyboard re-activation that pointer-events cannot block: without this a
-    // second Enter opens a second confirm and issues a second DELETE.
-    if (btn.getAttribute("aria-disabled") === "true") return;
-    const ok = await confirmDialog({
-      title: "Remove device",
-      body: `Remove ${entry.device.name}? It stops streaming and returns to the available list, and its stream path is discarded.`,
-      confirmLabel: "Remove",
-      danger: true,
-    });
-    if (!ok) return;
-    // The accessible name follows the visible text, as on Enable.
-    const removeLabel = btn.getAttribute("aria-label");
-    setBusy(btn, "Removing...");
-    btn.setAttribute("aria-label", `Removing ${entry.device.name}`);
-    let removed = false;
-    try {
-      // Serialize with toggles and settings saves: a stale full-array PATCH from
-      // one of those must not run interleaved with this delete and restore the
-      // removed device (or drop a concurrently provisioned one).
-      await this.enqueue(async () => {
-        const id = entry.device.device;
-        const name = entry.device.name;
-        // notFound is a 404: no device by that name, so gone already (an
-        // earlier attempt whose answer was lost, another tab) or renamed,
-        // which the re-read tells apart by the device's id. unknown is no
-        // readable answer at all.
-        let notFound: unknown = null;
-        let unknown = false;
-        // A render that removes the card (the re-read below, or a poll that
-        // lands while the DELETE is in flight) hands focus to its nearest
-        // neighbour, saying only where focus went (see reconcile): the toast
-        // below says what went.
-        this.removing.add(id);
-        let read: { devices: boolean; all: boolean };
-        try {
-          try {
-            await api.deleteDevice(name);
-          } catch (err: unknown) {
-            if (!isRefusal(err)) unknown = true;
-            else if (err.status === 404) notFound = err;
-            else throw err;
-          }
-          read = await this.refreshDeviceViews();
-        } finally {
-          this.removing.delete(id);
-        }
-        const listed = store.getState().devices.some((dv) => dv.device === id);
-        if (read.devices && listed) {
-          if (notFound !== null) throw notFound;
-          showToast(`${name} does not appear to have been removed; check again shortly.`, "warn");
-          return;
-        }
-        if (!read.devices && (unknown || notFound !== null)) {
-          showUnconfirmed(`that ${name} was removed`, "the device list could not be read; check it before trying again");
-          return;
-        }
-        removed = true;
-        if (read.all) showToast(`Removed ${name}.`);
-        else showToast(`Removed ${name}. The dashboard could not be refreshed; it updates on the next poll.`, "warn");
-        // Focus that had already fallen to the page (the confirm returned it
-        // to a Remove button a poll had just removed) goes to the dashboard.
-        if (focusDropped()) {
-          focusWorkspace();
-          announce(this.announceEl, REMOVED_FOCUS_MESSAGE);
-        }
-      });
-    } catch (err: unknown) {
-      // Only a refusal reaches here: an unknown outcome is settled in the task.
-      this.apiErrorToast(err, `Could not remove ${entry.device.name}`);
-    } finally {
-      if (!removed) {
-        clearBusy(btn, "Remove");
-        if (removeLabel !== null) btn.setAttribute("aria-label", removeLabel);
-      }
-    }
-  }
-
   private rtspUrl(d: Device): string {
     const port = rtspPort(this.status?.rtspListen);
     return `rtsp://${window.location.hostname}:${port}${d.path}`;
@@ -917,25 +727,31 @@ export class DashboardView {
   // (which outlives article rebuilds) plus a first built article, assembled into
   // a fully-typed CardEntry in one checked literal (no partial `as` cast).
   private newEntry(d: Device): CardEntry {
-    const settingsWrap = elem("div", "card-settings");
-    settingsWrap.id = `card-settings-${++settingsSeq}`;
-    settingsWrap.hidden = true;
     const parts = this.buildArticle(d);
     const entry: CardEntry = {
       ...parts,
       device: d,
       shape: shapeKey(d),
-      settingsWrap,
-      settingsForm: null,
-      formSource: null,
-      formSourceKey: "",
-      staleNote: null,
-      expanded: false,
-      dirty: false,
+      panel: new SettingsPanel({
+        queue: this.queue,
+        announceEl: this.announceEl,
+        device: () => entry.device,
+        hideInactive: () => entry.hideInactive,
+        setHideInactive: (hide) => {
+          entry.hideInactive = hide;
+          writeBoolPref(hideInactiveKey(entry.device.device), hide);
+          this.render();
+        },
+        expandedChanged: () => {
+          entry.article.classList.toggle("expanded", entry.panel.expanded);
+          this.syncSettingsButton(entry);
+        },
+        settingsButton: () => entry.settingsBtn,
+      }),
       hideInactive: readBoolPref(hideInactiveKey(d.device), true),
     };
     this.wireArticleHandlers(entry);
-    entry.article.appendChild(entry.settingsWrap);
+    entry.article.appendChild(entry.panel.el);
     return entry;
   }
 
@@ -956,11 +772,8 @@ export class DashboardView {
     this.wireArticleHandlers(entry);
     // Move the owned settings panel (and its live form, if open) into the new
     // article, and restore its expanded visual state.
-    entry.article.appendChild(entry.settingsWrap);
-    if (entry.expanded) {
-      entry.settingsWrap.hidden = false;
-      entry.article.classList.add("expanded");
-    }
+    entry.article.appendChild(entry.panel.el);
+    if (entry.panel.expanded) entry.article.classList.add("expanded");
     entry.shape = shapeKey(d);
 
     // Swap in place if the card was already mounted in the rack; otherwise the
@@ -974,15 +787,15 @@ export class DashboardView {
   // accent via the card's .expanded class. It runs wherever expanded changes
   // and after every rebuild, which creates a fresh button.
   private syncSettingsButton(entry: CardEntry): void {
-    entry.settingsBtn.setAttribute("aria-expanded", String(entry.expanded));
-    entry.settingsBtn.setAttribute("aria-controls", entry.settingsWrap.id);
+    entry.settingsBtn.setAttribute("aria-expanded", String(entry.panel.expanded));
+    entry.settingsBtn.setAttribute("aria-controls", entry.panel.el.id);
   }
 
   // wireArticleHandlers attaches the settings and toggle handlers to a freshly built
   // article's controls. They close over the stable entry (not the disposable
   // nodes), so a later rebuild simply re-wires the new nodes to the same entry.
   private wireArticleHandlers(entry: CardEntry): void {
-    entry.settingsBtn.addEventListener("click", () => this.toggleSettings(entry));
+    entry.settingsBtn.addEventListener("click", () => entry.panel.toggle());
     entry.toggleInput.addEventListener("change", () => void this.handleToggleEnabled(entry));
     if (entry.togglePending) {
       // Show the change asked for, not the unchecked default of a new switch.
@@ -1311,7 +1124,7 @@ export class DashboardView {
     const art = entry.article;
     const active = document.activeElement;
     if (!(active instanceof HTMLElement) || !art.contains(active)) return null;
-    if (entry.settingsWrap.contains(active)) return { el: active };
+    if (entry.panel.el.contains(active)) return { el: active };
     const key = active.dataset.focus;
     return key ? { key } : null;
   }
@@ -1345,39 +1158,6 @@ export class DashboardView {
     }
   }
 
-  // deviceConfigBase is the current device list to patch from: the persisted
-  // config when loaded, else the runtime devices projected to config shape so a
-  // patch built before the first config load still carries every device.
-  private deviceConfigBase(): DeviceConfig[] {
-    return store.getState().config?.devices ?? store.getState().devices.map(deviceToConfig);
-  }
-
-  // enqueue serializes config mutations. The queued task runs only after the
-  // previous mutation's PATCH and refresh have settled, so it can build its
-  // full-array PATCH from a fresh deviceConfigBase() and never clobber a
-  // concurrent change with a stale base. The chain tail never rejects (errors are
-  // handled inside each task), so one failure cannot wedge later mutations.
-  private enqueue(task: () => Promise<void>): Promise<void> {
-    const run = this.mutationQueue.then(() => task());
-    this.mutationQueue = run.catch(() => {});
-    return run;
-  }
-
-  // apiErrorToast surfaces a failed request under a prefix that says which
-  // action failed. A validation problem names the first field by its form
-  // label, and the device by its name in sent, the device list the request
-  // carried (the stored config when the request carried none), since a field
-  // path indexes that list.
-  private apiErrorToast(err: unknown, prefix: string, sent?: readonly DeviceConfig[]): void {
-    const problem = firstProblem(err);
-    if (problem) {
-      const names = (sent ?? store.getState().config?.devices ?? []).map((cd) => cd.name);
-      showToast(rejectionText(prefix, problem, names), "error");
-    } else {
-      showToast(`${prefix}: ${apiErrorMessage(err)}`, "error");
-    }
-  }
-
   // handleToggleEnabled persists a device's streaming enable/disable flag. The
   // change is hot-applied to the running pipeline (the device is started or
   // stopped in place, other devices keep serving), so it takes effect at once;
@@ -1389,7 +1169,7 @@ export class DashboardView {
     const id = entry.device.device;
     const name = entry.device.name;
     // Refuse to mutate the device list from the runtime fallback: until GET
-    // /config has loaded, deviceConfigBase() projects via deviceToConfig, which
+    // /config has loaded, the queue's base() projects via deviceToConfig, which
     // omits config-only fields (quietAlert), so a full-array PATCH would reset
     // every device's opt-out. config only ever goes null -> loaded, so checking
     // here is equivalent to checking inside the queued task.
@@ -1405,25 +1185,24 @@ export class DashboardView {
     entry.toggleWant = want;
     input.disabled = true;
     input.setAttribute("aria-busy", "true");
-    await this.enqueue(async () => {
+    const queue = this.queue;
+    await queue.enqueue(async () => {
       // Build merged from a FRESH base inside the queued task, after any prior
       // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
       // a concurrent change with a stale base.
       let merged: DeviceConfig[] = [];
       const verb = want ? "Enabled" : "Disabled";
       try {
-        if (!(await this.freshBase())) {
+        if (!(await queue.freshBase())) {
           entry.toggleInput.checked = !want;
           showToast(STALE_BASE_TEXT, "warn");
           return;
         }
-        merged = this.deviceConfigBase().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
+        merged = queue.base().map((cd) => (cd.device === id ? { ...cd, enabled: want } : cd));
         const res = await api.patchConfig({ devices: merged });
-        // The PATCH persisted. Seed the cached config with the authoritative
-        // response before the refresh, so a later queued mutation rebuilds its
-        // base from this change even if the GET refresh below fails.
-        store.applyConfig(res.config);
-        this.baseStale = false;
+        // The PATCH persisted: seed the cached config before the refresh (see
+        // ConfigQueue.applied).
+        queue.applied(res.config);
         // A refresh failure afterwards must NOT revert the toggle: the change is
         // already applied and reflected in the cached config above.
         await Promise.all([store.refreshConfig(), store.refreshDevices()]);
@@ -1437,12 +1216,12 @@ export class DashboardView {
           // A refusal did not persist, so the toggle reverts (the live node:
           // a poll may have rebuilt the card meanwhile).
           entry.toggleInput.checked = !want;
-          this.apiErrorToast(err, `Could not ${want ? "enable" : "disable"} ${name}`, merged);
+          apiErrorToast(err, `Could not ${want ? "enable" : "disable"} ${name}`, merged);
         } else {
           // The change may have persisted: re-read inside the queue, so the
           // next queued change builds from what the appliance holds, and say
           // what the re-read found.
-          const read = await this.refreshConfigViews();
+          const read = await queue.refreshConfigViews();
           const now = store.getState().config?.devices.find((cd) => cd.device === id);
           if (!read) showUnconfirmed(`the change to ${name}`, "check the switch before trying again");
           else if ((now?.enabled ?? true) === want) showToast(`${verb} ${name}.`);
@@ -1466,269 +1245,6 @@ export class DashboardView {
         if (hadFocus && ((toggle.isConnected && holdsFocus(toggle)) || focusDropped())) (toggle.isConnected ? toggle : entry.settingsBtn).focus();
       }
     });
-  }
-
-  private toggleSettings(entry: CardEntry): void {
-    if (entry.expanded) {
-      void this.requestCloseSettings(entry);
-      return;
-    }
-    if (!entry.settingsForm) {
-      entry.settingsWrap.textContent = "";
-
-      const actions = elem("div", "settings-actions");
-      const removeBtn = button({ variant: "danger", label: "Remove", ariaLabel: `Remove ${entry.device.name}` });
-      const badge = elem("span", "staged-badge", "Unsaved changes");
-      badge.hidden = true;
-      // Stale notice, shown by syncSettings when the saved config changed under
-      // an open form. A Reload rebuilds the form from the fresh config; Save
-      // keeps last-writer-wins. Hidden until a drift is detected.
-      const staleNote = elem("span", "stale-note");
-      staleNote.setAttribute("role", "status");
-      // The message text is written by syncSettings when drift is detected: a
-      // role=status region announces on a content change, so writing the text is
-      // reliable where merely un-hiding pre-filled text is not.
-      staleNote.appendChild(elem("span", "stale-msg"));
-      const reloadBtn = elem("button", "btn-link", "Reload");
-      reloadBtn.setAttribute("type", "button");
-      reloadBtn.addEventListener("click", () => void this.reloadSettings(entry));
-      staleNote.appendChild(reloadBtn);
-      staleNote.hidden = true;
-      const spacer = elem("span", "settings-actions-spacer");
-      const cancelBtn = button({ variant: "secondary", label: "Cancel" });
-      const saveBtn = button({ variant: "primary", label: "Save Changes" });
-      actions.append(removeBtn, badge, staleNote, spacer, cancelBtn, saveBtn);
-      removeBtn.addEventListener("click", () => void this.removeDevice(entry, removeBtn));
-
-      // Build from the saved config (source of truth), matched by device id. Prefer
-      // the persisted config (it carries the enabled flag); fall back to the
-      // runtime device projected through deviceToConfig so enabled is always
-      // present and collect() cannot drop it.
-      const cfg = store.getState().config;
-      const configured = cfg?.devices.find((cd) => cd.device === entry.device.device) ?? deviceToConfig(entry.device);
-      const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; entry.dirty = true; }, {
-        friendlyName: entry.device.friendlyName,
-        supportedRates: entry.device.supportedRates,
-        supportedChannels: entry.device.supportedChannels,
-        idStable: entry.device.idStable,
-      }, {
-        hideInactive: entry.hideInactive,
-        onHideInactiveChange: (hide) => {
-          entry.hideInactive = hide;
-          writeBoolPref(hideInactiveKey(entry.device.device), hide);
-          this.render();
-        },
-      });
-      entry.settingsForm = form;
-      // Record what the form was built from, so an out-of-band change is detected.
-      // Cache its config key now: formSource is fixed until the form is rebuilt,
-      // so syncSettings compares against this instead of re-serialising it every
-      // render while the form is open.
-      entry.formSource = configured;
-      entry.formSourceKey = deviceConfigKey(configured);
-      entry.staleNote = staleNote;
-      entry.settingsWrap.append(form.element, actions);
-
-      // Tell the operator when opening the form silently downgraded an
-      // unsupported saved codec, rather than the change appearing unexplained.
-      const notice = form.loadNotice();
-      if (notice) {
-        badge.hidden = false;
-        entry.dirty = true;
-        showToast(notice, "warn");
-      }
-
-      cancelBtn.addEventListener("click", () => void this.requestCloseSettings(entry));
-      saveBtn.addEventListener("click", () => this.saveDevice(entry, saveBtn, cancelBtn));
-    }
-    entry.expanded = true;
-    entry.settingsWrap.hidden = false;
-    entry.article.classList.add("expanded");
-    this.syncSettingsButton(entry);
-  }
-
-  // requestCloseSettings collapses the panel, but first confirms the discard if
-  // the form has unsaved edits. It guards every collapse path (the Cancel button
-  // and the settings button), so a stray click cannot silently drop pending changes.
-  private async requestCloseSettings(entry: CardEntry): Promise<void> {
-    if (entry.dirty) {
-      const ok = await confirmDialog({
-        title: "Discard changes?",
-        body: "This device has unsaved changes that will be lost.",
-        confirmLabel: "Discard",
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    this.closeSettings(entry);
-    // closeSettings clears settingsWrap (including the Cancel button focus was on),
-    // so return focus to the settings button, which always survives the collapse,
-    // rather than letting focus fall to <body>.
-    entry.settingsBtn.focus();
-  }
-
-  private closeSettings(entry: CardEntry): void {
-    entry.expanded = false;
-    entry.dirty = false;
-    entry.settingsWrap.hidden = true;
-    entry.article.classList.remove("expanded");
-    this.syncSettingsButton(entry);
-    entry.settingsWrap.textContent = "";
-    entry.settingsForm?.destroy();
-    entry.settingsForm = null;
-    entry.formSource = null;
-    entry.formSourceKey = "";
-    entry.staleNote = null;
-  }
-
-  // reloadSettings rebuilds the open form from the current config after an
-  // out-of-band change, confirming a discard first if the operator has unsaved
-  // edits. It never rewrites the form under the operator without asking.
-  private async reloadSettings(entry: CardEntry): Promise<void> {
-    if (entry.dirty) {
-      const ok = await confirmDialog({
-        title: "Discard changes?",
-        body: "Reloading replaces your unsaved changes with the current saved settings.",
-        confirmLabel: "Discard and reload",
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    this.closeSettings(entry);
-    this.toggleSettings(entry);
-    // The Reload button was just removed with the old form; move focus to the
-    // settings button (which survives the rebuild) rather than letting it fall to <body>.
-    entry.settingsBtn.focus();
-  }
-
-  // syncSettings shows or hides the "changed elsewhere" notice on an open form by
-  // comparing the config the form was built from (cached formSourceKey) against
-  // the current config (excluding enabled). It never mutates the form; the
-  // operator chooses Reload or Save. Called from reconcile() for entries with an
-  // open form.
-  private syncSettings(entry: CardEntry, cfgByDevice: Map<string, DeviceConfig>): void {
-    if (!entry.settingsForm || !entry.staleNote) return;
-    const current = cfgByDevice.get(entry.device.device);
-    const stale = deviceConfigKey(current) !== entry.formSourceKey;
-    // Write the message text (not just toggle visibility) so the role=status
-    // region announces the drift as it appears and clears when resolved.
-    const msg = entry.staleNote.querySelector<HTMLElement>(".stale-msg");
-    if (msg) setText(msg, stale ? "Settings changed elsewhere. Save overwrites them. " : "");
-    setHidden(entry.staleNote, !stale);
-  }
-
-  // finishSave ends a device save that applied: it closes the form that was
-  // saved (not one the operator opened while the save was queued, which
-  // would drop its edits), says so, and returns focus to the settings button
-  // if closing the form dropped it.
-  private finishSave(entry: CardEntry, form: DeviceSettingsForm, text: string): void {
-    const same = entry.settingsForm === form;
-    if (same) this.closeSettings(entry);
-    showToast(text);
-    if (same && focusDropped()) entry.settingsBtn.focus();
-  }
-
-  private async saveDevice(entry: CardEntry, btn: HTMLElement, cancelBtn: HTMLButtonElement): Promise<void> {
-    if (btn.getAttribute("aria-disabled") === "true") return;
-    const form = entry.settingsForm;
-    if (!form) return;
-    if (!form.validate()) {
-      showToast(FIX_FIELDS_TEXT, "error");
-      // Move focus to the first flagged field, matching AccessCard.save, so a keyboard
-      // user is taken to what needs fixing instead of staying on the Save button.
-      form.focusFirstInvalid();
-      return;
-    }
-    // Refuse to save from the runtime fallback: until GET /config has loaded,
-    // deviceConfigBase() projects via deviceToConfig, which omits config-only
-    // fields (quietAlert), so this full-array PATCH would reset every device's
-    // opt-out. config only ever goes null -> loaded.
-    if (!store.getState().config) {
-      showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
-      return;
-    }
-    const edited = form.collect();
-    // Show the save in flight and block a second submit or a discard while the
-    // queued PATCH runs; markBusy keeps Save focusable (aria-disabled) while
-    // Cancel, which is not focused, can simply be disabled.
-    setBusy(btn, "Saving...");
-    cancelBtn.disabled = true;
-    try {
-      await this.enqueue(async () => {
-      if (!(await this.freshBase())) {
-        showToast(STALE_BASE_TEXT, "warn");
-        return;
-      }
-      // Source the enabled flag and the patch base FRESH inside the queued task:
-      // the settings form does not edit enabled, the card toggle may have changed
-      // it since the panel opened, and a prior queued mutation may have changed
-      // the base. Building here (not at collect time) avoids clobbering either.
-      const cur = store.getState().config?.devices.find((cd) => cd.device === edited.device);
-      if (cur?.enabled !== undefined) edited.enabled = cur.enabled;
-      // The form edits the first stream; a multi-stream device keeps its other
-      // streams as the config holds them now, so a change made elsewhere since
-      // the form opened is not reverted.
-      const toSave = withFirstStream(edited, cur?.streams);
-      const merged = this.deviceConfigBase().map((cd) => (cd.device === edited.device ? toSave : cd));
-      if (!merged.some((cd) => cd.device === edited.device)) merged.push(toSave);
-
-      try {
-        const res = await api.patchConfig({ devices: merged });
-        // Seed the cached config with the authoritative PATCH response before the
-        // refresh so a later queued mutation cannot rebuild from a stale base if
-        // the GET refresh fails (see applyConfig). A refresh failure after a
-        // successful PATCH must not report "Save failed": the change persisted.
-        store.applyConfig(res.config);
-        this.baseStale = false;
-        this.finishSave(entry, form, res.restartRequired ? "Device settings saved. Restart the appliance to apply." : "Device settings applied.");
-        await Promise.all([store.refreshConfig(), store.refreshDevices()]);
-      } catch (err: unknown) {
-        // A problem the form can show is marked on its field (see
-        // rejectedFieldKey and markRejected), and the toast then only says
-        // the save failed, as for a local check: the field carries the
-        // reason. Focus moves there only if it is still on Save or dropped,
-        // and only on the form that was saved.
-        const problem = firstProblem(err);
-        const key = problem?.field ? rejectedFieldKey(problem.field, merged, edited.device) : null;
-        const moveFocus = focusOnOrDropped(btn);
-        const marked = problem !== null && key !== null && entry.settingsForm === form && form.markRejected(key, problem.reason, moveFocus);
-        // The short toast only when focus went to the marked field, which
-        // then reads the reason; otherwise the toast says it all.
-        if (marked && moveFocus) showToast(FIX_FIELDS_TEXT, "error");
-        else if (isRefusal(err)) this.apiErrorToast(err, "Save failed", merged);
-        else {
-          // The save may have persisted: re-read inside the queue, and judge
-          // by what the appliance now holds (judgeUnconfirmedSave).
-          const read = await this.refreshConfigViews();
-          const after = store.getState().config?.devices.find((cd) => cd.device === edited.device);
-          const what = `the save of ${edited.name}`;
-          switch (judgeUnconfirmedSave(read, deviceConfigKey(cur), deviceConfigKey(after), deviceConfigKey(toSave))) {
-            case "unread":
-              showUnconfirmed(what, "check the settings before saving again");
-              break;
-            case "applied":
-              this.finishSave(entry, form, "Device settings applied.");
-              break;
-            case "unchanged":
-              this.finishSave(entry, form, `${edited.name}'s settings were already as saved.`);
-              break;
-            case "notApplied":
-              showToast(`The save of ${edited.name} does not appear to have applied; check again shortly.`, "warn");
-              break;
-            case "changed":
-              showUnconfirmed(what, "the settings changed; check them before saving again");
-              break;
-          }
-        }
-      }
-      });
-    } finally {
-      // Restore the buttons whether the save succeeded (its panel is torn down,
-      // so this is a harmless no-op on detached nodes) or failed (they stay for
-      // retry).
-      clearBusy(btn, "Save Changes");
-      cancelBtn.disabled = false;
-    }
   }
 
   // handleCopyUrl copies the stream URL. When the appliance requires the access

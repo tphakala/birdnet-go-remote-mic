@@ -560,8 +560,8 @@ export class DeviceSettingsForm {
       channels: this.selectedChannels(),
       format: this.device.format || "s16",
       // Preserve the streaming enable/disable flag: this form does not edit it,
-      // but saveDevice replaces the whole device entry in the PATCH, so dropping
-      // it here would silently re-enable a disabled device on save.
+      // but a save (SettingsPanel) replaces the whole device entry in the
+      // PATCH, so dropping it here would silently re-enable a disabled device.
       enabled: this.device.enabled,
       // The very-quiet alert opt-out is written explicitly (true is equivalent
       // to absent), so toggling it off persists quietAlert:false.

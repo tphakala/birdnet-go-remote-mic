@@ -122,6 +122,47 @@ export function downCauseTitle(cause: string | undefined): string {
   }
 }
 
+// runtimeEnabled reports whether a device is on at runtime. A disabled device is
+// off; anything else (serving, or a failed/skipped device that was configured
+// to stream) is on until the operator changes it.
+export function runtimeEnabled(state: string): boolean {
+  return state !== "disabled";
+}
+
+// deviceToConfig projects a runtime device, which carries the runtime-visible
+// configured fields, to the config shape: the fallback base for a device-list
+// patch before GET /config has loaded. quietAlert is omitted, since the runtime
+// device carries no such field. It is a render and seed fallback only: the
+// Dashboard's mutating device PATCHes refuse to run until the config has
+// loaded, so it never persists and an existing opt-out cannot be reset.
+export function deviceToConfig(d: Device): DeviceConfig {
+  const c: DeviceConfig = {
+    name: d.name, device: d.device, path: d.path, mode: d.mode,
+    rate: d.rate, channels: d.channels, format: d.format,
+    enabled: runtimeEnabled(d.state),
+  };
+  if (d.opus) c.opus = d.opus;
+  return c;
+}
+
+// deviceConfigKey serialises the settings-relevant fields of a device config in
+// a fixed order, so an out-of-band change to an open settings form can be
+// detected by comparison. It EXCLUDES enabled: the form does not edit the enable
+// flag (the card toggle does, and a save sources it fresh), so a same-tab toggle
+// must not flag the operator's own open form as changed elsewhere. quietAlert is
+// included, since the form edits it, normalised with `?? true` (the backend's
+// absent default) so an absent value and an explicit true hash identically. A
+// config payload need not carry channels, so a missing one reads as empty
+// rather than throwing.
+export function deviceConfigKey(cd: DeviceConfig | undefined): string {
+  if (!cd) return "";
+  return JSON.stringify([
+    cd.name, cd.path, cd.mode, cd.rate,
+    [...(cd.channels ?? [])], cd.format, cd.opus?.bitrate ?? null,
+    cd.quietAlert ?? true,
+  ]);
+}
+
 // FooterMetrics is the text of a serving device card's footer counters.
 export interface FooterMetrics {
   clients: string;

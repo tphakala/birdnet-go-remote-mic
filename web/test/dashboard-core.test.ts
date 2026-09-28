@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
+import type { AvailableDevice, Device, DeviceConfig } from "../src/lib/types.ts";
 import { Emitter } from "../src/lib/emitter.ts";
 import type { ViewName } from "../src/lib/router-core.ts";
 import { fileURLToPath } from "node:url";
@@ -14,12 +14,15 @@ import { at, FakeTimers } from "./fixtures.ts";
 import {
   availableCardKey,
   availableGoneMessage,
+  deviceConfigKey,
   deviceGoneMessage,
+  deviceToConfig,
   focusMovedMessage,
   judgeUnconfirmedSave,
   neighbourOrder,
   parseDeviceFieldPath,
   rejectedFieldKey,
+  runtimeEnabled,
   settingsFocusMessage,
   availablePlan,
   bannerIsError,
@@ -519,4 +522,48 @@ test("routeLevels feeds each channel's meter and clears a card the event lacks",
     ["g1 -20 -6 false", "g0 -30 -0.05 true", "b0 clear"],
     "each channel's own levels and latch reach its meter; a channel with no meter is skipped; bats is missing, so cleared",
   );
+});
+
+test("runtimeEnabled is off only for a disabled device", () => {
+  assert.equal(runtimeEnabled("disabled"), false);
+  for (const state of ["serving", "failed", "skipped"]) assert.equal(runtimeEnabled(state), true, state);
+});
+
+const RUNTIME: Device = {
+  name: "Garden",
+  device: "usb:0d8c:0014:s=A:if=0,0",
+  path: "/garden",
+  mode: "opus",
+  format: "s16",
+  rate: 48000,
+  channels: [1],
+  state: "failed",
+  clientConnected: false,
+  droppedFrames: 0,
+  opus: { bitrate: 64000 },
+};
+
+test("deviceToConfig projects the configured fields and leaves quietAlert out", () => {
+  assert.deepEqual(deviceToConfig(RUNTIME), {
+    name: "Garden", device: RUNTIME.device, path: "/garden", mode: "opus",
+    rate: 48000, channels: [1], format: "s16", enabled: true, opus: { bitrate: 64000 },
+  });
+  const pcm = deviceToConfig({ ...RUNTIME, mode: "pcm", state: "disabled", opus: undefined });
+  assert.equal(pcm.enabled, false);
+  assert.equal("opus" in pcm, false);
+  assert.equal("quietAlert" in pcm, false);
+});
+
+test("deviceConfigKey ignores enabled and reads an absent quietAlert as true", () => {
+  const cd: DeviceConfig = { ...deviceToConfig(RUNTIME), quietAlert: true };
+  assert.equal(deviceConfigKey(undefined), "");
+  assert.equal(deviceConfigKey({ ...cd, enabled: false }), deviceConfigKey(cd));
+  assert.equal(deviceConfigKey({ ...cd, quietAlert: undefined }), deviceConfigKey(cd));
+  assert.notEqual(deviceConfigKey({ ...cd, quietAlert: false }), deviceConfigKey(cd));
+  assert.notEqual(deviceConfigKey({ ...cd, opus: { bitrate: 96000 } }), deviceConfigKey(cd));
+  assert.notEqual(deviceConfigKey({ ...cd, channels: [1, 2] }), deviceConfigKey(cd));
+  // A config payload without channels does not throw.
+  const noChannels = { ...cd } as Partial<DeviceConfig>;
+  delete noChannels.channels;
+  assert.equal(deviceConfigKey(noChannels as DeviceConfig), deviceConfigKey({ ...cd, channels: [] }));
 });
