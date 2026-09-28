@@ -321,6 +321,10 @@ remote-mic --config config.yaml --check   # validate config, show what each devi
 
 Then pull each stream at `rtsp://<host>:8554<path>`, for example
 `rtsp://<host>:8554/garden`. A single-device config is just a one-entry list.
+Several clients can play one stream at once, up to 8 per stream, for example two
+BirdNET-Go instances or a BirdNET-Go stream test alongside its capture. The
+stream is encoded once and shared, so each extra client costs only its
+bandwidth; a client that falls behind loses its own frames, not the others'.
 
 ## Updates
 
@@ -495,11 +499,11 @@ credentials in their URL. A connection that is not currently streaming, one
 still negotiating or set up but idle, is instead re-challenged on its next
 request, which for a mostly-idle client is when its keepalive next falls due: up
 to about 30 seconds with the default 60 second session timeout, measured with
-ffmpeg. A client that does not present the current token is disconnected and its
-stream slot released. Restart the appliance if you need every idle session cut
-at once. One exception: a management event stream (GET /events) opened before
-the change keeps running, because the bearer token is checked once when the
-stream starts, not per event.
+ffmpeg. A client that does not present the current token is disconnected and
+stops counting as a client of the stream. Restart the appliance if you need
+every idle session cut at once. One exception: a management event stream
+(GET /events) opened before the change keeps running, because the bearer token
+is checked once when the stream starts, not per event.
 As for what crosses the wire: the bearer token rides inside TLS (the API is
 HTTPS with a self-signed certificate), and Digest never sends the token at all,
 only an MD5 response over it. That MD5 exchange travels over plain TCP, so it is
