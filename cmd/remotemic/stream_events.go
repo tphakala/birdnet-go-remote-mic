@@ -72,7 +72,8 @@ func flapIDOf(path, remote string) flapID {
 	return flapID{path: path, host: host}
 }
 
-// newStreamEvents builds the adapter over pub. A nil clock uses time.Now; tests
+// newStreamEvents builds the adapter over pub, with no flap detectors yet (each
+// path and client host gets one on first use). A nil clock uses time.Now; tests
 // inject a fake clock so the flap window and quiet period are deterministic. A
 // nil pub becomes a typed-nil *notify.Center (a no-op Publisher) so the emission
 // sites can call it unconditionally, matching newAppliance's convention.
@@ -189,8 +190,8 @@ func (s *streamEvents) sweep(now time.Time) {
 	}
 }
 
-// flapSettled builds the info body for a flap clear; Center.Clear fills the key,
-// category, and source from the matching onset.
+// flapSettled builds the info body for a flap clear of one host on one path;
+// Center.Clear fills the key, category, and source from the matching onset.
 func flapSettled(id flapID) notify.Notification {
 	return notify.Notification{
 		Severity: notify.SeverityInfo,

@@ -23,7 +23,8 @@ const (
 	titleConnected = "Client connected"
 
 	evPath   = "/stream"
-	evRemote = "10.0.0.9:41000"
+	evHostA  = "10.0.0.9"
+	evRemote = evHostA + ":41000"
 	evHostB  = "10.0.0.20"
 )
 
@@ -377,7 +378,7 @@ func TestStreamEventsHostsFlapIndependently(t *testing.T) {
 	pub := &recordedPub{}
 	now := time.Unix(0, 0)
 	se := newStreamEvents(pub, func() time.Time { return now })
-	hostA, hostB := "10.0.0.9:41000", evHostB+":52000"
+	hostA, hostB := evRemote, evHostB+":52000"
 
 	// Six connects on the path inside the window, three per host: over the
 	// threshold for the path as a whole, under it for each host.
@@ -400,13 +401,15 @@ func TestStreamEventsHostsFlapIndependently(t *testing.T) {
 	if onset == nil {
 		t.Fatal("host A reconnecting rapidly raised no flap warning")
 	}
-	if want := streamFlapKey(flapID{path: evPath, host: "10.0.0.9"}); onset.key != want {
+	// The key is compared with a literal, not with streamFlapKey, so a key that
+	// dropped the host would fail here.
+	if want := "stream:/stream:10.0.0.9:flap"; onset.key != want {
 		t.Errorf("onset key = %q, want %q", onset.key, want)
 	}
-	if want := evPath + " from 10.0.0.9"; onset.n.Source != want {
+	if want := evPath + " from " + evHostA; onset.n.Source != want {
 		t.Errorf("onset source = %q, want %q", onset.n.Source, want)
 	}
-	if !strings.Contains(onset.n.Message, "10.0.0.9") || !strings.Contains(onset.n.Message, evPath) {
+	if !strings.Contains(onset.n.Message, evHostA) || !strings.Contains(onset.n.Message, evPath) {
 		t.Errorf("onset message %q does not name the host and the path", onset.n.Message)
 	}
 
@@ -431,7 +434,7 @@ func TestStreamEventsOneHostSettlingKeepsAnothersWarning(t *testing.T) {
 	pub := &recordedPub{}
 	now := time.Unix(0, 0)
 	se := newStreamEvents(pub, func() time.Time { return now })
-	hostA, hostB := "10.0.0.9:41000", evHostB+":52000"
+	hostA, hostB := evRemote, evHostB+":52000"
 
 	for range flapMax + 1 {
 		se.ClientConnected(evPath, hostA)
@@ -440,6 +443,18 @@ func TestStreamEventsOneHostSettlingKeepsAnothersWarning(t *testing.T) {
 	}
 	if got := pub.countTitles(opOnset, "Client reconnecting repeatedly"); got != 2 {
 		t.Fatalf("flap onsets = %d, want one per host", got)
+	}
+	// Each host has a condition key of its own: with one shared key, one host's
+	// clear would resolve the other's warning.
+	const keyA, keyB = "stream:/stream:10.0.0.9:flap", "stream:/stream:10.0.0.20:flap"
+	var onsetKeys []string
+	for i := range pub.notes {
+		if pub.notes[i].op == opOnset {
+			onsetKeys = append(onsetKeys, pub.notes[i].key)
+		}
+	}
+	if !slices.Equal(onsetKeys, []string{keyA, keyB}) {
+		t.Fatalf("onset keys = %q, want %q", onsetKeys, []string{keyA, keyB})
 	}
 
 	// Host B keeps reconnecting (silently, while flapping) so its quiet window
@@ -453,8 +468,8 @@ func TestStreamEventsOneHostSettlingKeepsAnothersWarning(t *testing.T) {
 	if cleared == nil {
 		t.Fatal("host A's warning was not cleared after it went quiet")
 	}
-	if want := streamFlapKey(flapID{path: evPath, host: "10.0.0.9"}); cleared.key != want {
-		t.Errorf("cleared %q, want %q", cleared.key, want)
+	if cleared.key != keyA {
+		t.Errorf("cleared %q, want %q", cleared.key, keyA)
 	}
 	if got := pub.countTitles(opClear, "Client stopped reconnecting"); got != 1 {
 		t.Errorf("flap clears = %d, want 1: host B is still reconnecting", got)
@@ -463,5 +478,29 @@ func TestStreamEventsOneHostSettlingKeepsAnothersWarning(t *testing.T) {
 	defer se.mu.Unlock()
 	if !se.paths[flapID{path: evPath, host: evHostB}].Active() {
 		t.Error("host B's flap warning was cleared along with host A's")
+	}
+}
+
+// TestFlapIDOf pins how a remote address becomes a detector id: the host
+// without its port, IPv6 brackets stripped, and an address that does not split
+// (no port, or empty) kept whole, with the path carried through unchanged.
+func TestFlapIDOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, remote, wantHost string
+	}{
+		{"ipv4 with port", evRemote, evHostA},
+		{"ipv6 with port", "[fe80::1]:41000", "fe80::1"},
+		{"host without port", evHostA, evHostA},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			want := flapID{path: evPath, host: tt.wantHost}
+			if got := flapIDOf(evPath, tt.remote); got != want {
+				t.Errorf("flapIDOf(%q, %q) = %+v, want %+v", evPath, tt.remote, got, want)
+			}
+		})
 	}
 }
