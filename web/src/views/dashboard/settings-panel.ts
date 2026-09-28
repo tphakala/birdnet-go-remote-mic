@@ -16,6 +16,18 @@ const FIX_FIELDS_TEXT = "Save failed: fix the highlighted fields.";
 // Sequence for the settings panels' element ids (aria-controls targets).
 let settingsSeq = 0;
 
+// OpenForm is an open panel's form with what sync compares and writes.
+interface OpenForm {
+  form: DeviceSettingsForm;
+  // deviceConfigKey of the config entry the form was built from, computed once
+  // when it opens rather than re-serialised on every render (the source does
+  // not change until the form is rebuilt).
+  sourceKey: string;
+  // The "changed elsewhere" notice in the actions bar, and its message.
+  staleNote: HTMLElement;
+  staleMsg: HTMLElement;
+}
+
 // SettingsPanelHost is what a panel needs from the device card it belongs to.
 export interface SettingsPanelHost {
   queue: ConfigQueue;
@@ -42,16 +54,8 @@ export interface SettingsPanelHost {
 export class SettingsPanel {
   public readonly el: HTMLElement;
   private readonly host: SettingsPanelHost;
-  private form: DeviceSettingsForm | null = null;
-  // Cached deviceConfigKey of the config entry the open form was built from,
-  // computed once when the form opens rather than re-serialised on every
-  // render (the source does not change until the form is rebuilt). sync
-  // compares it with the current config to detect an out-of-band change.
-  private formSourceKey = "";
-  // "Changed elsewhere" notice in the open form's actions bar.
-  private staleNote: HTMLElement | null = null;
-  private staleMsg: HTMLElement | null = null;
-  private open = false;
+  // The open form, null while the panel is closed.
+  private open: OpenForm | null = null;
   private dirty = false;
   // Set while this panel's Remove is deleting the device, so the render that
   // removes the card announces only where focus went: the Remove's own toast
@@ -64,7 +68,7 @@ export class SettingsPanel {
   }
 
   public get expanded(): boolean {
-    return this.open;
+    return this.open !== null;
   }
 
   public get removing(): boolean {
@@ -78,8 +82,7 @@ export class SettingsPanel {
       void this.requestClose();
       return;
     }
-    if (!this.form) this.build();
-    this.open = true;
+    this.open = this.build();
     this.el.hidden = false;
     this.host.expandedChanged();
   }
@@ -89,25 +92,27 @@ export class SettingsPanel {
   // device's entry in the current config (excluding enabled). It never
   // mutates the form; the operator chooses Reload or Save.
   public sync(current: DeviceConfig | undefined): void {
-    if (!this.form || !this.staleNote || !this.staleMsg) return;
-    const stale = deviceConfigKey(current) !== this.formSourceKey;
+    if (!this.open) return;
+    const stale = deviceConfigKey(current) !== this.open.sourceKey;
     // Write the message text (not just toggle visibility) so the role=status
     // region announces the drift as it appears and clears when resolved.
-    setText(this.staleMsg, stale ? "Settings changed elsewhere. Save overwrites them. " : "");
-    setHidden(this.staleNote, !stale);
+    setText(this.open.staleMsg, stale ? "Settings changed elsewhere. Save overwrites them. " : "");
+    setHidden(this.open.staleNote, !stale);
   }
 
   // setHideInactive shows a preference changed in another tab in an open
   // form's switch.
   public setHideInactive(hide: boolean): void {
-    this.form?.setHideInactive(hide);
+    this.open?.form.setHideInactive(hide);
   }
 
   public destroy(): void {
-    this.form?.destroy();
+    this.open?.form.destroy();
   }
 
-  private build(): void {
+  // build fills the panel with a form built from the saved config and its
+  // actions bar.
+  private build(): OpenForm {
     this.el.textContent = "";
     const d = this.host.device();
     const removeBtn = button({ variant: "danger", label: "Remove", ariaLabel: `Remove ${d.name}` });
@@ -131,7 +136,7 @@ export class SettingsPanel {
     // Prefer the persisted config (it carries the enabled flag); fall back to
     // the runtime device projected through deviceToConfig so enabled is always
     // present and collect() cannot drop it.
-    const configured = store.getState().config?.devices.find((cd) => cd.device === d.device) ?? deviceToConfig(d);
+    const configured = this.host.queue.configFor(d.device) ?? deviceToConfig(d);
     const form = new DeviceSettingsForm(configured, () => { badge.hidden = false; this.dirty = true; }, {
       friendlyName: d.friendlyName,
       supportedRates: d.supportedRates,
@@ -141,10 +146,6 @@ export class SettingsPanel {
       hideInactive: this.host.hideInactive(),
       onHideInactiveChange: (hide) => this.host.setHideInactive(hide),
     });
-    this.form = form;
-    this.formSourceKey = deviceConfigKey(configured);
-    this.staleNote = staleNote;
-    this.staleMsg = staleMsg;
     this.el.append(form.element, actions);
 
     // Tell the operator when opening the form silently downgraded an
@@ -158,6 +159,7 @@ export class SettingsPanel {
 
     cancelBtn.addEventListener("click", () => void this.requestClose());
     saveBtn.addEventListener("click", () => void this.save(saveBtn, cancelBtn));
+    return { form, sourceKey: deviceConfigKey(configured), staleNote, staleMsg };
   }
 
   // requestClose collapses the panel, but first confirms the discard if the
@@ -182,16 +184,13 @@ export class SettingsPanel {
   }
 
   private close(): void {
-    this.open = false;
+    const open = this.open;
+    this.open = null;
     this.dirty = false;
     this.el.hidden = true;
     this.host.expandedChanged();
     this.el.textContent = "";
-    this.form?.destroy();
-    this.form = null;
-    this.formSourceKey = "";
-    this.staleNote = null;
-    this.staleMsg = null;
+    open?.form.destroy();
   }
 
   // reload rebuilds the open form from the current config after an
@@ -221,7 +220,7 @@ export class SettingsPanel {
   // would drop its edits), says so, and returns focus to the settings button
   // if closing the form dropped it.
   private finishSave(form: DeviceSettingsForm, text: string): void {
-    const same = this.form === form;
+    const same = this.open?.form === form;
     if (same) this.close();
     showToast(text);
     if (same && focusDropped()) this.host.settingsButton().focus();
@@ -229,7 +228,7 @@ export class SettingsPanel {
 
   private async save(btn: HTMLElement, cancelBtn: HTMLButtonElement): Promise<void> {
     if (btn.getAttribute("aria-disabled") === "true") return;
-    const form = this.form;
+    const form = this.open?.form;
     if (!form) return;
     if (!form.validate()) {
       showToast(FIX_FIELDS_TEXT, "error");
@@ -239,16 +238,9 @@ export class SettingsPanel {
       form.focusFirstInvalid();
       return;
     }
-    // Refuse to save from the runtime fallback: until GET /config has loaded,
-    // the queue's base() projects via deviceToConfig, which omits config-only
-    // fields (quietAlert), so this full-array PATCH would reset every device's
-    // opt-out. config only ever goes null -> loaded.
-    if (!store.getState().config) {
-      showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
-      return;
-    }
-    const edited = form.collect();
     const queue = this.host.queue;
+    if (!queue.requireConfig()) return;
+    const edited = form.collect();
     // Show the save in flight and block a second submit or a discard while the
     // queued PATCH runs; setBusy keeps Save focusable (aria-disabled) while
     // Cancel, which is not focused, can simply be disabled.
@@ -265,7 +257,7 @@ export class SettingsPanel {
         // have changed it since the panel opened, and a prior queued mutation
         // may have changed the base. Building here (not at collect time) avoids
         // clobbering either.
-        const cur = store.getState().config?.devices.find((cd) => cd.device === edited.device);
+        const cur = queue.configFor(edited.device);
         if (cur?.enabled !== undefined) edited.enabled = cur.enabled;
         // The form edits the first stream; a multi-stream device keeps its
         // other streams as the config holds them now, so a change made
@@ -291,7 +283,7 @@ export class SettingsPanel {
           const problem = firstProblem(err);
           const key = problem?.field ? rejectedFieldKey(problem.field, merged, edited.device) : null;
           const moveFocus = focusOnOrDropped(btn);
-          const marked = problem !== null && key !== null && this.form === form && form.markRejected(key, problem.reason, moveFocus);
+          const marked = problem !== null && key !== null && this.open?.form === form && form.markRejected(key, problem.reason, moveFocus);
           // The short toast only when focus went to the marked field, which
           // then reads the reason; otherwise the toast says it all.
           if (marked && moveFocus) showToast(FIX_FIELDS_TEXT, "error");
@@ -300,7 +292,7 @@ export class SettingsPanel {
             // The save may have persisted: re-read inside the queue, and judge
             // by what the appliance now holds (judgeUnconfirmedSave).
             const read = await queue.refreshConfigViews();
-            const after = store.getState().config?.devices.find((cd) => cd.device === edited.device);
+            const after = queue.configFor(edited.device);
             const what = `the save of ${edited.name}`;
             switch (judgeUnconfirmedSave(read, deviceConfigKey(cur), deviceConfigKey(after), deviceConfigKey(toSave))) {
               case "unread":

@@ -25,15 +25,10 @@ export class DashboardView {
   private readonly available: AvailableDevices;
   // The polite status region for focus moves the operator did not make.
   private announceEl: HTMLElement | null;
-  private status: ApplianceStatus | null = null;
   // Serializes the device mutations of every card (see ConfigQueue).
   private readonly queue = new ConfigQueue();
   // What each device card needs from the view.
   private readonly cardHost: DeviceCardHost;
-  // Set by the first devices read. Until then the rack keeps its loading
-  // placeholder, whatever other reads land first, and the Available Devices
-  // section below it stays hidden (see AvailableDevices.rackLaidOut).
-  private devicesLoaded = false;
   // Set while a reconcile() is queued on the microtask, so the several store
   // events a single poll tick fires collapse into one pass (see render()).
   private renderScheduled = false;
@@ -45,7 +40,6 @@ export class DashboardView {
     this.cardHost = {
       queue: this.queue,
       announceEl: this.announceEl,
-      status: () => this.status,
       render: () => this.render(),
     };
     this.available = new AvailableDevices(document.getElementById("available-section"), {
@@ -86,17 +80,12 @@ export class DashboardView {
     });
     // The view is a function of store state: devices, status and config each
     // trigger a full render() that reads store.getState(), rather than each
-    // patching its own subset of the DOM. status is stored first because URLs
-    // and the lock tag depend on it; config now arrives on every poll (see the
-    // store) so an out-of-band change reflects within one interval.
-    store.on("devices", () => {
-      this.devicesLoaded = true;
-      this.render();
-    });
+    // patching its own subset of the DOM. config arrives on every poll (see
+    // the store) so an out-of-band change reflects within one interval.
+    store.on("devices", () => this.render());
     store.on("config", () => this.render());
     store.on("status", (status) => {
-      this.status = status;
-      this.updateTelemetryFromStatus();
+      this.updateTelemetryFromStatus(status);
       this.render();
     });
     store.on("system", (system) => {
@@ -120,8 +109,10 @@ export class DashboardView {
     store.on("levels", (levels) => {
       routeLevels(this.liveTargets(), levels, METER_LEVELS);
     });
+    // The rack's empty-state text names Available Devices, so it renders too.
     store.on("available", (available) => {
       this.available.render(available);
+      this.render();
     });
     // A drop reads "Reconnecting" at once, even for a proxy that recycles
     // the stream and reconnects within a second: the meters clear with it
@@ -131,9 +122,7 @@ export class DashboardView {
     store.on("loaderror", (failure) => {
       if (!failure.coreFailed) return;
       this.renderLoadError(failure.message);
-      // The rack now holds the failure and its Retry in place of the loading
-      // line, so Available Devices can show below it.
-      this.available.rackLaidOut();
+      this.available.syncShown();
     });
   }
 
@@ -188,8 +177,8 @@ export class DashboardView {
     const rack = this.rack;
     const devices = store.getState().devices;
 
-    // Before the first devices read an empty list only means not loaded yet.
-    if (this.emptyEl && this.devicesLoaded) {
+    // Until a devices read applied, an empty list only means not loaded yet.
+    if (this.emptyEl && store.devicesRead() === "loaded") {
       this.emptyEl.hidden = devices.length > 0;
       // Clear the alert live-region role set by renderLoadError so the benign
       // empty/loaded state is not re-announced as an error.
@@ -258,8 +247,7 @@ export class DashboardView {
 
     const clientsEl = document.getElementById("total-clients-display");
     if (clientsEl) setText(clientsEl, String(clientCount));
-    // The rack is in its loaded shape, so the section below may show.
-    if (this.devicesLoaded) this.available.rackLaidOut();
+    this.available.syncShown();
   }
 
   // settingsTarget is a device card's settings button as a focus target.
@@ -268,24 +256,23 @@ export class DashboardView {
     return c && { control: c.settingsButton, name: c.device.name };
   }
 
-  private updateTelemetryFromStatus(): void {
-    if (!this.status) return;
+  private updateTelemetryFromStatus(status: ApplianceStatus): void {
     const uptimeEl = document.getElementById("uptime-display");
-    if (uptimeEl) uptimeEl.textContent = formatUptime(this.status.uptimeSeconds, { seconds: true });
+    if (uptimeEl) uptimeEl.textContent = formatUptime(status.uptimeSeconds, { seconds: true });
 
     const servingEl = document.getElementById("devices-serving-display");
-    if (servingEl) servingEl.textContent = `${this.status.devicesServing} / ${this.status.devicesTotal}`;
+    if (servingEl) servingEl.textContent = `${status.devicesServing} / ${status.devicesTotal}`;
 
     // The open-access notice shows while no token is configured. Guard the write
     // so this role=status banner is not re-announced on every ~3s poll when its
     // state is unchanged.
     const banner = document.getElementById("open-access-banner");
-    if (banner) setHidden(banner, this.status.authRequired);
+    if (banner) setHidden(banner, status.authRequired);
 
     const badge = document.getElementById("appliance-status-badge");
     const text = document.getElementById("appliance-status-text");
     if (badge && text) {
-      if (this.status.devicesServing > 0) {
+      if (status.devicesServing > 0) {
         badge.className = "status-badge ok";
         text.textContent = "Streaming";
       } else {

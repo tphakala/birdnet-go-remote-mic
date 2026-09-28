@@ -50,8 +50,8 @@ reconcile:
   `hidden`, and the read fills it in place, so the page does not shift as
   reads land. Hide only what turns out not to apply (the certificate card on
   a 501). A region below a list of unknown length waits for the list's first
-  read instead: Available Devices shows only once the device rack has its
-  cards, which would otherwise push it down.
+  read instead (`store.devicesRead()`): Available Devices shows only once the
+  device rack has its cards, which would otherwise push it down.
 - Never clobber user input: a form being edited is not repopulated from a
   store event (each System card with a form keeps its own `dirty` flag and
   skips a config read while it is set).

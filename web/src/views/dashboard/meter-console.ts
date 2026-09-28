@@ -22,8 +22,14 @@ export class MeterConsole {
   // The row and clip button of each captured channel, indexed the same way.
   private readonly rows: HTMLElement[] = [];
   private readonly clips: HTMLButtonElement[] = [];
+  // Where focus goes when a hidden row held it and no row's clip button can
+  // take it, and the region that says why focus moved (see sync).
+  private readonly fallback: HTMLElement;
+  private readonly announceEl: HTMLElement | null;
 
-  constructor(count: number) {
+  constructor(count: number, fallback: HTMLElement, announceEl: HTMLElement | null) {
+    this.fallback = fallback;
+    this.announceEl = announceEl;
     const n = Math.max(1, count);
     // Cap the stack height for high-channel interfaces so a 6-8 channel device
     // does not grow the card tall enough to push the dashboard down; the rows
@@ -81,8 +87,9 @@ export class MeterConsole {
   // it holds focus (its clip button, as its channel leaves the stream or
   // hiding turns on) would drop focus to the document body, so focus goes to a
   // stable place in the same card: the first visible row's clip button
-  // (hiddenRows never hides them all), else fallback; announceEl says why.
-  public sync(streamed: number[], hideInactive: boolean, fallback: HTMLElement, announceEl: HTMLElement | null): void {
+  // (hiddenRows never hides them all), else the fallback, and the announce
+  // region says why.
+  public sync(streamed: number[], hideInactive: boolean): void {
     const states = tallyStates(streamed, this.rows.length);
     const hidden = hiddenRows(states, hideInactive);
     let strandedRow = -1;
@@ -107,8 +114,8 @@ export class MeterConsole {
     if (strandedRow >= 0) {
       const target = focusFallbackRow(hidden);
       const next = this.clips[target];
-      (next ?? fallback).focus();
-      announce(announceEl, channelHiddenMessage(strandedRow + 1, next ? target + 1 : null));
+      (next ?? this.fallback).focus();
+      announce(this.announceEl, channelHiddenMessage(strandedRow + 1, next ? target + 1 : null));
     }
   }
 

@@ -56,6 +56,14 @@ class AvailableCard {
   }
 }
 
+// FocusLost is an Available card that held focus when a render removed it:
+// its device, its neighbours on screen, and its label.
+interface FocusLost {
+  id: string;
+  neighbours: string[];
+  label: string;
+}
+
 // AvailableDevicesHost is what the section needs from the Dashboard.
 export interface AvailableDevicesHost {
   queue: ConfigQueue;
@@ -68,8 +76,8 @@ export interface AvailableDevicesHost {
 // AvailableDevices is the Available Devices section (#available-section): the
 // host's detected but unconfigured capture devices, each with an Enable button
 // that provisions it. The whole section hides when nothing is available, so a
-// fully configured host shows no empty panel, and until the device rack above
-// it has its first content (see rackLaidOut). Cards are keyed by device id and
+// fully configured host shows no empty panel, and while the device rack above
+// it is still loading (see syncShown). Cards are keyed by device id and
 // rebuilt only when what they show changed (availablePlan), so a render keeps
 // the operator's text selection (the device id is there to be copied) and
 // keyboard focus on the cards it leaves alone. A rebuilt card that held focus
@@ -84,15 +92,10 @@ export class AvailableDevices {
   // The cards on screen by device id, kept in screen order.
   private cards = new Map<string, AvailableCard>();
   // The card that held keyboard focus when a render removed it during that
-  // device's Enable: its device, its neighbours on screen and its label, so
-  // the Enable can move focus when it settles (to the new device card on
+  // device's Enable, so the Enable can move focus when it settles (to the new device card on
   // success; on failure to its own card when it is listed again, else its
   // nearest neighbour still listed). Only set while that Enable is in flight.
-  private focusLost: { id: string; neighbours: string[]; label: string } | null = null;
-  // Set once the device rack above has its first content, and the number of
-  // devices the last read listed: the section shows when both allow.
-  private rackShown = false;
-  private count = 0;
+  private focusLost: FocusLost | null = null;
 
   constructor(section: HTMLElement | null, host: AvailableDevicesHost) {
     this.section = section;
@@ -100,24 +103,20 @@ export class AvailableDevices {
     this.host = host;
   }
 
-  // rackLaidOut shows the section, if it lists anything, once the device rack
-  // above it has its first content (the devices read, or its load error).
+  // syncShown shows the section when it lists a device and the device rack
+  // above it is no longer loading: its first devices read applied or failed.
   // Shown earlier, the section would sit under the rack's one-line loading
   // placeholder and be pushed down, out of a laptop-sized window, when the
   // device cards arrive. The rack's length is unknown until that read, so the
   // section waits instead of reserving space.
-  public rackLaidOut(): void {
-    if (this.rackShown) return;
-    this.rackShown = true;
-    this.syncShown();
+  public syncShown(): void {
+    if (this.section) setHidden(this.section, this.cards.size === 0 || store.devicesRead() === "pending");
   }
 
   // render shows an available-devices read.
   public render(available: AvailableDevice[]): void {
     if (!this.rack || !this.section) return;
     const rack = this.rack;
-    this.count = available.length;
-    this.syncShown();
     const next = available.map((d) => ({ d, id: d.device, key: availableCardKey(d, this.provisioning.has(d.device)) }));
     const shown = new Map([...this.cards].map(([id, c]) => [id, c.key]));
     const plan = availablePlan(shown, next);
@@ -126,7 +125,7 @@ export class AvailableDevices {
     // focus once it settles; otherwise (the device went away) focus goes to
     // its nearest neighbour still listed, below. cards is kept in screen order
     // (see the end of this render), so its keys are the order on screen.
-    let stranded: { neighbours: string[]; label: string } | null = null;
+    let stranded: FocusLost | null = null;
     const oldOrder = [...this.cards.keys()];
     for (const id of plan.remove) {
       const c = this.cards.get(id);
@@ -157,27 +156,24 @@ export class AvailableDevices {
       return c ? [[id, c] as const] : [];
     }));
     orderChildren(rack, [...this.cards.values()].map((c) => c.el));
+    this.syncShown();
 
-    if (stranded) this.focusNeighbour(stranded.neighbours, stranded.label);
-  }
-
-  private syncShown(): void {
-    if (this.section) setHidden(this.section, !this.rackShown || this.count === 0);
+    if (stranded) this.focusCardNeighbour(stranded.neighbours, stranded.label);
   }
 
   // takeFocusLost returns and clears the record of a focused card that a
   // render removed during this device's Enable, if there is one.
-  private takeFocusLost(device: string): { id: string; neighbours: string[]; label: string } | null {
+  private takeFocusLost(device: string): FocusLost | null {
     const lost = this.focusLost;
     if (lost?.id !== device) return null;
     this.focusLost = null;
     return lost;
   }
 
-  // focusNeighbour moves focus, after a card holding it went away, to the
+  // focusCardNeighbour moves focus, after a card holding it went away, to the
   // Enable button of the first of its neighbours still listed, else to the
   // workspace, and announces which device went.
-  private focusNeighbour(neighbours: readonly string[], label: string): void {
+  private focusCardNeighbour(neighbours: readonly string[], label: string): void {
     focusNeighbour(
       this.host.announceEl,
       neighbours,
@@ -194,7 +190,7 @@ export class AvailableDevices {
     this.provisioning.add(d.device);
     card.setEnabling(true);
     const queue = this.host.queue;
-    const label = availableLabel(d);
+    const label = card.label;
     try {
       // Serialize through the same queue as toggles and settings saves: those
       // submit a full-array PATCH built from the cached config, so a provision
@@ -255,7 +251,7 @@ export class AvailableDevices {
         // focus; otherwise its nearest neighbour still listed.
         const own = this.cards.get(d.device)?.enableBtn;
         if (own) own.focus({ preventScroll: true });
-        else this.focusNeighbour(lost.neighbours, lost.label);
+        else this.focusCardNeighbour(lost.neighbours, lost.label);
       }
     }
   }

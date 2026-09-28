@@ -37,6 +37,22 @@ export class ConfigQueue {
     return store.getState().config?.devices ?? store.getState().devices.map(deviceToConfig);
   }
 
+  // configFor is a device's entry in the cached config, by id.
+  public configFor(id: string): DeviceConfig | undefined {
+    return store.getState().config?.devices.find((cd) => cd.device === id);
+  }
+
+  // requireConfig refuses, saying so, a full-array PATCH before GET /config has
+  // loaded: base() would project the runtime devices through deviceToConfig,
+  // which omits config-only fields (quietAlert), so the PATCH would reset
+  // every device's opt-out. config only ever goes null -> loaded, so checking
+  // before queueing is equivalent to checking inside the queued task.
+  public requireConfig(): boolean {
+    if (store.getState().config) return true;
+    showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
+    return false;
+  }
+
   // freshBase makes sure a full-array PATCH builds from the appliance's
   // config: after a change whose outcome is unknown and whose re-read failed
   // (baseStale), it reads the config first, and reports false if it cannot.

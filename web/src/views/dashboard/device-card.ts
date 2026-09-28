@@ -6,7 +6,7 @@ import { avatarLook, type AvatarIcon, bannerIsError, captureFormatLabel, cardSha
 import { hideInactiveKey, readBoolPref, writeBoolPref } from "../../lib/prefs.ts";
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
-import type { ApplianceStatus, Device, DeviceConfig } from "../../lib/types.ts";
+import type { Device, DeviceConfig } from "../../lib/types.ts";
 import { announce, deviceStateBadge, focusDropped, h, holdsFocus, ICON_COPY, iconSpan, modeLabel, reportClipboardFailure, setHidden, setText, showUnconfirmed, svgIcon, switchControl, writeToClipboard } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue, STALE_BASE_TEXT } from "./config-queue.ts";
 import { MeterConsole } from "./meter-console.ts";
@@ -145,9 +145,6 @@ interface ArticleParts {
 export interface DeviceCardHost {
   queue: ConfigQueue;
   announceEl: HTMLElement | null;
-  // status is the latest appliance status: the RTSP port and whether streams
-  // need the access token.
-  status(): ApplianceStatus | null;
   // render asks for a reconcile of every card from the store.
   render(): void;
 }
@@ -169,14 +166,11 @@ export class DeviceCard {
   private p: ArticleParts;
   // The latest runtime record, set by sync; device.device is the id.
   private dev: Device;
-  // cardShape of the mounted article.
-  private shape: string;
-  // Set while an enable/disable PATCH for this device is queued or in flight,
-  // on the card rather than the toggle node, so a card rebuilt meanwhile gets
-  // a busy toggle that sync does not reset.
-  private togglePending = false;
-  // The state the pending change asked for, shown on a rebuilt toggle.
-  private toggleWant = false;
+  // The state an enable/disable PATCH asked for while it is queued or in
+  // flight, else null. It is on the card rather than the toggle node, so a
+  // card rebuilt meanwhile gets a busy toggle showing it that sync does not
+  // reset.
+  private pendingWant: boolean | null = null;
   // The per-device "hide inactive channels" display preference. Read from
   // storage once when the card is created, rather than on every poll; the
   // settings switch and a change saved in another tab (the storage event)
@@ -188,7 +182,6 @@ export class DeviceCard {
   constructor(d: Device, host: DeviceCardHost) {
     this.host = host;
     this.dev = d;
-    this.shape = cardShape(d);
     this.hideInactive = readBoolPref(hideInactiveKey(d.device), true);
     this.panel = new SettingsPanel({
       queue: host.queue,
@@ -245,7 +238,7 @@ export class DeviceCard {
   // changed, writes every field, and checks an open settings form against cfg,
   // the device's entry in the current config (undefined before it loads).
   public update(d: Device, cfg: DeviceConfig | undefined): void {
-    if (cardShape(d) !== this.shape) this.mount(d);
+    if (cardShape(d) !== cardShape(this.dev)) this.mount(d);
     this.sync(d, cfg);
     if (this.panel.expanded) this.panel.sync(cfg);
   }
@@ -276,11 +269,10 @@ export class DeviceCard {
     // is discarded.
     this.p.live?.meterConsole.destroy();
     this.p = this.build(d);
-    this.shape = cardShape(d);
     // Swap in place if the card was already mounted in the rack; otherwise the
     // view's ordering pass inserts it.
     if (oldArticle.parentNode) oldArticle.replaceWith(this.p.article);
-    this.restoreFocus(saved, d.state === "serving");
+    this.restoreFocus(saved);
   }
 
   // build creates the DOM skeleton for a device's shape with NO device data
@@ -313,7 +305,7 @@ export class DeviceCard {
       "aria-label": TOKEN_ARIA,
       title: "Pulling this stream requires the access token. Click to copy it.",
       "data-focus": "token",
-      hidden: !(serving && !!this.host.status()?.authRequired),
+      hidden: !(serving && !!store.getState().status?.authRequired),
       "aria-describedby": tokenDescId,
     },
       iconSpan(ICON_LOCK, "icon-copy"),
@@ -339,9 +331,9 @@ export class DeviceCard {
     });
     toggleInput.dataset.focus = "toggle";
     toggleInput.addEventListener("change", () => void this.toggleEnabled());
-    if (this.togglePending) {
+    if (this.pendingWant !== null) {
       // Show the change asked for, not the unchecked default of a new switch.
-      toggleInput.checked = this.toggleWant;
+      toggleInput.checked = this.pendingWant;
       toggleInput.disabled = true;
       toggleInput.setAttribute("aria-busy", "true");
     }
@@ -385,7 +377,7 @@ export class DeviceCard {
         h("span", { class: "copy-label" }, COPY_LABEL),
       );
       copyBtn.addEventListener("click", () => this.copyUrl(copyBtn, urlEl));
-      const meterConsole = new MeterConsole(meterCount(d));
+      const meterConsole = new MeterConsole(meterCount(d), settingsBtn, this.host.announceEl);
       const clients = metricItem("Clients:");
       const dropped = metricItem("Dropped Frames:");
       const overruns = metricItem("Capture Overruns:", OVERRUNS_DESCRIPTION);
@@ -441,7 +433,7 @@ export class DeviceCard {
     const serving = d.state === "serving";
     const disabled = d.state === "disabled";
     const isUltra = d.mode === "pcm";
-    const status = this.host.status();
+    const status = store.getState().status;
     // The toggle reflects the persisted (desired) enabled flag, which can differ
     // from the runtime state only briefly while a config reload applies. Fall
     // back to the runtime state only when the config is not loaded.
@@ -504,7 +496,7 @@ export class DeviceCard {
     if (p.settingsBtn.getAttribute("aria-label") !== settingsAria) p.settingsBtn.setAttribute("aria-label", settingsAria);
     // Do not fight the user mid-interaction (a PATCH is queued or in flight);
     // otherwise keep it in sync with the persisted flag.
-    if (!this.togglePending && p.toggleInput.checked !== configEnabled) {
+    if (this.pendingWant === null && p.toggleInput.checked !== configEnabled) {
       p.toggleInput.checked = configEnabled;
     }
 
@@ -529,7 +521,7 @@ export class DeviceCard {
         : "";
       if (p.live.negotiatedEl.title !== negTitle) p.live.negotiatedEl.title = negTitle;
       // The tally lights follow every streamed channel, as the channel tag does.
-      p.live.meterConsole.sync(d.streamedChannels ?? d.channels, this.hideInactive, p.settingsBtn, this.host.announceEl);
+      p.live.meterConsole.sync(d.streamedChannels ?? d.channels, this.hideInactive);
     }
     if (p.idle) {
       setHidden(p.idle.banner, !d.error);
@@ -558,9 +550,10 @@ export class DeviceCard {
     return key ? { key } : null;
   }
 
-  // serving is the device's state in the rebuilt shape (mount runs before
-  // sync updates the device record).
-  private restoreFocus(saved: { el?: HTMLElement; key?: string } | null, serving: boolean): void {
+  // It runs from mount, before sync updates the device record, so whether the
+  // device serves comes from the rebuilt body.
+  private restoreFocus(saved: { el?: HTMLElement; key?: string } | null): void {
+    const serving = this.p.live !== null;
     if (!saved) return;
     if (saved.el) {
       // The panel node was moved into the new article and is connected again.
@@ -580,7 +573,7 @@ export class DeviceCard {
         // The token message only when the tag went because the token is no
         // longer needed; a device that stopped serving loses it too, and there
         // the token is still required.
-        const tokenDropped = saved.key === "token" && serving && !this.host.status()?.authRequired;
+        const tokenDropped = saved.key === "token" && serving && !store.getState().status?.authRequired;
         const name = this.dev.name;
         announce(this.host.announceEl, tokenDropped ? tokenHiddenMessage(name) : controlGoneMessage(name, saved.key, serving));
       }
@@ -597,24 +590,17 @@ export class DeviceCard {
     const want = input.checked;
     const id = this.dev.device;
     const name = this.dev.name;
-    // Refuse to mutate the device list from the runtime fallback: until GET
-    // /config has loaded, the queue's base() projects via deviceToConfig, which
-    // omits config-only fields (quietAlert), so a full-array PATCH would reset
-    // every device's opt-out. config only ever goes null -> loaded, so checking
-    // here is equivalent to checking inside the queued task.
-    if (!store.getState().config) {
+    const queue = this.host.queue;
+    if (!queue.requireConfig()) {
       input.checked = !want;
-      showToast("Configuration has not loaded yet. Try again in a moment.", "warn");
       return;
     }
     // Remember focus before disabling: re-enabling a disabled control drops focus
     // to the body, dumping a keyboard user at the top of the page.
     const hadFocus = document.activeElement === input;
-    this.togglePending = true;
-    this.toggleWant = want;
+    this.pendingWant = want;
     input.disabled = true;
     input.setAttribute("aria-busy", "true");
-    const queue = this.host.queue;
     await queue.enqueue(async () => {
       // Build merged from a FRESH base inside the queued task, after any prior
       // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
@@ -651,7 +637,7 @@ export class DeviceCard {
           // next queued change builds from what the appliance holds, and say
           // what the re-read found.
           const read = await queue.refreshConfigViews();
-          const now = store.getState().config?.devices.find((cd) => cd.device === id);
+          const now = queue.configFor(id);
           if (!read) showUnconfirmed(`the change to ${name}`, "check the switch before trying again");
           else if ((now?.enabled ?? true) === want) showToast(`${verb} ${name}.`);
           else showToast(`The change to ${name} does not appear to have applied; check again shortly.`, "warn");
@@ -662,7 +648,7 @@ export class DeviceCard {
         // the node this closure captured. Clear the busy state and restore focus on
         // the live node, falling back to the settings button if the toggle is gone, so a
         // keyboard user is never stranded on the document body.
-        this.togglePending = false;
+        this.pendingWant = null;
         // A card rebuilt while the change was pending skipped the sync, so
         // render once more to set its toggle from the config.
         this.host.render();
@@ -687,7 +673,7 @@ export class DeviceCard {
     const shown = urlEl.textContent;
     if (!shown) return;
     let url = shown;
-    const token = this.host.status()?.authRequired ? getToken() : null;
+    const token = store.getState().status?.authRequired ? getToken() : null;
     if (token) {
       // Anchor the scheme to the start so only the leading rtsp:// is rewritten,
       // never a literal "rtsp://" that appears later in the path.
