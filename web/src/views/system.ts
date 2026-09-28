@@ -1,9 +1,8 @@
-import { api, ApiError, apiErrorMessage, failureReason, firstProblem, isRefusal, problemFor, problemReason } from "../lib/api.ts";
+import { api, apiErrorMessage, failureReason, firstProblem, isRefusal } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { clearBusy, copyText, deviceStateBadge, downloadBlob, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, deviceStateBadge, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
-import { certTooLargeReason, describeManaged, parseExtraSans } from "../lib/certificate-core.ts";
 import { deviceIdTitle, sentence } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
 import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
@@ -15,9 +14,10 @@ import {
   unparsedThresholds,
   type NotifyFieldSpec,
 } from "../lib/notification-settings-core.ts";
-import type { ApplianceStatus, CertificateInfo, Config, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
+import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
 import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.ts";
 import { AccessCard } from "./system/access-card.ts";
+import { CertificateCard } from "./system/certificate-card.ts";
 import { NetworkCard } from "./system/network-card.ts";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
@@ -62,22 +62,9 @@ function formatByteSize(bytes: number): string {
   return `${Math.round(bytes / 1048576)} MB`;
 }
 
-// formatCertTime renders an RFC 3339 timestamp in the operator's locale, falling
-// back to the raw string if it does not parse.
-function formatCertTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
-
 // VERSION_NOTICE_MS keeps the "reload onto the new version" notice up long
 // enough to be seen by someone who comes back to the tab.
 const VERSION_NOTICE_MS = 5 * 60_000;
-
-// CERT_LOAD_ERROR_THRESHOLD is the number of consecutive certificate load
-// failures (one attempt per status poll) before the card shows its load-error
-// message with a Retry button. A single blip self-heals on the next poll
-// without any operator-visible noise.
-const CERT_LOAD_ERROR_THRESHOLD = 3;
 
 // TileSpec is one resource-gauge tile's data for a render pass; TileRefs are the
 // stable nodes a tile reuses across polls so renderTiles updates in place rather
@@ -130,38 +117,8 @@ export class SystemView {
   private devicesLoaded = false;
 
   private readonly network: NetworkCard;
-
-  private certCardEl: HTMLElement | null;
-  private certInfoEl: HTMLElement | null;
-  private certFingerprintEl: HTMLInputElement | null;
-  private certErrorEl: HTMLElement | null;
-  private certSansEl: HTMLInputElement | null;
-  private certSansErrorEl: HTMLElement | null;
-  private certPemEl: HTMLTextAreaElement | null;
-  private certPemErrorEl: HTMLElement | null;
-  private certKeyEl: HTMLTextAreaElement | null;
-  private certKeyErrorEl: HTMLElement | null;
-  // cert is the management certificate metadata. It changes at runtime: the
-  // panel fetches it on every status poll (a regenerate, an install, or an
-  // external change swaps the certificate live, no restart) and re-fetches
-  // after a regenerate or install. certPending guards concurrent loads;
-  // certUnavailable is set on a 501 so a permanently-unmounted endpoint is not
-  // polled forever; certBusy guards the regenerate and install actions against
-  // re-entry (they share it: both replace the certificate). certGen is bumped
-  // by each successful mutation so a GET that was already in flight when the
-  // mutation completed is discarded instead of overwriting the fresh metadata.
-  private cert: CertificateInfo | null = null;
-  private certPending = false;
-  private certUnavailable = false;
-  private certBusy = false;
-  private certGen = 0;
-  // certFailures counts consecutive load failures; at CERT_LOAD_ERROR_THRESHOLD
-  // the card shows the load-error region (role=alert) once. certErrorShown keeps
-  // later silent retries from re-rendering, and so re-announcing, that region.
-  private certFailures = 0;
-  private certErrorShown = false;
-
   private readonly access: AccessCard;
+  private readonly certificate: CertificateCard;
 
   private notifyCardEl: HTMLElement | null;
   private notifyActionsEl: HTMLElement | null;
@@ -206,22 +163,12 @@ export class SystemView {
     this.notifyActionsEl = document.getElementById("sys-notify-actions");
     this.notifyEnabledEl = document.getElementById("sys-notify-enabled") as HTMLInputElement | null;
     this.notifyErrorEl = document.getElementById("sys-notify-error");
-    this.certCardEl = document.getElementById("sys-cert-card");
-    this.certInfoEl = document.getElementById("sys-cert-info");
-    this.certFingerprintEl = document.getElementById("sys-cert-fingerprint") as HTMLInputElement | null;
-    this.certErrorEl = document.getElementById("sys-cert-error");
-    this.certSansEl = document.getElementById("sys-cert-extra-sans") as HTMLInputElement | null;
-    this.certSansErrorEl = document.getElementById("sys-cert-extra-sans-error");
-    this.certPemEl = document.getElementById("sys-cert-pem") as HTMLTextAreaElement | null;
-    this.certPemErrorEl = document.getElementById("sys-cert-pem-error");
-    this.certKeyEl = document.getElementById("sys-cert-key") as HTMLTextAreaElement | null;
-    this.certKeyErrorEl = document.getElementById("sys-cert-key-error");
+    this.certificate = new CertificateCard(document.getElementById("sys-cert-card"));
     this.updateCheckEl = document.getElementById("sys-update-check") as HTMLInputElement | null;
     this.updateCheckBtn = document.getElementById("btn-update-check");
     this.updateApplyBtn = document.getElementById("btn-update-apply");
     const btn = document.getElementById("btn-sys-restart") as HTMLButtonElement | null;
     if (btn) btn.addEventListener("click", () => triggerApplianceRestart());
-    this.bindCertificate();
 
     store.on("system", (system) => {
       this.system = system;
@@ -236,21 +183,21 @@ export class SystemView {
       this.renderInfo();
       this.network.overrides(status.overrides);
       // While the System view is showing, each status event refreshes the
-      // certificate metadata so the panel does not go stale after a
-      // regenerate, an install, or a change made outside this page; a 501 sets
-      // certUnavailable to stop polling the endpoint. The store announces
+      // certificate metadata so the card does not go stale after a
+      // regenerate, an install, or a change made outside this page; after a
+      // 501 the card stops polling the endpoint. The store announces
       // status only on change, but uptimeSeconds advances between polls, so
       // this runs every tick while the view is showing (the store pauses
-      // polling while the page is hidden). Off the view nobody reads the panel;
+      // polling while the page is hidden). Off the view nobody reads the card;
       // the route listener below loads it on arrival.
-      if (router.getCurrentView() === "system") this.maybeLoadCertificate();
+      if (router.getCurrentView() === "system") this.certificate.load();
     });
     // Arriving on the System view loads the certificate at once rather than on
     // the next status tick. Only once a status event has arrived: that is when
     // access (the token, if any) is settled, so an early route event at boot
     // does not send a request the login prompt would have to absorb.
     router.on("route", (view) => {
-      if (view === "system" && this.status !== null) this.maybeLoadCertificate();
+      if (view === "system" && this.status !== null) this.certificate.load();
     });
     store.on("devices", (devices) => {
       this.devicesLoaded = true;
@@ -283,294 +230,6 @@ export class SystemView {
     });
     this.bindNotifications();
     this.bindUpdate();
-  }
-
-  private bindCertificate(): void {
-    document.getElementById("btn-cert-copy")?.addEventListener("click", () => {
-      const value = this.cert?.fingerprintSha256;
-      if (!value) {
-        // The card is in its load-error state (this.cert is null), so a silent
-        // no-op would read as a broken button; say why, matching the auth card.
-        showToast("No fingerprint to copy: the certificate details could not be loaded.", "warn");
-        return;
-      }
-      copyText(value, "Fingerprint copied.");
-    });
-    document.getElementById("btn-cert-download")?.addEventListener("click", () => void this.downloadCertificate());
-    document.getElementById("btn-cert-regenerate")?.addEventListener("click", () => void this.regenerateCertificate());
-    document.getElementById("btn-cert-install")?.addEventListener("click", () => void this.installCertificate());
-    // Clear a field's error as soon as it is edited so a stale rejection does
-    // not linger over a value the operator has since changed (mirrors bindAuth).
-    this.certSansEl?.addEventListener("input", () => this.setCertFieldError(this.certSansEl, this.certSansErrorEl, ""));
-    this.certPemEl?.addEventListener("input", () => this.setCertFieldError(this.certPemEl, this.certPemErrorEl, ""));
-    this.certKeyEl?.addEventListener("input", () => this.setCertFieldError(this.certKeyEl, this.certKeyErrorEl, ""));
-  }
-
-  // setCertFieldError marks or clears one certificate-card field through the
-  // shared setFieldError, resolving the .form-field wrapper from the control
-  // the same way setAuthError does.
-  private setCertFieldError(input: HTMLElement | null, errorEl: HTMLElement | null, message: string): void {
-    setFieldError(input?.closest(".form-field") ?? null, input, errorEl, message);
-  }
-
-  // clearCertLoadError resets the load-failure state and swaps the load-error
-  // region back for the info grid. Fresh metadata from any source (a poll, the
-  // Retry button, a regenerate or an install) routes through here so the card
-  // never keeps showing a stale error over data it now has.
-  private clearCertLoadError(): void {
-    this.certFailures = 0;
-    this.certErrorShown = false;
-    if (this.certErrorEl) {
-      this.certErrorEl.hidden = true;
-      this.certErrorEl.removeAttribute("role");
-      this.certErrorEl.textContent = "";
-    }
-    if (this.certInfoEl) this.certInfoEl.hidden = false;
-  }
-
-  // maybeLoadCertificate reloads the certificate unless the endpoints are known
-  // to be unmounted (a 501).
-  private maybeLoadCertificate(): void {
-    if (!this.certUnavailable) void this.loadCertificate();
-  }
-
-  // loadCertificate fetches the management certificate metadata. It is
-  // re-callable: every status poll while the System view shows, arriving on
-  // that view, the Retry button, and a regenerate or
-  // install (to reconcile the panel with what the appliance now serves) all
-  // route through here. A 501 means the endpoints are not mounted (the
-  // appliance could not read its certificate), so it stops retrying. Any other
-  // failure counts toward CERT_LOAD_ERROR_THRESHOLD, at which the card surfaces
-  // its load-error region exactly once; the polls keep retrying silently after
-  // that (the panel self-heals) without re-rendering, and so re-announcing, the
-  // alert. A response that resolves after a mutation bumped certGen is stale
-  // (it describes the certificate that was just replaced) and is dropped.
-  private async loadCertificate(): Promise<void> {
-    if (this.certPending) return;
-    this.certPending = true;
-    const gen = this.certGen;
-    try {
-      const info = await api.getCertificate();
-      if (this.certGen !== gen) return;
-      this.cert = info;
-      this.clearCertLoadError();
-      this.renderCertificate();
-    } catch (err: unknown) {
-      if (this.certGen !== gen) return;
-      // Only the appliance's own 501 means it has no certificate control; a
-      // proxy's says nothing about it.
-      if (isRefusal(err) && err.status === 501) {
-        this.certUnavailable = true;
-        return;
-      }
-      this.certFailures++;
-      if (this.certFailures >= CERT_LOAD_ERROR_THRESHOLD && !this.certErrorShown && this.certErrorEl) {
-        this.certErrorShown = true;
-        if (this.certCardEl) this.certCardEl.hidden = false;
-        if (this.certInfoEl) this.certInfoEl.hidden = true;
-        renderLoadError(this.certErrorEl, "Certificate details could not be loaded.", "Loading certificate...", () => {
-          // The Retry button swapped the alert for its loading text; let a
-          // failed manual retry re-render (and re-announce) the error instead
-          // of leaving the loading text up with no button.
-          this.certErrorShown = false;
-          void this.loadCertificate();
-        });
-      }
-    } finally {
-      this.certPending = false;
-    }
-  }
-
-  // renderCertificate fills the certificate panel. It runs on every successful
-  // load (the certificate changes on a regenerate or install) and rebuilds the
-  // small grid outright rather than diffing it: it is not a per-poll render.
-  private renderCertificate(): void {
-    const cert = this.cert;
-    if (!cert || !this.certCardEl || !this.certInfoEl) return;
-    this.certCardEl.hidden = false;
-    const rows: Array<[string, string]> = [
-      ["Type", cert.selfSigned ? "Self-issued (subject matches issuer)" : "CA-issued (distinct issuer)"],
-      ["Management", describeManaged(cert.managed)],
-      ["Subject", cert.subject],
-      ["Issuer", cert.issuer],
-      ["Valid from", formatCertTime(cert.notBefore)],
-      ["Valid until", formatCertTime(cert.notAfter)],
-      ["DNS names", cert.dnsNames.length ? cert.dnsNames.join(", ") : "-"],
-      ["IP addresses", cert.ipAddresses.length ? cert.ipAddresses.join(", ") : "-"],
-    ];
-    this.certInfoEl.textContent = "";
-    for (const [k, v] of rows) {
-      this.certInfoEl.appendChild(elem("dt", "info-key", k));
-      this.certInfoEl.appendChild(elem("dd", "info-val mono", v));
-    }
-    if (this.certFingerprintEl) this.certFingerprintEl.value = cert.fingerprintSha256;
-  }
-
-  // downloadCertificate fetches the PEM (bearer-authenticated, so a bare link
-  // could not) and saves it via a Blob object URL. The public certificate only;
-  // the private key is never fetched.
-  private async downloadCertificate(): Promise<void> {
-    const btn = document.getElementById("btn-cert-download") as HTMLButtonElement | null;
-    // setBusy keeps the button focusable (aria-disabled, not disabled), so guard
-    // re-entry against a keyboard re-activation while the fetch is in flight.
-    if (btn?.getAttribute("aria-disabled") === "true") return;
-    if (btn) setBusy(btn, "Preparing...");
-    try {
-      const pem = await api.getCertificatePem();
-      downloadBlob(new Blob([pem], { type: "application/x-pem-file" }), "birdnet-go-remote-mic-mgmt.pem");
-      showToast("Certificate downloaded.");
-    } catch (err: unknown) {
-      showToast(`Download failed: ${failureReason(err)}`, "error");
-    } finally {
-      if (btn) clearBusy(btn, "Download PEM");
-    }
-  }
-
-  // regenerateCertificate asks the appliance to mint a new self-signed
-  // certificate, with any extra SANs from the input, and swap it in live. The
-  // panel is updated from the response and then reconciled with a fresh GET.
-  private async regenerateCertificate(): Promise<void> {
-    const btn = document.getElementById("btn-cert-regenerate") as HTMLButtonElement | null;
-    // setBusy keeps the button focusable (aria-disabled, not disabled), so guard
-    // re-entry against a keyboard re-activation while a request is in flight.
-    if (this.certBusy || btn?.getAttribute("aria-disabled") === "true") return;
-    const parsed = parseExtraSans(this.certSansEl?.value ?? "");
-    if (parsed.error) {
-      this.setCertFieldError(this.certSansEl, this.certSansErrorEl, parsed.error);
-      this.certSansEl?.focus();
-      return;
-    }
-    // Unknown (the metadata never loaded) is treated as the common
-    // appliance-managed case so the wording and the danger styling agree.
-    const managed = this.cert?.managed ?? true;
-    const ok = await confirmDialog({
-      title: "Regenerate certificate?",
-      body: `${managed
-        ? "A new self-signed certificate replaces the current one."
-        : "This replaces the operator-installed certificate with a self-signed one."} New connections use it immediately; this page may show a certificate warning on its next load, and clients that trusted the old fingerprint must trust the new one.`,
-      confirmLabel: "Regenerate",
-      danger: !managed,
-    });
-    if (!ok) return;
-    this.certBusy = true;
-    if (btn) setBusy(btn, "Regenerating...");
-    try {
-      // The contract requires a JSON body, so no extras still sends {}.
-      const info = await api.regenerateCertificate(parsed.sans.length ? { extraSans: parsed.sans } : {});
-      this.cert = info;
-      this.certGen++;
-      this.clearCertLoadError();
-      this.renderCertificate();
-      void this.loadCertificate();
-      showToast("Certificate regenerated and applied to new connections. Download and trust the new certificate where needed.");
-    } catch (err: unknown) {
-      if (!isRefusal(err)) {
-        // Anything but a refusal (a dropped connection, or an answer that
-        // could not be read) says nothing about whether the appliance applied
-        // the change; reconcile from the server instead of reporting a failure
-        // that may not be one.
-        showUnconfirmed("the certificate change", "refreshing the current certificate");
-        void this.loadCertificate();
-        return;
-      }
-      const item = problemFor(err, (e) => e.field?.startsWith("extraSans") ?? false);
-      if (item) {
-        this.setCertFieldError(this.certSansEl, this.certSansErrorEl, sentence(item.reason));
-        this.certSansEl?.focus();
-      } else {
-        showToast(`Regenerate failed: ${apiErrorMessage(err)}`, "error");
-      }
-    } finally {
-      this.certBusy = false;
-      if (btn) clearBusy(btn, "Regenerate");
-    }
-  }
-
-  // installCertificate uploads an operator-supplied certificate and private key.
-  // The key travels only in the request body and is never echoed into a toast,
-  // an error message, or the console. The key textarea is cleared on every
-  // completion (success or failure) so the secret does not linger in the DOM;
-  // the certificate textarea is public and is cleared only on success, so a
-  // rejected certificate stays in place for the operator to correct.
-  private async installCertificate(): Promise<void> {
-    const btn = document.getElementById("btn-cert-install") as HTMLButtonElement | null;
-    if (this.certBusy || btn?.getAttribute("aria-disabled") === "true") return;
-    const certPem = this.certPemEl?.value.trim() ?? "";
-    const keyPem = this.certKeyEl?.value.trim() ?? "";
-    if (!certPem || !keyPem) {
-      if (!certPem) this.setCertFieldError(this.certPemEl, this.certPemErrorEl, "Paste the PEM.");
-      if (!keyPem) this.setCertFieldError(this.certKeyEl, this.certKeyErrorEl, "Paste the PEM.");
-      (certPem ? this.certKeyEl : this.certPemEl)?.focus();
-      return;
-    }
-    const ok = await confirmDialog({
-      title: "Install certificate?",
-      body: "The appliance will stop managing its certificate: it will not regenerate one automatically on an address change or expiry. New connections use the installed certificate immediately; your browser may warn until it is trusted.",
-      confirmLabel: "Install",
-      danger: true,
-    });
-    if (!ok) return;
-    this.certBusy = true;
-    if (btn) setBusy(btn, "Installing...");
-    try {
-      const info = await api.installCertificate({ certPem, keyPem });
-      if (this.certPemEl) this.certPemEl.value = "";
-      this.setCertFieldError(this.certPemEl, this.certPemErrorEl, "");
-      this.setCertFieldError(this.certKeyEl, this.certKeyErrorEl, "");
-      this.cert = info;
-      this.certGen++;
-      this.clearCertLoadError();
-      this.renderCertificate();
-      void this.loadCertificate();
-      showToast("Custom certificate installed and applied to new connections.");
-    } catch (err: unknown) {
-      // The API caps request bodies, and a full CA bundle pasted with the
-      // certificate is the usual way past the cap, so say what to trim rather
-      // than echoing the bare "payload too large". The limit itself comes from
-      // the problem detail, so this text cannot drift from the server's value.
-      // A 413 is a refusal from whoever sent it: a proxy's means the request
-      // never reached the appliance.
-      if (err instanceof ApiError && err.status === 413) {
-        showToast(`Install failed: ${certTooLargeReason(err.problemDetail)}. Paste only the server certificate and its intermediates, not a full CA bundle, then paste the key again.`, "error");
-        return;
-      }
-      if (!isRefusal(err)) {
-        // Same as regenerate: anything but a refusal leaves the outcome
-        // unknown, so reconcile rather than claim a failure. The key
-        // textarea is still cleared in finally.
-        showUnconfirmed("the certificate change", "refreshing the current certificate");
-        void this.loadCertificate();
-        return;
-      }
-      let pemBad = false;
-      let keyBad = false;
-      if (err.errors) {
-        for (const item of err.errors) {
-          const reason = sentence(problemReason(err, item));
-          if (item.field === "certPem") {
-            this.setCertFieldError(this.certPemEl, this.certPemErrorEl, reason);
-            pemBad = true;
-          } else if (item.field === "keyPem") {
-            this.setCertFieldError(this.certKeyEl, this.certKeyErrorEl, reason);
-            keyBad = true;
-          }
-        }
-      }
-      if (pemBad || keyBad) {
-        // Land on the first invalid field in form order.
-        (pemBad ? this.certPemEl : this.certKeyEl)?.focus();
-      } else {
-        showToast(`Install failed: ${apiErrorMessage(err)}`, "error");
-      }
-    } finally {
-      // Drop the private key from the DOM whether or not the install succeeded:
-      // a rejected key must not sit in a hidden textarea until the next attempt.
-      // Only the value is cleared; a keyPem field error set in the catch above
-      // is left in place so the operator still sees why it was rejected.
-      if (this.certKeyEl) this.certKeyEl.value = "";
-      this.certBusy = false;
-      if (btn) clearBusy(btn, "Install");
-    }
   }
 
   // buildNotifyField builds one threshold input (label, number input with the
