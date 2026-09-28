@@ -26,18 +26,14 @@ export class StatTile {
   constructor(opts: StatTileOptions) {
     const tone = opts.tone ?? "neutral";
     this.tone = tone;
-    const parts = [
-      h("span", { class: "stat-tile-label" }, opts.label),
-      (this.valueEl = h("span", { class: "stat-tile-value mono" }, "-")),
-      (this.captionEl = h("span", { class: "stat-tile-caption" })),
-    ];
-    if (opts.onClick) {
-      const b = h("button", { type: "button", class: `stat-tile tone-${tone} is-action`, "aria-pressed": "false" }, ...parts);
-      b.addEventListener("click", opts.onClick);
-      this.el = b;
-    } else {
-      this.el = h("div", { class: `stat-tile tone-${tone}` }, ...parts);
-    }
+    const cls = `stat-tile tone-${tone}`;
+    const label = h("span", { class: "stat-tile-label" }, opts.label);
+    this.valueEl = h("span", { class: "stat-tile-value mono" }, "-");
+    this.captionEl = h("span", { class: "stat-tile-caption" });
+    this.el = opts.onClick
+      ? h("button", { type: "button", class: `${cls} is-action`, "aria-pressed": "false" }, label, this.valueEl, this.captionEl)
+      : h("div", { class: cls }, label, this.valueEl, this.captionEl);
+    if (opts.onClick) this.el.addEventListener("click", opts.onClick);
   }
 
   public set(value: string, caption = ""): void {

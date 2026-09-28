@@ -144,12 +144,13 @@ export class AboutView {
       h("dt", { class: "info-key" }, iconSpan(icon, "info-key-icon"), key),
       h("dd", { class: "info-val" }, val),
     ];
+    this.versionEl = h("span", { class: "mono" }, "-");
     body.append(
       h("p", { class: "about-text" },
         "Remote Mic turns a small Linux board and a USB microphone or sound card into a remote microphone for BirdNET-Go. It captures audio from the board's sound devices and streams it over RTSP, as Opus or as lossless PCM up to ultrasonic sample rates, and announces itself on the local network so BirdNET-Go can find it.",
       ),
       h("dl", { class: "info-grid" },
-        ...row(ICON_VERSION, "Version", (this.versionEl = h("span", { class: "mono" }, "-"))),
+        ...row(ICON_VERSION, "Version", this.versionEl),
         ...row(ICON_AUTHOR, "Author", externalLink(AUTHOR_URL, "Tomi P. Hakala")),
         ...row(ICON_CODE, "Source Code", externalLink(REPO_URL, "github.com/tphakala/birdnet-go-remote-mic")),
         ...row(ICON_SCALE_SM, "License", h("span", "Apache 2.0")),

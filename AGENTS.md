@@ -12,7 +12,8 @@ own, so read the matching file below before editing there:
 | Working on | Also read |
 |---|---|
 | `internal/` (any package under it) | `internal/AGENTS.md` |
-| `web/` (TypeScript UI, CSS, `index.html`) | `web/AGENTS.md` |
+| `web/` (CSS, `index.html`, tests, the rendered sweep) | `web/AGENTS.md` |
+| `web/src/` (the UI's TypeScript source) | `web/AGENTS.md`, then `web/src/AGENTS.md` |
 
 ## What this is
 

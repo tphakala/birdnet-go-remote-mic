@@ -1,4 +1,4 @@
-// Unit tests for the h() element builder (lib/ui.ts): which first argument is
+// Unit tests for the h() element builder (lib/h.ts): which first argument is
 // the attributes, how attribute values are written, which children are
 // skipped, and that event handler attributes are refused. The tests run
 // without a DOM, so a minimal fake document records what h() does. Run with
@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { h } from "../src/lib/ui.ts";
+import { h } from "../src/lib/h.ts";
 
 // FakeElement records the calls h() makes. A string child is kept as text,
 // which a real element turns into a text node.
@@ -62,10 +62,12 @@ test("without attributes the first argument is a child", () => {
   assert.deepEqual(outer.children, [inner, "tail"]);
 });
 
-test("children keep their order and skip false, null and undefined", () => {
+test("children keep their order and skip false, null, undefined and empty text", () => {
   const code = h("code", "journalctl");
-  const e = fake(h("li", { class: "x" }, "The log: ", false, code, null, undefined, "."));
+  const e = fake(h("li", { class: "x" }, "The log: ", false, code, null, undefined, "", "."));
   assert.deepEqual(e.children, ["The log: ", code, "."]);
+  // An empty text leaves the element :empty, as elem(tag, cls, "") does.
+  assert.deepEqual(fake(h("span", { class: "info-val" }, "")).children, []);
 });
 
 test("an empty attribute object is still the attributes, not a child", () => {
@@ -75,6 +77,8 @@ test("an empty attribute object is still the attributes, not a child", () => {
 });
 
 test("event handler attributes are refused in any case", () => {
+  // The type refuses lowercase handlers; the runtime check covers every casing.
+  // @ts-expect-error an event handler attribute
   assert.throws(() => h("button", { onclick: "alert(1)" }), TypeError);
   assert.throws(() => h("img", { OnError: "x" }), TypeError);
 });
