@@ -146,9 +146,10 @@ reconcile:
   `NON_LEVEL_EVENTS` too.
 - Lay out before data arrives. A region filled by a read after the first
   paint starts in its final shape with `setLoading` (placeholders sized like
-  the values, `aria-busy`, `inert`) rather than `hidden`, and the read fills it
-  in place, so the page does not shift as reads land. Hide only what turns out
-  not to apply (the certificate card on a 501).
+  the values, `aria-busy`, `inert` on all but the heading) rather than
+  `hidden`, and the read fills it in place, so the page does not shift as
+  reads land. Hide only what turns out not to apply (the certificate card on
+  a 501).
 - Never clobber user input: a form being edited is not repopulated from a
   store event (each System card with a form keeps its own `dirty` flag and
   skips a config read while it is set).

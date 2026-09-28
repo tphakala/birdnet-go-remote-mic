@@ -50,7 +50,7 @@ export class AccessCard {
   // Used by the open-access banner link so following it lands on the control
   // that resolves the warning.
   public focusToken(): void {
-    if (!this.cardEl || this.cardEl.inert) return;
+    if (!this.cardEl || this.cardEl.classList.contains("is-loading")) return;
     this.cardEl.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
     // preventScroll: the scroll above already positions the card; a focus
     // scroll would fight a smooth one with an instant jump.
