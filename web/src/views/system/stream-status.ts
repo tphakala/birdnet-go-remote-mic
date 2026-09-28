@@ -53,8 +53,10 @@ export class StreamStatus {
     if (this.loaded) this.render(devices, cfg);
   }
 
-  // loadFailed says so in place of the loading row when the first devices
-  // read failed; a later read that succeeds fills the table.
+  // loadFailed says so in place of the loading row; a later read that
+  // succeeds fills the table. SystemView calls it when the first status and
+  // devices reads both failed (coreFailed), so a failed devices read alone
+  // keeps the loading row until a poll brings the devices.
   public loadFailed(): void {
     if (!this.loaded) setText(this.messageCell, "Stream status could not be loaded. Retrying shortly.");
   }
