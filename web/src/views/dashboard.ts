@@ -1,17 +1,18 @@
 import { store } from "../lib/store.ts";
-import { meterFrames, VUMeter } from "../components/vu-meter.ts";
+import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
 import { DeviceSettingsForm } from "../components/device-settings.ts";
 import { showToast } from "../components/toast.ts";
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../lib/api.ts";
 import { announce, button, clearBusy, deviceStateBadge, elem, focusDropped, focusOnOrDropped, focusWorkspace, formatUptime, holdsFocus, ICON_COPY, iconSpan, modeLabel, orderChildren, renderLoadError, reportClipboardFailure, setBusy, setHidden, setText, svgIcon, showUnconfirmed, switchControl, writeToClipboard } from "../lib/ui.ts";
-import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelHiddenMessage, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, focusFallbackRow, footerMetrics, hiddenRows, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tallyStates, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
+import { availableCardKey, availableGoneMessage, availablePlan, bannerIsError, rejectionText, captureFormatLabel, channelLabel, controlGoneMessage, deviceGoneMessage, downCauseTitle, focusMovedMessage, judgeUnconfirmedSave, footerMetrics, neighbourOrder, rejectedFieldKey, REMOVED_FOCUS_MESSAGE, tokenHiddenMessage, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { deviceIdTitle } from "../lib/text.ts";
 import { hideInactiveKey, hideInactivePrefDevice, onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { confirmDialog } from "../lib/modal.ts";
 import { getToken } from "../lib/auth.ts";
 import { withFirstStream } from "../lib/device-settings-core.ts";
 import type { ApplianceStatus, AvailableDevice, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
+import { MeterConsole } from "./dashboard/meter-console.ts";
 
 // Trusted static SVG icon markup (no interpolation of runtime data).
 const ICON_MIC =
@@ -89,11 +90,7 @@ interface LiveBody {
   droppedEl: HTMLElement;
   overrunsEl: HTMLElement;
   negotiatedEl: HTMLElement;
-  // One VU meter per captured hardware channel, indexed by zero-based channel.
-  meters: VUMeter[];
-  // The meter row for each captured channel (same indexing), which syncCard
-  // marks live or off so a streamed channel stands out from an idle one.
-  rows: HTMLElement[];
+  meterConsole: MeterConsole;
 }
 
 interface IdleBody {
@@ -457,14 +454,14 @@ export class DashboardView {
   // liveTargets lists the serving cards' meters for routeLevels.
   private *liveTargets(): Generator<LevelsTarget<VUMeter>> {
     for (const entry of this.cards.values()) {
-      if (entry.live) yield { name: entry.device.name, meters: entry.live.meters };
+      if (entry.live) yield { name: entry.device.name, meters: entry.live.meterConsole.meters };
     }
   }
 
   // clearMeters puts every meter in its waiting state when levels stop
   // arriving, so a stale bar does not pass for live signal.
   private clearMeters(): void {
-    for (const entry of this.cards.values()) entry.live?.meters.forEach((m) => m.clearLevels());
+    for (const entry of this.cards.values()) entry.live?.meterConsole.clear();
   }
 
   // renderLoadError replaces the "Loading..." placeholder with the failure cause
@@ -555,7 +552,7 @@ export class DashboardView {
           const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
           focusLost = { id, neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: entry.device.name };
         }
-        entry.live?.meters.forEach((m) => m.destroy());
+        entry.live?.meterConsole.destroy();
         entry.settingsForm?.destroy();
         entry.article.remove();
         this.cards.delete(id);
@@ -951,7 +948,7 @@ export class DashboardView {
     const oldArticle = entry.article;
     // Take the old serving body's meters off the frame loop before the article
     // is discarded.
-    entry.live?.meters.forEach((m) => m.destroy());
+    entry.live?.meterConsole.destroy();
 
     // Refresh the article and its named nodes in one checked assignment, then
     // re-wire the fresh controls to the stable entry.
@@ -1113,16 +1110,8 @@ export class DashboardView {
       strip.appendChild(copyBtn);
       article.appendChild(strip);
 
-      // Meter console: one live VU meter per CAPTURED hardware channel. The level
-      // meter is registered on the raw capture source with the negotiated channel
-      // count and emits a zero-based index per hardware channel (the levels
-      // handler indexes live.meters by ch.channel), so the rows are the device's
-      // captured channels, not the streamed selection. A non-contiguous selection
-      // still shows every captured channel here. The meters are decorative
-      // real-time visualizations updating ~10 Hz, hidden from the accessibility
-      // tree so they do not spam screen readers.
-      const built = this.buildMeterConsole(meterCount(d));
-      article.appendChild(built.console);
+      const meterConsole = new MeterConsole(meterCount(d));
+      article.appendChild(meterConsole.el);
 
       // Footer
       const footer = elem("div", "rack-footer");
@@ -1147,8 +1136,7 @@ export class DashboardView {
         droppedEl: dropped.value,
         overrunsEl: overruns.value,
         negotiatedEl,
-        meters: built.meters,
-        rows: built.rows,
+        meterConsole,
       };
     } else {
       // Error / skipped / disabled body. The banner is always present and hidden
@@ -1180,74 +1168,6 @@ export class DashboardView {
       article, avatar, titleEl, hwEl, modeTag, rateTag, chTag, lockEl,
       statusEl, toggleInput, settingsBtn, pendingNote, live, idle,
     };
-  }
-
-  // buildMeterConsole builds the shared dB scale plus one metering row per
-  // captured hardware channel and returns the console element and its VU meters,
-  // indexed by zero-based hardware channel position (the levels event's
-  // ch.channel indexes straight into this array). Every device labels each row
-  // with its 1-based hardware channel number ("Ch 1", "Ch 2", ...), so the dB
-  // scale lines up the same way regardless of channel count.
-  private buildMeterConsole(count: number): { console: HTMLElement; meters: VUMeter[]; rows: HTMLElement[] } {
-    const meterConsole = elem("div", "meter-console");
-    const scale = elem("div", "meter-scale");
-    const scaleTrack = elem("div", "meter-scale-track");
-    for (const s of ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"]) {
-      scaleTrack.appendChild(elem("span", undefined, s));
-    }
-    scale.appendChild(scaleTrack);
-    meterConsole.appendChild(scale);
-
-    const meters: VUMeter[] = [];
-    const rows: HTMLElement[] = [];
-    const n = Math.max(1, count);
-    // Cap the stack height for high-channel interfaces so a 6-8 channel device
-    // does not grow the card tall enough to push the dashboard down; the rows
-    // scroll within the console instead. Most appliance devices are mono/stereo.
-    if (n > 4) meterConsole.classList.add("many-channels");
-    for (let c = 0; c < n; c++) {
-      const wrapper = elem("div", "meter-track-wrapper");
-      const chNum = c + 1;
-      // A tally light in front of the channel number, lit while a stream carries
-      // the channel (syncCard sets it). Shown for every device, mono included, so
-      // the channel-label column is always present and the dB scale lines up the
-      // same way regardless of channel count.
-      const label = elem("span", "meter-channel-label mono");
-      label.setAttribute("aria-hidden", "true");
-      label.appendChild(elem("span", "meter-tally"));
-      label.appendChild(elem("span", undefined, `Ch ${chNum}`));
-      wrapper.appendChild(label);
-      const canvasContainer = elem("div", "meter-canvas-container");
-      const canvas = document.createElement("canvas");
-      canvas.className = "meter-canvas";
-      // The live meter and its dB readout update ~10 Hz; hide them from assistive
-      // tech to avoid announcement spam. The clip button stays exposed.
-      canvas.setAttribute("aria-hidden", "true");
-      canvas.width = 700;
-      canvas.height = 22;
-      canvasContainer.appendChild(canvas);
-      const stats = elem("div", "meter-stats");
-      // The meter writes its readout, the waiting one first (MeterController).
-      const dbReadout = elem("span", "db-readout mono");
-      dbReadout.setAttribute("aria-hidden", "true");
-      const clipBtn = elem("button", "clip-latch-btn", "CLIP");
-      clipBtn.setAttribute("type", "button");
-      clipBtn.setAttribute("aria-label", `Channel ${chNum} clip indicator, click to clear`);
-      // The latch sees only the levels this page receives, which stop 30 s
-      // after another view shows (LEVELS_GRACE_MS) and 60 s after the tab is
-      // hidden (HIDDEN_STREAM_GRACE_MS).
-      clipBtn.title = "Latches clipping seen while the dashboard is showing.";
-      // Focus key so a rebuild that moves focus can restore it to the same row.
-      clipBtn.dataset.focus = `clip-${c}`;
-      stats.appendChild(dbReadout);
-      stats.appendChild(clipBtn);
-      wrapper.appendChild(canvasContainer);
-      wrapper.appendChild(stats);
-      meterConsole.appendChild(wrapper);
-      rows.push(wrapper);
-      meters.push(new VUMeter(canvas, dbReadout, clipBtn));
-    }
-    return { console: meterConsole, meters, rows };
   }
 
   // syncCard is the ONE write path for device and config data. It runs right
@@ -1362,46 +1282,9 @@ export class DashboardView {
         ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
         : "";
       if (entry.live.negotiatedEl.title !== negTitle) entry.live.negotiatedEl.title = negTitle;
-      // Mark each captured channel live when a stream carries it, and (with the
-      // per-device "hide inactive channels" preference, on by default) hide the
-      // rows no stream carries. Runs for every device, mono included, so a single
-      // row is marked live and the tally lights stay consistent. Rows index
-      // hardware channels from 0, selections number them from 1.
-      const states = tallyStates(d.streamedChannels ?? d.channels, entry.live.rows.length);
-      const hidden = hiddenRows(states, entry.hideInactive);
-      // meters is indexed the same as rows (both come from buildMeterConsole);
-      // capture it here so the callback below does not re-narrow entry.live.
-      const meters = entry.live.meters;
-      // A row hidden while it holds focus (its clip button, as its channel leaves
-      // the stream or hiding turns on) would drop focus to the document body;
-      // note it and re-home focus after the loop, once the visible rows settle.
-      let strandedRow = -1;
-      entry.live.rows.forEach((row, i) => {
-        const on = states[i] ?? false;
-        row.classList.toggle("ch-live", on);
-        row.classList.toggle("ch-off", !on);
-        const hide = hidden[i] ?? false;
-        if (hide && !row.hidden && holdsFocus(row)) strandedRow = i;
-        setHidden(row, hide);
-        // A hidden row's meter leaves the frame loop; it redraws when shown again.
-        const meter = meters[i];
-        if (meter) { if (hide) meter.pause(); else meter.resume(); }
-        const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
-        if (row.title !== title) row.title = title;
-        // The tally light is aria-hidden, so carry its streamed/not-streamed
-        // meaning on the row's own exposed control: the clip button.
-        const clip = row.querySelector<HTMLElement>(".clip-latch-btn");
-        const clipAria = `Channel ${i + 1} (${on ? "streamed" : "not streamed"}) clip indicator, click to clear`;
-        if (clip && clip.getAttribute("aria-label") !== clipAria) clip.setAttribute("aria-label", clipAria);
-      });
-      if (strandedRow >= 0) {
-        // A stable place in the same card: the first visible row's clip button
-        // (hiddenRows never hides them all), else the card's settings button.
-        const target = focusFallbackRow(hidden);
-        const next = entry.live.rows[target]?.querySelector<HTMLElement>(".clip-latch-btn");
-        (next ?? entry.settingsBtn).focus();
-        announce(this.announceEl, channelHiddenMessage(strandedRow + 1, next ? target + 1 : null));
-      }
+      // The tally lights follow every streamed channel (the union across the
+      // device's streams), as the header channel tag does.
+      entry.live.meterConsole.sync(d.streamedChannels ?? d.channels, entry.hideInactive, entry.settingsBtn, this.announceEl);
     }
     if (entry.idle) {
       setHidden(entry.idle.banner, !d.error);
