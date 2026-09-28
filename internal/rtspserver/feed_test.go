@@ -201,6 +201,36 @@ func TestFeedClose(t *testing.T) {
 	}
 }
 
+// TestFeedCloseWaitsForSubscribe pins the ordering between Close and a
+// Subscribe that is midway through publishing: Close must not return, and so
+// must not let the feed count as closed, while Subscribe holds the lock, or a
+// subscriber could be published after Close returned.
+func TestFeedCloseWaitsForSubscribe(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	f.mu.Lock() // stands in for a Subscribe that has passed its closure check
+	returned := make(chan struct{})
+	go func() {
+		f.Close()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		f.mu.Unlock()
+		t.Fatal("Close returned while a Subscribe held the lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	f.mu.Unlock()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return once the lock was released")
+	}
+	if _, err := f.Subscribe(); !errors.Is(err, ErrSourceClosed) {
+		t.Errorf("Subscribe after Close: err = %v, want ErrSourceClosed", err)
+	}
+}
+
 // TestFeedCloseWakesParkedNext pins that Close ends a Next that is already
 // blocked on an empty queue.
 func TestFeedCloseWakesParkedNext(t *testing.T) {

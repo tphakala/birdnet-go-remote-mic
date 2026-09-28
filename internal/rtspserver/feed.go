@@ -152,10 +152,17 @@ func (f *Feed) Session() (active bool, session uint64) {
 func (f *Feed) Clients() int { return len(f.snap.Load().subs) }
 
 // Close marks the feed dead: every Next returns ErrSourceClosed so the
-// playing writers tear down, and later Subscribe calls fail. Safe to call more
-// than once.
+// playing writers tear down, and later Subscribe calls fail. It takes the lock
+// Subscribe holds while it checks for closure and publishes, so a Subscribe
+// either finishes first (its client is then told at once through Next) or sees
+// the closed feed; none publishes a subscriber after Close has returned. Safe
+// to call more than once.
 func (f *Feed) Close() {
-	f.closeOnce.Do(func() { close(f.done) })
+	f.closeOnce.Do(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		close(f.done)
+	})
 }
 
 // Next returns the next frame, blocking until one is available, ctx is done,
