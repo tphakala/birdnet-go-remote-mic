@@ -284,7 +284,7 @@ export class AppStore extends Emitter<StoreEvents> {
     const coreFailed = !statusOk && !devicesOk;
     const systemFailed = !systemOk;
     // A config-only failure leaves the System view's network/access/notification
-    // cards hidden (they unhide on the "config" event). Surface it so the miss is
+    // cards loading (the "config" event fills them). Surface it so the miss is
     // not silent; the System view warns and polling recovers it on a later tick.
     const configFailed = !configOk;
     // The unconfigured-hardware list is advisory: a failure leaves it stale until

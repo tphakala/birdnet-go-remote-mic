@@ -1,7 +1,8 @@
 // I/O-free logic for the Notifications settings card. No DOM, no fetch: the
 // field catalogue, the input-string to patch transform, and the server-error to
 // field mapping all live here so they are unit-tested with node:test and no
-// browser. The view (views/system.ts) owns the DOM and calls into here.
+// browser. The card (views/system/notifications-card.ts) owns the DOM and calls
+// into here.
 
 import type { AudioAlertSettings, HostAlertSettings, NotificationSettings } from "./types.ts";
 

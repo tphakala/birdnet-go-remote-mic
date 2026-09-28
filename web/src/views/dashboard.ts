@@ -1751,7 +1751,7 @@ export class DashboardView {
     if (!form) return;
     if (!form.validate()) {
       showToast(FIX_FIELDS_TEXT, "error");
-      // Move focus to the first flagged field, matching saveAuth, so a keyboard
+      // Move focus to the first flagged field, matching AccessCard.save, so a keyboard
       // user is taken to what needs fixing instead of staying on the Save button.
       form.focusFirstInvalid();
       return;

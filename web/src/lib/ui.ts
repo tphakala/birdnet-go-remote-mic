@@ -346,6 +346,29 @@ export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
   }
 }
 
+// part finds an element of a card's static markup by id, looking only inside
+// the card's root, so a card class reaches no markup but its own. Like
+// querySelector's, the type parameter is an unchecked narrowing.
+export function part<T extends HTMLElement = HTMLElement>(root: HTMLElement | null, id: string): T | null {
+  return root?.querySelector<T>(`#${id}`) ?? null;
+}
+
+// setLoading marks a region that is laid out before its first read arrives:
+// .is-loading draws the placeholders, aria-busy tells assistive technology the
+// content is not there yet, and inert on its body keeps its controls from being
+// used or focused before their values are known. The region itself and its
+// .section-head stay out of inert, so the heading and the busy state remain in
+// the accessibility tree. A child added while loading is not made inert.
+export function setLoading(el: HTMLElement, loading: boolean): void {
+  if (el.classList.contains("is-loading") === loading) return;
+  el.classList.toggle("is-loading", loading);
+  for (const child of el.children) {
+    if (child instanceof HTMLElement && !child.classList.contains("section-head")) child.inert = loading;
+  }
+  if (loading) el.setAttribute("aria-busy", "true");
+  else el.removeAttribute("aria-busy");
+}
+
 export function setHidden(el: HTMLElement, hidden: boolean): void {
   if (el.hidden !== hidden) el.hidden = hidden;
 }

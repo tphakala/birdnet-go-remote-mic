@@ -317,9 +317,11 @@ textarea {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .brand-icon {
+  flex: none;
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
@@ -337,6 +339,7 @@ textarea {
 .brand-titles {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .brand-row {
@@ -370,14 +373,28 @@ textarea {
   border: 1px solid var(--border-subtle);
 }
 
+/* One line at every width: the address is filled in after the first paint and
+   the connection text changes length when the event stream connects, so a line
+   that wrapped would move the whole page each time. A long address is cut
+   short instead. */
 .brand-sub {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: var(--font-size-caption);
   font-weight: 500;
   color: var(--text-muted);
+}
+
+.brand-sub > * {
+  flex: none;
+  white-space: nowrap;
+}
+.brand-sub > .brand-address {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .live-indicator {
@@ -1338,7 +1355,8 @@ textarea.field-input {
 /* :focus (any focus, including a pointer) sets only the active border colour; the
    keyboard focus ring is the .field-input:focus-visible glow rule below. */
 
-.field-input:disabled {
+.field-input:disabled,
+.is-loading .field-input {
   background: var(--bg-surface-raised);
   color: var(--text-muted);
   cursor: not-allowed;
@@ -1552,12 +1570,19 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   width: 16px;
 }
 
-/* In-flight state: the input is disabled while its PATCH runs, so dim the
-   track and show a progress cursor rather than a frozen-looking switch. */
+/* In-flight state: the input is disabled while its PATCH runs, or its card is
+   still loading, so dim the track and show a progress cursor rather than a
+   frozen-looking switch. */
 .switch-control input:disabled + .switch-track,
-.switch-control input[aria-disabled="true"] + .switch-track {
+.switch-control input[aria-disabled="true"] + .switch-track,
+.is-loading .switch-track {
   opacity: 0.55;
   cursor: progress;
+}
+/* A switch waiting for its first read shows neither position: an "off" there
+   would read as the appliance's setting. */
+.is-loading .switch-thumb {
+  visibility: hidden;
 }
 .switch-control:has(input:disabled),
 .switch-control:has(input[aria-disabled="true"]) {
@@ -1956,6 +1981,32 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* ==================== SYSTEM VIEW ==================== */
+/* Loading placeholders. A System card is laid out before its first read
+   (setLoading in lib/ui.ts adds .is-loading), so the read fills values in
+   place instead of growing the page. Each value still to come holds one line
+   of its own text size with a muted bar. */
+.is-loading .info-val:empty::before,
+.is-loading .tile-value > span:first-child:empty::before,
+.is-loading .update-headline:empty::before,
+.is-loading .update-detail:empty::before,
+.is-loading .auth-state:empty::before {
+  content: "\00a0";
+  display: inline-block;
+  width: min(12em, 100%);
+  border-radius: var(--radius-xs);
+  background: var(--border-base);
+}
+.is-loading .tile-value > span:first-child:empty::before {
+  width: 3em;
+}
+.is-loading .update-detail:empty::before {
+  width: min(28em, 100%);
+}
+/* A placeholder tile's bar shows its empty track, not a full reading. */
+.is-loading .progress-bar-fill {
+  width: 0;
+}
+
 .system-matrix {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -3337,11 +3388,13 @@ select.field-input {
 .available-enable {
   flex: 0 0 auto;
 }
-/* A control that cannot act now (aria-disabled keeps it focusable) looks it,
-   unless it is busy, which has its own look below. */
+/* A control that cannot act now looks it: one kept focusable with
+   aria-disabled (unless it is busy, which has its own look below), or one in a
+   region still waiting for its first read (.is-loading). */
 .btn[aria-disabled="true"]:not(.is-busy),
 .btn[aria-disabled="true"]:not(.is-busy):hover,
-.btn[aria-disabled="true"]:not(.is-busy):active {
+.btn[aria-disabled="true"]:not(.is-busy):active,
+.is-loading .btn {
   opacity: 0.55;
   cursor: not-allowed;
   /* No hover or press feedback on a control that will not act. */

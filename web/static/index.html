@@ -31,7 +31,7 @@
         <div class="brand-sub">
           <span class="live-indicator" id="connection-indicator"><span class="pulse-dot"></span> <span id="connection-text">Connecting</span></span>
           <span>&bull;</span>
-          <span class="mono" id="appliance-address">-</span>
+          <span class="mono brand-address" id="appliance-address">-</span>
         </div>
       </div>
     </div>
@@ -198,13 +198,11 @@
     <section id="view-system" class="view-panel view-container" aria-label="System" tabindex="-1">
       <div style="display: flex; flex-direction: column; gap: 18px;">
 
-        <!-- System Telemetry Matrix (rendered from live /system) -->
-        <div class="system-matrix" id="sys-tiles">
-          <p class="cfg-empty">Loading system telemetry...</p>
-        </div>
+        <!-- System Telemetry Matrix (rendered from live /system; placeholder tiles until the first read) -->
+        <div class="system-matrix" id="sys-tiles"></div>
 
         <!-- Host and appliance details (rendered from live /system and /status) -->
-        <div class="config-section-card" id="sys-info-card" hidden>
+        <div class="config-section-card" id="sys-info-card">
           <div class="section-head">
             <div>
               <h2 class="section-title">
@@ -218,7 +216,7 @@
               <span class="section-desc">Host platform, appliance build and software updates.</span>
             </div>
           </div>
-          <div class="update-state" hidden id="sys-update-state" role="status">
+          <div class="update-state" id="sys-update-state" role="status">
             <p class="update-headline" id="sys-update-headline"></p>
             <p class="update-detail" id="sys-update-detail"></p>
             <p class="update-hint" id="sys-update-hint" hidden></p>
@@ -235,7 +233,7 @@
             </div>
           </div>
           <!-- Software updates: the daily release check and the one-button update (from live /system) -->
-          <div class="network-actions" id="sys-update-actions" hidden>
+          <div class="network-actions" id="sys-update-actions">
             <label class="switch-control">
               <input type="checkbox" id="sys-update-check" class="visually-hidden" role="switch" aria-describedby="sys-update-check-hint">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -275,7 +273,7 @@
         </div>
 
         <!-- Global network & discovery settings (from live /config) -->
-        <div class="config-section-card" id="sys-network-card" hidden>
+        <div class="config-section-card" id="sys-network-card">
           <div class="section-head">
             <div>
               <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg><span>Network &amp; Discovery</span></h2>
@@ -313,14 +311,14 @@
         </div>
 
         <!-- Access control: the shared token gating the API, this UI and RTSP (from live /config) -->
-        <div class="config-section-card" id="sys-auth-card" hidden>
+        <div class="config-section-card" id="sys-auth-card">
           <div class="section-head">
             <div>
               <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span>Access Control</span></h2>
               <span class="section-desc">One shared access token protects the management API, this web UI, and the RTSP streams. BirdNET-Go and media players send it as the RTSP password (any username). Changes apply immediately; no restart needed.</span>
             </div>
           </div>
-          <p class="auth-state" id="sys-auth-state" role="status">Open access</p>
+          <p class="auth-state" id="sys-auth-state" role="status"></p>
           <div class="form-field">
             <label class="field-label" for="sys-auth-token">Access Token</label>
             <div class="auth-token-row">
@@ -343,7 +341,7 @@
         <!-- Management TLS certificate: metadata and PEM download for client trust (GET /system/certificate),
              plus regenerating the self-signed certificate (POST /system/certificate/regenerate) and installing
              an operator-supplied one (PUT /system/certificate). Both apply live; no restart. -->
-        <div class="config-section-card" id="sys-cert-card" hidden>
+        <div class="config-section-card" id="sys-cert-card">
           <div class="section-head">
             <div>
               <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="m9 12 2 2 4-4"></path></svg><span>Management Certificate</span></h2>
@@ -395,7 +393,7 @@
         </div>
 
         <!-- Condition-monitor notification thresholds (from live /config) -->
-        <div class="config-section-card" id="sys-notifications-card" hidden>
+        <div class="config-section-card" id="sys-notifications-card">
           <div class="section-head">
             <div>
               <h2 class="section-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.268 21a2 2 0 0 0 3.464 0"></path><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"></path></svg><span>Notifications</span></h2>

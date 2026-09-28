@@ -60,7 +60,7 @@ type ViewName = (typeof VIEWS)[number];
 const VIEW_READY: Record<ViewName, string> = {
   dashboard: "#view-dashboard .meter-track-wrapper",
   events: "#view-events .ev-list",
-  system: "#sys-info-card:not([hidden]) .info-grid dd",
+  system: "#view-system:not(:has([aria-busy=\"true\"])) #sys-info-card .info-grid dd",
   about: "#view-about .about-body",
 };
 
