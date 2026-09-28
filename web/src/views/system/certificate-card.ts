@@ -147,7 +147,11 @@ export class CertificateCard {
       // proxy's says nothing about it.
       if (isRefusal(err) && err.status === 501) {
         this.unavailable = true;
-        if (this.cardEl) this.cardEl.hidden = true;
+        // Not busy any more: it turned out not to apply.
+        if (this.cardEl) {
+          setLoading(this.cardEl, false);
+          this.cardEl.hidden = true;
+        }
         return;
       }
       this.failures++;

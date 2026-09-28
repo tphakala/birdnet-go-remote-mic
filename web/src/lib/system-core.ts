@@ -136,8 +136,10 @@ export const INFO_ORDER: readonly InfoRow[] = [
 ];
 
 // withPlaceholders fills the rows a read has not supplied yet with empty
-// values, in display order, so the card keeps the height it will have once
-// both reads are in.
+// values, in display order, so a read fills rows in place instead of growing
+// the card. It lays out the rows of a release build on a host that reports
+// every fact; a host or build without some of them drops those rows once both
+// reads are in, rather than keeping rows that would read as missing values.
 export function withPlaceholders(rows: readonly InfoRow[]): InfoRow[] {
   const have = new Map(rows.map((r) => [r.label, r]));
   return INFO_ORDER.map((slot) => have.get(slot.label) ?? slot);

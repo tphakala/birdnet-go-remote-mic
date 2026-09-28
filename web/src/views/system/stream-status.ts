@@ -1,4 +1,4 @@
-import { deviceStateBadge, elem, modeLabel, orderChildren, setText } from "../../lib/ui.ts";
+import { deviceStateBadge, elem, modeLabel, orderChildren, setLoading, setText } from "../../lib/ui.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import { captureFormatLabel, clientSummary, streamSummary } from "../../lib/dashboard-core.ts";
 import type { Config, Device } from "../../lib/types.ts";
@@ -28,20 +28,27 @@ export class StreamStatus {
   // row height from the first paint.
   private readonly messageRow: HTMLElement;
   private readonly messageCell: HTMLElement;
+  // The Stream Status card, busy until the first devices read, or until
+  // loadFailed (see there for when that runs). The row count is unknown until
+  // then, so a multi-device table still grows once when the devices arrive.
+  private readonly cardEl: HTMLElement | null;
   private loaded = false;
 
   constructor(body: HTMLElement | null) {
     this.bodyEl = body;
+    this.cardEl = body?.closest<HTMLElement>(".client-card") ?? null;
     this.messageRow = document.createElement("tr");
     this.messageCell = elem("td", undefined, "Loading streams...");
     this.messageCell.setAttribute("colspan", "6");
     this.messageRow.appendChild(this.messageCell);
     body?.replaceChildren(this.messageRow);
+    if (this.cardEl) setLoading(this.cardEl, true);
   }
 
   // devices renders a devices read.
   public devices(devices: Device[], cfg: Config | null): void {
     this.loaded = true;
+    if (this.cardEl) setLoading(this.cardEl, false);
     this.render(devices, cfg);
   }
 
@@ -58,7 +65,9 @@ export class StreamStatus {
   // devices reads both failed (coreFailed), so a failed devices read alone
   // keeps the loading row until a poll brings the devices.
   public loadFailed(): void {
-    if (!this.loaded) setText(this.messageCell, "Stream status could not be loaded. Retrying shortly.");
+    if (this.loaded) return;
+    setText(this.messageCell, "Stream status could not be loaded. Retrying shortly.");
+    if (this.cardEl) setLoading(this.cardEl, false);
   }
 
   // render fills the table, diffed: rows are keyed by the immutable device id,
