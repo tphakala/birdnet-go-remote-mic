@@ -109,8 +109,8 @@ export class VUMeter {
           if (!this.peakValEl) return;
           this.peakValEl.textContent = text;
           // Say what "--" means to a pointer user. Only a pointer gets it, by
-          // choice: the readout is aria-hidden with the canvas (the dashboard
-          // hides both, web/src/views/dashboard.ts:1218-1227), so "--" is
+          // choice: the readout is aria-hidden with the canvas (MeterConsole
+          // in web/src/views/dashboard/meter-console.ts hides both), so "--" is
           // visual only, and the stream state reaches everyone through the
           // connection indicator instead.
           // Written on change only: the text changes up to ten times a second.

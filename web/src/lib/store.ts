@@ -37,6 +37,9 @@ export const LEVELS_GRACE_MS = 30_000;
 // filter means every event type, levels included (a test checks both).
 export const NON_LEVEL_EVENTS: readonly string[] = [NOTIFICATION_EVENT];
 
+// DevicesRead is what the device list is known to be (AppStore.devicesRead).
+export type DevicesRead = "pending" | "loaded" | "failed";
+
 export interface AppState {
   status: ApplianceStatus | null;
   devices: Device[];
@@ -115,6 +118,8 @@ export class AppStore extends Emitter<StoreEvents> {
   private levelsTimer: ReturnType<typeof setTimeout> | null = null;
   // Whether the current outage was announced (see markStreamDown).
   private downAnnounced = false;
+  // What the device list is known to be (see devicesRead).
+  private devicesKnown: DevicesRead = "pending";
   // One ordering gate per polled resource (see LatestGate). The poll timer does
   // not wait for a tick to finish, and a provision, removal, or save triggers an
   // extra refresh, so reads of one resource overlap and can resolve out of
@@ -232,6 +237,14 @@ export class AppStore extends Emitter<StoreEvents> {
 
   public getState(): Readonly<AppState> {
     return this.state;
+  }
+
+  // devicesRead tells an empty device list that was read apart from one not
+  // read yet: pending until the first devices read settles, then loaded once
+  // any read applied, or failed while none has. A region laid out from the
+  // list keeps its loading shape while pending.
+  public devicesRead(): DevicesRead {
+    return this.devicesKnown;
   }
 
   private initSSE(): void {
@@ -590,6 +603,7 @@ export class AppStore extends Emitter<StoreEvents> {
       },
       (devices) => {
         this.state.devices = devices;
+        this.devicesKnown = "loaded";
         if (this.devicesChange.changed(devices)) {
           this.emit("devices", this.state.devices);
         }
@@ -597,6 +611,7 @@ export class AppStore extends Emitter<StoreEvents> {
       (err, superseded) => {
         console.warn("Failed to refresh devices:", err);
         if (!superseded) this.devicesChange.reset();
+        if (this.devicesKnown === "pending") this.devicesKnown = "failed";
       },
     );
   }

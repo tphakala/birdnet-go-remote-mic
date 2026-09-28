@@ -122,6 +122,129 @@ export function downCauseTitle(cause: string | undefined): string {
   }
 }
 
+// runtimeEnabled reports whether a device is on at runtime. A disabled device is
+// off; anything else (serving, or a failed/skipped device that was configured
+// to stream) is on until the operator changes it.
+export function runtimeEnabled(state: string): boolean {
+  return state !== "disabled";
+}
+
+// deviceToConfig projects a runtime device, which carries the runtime-visible
+// configured fields, to the config shape: the fallback base for a device-list
+// patch before GET /config has loaded. quietAlert is omitted, since the runtime
+// device carries no such field. It is a render and seed fallback only: the
+// Dashboard's mutating device PATCHes refuse to run until the config has
+// loaded, so it never persists and an existing opt-out cannot be reset.
+export function deviceToConfig(d: Device): DeviceConfig {
+  const c: DeviceConfig = {
+    name: d.name, device: d.device, path: d.path, mode: d.mode,
+    rate: d.rate, channels: d.channels, format: d.format,
+    enabled: runtimeEnabled(d.state),
+  };
+  if (d.opus) c.opus = d.opus;
+  return c;
+}
+
+// deviceConfigKey serialises the settings-relevant fields of a device config in
+// a fixed order, so an out-of-band change to an open settings form can be
+// detected by comparison. It EXCLUDES enabled: the form does not edit the enable
+// flag (the card toggle does, and a save sources it fresh), so a same-tab toggle
+// must not flag the operator's own open form as changed elsewhere. quietAlert is
+// included, since the form edits it, normalised with `?? true` (the backend's
+// absent default) so an absent value and an explicit true hash identically. A
+// config payload need not carry channels, so a missing one reads as empty
+// rather than throwing.
+export function deviceConfigKey(cd: DeviceConfig | undefined): string {
+  if (!cd) return "";
+  return JSON.stringify([
+    cd.name, cd.path, cd.mode, cd.rate,
+    [...(cd.channels ?? [])], cd.format, cd.opus?.bitrate ?? null,
+    cd.quietAlert ?? true,
+  ]);
+}
+
+// pendingStop reports that a device is currently serving while the config now
+// disables it. A config change is hot-applied, so this divergence is only ever a
+// brief moment while the reload stops the device; the card's note labels that
+// instant so the still-live "Serving" badge and meters are not unexplained. Only
+// a serving device qualifies: a failed or skipped device is not serving (its
+// footer already explains the exclusion), and the reverse (a disabled card now
+// enabled) is explained by the non-serving footer, so neither needs the note.
+export function pendingStop(configEnabled: boolean, state: string): boolean {
+  return state === "serving" && !configEnabled;
+}
+
+export const PENDING_STOP_TEXT = "Disabling; this device stops serving shortly.";
+
+// nonServingFooterText is the footer message for a card that is not serving.
+export function nonServingFooterText(state: string, configEnabled: boolean): string {
+  if (state === "disabled") {
+    return configEnabled
+      ? "Enabling; this device starts serving shortly."
+      : "Streaming is disabled for this device. Enable it to start serving.";
+  }
+  return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
+}
+
+// rtspUrl is a stream path's URL on host, at the port of the appliance's RTSP
+// listen address (":8554", "0.0.0.0:8554", or a bare port), 8554 when the
+// status has not said.
+export function rtspUrl(host: string, listen: string | undefined, path: string): string {
+  let port = "8554";
+  if (listen) {
+    const i = listen.lastIndexOf(":");
+    port = i >= 0 ? listen.slice(i + 1) : listen;
+  }
+  return `rtsp://${host}:${port}${path}`;
+}
+
+// meterCount is the number of VU meter rows a serving device shows: one per
+// CAPTURED hardware channel (the negotiated count), not per streamed channel.
+export function meterCount(d: Pick<Device, "negotiatedChannels" | "channels">): number {
+  return Math.max(1, d.negotiatedChannels ?? d.channels.length);
+}
+
+// cardShape names the only structural facts about a device card: whether it
+// has a serving body (endpoint strip, meter console, metrics) or an idle body
+// (error banner, footer), and how many meter rows the serving body has. A
+// change to either rebuilds the card; every other field is patched in place.
+// Mode is left out: the avatar and chips are patched, not rebuilt.
+export function cardShape(d: Pick<Device, "state" | "negotiatedChannels" | "channels">): string {
+  return d.state === "serving" ? `serving:${meterCount(d)}` : "idle";
+}
+
+// AvatarIcon is the glyph of a device card's avatar.
+export type AvatarIcon = "mic" | "ultra" | "error";
+
+// avatarLook is a device card's avatar: a microphone, the ultrasonic glyph
+// for a serving PCM device, or the error glyph for a failed or skipped one (a
+// disabled device is off by intent, not broken), and its colour.
+export function avatarLook(state: string, mode: StreamMode): { icon: AvatarIcon; color: string } {
+  const serving = state === "serving";
+  const disabled = state === "disabled";
+  if (serving && mode === "pcm") return { icon: "ultra", color: "var(--ultrasonic-purple)" };
+  if (serving || disabled) return { icon: "mic", color: "" };
+  return { icon: "error", color: "var(--signal-crit)" };
+}
+
+// hardwareLine is the line under a device card's name: the hardware the
+// configured id resolves to right now, its current ALSA address and the sound
+// card's model (friendlyName). When the id resolved to no single present
+// device the address is absent: a serving card-index device opened without a
+// resolution (the container fallback) still shows its configured id, and
+// anything else shows "No matching hardware". The model is left out when
+// absent or when it only repeats the configured name. A card-index id can name
+// a different device after a reboot or replug, which the line says; the
+// settings panel's Device ID hint carries the remedy (remove and re-add).
+export function hardwareLine(d: Pick<Device, "name" | "device" | "state" | "hwAddr" | "friendlyName" | "idStable">): string {
+  const hw = d.friendlyName?.trim();
+  const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
+  const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : d.state === "serving" ? `ALSA: ${d.device}` : "No matching hardware";
+  let line = showHw ? `${addr} · ${hw}` : addr;
+  if (d.idStable === false) line += " · card index (can change after a reboot)";
+  return line;
+}
+
 // FooterMetrics is the text of a serving device card's footer counters.
 export interface FooterMetrics {
   clients: string;
@@ -195,6 +318,32 @@ export function controlGoneMessage(device: string, key: string, serving: boolean
 // Said after a device is removed, following the "Removed" toast: its card and
 // the Remove button that held focus are gone, so focus moved to the dashboard.
 export const REMOVED_FOCUS_MESSAGE = "Focus moved to the dashboard.";
+
+// availableLabel names an available device for people: its friendly name,
+// with the ALSA address when there is one to tell two identical units apart,
+// else the address, else the device id.
+export function availableLabel(d: Pick<AvailableDevice, "device" | "hwAddr" | "friendlyName">): string {
+  return d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+}
+
+// capsSummary is a short summary of a device's probed capabilities (channel
+// support and top sample rate) for the Available Devices list, or "" when the
+// probe found neither.
+export function capsSummary(d: Pick<AvailableDevice, "supportedChannels" | "supportedRates">): string {
+  const parts: string[] = [];
+  const ch = d.supportedChannels ?? [];
+  if (ch.length) {
+    if (ch.includes(1) && ch.includes(2)) parts.push("mono/stereo");
+    else if (ch.includes(2)) parts.push("stereo");
+    else parts.push("mono");
+  }
+  const rates = d.supportedRates ?? [];
+  if (rates.length) {
+    const maxKhz = Math.max(...rates) / 1000;
+    parts.push(`up to ${maxKhz.toLocaleString("en-US")} kHz`);
+  }
+  return parts.join(" · ");
+}
 
 // availableCardKey is what an Available Devices card shows: the device's data
 // and whether an Enable is in flight for it. A card is rebuilt only when this

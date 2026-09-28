@@ -256,7 +256,7 @@ export class AccessCard {
       // to <body>; re-enabling does not restore it. After a successful save the
       // actions bar is hidden, so the token input is the sensible landing spot in
       // every case. Restore focus explicitly, matching the convention the toggle
-      // and settings paths in dashboard.ts already follow.
+      // and settings paths on the Dashboard already follow.
       this.tokenEl?.focus();
     }
   }

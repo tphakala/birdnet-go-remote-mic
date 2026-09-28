@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { AvailableDevice, DeviceConfig } from "../src/lib/types.ts";
+import type { AvailableDevice, Device, DeviceConfig } from "../src/lib/types.ts";
 import { Emitter } from "../src/lib/emitter.ts";
 import type { ViewName } from "../src/lib/router-core.ts";
 import { fileURLToPath } from "node:url";
@@ -14,15 +14,22 @@ import { at, FakeTimers } from "./fixtures.ts";
 import {
   availableCardKey,
   availableGoneMessage,
+  availableLabel,
+  deviceConfigKey,
   deviceGoneMessage,
+  deviceToConfig,
   focusMovedMessage,
   judgeUnconfirmedSave,
   neighbourOrder,
   parseDeviceFieldPath,
   rejectedFieldKey,
+  runtimeEnabled,
   settingsFocusMessage,
   availablePlan,
+  avatarLook,
   bannerIsError,
+  capsSummary,
+  cardShape,
   deviceFieldLabel,
   rejectionText,
   followDashboardRoute,
@@ -38,8 +45,13 @@ import {
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
+  hardwareLine,
   hiddenRows,
+  meterCount,
   needsNotificationsFallback,
+  nonServingFooterText,
+  pendingStop,
+  rtspUrl,
   streamSummary,
   tallyStates,
   tokenHiddenMessage,
@@ -519,4 +531,128 @@ test("routeLevels feeds each channel's meter and clears a card the event lacks",
     ["g1 -20 -6 false", "g0 -30 -0.05 true", "b0 clear"],
     "each channel's own levels and latch reach its meter; a channel with no meter is skipped; bats is missing, so cleared",
   );
+});
+
+test("runtimeEnabled is off only for a disabled device", () => {
+  assert.equal(runtimeEnabled("disabled"), false);
+  for (const state of ["serving", "failed", "skipped"]) assert.equal(runtimeEnabled(state), true, state);
+});
+
+const RUNTIME: Device = {
+  name: "Garden",
+  device: "usb:0d8c:0014:s=A:if=0,0",
+  path: "/garden",
+  mode: "opus",
+  format: "s16",
+  rate: 48000,
+  channels: [1],
+  state: "failed",
+  clientConnected: false,
+  droppedFrames: 0,
+  opus: { bitrate: 64000 },
+};
+
+test("deviceToConfig projects the configured fields and leaves quietAlert out", () => {
+  assert.deepEqual(deviceToConfig(RUNTIME), {
+    name: "Garden", device: RUNTIME.device, path: "/garden", mode: "opus",
+    rate: 48000, channels: [1], format: "s16", enabled: true, opus: { bitrate: 64000 },
+  });
+  const pcm = deviceToConfig({ ...RUNTIME, mode: "pcm", state: "disabled", opus: undefined });
+  assert.equal(pcm.enabled, false);
+  assert.equal("opus" in pcm, false);
+  assert.equal("quietAlert" in pcm, false);
+});
+
+test("deviceConfigKey ignores enabled and reads an absent quietAlert as true", () => {
+  const cd: DeviceConfig = { ...deviceToConfig(RUNTIME), quietAlert: true };
+  assert.equal(deviceConfigKey(undefined), "");
+  assert.equal(deviceConfigKey({ ...cd, enabled: false }), deviceConfigKey(cd));
+  assert.equal(deviceConfigKey({ ...cd, quietAlert: undefined }), deviceConfigKey(cd));
+  assert.notEqual(deviceConfigKey({ ...cd, quietAlert: false }), deviceConfigKey(cd));
+  assert.notEqual(deviceConfigKey({ ...cd, opus: { bitrate: 96000 } }), deviceConfigKey(cd));
+  assert.notEqual(deviceConfigKey({ ...cd, channels: [1, 2] }), deviceConfigKey(cd));
+  // Every field the settings form edits is in the key.
+  const edits: Partial<DeviceConfig>[] = [{ name: "Pond" }, { path: "/pond" }, { mode: "pcm" }, { rate: 96000 }, { format: "s32" as DeviceConfig["format"] }];
+  for (const edit of edits) assert.notEqual(deviceConfigKey({ ...cd, ...edit }), deviceConfigKey(cd), JSON.stringify(edit));
+  // A config payload without channels does not throw.
+  const noChannels = { ...cd } as Partial<DeviceConfig>;
+  delete noChannels.channels;
+  assert.equal(deviceConfigKey(noChannels as DeviceConfig), deviceConfigKey({ ...cd, channels: [] }));
+});
+
+test("pendingStop flags only a serving device the config now disables", () => {
+  assert.equal(pendingStop(false, "serving"), true);
+  assert.equal(pendingStop(true, "serving"), false);
+  assert.equal(pendingStop(false, "failed"), false);
+  assert.equal(pendingStop(true, "disabled"), false);
+});
+
+test("nonServingFooterText says whether a disabled device is starting", () => {
+  assert.equal(nonServingFooterText("disabled", true), "Enabling; this device starts serving shortly.");
+  assert.equal(nonServingFooterText("disabled", false), "Streaming is disabled for this device. Enable it to start serving.");
+  const excluded = "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
+  assert.equal(nonServingFooterText("failed", true), excluded);
+  assert.equal(nonServingFooterText("skipped", false), excluded);
+});
+
+test("rtspUrl takes the port from the listen address, 8554 without one", () => {
+  assert.equal(rtspUrl("mic.local", ":8555", "/garden"), "rtsp://mic.local:8555/garden");
+  assert.equal(rtspUrl("mic.local", "0.0.0.0:8556", "/garden"), "rtsp://mic.local:8556/garden");
+  assert.equal(rtspUrl("mic.local", "8557", "/garden"), "rtsp://mic.local:8557/garden");
+  assert.equal(rtspUrl("mic.local", undefined, "/garden"), "rtsp://mic.local:8554/garden");
+  assert.equal(rtspUrl("mic.local", "", "/garden"), "rtsp://mic.local:8554/garden");
+  // The port follows the last colon, as in an IPv6 listen address.
+  assert.equal(rtspUrl("mic.local", "[::]:8555", "/garden"), "rtsp://mic.local:8555/garden");
+});
+
+test("meterCount and cardShape follow the captured channels of a serving device", () => {
+  assert.equal(meterCount({ negotiatedChannels: 2, channels: [1] }), 2);
+  assert.equal(meterCount({ channels: [1, 2, 3] }), 3);
+  assert.equal(meterCount({ negotiatedChannels: 0, channels: [] }), 1);
+  assert.equal(cardShape({ state: "serving", negotiatedChannels: 2, channels: [1] }), "serving:2");
+  assert.equal(cardShape({ state: "serving", channels: [1] }), "serving:1");
+  for (const state of ["disabled", "failed", "skipped"] as const) {
+    assert.equal(cardShape({ state, negotiatedChannels: 2, channels: [1] }), "idle", state);
+  }
+});
+
+test("avatarLook marks a serving PCM device ultrasonic and a down one as an error", () => {
+  assert.deepEqual(avatarLook("serving", "pcm"), { icon: "ultra", color: "var(--ultrasonic-purple)" });
+  assert.deepEqual(avatarLook("serving", "opus"), { icon: "mic", color: "" });
+  assert.deepEqual(avatarLook("disabled", "pcm"), { icon: "mic", color: "" });
+  assert.deepEqual(avatarLook("failed", "opus"), { icon: "error", color: "var(--signal-crit)" });
+  assert.deepEqual(avatarLook("skipped", "pcm"), { icon: "error", color: "var(--signal-crit)" });
+});
+
+test("hardwareLine shows the address, a distinct model, and a card-index warning", () => {
+  const d = { name: "Garden", device: "usb:0d8c:0014:s=A:if=0,0", state: "serving" as const };
+  assert.equal(hardwareLine({ ...d, hwAddr: "hw:2,0", friendlyName: "USB Audio Device" }), "ALSA: hw:2,0 · USB Audio Device");
+  // A model that only repeats the name, or a blank one, is left out.
+  assert.equal(hardwareLine({ ...d, hwAddr: "hw:2,0", friendlyName: " garden " }), "ALSA: hw:2,0");
+  assert.equal(hardwareLine({ ...d, hwAddr: "hw:2,0", friendlyName: "  " }), "ALSA: hw:2,0");
+  // Unresolved: a serving device shows its configured id, anything else says so.
+  assert.equal(hardwareLine({ ...d, device: "hw:1,0" }), "ALSA: hw:1,0");
+  assert.equal(hardwareLine({ ...d, state: "skipped" }), "No matching hardware");
+  // A device that is down but present shows its address.
+  assert.equal(hardwareLine({ ...d, state: "failed", hwAddr: "hw:2,0" }), "ALSA: hw:2,0");
+  assert.equal(
+    hardwareLine({ ...d, state: "skipped", idStable: false }),
+    "No matching hardware · card index (can change after a reboot)",
+  );
+});
+
+test("availableLabel adds the address to a friendly name, else falls back", () => {
+  const device = "usb:2752:0019:s=Y8ZQ2BM1:if=0,0";
+  assert.equal(availableLabel({ device, hwAddr: "hw:4,0", friendlyName: "Scarlett 2i2" }), "Scarlett 2i2 (hw:4,0)");
+  assert.equal(availableLabel({ device, friendlyName: "Scarlett 2i2" }), "Scarlett 2i2");
+  assert.equal(availableLabel({ device, hwAddr: "hw:4,0" }), "hw:4,0");
+  assert.equal(availableLabel({ device }), device);
+});
+
+test("capsSummary names the channel support and the top rate", () => {
+  assert.equal(capsSummary({ supportedChannels: [1, 2], supportedRates: [44100, 48000, 192000] }), "mono/stereo · up to 192 kHz");
+  assert.equal(capsSummary({ supportedChannels: [2], supportedRates: [44100] }), "stereo · up to 44.1 kHz");
+  assert.equal(capsSummary({ supportedChannels: [1] }), "mono");
+  assert.equal(capsSummary({ supportedRates: [384000] }), "up to 384 kHz");
+  assert.equal(capsSummary({}), "");
 });

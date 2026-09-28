@@ -167,6 +167,21 @@ test("devices announce on change, reset on failure, and normalize channels", asy
   assert.equal(h.last.get("devices"), h.store.getState().devices);
 });
 
+test("devicesRead is pending until a read settles, and stays loaded after a failure", async () => {
+  const h = harness();
+  h.push("getDevices", new Error("offline"));
+  h.push("getDevices", []);
+  h.push("getDevices", new Error("offline"));
+  assert.equal(h.store.devicesRead(), "pending");
+  await h.store.refreshDevices();
+  assert.equal(h.store.devicesRead(), "failed");
+  // An empty list read counts as loaded.
+  await h.store.refreshDevices();
+  assert.equal(h.store.devicesRead(), "loaded");
+  await h.store.refreshDevices();
+  assert.equal(h.store.devicesRead(), "loaded");
+});
+
 test("system announces on change and re-announces after a failure", async () => {
   const h = harness();
   const sys = { hostname: "pi" } as unknown as SystemInfo;
