@@ -24,6 +24,7 @@ const (
 
 	evPath   = "/stream"
 	evRemote = "10.0.0.9:41000"
+	evHostB  = "10.0.0.20"
 )
 
 // recordedNote is one publish the adapter made, captured by recordedPub.
@@ -197,8 +198,8 @@ func TestStreamEventsFlapOnsetSuppressesInfos(t *testing.T) {
 	if onset == nil {
 		t.Fatal("no flap onset was published")
 	}
-	if onset.key != streamFlapKey(evPath) {
-		t.Errorf("flap onset key = %q, want %q", onset.key, streamFlapKey(evPath))
+	if onset.key != streamFlapKey(flapIDOf(evPath, evRemote)) {
+		t.Errorf("flap onset key = %q, want %q", onset.key, streamFlapKey(flapIDOf(evPath, evRemote)))
 	}
 	if onset.n.Severity != notify.SeverityWarning || onset.n.Category != notify.CategoryStream {
 		t.Errorf("flap onset = %+v, want warning/stream", onset.n)
@@ -235,8 +236,8 @@ func TestStreamEventsFlapClearsAfterQuiet(t *testing.T) {
 	}
 	// The clear must carry the same key as the onset so the two pair.
 	clearNote := pub.lastByOp(opClear)
-	if clearNote == nil || clearNote.key != streamFlapKey(evPath) {
-		t.Fatalf("clear = %+v, want key %q", clearNote, streamFlapKey(evPath))
+	if clearNote == nil || clearNote.key != streamFlapKey(flapIDOf(evPath, evRemote)) {
+		t.Fatalf("clear = %+v, want key %q", clearNote, streamFlapKey(flapIDOf(evPath, evRemote)))
 	}
 }
 
@@ -265,8 +266,8 @@ func TestStreamEventsSweepClearsSettledFlap(t *testing.T) {
 		t.Fatalf("sweep clear = %d, want 1", got)
 	}
 	clearNote := pub.lastByOp(opClear)
-	if clearNote == nil || clearNote.key != streamFlapKey(evPath) {
-		t.Fatalf("sweep clear = %+v, want key %q", clearNote, streamFlapKey(evPath))
+	if clearNote == nil || clearNote.key != streamFlapKey(flapIDOf(evPath, evRemote)) {
+		t.Fatalf("sweep clear = %+v, want key %q", clearNote, streamFlapKey(flapIDOf(evPath, evRemote)))
 	}
 	// The now-idle path is pruned so the map does not retain it.
 	if len(se.paths) != 0 {
@@ -366,5 +367,101 @@ func TestStreamEventsPathsAreIndependent(t *testing.T) {
 	}
 	if !found {
 		t.Error("a connect on an unrelated path was suppressed by another path's flap")
+	}
+}
+
+// TestStreamEventsHostsFlapIndependently pins that two hosts connecting to one
+// path in turn do not add up to a flap, while one host reconnecting rapidly
+// does.
+func TestStreamEventsHostsFlapIndependently(t *testing.T) {
+	pub := &recordedPub{}
+	now := time.Unix(0, 0)
+	se := newStreamEvents(pub, func() time.Time { return now })
+	hostA, hostB := "10.0.0.9:41000", evHostB+":52000"
+
+	// Six connects on the path inside the window, three per host: over the
+	// threshold for the path as a whole, under it for each host.
+	for range flapMax {
+		for _, remote := range []string{hostA, hostB} {
+			se.ClientConnected(evPath, remote)
+			now = now.Add(time.Second)
+		}
+	}
+	if got := pub.countTitles(opOnset, "Client reconnecting repeatedly"); got != 0 {
+		t.Fatalf("flap onsets = %d after two hosts connected in turn, want 0", got)
+	}
+	if got := pub.countTitles(opPublish, titleConnected); got != 2*flapMax {
+		t.Errorf("client-connected infos = %d, want %d", got, 2*flapMax)
+	}
+
+	// One more from host A crosses its own threshold.
+	se.ClientConnected(evPath, hostA)
+	onset := pub.lastByOp(opOnset)
+	if onset == nil {
+		t.Fatal("host A reconnecting rapidly raised no flap warning")
+	}
+	if want := streamFlapKey(flapID{path: evPath, host: "10.0.0.9"}); onset.key != want {
+		t.Errorf("onset key = %q, want %q", onset.key, want)
+	}
+	if want := evPath + " from 10.0.0.9"; onset.n.Source != want {
+		t.Errorf("onset source = %q, want %q", onset.n.Source, want)
+	}
+	if !strings.Contains(onset.n.Message, "10.0.0.9") || !strings.Contains(onset.n.Message, evPath) {
+		t.Errorf("onset message %q does not name the host and the path", onset.n.Message)
+	}
+
+	// A third host is not flapping, so its connect and disconnect are still
+	// reported while host A's are suppressed.
+	hostC := "10.0.0.30:53000"
+	connects := pub.countTitles(opPublish, titleConnected)
+	se.ClientConnected(evPath, hostC)
+	se.ClientDisconnected(evPath, hostC, rtspserver.DisconnectTeardown)
+	se.ClientDisconnected(evPath, hostA, rtspserver.DisconnectTeardown)
+	if got := pub.countTitles(opPublish, titleConnected); got != connects+1 {
+		t.Errorf("host C connect while host A flaps: infos = %d, want %d", got, connects+1)
+	}
+	if got := pub.countTitles(opPublish, "Client disconnected"); got != 1 {
+		t.Errorf("disconnect infos = %d, want 1: only host C's, not flapping host A's", got)
+	}
+}
+
+// TestStreamEventsOneHostSettlingKeepsAnothersWarning pins that a flap clear is
+// per host: when one host settles, the other host's warning stays raised.
+func TestStreamEventsOneHostSettlingKeepsAnothersWarning(t *testing.T) {
+	pub := &recordedPub{}
+	now := time.Unix(0, 0)
+	se := newStreamEvents(pub, func() time.Time { return now })
+	hostA, hostB := "10.0.0.9:41000", evHostB+":52000"
+
+	for range flapMax + 1 {
+		se.ClientConnected(evPath, hostA)
+		se.ClientConnected(evPath, hostB)
+		now = now.Add(time.Second)
+	}
+	if got := pub.countTitles(opOnset, "Client reconnecting repeatedly"); got != 2 {
+		t.Fatalf("flap onsets = %d, want one per host", got)
+	}
+
+	// Host B keeps reconnecting (silently, while flapping) so its quiet window
+	// restarts; host A goes quiet for longer than flapQuiet.
+	now = now.Add(flapQuiet - time.Minute)
+	se.ClientConnected(evPath, hostB)
+	now = now.Add(2 * time.Minute)
+	se.sweep(now)
+
+	cleared := pub.lastByOp(opClear)
+	if cleared == nil {
+		t.Fatal("host A's warning was not cleared after it went quiet")
+	}
+	if want := streamFlapKey(flapID{path: evPath, host: "10.0.0.9"}); cleared.key != want {
+		t.Errorf("cleared %q, want %q", cleared.key, want)
+	}
+	if got := pub.countTitles(opClear, "Client stopped reconnecting"); got != 1 {
+		t.Errorf("flap clears = %d, want 1: host B is still reconnecting", got)
+	}
+	se.mu.Lock()
+	defer se.mu.Unlock()
+	if !se.paths[flapID{path: evPath, host: evHostB}].Active() {
+		t.Error("host B's flap warning was cleared along with host A's")
 	}
 }
