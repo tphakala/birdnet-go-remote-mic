@@ -1355,7 +1355,8 @@ textarea.field-input {
 /* :focus (any focus, including a pointer) sets only the active border colour; the
    keyboard focus ring is the .field-input:focus-visible glow rule below. */
 
-.field-input:disabled {
+.field-input:disabled,
+.is-loading .field-input {
   background: var(--bg-surface-raised);
   color: var(--text-muted);
   cursor: not-allowed;
@@ -1569,12 +1570,19 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   width: 16px;
 }
 
-/* In-flight state: the input is disabled while its PATCH runs, so dim the
-   track and show a progress cursor rather than a frozen-looking switch. */
+/* In-flight state: the input is disabled while its PATCH runs, or its card is
+   still loading, so dim the track and show a progress cursor rather than a
+   frozen-looking switch. */
 .switch-control input:disabled + .switch-track,
-.switch-control input[aria-disabled="true"] + .switch-track {
+.switch-control input[aria-disabled="true"] + .switch-track,
+.is-loading .switch-track {
   opacity: 0.55;
   cursor: progress;
+}
+/* A switch waiting for its first read shows neither position: an "off" there
+   would read as the appliance's setting. */
+.is-loading .switch-thumb {
+  visibility: hidden;
 }
 .switch-control:has(input:disabled),
 .switch-control:has(input[aria-disabled="true"]) {
@@ -3380,11 +3388,13 @@ select.field-input {
 .available-enable {
   flex: 0 0 auto;
 }
-/* A control that cannot act now (aria-disabled keeps it focusable) looks it,
-   unless it is busy, which has its own look below. */
+/* A control that cannot act now looks it: one kept focusable with
+   aria-disabled (unless it is busy, which has its own look below), or one in a
+   region still waiting for its first read (.is-loading). */
 .btn[aria-disabled="true"]:not(.is-busy),
 .btn[aria-disabled="true"]:not(.is-busy):hover,
-.btn[aria-disabled="true"]:not(.is-busy):active {
+.btn[aria-disabled="true"]:not(.is-busy):active,
+.is-loading .btn {
   opacity: 0.55;
   cursor: not-allowed;
   /* No hover or press feedback on a control that will not act. */
