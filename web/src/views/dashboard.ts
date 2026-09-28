@@ -2,7 +2,7 @@ import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
 import { announce, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, parkFocus, renderLoadError, setHidden, setText } from "../lib/ui.ts";
-import { deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
+import { clientCountOf, deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { hideInactivePrefDevice, onPrefChange, parseBoolPref } from "../lib/prefs.ts";
 import type { ApplianceStatus, DeviceConfig, SystemInfo } from "../lib/types.ts";
 import { AvailableDevices } from "./dashboard/available-devices.ts";
@@ -212,7 +212,7 @@ export class DashboardView {
 
     for (const d of devices) {
       seen.add(d.device);
-      if (d.clientConnected) clientCount++;
+      clientCount += clientCountOf(d);
 
       let card = this.cards.get(d.device);
       if (!card) {

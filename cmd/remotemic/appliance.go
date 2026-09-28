@@ -440,12 +440,13 @@ func (a *appliance) runningParams() map[string]config.Device {
 // mid-period; each stream's pipeline runs on its own goroutine so N encodes fan
 // across cores and a slow encoder cannot blow the capture period budget. Each
 // stage is gated on its own stream feed's play session, so it encodes only
-// while a client plays that stream (an Opus stage starts each client from a
-// fresh encoder), and discards unencoded any period it reads with no client.
+// while a client plays that stream (an Opus stage starts from a fresh encoder
+// when the first client joins an idle stream, and carries on while any client
+// plays), and discards unencoded any period it reads with no client.
 // The fan-out is gated on the feed's play session too: it sends an idle stream
 // nothing, so an idle stage blocks in its read and the fan-out never backs up,
 // and it tags each period it sends with the session, so a stage drops what was
-// queued for an earlier client (see pipeline.Stage).
+// queued for an earlier stretch of playing (see pipeline.Stage).
 // An idle appliance thus pays for the capture read but not for copying, channel
 // extraction, encoding, or waking the idle stages. When the capture ends
 // the fan-out closes the stream feeds, so every stage goroutine returns, and
@@ -466,12 +467,7 @@ func (a *appliance) pump(rt *deviceRuntime) {
 		wg.Go(func() {
 			err := sr.stage.Run(sr.src, sr.frames.Session, func(f pipeline.Frame) error {
 				sr.noteEncoded(&rt.awaitEncode, a.signalRetryDue)
-				if !sr.frames.Push(f) {
-					drops := sr.dropped.Add(1)
-					if drops%50 == 1 {
-						log.Printf("%s (%s): dropping frames: the client is not keeping up (total drops: %d)", rt.dev.Name, sr.stream.Path, drops)
-					}
-				}
+				sr.noteDropped(rt.dev.Name, sr.frames.Push(f))
 				return a.ctx.Err()
 			})
 			// A non-nil error while the appliance is NOT shutting down is a spontaneous

@@ -133,7 +133,7 @@ func (l *fakeOpenLog) snapshot() []string {
 }
 
 // fakeOpener returns an appliance.open replacement that builds a real
-// deviceRuntime (real fan-out, per-stream pipeline stages, ChanSources and
+// deviceRuntime (real fan-out, per-stream pipeline stages, Feeds and
 // Tracks) around a blocking fake source, logging each open and each source close
 // through log. It mirrors production openDevice: one metered base capture fanned
 // out into one runtime per configured stream.
@@ -162,12 +162,12 @@ func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Sour
 		streams := make([]*streamRuntime, 0, len(dev.Streams))
 		for i := range dev.Streams {
 			s := dev.Streams[i]
-			frames := rtspserver.NewChanSource(64)
+			frames := rtspserver.NewFeed()
 			streams = append(streams, &streamRuntime{
 				stream: s,
 				stage:  pipeline.NewPCM(),
 				frames: frames,
-				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Frames: frames},
+				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Feed: frames},
 			})
 		}
 		fanout, consumers := audio.NewFanout(metered, dev.Name, fanoutStreams(streams))
@@ -297,12 +297,12 @@ func (g gateRecorder) Run(src audio.Source, gate pipeline.Gate, _ func(pipeline.
 
 // TestAppliancePumpGatesStageOnFeed pins the production wiring of the encode
 // gate: the pump must hand each stage its own stream feed's play session, so a
-// stream encodes exactly while a client plays it and each new client starts a
-// new session. A nil gate would bring back
-// encoding for no client, a gate that never opens would stream nothing to a
-// playing client, and a sibling's gate would encode one stream on another's
-// client; the stage-level tests cannot see any of these, because they pass the
-// gate themselves. The device has two streams so the last case is visible.
+// stream encodes exactly while a client plays it and each new stretch of
+// playing starts a new session. A nil gate would bring back encoding for no
+// client, a gate that never opens would stream nothing to a playing client, and
+// a sibling's gate would encode one stream on another's client; the stage-level
+// tests cannot see any of these, because they pass the gate themselves. The
+// device has two streams so the last case is visible.
 func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 	app, log, cancel := newTestAppliance(t)
 	defer cancel()
@@ -337,7 +337,7 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 			t.Fatalf("the pump ran %d of %d stream stages", len(got), len(dev.Streams))
 		}
 	}
-	feeds := make(map[string]*rtspserver.ChanSource)
+	feeds := make(map[string]*rtspserver.Feed)
 	for _, sr := range app.devices["a"].streams {
 		feeds[sr.stream.Path] = sr.frames
 	}
@@ -352,19 +352,28 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 		}
 	}
 	check("before any client plays", "")
+	join := func(path string) rtspserver.Subscription {
+		t.Helper()
+		sub, err := feeds[path].Subscribe()
+		if err != nil {
+			t.Fatalf("Subscribe %s: %v", path, err)
+		}
+		return sub
+	}
 	for _, path := range []string{"/a", "/a2"} {
-		feeds[path].SetActive(true)
+		sub := join(path)
 		check("while only "+path+" plays", path)
 		_, first := got[path]()
-		feeds[path].SetActive(false)
+		sub.Close()
 		check("after "+path+" stops", "")
 		// The gate carries the feed's play session, so the stage sees the next
-		// client as a new session (its encoder reset) even across a quick replay.
-		feeds[path].SetActive(true)
+		// stretch of playing as a new session (its encoder reset) even across a
+		// quick replay.
+		sub = join(path)
 		if _, next := got[path](); next == first {
 			t.Errorf("gate of %s kept session %d across a new PLAY, want a new session", path, first)
 		}
-		feeds[path].SetActive(false)
+		sub.Close()
 	}
 }
 

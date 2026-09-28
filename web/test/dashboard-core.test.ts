@@ -40,6 +40,7 @@ import {
   captureFormatLabel,
   channelHiddenMessage,
   channelLabel,
+  clientCountOf,
   clientSummary,
   controlGoneMessage,
   downCauseTitle,
@@ -149,6 +150,18 @@ test("footerMetrics formats the card footer counters", () => {
   });
   // An appliance that predates the overrun counter omits it: zero, not "undefined".
   assert.equal(footerMetrics({ clientConnected: false, droppedFrames: 5 }).overruns, "0");
+  // Several clients play one stream: the real count, not "1 connected".
+  assert.equal(footerMetrics({ clientConnected: true, clientCount: 3, droppedFrames: 0 }).clients, "3 connected");
+  // An appliance that predates the client count reports only whether one is connected.
+  assert.equal(footerMetrics({ clientConnected: true, droppedFrames: 0 }).clients, "1 connected");
+  assert.equal(footerMetrics({ clientConnected: false, droppedFrames: 0 }).clients, "0 connected");
+});
+
+test("clientCountOf reads the count, falling back to the connected flag", () => {
+  assert.equal(clientCountOf({ clientConnected: true, clientCount: 4 }), 4);
+  assert.equal(clientCountOf({ clientConnected: false, clientCount: 0 }), 0);
+  assert.equal(clientCountOf({ clientConnected: true }), 1);
+  assert.equal(clientCountOf({ clientConnected: false }), 0);
 });
 
 test("hiddenRows hides the rows no stream carries, only with the preference on", () => {
@@ -198,7 +211,7 @@ test("streamSummary lists every configured stream, even while the device is down
     { path: "/c", mode: "opus" as const, channels: [2] },
   ] };
   const down = streamSummary(flat, cfg);
-  assert.deepEqual(down, { paths: ["/a", "/b", "/c"], modes: ["opus", "pcm"], connected: 0 });
+  assert.deepEqual(down, { paths: ["/a", "/b", "/c"], modes: ["opus", "pcm"], connected: 0, clients: 0 });
   assert.equal(clientSummary(down), "0 of 3 connected");
 
   const serving = streamSummary({ ...flat, clientConnected: true, streams: [
@@ -207,12 +220,24 @@ test("streamSummary lists every configured stream, even while the device is down
     { path: "/c", clientConnected: false, droppedFrames: 0 },
   ] }, cfg);
   assert.equal(clientSummary(serving), "2 of 3 connected");
+  // Several clients on one stream do not change "N of M connected" for a device
+  // with several streams.
+  const busy = streamSummary({ ...flat, clientConnected: true, clientCount: 4, streams: [
+    { path: "/a", clientConnected: true, clientCount: 3, droppedFrames: 0 },
+    { path: "/b", clientConnected: true, clientCount: 1, droppedFrames: 0 },
+    { path: "/c", clientConnected: false, clientCount: 0, droppedFrames: 0 },
+  ] }, cfg);
+  assert.equal(busy.clients, 4);
+  assert.equal(clientSummary(busy), "2 of 3 connected");
 });
 
 test("streamSummary falls back to the record without a config", () => {
   const s = streamSummary({ path: "/a", mode: "pcm", clientConnected: true });
-  assert.deepEqual(s, { paths: ["/a"], modes: ["pcm"], connected: 1 });
+  assert.deepEqual(s, { paths: ["/a"], modes: ["pcm"], connected: 1, clients: 1 });
   assert.equal(clientSummary(s), "Connected");
+  // A single stream with more than one client shows the count.
+  assert.equal(clientSummary(streamSummary({ path: "/a", mode: "pcm", clientConnected: true, clientCount: 2 })), "2 connected");
+  assert.equal(clientSummary(streamSummary({ path: "/a", mode: "pcm", clientConnected: true, clientCount: 1 })), "Connected");
   assert.equal(clientSummary(streamSummary({ path: "/a", mode: "pcm", clientConnected: false })), "-");
   // A serving record lists its runtime streams when the config has not loaded.
   const live = streamSummary({ path: "/a", mode: "pcm", clientConnected: false, streams: [

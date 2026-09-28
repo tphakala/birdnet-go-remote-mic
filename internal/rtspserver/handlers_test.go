@@ -24,7 +24,11 @@ const testPath = "/stream"
 func baseURL(addr string) string  { return "rtsp://" + addr + testPath }
 func trackURL(addr string) string { return baseURL(addr) + "/trackID=0" }
 
-func defaultTrack() *Track { return &Track{Path: testPath, SDP: testSDP, PayloadType: 96} }
+// defaultTrack is a track over a fresh Feed, so a PLAY subscribes, starts the
+// writer and makes the listener see a connect.
+func defaultTrack() *Track {
+	return &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: NewFeed()}
+}
 
 //nolint:gocritic // test helper; Config by value is fine.
 func startServer(t *testing.T, cfg Config, tracks ...*Track) (string, *Server) {
@@ -185,17 +189,22 @@ func TestSetupRejectsUDP(t *testing.T) {
 	}
 }
 
-func TestSecondSetupRejected(t *testing.T) {
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second}, defaultTrack())
-	track := trackURL(addr)
+// TestTwoClientsPlayOnePath pins the multi-consumer contract: two connections
+// SETUP and PLAY the same path and both receive the frames pushed to it.
+func TestTwoClientsPlayOnePath(t *testing.T) {
+	track, feed := feedTrack()
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour}, track)
 
-	c1 := dial(t, addr)
-	if r := c1.do(t, "SETUP", track, tcpTransport("0-1")); r.StatusCode != 200 {
-		t.Fatalf("first SETUP = %d", r.StatusCode)
-	}
-	c2 := dial(t, addr)
-	if r := c2.do(t, "SETUP", track, tcpTransport("0-1")); r.StatusCode != 453 {
-		t.Errorf("second SETUP = %d, want 453", r.StatusCode)
+	c1, c2 := dial(t, addr), dial(t, addr)
+	setupAndPlay(t, c1, addr)
+	setupAndPlay(t, c2, addr)
+	waitFor(t, func() bool { return feed.Clients() == 2 }, 2*time.Second, "both clients to subscribe")
+
+	feed.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
+	for i, c := range []*client{c1, c2} {
+		if !firstByteIs(t, c.conn, '$', 2*time.Second) {
+			t.Errorf("client %d received no RTP frame", i+1)
+		}
 	}
 }
 
@@ -270,8 +279,8 @@ func TestKeepaliveRefreshesDeadline(t *testing.T) {
 func TestTracksRouteIndependently(t *testing.T) {
 	sdpB := bytes.Replace(testSDP, []byte("L16/256000/1"), []byte("L16/48000/1"), 1)
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second},
-		&Track{Path: "/a", SDP: testSDP, PayloadType: 96},
-		&Track{Path: "/b", SDP: sdpB, PayloadType: 96},
+		&Track{Path: "/a", SDP: testSDP, PayloadType: 96, Feed: NewFeed()},
+		&Track{Path: "/b", SDP: sdpB, PayloadType: 96, Feed: NewFeed()},
 	)
 	c := dial(t, addr)
 	ra := c.do(t, "DESCRIBE", "rtsp://"+addr+"/a", nil)
@@ -289,8 +298,8 @@ func TestTracksRouteIndependently(t *testing.T) {
 
 func TestSetupSecondTrackSameConnRejected(t *testing.T) {
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second},
-		&Track{Path: "/a", SDP: testSDP, PayloadType: 96},
-		&Track{Path: "/b", SDP: testSDP, PayloadType: 96},
+		&Track{Path: "/a", SDP: testSDP, PayloadType: 96, Feed: NewFeed()},
+		&Track{Path: "/b", SDP: testSDP, PayloadType: 96, Feed: NewFeed()},
 	)
 	c := dial(t, addr)
 	if r := c.do(t, "SETUP", "rtsp://"+addr+"/a/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
@@ -301,22 +310,16 @@ func TestSetupSecondTrackSameConnRejected(t *testing.T) {
 	}
 }
 
-func TestPerTrackSlots(t *testing.T) {
+func TestSetupSameTrackOnSeveralConnections(t *testing.T) {
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second},
-		&Track{Path: "/a", SDP: testSDP, PayloadType: 96},
-		&Track{Path: "/b", SDP: testSDP, PayloadType: 96},
+		&Track{Path: "/a", SDP: testSDP, PayloadType: 96, Feed: NewFeed()},
+		&Track{Path: "/b", SDP: testSDP, PayloadType: 96, Feed: NewFeed()},
 	)
-	c1 := dial(t, addr)
-	if r := c1.do(t, "SETUP", "rtsp://"+addr+"/a/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
-		t.Fatalf("SETUP /a = %d", r.StatusCode)
-	}
-	c2 := dial(t, addr)
-	if r := c2.do(t, "SETUP", "rtsp://"+addr+"/b/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
-		t.Errorf("SETUP /b on second conn = %d, want 200 (slots are per track)", r.StatusCode)
-	}
-	c3 := dial(t, addr)
-	if r := c3.do(t, "SETUP", "rtsp://"+addr+"/a/trackID=0", tcpTransport("0-1")); r.StatusCode != 453 {
-		t.Errorf("second SETUP /a = %d, want 453", r.StatusCode)
+	for i, path := range []string{"/a", "/b", "/a"} {
+		c := dial(t, addr)
+		if r := c.do(t, "SETUP", "rtsp://"+addr+path+"/trackID=0", tcpTransport("0-1")); r.StatusCode != 200 {
+			t.Errorf("connection %d: SETUP %s = %d, want 200", i+1, path, r.StatusCode)
+		}
 	}
 }
 
@@ -392,12 +395,6 @@ func waitFor(t *testing.T, cond func() bool, timeout time.Duration, what string)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// playingTrack is a track with a live frame source, so a PLAY starts the writer
-// and the listener sees a connect.
-func playingTrack() *Track {
-	return &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Frames: NewChanSource(64)}
-}
-
 // setupAndPlay runs SETUP then PLAY on c and returns the session header, failing
 // the test on any non-200.
 func setupAndPlay(t *testing.T, c *client, addr string) rtsp.Header {
@@ -416,7 +413,7 @@ func setupAndPlay(t *testing.T, c *client, addr string) rtsp.Header {
 
 func TestListenerConnectThenTeardown(t *testing.T) {
 	rec := &recordingListener{}
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, playingTrack())
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, defaultTrack())
 	c := dial(t, addr)
 
 	sess := setupAndPlay(t, c, addr)
@@ -443,7 +440,7 @@ func TestListenerConnectThenTeardown(t *testing.T) {
 
 func TestListenerDisconnectOnConnectionDrop(t *testing.T) {
 	rec := &recordingListener{}
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, playingTrack())
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, defaultTrack())
 	c := dial(t, addr)
 
 	setupAndPlay(t, c, addr)
@@ -467,8 +464,7 @@ func TestListenerDisconnectOnConnectionDrop(t *testing.T) {
 func TestListenerDisconnectOnEviction(t *testing.T) {
 	rec := &recordingListener{}
 	g := auth.NewGuard("")
-	frames := NewChanSource(256)
-	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Frames: frames}
+	track, frames := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g, Listener: rec}, track)
 	c := dial(t, addr)
 
@@ -480,20 +476,7 @@ func TestListenerDisconnectOnEviction(t *testing.T) {
 	}
 
 	// Feed audio continuously so the writer loops and checks shouldEvict.
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		tick := time.NewTicker(2 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-tick.C:
-				frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
-			}
-		}
-	}()
+	pumpFrames(t, frames)
 
 	// Enabling a token evicts the open-access session proactively in the writer.
 	g.Set(testAuthToken)
@@ -509,22 +492,34 @@ func TestListenerDisconnectOnEviction(t *testing.T) {
 
 func TestListenerSetupOnlyEmitsNothing(t *testing.T) {
 	rec := &recordingListener{}
-	track := playingTrack()
+	track, feed := feedTrack()
 	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Listener: rec}, track)
 	c := dial(t, addr)
 
 	if r := c.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); r.StatusCode != 200 {
 		t.Fatalf("SETUP = %d", r.StatusCode)
 	}
-	// A SETUP claims the track slot; dropping the connection releases it. Waiting
-	// on that release confirms the deferred cleanup ran, so the assertions below
-	// are not racing it.
-	_ = c.conn.Close()
-	waitFor(t, func() bool { return !track.ClientConnected() }, 2*time.Second, "the slot to be released after cleanup")
-	if rec.connectCount() != 0 {
-		t.Errorf("a SETUP that never played emitted %d connects, want 0", rec.connectCount())
+	if got := feed.Clients(); got != 0 {
+		t.Fatalf("Clients() = %d after a SETUP, want 0", got)
 	}
-	if n := len(rec.disconnects()); n != 0 {
-		t.Errorf("a SETUP that never played emitted %d disconnects, want 0", n)
+	_ = c.conn.Close()
+
+	// A second connection plays and drops after the first was closed. Its
+	// disconnect is the only event either connection may produce. The first
+	// connection's cleanup runs on its own goroutine and nothing orders it before
+	// the second connection's events, so a late event from it could still slip
+	// past this check; it catches one that arrives before the second
+	// connection's disconnect.
+	c2 := dial(t, addr)
+	setupAndPlay(t, c2, addr)
+	wantRemote := c2.conn.LocalAddr().String()
+	waitFor(t, func() bool { return rec.connectCount() == 1 }, 2*time.Second, "the second connection's connect")
+	_ = c2.conn.Close()
+	waitFor(t, func() bool { return len(rec.disconnects()) >= 1 }, 2*time.Second, "the second connection's disconnect")
+	if got := rec.connects(); len(got) != 1 || got[0].remote != wantRemote {
+		t.Errorf("connects = %+v, want only the connection that played (%s)", got, wantRemote)
+	}
+	if got := rec.disconnects(); len(got) != 1 || got[0].remote != wantRemote {
+		t.Errorf("disconnects = %+v, want only the connection that played (%s)", got, wantRemote)
 	}
 }

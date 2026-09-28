@@ -1,7 +1,7 @@
 // Package rtspserver is the appliance's minimal TCP-interleaved RTSP server. It
 // serves one or more audio tracks (L16 or Opus), routed by URL path, each to
-// one playing client at a time, reusing go-audio-stream's RTSP message layer
-// and send primitives.
+// up to maxClients simultaneous playing clients, reusing go-audio-stream's RTSP
+// message layer and send primitives.
 package rtspserver
 
 import (
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
-	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 )
 
 // Config configures the server.
@@ -66,52 +65,17 @@ type Listener interface {
 	ClientDisconnected(path, remote string, reason DisconnectReason)
 }
 
-// FrameSource is how the server pulls media: the pipeline pushes frames in, the
-// playing session's writer drains them. ChanSource (feed.go) is the
-// implementation; tests pass their own.
-type FrameSource interface {
-	Next(ctx context.Context) (pipeline.Frame, error)
-}
-
-// activator is implemented by frame sources whose delivery can be gated
-// (ChanSource): PLAY activates, teardown deactivates.
-type activator interface{ SetActive(active bool) }
-
 // Track is one device's stream: its RTSP path, DESCRIBE body, payload type and
-// frame source. Each track serves one playing client at a time.
+// frame feed. Any number of clients, up to the feed's cap, play it at once; the
+// track holds no client state.
 type Track struct {
 	Path        string // session path, e.g. "/stream"; SETUP matches Path+"/trackID=0"
 	SDP         []byte // the DESCRIBE body, built at startup
 	PayloadType int    // RTP payload type (96 L16, 97 Opus)
-	Frames      FrameSource
-
-	slotMu    sync.Mutex
-	slotTaken bool
-}
-
-// acquireSlot claims the track's single session slot; false if taken.
-func (t *Track) acquireSlot() bool {
-	t.slotMu.Lock()
-	defer t.slotMu.Unlock()
-	if t.slotTaken {
-		return false
-	}
-	t.slotTaken = true
-	return true
-}
-
-func (t *Track) releaseSlot() {
-	t.slotMu.Lock()
-	t.slotTaken = false
-	t.slotMu.Unlock()
-}
-
-// ClientConnected reports whether a session currently holds the track's single
-// playing slot. Safe to call concurrently with SETUP/TEARDOWN.
-func (t *Track) ClientConnected() bool {
-	t.slotMu.Lock()
-	defer t.slotMu.Unlock()
-	return t.slotTaken
+	// Feed must be non-nil for a track that is played: PLAY calls Feed.Subscribe
+	// unguarded, so a nil Feed panics on the first PLAY. DESCRIBE and SETUP do not
+	// use it.
+	Feed FrameFeed
 }
 
 // Server accepts RTSP connections and routes each request to a track by URL
@@ -149,7 +113,7 @@ func (s *Server) lookup(path string) *Track {
 }
 
 // RemoveTrack unregisters a dead device's path: later requests get 404. The
-// caller also closes the track's frame source so a playing writer tears down.
+// caller also closes the track's feed so the playing writers tear down.
 func (s *Server) RemoveTrack(path string) {
 	s.mu.Lock()
 	delete(s.tracks, path)
@@ -160,8 +124,8 @@ func (s *Server) RemoveTrack(path string) {
 // without rebinding the listener. It is how a hot-reloaded device joins a
 // serving appliance. Registering a path that already exists replaces it (the
 // restart-on-param-change case removes the old track and adds the new one on the
-// same path); the caller is responsible for tearing the old track's frame
-// source down first so no writer keeps draining it.
+// same path); the caller is responsible for closing the old track's feed first
+// so no writer keeps draining it.
 func (s *Server) AddTrack(t *Track) {
 	s.mu.Lock()
 	s.tracks[t.Path] = t

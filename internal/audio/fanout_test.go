@@ -257,7 +257,7 @@ func gateOf(active bool, session uint64) func() (bool, uint64) {
 func TestFanoutTagsSessionAndCaptureTime(t *testing.T) {
 	t.Parallel()
 	// Each consumer's period carries the session its own gate reported, so a
-	// stage can tell a period queued for an earlier client, and the time the
+	// stage can tell a period queued for an earlier session, and the time the
 	// period was read, so a lagging stage stamps its capture time. A consumer
 	// with no gate gets an untagged session.
 	var session atomic.Uint64

@@ -115,15 +115,15 @@ func main() {
 
 // streamRuntime bundles one stream fanned out from a device's shared capture: its
 // selecting source (the device's channels it carries), its pipeline stage, its
-// frame buffer and its RTSP track. dropped counts audio lost for this stream,
-// whether the fan-out dropped a period (its encoder is slow) or the RTSP writer
-// dropped a frame (its client is slow); the device sums them for the host
-// monitor.
+// frame feed and its RTSP track. dropped counts audio lost for this stream,
+// whether the fan-out dropped a period (its encoder is slow) or a client's queue
+// dropped a frame (that client is slow; one count per client per frame); the
+// device sums them for the host monitor.
 type streamRuntime struct {
 	stream  config.Stream
 	src     audio.Source
 	stage   pipeline.Stage
-	frames  *rtspserver.ChanSource
+	frames  *rtspserver.Feed
 	track   *rtspserver.Track
 	dropped atomic.Uint64
 	// encoded records that this stream's stage has emitted an encoded frame,
@@ -132,6 +132,27 @@ type streamRuntime struct {
 	// settle (see encodeFault). Set once by the stage goroutine, read
 	// by the run loop.
 	encoded atomic.Bool
+}
+
+// noteDropped adds the drops a Feed.Push reported (one per client whose queue
+// was full) to the stream's counter, and logs at the first drop and then once
+// per 50 more, however they arrive. dev names the device for the log line.
+func (sr *streamRuntime) noteDropped(dev string, n int) {
+	if n <= 0 {
+		return
+	}
+	drops := sr.dropped.Add(uint64(n))
+	if dropLogDue(drops, uint64(n)) {
+		log.Printf("%s (%s): dropping frames: a client is not keeping up (total drops: %d)", dev, sr.stream.Path, drops)
+	}
+}
+
+// dropLogDue reports whether adding n drops to reach total crossed a logging
+// step: one log line at the first drop and then one per 50 more, however the
+// drops arrive (a single push can drop for several clients at once). n is at
+// most total.
+func dropLogDue(total, n uint64) bool {
+	return (total+49)/50 > (total-n+49)/50
 }
 
 // noteEncoded records the stream's first encoded frame and wakes the run loop
@@ -240,7 +261,8 @@ var runtimeGen atomic.Uint64
 // capture out into one pipeline stage, SDP, and RTSP track per configured stream.
 // The meter and fan-out run on the capture pump regardless of whether any RTSP
 // client is connected, but the fan-out copies a period only for a stream a
-// client is playing. Each stream extracts its own channels from the shared
+// client is playing (with several clients on one stream, that is one copy and
+// one encode shared by all of them). Each stream extracts its own channels from the shared
 // capture with a selecting source, so the device opens the hardware exactly once.
 func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
 	base, capFormat, err := openCaptureAt(dev, openCh)
@@ -262,12 +284,12 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 			_ = base.Close()
 			return nil, fmt.Errorf("build sdp for %s: %w", s.Path, serr)
 		}
-		frames := rtspserver.NewChanSource(64)
+		frames := rtspserver.NewFeed()
 		streams = append(streams, &streamRuntime{
 			stream: s,
 			stage:  stage,
 			frames: frames,
-			track:  &rtspserver.Track{Path: s.Path, SDP: sdpBytes, PayloadType: payloadType, Frames: frames},
+			track:  &rtspserver.Track{Path: s.Path, SDP: sdpBytes, PayloadType: payloadType, Feed: frames},
 		})
 	}
 

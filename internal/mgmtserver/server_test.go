@@ -73,9 +73,10 @@ func servingOpus() DeviceStatus {
 		NegotiatedChannels: 1,
 		NegotiatedFormat:   "s24_3le",
 		ClientConnected:    true,
+		ClientCount:        2,
 		DroppedFrames:      12,
 		Overruns:           9,
-		Streams:            []StreamStatus{{Path: "/garden", ClientConnected: true, DroppedFrames: 12}},
+		Streams:            []StreamStatus{{Path: "/garden", ClientConnected: true, ClientCount: 2, DroppedFrames: 12}},
 		FriendlyName:       nameScarlett,
 		SupportedRates:     []int{48000, 96000, 192000},
 		SupportedChannels:  []int{1, 2},
@@ -231,8 +232,8 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.NegotiatedFormat == nil || *d.NegotiatedFormat != "s24_3le" {
 		t.Errorf("negotiatedFormat = %v, want s24_3le", d.NegotiatedFormat)
 	}
-	if !d.ClientConnected || d.DroppedFrames != 12 || d.Overruns != 9 {
-		t.Errorf("runtime fields: connected=%v dropped=%d overruns=%d, want true/12/9", d.ClientConnected, d.DroppedFrames, d.Overruns)
+	if !d.ClientConnected || d.ClientCount != 2 || d.DroppedFrames != 12 || d.Overruns != 9 {
+		t.Errorf("runtime fields: connected=%v clients=%d dropped=%d overruns=%d, want true/2/12/9", d.ClientConnected, d.ClientCount, d.DroppedFrames, d.Overruns)
 	}
 	if d.Opus == nil || d.Opus.Bitrate == nil || *d.Opus.Bitrate != 96000 {
 		t.Errorf("opus settings not mapped: %+v", d.Opus)

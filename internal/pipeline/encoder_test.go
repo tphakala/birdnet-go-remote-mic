@@ -93,7 +93,7 @@ func TestOpusStageIdleRunsNoEncode(t *testing.T) {
 }
 
 // TestOpusStageResetsOncePerSession pins the reset to the session change: one
-// per client, not one per period, so a playing stream keeps its encoder state
+// per session, not one per period, so a playing stream keeps its encoder state
 // from frame to frame.
 func TestOpusStageResetsOncePerSession(t *testing.T) {
 	t.Parallel()

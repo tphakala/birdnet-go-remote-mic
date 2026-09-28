@@ -35,7 +35,8 @@ const fanoutBuffer = 8
 // encoder on the play session its gate reports (see pipeline.Gate). Each
 // period sent is tagged with the play session it was sent for and the time it
 // was read from the capture, so a stage that has fallen behind drops what was
-// queued for an earlier client and stamps the rest with their capture time.
+// queued for an earlier play session and stamps the rest with their capture
+// time.
 type Fanout struct {
 	src       Source
 	name      string
@@ -59,8 +60,8 @@ type fanoutConsumer struct {
 // FanoutStream describes one fan-out consumer. Dropped, which is required,
 // counts the periods the consumer lost to a full queue; the caller shares it
 // with the stream's downstream frame-drop counter. Gate reports whether the
-// stream has a client playing and which play session it is
-// (rtspserver.ChanSource.Session): while it reports inactive the consumer is
+// stream has any client playing and which play session it is
+// (rtspserver.Feed.Session): while it reports inactive the consumer is
 // sent no periods, since its stage would discard them unencoded anyway, and
 // each period sent carries the session in Period.Session. A nil Gate means
 // always active, with Period.Session left zero (Captured is still set).

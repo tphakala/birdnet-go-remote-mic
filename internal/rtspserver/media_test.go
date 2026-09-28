@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,14 +70,14 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 	const rate, periodFrames, periods = 48000, 960, 50
 	fakeSrc, wantPCM := sineSource(periods, periodFrames, rate)
 
-	frames := NewChanSource(128)
+	frames := NewFeed()
 	spec := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "test", rate, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	addr := serveWith(t, Config{SRInterval: 50 * time.Millisecond, Timeout: 30 * time.Second},
-		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 96, Frames: frames})
+		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 96, Feed: frames})
 
 	var mu sync.Mutex
 	var got []byte
@@ -105,7 +106,7 @@ func TestEndToEndAgainstIngestClientL16(t *testing.T) {
 		t.Fatalf("play handshake: %v", err)
 	}
 
-	// Push only after PLAY: delivery is gated on activation, and the fake
+	// Push only after PLAY: a frame pushed with no subscriber is discarded, and the fake
 	// source is finite, so pumping earlier would discard every period. The stage
 	// is gated on the feed exactly as the appliance wires it, so this also proves
 	// PLAY opens the encode gate.
@@ -157,14 +158,14 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 	const rate, periodFrames, periods = 48000, 960, 40
 	fakeSrc, _ := sineSource(periods, periodFrames, rate)
 
-	frames := NewChanSource(128)
+	frames := NewFeed()
 	spec := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, "test", rate, 1)
 	sdpBytes, err := sdp.WriteSession(spec)
 	if err != nil {
 		t.Fatalf("WriteSession: %v", err)
 	}
 	addr := serveWith(t, Config{SRInterval: time.Hour, Timeout: 30 * time.Second},
-		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 97, Frames: frames})
+		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 97, Feed: frames})
 
 	dec, err := opus.NewDecoder(48000, 1)
 	if err != nil {
@@ -203,7 +204,7 @@ func TestEndToEndAgainstIngestClientOpus(t *testing.T) {
 		t.Fatalf("play handshake: %v", err)
 	}
 
-	// Push only after PLAY: delivery is gated on activation, and the fake
+	// Push only after PLAY: a frame pushed with no subscriber is discarded, and the fake
 	// source is finite, so pumping earlier would discard every period. The stage
 	// is gated on the feed exactly as the appliance wires it.
 	stageErr := make(chan error, 1)
@@ -292,18 +293,18 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 		}
 	}()
 
-	frames := NewChanSource(256)
-	frames.SetActive(true)
-	for range 100 {
+	frames := NewFeed()
+	sub := mustSubscribe(t, frames)
+	for range subQueueDepth {
 		frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 	}
-	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
+	track := &Track{Path: testPath, PayloadType: 96, Feed: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(t.Context())
 	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1, writerDone: make(chan struct{})}
 
 	var wg sync.WaitGroup
-	wg.Go(func() { ; cs.runWriter() })
+	wg.Go(func() { cs.runWriter(sub) })
 	for i := range 50 {
 		cs.write(&rtsp.Response{StatusCode: 200, Reason: "OK", CSeq: i})
 	}
@@ -320,35 +321,20 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	parseCleanStream(t, data)
 }
 
-func TestChanSourceBackpressure(t *testing.T) {
-	c := NewChanSource(2)
-	c.SetActive(true)
-	f := pipeline.Frame{Payload: []byte{1, 2}, Duration: 1}
-	if !c.Push(f) {
-		t.Fatal("first push should succeed")
-	}
-	if !c.Push(f) {
-		t.Fatal("second push should succeed")
-	}
-	if c.Push(f) {
-		t.Error("third push should fail when the buffer is full")
-	}
-}
-
 func TestWriterTearsDownOnWriteError(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	_ = clientConn.Close() // writes on serverConn now fail
 
-	frames := NewChanSource(4)
-	frames.SetActive(true)
+	frames := NewFeed()
+	sub := mustSubscribe(t, frames)
 	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
-	track := &Track{Path: testPath, PayloadType: 96, Frames: frames}
+	track := &Track{Path: testPath, PayloadType: 96, Feed: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(t.Context())
 	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, writerDone: make(chan struct{})}
 
 	done := make(chan struct{})
-	go func() { cs.runWriter(); close(done) }()
+	go func() { cs.runWriter(sub); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -356,5 +342,98 @@ func TestWriterTearsDownOnWriteError(t *testing.T) {
 	}
 	if ctx.Err() == nil {
 		t.Error("teardown did not cancel the connection context")
+	}
+}
+
+// pacedSource delays each Read, standing in for a sound card's clock so a
+// second client can join while the stream is running.
+type pacedSource struct {
+	audio.Source
+	every time.Duration
+}
+
+func (p pacedSource) Read() (audio.Period, error) {
+	time.Sleep(p.every)
+	return p.Source.Read()
+}
+
+// TestOpusLateJoinerDecodesWithoutResettingTheEncoder pins the multi-client
+// Opus contract end to end with the real ingest client: a second client joining
+// a running stream decodes it from its first packet, and the join leaves the
+// play session (and so the shared encoder) alone.
+func TestOpusLateJoinerDecodesWithoutResettingTheEncoder(t *testing.T) {
+	const rate, periodFrames, periods = 48000, 960, 600
+	base, _ := sineSource(periods, periodFrames, rate)
+	src := pacedSource{Source: base, every: 2 * time.Millisecond}
+
+	feed := NewFeed()
+	spec := pipeline.SDPSpec(&config.Stream{Mode: config.ModeOpus, Opus: config.Opus{Bitrate: 64000}}, "test", rate, 1)
+	sdpBytes, err := sdp.WriteSession(spec)
+	if err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	addr := serveWith(t, Config{SRInterval: time.Hour, Timeout: 30 * time.Second},
+		&Track{Path: testPath, SDP: sdpBytes, PayloadType: 97, Feed: feed})
+
+	// newClient plays the stream and counts the Opus frames it decodes cleanly.
+	newClient := func() (decoded *atomic.Int32) {
+		t.Helper()
+		dec, derr := opus.NewDecoder(48000, 1)
+		if derr != nil {
+			t.Fatalf("NewDecoder: %v", derr)
+		}
+		pcm := make([]int16, 960)
+		decoded = new(atomic.Int32)
+		var mu sync.Mutex
+		client, cerr := rtsp.Dial(t.Context(), rtsp.Config{
+			URL:     "rtsp://" + addr + testPath,
+			Timeout: 5 * time.Second,
+			OnFrame: func(fr audiostream.Frame) {
+				mu.Lock()
+				defer mu.Unlock()
+				if n, e := dec.Decode(fr.Data, pcm); e != nil || n != 960 {
+					t.Errorf("decode: %d samples, err %v, want 960 and nil", n, e)
+					return
+				}
+				decoded.Add(1)
+			},
+		})
+		if cerr != nil {
+			t.Fatalf("Dial: %v", cerr)
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		if perr := drivePlay(t, client); perr != nil {
+			t.Fatalf("play handshake: %v", perr)
+		}
+		return decoded
+	}
+
+	first := newClient()
+	stageErr := make(chan error, 1)
+	go func() {
+		stageErr <- pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(src, feed.Session, func(f pipeline.Frame) error {
+			feed.Push(f)
+			return nil
+		})
+	}()
+	waitFor(t, func() bool { return first.Load() >= 20 }, 10*time.Second, "the first client to decode 20 frames")
+
+	_, sessionBefore := feed.Session()
+	second := newClient()
+	waitFor(t, func() bool { return second.Load() >= 20 }, 10*time.Second, "the late joiner to decode 20 frames")
+	if _, after := feed.Session(); after != sessionBefore {
+		t.Errorf("play session went from %d to %d when a second client joined, want it kept", sessionBefore, after)
+	}
+	if got := feed.Clients(); got != 2 {
+		t.Errorf("Clients() = %d, want 2", got)
+	}
+
+	select {
+	case err := <-stageErr:
+		if err != nil {
+			t.Errorf("stage Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the stage to finish")
 	}
 }

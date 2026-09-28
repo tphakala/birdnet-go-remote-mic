@@ -525,7 +525,8 @@ func (rt *deviceRuntime) currentState() mgmtserver.DeviceState {
 }
 
 // status snapshots the device's current state for the API. Negotiated values
-// are reported only for a device that actually opened (src is non-nil).
+// are reported only for a device that actually opened (src is non-nil), and
+// per-stream client state only for a serving device.
 func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	rt.mu.Lock()
 	state, errMsg, downCause := rt.state, rt.err, rt.downCause
@@ -560,23 +561,26 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		ds.NegotiatedChannels = rt.channels
 		ds.NegotiatedFormat = rt.format
 	}
-	// Only a serving device can hold a client slot. A device that died after
-	// startup keeps its track pointers until process exit, and slots are released
+	// Only a serving device can have clients. A device that died after startup
+	// keeps its feed pointers until process exit, and clients unsubscribe
 	// asynchronously during teardown, so gate on state to honor the contract's
 	// "always false for skipped or failed devices". The device-level
-	// ClientConnected is true when ANY stream has a client; each stream's own state
-	// is reported per stream, and DroppedFrames per stream sums the same way the
-	// device figure does.
+	// ClientConnected is true when ANY stream has a client and ClientCount sums
+	// the streams' counts; each stream's own state is reported per stream, and
+	// DroppedFrames per stream sums the same way the device figure does.
 	if state == mgmtserver.StateServing {
 		ds.Streams = make([]mgmtserver.StreamStatus, 0, len(rt.streams))
 		for _, sr := range rt.streams {
-			connected := sr.track != nil && sr.track.ClientConnected()
-			if connected {
-				ds.ClientConnected = true
+			clients := 0
+			if sr.frames != nil {
+				clients = sr.frames.Clients()
 			}
+			ds.ClientConnected = ds.ClientConnected || clients > 0
+			ds.ClientCount += clients
 			ds.Streams = append(ds.Streams, mgmtserver.StreamStatus{
 				Path:            sr.stream.Path,
-				ClientConnected: connected,
+				ClientConnected: clients > 0,
+				ClientCount:     clients,
 				DroppedFrames:   int64(sr.dropped.Load()),
 			})
 		}

@@ -95,7 +95,7 @@ type retryState struct {
 // nothing, because with no client playing a stream nothing is encoded on it,
 // and another stream encoding proves nothing about it. Settling on time alone
 // would clear the condition and rebuild mDNS only for the next PLAY to fault
-// again, once per client connect.
+// again, once per stretch of playing.
 //
 // It lives beside the retry state rather than in it, because it must outlive
 // it: a disconnect of the device ends its backoff retry, and a config save or

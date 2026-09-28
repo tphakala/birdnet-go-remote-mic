@@ -16,8 +16,8 @@ import (
 func TestFanoutStreamsWiresFeedAndDrops(t *testing.T) {
 	t.Parallel()
 	streams := []*streamRuntime{
-		{frames: rtspserver.NewChanSource(1)},
-		{frames: rtspserver.NewChanSource(1)},
+		{frames: rtspserver.NewFeed()},
+		{frames: rtspserver.NewFeed()},
 	}
 	out := fanoutStreams(streams)
 	if len(out) != len(streams) {
@@ -34,7 +34,11 @@ func TestFanoutStreamsWiresFeedAndDrops(t *testing.T) {
 			t.Errorf("stream %d: got an active Gate with no client playing, want inactive", i)
 		}
 	}
-	streams[1].frames.SetActive(true)
+	sub, err := streams[1].frames.Subscribe()
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
 	on0, _ := out[0].Gate()
 	on1, s1 := out[1].Gate()
 	if _, want := streams[1].frames.Session(); on0 || !on1 || s1 != want {

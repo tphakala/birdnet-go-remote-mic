@@ -10,6 +10,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/sysinfo"
 )
 
@@ -104,6 +105,50 @@ func TestDeviceRuntimeAggregatesStreamDrops(t *testing.T) {
 	}
 	if ds.Streams[1].Path != "/b" || ds.Streams[1].DroppedFrames != 2 {
 		t.Errorf("status stream[1] = %+v, want /b drops=2", ds.Streams[1])
+	}
+}
+
+func TestDeviceRuntimeStatusReportsClientCounts(t *testing.T) {
+	t.Parallel()
+	// status() reports each stream's playing-client count from its feed and the
+	// device figure as their sum; ClientConnected is true when any stream has a
+	// client.
+	feedA, feedB := rtspserver.NewFeed(), rtspserver.NewFeed()
+	rt := &deviceRuntime{
+		dev:   config.Device{Name: "clients"},
+		state: mgmtserver.StateServing,
+		streams: []*streamRuntime{
+			{stream: config.Stream{Path: "/a"}, frames: feedA},
+			{stream: config.Stream{Path: "/b"}, frames: feedB},
+			{stream: config.Stream{Path: "/c"}}, // no feed
+		},
+	}
+	if ds := rt.status(); ds.ClientConnected || ds.ClientCount != 0 {
+		t.Errorf("no clients: connected=%v count=%d, want false/0", ds.ClientConnected, ds.ClientCount)
+	}
+	for _, f := range []*rtspserver.Feed{feedA, feedA, feedA, feedB} {
+		sub, err := f.Subscribe()
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+		t.Cleanup(sub.Close)
+	}
+	ds := rt.status()
+	if !ds.ClientConnected || ds.ClientCount != 4 {
+		t.Errorf("device: connected=%v count=%d, want true/4", ds.ClientConnected, ds.ClientCount)
+	}
+	want := []mgmtserver.StreamStatus{
+		{Path: "/a", ClientConnected: true, ClientCount: 3},
+		{Path: "/b", ClientConnected: true, ClientCount: 1},
+		{Path: "/c"},
+	}
+	if len(ds.Streams) != len(want) {
+		t.Fatalf("Streams = %d, want %d", len(ds.Streams), len(want))
+	}
+	for i, w := range want {
+		if got := ds.Streams[i]; got != w {
+			t.Errorf("stream[%d] = %+v, want %+v", i, got, w)
+		}
 	}
 }
 

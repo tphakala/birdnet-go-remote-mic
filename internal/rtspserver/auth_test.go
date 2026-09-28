@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,39 +246,19 @@ func drainUntilClosed(t *testing.T, conn net.Conn, timeout time.Duration) bool {
 	}
 }
 
-// TestAuthEnableEvictsPlayingOpenAccessSession is closure (a) for G3 and the
-// closure for the round-2 finding that eviction was request-driven. A session
-// set up and playing (a real ChanSource with frames flowing) while access was
-// open is torn down PROACTIVELY once a token is enabled: the RTP flow stops and
-// the connection is closed WITHOUT the client sending any request, and the
-// freed track slot becomes available to a second, authenticated client. It also
-// exercises the mid-session cleanup (SetActive(false), releaseSlot, writer
-// teardown) that the fix relies on. Against the pre-fix code, whose eviction
-// fired only when the client sent a request, the writer keeps streaming and the
-// slot stays held, so both drainUntilClosed and the slot reacquisition fail.
-func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
-	g := auth.NewGuard("")
-	frames := NewChanSource(256)
-	track := &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Frames: frames}
-	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
-
-	c1 := dial(t, addr)
-	setup := c1.do(t, "SETUP", trackURL(addr), tcpTransport("0-1"))
-	if setup.StatusCode != 200 {
-		t.Fatalf("open-access SETUP: status = %d, want 200", setup.StatusCode)
-	}
-	play := rtsp.Header{}
-	play.Set("Session", setup.Header.Get("Session"))
-	if resp := c1.do(t, "PLAY", baseURL(addr), play); resp.StatusCode != 200 {
-		t.Fatalf("open-access PLAY: status = %d, want 200", resp.StatusCode)
-	}
-
-	// Feed audio continuously so the writer is actively sending RTP. A zero-filled
-	// payload carries no '$' bytes, so the '$' the client sees is the interleaved
-	// frame prefix, not payload data.
+// pumpFrames pushes a small frame into feed every couple of milliseconds until
+// the test ends (its Cleanup stops the pump and waits for it), so writers loop
+// and check for eviction. A zero-filled payload carries no '$' bytes, so the
+// '$' a client sees is the interleaved frame prefix, not payload data.
+func pumpFrames(t *testing.T, feed *Feed) {
+	t.Helper()
 	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+	wg.Go(func() {
 		tick := time.NewTicker(2 * time.Millisecond)
 		defer tick.Stop()
 		for {
@@ -285,10 +266,30 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 			case <-stop:
 				return
 			case <-tick.C:
-				frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
+				feed.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 			}
 		}
-	}()
+	})
+}
+
+// TestAuthEnableEvictsPlayingOpenAccessSession is closure (a) for G3 and the
+// closure for the round-2 finding that eviction was request-driven. A session
+// set up and playing (a real Feed with frames flowing) while access was open
+// is torn down PROACTIVELY once a token is enabled: the RTP flow stops and the
+// connection is closed WITHOUT the client sending any request, and the feed's
+// client count returns to zero. It also exercises the mid-session cleanup
+// (unsubscribe, writer teardown) that the fix relies on. Against the pre-fix
+// code, whose eviction fired only when the client sent a request, the writer
+// keeps streaming and the subscription stays, so both drainUntilClosed and the
+// client count check fail.
+func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
+	g := auth.NewGuard("")
+	track, frames := feedTrack()
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
+
+	c1 := dial(t, addr)
+	setupAndPlay(t, c1, addr)
+	pumpFrames(t, frames)
 
 	// Confirm RTP is actually flowing to this open-access client before enabling
 	// the token: the first byte on the wire is an interleaved-frame marker.
@@ -302,56 +303,67 @@ func TestAuthEnableEvictsPlayingOpenAccessSession(t *testing.T) {
 	if !drainUntilClosed(t, c1.conn, 3*time.Second) {
 		t.Fatal("open-access session kept streaming after the token was enabled; eviction is request-driven")
 	}
+	waitFor(t, func() bool { return frames.Clients() == 0 }, 3*time.Second, "the evicted client to unsubscribe")
+}
 
-	// The slot the evicted connection held is released, so a second client that
-	// presents the token can take it.
-	c2 := dial(t, addr)
-	ch := challengeOf(t, c2.do(t, methodDesc, baseURL(addr), nil))
-	if resp := c2.do(t, methodDesc, baseURL(addr), answer(t, ch, testAuthToken, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
-		t.Fatalf("c2 auth: status = %d, want 200", resp.StatusCode)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if resp := c2.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); resp.StatusCode == 200 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("SETUP after eviction never got the slot")
-		}
-		time.Sleep(20 * time.Millisecond)
+// TestAuthRotationEvictsEveryPlayingClient pins that a token change ends every
+// client playing a path, each one independently, both when a token is enabled
+// on an open appliance and when one token is rotated to another. The rotated
+// case is the one that needs Digest: the clients authenticate first, and the
+// writer must see their generation go stale.
+func TestAuthRotationEvictsEveryPlayingClient(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		initial string // the guard's token before the change; empty is open access
+		next    string
+	}{
+		{"enable", "", testAuthToken},
+		{"rotate", testAuthToken, "rotated-token-0001"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := auth.NewGuard(tt.initial)
+			track, frames := feedTrack()
+			addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: g}, track)
+
+			clients := []*client{dial(t, addr), dial(t, addr), dial(t, addr)}
+			for _, c := range clients {
+				if tt.initial != "" {
+					ch := challengeOf(t, c.do(t, methodDesc, baseURL(addr), nil))
+					if resp := c.do(t, methodDesc, baseURL(addr), answer(t, ch, tt.initial, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
+						t.Fatalf("auth: status = %d, want 200", resp.StatusCode)
+					}
+				}
+				setupAndPlay(t, c, addr)
+			}
+			waitFor(t, func() bool { return frames.Clients() == len(clients) }, 2*time.Second, "every client to subscribe")
+			pumpFrames(t, frames)
+
+			g.Set(tt.next)
+			for i, c := range clients {
+				if !drainUntilClosed(t, c.conn, 3*time.Second) {
+					t.Errorf("client %d kept streaming after the token changed", i+1)
+				}
+			}
+			waitFor(t, func() bool { return frames.Clients() == 0 }, 3*time.Second, "every evicted client to unsubscribe")
+		})
 	}
 }
 
-// TestAuthenticatedClientTCPDropReleasesSlot proves the track slot an
-// authenticated client claimed at SETUP is released when its TCP connection
-// simply drops (no TEARDOWN), so the next client can take it.
-func TestAuthenticatedClientTCPDropReleasesSlot(t *testing.T) {
-	addr, _ := startServer(t, authConfig(testAuthToken), defaultTrack())
+// TestAuthenticatedClientTCPDropUnsubscribes proves the subscription an
+// authenticated client took at PLAY is released when its TCP connection simply
+// drops (no TEARDOWN).
+func TestAuthenticatedClientTCPDropUnsubscribes(t *testing.T) {
+	track, frames := feedTrack()
+	addr, _ := startServer(t, Config{Timeout: 60 * time.Second, SRInterval: time.Hour, Auth: auth.NewGuard(testAuthToken)}, track)
 	c := dial(t, addr)
 	ch := challengeOf(t, c.do(t, methodDesc, baseURL(addr), nil))
 	if resp := c.do(t, methodDesc, baseURL(addr), answer(t, ch, testAuthToken, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
 		t.Fatalf("auth: status = %d", resp.StatusCode)
 	}
-	if resp := c.do(t, "SETUP", trackURL(addr), tcpTransport("0-1")); resp.StatusCode != 200 {
-		t.Fatalf("SETUP: status = %d", resp.StatusCode)
+	setupAndPlay(t, c, addr)
+	if got := frames.Clients(); got != 1 {
+		t.Fatalf("Clients() = %d while playing, want 1", got)
 	}
 	_ = c.conn.Close()
-	// A second client must be able to take the slot once the first connection
-	// is gone (the deferred teardown in serveConn releases it).
-	c2 := dial(t, addr)
-	ch2 := challengeOf(t, c2.do(t, methodDesc, baseURL(addr), nil))
-	if resp := c2.do(t, methodDesc, baseURL(addr), answer(t, ch2, testAuthToken, methodDesc, baseURL(addr))); resp.StatusCode != 200 {
-		t.Fatalf("c2 auth: status = %d", resp.StatusCode)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		resp := c2.do(t, "SETUP", trackURL(addr), tcpTransport("0-1"))
-		if resp.StatusCode == 200 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("SETUP after the first client dropped: status = %d, want 200", resp.StatusCode)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool { return frames.Clients() == 0 }, 2*time.Second, "the dropped client to unsubscribe")
 }
