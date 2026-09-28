@@ -76,6 +76,22 @@ test("an empty attribute object is still the attributes, not a child", () => {
   assert.deepEqual(e.children, ["a"]);
 });
 
+test("the result has the tag's own element type", () => {
+  // Checked by tsc (web:typecheck): a button is not typed as a div.
+  const button: HTMLButtonElement = h("button");
+  // @ts-expect-error h("div") is an HTMLDivElement, not an HTMLButtonElement
+  const wrong: HTMLButtonElement = h("div");
+  assert.equal(fake(button).tagName, "button");
+  assert.equal(fake(wrong).tagName, "div");
+});
+
+test("nodeType is not an attribute, since it marks a child node", () => {
+  // @ts-expect-error nodeType would make the attributes read as a node
+  const e = fake(h("div", { nodeType: 1 }));
+  assert.equal(e.attrs.size, 0);
+  assert.deepEqual(e.children, [{ nodeType: 1 }]);
+});
+
 test("event handler attributes are refused in any case", () => {
   // The type refuses lowercase handlers; the runtime check covers every casing.
   // @ts-expect-error an event handler attribute

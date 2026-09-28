@@ -10,8 +10,9 @@ type HAttrValue = string | number | boolean | null | undefined;
 // conditional attribute reads inline. aria-pressed and friends take the
 // strings "true" and "false", not booleans. An event handler attribute (on*)
 // would be inline script, so the type refuses lowercase ones and h() throws on
-// any casing; add listeners with addEventListener.
-export type HAttrs = Readonly<Record<string, HAttrValue> & { [K in `on${string}`]?: never }>;
+// any casing; add listeners with addEventListener. nodeType is refused too:
+// h() tells the attributes from a first child node by it.
+export type HAttrs = Readonly<Record<string, HAttrValue> & { [K in `on${string}`]?: never } & { nodeType?: never }>;
 
 // HChild is one child of h(). A string becomes a text node, never markup.
 // false, null, undefined and "" are skipped, so a conditional child reads
