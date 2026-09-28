@@ -22,9 +22,8 @@ export class UpdatePanel {
   // The latest update status from a system read; undefined when the appliance
   // sends none.
   private update: UpdateStatus | undefined;
-  // Set by the first system read or a failed first load. Until then the
-  // status and footer keep their place, empty, so the read fills them in
-  // place.
+  // Set by the first system read. Until then the status and footer keep
+  // their place, empty, so the read fills them in place.
   private settled = false;
   // The release notes address the footer's link was built for.
   private notesUrl = "";
@@ -56,14 +55,6 @@ export class UpdatePanel {
   // system takes the update status from a system read and renders it.
   public system(update: UpdateStatus | undefined): void {
     this.update = update;
-    this.settled = true;
-    this.render();
-  }
-
-  // settle ends the wait after a failed first load: with no status the panel
-  // hides, as for an appliance that sends none.
-  public settle(): void {
-    if (this.settled) return;
     this.settled = true;
     this.render();
   }

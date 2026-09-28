@@ -79,12 +79,7 @@ export class SystemView {
       this.streams.config(cfg, store.getState().devices);
     });
     store.on("loaderror", (failure) => {
-      if (failure.systemFailed) {
-        this.tiles.loadError(failure.message);
-        this.update.settle();
-      }
-      // System Information shows what the first load brought.
-      this.info.settle();
+      if (failure.systemFailed) this.tiles.loadError(failure.message);
       if (failure.coreFailed) this.streams.loadFailed();
       // A config-only failure leaves the network/access/notification cards
       // loading with no other signal. Surface it so the miss is not invisible;
