@@ -1,5 +1,5 @@
 import { api, ApiError, apiErrorMessage, failureReason, isRefusal, problemFor, problemReason } from "../../lib/api.ts";
-import { clearBusy, copyText, downloadBlob, elem, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, copyText, downloadBlob, infoRow, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { CERT_LABELS, certRows, certTooLargeReason, parseExtraSans, type CertLabel } from "../../lib/certificate-core.ts";
 import { sentence } from "../../lib/text.ts";
@@ -61,8 +61,8 @@ export class CertificateCard {
     this.keyEl = part<HTMLTextAreaElement>(root, "sys-cert-key");
     this.keyErrorEl = part(root, "sys-cert-key-error");
     for (const label of CERT_LABELS) {
-      const dd = elem("dd", "info-val mono");
-      this.infoEl?.append(elem("dt", "info-key", label), dd);
+      const { dt, dd } = infoRow(label, "", { mono: true });
+      this.infoEl?.append(dt, dd);
       this.values.set(label, dd);
     }
     // Laid out from the first paint, and usable once the first load fills it

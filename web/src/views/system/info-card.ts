@@ -1,4 +1,4 @@
-import { elem, formatRelative, formatUptime, ICON_VERSION, iconSpan, orderChildren, part, setLoading, setText, svgIcon } from "../../lib/ui.ts";
+import { formatRelative, formatUptime, ICON_VERSION, infoRow, orderChildren, part, setLoading, setText, svgIcon } from "../../lib/ui.ts";
 import { infoRows, withPlaceholders, type InfoLabel } from "../../lib/system-core.ts";
 import type { ApplianceStatus, SystemInfo } from "../../lib/types.ts";
 
@@ -83,9 +83,7 @@ export class InfoCard {
     for (const r of rows) {
       let pair = this.rows.get(r.label);
       if (!pair) {
-        const dt = elem("dt", "info-key");
-        dt.append(iconSpan(INFO_ICONS[r.label], "info-key-icon"), document.createTextNode(r.label));
-        pair = { dt, dd: elem("dd", "info-val mono", r.value) };
+        pair = infoRow(r.label, r.value, { icon: INFO_ICONS[r.label], mono: true });
         this.rows.set(r.label, pair);
       } else {
         setText(pair.dd, r.value);

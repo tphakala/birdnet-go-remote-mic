@@ -109,8 +109,10 @@ reconcile:
   `focusDropped`/`focusOnOrDropped`/`focusWorkspace` (focus fallback when a
   control went away), `showUnconfirmed`, `failureReason`,
   `scrollBehavior` (a scripted scroll that follows reduced motion),
-  `copyText`, `externalLink` (new-tab link with `rel="noopener"`), `announce` (a
-  polite live-region message), `MenuButton` (a single-choice header menu),
+  `copyText`, `infoRow` (an `.info-grid` key and value pair), `sectionHead`
+  (a card's icon title and description), `externalLink` (new-tab link with
+  `rel="noopener"`), `announce` (a polite live-region message),
+  `MenuButton` (a single-choice header menu),
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
   switch; the static ones in `index.html` copy its markup, `role="switch"`
   included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size and stroke
