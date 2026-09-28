@@ -4,7 +4,7 @@ import { availableCardKey, availableGoneMessage, availableLabel, availablePlan, 
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import type { AvailableDevice, Device } from "../../lib/types.ts";
-import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setBusy, showUnconfirmed } from "../../lib/ui.ts";
+import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setBusy, setHidden, showUnconfirmed } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue } from "./config-queue.ts";
 
 // AvailableCard is one detected but unconfigured capture device: its name,
@@ -68,7 +68,8 @@ export interface AvailableDevicesHost {
 // AvailableDevices is the Available Devices section (#available-section): the
 // host's detected but unconfigured capture devices, each with an Enable button
 // that provisions it. The whole section hides when nothing is available, so a
-// fully configured host shows no empty panel. Cards are keyed by device id and
+// fully configured host shows no empty panel, and until the device rack above
+// it has its first content (see rackLaidOut). Cards are keyed by device id and
 // rebuilt only when what they show changed (availablePlan), so a render keeps
 // the operator's text selection (the device id is there to be copied) and
 // keyboard focus on the cards it leaves alone. A rebuilt card that held focus
@@ -88,6 +89,10 @@ export class AvailableDevices {
   // success; on failure to its own card when it is listed again, else its
   // nearest neighbour still listed). Only set while that Enable is in flight.
   private focusLost: { id: string; neighbours: string[]; label: string } | null = null;
+  // Set once the device rack above has its first content, and the number of
+  // devices the last read listed: the section shows when both allow.
+  private rackShown = false;
+  private count = 0;
 
   constructor(section: HTMLElement | null, host: AvailableDevicesHost) {
     this.section = section;
@@ -95,11 +100,24 @@ export class AvailableDevices {
     this.host = host;
   }
 
+  // rackLaidOut shows the section, if it lists anything, once the device rack
+  // above it has its first content (the devices read, or its load error).
+  // Shown earlier, the section would sit under the rack's one-line loading
+  // placeholder and be pushed down, out of a laptop-sized window, when the
+  // device cards arrive. The rack's length is unknown until that read, so the
+  // section waits instead of reserving space.
+  public rackLaidOut(): void {
+    if (this.rackShown) return;
+    this.rackShown = true;
+    this.syncShown();
+  }
+
   // render shows an available-devices read.
   public render(available: AvailableDevice[]): void {
     if (!this.rack || !this.section) return;
     const rack = this.rack;
-    this.section.hidden = available.length === 0;
+    this.count = available.length;
+    this.syncShown();
     const next = available.map((d) => ({ d, id: d.device, key: availableCardKey(d, this.provisioning.has(d.device)) }));
     const shown = new Map([...this.cards].map(([id, c]) => [id, c.key]));
     const plan = availablePlan(shown, next);
@@ -141,6 +159,10 @@ export class AvailableDevices {
     orderChildren(rack, [...this.cards.values()].map((c) => c.el));
 
     if (stranded) this.focusNeighbour(stranded.neighbours, stranded.label);
+  }
+
+  private syncShown(): void {
+    if (this.section) setHidden(this.section, !this.rackShown || this.count === 0);
   }
 
   // takeFocusLost returns and clears the record of a focused card that a

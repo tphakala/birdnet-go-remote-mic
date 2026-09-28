@@ -30,6 +30,10 @@ export class DashboardView {
   private readonly queue = new ConfigQueue();
   // What each device card needs from the view.
   private readonly cardHost: DeviceCardHost;
+  // Set by the first devices read. Until then the rack keeps its loading
+  // placeholder, whatever other reads land first, and the Available Devices
+  // section below it stays hidden (see AvailableDevices.rackLaidOut).
+  private devicesLoaded = false;
   // Set while a reconcile() is queued on the microtask, so the several store
   // events a single poll tick fires collapse into one pass (see render()).
   private renderScheduled = false;
@@ -85,7 +89,10 @@ export class DashboardView {
     // patching its own subset of the DOM. status is stored first because URLs
     // and the lock tag depend on it; config now arrives on every poll (see the
     // store) so an out-of-band change reflects within one interval.
-    store.on("devices", () => this.render());
+    store.on("devices", () => {
+      this.devicesLoaded = true;
+      this.render();
+    });
     store.on("config", () => this.render());
     store.on("status", (status) => {
       this.status = status;
@@ -122,7 +129,11 @@ export class DashboardView {
     // meters would contradict them.
     store.on("connection", (connected) => this.updateConnection(connected));
     store.on("loaderror", (failure) => {
-      if (failure.coreFailed) this.renderLoadError(failure.message);
+      if (!failure.coreFailed) return;
+      this.renderLoadError(failure.message);
+      // The rack now holds the failure and its Retry in place of the loading
+      // line, so Available Devices can show below it.
+      this.available.rackLaidOut();
     });
   }
 
@@ -177,7 +188,8 @@ export class DashboardView {
     const rack = this.rack;
     const devices = store.getState().devices;
 
-    if (this.emptyEl) {
+    // Before the first devices read an empty list only means not loaded yet.
+    if (this.emptyEl && this.devicesLoaded) {
       this.emptyEl.hidden = devices.length > 0;
       // Clear the alert live-region role set by renderLoadError so the benign
       // empty/loaded state is not re-announced as an error.
@@ -246,6 +258,8 @@ export class DashboardView {
 
     const clientsEl = document.getElementById("total-clients-display");
     if (clientsEl) setText(clientsEl, String(clientCount));
+    // The rack is in its loaded shape, so the section below may show.
+    if (this.devicesLoaded) this.available.rackLaidOut();
   }
 
   // settingsTarget is a device card's settings button as a focus target.
