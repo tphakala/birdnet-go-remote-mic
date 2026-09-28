@@ -3,228 +3,313 @@ package rtspserver
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 )
 
-func TestPushDiscardedWhileInactive(t *testing.T) {
-	c := NewChanSource(4)
-	if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1}) {
-		t.Fatal("inactive push should report success (discard, not drop)")
+// mustSubscribe subscribes to f and fails the test on an error.
+func mustSubscribe(t *testing.T, f *Feed) Subscription {
+	t.Helper()
+	s, err := f.Subscribe()
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	return s
+}
+
+// nextPayload returns the first payload byte of the next queued frame, failing
+// if none is ready.
+func nextPayload(t *testing.T, s Subscription) byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	if _, err := c.Next(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("inactive push must not be delivered; Next err = %v", err)
+	fr, err := s.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	return fr.Payload[0]
+}
+
+// noFrame fails the test if s has a frame ready.
+func noFrame(t *testing.T, s Subscription) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if fr, err := s.Next(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Next = (%v, %v), want no frame", fr, err)
 	}
 }
 
-// TestActiveFollowsSetActive pins the gate the pipeline stage polls: Active is
-// false until a client plays, true while it does, and false again after it
-// stops, so a stream with no client skips its encode.
-func TestActiveFollowsSetActive(t *testing.T) {
+func TestFeedPushWithoutSubscribers(t *testing.T) {
 	t.Parallel()
-	c := NewChanSource(4)
-	if c.Active() {
-		t.Fatal("a new source reports Active; the stage would encode for no client")
+	f := NewFeed()
+	if got := f.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1}); got != 0 {
+		t.Fatalf("Push with no subscribers = %d drops, want 0", got)
 	}
-	c.SetActive(true)
-	if !c.Active() {
-		t.Fatal("Active = false after SetActive(true)")
+	if on, s := f.Session(); on || s != 0 {
+		t.Fatalf("idle Session() = (%v, %d), want (false, 0)", on, s)
 	}
-	c.SetActive(false)
-	if c.Active() {
-		t.Fatal("Active = true after SetActive(false)")
-	}
+	// A frame pushed while idle is not held for the next client.
+	s := mustSubscribe(t, f)
+	noFrame(t, s)
 }
 
-func TestActivateDrainsStaleFrames(t *testing.T) {
-	c := NewChanSource(4)
-	c.SetActive(true)
-	if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1}) {
-		t.Fatal("active push should succeed")
-	}
-	c.SetActive(false)
-	c.SetActive(true) // reactivation drains the leftover frame
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := c.Next(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("stale frame survived reactivation; Next err = %v", err)
-	}
-}
-
-func TestCloseUnblocksNext(t *testing.T) {
-	c := NewChanSource(1)
-	c.Close()
-	c.Close() // idempotent
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := c.Next(ctx); !errors.Is(err, ErrSourceClosed) {
-		t.Fatalf("Next after Close = %v, want ErrSourceClosed", err)
-	}
-}
-
-func TestCloseWinsOverBufferedFrame(t *testing.T) {
-	c := NewChanSource(4)
-	c.SetActive(true)
-	if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1}) {
-		t.Fatal("active push should succeed")
-	}
-	c.Close() // a buffered frame is queued, but the source is now dead
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := c.Next(ctx); !errors.Is(err, ErrSourceClosed) {
-		t.Fatalf("Next after Close = %v, want ErrSourceClosed even with a frame queued", err)
-	}
-}
-
-// TestSessionAdvancesOnEveryActivation pins the play session the pipeline stage
-// keys its encoder reset on: each SetActive(true) starts a new session, even
-// one that follows a teardown so closely that no stage saw the stream idle,
-// and a deactivation keeps the session number, so a stage reading a period
-// after a teardown still sees the session it last encoded for.
-func TestSessionAdvancesOnEveryActivation(t *testing.T) {
+func TestFeedEverySubscriberGetsTheSameSequence(t *testing.T) {
 	t.Parallel()
-	c := NewChanSource(4)
-	if on, s := c.Session(); on || s != 0 {
-		t.Fatalf("new source: Session() = (%v, %d), want (false, 0)", on, s)
+	f := NewFeed()
+	a, b, c := mustSubscribe(t, f), mustSubscribe(t, f), mustSubscribe(t, f)
+	payload := []byte{0}
+	for i := byte(1); i <= 5; i++ {
+		payload[0] = i
+		if got := f.Push(pipeline.Frame{Payload: payload, Duration: 1}); got != 0 {
+			t.Fatalf("Push %d dropped %d", i, got)
+		}
 	}
-	c.SetActive(true)
-	on, first := c.Session()
+	// The producer reuses its buffer: the queued frames are copies.
+	payload[0] = 99
+	for _, s := range []Subscription{a, b, c} {
+		for want := byte(1); want <= 5; want++ {
+			if got := nextPayload(t, s); got != want {
+				t.Fatalf("got payload %d, want %d", got, want)
+			}
+		}
+	}
+}
+
+func TestFeedSlowSubscriberDropsOnlyItsOwn(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	slow, fast := mustSubscribe(t, f), mustSubscribe(t, f)
+	_ = slow // never read
+	const total = subQueueDepth + 10
+	var drops int
+	for i := range total {
+		drops += f.Push(pipeline.Frame{Payload: []byte{byte(i)}, Duration: 1})
+		// The fast subscriber reads every frame as it is pushed.
+		if got := nextPayload(t, fast); got != byte(i) {
+			t.Fatalf("fast subscriber: frame %d = %d, want a gap-free sequence", i, got)
+		}
+	}
+	if want := total - subQueueDepth; drops != want {
+		t.Errorf("Push reported %d drops, want %d (one per frame the slow queue refused)", drops, want)
+	}
+}
+
+func TestFeedEpoch(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	sessionOf := func() (bool, uint64) { return f.Session() }
+
+	a := mustSubscribe(t, f)
+	on, first := sessionOf()
 	if !on || first == 0 {
-		t.Fatalf("after the first PLAY: Session() = (%v, %d), want (true, nonzero)", on, first)
+		t.Fatalf("after the first join: Session() = (%v, %d), want active in a session numbered from 1", on, first)
 	}
-	c.SetActive(false)
-	if on, s := c.Session(); on || s != first {
-		t.Fatalf("after teardown: Session() = (%v, %d), want (false, %d)", on, s, first)
+	b := mustSubscribe(t, f)
+	if on, s := sessionOf(); !on || s != first {
+		t.Errorf("second join: Session() = (%v, %d), want (true, %d): a join keeps the session", on, s, first)
 	}
-	c.SetActive(true)
-	on, second := c.Session()
-	if !on || second == first {
-		t.Fatalf("after the second PLAY: Session() = (%v, %d), want (true, not %d)", on, second, first)
+	a.Close()
+	if on, s := sessionOf(); !on || s != first {
+		t.Errorf("non-last leave: Session() = (%v, %d), want (true, %d)", on, s, first)
 	}
-	if c.Active() != on {
-		t.Errorf("Active() = %v, want it to match Session()'s %v", c.Active(), on)
+	b.Close()
+	if on, s := sessionOf(); on || s != first {
+		t.Errorf("last leave: Session() = (%v, %d), want (false, %d): inactive, session kept", on, s, first)
+	}
+	c := mustSubscribe(t, f)
+	defer c.Close()
+	if on, s := sessionOf(); !on || s != first+1 {
+		t.Errorf("join after idle: Session() = (%v, %d), want (true, %d)", on, s, first+1)
 	}
 }
 
-// TestSetActiveConcurrentKeepsEverySession pins that SetActive is safe to call
-// from several goroutines: every activation's session bump survives, and a
-// deactivation never writes back a stale session or flag. A load-then-store
-// update would lose bumps under this contention, so a later client could be
-// handed an old session and keep the previous client's encoder state.
-func TestSetActiveConcurrentKeepsEverySession(t *testing.T) {
+// TestFeedOverlappingJoinKeepsSession pins that a join landing before the
+// previous client's close never passes through idle, so the session (and with
+// it the stage's encoder) carries on.
+func TestFeedOverlappingJoinKeepsSession(t *testing.T) {
 	t.Parallel()
-	if runtime.GOMAXPROCS(0) < 2 {
-		t.Skip("needs two or more procs: on one, the workers almost never preempt each other mid-update, so a lost bump would not show")
+	f := NewFeed()
+	a := mustSubscribe(t, f)
+	_, first := f.Session()
+	b := mustSubscribe(t, f)
+	a.Close()
+	defer b.Close()
+	if on, s := f.Session(); !on || s != first {
+		t.Fatalf("Session() = (%v, %d), want (true, %d)", on, s, first)
 	}
-	const workers, rounds = 4, 20000
-	c := NewChanSource(1)
+	if f.Push(pipeline.Frame{Payload: []byte{7}, Duration: 1, Session: first}) != 0 {
+		t.Fatal("frame of the running session reported a drop")
+	}
+	if got := nextPayload(t, b); got != 7 {
+		t.Fatalf("got %d, want 7", got)
+	}
+}
+
+func TestFeedNeverDeliversAnEarlierSession(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	a := mustSubscribe(t, f)
+	_, old := f.Session()
+	a.Close()
+	b := mustSubscribe(t, f)
+	defer b.Close()
+	_, cur := f.Session()
+	if cur == old {
+		t.Fatalf("session did not advance across a leave and a join: %d", cur)
+	}
+	// An earlier session's frame, overtaken by the leave and the join while it
+	// was being encoded.
+	f.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: old})
+	noFrame(t, b)
+	f.Push(pipeline.Frame{Payload: []byte{2}, Duration: 1, Session: cur})
+	f.Push(pipeline.Frame{Payload: []byte{3}, Duration: 1}) // untagged goes to whoever plays
+	if got := nextPayload(t, b); got != 2 {
+		t.Errorf("got %d, want 2", got)
+	}
+	if got := nextPayload(t, b); got != 3 {
+		t.Errorf("got %d, want 3", got)
+	}
+}
+
+func TestFeedClose(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	b := mustSubscribe(t, f)
+	f.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1})
+	f.Close()
+	f.Close() // idempotent
+	// Closure wins over a frame that is still queued.
+	if _, err := b.Next(t.Context()); !errors.Is(err, ErrSourceClosed) {
+		t.Errorf("Next with a queued frame after Close: err = %v, want ErrSourceClosed", err)
+	}
+	if _, err := f.Subscribe(); !errors.Is(err, ErrSourceClosed) {
+		t.Errorf("Subscribe after Close: err = %v, want ErrSourceClosed", err)
+	}
+}
+
+// TestFeedCloseWakesParkedNext pins that Close ends a Next that is already
+// blocked on an empty queue.
+func TestFeedCloseWakesParkedNext(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := NewFeed()
+		a := mustSubscribe(t, f)
+		errc := make(chan error, 1)
+		go func() {
+			_, err := a.Next(t.Context())
+			errc <- err
+		}()
+		synctest.Wait() // a's Next is parked on its empty queue
+		f.Close()
+		synctest.Wait()
+		select {
+		case err := <-errc:
+			if !errors.Is(err, ErrSourceClosed) {
+				t.Errorf("parked Next err = %v, want ErrSourceClosed", err)
+			}
+		default:
+			t.Fatal("Close did not wake the parked Next")
+		}
+	})
+}
+
+func TestFeedClientCap(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	subs := make([]Subscription, 0, maxClients)
+	for range maxClients {
+		subs = append(subs, mustSubscribe(t, f))
+	}
+	if _, err := f.Subscribe(); !errors.Is(err, ErrTooManyClients) {
+		t.Fatalf("subscribe %d: err = %v, want ErrTooManyClients", maxClients+1, err)
+	}
+	if got := f.Clients(); got != maxClients {
+		t.Fatalf("Clients() = %d after a refused subscribe, want %d", got, maxClients)
+	}
+	subs[3].Close()
+	subs[3].Close() // idempotent: must not free a second slot
+	if got := f.Clients(); got != maxClients-1 {
+		t.Fatalf("Clients() = %d after one Close, want %d", got, maxClients-1)
+	}
+	mustSubscribe(t, f)
+	if _, err := f.Subscribe(); !errors.Is(err, ErrTooManyClients) {
+		t.Fatalf("err = %v, want ErrTooManyClients once full again", err)
+	}
+}
+
+func TestFeedConcurrent(t *testing.T) {
+	t.Parallel()
+	f := NewFeed()
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
 	var wg sync.WaitGroup
-	for range workers {
+
+	wg.Go(func() {
+		for ctx.Err() == nil {
+			f.Push(pipeline.Frame{Payload: []byte{1, 2, 3}, Duration: 1})
+		}
+	})
+	wg.Go(func() {
+		for ctx.Err() == nil {
+			_, _ = f.Session()
+			_ = f.Clients()
+		}
+	})
+	for range 4 {
 		wg.Go(func() {
-			for range rounds {
-				c.SetActive(true)
-				c.SetActive(false)
+			for ctx.Err() == nil {
+				s, err := f.Subscribe()
+				if err != nil {
+					continue // at the cap
+				}
+				rctx, rcancel := context.WithTimeout(ctx, time.Millisecond)
+				_, _ = s.Next(rctx)
+				rcancel()
+				s.Close()
 			}
 		})
 	}
 	wg.Wait()
-	if on, s := c.Session(); on || s != workers*rounds {
-		t.Errorf("after %d activations: Session() = (%v, %d), want (false, %d)", workers*rounds, on, s, workers*rounds)
+	if got := f.Clients(); got != 0 {
+		t.Errorf("Clients() = %d after every subscriber closed, want 0", got)
 	}
 }
 
-// TestPushDropsFrameOfAnotherSession pins the fix for a frame that a teardown
-// and the next PLAY overtook while the stage was encoding it: a frame tagged
-// with an earlier session is discarded (reported as success, not a drop),
-// while a frame of the current session and an untagged one are delivered.
-func TestPushDropsFrameOfAnotherSession(t *testing.T) {
-	t.Parallel()
-	c := NewChanSource(4)
-	c.SetActive(true)
-	_, old := c.Session()
-	c.SetActive(false)
-	c.SetActive(true)
-	_, cur := c.Session()
+// TestFeedPushAllocs pins the allocation contract: none while idle, exactly the
+// one payload copy per frame with one or more clients.
+func TestFeedPushAllocs(t *testing.T) {
+	// Not parallel: AllocsPerRun counts process-wide allocations.
 	for _, tt := range []struct {
 		name    string
-		session uint64
-		deliver bool
+		clients int
+		want    float64
 	}{
-		{"earlier session", old, false},
-		{"current session", cur, true},
-		{"untagged", 0, true},
+		{"no clients", 0, 0},
+		{"one client", 1, 1},
+		{"three clients", 3, 1},
 	} {
-		if !c.Push(pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: tt.session}) {
-			t.Fatalf("%s: Push reported a drop, want success", tt.name)
-		}
-		// Push is synchronous, so the queue already shows whether it kept the
-		// frame; no wait is needed to prove a discard.
-		if !tt.deliver {
-			if got := len(c.ch); got != 0 {
-				t.Errorf("%s: got %d queued frames, want the frame discarded", tt.name, got)
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewFeed()
+			subs := make([]Subscription, tt.clients)
+			for i := range subs {
+				subs[i] = mustSubscribe(t, f)
 			}
-			continue
-		}
-		if got := len(c.ch); got != 1 {
-			t.Fatalf("%s: got %d queued frames, want 1", tt.name, got)
-		}
-		f, err := c.Next(t.Context())
-		switch {
-		case err != nil:
-			t.Errorf("%s: Next err = %v, want the frame", tt.name, err)
-		case f.Session != tt.session:
-			t.Errorf("%s: got session %d, want %d", tt.name, f.Session, tt.session)
-		}
-	}
-}
-
-// TestActivateDrainsBeforeNewSession pins the order inside SetActive(true):
-// the drain runs while the source still reports the old state, so a frame the
-// new client's stage pushes once it sees the new session is never drained.
-func TestActivateDrainsBeforeNewSession(t *testing.T) {
-	t.Parallel()
-	c := NewChanSource(4)
-	calls := 0
-	c.drained = func() {
-		calls++
-		if on, s := c.Session(); on || s != 0 {
-			t.Errorf("at the drain: Session() = (%v, %d), want (false, 0): the new session started first", on, s)
-		}
-	}
-	c.SetActive(true)
-	if calls != 1 {
-		t.Fatalf("drained hook ran %d times, want 1", calls)
-	}
-}
-
-// TestNextSkipsFrameOfAnotherSession pins the second half of the stale-frame
-// guard: a frame of an earlier session that Push queued after the next PLAY's
-// drain (its session check ran before the teardown) never reaches the new
-// client's writer; Next skips it and returns the current session's frame.
-func TestNextSkipsFrameOfAnotherSession(t *testing.T) {
-	t.Parallel()
-	c := NewChanSource(4)
-	c.SetActive(true)
-	_, old := c.Session()
-	c.SetActive(false)
-	c.SetActive(true)
-	_, cur := c.Session()
-	// The late send of a Push that checked the session before the teardown.
-	c.ch <- pipeline.Frame{Payload: []byte{1}, Duration: 1, Session: old}
-	if !c.Push(pipeline.Frame{Payload: []byte{2}, Duration: 1, Session: cur}) {
-		t.Fatal("current-session push reported a drop")
-	}
-	f, err := c.Next(t.Context())
-	if err != nil {
-		t.Fatalf("Next: %v", err)
-	}
-	if f.Session != cur {
-		t.Errorf("got a frame of session %d, want the current session %d", f.Session, cur)
+			_, epoch := f.Session()
+			fr := pipeline.Frame{Payload: make([]byte, 320), Duration: 960, Session: epoch}
+			got := testing.AllocsPerRun(100, func() {
+				f.Push(fr)
+				for _, s := range subs {
+					_, _ = s.Next(t.Context())
+				}
+			})
+			if got != tt.want {
+				t.Errorf("allocs per Push = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

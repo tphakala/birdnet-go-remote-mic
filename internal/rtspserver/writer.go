@@ -14,10 +14,12 @@ import (
 const maxWriterPayload = 15360
 
 // runWriter is the playing session's single writer: it drains frames from the
-// FrameSource and writes each as an interleaved RTP packet, then emits an RTCP
-// sender report every SRInterval. It owns the reused packet buffer, and every
-// write goes through writeRaw so it never interleaves with an RTSP response.
-func (cs *connSession) runWriter() {
+// connection's subscription and writes each as an interleaved RTP packet, then
+// emits an RTCP sender report every SRInterval. It owns the reused packet
+// buffer, and every write goes through writeRaw so it never interleaves with an
+// RTSP response. Each connection has its own SSRC, sequence and timestamp
+// state, so clients of one stream are independent.
+func (cs *connSession) runWriter(sub Subscription) {
 	// Declared first so it runs last (LIFO): cs.close() cancels the context and drops
 	// the socket, then this signals serveConn's join that the writer has fully exited.
 	defer close(cs.writerDone)
@@ -37,7 +39,7 @@ func (cs *connSession) runWriter() {
 	var lastTS uint32
 
 	for {
-		frame, err := cs.track.Frames.Next(cs.ctx)
+		frame, err := sub.Next(cs.ctx)
 		if err != nil {
 			return
 		}
@@ -52,7 +54,7 @@ func (cs *connSession) runWriter() {
 		// are read as one Snapshot so a rotation cannot split them. Returning here
 		// runs the same teardown as any other writer exit: defer cs.close()
 		// cancels the context and closes the socket, and serveConn's deferred
-		// cleanup releases the track slot.
+		// cleanup unsubscribes.
 		if enabled, gen := cs.srv.cfg.Auth.Snapshot(); shouldEvict(enabled, gen, cs.authed.Load(), cs.authGen.Load()) {
 			// Record why this session ends so serveConn's cleanup reports an
 			// eviction rather than a plain dropped connection.

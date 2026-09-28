@@ -229,7 +229,7 @@ func gateSteps(t *testing.T, steps ...gateStep) (gate pipeline.Gate, calls *int)
 }
 
 // gateSeq returns a gate that answers from pattern as a real feed would: each
-// run of true is one play session, numbered from 1 as ChanSource numbers them.
+// run of true is one play session, numbered from 1 as Feed numbers them.
 func gateSeq(t *testing.T, pattern ...bool) (gate pipeline.Gate, calls *int) {
 	t.Helper()
 	steps := make([]gateStep, len(pattern))

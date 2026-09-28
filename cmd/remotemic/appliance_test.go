@@ -133,7 +133,7 @@ func (l *fakeOpenLog) snapshot() []string {
 }
 
 // fakeOpener returns an appliance.open replacement that builds a real
-// deviceRuntime (real fan-out, per-stream pipeline stages, ChanSources and
+// deviceRuntime (real fan-out, per-stream pipeline stages, Feeds and
 // Tracks) around a blocking fake source, logging each open and each source close
 // through log. It mirrors production openDevice: one metered base capture fanned
 // out into one runtime per configured stream.
@@ -162,12 +162,12 @@ func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Sour
 		streams := make([]*streamRuntime, 0, len(dev.Streams))
 		for i := range dev.Streams {
 			s := dev.Streams[i]
-			frames := rtspserver.NewChanSource(64)
+			frames := rtspserver.NewFeed()
 			streams = append(streams, &streamRuntime{
 				stream: s,
 				stage:  pipeline.NewPCM(),
 				frames: frames,
-				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Frames: frames},
+				track:  &rtspserver.Track{Path: s.Path, PayloadType: 96, Feed: frames},
 			})
 		}
 		fanout, consumers := audio.NewFanout(metered, dev.Name, fanoutStreams(streams))
@@ -337,7 +337,7 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 			t.Fatalf("the pump ran %d of %d stream stages", len(got), len(dev.Streams))
 		}
 	}
-	feeds := make(map[string]*rtspserver.ChanSource)
+	feeds := make(map[string]*rtspserver.Feed)
 	for _, sr := range app.devices["a"].streams {
 		feeds[sr.stream.Path] = sr.frames
 	}
@@ -352,19 +352,28 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 		}
 	}
 	check("before any client plays", "")
+	join := func(path string) rtspserver.Subscription {
+		t.Helper()
+		sub, err := feeds[path].Subscribe()
+		if err != nil {
+			t.Fatalf("Subscribe %s: %v", path, err)
+		}
+		return sub
+	}
 	for _, path := range []string{"/a", "/a2"} {
-		feeds[path].SetActive(true)
+		sub := join(path)
 		check("while only "+path+" plays", path)
 		_, first := got[path]()
-		feeds[path].SetActive(false)
+		sub.Close()
 		check("after "+path+" stops", "")
 		// The gate carries the feed's play session, so the stage sees the next
-		// client as a new session (its encoder reset) even across a quick replay.
-		feeds[path].SetActive(true)
+		// stretch of playing as a new session (its encoder reset) even across a
+		// quick replay.
+		sub = join(path)
 		if _, next := got[path](); next == first {
 			t.Errorf("gate of %s kept session %d across a new PLAY, want a new session", path, first)
 		}
-		feeds[path].SetActive(false)
+		sub.Close()
 	}
 }
 

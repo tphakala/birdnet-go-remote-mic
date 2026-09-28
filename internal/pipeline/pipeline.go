@@ -42,15 +42,18 @@ type Frame struct {
 // is read, and a period read while it reports inactive is drained but not
 // packetized or encoded, since its frames would be discarded downstream anyway.
 // A stateful stage (Opus) starts from a clean state whenever the session
-// changes, so each client's frames come from an encoder with no history or
-// partial frame from an earlier client, even when a teardown and the next PLAY
-// both land between two period reads and the stage never sees the stream idle.
+// changes, so a stretch of playing gets an encoder with no history or partial
+// frame from an earlier stretch, even when the last client's teardown and the
+// next stretch's first PLAY both land between two period reads and the stage
+// never sees the stream idle. The session advances only when the first client
+// joins an idle stream: a client joining or leaving while others play leaves it
+// alone, so the running encoder is never touched and every client shares one
+// encode.
 // A period tagged with another session than the gate reports (audio.Period.
-// Session, set by the fan-out) was queued for an earlier client and is dropped
+// Session, set by the fan-out) was queued for an earlier stretch of playing and is dropped
 // unencoded, and every frame carries the session it was produced for
 // (Frame.Session), so the feed can drop one that a teardown and the next PLAY
-// overtook while it was being encoded (rtspserver.ChanSource checks it on Push
-// and again on Next). A frame is stamped with its period's capture
+// overtook while it was being encoded (rtspserver.Feed checks it on Push). A frame is stamped with its period's capture
 // time (audio.Period.Captured) when the period carries one.
 // A nil gate means always active: every period is encoded, in the session it
 // carries (zero for an untagged one), so an ungated stage drops no period.
@@ -58,10 +61,11 @@ type Stage interface {
 	Run(src audio.Source, gate Gate, emit func(Frame) error) error
 }
 
-// Gate reports whether a client is playing the stream a stage feeds, and which
-// play session it is (rtspserver.ChanSource.Session). The session changes on
-// every activation, so a stage comparing it with the session it last encoded
-// for sees each new client.
+// Gate reports whether any client is playing the stream a stage feeds, and which
+// play session it is (rtspserver.Feed.Session). The session is per stretch with
+// at least one client playing: it advances when the first client joins an idle
+// stream, so a stage comparing it with the session it last encoded for sees
+// each new stretch.
 type Gate func() (active bool, session uint64)
 
 // admit reports whether a period read now is to be encoded, and the play
@@ -189,9 +193,9 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 	// session is the play session the encoder state belongs to. When the gate
 	// reports another session, the encoder resets and drops the stale partial
 	// frame (a period queued for another session never gets here), so a
-	// new client's stream starts exactly as a freshly built encoder's would. It
-	// starts at 0, which a feed never reports while active, so the first client
-	// resets the fresh encoder too; that is harmless. (A nil gate follows the
+	// new stretch of playing starts exactly as a freshly built encoder's would.
+	// It starts at 0, which a feed never reports while active, so the first
+	// client resets the fresh encoder too; that is harmless. (A nil gate follows the
 	// periods' own tags, so untagged periods stay in session 0 and never reset.)
 	var session uint64
 
