@@ -1,7 +1,7 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
-import { focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, renderLoadError, setHidden, setText } from "../lib/ui.ts";
+import { announce, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, parkFocus, renderLoadError, setHidden, setText } from "../lib/ui.ts";
 import { deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { hideInactivePrefDevice, onPrefChange, parseBoolPref } from "../lib/prefs.ts";
 import type { ApplianceStatus, DeviceConfig, SystemInfo } from "../lib/types.ts";
@@ -178,6 +178,11 @@ export class DashboardView {
 
     // Until a devices read applied, an empty list only means not loaded yet.
     if (this.emptyEl && store.devicesRead() === "loaded") {
+      // A poll that recovers the list while Retry holds focus removes the
+      // button (the message is rewritten or hidden): park focus on the view
+      // (a click on Retry parks it too) and announce the recovery, instead of
+      // dropping focus to <body>.
+      const retryHadFocus = holdsFocus(this.emptyEl);
       this.emptyEl.hidden = devices.length > 0;
       // Clear the alert live-region role set by renderLoadError so the benign
       // empty/loaded state is not re-announced as an error.
@@ -190,6 +195,10 @@ export class DashboardView {
         setText(this.emptyEl, hasAvailable
           ? "No capture devices are configured yet. Enable one from Available Devices below to start streaming."
           : "No capture devices are configured. Connect capture hardware; it appears under Available Devices below, ready to enable.");
+      }
+      if (retryHadFocus) {
+        parkFocus(this.emptyEl);
+        announce(this.announceEl, "Devices loaded.");
       }
     }
 

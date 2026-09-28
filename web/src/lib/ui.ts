@@ -468,6 +468,15 @@ export function deviceStateBadge(state: string): { cls: string; label: string } 
   return { cls: "status-badge ok", label: "Serving" };
 }
 
+// parkFocus moves focus to the view section holding container (focusable,
+// ringless, and never removed), else to container itself, for a control in
+// container that is about to go or has just gone. It does not scroll.
+export function parkFocus(container: HTMLElement): void {
+  const target = container.closest<HTMLElement>(".view-container") ?? container;
+  if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
+
 // renderLoadError replaces a container's contents with a failure message and a
 // Retry button, and marks the container as an assertive live region (role=alert)
 // so the cold load error is announced to screen readers rather than appearing
@@ -490,17 +499,11 @@ export function renderLoadError(
     // the screen reader does not read "Loading..." as an alert. A later failure
     // re-adds it when renderLoadError runs again.
     container.removeAttribute("role");
-    // Replacing the content removes the focused Retry button, which would drop
-    // keyboard focus to the page body. Park it on the enclosing view section
-    // (focusable, ringless, and never removed, so focus survives the reload
-    // replacing or hiding this container), else on the container itself.
-    const hadFocus = container.contains(document.activeElement);
+    // Replacing the content removes the focused Retry button; park focus so it
+    // does not drop to the page body.
+    const hadFocus = holdsFocus(container);
     container.textContent = loadingText;
-    if (hadFocus) {
-      const target = container.closest<HTMLElement>(".view-container") ?? container;
-      if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-    }
+    if (hadFocus) parkFocus(container);
     onRetry();
   });
   container.appendChild(retry);

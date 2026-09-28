@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, copyText, part, scrollBehavior, setBusy, setButtonLabel, setFieldError, setLoading, setText, showUnconfirmed, svgIcon } from "../../lib/ui.ts";
+import { clearBusy, copyText, focusOnOrDropped, part, scrollBehavior, setBusy, setButtonLabel, setFieldError, setLoading, setText, showUnconfirmed, svgIcon } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { sentence } from "../../lib/text.ts";
 import { generateToken, setToken } from "../../lib/auth.ts";
@@ -167,7 +167,7 @@ export class AccessCard {
     // leave the restored saved secret on screen.
     this.setReveal(false);
     // populate hid the actions bar holding the Discard button focus was on,
-    // dropping it to <body>; return focus to the token field, matching save.
+    // dropping it to <body>; return focus to the token field.
     this.tokenEl?.focus();
   }
 
@@ -252,12 +252,12 @@ export class AccessCard {
       this.saving = false;
       if (saveBtn) clearBusy(saveBtn, "Save Token");
       if (discardBtn) discardBtn.disabled = false;
-      // Disabling the Save button the user just activated dropped keyboard focus
-      // to <body>; re-enabling does not restore it. After a successful save the
-      // actions bar is hidden, so the token input is the sensible landing spot in
-      // every case. Restore focus explicitly, matching the convention the toggle
-      // and settings paths on the Dashboard already follow.
-      this.tokenEl?.focus();
+      // Save keeps focus while it works (aria-disabled), so a failed save leaves
+      // it there for a retry. A successful save hides the actions bar holding
+      // Save (and Discard), which drops or strands focus: the token input is the
+      // landing spot then. Move it only if it is still in the bar or dropped, as
+      // the Dashboard does; the operator may have moved on while it saved.
+      if (this.actionsEl?.hidden && focusOnOrDropped(this.actionsEl)) this.tokenEl?.focus();
     }
   }
 }

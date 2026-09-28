@@ -7,7 +7,7 @@ import { hideInactiveKey, readBoolPref, writeBoolPref } from "../../lib/prefs.ts
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import type { Device, DeviceConfig } from "../../lib/types.ts";
-import { announce, deviceStateBadge, focusDropped, h, holdsFocus, ICON_COPY, iconSpan, modeLabel, reportClipboardFailure, setHidden, setText, showUnconfirmed, svgIcon, switchControl, writeToClipboard } from "../../lib/ui.ts";
+import { announce, clearBusy, deviceStateBadge, focusOnOrDropped, h, holdsFocus, ICON_COPY, iconSpan, modeLabel, reportClipboardFailure, setBusy, setHidden, setText, showUnconfirmed, svgIcon, switchControl, writeToClipboard } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue, STALE_BASE_TEXT } from "./config-queue.ts";
 import { MeterConsole } from "./meter-console.ts";
 import { SettingsPanel } from "./settings-panel.ts";
@@ -334,8 +334,7 @@ export class DeviceCard {
     if (this.pendingWant !== null) {
       // Show the change asked for, not the unchecked default of a new switch.
       toggleInput.checked = this.pendingWant;
-      toggleInput.disabled = true;
-      toggleInput.setAttribute("aria-busy", "true");
+      setBusy(toggleInput);
     }
 
     // Settings disclosure. It sits at the right end of the footer, directly
@@ -588,6 +587,12 @@ export class DeviceCard {
   // is rejected.
   private async toggleEnabled(): Promise<void> {
     const input = this.p.toggleInput;
+    // A busy switch stays enabled (aria-disabled) so it keeps keyboard focus, so
+    // it still takes a click: undo it, the pending change decides the value.
+    if (this.pendingWant !== null) {
+      input.checked = this.pendingWant;
+      return;
+    }
     const want = input.checked;
     const id = this.dev.device;
     const name = this.dev.name;
@@ -596,12 +601,11 @@ export class DeviceCard {
       input.checked = !want;
       return;
     }
-    // Remember focus before disabling: re-enabling a disabled control drops focus
-    // to the body, dumping a keyboard user at the top of the page.
     const hadFocus = document.activeElement === input;
     this.pendingWant = want;
-    input.disabled = true;
-    input.setAttribute("aria-busy", "true");
+    // aria-disabled, not disabled: a disabled control cannot hold focus, so a
+    // card rebuilt while the change is pending could not hand it back.
+    setBusy(input);
     await queue.enqueue(async () => {
       // Build merged from a FRESH base inside the queued task, after any prior
       // mutation's PATCH+refresh settled, so this full-array PATCH cannot clobber
@@ -646,19 +650,18 @@ export class DeviceCard {
       } finally {
         // Re-read the current toggle: a poll may have rebuilt the card during the
         // PATCH (a serving<->idle flip, or a captured-channel change) and replaced
-        // the node this closure captured. Clear the busy state and restore focus on
-        // the live node, falling back to the settings button if the toggle is gone, so a
-        // keyboard user is never stranded on the document body.
+        // the node this closure captured. Clear the busy state on the live node and
+        // keep focus there, falling back to the settings button if the toggle is
+        // gone, so a keyboard user is never stranded on the document body.
         this.pendingWant = null;
         // A card rebuilt while the change was pending skipped the sync, so
         // render once more to set its toggle from the config.
         this.host.render();
         const toggle = this.p.toggleInput;
-        toggle.disabled = false;
-        toggle.removeAttribute("aria-busy");
+        clearBusy(toggle);
         // Only if focus is still on the toggle or dropped: the operator may
         // have moved on while the change was queued.
-        if (hadFocus && ((toggle.isConnected && holdsFocus(toggle)) || focusDropped())) (toggle.isConnected ? toggle : this.p.settingsBtn).focus();
+        if (hadFocus && focusOnOrDropped(toggle)) (toggle.isConnected ? toggle : this.p.settingsBtn).focus();
       }
     });
   }
