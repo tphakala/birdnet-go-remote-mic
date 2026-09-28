@@ -25,7 +25,9 @@ import {
   runtimeEnabled,
   settingsFocusMessage,
   availablePlan,
+  avatarLook,
   bannerIsError,
+  cardShape,
   deviceFieldLabel,
   rejectionText,
   followDashboardRoute,
@@ -41,8 +43,13 @@ import {
   downCauseTitle,
   focusFallbackRow,
   footerMetrics,
+  hardwareLine,
   hiddenRows,
+  meterCount,
   needsNotificationsFallback,
+  nonServingFooterText,
+  pendingStop,
+  rtspUrl,
   streamSummary,
   tallyStates,
   tokenHiddenMessage,
@@ -566,4 +573,61 @@ test("deviceConfigKey ignores enabled and reads an absent quietAlert as true", (
   const noChannels = { ...cd } as Partial<DeviceConfig>;
   delete noChannels.channels;
   assert.equal(deviceConfigKey(noChannels as DeviceConfig), deviceConfigKey({ ...cd, channels: [] }));
+});
+
+test("pendingStop flags only a serving device the config now disables", () => {
+  assert.equal(pendingStop(false, "serving"), true);
+  assert.equal(pendingStop(true, "serving"), false);
+  assert.equal(pendingStop(false, "failed"), false);
+  assert.equal(pendingStop(true, "disabled"), false);
+});
+
+test("nonServingFooterText says whether a disabled device is starting", () => {
+  assert.equal(nonServingFooterText("disabled", true), "Enabling; this device starts serving shortly.");
+  assert.equal(nonServingFooterText("disabled", false), "Streaming is disabled for this device. Enable it to start serving.");
+  const excluded = "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
+  assert.equal(nonServingFooterText("failed", true), excluded);
+  assert.equal(nonServingFooterText("skipped", false), excluded);
+});
+
+test("rtspUrl takes the port from the listen address, 8554 without one", () => {
+  assert.equal(rtspUrl("mic.local", ":8555", "/garden"), "rtsp://mic.local:8555/garden");
+  assert.equal(rtspUrl("mic.local", "0.0.0.0:8556", "/garden"), "rtsp://mic.local:8556/garden");
+  assert.equal(rtspUrl("mic.local", "8557", "/garden"), "rtsp://mic.local:8557/garden");
+  assert.equal(rtspUrl("mic.local", undefined, "/garden"), "rtsp://mic.local:8554/garden");
+  assert.equal(rtspUrl("mic.local", "", "/garden"), "rtsp://mic.local:8554/garden");
+});
+
+test("meterCount and cardShape follow the captured channels of a serving device", () => {
+  assert.equal(meterCount({ negotiatedChannels: 2, channels: [1] }), 2);
+  assert.equal(meterCount({ channels: [1, 2, 3] }), 3);
+  assert.equal(meterCount({ negotiatedChannels: 0, channels: [] }), 1);
+  assert.equal(cardShape({ state: "serving", negotiatedChannels: 2, channels: [1] }), "serving:2");
+  assert.equal(cardShape({ state: "serving", channels: [1] }), "serving:1");
+  for (const state of ["disabled", "failed", "skipped"] as const) {
+    assert.equal(cardShape({ state, negotiatedChannels: 2, channels: [1] }), "idle", state);
+  }
+});
+
+test("avatarLook marks a serving PCM device ultrasonic and a down one as an error", () => {
+  assert.deepEqual(avatarLook("serving", "pcm"), { icon: "ultra", color: "var(--ultrasonic-purple)" });
+  assert.deepEqual(avatarLook("serving", "opus"), { icon: "mic", color: "" });
+  assert.deepEqual(avatarLook("disabled", "pcm"), { icon: "mic", color: "" });
+  assert.deepEqual(avatarLook("failed", "opus"), { icon: "error", color: "var(--signal-crit)" });
+  assert.deepEqual(avatarLook("skipped", "pcm"), { icon: "error", color: "var(--signal-crit)" });
+});
+
+test("hardwareLine shows the address, a distinct model, and a card-index warning", () => {
+  const d = { name: "Garden", device: "usb:0d8c:0014:s=A:if=0,0", state: "serving" as const };
+  assert.equal(hardwareLine({ ...d, hwAddr: "hw:2,0", friendlyName: "USB Audio Device" }), "ALSA: hw:2,0 · USB Audio Device");
+  // A model that only repeats the name, or a blank one, is left out.
+  assert.equal(hardwareLine({ ...d, hwAddr: "hw:2,0", friendlyName: " garden " }), "ALSA: hw:2,0");
+  assert.equal(hardwareLine({ ...d, hwAddr: "hw:2,0", friendlyName: "  " }), "ALSA: hw:2,0");
+  // Unresolved: a serving device shows its configured id, anything else says so.
+  assert.equal(hardwareLine({ ...d, device: "hw:1,0" }), "ALSA: hw:1,0");
+  assert.equal(hardwareLine({ ...d, state: "skipped" }), "No matching hardware");
+  assert.equal(
+    hardwareLine({ ...d, state: "skipped", idStable: false }),
+    "No matching hardware · card index (can change after a reboot)",
+  );
 });

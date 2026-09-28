@@ -163,6 +163,88 @@ export function deviceConfigKey(cd: DeviceConfig | undefined): string {
   ]);
 }
 
+// pendingStop reports that a device is currently serving while the config now
+// disables it. A config change is hot-applied, so this divergence is only ever a
+// brief moment while the reload stops the device; the card's note labels that
+// instant so the still-live "Serving" badge and meters are not unexplained. Only
+// a serving device qualifies: a failed or skipped device is not serving (its
+// footer already explains the exclusion), and the reverse (a disabled card now
+// enabled) is explained by the non-serving footer, so neither needs the note.
+export function pendingStop(configEnabled: boolean, state: string): boolean {
+  return state === "serving" && !configEnabled;
+}
+
+export const PENDING_STOP_TEXT = "Disabling; this device stops serving shortly.";
+
+// nonServingFooterText is the footer message for a card that is not serving.
+export function nonServingFooterText(state: string, configEnabled: boolean): string {
+  if (state === "disabled") {
+    return configEnabled
+      ? "Enabling; this device starts serving shortly."
+      : "Streaming is disabled for this device. Enable it to start serving.";
+  }
+  return "Excluded from the RTSP stream server. Other active devices continue serving without interruption.";
+}
+
+// rtspUrl is a stream path's URL on host, at the port of the appliance's RTSP
+// listen address (":8554", "0.0.0.0:8554", or a bare port), 8554 when the
+// status has not said.
+export function rtspUrl(host: string, listen: string | undefined, path: string): string {
+  let port = "8554";
+  if (listen) {
+    const i = listen.lastIndexOf(":");
+    port = i >= 0 ? listen.slice(i + 1) : listen;
+  }
+  return `rtsp://${host}:${port}${path}`;
+}
+
+// meterCount is the number of VU meter rows a serving device shows: one per
+// CAPTURED hardware channel (the negotiated count), not per streamed channel.
+export function meterCount(d: Pick<Device, "negotiatedChannels" | "channels">): number {
+  return Math.max(1, d.negotiatedChannels ?? d.channels.length);
+}
+
+// cardShape names the only structural facts about a device card: whether it
+// has a serving body (endpoint strip, meter console, metrics) or an idle body
+// (error banner, footer), and how many meter rows the serving body has. A
+// change to either rebuilds the card; every other field is patched in place.
+// Mode is left out: the avatar and chips are patched, not rebuilt.
+export function cardShape(d: Pick<Device, "state" | "negotiatedChannels" | "channels">): string {
+  return d.state === "serving" ? `serving:${meterCount(d)}` : "idle";
+}
+
+// AvatarIcon is the glyph of a device card's avatar.
+export type AvatarIcon = "mic" | "ultra" | "error";
+
+// avatarLook is a device card's avatar: a microphone, the ultrasonic glyph
+// for a serving PCM device, or the error glyph for a failed or skipped one (a
+// disabled device is off by intent, not broken), and its colour.
+export function avatarLook(state: string, mode: StreamMode): { icon: AvatarIcon; color: string } {
+  const serving = state === "serving";
+  const disabled = state === "disabled";
+  if (serving && mode === "pcm") return { icon: "ultra", color: "var(--ultrasonic-purple)" };
+  if (serving || disabled) return { icon: "mic", color: "" };
+  return { icon: "error", color: "var(--signal-crit)" };
+}
+
+// hardwareLine is the line under a device card's name: the hardware the
+// configured id resolves to right now, its current ALSA address and the sound
+// card's model (friendlyName). When the id resolved to no single present
+// device the address is absent: a serving card-index device opened without a
+// resolution (the container fallback) still shows its configured id, and
+// anything else shows "No matching hardware". The model is left out when
+// absent or when it only repeats the configured name. A card-index id can name
+// a different device after a reboot or replug, which the line says; the
+// settings panel's Device ID hint carries the remedy (remove and re-add).
+export function hardwareLine(d: Pick<Device, "name" | "device" | "state" | "hwAddr" | "friendlyName" | "idStable">): string {
+  const hw = d.friendlyName?.trim();
+  const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
+  const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : d.state === "serving" ? `ALSA: ${d.device}` : "No matching hardware";
+  let line = showHw ? `${addr} · ${hw}` : addr;
+  if (d.idStable === false) line += " · card index (can change after a reboot)";
+  return line;
+}
+
 // FooterMetrics is the text of a serving device card's footer counters.
 export interface FooterMetrics {
   clients: string;
