@@ -139,7 +139,8 @@ reconcile:
   `lib/sse.ts` (as `LEVELS_EVENT` and `NOTIFICATION_EVENT` do) and goes in
   `NON_LEVEL_EVENTS` too.
 - Never clobber user input: a form being edited is not repopulated from a
-  store event (`SystemView` tracks `netDirty`, `authDirty`, `notifyDirty`).
+  store event (each System card with a form keeps its own `dirty` flag and
+  skips a config read while it is set).
 - Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries,
   create each once, patch only changed fields (`setText`/`setHidden` write
   only on change), rebuild an element only when its shape changes, and

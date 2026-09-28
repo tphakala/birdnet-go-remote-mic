@@ -18,6 +18,7 @@ import {
 } from "../lib/notification-settings-core.ts";
 import type { ApplianceStatus, CertificateInfo, Config, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
 import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.ts";
+import { NetworkCard } from "./system/network-card.ts";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
 // into a Hardware column (physical machine) and a Software column (OS + build).
@@ -67,16 +68,6 @@ function formatByteSize(bytes: number): string {
   if (gb >= 1) return `${gb >= 10 ? Math.round(gb) : gb.toFixed(1)} GB`;
   return `${Math.round(bytes / 1048576)} MB`;
 }
-
-// OVERRIDE_LABELS maps a serve-override's dotted config field to an operator-
-// facing label. An unmapped field falls back to its dotted path.
-const OVERRIDE_LABELS: Record<string, string> = {
-  listen: "RTSP listen address",
-  "management.listen": "Management listen address",
-  "management.certDir": "Certificate directory",
-  "management.enabled": "Management API",
-  "discovery.enabled": "mDNS discovery",
-};
 
 // formatCertTime renders an RFC 3339 timestamp in the operator's locale, falling
 // back to the raw string if it does not parse.
@@ -149,14 +140,7 @@ export class SystemView {
   private deviceEmptyRow: HTMLElement | null = null;
   private devicesLoaded = false;
 
-  private netCardEl: HTMLElement | null;
-  private netActionsEl: HTMLElement | null;
-  private discoveryEl: HTMLInputElement | null;
-  private netDirty = false;
-  private overridesEl: HTMLElement | null;
-  // Signature of the override set last rendered into the #sys-overrides live
-  // region, so a 3s status poll that changes nothing does not re-announce it.
-  private lastOverridesSig: string | null = null;
+  private readonly network: NetworkCard;
 
   private certCardEl: HTMLElement | null;
   private certInfoEl: HTMLElement | null;
@@ -233,9 +217,7 @@ export class SystemView {
     this.infoSwEl = document.getElementById("sys-info-sw");
     this.infoCardEl = document.getElementById("sys-info-card");
     this.rowsEl = document.getElementById("sys-device-rows");
-    this.netCardEl = document.getElementById("sys-network-card");
-    this.netActionsEl = document.getElementById("sys-network-actions");
-    this.discoveryEl = document.getElementById("sys-discovery-enabled") as HTMLInputElement | null;
+    this.network = new NetworkCard(document.getElementById("sys-network-card"));
     this.authCardEl = document.getElementById("sys-auth-card");
     this.authStateEl = document.getElementById("sys-auth-state");
     this.authTokenEl = document.getElementById("sys-auth-token") as HTMLInputElement | null;
@@ -245,7 +227,6 @@ export class SystemView {
     this.notifyActionsEl = document.getElementById("sys-notify-actions");
     this.notifyEnabledEl = document.getElementById("sys-notify-enabled") as HTMLInputElement | null;
     this.notifyErrorEl = document.getElementById("sys-notify-error");
-    this.overridesEl = document.getElementById("sys-overrides");
     this.certCardEl = document.getElementById("sys-cert-card");
     this.certInfoEl = document.getElementById("sys-cert-info");
     this.certFingerprintEl = document.getElementById("sys-cert-fingerprint") as HTMLInputElement | null;
@@ -274,7 +255,7 @@ export class SystemView {
       this.watchVersion(this.status.version, this.status.uptimeSeconds);
       this.renderTiles();
       this.renderInfo();
-      this.renderOverrides();
+      this.network.overrides(status.overrides);
       // While the System view is showing, each status event refreshes the
       // certificate metadata so the panel does not go stale after a
       // regenerate, an install, or a change made outside this page; a 501 sets
@@ -297,7 +278,7 @@ export class SystemView {
       this.renderDeviceRows(devices);
     });
     store.on("config", (cfg) => {
-      if (!this.netDirty) this.populateNetwork(cfg);
+      this.network.config(cfg);
       if (!this.authDirty) this.populateAuth(cfg);
       if (!this.notifyDirty) this.populateNotifications(cfg);
       // The table lists every configured stream, which only the config holds.
@@ -321,7 +302,6 @@ export class SystemView {
     document.querySelector<HTMLAnchorElement>("#open-access-banner a")?.addEventListener("click", () => {
       requestAnimationFrame(() => this.focusAuthCard());
     });
-    this.bindNetwork();
     this.bindAuth();
     this.bindNotifications();
     this.bindUpdate();
@@ -364,36 +344,6 @@ export class SystemView {
   // the same way setAuthError does.
   private setCertFieldError(input: HTMLElement | null, errorEl: HTMLElement | null, message: string): void {
     setFieldError(input?.closest(".form-field") ?? null, input, errorEl, message);
-  }
-
-  // renderOverrides shows or hides the serve-overrides note on the Network card.
-  // Each entry explains why a config-view (persisted) value differs from what the
-  // appliance is actually running (effective), because a serve CLI flag overrode
-  // it for this run. Empty or absent means no override is active.
-  private renderOverrides(): void {
-    if (!this.overridesEl) return;
-    const overrides = this.status?.overrides ?? [];
-    // Rebuild only when the set actually changes. This runs on every 3s status
-    // poll and #sys-overrides is a role=status live region, so an unconditional
-    // rebuild would re-announce the unchanged note to a screen reader each tick.
-    // Mirrors populateAuth's setText guard on #sys-auth-state.
-    const sig = overrides.map((o) => `${o.field}=${o.effective}|${o.persisted}`).join("\n");
-    if (sig === this.lastOverridesSig) return;
-    this.lastOverridesSig = sig;
-    this.overridesEl.textContent = "";
-    if (overrides.length === 0) {
-      this.overridesEl.hidden = true;
-      return;
-    }
-    this.overridesEl.hidden = false;
-    this.overridesEl.appendChild(elem("span", "staged-badge", "Serve overrides active"));
-    for (const o of overrides) {
-      const label = OVERRIDE_LABELS[o.field] ?? o.field;
-      const persisted = o.persisted === "" ? "(default)" : o.persisted;
-      this.overridesEl.appendChild(
-        elem("span", "override-line", `${label}: serving ${o.effective} (config file: ${persisted})`),
-      );
-    }
   }
 
   // clearCertLoadError resets the load-failure state and swaps the load-error
@@ -1384,91 +1334,6 @@ export class SystemView {
     const p = elem("p", "cfg-empty");
     this.tilesEl.appendChild(p);
     renderLoadError(p, message, "Loading system telemetry...", () => void store.retry());
-  }
-
-  private bindNetwork(): void {
-    if (this.discoveryEl) {
-      this.discoveryEl.addEventListener("change", () => {
-        this.netDirty = true;
-        if (this.netActionsEl) this.netActionsEl.hidden = false;
-      });
-    }
-    document.getElementById("btn-network-save")?.addEventListener("click", () => this.saveNetwork());
-    document.getElementById("btn-network-discard")?.addEventListener("click", () => void this.discardNetwork());
-  }
-
-  // discardNetwork reverts the network form to the saved config, confirming
-  // first when there are unsaved edits so a stray click cannot drop them.
-  private async discardNetwork(): Promise<void> {
-    if (this.netDirty) {
-      const ok = await confirmDialog({
-        title: "Discard changes?",
-        body: "The network settings have unsaved changes that will be lost.",
-        confirmLabel: "Discard",
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    const cfg = store.getState().config;
-    if (cfg) this.populateNetwork(cfg);
-    // populateNetwork hid the actions bar holding the Discard button focus was on,
-    // dropping it to <body>; return focus to the discovery toggle.
-    this.discoveryEl?.focus();
-  }
-
-  private populateNetwork(cfg: Config): void {
-    if (this.netCardEl) this.netCardEl.hidden = false;
-    // Config is polled every 3 s, so only write an input when its value actually
-    // changes: a redundant assignment is wasteful and could disturb a field the
-    // operator is reading. These run only while the form is not dirty (guarded by
-    // the caller), so they never overwrite an in-progress edit.
-    const rtsp = document.getElementById("sys-rtsp-listen") as HTMLInputElement | null;
-    const rtspVal = cfg.listen ?? "";
-    if (rtsp && rtsp.value !== rtspVal) rtsp.value = rtspVal;
-    const mgmt = document.getElementById("sys-mgmt-listen") as HTMLInputElement | null;
-    const mgmtVal = cfg.management?.listen ?? "(default)";
-    if (mgmt && mgmt.value !== mgmtVal) mgmt.value = mgmtVal;
-    const discovery = cfg.discovery?.enabled ?? true;
-    if (this.discoveryEl && this.discoveryEl.checked !== discovery) this.discoveryEl.checked = discovery;
-    this.netDirty = false;
-    if (this.netActionsEl) this.netActionsEl.hidden = true;
-  }
-
-  private async saveNetwork(): Promise<void> {
-    const saveBtn = document.getElementById("btn-network-save") as HTMLButtonElement | null;
-    const discardBtn = document.getElementById("btn-network-discard") as HTMLButtonElement | null;
-    // setBusy keeps Save focusable, so guard re-entry against a keyboard
-    // re-activation while the PATCH is in flight, matching the Access Control save.
-    if (saveBtn?.getAttribute("aria-disabled") === "true") return;
-    if (saveBtn) setBusy(saveBtn, "Saving...");
-    if (discardBtn) discardBtn.disabled = true;
-    try {
-      const res = await api.patchConfig({ discovery: { enabled: this.discoveryEl?.checked ?? true } });
-      this.netDirty = false;
-      // Seed the cached config with the authoritative PATCH response, matching the
-      // auth/notify/device save paths, so a later queued read builds from this
-      // change instead of a stale base.
-      store.applyConfig(res.config);
-      if (this.netActionsEl) this.netActionsEl.hidden = true;
-      await store.refreshConfig();
-      showToast(res.restartRequired ? "Discovery setting saved. Restart the appliance to apply." : "Discovery setting applied.");
-      // Hiding the actions bar dropped focus from the Save button; return it to
-      // the discovery toggle, the card's editable control.
-      this.discoveryEl?.focus();
-    } catch (err: unknown) {
-      if (isRefusal(err)) {
-        // A validation problem reads by its reason, as on the other forms;
-        // its detail repeats the raw field path.
-        showToast(`Save failed: ${firstProblem(err)?.reason ?? apiErrorMessage(err)}`, "error");
-      } else {
-        // As for the notification settings: the form keeps the edit, and a
-        // second save is safe.
-        showUnconfirmed("that the discovery setting was saved", "save again to be sure");
-      }
-    } finally {
-      if (saveBtn) clearBusy(saveBtn, "Save Changes");
-      if (discardBtn) discardBtn.disabled = false;
-    }
   }
 
   // buildTile creates one resource-gauge tile with stable inner nodes (the sub,

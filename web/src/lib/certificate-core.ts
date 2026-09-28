@@ -1,7 +1,9 @@
 // I/O-free logic for the Management Certificate card. No DOM, no fetch: the
-// extra-SAN parser and the managed-state label live here so they are unit-tested
-// with node:test and no browser. The view (views/system.ts) owns the DOM and
-// calls into here.
+// extra-SAN parser, the managed-state label and the metadata rows live here so
+// they are unit-tested with node:test and no browser. The card
+// (views/system/certificate-card.ts) owns the DOM and calls into here.
+
+import type { CertificateInfo } from "./types.ts";
 
 // ParsedSans is parseExtraSans's result: the cleaned list, or the first
 // offending token's message with an empty list.
@@ -101,4 +103,31 @@ export function certTooLargeReason(detail: string | undefined): string {
 // "Management" row of the certificate panel.
 export function describeManaged(managed: boolean): string {
   return managed ? "Appliance-managed (self-signed)" : "Operator-installed (custom)";
+}
+
+// CERT_LABELS are the certificate panel's rows in display order. The set is
+// fixed, so the card lays the rows out before the metadata loads and fills the
+// values in place.
+export const CERT_LABELS = ["Type", "Management", "Subject", "Issuer", "Valid from", "Valid until", "DNS names", "IP addresses"] as const;
+export type CertLabel = (typeof CERT_LABELS)[number];
+
+// formatCertTime renders an RFC 3339 timestamp in the operator's locale, falling
+// back to the raw string if it does not parse.
+export function formatCertTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+// certRows pairs each of CERT_LABELS, in order, with its value for cert.
+export function certRows(cert: CertificateInfo): Array<[CertLabel, string]> {
+  return [
+    ["Type", cert.selfSigned ? "Self-issued (subject matches issuer)" : "CA-issued (distinct issuer)"],
+    ["Management", describeManaged(cert.managed)],
+    ["Subject", cert.subject],
+    ["Issuer", cert.issuer],
+    ["Valid from", formatCertTime(cert.notBefore)],
+    ["Valid until", formatCertTime(cert.notAfter)],
+    ["DNS names", cert.dnsNames.length ? cert.dnsNames.join(", ") : "-"],
+    ["IP addresses", cert.ipAddresses.length ? cert.ipAddresses.join(", ") : "-"],
+  ];
 }

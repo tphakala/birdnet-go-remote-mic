@@ -346,6 +346,13 @@ export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
   }
 }
 
+// part finds an element of a card's static markup by id, looking only inside
+// the card's root, so a card class reaches no markup but its own. Like
+// querySelector's, the type parameter is an unchecked narrowing.
+export function part<T extends HTMLElement = HTMLElement>(root: HTMLElement | null, id: string): T | null {
+  return root?.querySelector<T>(`#${id}`) ?? null;
+}
+
 export function setHidden(el: HTMLElement, hidden: boolean): void {
   if (el.hidden !== hidden) el.hidden = hidden;
 }
