@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,14 +247,18 @@ func drainUntilClosed(t *testing.T, conn net.Conn, timeout time.Duration) bool {
 }
 
 // pumpFrames pushes a small frame into feed every couple of milliseconds until
-// the test ends, so writers loop and check for eviction. A zero-filled payload
-// carries no '$' bytes, so the '$' a client sees is the interleaved frame
-// prefix, not payload data.
+// the test ends (its Cleanup stops the pump and waits for it), so writers loop
+// and check for eviction. A zero-filled payload carries no '$' bytes, so the
+// '$' a client sees is the interleaved frame prefix, not payload data.
 func pumpFrames(t *testing.T, feed *Feed) {
 	t.Helper()
 	stop := make(chan struct{})
-	t.Cleanup(func() { close(stop) })
-	go func() {
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+	wg.Go(func() {
 		tick := time.NewTicker(2 * time.Millisecond)
 		defer tick.Stop()
 		for {
@@ -264,7 +269,7 @@ func pumpFrames(t *testing.T, feed *Feed) {
 				feed.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
 			}
 		}
-	}()
+	})
 }
 
 // TestAuthEnableEvictsPlayingOpenAccessSession is closure (a) for G3 and the
