@@ -1,24 +1,18 @@
-import { api, apiErrorMessage, failureReason, firstProblem, isRefusal } from "../lib/api.ts";
+import { api, apiErrorMessage, failureReason, isRefusal } from "../lib/api.ts";
 import { store } from "../lib/store.ts";
 import { router } from "../lib/router.ts";
-import { clearBusy, deviceStateBadge, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setFieldError, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
+import { clearBusy, deviceStateBadge, elem, externalLink, formatRelative, formatUptime, ICON_VERSION, iconSpan, modeLabel, orderChildren, renderLoadError, setBusy, setHidden, showUnconfirmed, setText, svgIcon } from "../lib/ui.ts";
 import { confirmDialog } from "../lib/modal.ts";
-import { deviceIdTitle, sentence } from "../lib/text.ts";
+import { deviceIdTitle } from "../lib/text.ts";
 import { showUpdateModal, triggerApplianceRestart, type UpdateModal } from "../components/restart-modal.ts";
 import { describeUpdate, followEndText, lastCheckText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../lib/update-core.ts";
 import { showToast } from "../components/toast.ts";
-import {
-  NOTIFY_FIELDS,
-  buildNotificationsPatch,
-  fieldForServerPath,
-  unparsedThresholds,
-  type NotifyFieldSpec,
-} from "../lib/notification-settings-core.ts";
-import type { ApplianceStatus, Config, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
+import type { ApplianceStatus, Device, SystemInfo, UpdateStatus } from "../lib/types.ts";
 import { captureFormatLabel, clientSummary, streamSummary } from "../lib/dashboard-core.ts";
 import { AccessCard } from "./system/access-card.ts";
 import { CertificateCard } from "./system/certificate-card.ts";
 import { NetworkCard } from "./system/network-card.ts";
+import { NotificationsCard } from "./system/notifications-card.ts";
 
 // System Information item icons (Lucide glyphs), one per label. The card splits
 // into a Hardware column (physical machine) and a Software column (OS + build).
@@ -119,17 +113,8 @@ export class SystemView {
   private readonly network: NetworkCard;
   private readonly access: AccessCard;
   private readonly certificate: CertificateCard;
+  private readonly notifications: NotificationsCard;
 
-  private notifyCardEl: HTMLElement | null;
-  private notifyActionsEl: HTMLElement | null;
-  private notifyEnabledEl: HTMLInputElement | null;
-  private notifyErrorEl: HTMLElement | null;
-  // Threshold inputs and their .form-field wrappers, keyed by NotifyFieldSpec.key,
-  // built once in bindNotifications so a config poll only rewrites their values.
-  private notifyInputs = new Map<string, HTMLInputElement>();
-  private notifyFields = new Map<string, HTMLElement>();
-  private notifyDirty = false;
-  private notifySaving = false;
 
   private updateCheckEl: HTMLInputElement | null;
   private updateCheckBtn: HTMLElement | null;
@@ -159,11 +144,8 @@ export class SystemView {
     this.rowsEl = document.getElementById("sys-device-rows");
     this.network = new NetworkCard(document.getElementById("sys-network-card"));
     this.access = new AccessCard(document.getElementById("sys-auth-card"));
-    this.notifyCardEl = document.getElementById("sys-notifications-card");
-    this.notifyActionsEl = document.getElementById("sys-notify-actions");
-    this.notifyEnabledEl = document.getElementById("sys-notify-enabled") as HTMLInputElement | null;
-    this.notifyErrorEl = document.getElementById("sys-notify-error");
     this.certificate = new CertificateCard(document.getElementById("sys-cert-card"));
+    this.notifications = new NotificationsCard(document.getElementById("sys-notifications-card"));
     this.updateCheckEl = document.getElementById("sys-update-check") as HTMLInputElement | null;
     this.updateCheckBtn = document.getElementById("btn-update-check");
     this.updateApplyBtn = document.getElementById("btn-update-apply");
@@ -206,7 +188,7 @@ export class SystemView {
     store.on("config", (cfg) => {
       this.network.config(cfg);
       this.access.config(cfg);
-      if (!this.notifyDirty) this.populateNotifications(cfg);
+      this.notifications.config(cfg);
       // The table lists every configured stream, which only the config holds.
       // config fires on every poll, but the rows write only what changed.
       // Only once the devices loaded, or a config arriving first would flash
@@ -228,230 +210,7 @@ export class SystemView {
     document.querySelector<HTMLAnchorElement>("#open-access-banner a")?.addEventListener("click", () => {
       requestAnimationFrame(() => this.access.focusToken());
     });
-    this.bindNotifications();
     this.bindUpdate();
-  }
-
-  // buildNotifyField builds one threshold input (label, number input with the
-  // contract's min/max, error, hint) into its group container and records the
-  // input and its .form-field wrapper for later population and error marking. It
-  // mirrors the device form's field() helper; the server is the authority on
-  // bounds, so there is no live validation here beyond the native min/max.
-  private buildNotifyField(container: HTMLElement, spec: NotifyFieldSpec): void {
-    const id = `sys-notify-${spec.key}`;
-    const field = elem("div", "form-field");
-    const label = elem("label", "field-label", spec.label);
-    label.setAttribute("for", id);
-    field.appendChild(label);
-
-    const input = document.createElement("input");
-    input.type = "number";
-    input.className = "field-input mono";
-    input.id = id;
-    input.min = String(spec.min);
-    input.max = String(spec.max);
-    input.step = "1";
-    // Only hint the digits-only keypad for non-negative fields: a numeric
-    // inputMode omits the minus sign on mobile, which would block editing a
-    // negative-bounded field (quietDbfs, min -99); its default keyboard keeps it.
-    if (spec.min >= 0) input.inputMode = "numeric";
-    input.setAttribute("aria-describedby", `${id}-err ${id}-hint`);
-    input.addEventListener("input", () => this.markNotifyDirty(spec.key));
-    field.appendChild(input);
-
-    const error = elem("span", "field-error");
-    error.id = `${id}-err`;
-    field.appendChild(error);
-    const hint = elem("span", "field-hint", spec.hint);
-    hint.id = `${id}-hint`;
-    field.appendChild(hint);
-
-    container.appendChild(field);
-    this.notifyInputs.set(spec.key, input);
-    this.notifyFields.set(spec.key, field);
-  }
-
-  private bindNotifications(): void {
-    const audioEl = document.getElementById("sys-notify-audio-fields");
-    const hostEl = document.getElementById("sys-notify-host-fields");
-    // Build the inputs once. Without both containers the card cannot render, so
-    // leave it hidden rather than half-built.
-    if (audioEl && hostEl) {
-      for (const spec of NOTIFY_FIELDS) {
-        this.buildNotifyField(spec.group === "audio" ? audioEl : hostEl, spec);
-      }
-    }
-    this.notifyEnabledEl?.addEventListener("change", () => {
-      this.markNotifyDirty();
-      this.applyNotifyEnabledState();
-    });
-    document.getElementById("btn-notify-save")?.addEventListener("click", () => void this.saveNotifications());
-    document.getElementById("btn-notify-discard")?.addEventListener("click", () => void this.discardNotifications());
-  }
-
-  // markNotifyDirty stages a change: it reveals the actions bar and clears the
-  // edited field's error (and the form-level error) so a stale 422 does not
-  // linger over a value the operator has since changed.
-  private markNotifyDirty(key?: string): void {
-    this.notifyDirty = true;
-    if (this.notifyActionsEl) this.notifyActionsEl.hidden = false;
-    if (key) {
-      this.notifyFields.get(key)?.classList.remove("invalid");
-      this.notifyInputs.get(key)?.setAttribute("aria-invalid", "false");
-    }
-    if (this.notifyErrorEl) this.notifyErrorEl.textContent = "";
-  }
-
-  // applyNotifyEnabledState greys the thresholds when the monitors are off, so it
-  // is clear they are inert. Their values are still read on save (a disabled
-  // input keeps its value), so turning the monitors back on preserves them.
-  private applyNotifyEnabledState(): void {
-    const on = this.notifyEnabledEl?.checked ?? true;
-    for (const input of this.notifyInputs.values()) input.disabled = !on;
-  }
-
-  private clearNotifyErrors(): void {
-    for (const [key, input] of this.notifyInputs) {
-      this.notifyFields.get(key)?.classList.remove("invalid");
-      input.setAttribute("aria-invalid", "false");
-    }
-    if (this.notifyErrorEl) this.notifyErrorEl.textContent = "";
-  }
-
-  private populateNotifications(cfg: Config): void {
-    if (this.notifyCardEl) this.notifyCardEl.hidden = false;
-    const n = cfg.notifications;
-    const enabled = n?.enabled ?? true;
-    if (this.notifyEnabledEl && this.notifyEnabledEl.checked !== enabled) {
-      this.notifyEnabledEl.checked = enabled;
-    }
-    for (const spec of NOTIFY_FIELDS) {
-      const input = this.notifyInputs.get(spec.key);
-      if (!input) continue;
-      const group = (spec.group === "audio" ? n?.audio : n?.host) as
-        | Record<string, number | undefined>
-        | undefined;
-      const value = group?.[spec.key];
-      const text = value === undefined ? "" : String(value);
-      // Only write when changed: this runs on every 3 s config poll (while not
-      // dirty), and a redundant assignment would disturb a field being read.
-      if (input.value !== text) input.value = text;
-    }
-    this.clearNotifyErrors();
-    this.notifyDirty = false;
-    this.applyNotifyEnabledState();
-    if (this.notifyActionsEl) this.notifyActionsEl.hidden = true;
-  }
-
-  // discardNotifications reverts the thresholds to the saved config, confirming
-  // first when there are unsaved edits so a stray click cannot drop them.
-  private async discardNotifications(): Promise<void> {
-    if (this.notifyDirty) {
-      const ok = await confirmDialog({
-        title: "Discard changes?",
-        body: "The notification settings have unsaved changes that will be lost.",
-        confirmLabel: "Discard",
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    const cfg = store.getState().config;
-    if (cfg) this.populateNotifications(cfg);
-    // populateNotifications hid the actions bar holding the Discard button focus
-    // was on, dropping it to <body>. Return focus to the card's stable top
-    // control, matching saveNotifications.
-    this.notifyEnabledEl?.focus();
-  }
-
-  // saveNotifications persists the whole notifications block. On a 422 it marks
-  // the offending input (mapping the server's field path via the core helper) so
-  // a clear-above-onset error lands on that input rather than as a bare toast.
-  private async saveNotifications(): Promise<void> {
-    if (this.notifySaving) return;
-    const values: Record<string, string> = {};
-    for (const [key, input] of this.notifyInputs) values[key] = input.value;
-    // Reject a blank or non-integer box before sending: the server treats an
-    // absent field as unchanged, so omitting it (buildNotificationsPatch's
-    // defensive behavior) would report "applied" while silently keeping the old
-    // value. Mark the offending inputs and abort instead.
-    const invalid = unparsedThresholds(values);
-    if (invalid.length > 0) {
-      this.clearNotifyErrors();
-      for (const key of invalid) {
-        setFieldError(
-          this.notifyFields.get(key) ?? null,
-          this.notifyInputs.get(key),
-          document.getElementById(`sys-notify-${key}-err`),
-          "Enter a whole number.",
-        );
-      }
-      if (this.notifyErrorEl) {
-        this.notifyErrorEl.textContent = "Some thresholds are blank or not whole numbers.";
-      }
-      const firstInvalid = invalid[0];
-      if (firstInvalid !== undefined) this.notifyInputs.get(firstInvalid)?.focus();
-      return;
-    }
-    const patch = buildNotificationsPatch(this.notifyEnabledEl?.checked ?? true, values);
-    const saveBtn = document.getElementById("btn-notify-save") as HTMLButtonElement | null;
-    const discardBtn = document.getElementById("btn-notify-discard") as HTMLButtonElement | null;
-    this.notifySaving = true;
-    // Busy affordance that keeps Save focusable (see setBusy); notifySaving guards
-    // re-entry.
-    if (saveBtn) setBusy(saveBtn, "Saving...");
-    if (discardBtn) discardBtn.disabled = true;
-    this.clearNotifyErrors();
-    try {
-      const res = await api.patchConfig({ notifications: patch });
-      this.notifyDirty = false;
-      store.applyConfig(res.config);
-      await store.refreshStatus();
-      if (this.notifyActionsEl) this.notifyActionsEl.hidden = true;
-      showToast(res.restartRequired
-        ? "Notification settings saved. Restart the appliance to finish applying the configuration."
-        : "Notification settings applied.", res.restartRequired ? "warn" : "info");
-      // Disabling the Save button the operator just activated dropped keyboard
-      // focus to <body>, and hiding the actions bar on success removes the
-      // landing spot; re-enabling in the finally does not restore focus. Move it
-      // to the enabled toggle, the card's stable top control, matching the auth
-      // card's focus-restoration convention. The error path leaves focus on the
-      // offending input (see showNotifyError), so only the success path does this.
-      this.notifyEnabledEl?.focus();
-    } catch (err: unknown) {
-      this.showNotifyError(err);
-    } finally {
-      this.notifySaving = false;
-      if (saveBtn) clearBusy(saveBtn, "Save Changes");
-      if (discardBtn) discardBtn.disabled = false;
-    }
-  }
-
-  // showNotifyError maps a failed save onto the form: a validation error marks
-  // the named input (or the form-level region when the path is not one the card
-  // owns) and refocuses it; any other failure is a toast.
-  private showNotifyError(err: unknown): void {
-    const problem = firstProblem(err);
-    if (problem) {
-      const spec = problem.field ? fieldForServerPath(problem.field) : null;
-      if (spec) {
-        // Field reasons read as sentences, as on the device form.
-        const input = this.notifyInputs.get(spec.key);
-        setFieldError(this.notifyFields.get(spec.key) ?? null, input, document.getElementById(`sys-notify-${spec.key}-err`), sentence(problem.reason));
-        input?.focus();
-        return;
-      }
-      if (this.notifyErrorEl) {
-        this.notifyErrorEl.textContent = sentence(problem.reason);
-        return;
-      }
-    }
-    if (isRefusal(err)) {
-      showToast(`Save failed: ${apiErrorMessage(err)}`, "error");
-      return;
-    }
-    // It may have applied. The form keeps the edits (a refresh would not
-    // show over a dirty form), and saving the same values again is safe.
-    showUnconfirmed("that the notification settings were saved", "save again to be sure");
   }
 
   // bindUpdate wires the update switch and buttons in the System Information
