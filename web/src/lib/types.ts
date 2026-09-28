@@ -34,7 +34,10 @@ export interface StreamConfig {
 // StreamStatus is one stream's runtime state within a serving device.
 export interface StreamStatus {
   path: string;
+  // At least one client is playing the stream.
   clientConnected: boolean;
+  // How many clients are playing it (up to 8). Absent from an older appliance.
+  clientCount?: number;
   droppedFrames: number;
 }
 
@@ -234,6 +237,9 @@ export interface Device {
   // capture is downconverted to the S16LE stream.
   negotiatedFormat?: string;
   clientConnected: boolean;
+  // Clients playing the device's streams, summed. Absent from an older
+  // appliance.
+  clientCount?: number;
   droppedFrames: number;
   // Capture overruns (ALSA xruns) recovered since the device was last opened;
   // each lost audio for every stream. Absent from an older appliance.
@@ -256,7 +262,7 @@ export interface Device {
   supportedRates?: number[];
   supportedChannels?: number[];
   // Per-stream runtime state, present only while serving; the device-level
-  // clientConnected and droppedFrames aggregate it.
+  // clientConnected, clientCount and droppedFrames aggregate it.
   streams?: StreamStatus[];
 }
 

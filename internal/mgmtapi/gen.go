@@ -519,8 +519,11 @@ type Device struct {
 	// Channels Selected 1-based capture channel numbers to stream, ascending and unique (e.g. [1], [1, 2], or [1, 3]). The stream carries these channels in order; a single-channel selection yields a mono stream. Opus accepts one channel (mono) or two (stereo); PCM L16 carries any selection.
 	Channels []int `json:"channels"`
 
-	// ClientConnected Whether an RTSP session currently holds this track's single slot. Always false for skipped or failed devices.
+	// ClientConnected Whether at least one RTSP client is playing one of this device's streams. Always false for skipped or failed devices.
 	ClientConnected bool `json:"clientConnected"`
+
+	// ClientCount How many RTSP clients are playing this device's streams right now, summed over its streams (each stream serves up to 8 at once). Zero for skipped or failed devices.
+	ClientCount int `json:"clientCount"`
 
 	// Device Configured capture device id. A stable id names the physical device and survives reboots: a USB unit by vendor, product and serial follows it to any port, while the by-port form (a USB unit with no serial) and the alsa-lib hw:CARD= form survive a replug into the same port. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable).
 	//
@@ -531,7 +534,7 @@ type Device struct {
 	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
 	DownCause *DeviceDownCause `json:"downCause,omitempty"`
 
-	// DroppedFrames Frames dropped because the connected client was not keeping up. Zero for devices that never served.
+	// DroppedFrames Frames dropped because a connected client was not keeping up (counted once per client per dropped frame). Zero for devices that never served.
 	DroppedFrames int64 `json:"droppedFrames"`
 
 	// Error Why the device is skipped or failed. Absent when serving.
@@ -598,7 +601,7 @@ type Device struct {
 	// Examples: [1], [1,3]
 	StreamedChannels *[]int `json:"streamedChannels,omitempty"`
 
-	// Streams Per-stream runtime state, one entry per stream fanned out from this device's shared capture. Present only while the device is serving. The device-level clientConnected and droppedFrames aggregate these (any client connected; summed drops), so a client that predates fan-out can ignore this array. A single-stream device carries one entry mirroring the device-level fields.
+	// Streams Per-stream runtime state, one entry per stream fanned out from this device's shared capture. Present only while the device is serving. The device-level clientConnected, clientCount and droppedFrames aggregate these (any client connected; summed clients; summed drops), so a client that predates fan-out can ignore this array. A single-stream device carries one entry mirroring the device-level fields.
 	Streams *[]StreamStatus `json:"streams,omitempty"`
 
 	// SupportedChannels Channel counts the hardware accepts, from the last successful probe (re-probed each time the device is opened) via the same non-blocking capability query as supportedRates. Absent or empty when no probe has succeeded (device missing or busy), in which case the UI offers a mono/stereo default. The UI takes the largest count as the number of selectable channels and builds the per-channel selection control (Ch1..ChN) from it.
@@ -930,10 +933,13 @@ type StreamMode string
 
 // StreamStatus One stream's runtime state within a serving device.
 type StreamStatus struct {
-	// ClientConnected Whether an RTSP session currently holds this stream's single slot.
+	// ClientConnected Whether at least one RTSP client is playing this stream.
 	ClientConnected bool `json:"clientConnected"`
 
-	// DroppedFrames Audio dropped for this stream because its client or encoder was not keeping up. Zero when it never fell behind.
+	// ClientCount How many RTSP clients are playing this stream right now, up to 8.
+	ClientCount int `json:"clientCount"`
+
+	// DroppedFrames Audio dropped for this stream because a client or the encoder was not keeping up (counted once per client per dropped frame). Zero when it never fell behind.
 	DroppedFrames int64 `json:"droppedFrames"`
 
 	// Path RTSP path serving this stream.

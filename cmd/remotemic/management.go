@@ -565,19 +565,22 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	// keeps its feed pointers until process exit, and clients unsubscribe
 	// asynchronously during teardown, so gate on state to honor the contract's
 	// "always false for skipped or failed devices". The device-level
-	// ClientConnected is true when ANY stream has a client; each stream's own state
-	// is reported per stream, and DroppedFrames per stream sums the same way the
-	// device figure does.
+	// ClientConnected is true when ANY stream has a client and ClientCount sums
+	// the streams' counts; each stream's own state is reported per stream, and
+	// DroppedFrames per stream sums the same way the device figure does.
 	if state == mgmtserver.StateServing {
 		ds.Streams = make([]mgmtserver.StreamStatus, 0, len(rt.streams))
 		for _, sr := range rt.streams {
-			connected := sr.frames != nil && sr.frames.Clients() > 0
-			if connected {
-				ds.ClientConnected = true
+			clients := 0
+			if sr.frames != nil {
+				clients = sr.frames.Clients()
 			}
+			ds.ClientConnected = ds.ClientConnected || clients > 0
+			ds.ClientCount += clients
 			ds.Streams = append(ds.Streams, mgmtserver.StreamStatus{
 				Path:            sr.stream.Path,
-				ClientConnected: connected,
+				ClientConnected: clients > 0,
+				ClientCount:     clients,
 				DroppedFrames:   int64(sr.dropped.Load()),
 			})
 		}

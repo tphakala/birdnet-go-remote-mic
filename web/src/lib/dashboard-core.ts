@@ -16,34 +16,45 @@ export function channelLabel(channels: number[]): string {
   return "Ch " + channels.join("+");
 }
 
+// clientCountOf is how many clients are playing a device or stream. An older
+// appliance omits clientCount and reports only whether one is connected, which
+// reads as one.
+export function clientCountOf(s: { clientConnected: boolean; clientCount?: number }): number {
+  return s.clientCount ?? (s.clientConnected ? 1 : 0);
+}
+
 // StreamSummary is one device's streams as the System view's Stream Status table
-// lists them: every path, the distinct modes in stream order, and how many
-// streams have a client.
+// lists them: every path, the distinct modes in stream order, how many streams
+// have a client, and how many clients play them in all.
 export interface StreamSummary {
   paths: string[];
   modes: StreamMode[];
   connected: number;
+  clients: number;
 }
 
 // streamSummary combines a device record with its config. The config lists every
 // stream even while the device is down; the record's streams array exists only
 // while serving, and its flat fields cover the first stream alone (an older
-// appliance, or before GET /config loads).
+// appliance, or before GET /config loads). Client counts come from the record's
+// streams when it has them, else from its own device-level figure.
 export function streamSummary(
-  d: Pick<Device, "path" | "mode" | "clientConnected" | "streams">,
+  d: Pick<Device, "path" | "mode" | "clientConnected" | "clientCount" | "streams">,
   cfg?: Pick<DeviceConfig, "streams">,
 ): StreamSummary {
   const configured = cfg?.streams ?? [];
   const paths = configured.length > 0 ? configured.map((s) => s.path) : d.streams?.map((s) => s.path) ?? [d.path];
   const modes = configured.length > 0 ? [...new Set(configured.map((s) => s.mode))] : [d.mode];
-  const connected = d.streams ? d.streams.filter((s) => s.clientConnected).length : d.clientConnected ? 1 : 0;
-  return { paths, modes, connected };
+  const counts = d.streams ? d.streams.map(clientCountOf) : [clientCountOf(d)];
+  return { paths, modes, connected: counts.filter((n) => n > 0).length, clients: counts.reduce((a, n) => a + n, 0) };
 }
 
-// clientSummary is the Client cell: a single stream says Connected or "-", and a
-// device with several says how many of them have a client.
+// clientSummary is the Client cell: a device with several streams says how many
+// of them have a client, and a single stream says Connected or "-", or the count
+// when more than one client plays it.
 export function clientSummary(s: StreamSummary): string {
   if (s.paths.length > 1) return `${s.connected} of ${s.paths.length} connected`;
+  if (s.clients > 1) return `${s.clients} connected`;
   return s.connected > 0 ? "Connected" : "-";
 }
 
@@ -253,10 +264,11 @@ export interface FooterMetrics {
 }
 
 // footerMetrics formats a serving device's footer counters. An appliance that
-// predates the overrun counter omits it, which reads as zero.
-export function footerMetrics(d: { clientConnected: boolean; droppedFrames: number; overruns?: number }): FooterMetrics {
+// predates the overrun counter omits it, which reads as zero, and one that
+// predates the client count reports only whether a client is connected.
+export function footerMetrics(d: { clientConnected: boolean; clientCount?: number; droppedFrames: number; overruns?: number }): FooterMetrics {
   return {
-    clients: d.clientConnected ? "1 connected" : "0 connected",
+    clients: `${clientCountOf(d)} connected`,
     dropped: String(d.droppedFrames),
     overruns: String(d.overruns ?? 0),
   };

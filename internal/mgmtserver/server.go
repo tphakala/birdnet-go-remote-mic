@@ -80,7 +80,10 @@ type DeviceStatus struct {
 	// capture is downconverted to S16LE, so this surfaces that reduction.
 	NegotiatedFormat string
 	ClientConnected  bool
-	DroppedFrames    int64
+	// ClientCount is how many RTSP clients are playing the device's streams,
+	// summed over them.
+	ClientCount   int
+	DroppedFrames int64
 	// Overruns is the capture's cumulative count of recovered overruns (ALSA
 	// xruns) since the device was last opened. A failed device keeps the count it
 	// reached; a record that holds no capture (never opened, disabled, or skipped)
@@ -110,16 +113,19 @@ type DeviceStatus struct {
 	// successful probe as SupportedRates; empty when no probe has succeeded.
 	SupportedChannels []int
 	// Streams is the per-stream live state, one entry per stream fanned out from
-	// this device's shared capture, present only while serving. ClientConnected
-	// and DroppedFrames above aggregate these (any client connected; summed
-	// drops).
+	// this device's shared capture, present only while serving. ClientConnected,
+	// ClientCount and DroppedFrames above aggregate these (any client
+	// connected; summed clients; summed drops).
 	Streams []StreamStatus
 }
 
 // StreamStatus is one stream's live state within a serving device.
 type StreamStatus struct {
-	Path            string
+	Path string
+	// ClientConnected is true while at least one client is playing the stream;
+	// ClientCount is how many.
 	ClientConnected bool
+	ClientCount     int
 	DroppedFrames   int64
 }
 
@@ -358,6 +364,8 @@ func (s *Server) StreamEvents(_ context.Context, _ mgmtapi.StreamEventsRequestOb
 // full set is in streams (config) and the per-stream runtime state in the status
 // streams array. streamedChannels is the union of every stream's channels, so a
 // client can tell which captured channels are carried without walking streams.
+// clientConnected, clientCount and droppedFrames are the device-level
+// aggregates of the per-stream figures.
 func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	out := mgmtapi.Device{
 		Name:            d.Config.Name,
@@ -366,6 +374,7 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 		Rate:            d.Config.Rate,
 		State:           mgmtapi.DeviceState(d.State),
 		ClientConnected: d.ClientConnected,
+		ClientCount:     d.ClientCount,
 		DroppedFrames:   d.DroppedFrames,
 		Overruns:        d.Overruns,
 	}
@@ -376,6 +385,7 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 			ss = append(ss, mgmtapi.StreamStatus{
 				Path:            d.Streams[i].Path,
 				ClientConnected: d.Streams[i].ClientConnected,
+				ClientCount:     d.Streams[i].ClientCount,
 				DroppedFrames:   d.Streams[i].DroppedFrames,
 			})
 		}

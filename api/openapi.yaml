@@ -826,6 +826,7 @@ components:
         - rate
         - channels
         - clientConnected
+        - clientCount
         - droppedFrames
         - overruns
       properties:
@@ -923,15 +924,23 @@ components:
         clientConnected:
           type: boolean
           description: >
-            Whether an RTSP session currently holds this track's single
-            slot. Always false for skipped or failed devices.
+            Whether at least one RTSP client is playing one of this device's
+            streams. Always false for skipped or failed devices.
+        clientCount:
+          type: integer
+          minimum: 0
+          description: >
+            How many RTSP clients are playing this device's streams right
+            now, summed over its streams (each stream serves up to 8 at
+            once). Zero for skipped or failed devices.
         droppedFrames:
           type: integer
           format: int64
           minimum: 0
           description: >
-            Frames dropped because the connected client was not keeping
-            up. Zero for devices that never served.
+            Frames dropped because a connected client was not keeping up
+            (counted once per client per dropped frame). Zero for devices that
+            never served.
         overruns:
           type: integer
           format: int64
@@ -1010,8 +1019,9 @@ components:
           description: >
             Per-stream runtime state, one entry per stream fanned out from this
             device's shared capture. Present only while the device is serving.
-            The device-level clientConnected and droppedFrames aggregate these
-            (any client connected; summed drops), so a client that predates
+            The device-level clientConnected, clientCount and droppedFrames
+            aggregate these (any client connected; summed clients; summed
+            drops), so a client that predates
             fan-out can ignore this array. A single-stream device carries one
             entry mirroring the device-level fields.
           items:
@@ -1020,7 +1030,7 @@ components:
     StreamStatus:
       type: object
       description: One stream's runtime state within a serving device.
-      required: [path, clientConnected, droppedFrames]
+      required: [path, clientConnected, clientCount, droppedFrames]
       properties:
         path:
           type: string
@@ -1028,14 +1038,20 @@ components:
           examples: [/garden]
         clientConnected:
           type: boolean
-          description: Whether an RTSP session currently holds this stream's single slot.
+          description: Whether at least one RTSP client is playing this stream.
+        clientCount:
+          type: integer
+          minimum: 0
+          description: >
+            How many RTSP clients are playing this stream right now, up to 8.
         droppedFrames:
           type: integer
           format: int64
           minimum: 0
           description: >
-            Audio dropped for this stream because its client or encoder was not
-            keeping up. Zero when it never fell behind.
+            Audio dropped for this stream because a client or the encoder was
+            not keeping up (counted once per client per dropped frame). Zero
+            when it never fell behind.
 
     DeviceState:
       type: string

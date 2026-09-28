@@ -69,6 +69,7 @@ const DEVICES: Device[] = [
     negotiatedChannels: 2,
     negotiatedFormat: "s24_3le",
     clientConnected: true,
+    clientCount: 1,
     droppedFrames: 12,
     overruns: 1,
     opus: { bitrate: 96000 },
@@ -78,8 +79,8 @@ const DEVICES: Device[] = [
     supportedRates: [44100, 48000, 96000],
     supportedChannels: [1, 2],
     streams: [
-      { path: "/garden", clientConnected: true, droppedFrames: 12 },
-      { path: "/garden-right", clientConnected: false, droppedFrames: 0 },
+      { path: "/garden", clientConnected: true, clientCount: 1, droppedFrames: 12 },
+      { path: "/garden-right", clientConnected: false, clientCount: 0, droppedFrames: 0 },
     ],
   },
   {
@@ -96,6 +97,7 @@ const DEVICES: Device[] = [
     negotiatedChannels: 1,
     negotiatedFormat: "s16",
     clientConnected: false,
+    clientCount: 0,
     droppedFrames: 0,
     overruns: 0,
     friendlyName: "Dodotronic Ultramic 384K",
@@ -103,7 +105,7 @@ const DEVICES: Device[] = [
     idStable: true,
     supportedRates: [192000, 384000],
     supportedChannels: [1],
-    streams: [{ path: "/bats", clientConnected: false, droppedFrames: 0 }],
+    streams: [{ path: "/bats", clientConnected: false, clientCount: 0, droppedFrames: 0 }],
   },
   {
     name: "Pond",

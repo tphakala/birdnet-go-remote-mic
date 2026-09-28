@@ -217,9 +217,10 @@ func TestListDevicesMapsPerStreamStatus(t *testing.T) {
 		NegotiatedRate:     48000,
 		NegotiatedChannels: 2,
 		ClientConnected:    true, // any stream connected
+		ClientCount:        3,    // summed
 		DroppedFrames:      7,    // summed
 		Streams: []StreamStatus{
-			{Path: pathNorth, ClientConnected: true, DroppedFrames: 5},
+			{Path: pathNorth, ClientConnected: true, ClientCount: 3, DroppedFrames: 5},
 			{Path: pathSouth, ClientConnected: false, DroppedFrames: 2},
 		},
 	}
@@ -233,18 +234,18 @@ func TestListDevicesMapsPerStreamStatus(t *testing.T) {
 	if d.NegotiatedChannels == nil || *d.NegotiatedChannels != 2 {
 		t.Errorf("negotiatedChannels = %v, want 2 (opened hardware count)", d.NegotiatedChannels)
 	}
-	if !d.ClientConnected || d.DroppedFrames != 7 {
-		t.Errorf("device aggregate: connected=%v dropped=%d, want true/7", d.ClientConnected, d.DroppedFrames)
+	if !d.ClientConnected || d.ClientCount != 3 || d.DroppedFrames != 7 {
+		t.Errorf("device aggregate: connected=%v clients=%d dropped=%d, want true/3/7", d.ClientConnected, d.ClientCount, d.DroppedFrames)
 	}
 	if d.Streams == nil || len(*d.Streams) != 2 {
 		t.Fatalf("wire streams = %+v, want 2", d.Streams)
 	}
 	ws := *d.Streams
-	if ws[0].Path != pathNorth || !ws[0].ClientConnected || ws[0].DroppedFrames != 5 {
-		t.Errorf("stream[0] = %+v, want /north connected drops=5", ws[0])
+	if ws[0].Path != pathNorth || !ws[0].ClientConnected || ws[0].ClientCount != 3 || ws[0].DroppedFrames != 5 {
+		t.Errorf("stream[0] = %+v, want /north connected clients=3 drops=5", ws[0])
 	}
-	if ws[1].Path != pathSouth || ws[1].ClientConnected || ws[1].DroppedFrames != 2 {
-		t.Errorf("stream[1] = %+v, want /south not-connected drops=2", ws[1])
+	if ws[1].Path != pathSouth || ws[1].ClientConnected || ws[1].ClientCount != 0 || ws[1].DroppedFrames != 2 {
+		t.Errorf("stream[1] = %+v, want /south not-connected clients=0 drops=2", ws[1])
 	}
 }
 
