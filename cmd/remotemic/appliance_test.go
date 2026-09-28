@@ -297,12 +297,12 @@ func (g gateRecorder) Run(src audio.Source, gate pipeline.Gate, _ func(pipeline.
 
 // TestAppliancePumpGatesStageOnFeed pins the production wiring of the encode
 // gate: the pump must hand each stage its own stream feed's play session, so a
-// stream encodes exactly while a client plays it and each new client starts a
-// new session. A nil gate would bring back
-// encoding for no client, a gate that never opens would stream nothing to a
-// playing client, and a sibling's gate would encode one stream on another's
-// client; the stage-level tests cannot see any of these, because they pass the
-// gate themselves. The device has two streams so the last case is visible.
+// stream encodes exactly while a client plays it and each new stretch of
+// playing starts a new session. A nil gate would bring back encoding for no
+// client, a gate that never opens would stream nothing to a playing client, and
+// a sibling's gate would encode one stream on another's client; the stage-level
+// tests cannot see any of these, because they pass the gate themselves. The
+// device has two streams so the last case is visible.
 func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 	app, log, cancel := newTestAppliance(t)
 	defer cancel()

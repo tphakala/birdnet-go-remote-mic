@@ -50,11 +50,12 @@ type Frame struct {
 // alone, so the running encoder is never touched and every client shares one
 // encode.
 // A period tagged with another session than the gate reports (audio.Period.
-// Session, set by the fan-out) was queued for an earlier stretch of playing and is dropped
-// unencoded, and every frame carries the session it was produced for
+// Session, set by the fan-out) was queued for an earlier stretch of playing and
+// is dropped unencoded, and every frame carries the session it was produced for
 // (Frame.Session), so the feed can drop one that a teardown and the next PLAY
-// overtook while it was being encoded (rtspserver.Feed checks it on Push). A frame is stamped with its period's capture
-// time (audio.Period.Captured) when the period carries one.
+// overtook while it was being encoded (rtspserver.Feed checks it on Push). A
+// frame is stamped with its period's capture time (audio.Period.Captured) when
+// the period carries one.
 // A nil gate means always active: every period is encoded, in the session it
 // carries (zero for an untagged one), so an ungated stage drops no period.
 type Stage interface {

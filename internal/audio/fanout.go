@@ -35,7 +35,8 @@ const fanoutBuffer = 8
 // encoder on the play session its gate reports (see pipeline.Gate). Each
 // period sent is tagged with the play session it was sent for and the time it
 // was read from the capture, so a stage that has fallen behind drops what was
-// queued for an earlier client and stamps the rest with their capture time.
+// queued for an earlier play session and stamps the rest with their capture
+// time.
 type Fanout struct {
 	src       Source
 	name      string

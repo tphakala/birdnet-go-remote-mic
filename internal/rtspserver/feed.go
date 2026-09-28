@@ -25,7 +25,9 @@ const (
 	// can be added later if someone needs one.
 	maxClients = 8
 	// subQueueDepth is the frames queued per subscriber: 1.28 s of Opus (20 ms
-	// frames), and 0.64 to 1.28 s of PCM.
+	// frames), and up to 1.28 s of PCM (20 ms frames; less where the 15360-byte
+	// L16 cap shortens them: 10 ms at 384 kHz stereo, 2.5 ms at 384 kHz with
+	// eight channels, so as little as 0.16 s).
 	subQueueDepth = 64
 )
 

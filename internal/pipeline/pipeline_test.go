@@ -612,8 +612,8 @@ func TestNilGateAdmitsTaggedPeriods(t *testing.T) {
 
 // TestStagesDropPeriodsQueuedForEarlierSession pins the fix for a stage that
 // fell behind across a teardown and the next PLAY: periods the fan-out queued
-// for the earlier session are dropped unencoded, so the new client's stream
-// starts with its own audio (for Opus, exactly as a fresh encoder would), and
+// for the earlier session are dropped unencoded, so the new session starts
+// with its own audio (for Opus, exactly as a fresh encoder would), and
 // every frame emitted carries the gate's session and its period's capture
 // time rather than the stage's read time.
 func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
