@@ -15,10 +15,11 @@ import (
 
 // Flap thresholds for a repeatedly reconnecting client. BirdNET-Go retries a
 // dead upstream with backoff, so a broken path produces a connect/disconnect
-// pair every few seconds; more than flapMax connects within flapWindow raises
-// one warning and suppresses the per-connection infos for that path until
-// flapQuiet passes with no reconnect. These describe protocol behaviour, not a
-// per-site condition, so they are constants rather than configurable thresholds.
+// pair every few seconds; more than flapMax connects from one client host to one
+// path within flapWindow raises one warning and suppresses that host's
+// per-connection infos on that path until flapQuiet passes with no reconnect.
+// These describe protocol behaviour, not a per-site condition, so they are
+// constants rather than configurable thresholds.
 const (
 	flapMax    = 3
 	flapWindow = 60 * time.Second
@@ -34,15 +35,15 @@ const (
 )
 
 // streamEvents adapts rtspserver's playing-client callbacks into notification
-// center entries. It implements rtspserver.Listener. Per RTSP path it keeps a
-// flap detector per path and client host: while a client is flapping it
-// publishes a single warning instead of the churn of connect/disconnect infos.
+// center entries. It implements rtspserver.Listener. It keeps one flap detector
+// per RTSP path and client host: while a client is flapping it publishes a
+// single warning instead of the churn of connect/disconnect infos.
 // Several clients play one path at once, so the detector is keyed by host too:
 // two hosts reconnecting in turn do not add up to a flap. Two clients on one
 // host share a detector, since RTSP carries no stable client identity. Its
 // methods run on RTSP session read goroutines, so they only touch
-// mutex-guarded per-client state and publish (a non-blocking send inside the
-// Center); they never block.
+// mutex-guarded per-(path, host) state and publish (a non-blocking send inside
+// the Center); they never block.
 type streamEvents struct {
 	pub   notify.Publisher
 	clock func() time.Time
@@ -106,10 +107,11 @@ func (s *streamEvents) pathFlap(id flapID) *notify.Flap {
 }
 
 // ClientConnected records a client starting to play on path. It feeds the
-// detector for the path and the client's host: a flap onset raises one warning and suppresses this connect; an
-// ongoing flap suppresses it silently; otherwise a client_connected info is
-// published. A flap clear (the first reconnect after a quiet gap) resolves the
-// warning and this connect is reported normally as the start of a fresh session.
+// detector for the path and the client's host: a flap onset raises one warning
+// and suppresses this connect; an ongoing flap suppresses it silently;
+// otherwise a client_connected info is published. A flap clear (the first
+// reconnect after a quiet gap) resolves the warning and this connect is
+// reported normally as the start of a fresh session.
 func (s *streamEvents) ClientConnected(path, remote string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

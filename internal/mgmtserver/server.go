@@ -79,7 +79,9 @@ type DeviceStatus struct {
 	// (s16, s24_le, s24_3le, s32); empty when the device never opened. A wider
 	// capture is downconverted to S16LE, so this surfaces that reduction.
 	NegotiatedFormat string
-	ClientConnected  bool
+	// ClientConnected is true exactly when ClientCount is above zero; the
+	// provider sets both.
+	ClientConnected bool
 	// ClientCount is how many RTSP clients are playing the device's streams,
 	// summed over them.
 	ClientCount   int
@@ -122,8 +124,8 @@ type DeviceStatus struct {
 // StreamStatus is one stream's live state within a serving device.
 type StreamStatus struct {
 	Path string
-	// ClientConnected is true while at least one client is playing the stream;
-	// ClientCount is how many.
+	// ClientConnected is true exactly when ClientCount is above zero, that is,
+	// while at least one client is playing the stream; ClientCount is how many.
 	ClientConnected bool
 	ClientCount     int
 	DroppedFrames   int64

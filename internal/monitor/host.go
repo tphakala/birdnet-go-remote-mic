@@ -43,8 +43,10 @@ const (
 	// total, because a high MemFreePercent can push limit*1.25 past total, where
 	// available memory can never reach it and the warning would never clear.
 	memClearGapDivisor = 4
-	// dropsPerSecond is the dropped-frame rate above which a device's client is
-	// judged not to be keeping up.
+	// dropsPerSecond is the dropped-frame rate above which a device's clients are
+	// judged not to be keeping up. It is the device-wide rate: every stream, every
+	// client (counted once per client per dropped frame) and the periods the
+	// fan-out dropped.
 	dropsPerSecond = 1.0
 
 	// Capture overruns are sporadic events rather than a steady rate, so their
@@ -108,7 +110,8 @@ type DeviceCounters struct {
 	Name string
 	Gen  uint64
 	// Dropped counts the audio frames the device's streams dropped because a
-	// client or encoder was not keeping up.
+	// client or encoder was not keeping up (a client's drop counts once per client
+	// per dropped frame; the fan-out's counts once per period).
 	Dropped uint64
 	// Overruns counts the capture overruns (ALSA xruns, which include a
 	// recovered system suspend) the device's capture recovered from; each one

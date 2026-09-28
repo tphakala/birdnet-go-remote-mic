@@ -72,7 +72,10 @@ type Track struct {
 	Path        string // session path, e.g. "/stream"; SETUP matches Path+"/trackID=0"
 	SDP         []byte // the DESCRIBE body, built at startup
 	PayloadType int    // RTP payload type (96 L16, 97 Opus)
-	Feed        FrameFeed
+	// Feed must be non-nil for a track that is played: PLAY calls Feed.Subscribe
+	// unguarded, so a nil Feed panics on the first PLAY. DESCRIBE and SETUP do not
+	// use it.
+	Feed FrameFeed
 }
 
 // Server accepts RTSP connections and routes each request to a track by URL
