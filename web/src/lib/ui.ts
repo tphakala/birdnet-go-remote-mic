@@ -9,11 +9,49 @@ import { svgIcon } from "./svg.ts";
 
 export { svgIcon };
 
-// elem creates an element with an optional class and text content.
+// elem creates an element with an optional class and text content. h() is the
+// builder for nested markup; elem stays for single elements.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
   if (className) e.className = className;
   if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// HAttrs are the attributes h() sets, written as in the markup ("class",
+// "aria-label", "tabindex"). A string or number is set as is, true sets an
+// empty (present) attribute, and false, null or undefined leave it off, so a
+// conditional attribute reads inline. aria-pressed and friends take the
+// strings "true" and "false", not booleans.
+export type HAttrs = Readonly<Record<string, string | number | boolean | null | undefined>>;
+
+// HChild is one child of h(). A string becomes a text node, never markup;
+// false, null and undefined are skipped, so a conditional child reads inline.
+export type HChild = Node | string | false | null | undefined;
+
+// h builds an element whose nesting mirrors the markup it produces, typed by
+// its tag (h("button") is an HTMLButtonElement). It only builds: updates keep
+// using setText, setHidden and friends on the elements it returns. Event
+// handler attributes (on*) are refused, since they would be inline script;
+// add listeners with addEventListener.
+export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: HAttrs, ...children: HChild[]): HTMLElementTagNameMap[K];
+export function h<K extends keyof HTMLElementTagNameMap>(tag: K, ...children: HChild[]): HTMLElementTagNameMap[K];
+export function h<K extends keyof HTMLElementTagNameMap>(tag: K, ...rest: (HAttrs | HChild)[]): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  const first = rest[0];
+  // A plain object in the first slot is the attributes; a node has nodeType.
+  if (typeof first === "object" && first !== null && !("nodeType" in first)) {
+    rest.shift();
+    for (const [name, value] of Object.entries(first as HAttrs)) {
+      if (/^on/i.test(name)) throw new TypeError(`h: event handler attribute ${name} on <${tag}>; use addEventListener`);
+      if (value === false || value === null || value === undefined) continue;
+      e.setAttribute(name, value === true ? "" : String(value));
+    }
+  }
+  for (const c of rest as HChild[]) {
+    if (c === false || c === null || c === undefined) continue;
+    e.append(c);
+  }
   return e;
 }
 

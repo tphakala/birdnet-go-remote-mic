@@ -193,15 +193,14 @@ reconcile:
 
 ## Components
 
-- A component is a class that builds its DOM with `elem()` or
-  `document.createElement` in the constructor, exposes `readonly el`, and
-  offers a small imperative API (`set(...)`, `update(...)`). The caller owns
-  the state and pushes it in; the component reports intent through callbacks
-  in its options (`onChange`). Only app-level components (notification
-  center, login modal) import the store.
-- Create buttons with the `button()` factory from `lib/ui.ts`. Show work in
-  progress with `setBusy`/`clearBusy` (aria-disabled plus aria-busy), never by
-  toggling `disabled` on a focused control, which drops focus.
+- A component is a class that builds its DOM in the constructor, exposes
+  `readonly el`, and offers a small imperative API (`set`, `update`). The caller owns the state and pushes it in; the
+  component reports intent through callbacks in its options (`onChange`).
+  Only app-level components (notification center, login modal) import the
+  store.
+- Create buttons with the `button()` factory. Show work in progress with
+  `setBusy`/`clearBusy` (aria-disabled plus aria-busy), never by toggling
+  `disabled` on a focused control, which drops focus.
 - Ids for `aria-labelledby`/`aria-describedby` come from a module-level
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
@@ -214,21 +213,25 @@ reconcile:
   `formatUptime`/`formatRelative`, `switchControl` (every scripted on/off
   switch; the static ones in `index.html` copy its markup, `role="switch"`
   included), `svgIcon` (wraps a 24x24 stroked glyph's paths at a size and stroke
-  width; every stroked icon uses it, from `lib/svg.ts`, a leaf module `ui.ts`
-  re-exports), `focusTarget` (where focus or a click went relative to a popup
+  width, for every stroked icon; in the leaf `lib/svg.ts`, re-exported
+  by `ui.ts`), `focusTarget` (where focus or a click went relative to a popup
   and its opener), and icon constants such as `ICON_COPY` and `TOAST_ICONS`.
 - A component with non-trivial event wiring keeps its state and sequencing in
   a DOM-free controller in `lib/*-core.ts` that drives injected ports (see
   `MenuController` and `PopoverController` in `lib/menu-core.ts`), so
   node:test pins the wiring, not only the decisions.
+- Build DOM with `h(tag, attrs?, ...children)`: nesting mirrors the markup,
+  and `h("button")` is an `HTMLButtonElement`. Strings become text;
+  `false`/`null`/`undefined` skips an attribute or child. Keep what you
+  update (`(this.el = h(...))`); reworked `elem()` code moves to `h()`.
 
 ## DOM safety
 
-- Runtime data is only written with `textContent` (via `elem`, `setText`) or
-  attributes. `innerHTML` is allowed solely for trusted, static inline SVG
-  constants; mark each new such assignment with `// static, trusted markup`.
-  Never interpolate device names, config values, API responses, or any user
-  input into markup.
+- Runtime data is only written with `textContent` (via `h`, `elem`,
+  `setText`) or attributes. `innerHTML` is allowed solely for trusted,
+  static inline SVG constants; mark each new such assignment with
+  `// static, trusted markup`. Never interpolate device names, config
+  values, API responses, or any user input into markup.
 - `localStorage` holds only per-browser preferences (theme, access token,
   hidden meter channels, the Events `/` shortcut, read and dismissed
   notifications). Wrap access so a storage-blocked browser still works
