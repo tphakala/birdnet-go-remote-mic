@@ -175,7 +175,7 @@ test("devicesRead is pending until a read settles, and stays loaded after a fail
   assert.equal(h.store.devicesRead(), "pending");
   await h.store.refreshDevices();
   assert.equal(h.store.devicesRead(), "failed");
-  // An empty list read is loaded, not pending.
+  // An empty list read counts as loaded.
   await h.store.refreshDevices();
   assert.equal(h.store.devicesRead(), "loaded");
   await h.store.refreshDevices();

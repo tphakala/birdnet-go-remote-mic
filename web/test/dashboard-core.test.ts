@@ -571,6 +571,9 @@ test("deviceConfigKey ignores enabled and reads an absent quietAlert as true", (
   assert.notEqual(deviceConfigKey({ ...cd, quietAlert: false }), deviceConfigKey(cd));
   assert.notEqual(deviceConfigKey({ ...cd, opus: { bitrate: 96000 } }), deviceConfigKey(cd));
   assert.notEqual(deviceConfigKey({ ...cd, channels: [1, 2] }), deviceConfigKey(cd));
+  // Every field the settings form edits is in the key.
+  const edits: Partial<DeviceConfig>[] = [{ name: "Pond" }, { path: "/pond" }, { mode: "pcm" }, { rate: 96000 }, { format: "s32" as DeviceConfig["format"] }];
+  for (const edit of edits) assert.notEqual(deviceConfigKey({ ...cd, ...edit }), deviceConfigKey(cd), JSON.stringify(edit));
   // A config payload without channels does not throw.
   const noChannels = { ...cd } as Partial<DeviceConfig>;
   delete noChannels.channels;
@@ -598,6 +601,8 @@ test("rtspUrl takes the port from the listen address, 8554 without one", () => {
   assert.equal(rtspUrl("mic.local", "8557", "/garden"), "rtsp://mic.local:8557/garden");
   assert.equal(rtspUrl("mic.local", undefined, "/garden"), "rtsp://mic.local:8554/garden");
   assert.equal(rtspUrl("mic.local", "", "/garden"), "rtsp://mic.local:8554/garden");
+  // The port follows the last colon, as in an IPv6 listen address.
+  assert.equal(rtspUrl("mic.local", "[::]:8555", "/garden"), "rtsp://mic.local:8555/garden");
 });
 
 test("meterCount and cardShape follow the captured channels of a serving device", () => {
@@ -628,6 +633,8 @@ test("hardwareLine shows the address, a distinct model, and a card-index warning
   // Unresolved: a serving device shows its configured id, anything else says so.
   assert.equal(hardwareLine({ ...d, device: "hw:1,0" }), "ALSA: hw:1,0");
   assert.equal(hardwareLine({ ...d, state: "skipped" }), "No matching hardware");
+  // A device that is down but present shows its address.
+  assert.equal(hardwareLine({ ...d, state: "failed", hwAddr: "hw:2,0" }), "ALSA: hw:2,0");
   assert.equal(
     hardwareLine({ ...d, state: "skipped", idStable: false }),
     "No matching hardware · card index (can change after a reboot)",

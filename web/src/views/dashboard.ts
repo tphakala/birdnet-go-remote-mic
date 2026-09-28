@@ -78,10 +78,11 @@ export class DashboardView {
       }
       if (changed) this.render();
     });
-    // The view is a function of store state: devices, status and config each
-    // trigger a full render() that reads store.getState(), rather than each
-    // patching its own subset of the DOM. config arrives on every poll (see
-    // the store) so an out-of-band change reflects within one interval.
+    // The view is a function of store state: devices, status, config and
+    // available each trigger a full render() that reads store.getState(),
+    // rather than each patching its own subset of the DOM. config arrives on
+    // every poll (see the store) so an out-of-band change reflects within one
+    // interval.
     store.on("devices", () => this.render());
     store.on("config", () => this.render());
     store.on("status", (status) => {
@@ -148,13 +149,13 @@ export class DashboardView {
     renderLoadError(this.emptyEl, message, "Loading devices...", () => void store.retry());
   }
 
-  // render coalesces the up-to-three store events per 3 s poll tick (devices,
-  // status and config each request it) into a single reconcile on the microtask
-  // queue, so same-tick events collapse into one pass instead of three. The pass
-  // is idempotent and diffed, so this only drops redundant CPU. Focus
-  // restoration lives in the mutation handlers (which read the live nodes) and in
-  // mount(); both run inside microtask timing during their awaits, so coalescing
-  // does not disturb them.
+  // render coalesces the store events of a 3 s poll tick (devices, status,
+  // config and available each request it) into a single reconcile on the
+  // microtask queue, so same-tick events collapse into one pass. The pass is
+  // idempotent and diffed, so this only drops redundant CPU. Focus restoration
+  // lives in the cards' mutation handlers (which read the live nodes) and in
+  // DeviceCard.mount; both run inside microtask timing during their awaits, so
+  // coalescing does not disturb them.
   private render(): void {
     if (this.renderScheduled) return;
     this.renderScheduled = true;
@@ -171,9 +172,7 @@ export class DashboardView {
   // being dropped every poll).
   private reconcile(): void {
     if (!this.rack) return;
-    // Capture the narrowed rack: the intervening card updates below make TS
-    // re-widen this.rack to include null, so hold a non-null local for the
-    // ordering pass rather than re-guarding it.
+    // The narrowed rack, for the removal and ordering passes below.
     const rack = this.rack;
     const devices = store.getState().devices;
 

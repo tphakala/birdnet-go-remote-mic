@@ -9,8 +9,8 @@ import { apiErrorToast, type ConfigQueue } from "./config-queue.ts";
 
 // AvailableCard is one detected but unconfigured capture device: its name,
 // address, the id provisioning persists and its capabilities, and an Enable
-// button. It shows what key names (availableCardKey) and is rebuilt when that
-// changes, busy state included.
+// button. It shows the fields availableCardKey covers, busy state included,
+// and is rebuilt when that key changes.
 class AvailableCard {
   public readonly el: HTMLElement;
   public readonly enableBtn: HTMLButtonElement;
@@ -92,9 +92,10 @@ export class AvailableDevices {
   // The cards on screen by device id, kept in screen order.
   private cards = new Map<string, AvailableCard>();
   // The card that held keyboard focus when a render removed it during that
-  // device's Enable, so the Enable can move focus when it settles (to the new device card on
-  // success; on failure to its own card when it is listed again, else its
-  // nearest neighbour still listed). Only set while that Enable is in flight.
+  // device's Enable, so the Enable can move focus when it settles (to the new
+  // device card on success; on failure to its own card when it is listed
+  // again, else its nearest neighbour still listed). Only set while that
+  // Enable is in flight.
   private focusLost: FocusLost | null = null;
 
   constructor(section: HTMLElement | null, host: AvailableDevicesHost) {
@@ -222,9 +223,10 @@ export class AvailableDevices {
           const ch = created.channels.length === 1 ? ` on channel ${created.channels[0]}` : "";
           showToast(`Enabled ${created.name}${ch}. Streaming on ${created.path}.`);
         }
-        // The refresh removed this device's card. If it held focus and focus
-        // has not moved since (it fell to the document body), hand it to the
-        // new device card, else to the workspace region, and say where it went.
+        // The refresh removed this device's Available card. If it held focus
+        // and focus has not moved since (it fell to the document body), hand
+        // it to the new device card, else to the workspace region, and say
+        // where it went.
         const lost = this.takeFocusLost(d.device);
         if (lost && focusDropped()) this.host.focusDevice(created.device);
       });

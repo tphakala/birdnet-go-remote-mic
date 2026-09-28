@@ -276,9 +276,9 @@ export class DeviceCard {
   }
 
   // build creates the DOM skeleton for a device's shape with NO device data
-  // written: header nodes with empty text, chips and lock hidden, toggle
-  // unchecked, the body for the shape, and the settings panel moved in. sync
-  // fills every value. Trusted static SVG for the copy, lock and settings icons
+  // written: header nodes with empty text, chips hidden, the toggle unchecked
+  // (or showing a pending change, see pendingWant), the body for the shape, and
+  // the settings panel moved in. sync fills every value. Trusted static SVG for the copy, lock and settings icons
   // is assigned here; the avatar icon depends on state and is written by sync.
   private build(d: Device): ArticleParts {
     const serving = d.state === "serving";
@@ -550,8 +550,9 @@ export class DeviceCard {
     return key ? { key } : null;
   }
 
-  // It runs from mount, before sync updates the device record, so whether the
-  // device serves comes from the rebuilt body.
+  // restoreFocus puts focus back after mount's rebuild. It runs before sync
+  // updates the device record, so whether the device serves comes from the
+  // rebuilt body.
   private restoreFocus(saved: { el?: HTMLElement; key?: string } | null): void {
     const serving = this.p.live !== null;
     if (!saved) return;
