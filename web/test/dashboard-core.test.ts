@@ -14,6 +14,7 @@ import { at, FakeTimers } from "./fixtures.ts";
 import {
   availableCardKey,
   availableGoneMessage,
+  availableLabel,
   deviceConfigKey,
   deviceGoneMessage,
   deviceToConfig,
@@ -27,6 +28,7 @@ import {
   availablePlan,
   avatarLook,
   bannerIsError,
+  capsSummary,
   cardShape,
   deviceFieldLabel,
   rejectionText,
@@ -630,4 +632,20 @@ test("hardwareLine shows the address, a distinct model, and a card-index warning
     hardwareLine({ ...d, state: "skipped", idStable: false }),
     "No matching hardware · card index (can change after a reboot)",
   );
+});
+
+test("availableLabel adds the address to a friendly name, else falls back", () => {
+  const device = "usb:2752:0019:s=Y8ZQ2BM1:if=0,0";
+  assert.equal(availableLabel({ device, hwAddr: "hw:4,0", friendlyName: "Scarlett 2i2" }), "Scarlett 2i2 (hw:4,0)");
+  assert.equal(availableLabel({ device, friendlyName: "Scarlett 2i2" }), "Scarlett 2i2");
+  assert.equal(availableLabel({ device, hwAddr: "hw:4,0" }), "hw:4,0");
+  assert.equal(availableLabel({ device }), device);
+});
+
+test("capsSummary names the channel support and the top rate", () => {
+  assert.equal(capsSummary({ supportedChannels: [1, 2], supportedRates: [44100, 48000, 192000] }), "mono/stereo · up to 192 kHz");
+  assert.equal(capsSummary({ supportedChannels: [2], supportedRates: [44100] }), "stereo · up to 44.1 kHz");
+  assert.equal(capsSummary({ supportedChannels: [1] }), "mono");
+  assert.equal(capsSummary({ supportedRates: [384000] }), "up to 384 kHz");
+  assert.equal(capsSummary({}), "");
 });

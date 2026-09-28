@@ -345,6 +345,29 @@ export function focusWorkspace(): HTMLElement | null {
   return main;
 }
 
+// focusNeighbour moves focus, after the item holding it went away, to the
+// control of the first of ids that find still resolves (the item's
+// neighbours from neighbourOrder; after an Enable, the new device card), else
+// to the workspace, and announces message(that item's name, or null) in
+// region.
+export function focusNeighbour(
+  region: HTMLElement | null,
+  ids: readonly string[],
+  find: (id: string) => { control: HTMLElement; name: string } | undefined,
+  message: (next: string | null) => string,
+): void {
+  const next = ids.map(find).find((n) => n !== undefined);
+  if (next) {
+    // The control may be out of view (the removed item was last and the one
+    // before it is tall), so bring it just into view.
+    next.control.focus({ preventScroll: true });
+    next.control.scrollIntoView({ block: "nearest" });
+  } else {
+    focusWorkspace();
+  }
+  announce(region, message(next?.name ?? null));
+}
+
 // scrollBehavior is how a scripted scroll moves: smoothly, unless the viewer
 // asked for reduced motion (an explicit "smooth" is not overridden by the
 // stylesheet's reduced-motion rule).

@@ -319,6 +319,32 @@ export function controlGoneMessage(device: string, key: string, serving: boolean
 // the Remove button that held focus are gone, so focus moved to the dashboard.
 export const REMOVED_FOCUS_MESSAGE = "Focus moved to the dashboard.";
 
+// availableLabel names an available device for people: its friendly name,
+// with the ALSA address when there is one to tell two identical units apart,
+// else the address, else the device id.
+export function availableLabel(d: Pick<AvailableDevice, "device" | "hwAddr" | "friendlyName">): string {
+  return d.friendlyName && d.hwAddr ? `${d.friendlyName} (${d.hwAddr})` : d.friendlyName || d.hwAddr || d.device;
+}
+
+// capsSummary is a short summary of a device's probed capabilities (channel
+// support and top sample rate) for the Available Devices list, or "" when the
+// probe found neither.
+export function capsSummary(d: Pick<AvailableDevice, "supportedChannels" | "supportedRates">): string {
+  const parts: string[] = [];
+  const ch = d.supportedChannels ?? [];
+  if (ch.length) {
+    if (ch.includes(1) && ch.includes(2)) parts.push("mono/stereo");
+    else if (ch.includes(2)) parts.push("stereo");
+    else parts.push("mono");
+  }
+  const rates = d.supportedRates ?? [];
+  if (rates.length) {
+    const maxKhz = Math.max(...rates) / 1000;
+    parts.push(`up to ${maxKhz.toLocaleString("en-US")} kHz`);
+  }
+  return parts.join(" · ");
+}
+
 // availableCardKey is what an Available Devices card shows: the device's data
 // and whether an Enable is in flight for it. A card is rebuilt only when this
 // changes. A render during an Enable therefore builds the card busy, and the
