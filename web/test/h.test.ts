@@ -1,0 +1,100 @@
+// Unit tests for the h() element builder (lib/h.ts): which first argument is
+// the attributes, how attribute values are written, which children are
+// skipped, and that event handler attributes are refused. The tests run
+// without a DOM, so a minimal fake document records what h() does. Run with
+// node:test (see web:test).
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { h } from "../src/lib/h.ts";
+
+// FakeElement records the calls h() makes. A string child is kept as text,
+// which a real element turns into a text node.
+class FakeElement {
+  readonly nodeType = 1;
+  readonly tagName: string;
+  readonly attrs = new Map<string, string>();
+  readonly children: unknown[] = [];
+  constructor(tag: string) {
+    this.tagName = tag;
+  }
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+  append(...nodes: unknown[]): void {
+    this.children.push(...nodes);
+  }
+}
+
+const fakeDocument = { createElement: (tag: string) => new FakeElement(tag) };
+Object.defineProperty(globalThis, "document", { value: fakeDocument, configurable: true });
+
+const fake = (el: unknown): FakeElement => {
+  assert.ok(el instanceof FakeElement);
+  return el;
+};
+
+test("attributes are set as written, strings and numbers as text", () => {
+  const e = fake(h("pre", { class: "license-text mono", tabindex: 0, "aria-label": "Apache" }));
+  assert.equal(e.tagName, "pre");
+  assert.deepEqual([...e.attrs], [["class", "license-text mono"], ["tabindex", "0"], ["aria-label", "Apache"]]);
+});
+
+test("true sets an empty attribute; false, null and undefined leave it off", () => {
+  const e = fake(h("input", { disabled: true, hidden: false, title: null, name: undefined }));
+  assert.deepEqual([...e.attrs], [["disabled", ""]]);
+});
+
+test("aria state takes the string, so false is written, not dropped", () => {
+  const e = fake(h("button", { "aria-pressed": "false" }));
+  assert.equal(e.attrs.get("aria-pressed"), "false");
+});
+
+test("without attributes the first argument is a child", () => {
+  const e = fake(h("li", "Your microphone model."));
+  assert.equal(e.attrs.size, 0);
+  assert.deepEqual(e.children, ["Your microphone model."]);
+
+  const inner = h("span");
+  const outer = fake(h("div", inner, "tail"));
+  assert.equal(outer.attrs.size, 0);
+  assert.deepEqual(outer.children, [inner, "tail"]);
+});
+
+test("children keep their order and skip false, null, undefined and empty text", () => {
+  const code = h("code", "journalctl");
+  const e = fake(h("li", { class: "x" }, "The log: ", false, code, null, undefined, "", "."));
+  assert.deepEqual(e.children, ["The log: ", code, "."]);
+  // An empty text leaves the element :empty, as elem(tag, cls, "") does.
+  assert.deepEqual(fake(h("span", { class: "info-val" }, "")).children, []);
+});
+
+test("an empty attribute object is still the attributes, not a child", () => {
+  const e = fake(h("div", {}, "a"));
+  assert.equal(e.attrs.size, 0);
+  assert.deepEqual(e.children, ["a"]);
+});
+
+test("the result has the tag's own element type", () => {
+  // Checked by tsc (web:typecheck): a button is not typed as a div.
+  const button: HTMLButtonElement = h("button");
+  // @ts-expect-error h("div") is an HTMLDivElement, not an HTMLButtonElement
+  const wrong: HTMLButtonElement = h("div");
+  assert.equal(fake(button).tagName, "button");
+  assert.equal(fake(wrong).tagName, "div");
+});
+
+test("nodeType is not an attribute, since it marks a child node", () => {
+  // @ts-expect-error nodeType would make the attributes read as a node
+  const e = fake(h("div", { nodeType: 1 }));
+  assert.equal(e.attrs.size, 0);
+  assert.deepEqual(e.children, [{ nodeType: 1 }]);
+});
+
+test("event handler attributes are refused in any case", () => {
+  // The type refuses lowercase handlers; the runtime check covers every casing.
+  // @ts-expect-error an event handler attribute
+  assert.throws(() => h("button", { onclick: "alert(1)" }), TypeError);
+  assert.throws(() => h("img", { OnError: "x" }), TypeError);
+});

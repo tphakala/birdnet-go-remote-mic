@@ -22,7 +22,7 @@ import {
 import { router } from "../lib/router.ts";
 import { store } from "../lib/store.ts";
 import type { ApplianceStatus, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
-import { button, copyText, elem, externalLink, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.ts";
+import { button, copyText, externalLink, h, ICON_COPY, ICON_VERSION, iconSpan, renderLoadError, setText, svgIcon } from "../lib/ui.ts";
 
 // Section and link icons: static, trusted markup.
 const ICON_INFO = svgIcon('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>');
@@ -45,16 +45,16 @@ const LICENSES_TIMEOUT_MS = 15_000;
 // section builds a card in the System view's style: an icon heading, a one-line
 // description, and a body the caller fills.
 function section(icon: string, title: string, desc: string): { card: HTMLElement; body: HTMLElement } {
-  const card = elem("section", "config-section-card about-card");
-  const head = elem("div", "section-head");
-  const titles = elem("div");
-  const h = elem("h2", "section-title");
-  h.appendChild(iconSpan(icon));
-  h.appendChild(elem("span", undefined, title));
-  titles.append(h, elem("span", "section-desc", desc));
-  head.appendChild(titles);
-  const body = elem("div", "about-body");
-  card.append(head, body);
+  const body = h("div", { class: "about-body" });
+  const card = h("section", { class: "config-section-card about-card" },
+    h("div", { class: "section-head" },
+      h("div",
+        h("h2", { class: "section-title" }, iconSpan(icon), h("span", title)),
+        h("span", { class: "section-desc" }, desc),
+      ),
+    ),
+    body,
+  );
   return { card, body };
 }
 
@@ -62,21 +62,17 @@ function section(icon: string, title: string, desc: string): { card: HTMLElement
 // a focusable, labelled region so a keyboard user can scroll it in every
 // browser (Safari does not make an overflowing element focusable by itself).
 function licenseTextBlock(label: string, text: string): HTMLElement {
-  const pre = elem("pre", "license-text mono", text);
-  pre.tabIndex = 0;
-  pre.setAttribute("role", "region");
-  pre.setAttribute("aria-label", label);
-  return pre;
+  return h("pre", { class: "license-text mono", tabindex: 0, role: "region", "aria-label": label }, text);
 }
 
 // licenseText renders one license file as a disclosure, closed by default
 // (the texts run to thousands of lines together): summary is its visible line,
 // label names the text region for assistive tech.
 function licenseText(summary: string, label: string, text: string): HTMLElement {
-  const d = elem("details", "license-text-details");
-  d.appendChild(elem("summary", "license-text-summary", summary));
-  d.appendChild(licenseTextBlock(label, text));
-  return d;
+  return h("details", { class: "license-text-details" },
+    h("summary", { class: "license-text-summary" }, summary),
+    licenseTextBlock(label, text),
+  );
 }
 
 export class AboutView {
@@ -139,86 +135,76 @@ export class AboutView {
   }
 
   private build(): HTMLElement {
-    const stack = elem("div", "config-layout");
-    stack.append(this.buildProject(), this.buildSupport(), this.buildHelp(), this.buildLicense());
-    return stack;
+    return h("div", { class: "config-layout" }, this.buildProject(), this.buildSupport(), this.buildHelp(), this.buildLicense());
   }
 
   private buildProject(): HTMLElement {
     const { card, body } = section(ICON_INFO, "About Remote Mic", "A remote microphone streaming appliance for BirdNET-Go.");
-    body.appendChild(elem(
-      "p",
-      "about-text",
-      "Remote Mic turns a small Linux board and a USB microphone or sound card into a remote microphone for BirdNET-Go. It captures audio from the board's sound devices and streams it over RTSP, as Opus or as lossless PCM up to ultrasonic sample rates, and announces itself on the local network so BirdNET-Go can find it.",
-    ));
-    const dl = elem("dl", "info-grid");
-    const row = (icon: string, key: string, val: HTMLElement): void => {
-      const dt = elem("dt", "info-key");
-      dt.append(iconSpan(icon, "info-key-icon"), document.createTextNode(key));
-      dl.appendChild(dt);
-      const dd = elem("dd", "info-val");
-      dd.appendChild(val);
-      dl.appendChild(dd);
-    };
-    this.versionEl = elem("span", "mono", "-");
-    row(ICON_VERSION, "Version", this.versionEl);
-    row(ICON_AUTHOR, "Author", externalLink(AUTHOR_URL, "Tomi P. Hakala"));
-    row(ICON_CODE, "Source Code", externalLink(REPO_URL, "github.com/tphakala/birdnet-go-remote-mic"));
-    row(ICON_SCALE_SM, "License", elem("span", undefined, "Apache 2.0"));
-    body.appendChild(dl);
+    const row = (icon: string, key: string, val: HTMLElement): Node[] => [
+      h("dt", { class: "info-key" }, iconSpan(icon, "info-key-icon"), key),
+      h("dd", { class: "info-val" }, val),
+    ];
+    this.versionEl = h("span", { class: "mono" }, "-");
+    body.append(
+      h("p", { class: "about-text" },
+        "Remote Mic turns a small Linux board and a USB microphone or sound card into a remote microphone for BirdNET-Go. It captures audio from the board's sound devices and streams it over RTSP, as Opus or as lossless PCM up to ultrasonic sample rates, and announces itself on the local network so BirdNET-Go can find it.",
+      ),
+      h("dl", { class: "info-grid" },
+        ...row(ICON_VERSION, "Version", this.versionEl),
+        ...row(ICON_AUTHOR, "Author", externalLink(AUTHOR_URL, "Tomi P. Hakala")),
+        ...row(ICON_CODE, "Source Code", externalLink(REPO_URL, "github.com/tphakala/birdnet-go-remote-mic")),
+        ...row(ICON_SCALE_SM, "License", h("span", "Apache 2.0")),
+      ),
+    );
     return card;
   }
 
   private buildHelp(): HTMLElement {
     const { card, body } = section(ICON_HELP, "Get Help", "Bug reports and questions both go to the project on GitHub.");
-    const cols = elem("div", "about-help-cols");
-
-    const bug = elem("div", "about-help-col");
-    bug.appendChild(elem("h3", "about-subtitle", "Report a Bug"));
-    bug.appendChild(elem("p", "about-text", "Something not working as it should? Search the existing issues first, and open a new one if nobody has reported it yet. A good report includes:"));
-    const ul = elem("ul", "about-list");
-    ul.appendChild(elem("li", undefined, "The version and host details below (Copy System Details puts them on the clipboard)."));
-    ul.appendChild(elem("li", undefined, "Your microphone or sound card model."));
-    ul.appendChild(elem("li", undefined, "What you did, what you expected, and what happened instead."));
-    const logs = elem("li", undefined, "The log from around the time it happened: ");
-    logs.appendChild(elem("code", undefined, "sudo journalctl -u remote-mic --since \"1 hour ago\""));
-    ul.appendChild(logs);
-    bug.appendChild(ul);
-    bug.appendChild(elem("p", "about-note", "Issues are public. Remove your access token, addresses, and anything else private from logs and settings before you post them."));
-    bug.appendChild(externalLink(ISSUES_URL, "Report a Bug", { className: "btn btn-secondary", icon: ICON_BUG }));
-
-    const ask = elem("div", "about-help-col");
-    ask.appendChild(elem("h3", "about-subtitle", "Ask a Question"));
-    ask.appendChild(elem("p", "about-text", "Setup questions, ideas for new features, and stories from your own recordings belong in GitHub Discussions, where other users can join in too."));
-    ask.appendChild(externalLink(DISCUSSIONS_URL, "Open Discussions", { className: "btn btn-secondary", icon: ICON_CHAT }));
-
-    cols.append(bug, ask);
-    body.appendChild(cols);
-
-    const detailsHead = elem("h3", "about-subtitle", "System Details");
-    this.detailsEl = elem("pre", "about-details mono");
     const copy = button({ variant: "secondary", label: "Copy System Details", icon: ICON_COPY });
     copy.addEventListener("click", () => copyText(supportDetails(this.status, this.system, this.devices, this.configs), "System details copied"));
-    const actions = elem("div", "network-actions");
-    actions.append(elem("span", "network-actions-spacer"), copy);
-    body.append(detailsHead, this.detailsEl, actions);
+    body.append(
+      h("div", { class: "about-help-cols" },
+        h("div", { class: "about-help-col" },
+          h("h3", { class: "about-subtitle" }, "Report a Bug"),
+          h("p", { class: "about-text" }, "Something not working as it should? Search the existing issues first, and open a new one if nobody has reported it yet. A good report includes:"),
+          h("ul", { class: "about-list" },
+            h("li", "The version and host details below (Copy System Details puts them on the clipboard)."),
+            h("li", "Your microphone or sound card model."),
+            h("li", "What you did, what you expected, and what happened instead."),
+            h("li", "The log from around the time it happened: ", h("code", "sudo journalctl -u remote-mic --since \"1 hour ago\"")),
+          ),
+          h("p", { class: "about-note" }, "Issues are public. Remove your access token, addresses, and anything else private from logs and settings before you post them."),
+          externalLink(ISSUES_URL, "Report a Bug", { className: "btn btn-secondary", icon: ICON_BUG }),
+        ),
+        h("div", { class: "about-help-col" },
+          h("h3", { class: "about-subtitle" }, "Ask a Question"),
+          h("p", { class: "about-text" }, "Setup questions, ideas for new features, and stories from your own recordings belong in GitHub Discussions, where other users can join in too."),
+          externalLink(DISCUSSIONS_URL, "Open Discussions", { className: "btn btn-secondary", icon: ICON_CHAT }),
+        ),
+      ),
+      h("h3", { class: "about-subtitle" }, "System Details"),
+      (this.detailsEl = h("pre", { class: "about-details mono" })),
+      h("div", { class: "network-actions" }, h("span", { class: "network-actions-spacer" }), copy),
+    );
     return card;
   }
 
   private buildSupport(): HTMLElement {
     const { card, body } = section(ICON_HEART, "Support the Project", "Remote Mic and BirdNET-Go are free and open source.");
-    body.appendChild(elem(
-      "p",
-      "about-text",
-      "I build and maintain Remote Mic and BirdNET-Go in my spare time. If you find them valuable, whether they help you hear more of the birds and bats around you or feed your own research, please consider sponsoring the work on GitHub. Sponsorship pays for test hardware and the hours that keep both projects moving.",
-    ));
-    const more = elem("p", "about-text", "New to BirdNET-Go? It is the bird sound identification app this appliance streams to: ");
-    more.appendChild(externalLink(BIRDNET_GO_URL, "github.com/tphakala/birdnet-go"));
-    more.appendChild(document.createTextNode("."));
-    body.appendChild(more);
-    const actions = elem("div", "about-actions");
-    actions.appendChild(externalLink(SPONSOR_URL, "Sponsor on GitHub", { className: "btn btn-primary", icon: ICON_HEART_SM }));
-    body.appendChild(actions);
+    body.append(
+      h("p", { class: "about-text" },
+        "I build and maintain Remote Mic and BirdNET-Go in my spare time. If you find them valuable, whether they help you hear more of the birds and bats around you or feed your own research, please consider sponsoring the work on GitHub. Sponsorship pays for test hardware and the hours that keep both projects moving.",
+      ),
+      h("p", { class: "about-text" },
+        "New to BirdNET-Go? It is the bird sound identification app this appliance streams to: ",
+        externalLink(BIRDNET_GO_URL, "github.com/tphakala/birdnet-go"),
+        ".",
+      ),
+      h("div", { class: "about-actions" },
+        externalLink(SPONSOR_URL, "Sponsor on GitHub", { className: "btn btn-primary", icon: ICON_HEART_SM }),
+      ),
+    );
     return card;
   }
 
@@ -230,17 +216,17 @@ export class AboutView {
       "Licenses",
       "Remote Mic is open source under the Apache License 2.0, and built on open source components under their own licenses.",
     );
-    const p = elem("p", "about-text", "You may use, modify, and distribute Remote Mic under the terms of the Apache License 2.0. ");
-    p.appendChild(externalLink(`${REPO_URL}/blob/main/LICENSE`, "Read it on GitHub"));
-    body.appendChild(p);
-    // The full text arrives with licenses.json; until then the link above covers it.
-    this.projectLicenseEl = elem("div");
-    body.appendChild(this.projectLicenseEl);
-
-    body.appendChild(elem("h3", "about-subtitle", "Third-Party Components"));
-    body.appendChild(elem("p", "about-text", "The list comes from the modules linked into this build."));
-    this.thirdPartyEl = elem("div", "about-third-party", LOADING_TEXT);
-    body.appendChild(this.thirdPartyEl);
+    body.append(
+      h("p", { class: "about-text" },
+        "You may use, modify, and distribute Remote Mic under the terms of the Apache License 2.0. ",
+        externalLink(`${REPO_URL}/blob/main/LICENSE`, "Read it on GitHub"),
+      ),
+      // The full text arrives with licenses.json; until then the link above covers it.
+      (this.projectLicenseEl = h("div")),
+      h("h3", { class: "about-subtitle" }, "Third-Party Components"),
+      h("p", { class: "about-text" }, "The list comes from the modules linked into this build."),
+      (this.thirdPartyEl = h("div", { class: "about-third-party" }, LOADING_TEXT)),
+    );
     return card;
   }
 
@@ -288,27 +274,27 @@ export class AboutView {
     const el = this.thirdPartyEl;
     if (!el) return;
     el.removeAttribute("role");
-    el.textContent = "";
-    el.appendChild(elem("p", "about-text", `${doc.components.length} components. Open one to read its full license text.`));
-    const list = elem("ul", "license-list");
-    for (const c of doc.components) list.appendChild(this.componentItem(c));
-    el.appendChild(list);
+    el.replaceChildren(
+      h("p", { class: "about-text" }, `${doc.components.length} components. Open one to read its full license text.`),
+      h("ul", { class: "license-list" }, ...doc.components.map((c) => this.componentItem(c))),
+    );
   }
 
   private componentItem(c: LicenseEntry): HTMLElement {
-    const li = elem("li", "license-item");
-    const d = elem("details", "license-details");
-    const summary = elem("summary", "license-summary");
-    summary.appendChild(elem("span", "license-name mono", componentTitle(c)));
-    summary.appendChild(elem("span", "tech-tag license-tag", c.license));
-    d.appendChild(summary);
-    for (const f of c.files) {
-      const file = elem("div", "license-file");
-      file.appendChild(elem("p", "license-file-name mono", f.name));
-      file.appendChild(licenseTextBlock(`${componentTitle(c)} ${f.name}`, f.text));
-      d.appendChild(file);
-    }
-    li.appendChild(d);
-    return li;
+    const title = componentTitle(c);
+    return h("li", { class: "license-item" },
+      h("details", { class: "license-details" },
+        h("summary", { class: "license-summary" },
+          h("span", { class: "license-name mono" }, title),
+          h("span", { class: "tech-tag license-tag" }, c.license),
+        ),
+        ...c.files.map((f) =>
+          h("div", { class: "license-file" },
+            h("p", { class: "license-file-name mono" }, f.name),
+            licenseTextBlock(`${title} ${f.name}`, f.text),
+          ),
+        ),
+      ),
+    );
   }
 }

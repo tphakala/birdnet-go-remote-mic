@@ -7,9 +7,11 @@ import { unconfirmedText } from "./api.ts";
 import type { FocusTarget } from "./menu-core.ts";
 import { svgIcon } from "./svg.ts";
 
+export { h } from "./h.ts";
 export { svgIcon };
 
-// elem creates an element with an optional class and text content.
+// elem creates an element with an optional class and text content. New code
+// builds with h() (lib/h.ts); elem remains for the call sites not moved yet.
 export function elem(tag: string, className?: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
   if (className) e.className = className;

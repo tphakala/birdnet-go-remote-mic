@@ -5,7 +5,7 @@
 // (setText), so a tile can be re-synced on every store change without churning the
 // DOM.
 
-import { elem, setText } from "../lib/ui.ts";
+import { h, setText } from "../lib/ui.ts";
 
 // ok is "all clear", distinct from info (a severity) even where the two share a
 // colour, so the intent reads in the markup and the stylesheet.
@@ -26,20 +26,14 @@ export class StatTile {
   constructor(opts: StatTileOptions) {
     const tone = opts.tone ?? "neutral";
     this.tone = tone;
-    if (opts.onClick) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.setAttribute("aria-pressed", "false");
-      b.addEventListener("click", opts.onClick);
-      this.el = b;
-    } else {
-      this.el = document.createElement("div");
-    }
-    this.el.className = `stat-tile tone-${tone}${opts.onClick ? " is-action" : ""}`;
-    this.el.append(elem("span", "stat-tile-label", opts.label));
-    this.valueEl = elem("span", "stat-tile-value mono", "-");
-    this.captionEl = elem("span", "stat-tile-caption");
-    this.el.append(this.valueEl, this.captionEl);
+    const cls = `stat-tile tone-${tone}`;
+    const label = h("span", { class: "stat-tile-label" }, opts.label);
+    this.valueEl = h("span", { class: "stat-tile-value mono" }, "-");
+    this.captionEl = h("span", { class: "stat-tile-caption" });
+    this.el = opts.onClick
+      ? h("button", { type: "button", class: `${cls} is-action`, "aria-pressed": "false" }, label, this.valueEl, this.captionEl)
+      : h("div", { class: cls }, label, this.valueEl, this.captionEl);
+    if (opts.onClick) this.el.addEventListener("click", opts.onClick);
   }
 
   public set(value: string, caption = ""): void {
