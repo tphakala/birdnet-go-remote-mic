@@ -5,7 +5,11 @@
 // monitor, and the Host health monitor.
 package monitor
 
-import "github.com/tphakala/birdnet-go-remote-mic/internal/config"
+import (
+	"time"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+)
 
 // Settings is an immutable snapshot of the notification thresholds and the
 // per-device quiet-alert opt-out. A monitor holds it in an atomic pointer and
@@ -68,6 +72,28 @@ func (g Group) Apply(s *Settings) {
 	for _, m := range g {
 		if m != nil {
 			m.Apply(s)
+		}
+	}
+}
+
+// Wait blocks until every member that has a Done channel is done, or until
+// timeout has passed for the whole group. Members without one (the signal
+// monitor and the update manager stop on their context but are not waited for)
+// are skipped. The appliance calls it after cancelling the monitors' context, so
+// the last log lines a waited-for monitor owes are written before the process
+// exits.
+func (g Group) Wait(timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for _, m := range g {
+		d, ok := m.(interface{ Done() <-chan struct{} })
+		if !ok {
+			continue
+		}
+		select {
+		case <-d.Done():
+		case <-timer.C:
+			return
 		}
 	}
 }

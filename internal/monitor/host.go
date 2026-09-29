@@ -179,12 +179,26 @@ type Host struct {
 	reader   HostReader
 	counters CounterSource
 	set      atomic.Pointer[Settings]
+	// done is closed when the RunHost goroutine has returned; a Host nothing
+	// drives has nothing to wait for, so NewHost starts it closed.
+	done <-chan struct{}
 
 	// Owned by the poll goroutine.
 	applied                  *Settings
 	cpu, mem, temp, disk, vt *hostCond
 	devs                     map[string]*counterState
 }
+
+// closedChan is the Done of a Host that no goroutine drives.
+var closedChan = func() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+// Done returns a channel that is closed once the RunHost goroutine has returned,
+// its shutdown flush included.
+func (h *Host) Done() <-chan struct{} { return h.done }
 
 // Host implements the appliance's Monitors handle.
 var _ Monitors = (*Host)(nil)
@@ -216,7 +230,7 @@ func WithHostLogf(fn func(format string, args ...any)) HostOption {
 // NewHost builds a host monitor publishing to center. A nil reader or counter
 // source disables that half of the monitor. A nil center becomes a typed-nil
 // *notify.Center (a no-op Publisher), matching NewSignal. Call poll on a ticker
-// (RunHost does this) to drive it.
+// (RunHost does this) to drive it; until then its Done channel is already closed.
 func NewHost(reader HostReader, counters CounterSource, center notify.Publisher, s *Settings, opts ...HostOption) *Host {
 	if center == nil {
 		center = (*notify.Center)(nil)
@@ -225,6 +239,7 @@ func NewHost(reader HostReader, counters CounterSource, center notify.Publisher,
 		pub:      center,
 		clock:    time.Now,
 		logf:     log.Printf,
+		done:     closedChan,
 		reader:   reader,
 		counters: counters,
 		cpu:      newHostCond(hostCPUKey, cpuEnterAfter, cpuClearAfter),
@@ -250,16 +265,21 @@ func (h *Host) Apply(set *Settings) {
 }
 
 // RunHost builds the monitor and polls it every hostPollInterval until ctx is
-// done. It returns the monitor so the caller can hand it to the appliance as one
-// of its Monitors.
-func RunHost(ctx context.Context, reader HostReader, counters CounterSource, center notify.Publisher, s *Settings) *Host {
-	h := NewHost(reader, counters, center, s)
+// done, then writes the overrun lines its devices still owe. It returns the
+// monitor so the caller can hand it to the appliance as one of its Monitors;
+// the monitor's Done channel closes once that goroutine has returned.
+func RunHost(ctx context.Context, reader HostReader, counters CounterSource, center notify.Publisher, s *Settings, opts ...HostOption) *Host {
+	h := NewHost(reader, counters, center, s, opts...)
+	done := make(chan struct{})
+	h.done = done
 	go func() {
+		defer close(done)
 		t := time.NewTicker(hostPollInterval)
 		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
+				h.flushOverruns("appliance stopping")
 				return
 			case <-t.C:
 				h.poll()
@@ -562,10 +582,10 @@ func (h *Host) observeDrops(st *counterState, now time.Time, name string, droppe
 // overrunWindow, and an active condition clears after overrunClearAfter with
 // none. A restarted runtime's counter started at zero after the poll that last
 // saw its predecessor, so its whole count is new since that poll. Overruns short
-// of the onset are logged (see logOverruns); once the condition is raised its
-// onset line speaks for them, and the line that ends it (the clear here, or a
-// resolve in endOverruns) reports how many came since the check that raised
-// it, that check's own included. The quiet dwell is judged per poll, as
+// of the onset are logged (see logOverruns); the onset line reports the ones
+// still held back by that rate limit, and the line that ends the condition
+// (the clear here, or a resolve in endOverruns) reports how many came since the
+// check that raised it, that check's own included. The quiet dwell is judged per poll, as
 // notify.Flap does: the poll that completes the dwell clears the
 // condition before counting its own overruns, which start a fresh window, so a
 // burst of overrunOnsetCount there clears and re-raises it in the same poll.
@@ -588,15 +608,20 @@ func (h *Host) observeOverruns(st *counterState, now time.Time, name string, tot
 	// Sweep has already cleared a quiet-ended flap at this now, so Event can
 	// only report an onset.
 	for range min(delta, overrunOnsetCount) {
-		if st.ov.Event(now) == notify.TransitionOnset {
-			h.logf("device %q: at least %d capture overruns within %s, audio lost; raising an overrun warning", name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)))
-			h.pub.Onset(overrunsOnset(name))
-			// The onset line speaks for any overruns not yet logged, and after the
-			// clear the first overrun is logged at once again. The episode starts
-			// with this poll's overruns.
-			st.ovUnlogged, st.ovLogAt, st.ovEpisode = 0, time.Time{}, delta
-			return
+		if st.ov.Event(now) != notify.TransitionOnset {
+			continue
 		}
+		held := ""
+		if st.ovUnlogged > 0 {
+			held = fmt.Sprintf(" (%d earlier overrun(s) not yet reported)", st.ovUnlogged)
+		}
+		h.logf("device %q: at least %d capture overruns within %s, audio lost; raising an overrun warning%s", name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)), held)
+		h.pub.Onset(overrunsOnset(name))
+		// The onset line reports any overruns not yet logged, and after the
+		// clear the first overrun is logged at once again. The episode starts
+		// with this poll's overruns.
+		st.ovUnlogged, st.ovLogAt, st.ovEpisode = 0, time.Time{}, delta
+		return
 	}
 	if st.ov.Active() {
 		st.ovEpisode += delta
@@ -626,6 +651,21 @@ func (h *Host) logOverruns(st *counterState, now time.Time, name string, delta u
 		return
 	}
 	st.ovUnlogged, st.ovLogAt = 0, now
+}
+
+// flushOverruns writes the line every tracked device's overrun state owes, for
+// the appliance shutting down. It only logs: no notification is resolved, since
+// the center goes away with the process, so a raised warning is reported as
+// still raised. Counts are as of the last poll, as they are for a device stop.
+// It runs on the RunHost goroutine, the only one that touches the device state.
+func (h *Host) flushOverruns(reason string) {
+	for name, st := range h.devs {
+		if st.ov.Active() {
+			h.logf("device %q: %s; overrun warning still raised after %d overrun(s) since the check that raised it", name, reason, st.ovEpisode)
+			continue
+		}
+		h.endOverruns(st, name, reason)
+	}
 }
 
 // endDevice resolves a device's active counter conditions with reason and

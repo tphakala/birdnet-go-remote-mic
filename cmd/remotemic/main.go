@@ -406,6 +406,10 @@ func runLockState(ep *mgmtEndpoint) runlock.State {
 	return runlock.State{PID: pid}
 }
 
+// monitorStopWait bounds how long run() waits for the condition monitors to
+// finish their shutdown work, so a stuck one cannot hold the process up.
+const monitorStopWait = 2 * time.Second
+
 // runLockRetryDelay is how long runLockPublisher waits before rewriting a run
 // lock whose last write failed.
 const runLockRetryDelay = 30 * time.Second
@@ -773,6 +777,14 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 		go updates.Run(ctx)
 	}
 	app.monitors = group
+	// The monitors stop on ctx. Wait on the way out (after closeAll, which is
+	// registered below) for the ones that report a Done channel, today only the
+	// host monitor, so the overrun lines it owes at shutdown reach the journal
+	// before the process exits.
+	defer func() {
+		stop()
+		group.Wait(monitorStopWait)
+	}()
 
 	// Sweep stale client-flap warnings: the connect-driven detector only clears on
 	// the next connect after the quiet window, which a client that settles into a
