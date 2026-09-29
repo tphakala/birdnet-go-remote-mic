@@ -10,9 +10,10 @@ remove) ;;
 *) exit 0 ;;
 esac
 command -v systemctl >/dev/null 2>&1 || exit 0
-unit=$(systemctl cat remote-mic.service 2>/dev/null) || exit 0
-case "$unit" in
-*"ExecStart=/usr/bin/remote-mic serve"*)
+# The effective ExecStart, drop-ins included, not the unit file's own text.
+exec_start=$(systemctl show --property=ExecStart --value remote-mic.service 2>/dev/null) || exit 0
+case "$exec_start" in
+*"path=/usr/bin/remote-mic ;"*)
 	systemctl disable --now remote-mic.service || true
 	echo "remote-mic.service is stopped and disabled. Reinstall the package and run: sudo remote-mic service install" >&2
 	;;

@@ -58,11 +58,12 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		lexists:    func(string) (bool, error) { return false, nil },
 		syncDir:    func(dir string) { *events = append(*events, "syncdir "+dir) },
 
-		packageOwns:   func(string) bool { return false },
-		installed:     func() (ServiceSpec, error) { return ServiceSpec{}, nil },
-		removeStaging: func(dir string) error { *events = append(*events, "rmstaging "+dir); return nil },
-		isRegular:     func(string) bool { return true },
-		warn:          io.Discard,
+		packageOwns:     func(string) bool { return false },
+		installed:       func() (ServiceSpec, error) { return ServiceSpec{}, nil },
+		execStartDropIn: func() (string, error) { return "", nil },
+		removeStaging:   func(dir string) error { *events = append(*events, "rmstaging "+dir); return nil },
+		isRegular:       func(string) bool { return true },
+		warn:            io.Discard,
 	}
 }
 

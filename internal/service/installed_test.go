@@ -469,3 +469,30 @@ func TestReleasedUnitTemplates(t *testing.T) {
 		}
 	}
 }
+
+// TestExecStartDropIn asserts a drop-in that sets ExecStart= is reported, and
+// one that only sets the environment, or no drop-in at all, is not.
+func TestExecStartDropIn(t *testing.T) {
+	base := "/etc/systemd/system/" + DefaultUnitName
+	unit := "[Service]\nExecStart=/usr/bin/remote-mic serve\n"
+	unitTree(t, map[string]string{base: unit})
+	if got, err := execStartDropIn(DefaultUnitName); err != nil || got != "" {
+		t.Fatalf("no drop-in: %q, %v", got, err)
+	}
+	unitTree(t, map[string]string{base: unit, base + ".d/env.conf": "[Service]\nEnvironment=A=b\n"})
+	if got, err := execStartDropIn(DefaultUnitName); err != nil || got != "" {
+		t.Fatalf("environment-only drop-in: %q, %v", got, err)
+	}
+	unitTree(t, map[string]string{base: unit, base + ".d/exec.conf": "[Service]\nExecStart=\nExecStart=/opt/wrap\n"})
+	if got, err := execStartDropIn(DefaultUnitName); err != nil || !strings.HasSuffix(got, "exec.conf") {
+		t.Fatalf("overriding drop-in: %q, %v, want its path", got, err)
+	}
+	unitTree(t, nil)
+	if got, err := execStartDropIn(DefaultUnitName); err != nil || got != "" {
+		t.Fatalf("no unit: %q, %v", got, err)
+	}
+	unitTree(t, map[string]string{base: "\ufeff" + unit})
+	if _, err := execStartDropIn(DefaultUnitName); err == nil {
+		t.Error("a unit that cannot be read reported no error")
+	}
+}

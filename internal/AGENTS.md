@@ -76,9 +76,11 @@ not break.
   binary the .deb owns (`PackageOwns`, a dpkg file list) it runs that binary in
   place instead: no copy, no updater units, no staging directory, and it
   migrates an earlier copy install (locked, downgrade-guarded, refused while
-  an updater runs, removed once the unit runs the package binary); purge
-  leaves a package-owned binary to dpkg. `packaging/deb/{postinst,prerm}`
-  only try-restart such a unit after an upgrade and stop it on removal.
+  an updater runs, removed once the unit runs the package binary; a drop-in
+  that sets `ExecStart=` is refused); purge leaves a package-owned binary to
+  dpkg. `packaging/deb/{postinst,prerm}` read the effective `ExecStart` from
+  `systemctl show` (drop-ins included) and only try-restart such a unit after
+  an upgrade and stop it on removal.
 - `runlock`: advisory lock at `<config path>.lock` marking a live appliance,
   so token commands use its API instead of editing its config.
 - `atomicfile`: atomic durable file replace (config, certs).

@@ -106,6 +106,7 @@ type fakeInit struct {
 	activeUnits map[string]bool
 	restartErr  error
 	reloadErr   error
+	activeErr   map[string]error
 	enableErr   error
 }
 
@@ -142,6 +143,9 @@ func (f *fakeInit) ResetFailed(unit string) error {
 
 func (f *fakeInit) IsEnabled(string) (bool, error) { return f.enabled, nil }
 func (f *fakeInit) IsActive(unit string) (bool, error) {
+	if err := f.activeErr[unit]; err != nil {
+		return false, err
+	}
 	if f.activeUnits != nil {
 		return f.activeUnits[unit], nil
 	}

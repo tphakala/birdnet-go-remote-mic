@@ -327,6 +327,39 @@ func TestInstallPackagedFailures(t *testing.T) {
 	}
 }
 
+// TestInstallPackagedRefusesWhatItCannotSee asserts that an unreadable
+// systemd state, and a drop-in that overrides ExecStart=, stop the install
+// before anything is written, instead of being read as "not running".
+func TestInstallPackagedRefusesWhatItCannotSee(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name    string
+		break_  func(in *Installer, init *fakeInit)
+		wantErr string
+	}{
+		{"updater state", func(_ *Installer, init *fakeInit) { init.activeErr = map[string]error{UpdateServiceUnit: boom} }, "whether an update is running"},
+		{"appliance state", func(_ *Installer, init *fakeInit) { init.activeErr = map[string]error{DefaultUnitName: boom} }, "whether remote-mic.service is running"},
+		{"drop-in overrides ExecStart", func(in *Installer, _ *fakeInit) {
+			in.execStartDropIn = func() (string, error) { return "/etc/systemd/system/remote-mic.service.d/x.conf", nil }
+		}, "x.conf sets ExecStart="},
+		{"unit cannot be read", func(in *Installer, _ *fakeInit) { in.execStartDropIn = func() (string, error) { return "", boom } }, "cannot tell what remote-mic.service runs"},
+	} {
+		var events []string
+		init := &fakeInit{events: &events, present: true}
+		in := packagedInstaller(&events, init, copyInstall(), nil)
+		tc.break_(in, init)
+		err := in.Install(true)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: Install = %v, want an error containing %q", tc.name, err, tc.wantErr)
+		}
+		for _, e := range events {
+			if strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "remove ") || strings.HasPrefix(e, "enable") {
+				t.Errorf("%s: event %q after a refusal", tc.name, e)
+			}
+		}
+	}
+}
+
 // TestInstallPackagedWarnsAndGoesOn asserts that a staging directory or an old
 // copy that cannot be removed only warns.
 func TestInstallPackagedWarnsAndGoesOn(t *testing.T) {

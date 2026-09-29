@@ -85,6 +85,9 @@ type Installer struct {
 	// installed reads the spec the installed unit was written from
 	// (InstalledSpec), for the copy an earlier install left.
 	installed func() (ServiceSpec, error)
+	// execStartDropIn names a drop-in of the appliance unit that sets
+	// ExecStart= (execStartDropIn), or "".
+	execStartDropIn func() (string, error)
 	// removeStaging removes the update staging directory in the state
 	// directory, which a package-managed install has no use for.
 	removeStaging func(stateDir string) error
@@ -97,9 +100,10 @@ type Installer struct {
 // NewInstaller builds an Installer for spec with the production init system,
 // command runner, detected platform, and real filesystem, user and
 // installed-version operations (running the installed binary only when it is
-// a root-only regular file), the lock shared with the root updater, and the
-// dpkg file lists that say whether the .deb package owns a binary. The caller
-// sets Version and AllowDowngrade.
+// a root-only regular file), the lock shared with the root updater, the
+// dpkg file lists that say whether the .deb package owns a binary, and the
+// installed unit's files, read for a drop-in that overrides ExecStart=. The
+// caller sets Version and AllowDowngrade.
 func NewInstaller(spec ServiceSpec) *Installer {
 	return &Installer{
 		Spec:       spec,
@@ -126,11 +130,12 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		lexists:    lexists,
 		syncDir:    atomicfile.SyncDir,
 
-		packageOwns:   PackageOwns,
-		installed:     InstalledSpec,
-		removeStaging: removeStagingDir,
-		isRegular:     isRegularFile,
-		warn:          os.Stderr,
+		packageOwns:     PackageOwns,
+		installed:       InstalledSpec,
+		execStartDropIn: func() (string, error) { return execStartDropIn(DefaultUnitName) },
+		removeStaging:   removeStagingDir,
+		isRegular:       isRegularFile,
+		warn:            os.Stderr,
 	}
 }
 
@@ -290,6 +295,10 @@ func (in *Installer) Install(now bool) error {
 // owns) and no staging directory is kept. It refuses to run for a binary
 // other than the packaged one at s.BinPath, since the package owns that path.
 //
+// A drop-in of the appliance unit that sets ExecStart= (execStartDropIn) would
+// keep the appliance running whatever it names, so it is refused, and so is a
+// systemd state that cannot be read (whether an updater or the appliance runs).
+//
 // An earlier install may have copied the binary elsewhere (the default is
 // DefaultBinPath) and pointed the unit and the updater at the copy; this
 // migrates it. The copy is left alone unless the installed unit names it, and
@@ -313,12 +322,33 @@ func (in *Installer) installPackaged(s ServiceSpec, now bool) error {
 	if err := in.dirsOK(s); err != nil {
 		return fmt.Errorf("service: refusing to install: %w", err)
 	}
+	// A drop-in that sets ExecStart= wins over the unit written below, so the
+	// appliance would keep running whatever it names while this reports the
+	// packaged binary; refuse rather than migrate it or restart onto it.
+	dropIn, err := in.execStartDropIn()
+	if err != nil {
+		return fmt.Errorf("service: cannot tell what %s runs: %w", DefaultUnitName, err)
+	}
+	if dropIn != "" {
+		return fmt.Errorf("service: %s sets ExecStart= and would override the packaged binary; remove that setting and re-run the install", dropIn)
+	}
 	prev := in.previousCopy(s)
+	wasActive := false
 	if prev != "" {
+		// Whether the appliance runs now decides whether it is restarted onto
+		// the packaged binary; ask before anything is written.
+		if wasActive, err = in.Init.IsActive(DefaultUnitName); err != nil {
+			return fmt.Errorf("service: cannot tell whether %s is running: %w", DefaultUnitName, err)
+		}
 		// A running updater installs the copy in place; an updater from before
 		// the bin lock does not take it. Wait for it rather than pull the unit
-		// out from under it.
-		if active, _ := in.Init.IsActive(UpdateServiceUnit); active {
+		// out from under it. A unit whose state cannot be read counts as
+		// unknown, not as stopped.
+		active, err := in.Init.IsActive(UpdateServiceUnit)
+		if err != nil {
+			return fmt.Errorf("service: cannot tell whether an update is running: %w", err)
+		}
+		if active {
 			return fmt.Errorf("service: an update of %s is being installed; try again in a few minutes", prev)
 		}
 		release, err := in.lockBin(prev, func() {
@@ -362,10 +392,6 @@ func (in *Installer) installPackaged(s ServiceSpec, now bool) error {
 
 	if err := in.Init.DaemonReload(); err != nil {
 		return fmt.Errorf("service: daemon-reload: %w", err)
-	}
-	wasActive := false
-	if prev != "" {
-		wasActive, _ = in.Init.IsActive(DefaultUnitName)
 	}
 	if err := in.Init.Enable(DefaultUnitName, now); err != nil {
 		return fmt.Errorf("service: enable %s: %w", DefaultUnitName, err)

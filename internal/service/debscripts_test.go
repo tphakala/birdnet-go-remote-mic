@@ -12,7 +12,7 @@ import (
 )
 
 // runDebScript runs packaging/deb/<script> with a stub systemctl first on PATH
-// that logs its arguments and answers `cat` with unit, exiting 1 for the verb
+// that logs its arguments and answers `show` with unit, exiting 1 for the verb
 // failVerb. It returns the logged systemctl calls and the exit code.
 func runDebScript(t *testing.T, script, unit, failVerb string, args ...string) (calls []string, code int) {
 	t.Helper()
@@ -25,7 +25,7 @@ func runDebScript(t *testing.T, script, unit, failVerb string, args ...string) (
 	stub := `#!/bin/sh
 echo "$*" >> "$STUB_LOG"
 [ "$1" = "$STUB_FAIL" ] && exit 1
-[ "$1" = cat ] && { cat "$STUB_UNIT"; exit 0; }
+[ "$1" = show ] && { cat "$STUB_UNIT"; exit 0; }
 exit 0
 `
 	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(stub), 0o755); err != nil {
@@ -54,9 +54,13 @@ exit 0
 const (
 	prevVersion  = "0.3.0"
 	argConfigure = "configure"
-	catUnit      = "cat remote-mic.service"
-	unitPackaged = "[Service]\nExecStart=/usr/bin/remote-mic serve --cert-dir=/var/lib/remote-mic\n"
-	unitCopy     = "[Service]\nExecStart=/usr/local/bin/remote-mic serve --cert-dir=/var/lib/remote-mic\n"
+	argRemove    = "remove"
+	showUnit     = "show --property=ExecStart --value remote-mic.service"
+	unitPackaged = "{ path=/usr/bin/remote-mic ; argv[]=/usr/bin/remote-mic serve --cert-dir=/var/lib/remote-mic ; ignore_errors=no }\n"
+	unitCopy     = "{ path=/usr/local/bin/remote-mic ; argv[]=/usr/local/bin/remote-mic serve --cert-dir=/var/lib/remote-mic ; ignore_errors=no }\n"
+	// unitOverridden is a unit whose drop-in replaced ExecStart with a wrapper
+	// that merely names the packaged binary as an argument.
+	unitOverridden = "{ path=/opt/wrap ; argv[]=/opt/wrap /usr/bin/remote-mic serve ; ignore_errors=no }\n"
 )
 
 func TestDebPostinst(t *testing.T) {
@@ -68,12 +72,13 @@ func TestDebPostinst(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"upgrade of a packaged unit restarts only if running", unitPackaged, "", []string{argConfigure, prevVersion}, []string{catUnit, "try-restart remote-mic.service"}},
+		{"upgrade of a packaged unit restarts only if running", unitPackaged, "", []string{argConfigure, prevVersion}, []string{showUnit, "try-restart remote-mic.service"}},
 		{"first install touches nothing", unitPackaged, "", []string{argConfigure}, nil},
-		{"a unit that runs a copy is left alone", unitCopy, "", []string{argConfigure, prevVersion}, []string{catUnit}},
-		{"no unit", "", "cat", []string{argConfigure, prevVersion}, []string{catUnit}},
+		{"a unit that runs a copy is left alone", unitCopy, "", []string{argConfigure, prevVersion}, []string{showUnit}},
+		{"a drop-in that replaces ExecStart is left alone", unitOverridden, "", []string{argConfigure, prevVersion}, []string{showUnit}},
+		{"no unit", "", "show", []string{argConfigure, prevVersion}, []string{showUnit}},
 		{"abort-upgrade", unitPackaged, "", []string{"abort-upgrade", prevVersion}, nil},
-		{"a failing try-restart does not fail the upgrade", unitPackaged, "try-restart", []string{argConfigure, prevVersion}, []string{catUnit, "try-restart remote-mic.service"}},
+		{"a failing try-restart does not fail the upgrade", unitPackaged, "try-restart", []string{argConfigure, prevVersion}, []string{showUnit, "try-restart remote-mic.service"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -101,10 +106,11 @@ func TestDebPrerm(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"remove disables a packaged unit", unitPackaged, []string{"remove"}, []string{catUnit, "disable --now remote-mic.service"}},
+		{"remove disables a packaged unit", unitPackaged, []string{argRemove}, []string{showUnit, "disable --now remote-mic.service"}},
 		{"upgrade does nothing", unitPackaged, []string{"upgrade", "0.4.0"}, nil},
 		{"deconfigure does nothing", unitPackaged, []string{"deconfigure"}, nil},
-		{"remove leaves a copy's unit alone", unitCopy, []string{"remove"}, []string{catUnit}},
+		{"remove leaves a copy's unit alone", unitCopy, []string{argRemove}, []string{showUnit}},
+		{"remove leaves an overriding drop-in alone", unitOverridden, []string{argRemove}, []string{showUnit}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
