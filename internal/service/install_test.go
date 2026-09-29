@@ -813,6 +813,10 @@ func TestInstallRefusesADirectoryOverTheBinDir(t *testing.T) {
 	init := &fakeInit{events: &events, present: true}
 	userThere := true
 	in := testInstaller(&events, init, &userThere)
+	in.lockBin = func(string, func()) (func(), error) {
+		events = append(events, "lock")
+		return func() {}, nil
+	}
 	in.dirsOK = func(ServiceSpec) error {
 		events = append(events, evDirs)
 		return errors.New("the config directory /etc/remote-mic is /usr/local/bin")
