@@ -105,9 +105,12 @@ The output must stay plain ES modules (plus the one classic script,
   (run it alone to look at the UI: `node web/e2e/mock-server.ts <dir> [port]`);
   `sweep.ts` drives Playwright's Chromium over every view in both themes at
   320 and 1280 px and 16, 20 and 24 px browser font sizes, checking composited
-  contrast, that text scales, horizontal overflow, and steady meter rows. Run
-  it after layout, colour or type changes; keep the fixtures in step with
-  `types.ts`.
+  contrast, that text scales, horizontal overflow, and steady meter rows. It
+  also fails chosen paths (`MockServer.failPaths`, or `POST
+  /__mock/fail?paths=/api/v1/devices` on a running mock) to check where focus
+  lands when a load-error Retry recovers; a new Retry path gets a `RETRY_CASES`
+  entry. Run it after layout, colour, type or focus changes; keep the fixtures
+  in step with `types.ts`.
 
 ## Accessibility (a CI gate, not a nicety)
 

@@ -1,47 +1,70 @@
 import { showToast } from "../../components/toast.ts";
 import { api, isRefusal } from "../../lib/api.ts";
-import { availableCardKey, availableGoneMessage, availableLabel, availablePlan, capsSummary, neighbourOrder } from "../../lib/dashboard-core.ts";
+import { availableCardKey, availableCardShape, availableGoneMessage, availableLabel, availablePlan, capsSummary, neighbourOrder } from "../../lib/dashboard-core.ts";
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import type { AvailableDevice, Device } from "../../lib/types.ts";
-import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setBusy, setHidden, showUnconfirmed } from "../../lib/ui.ts";
+import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue } from "./config-queue.ts";
 
 // AvailableCard is one detected but unconfigured capture device: its name,
 // address, the id provisioning persists and its capabilities, and an Enable
-// button. It shows the fields availableCardKey covers, busy state included,
-// and is rebuilt when that key changes.
+// button. It shows the fields availableCardKey covers, busy state included.
+// A change to their text is patched in (update); the card is rebuilt only when
+// its optional rows appear or go (availableCardShape).
 class AvailableCard {
   public readonly el: HTMLElement;
   public readonly enableBtn: HTMLButtonElement;
-  public readonly key: string;
-  public readonly label: string;
+  public readonly shape: string;
+  public key: string;
+  public label: string;
+  private readonly titleEl: HTMLElement;
+  private readonly addrEl: HTMLElement;
+  private readonly capsEl: HTMLElement | null;
+  private readonly idEl: HTMLElement | null;
 
   constructor(d: AvailableDevice, key: string, enabling: boolean) {
+    this.shape = availableCardShape(d);
     this.key = key;
     this.label = availableLabel(d);
     const caps = capsSummary(d);
     this.enableBtn = button({ variant: "primary", extraClass: "available-enable", label: "Enable" });
     this.setEnabling(enabling);
+    // Fall back to the short ALSA address, not the long stable id, when the
+    // card has no friendly name: the address is what the rest of the card
+    // shows.
+    this.titleEl = h("div", { class: "device-title" }, d.friendlyName || d.hwAddr || d.device);
+    this.addrEl = h("span", { class: "mono" }, d.hwAddr ?? d.device);
+    this.capsEl = caps ? h("span", { class: "available-caps" }, caps) : null;
+    // The id provisioning persists, shown as selectable text rather than a
+    // tooltip (unreachable by keyboard, touch and screen readers), so an
+    // operator can tell which of two identical units (serial or port) this
+    // card binds.
+    this.idEl = d.hwAddr && d.device !== d.hwAddr ? h("div", { class: "available-id mono" }, deviceIdTitle(d.device)) : null;
     this.el = h("div", { class: "config-device-card available-card" },
       h("div", { class: "available-info" },
-        // Fall back to the short ALSA address, not the long stable id, when the
-        // card has no friendly name: the address is what the rest of the card
-        // shows.
-        h("div", { class: "device-title" }, d.friendlyName || d.hwAddr || d.device),
+        this.titleEl,
         h("div", { class: "available-sub" },
-          h("span", { class: "mono" }, d.hwAddr ?? d.device),
+          this.addrEl,
           d.idStable === false && h("span", { class: "available-caps" }, "no stable ID"),
-          caps && h("span", { class: "available-caps" }, caps),
+          this.capsEl,
         ),
-        // The id provisioning persists, shown as selectable text rather than a
-        // tooltip (unreachable by keyboard, touch and screen readers), so an
-        // operator can tell which of two identical units (serial or port) this
-        // card binds.
-        d.hwAddr && d.device !== d.hwAddr && h("div", { class: "available-id mono" }, deviceIdTitle(d.device)),
+        this.idEl,
       ),
       this.enableBtn,
     );
+  }
+
+  // update patches the card to a device of the same shape, writing only what
+  // changed, so a text selection in the device id survives a name change.
+  public update(d: AvailableDevice, key: string, enabling: boolean): void {
+    this.key = key;
+    this.label = availableLabel(d);
+    setText(this.titleEl, d.friendlyName || d.hwAddr || d.device);
+    setText(this.addrEl, d.hwAddr ?? d.device);
+    if (this.capsEl) setText(this.capsEl, capsSummary(d));
+    if (this.idEl) setText(this.idEl, deviceIdTitle(d.device));
+    this.setEnabling(enabling);
   }
 
   // setEnabling shows the Enable's progress. The accessible name names the
@@ -52,7 +75,8 @@ class AvailableCard {
   public setEnabling(busy: boolean): void {
     if (busy) setBusy(this.enableBtn, "Enabling...");
     else clearBusy(this.enableBtn, "Enable");
-    this.enableBtn.setAttribute("aria-label", `${busy ? "Enabling" : "Enable"} ${this.label}`);
+    const name = `${busy ? "Enabling" : "Enable"} ${this.label}`;
+    if (this.enableBtn.getAttribute("aria-label") !== name) this.enableBtn.setAttribute("aria-label", name);
   }
 }
 
@@ -77,11 +101,12 @@ export interface AvailableDevicesHost {
 // host's detected but unconfigured capture devices, each with an Enable button
 // that provisions it. The whole section hides when nothing is available, so a
 // fully configured host shows no empty panel, and while the device rack above
-// it is still loading (see syncShown). Cards are keyed by device id and
-// rebuilt only when what they show changed (availablePlan), so a render keeps
-// the operator's text selection (the device id is there to be copied) and
-// keyboard focus on the cards it leaves alone. A rebuilt card that held focus
-// hands it to its new Enable button.
+// it is still loading (see syncShown). Cards are keyed by device id. A change
+// to what one shows is patched in place, and only a card whose optional rows
+// appear or go is rebuilt (availablePlan), so a render keeps the operator's
+// text selection (the device id is there to be copied) and keyboard focus on
+// the cards it leaves alone. A rebuilt card that held focus hands it to its new
+// Enable button.
 export class AvailableDevices {
   private readonly section: HTMLElement | null;
   private readonly rack: HTMLElement | null;
@@ -118,8 +143,8 @@ export class AvailableDevices {
   public render(available: AvailableDevice[]): void {
     if (!this.rack || !this.section) return;
     const rack = this.rack;
-    const next = available.map((d) => ({ d, id: d.device, key: availableCardKey(d, this.provisioning.has(d.device)) }));
-    const shown = new Map([...this.cards].map(([id, c]) => [id, c.key]));
+    const next = available.map((d) => ({ d, id: d.device, shape: availableCardShape(d), key: availableCardKey(d, this.provisioning.has(d.device)) }));
+    const shown = new Map([...this.cards].map(([id, c]) => [id, { shape: c.shape, key: c.key }]));
     const plan = availablePlan(shown, next);
 
     // A removed card that held focus: during its own Enable the Enable moves
@@ -140,7 +165,9 @@ export class AvailableDevices {
       this.cards.delete(id);
     }
     const build = new Set(plan.build);
+    const patch = new Set(plan.patch);
     for (const { d, id, key } of next) {
+      if (patch.has(id)) this.cards.get(id)?.update(d, key, this.provisioning.has(id));
       if (!build.has(id)) continue;
       const old = this.cards.get(id);
       const card = new AvailableCard(d, key, this.provisioning.has(id));
@@ -244,9 +271,10 @@ export class AvailableDevices {
       const lost = this.takeFocusLost(d.device);
       card.setEnabling(false);
       // setEnabling restores the card built before the click. If a render
-      // during the Enable rebuilt the card busy instead (its key includes the
-      // in-flight state), this render rebuilds it idle, since the key changed
-      // back. A device no longer listed (the usual success) has no card left.
+      // during the Enable rebuilt the card busy instead, or patched it (its key
+      // includes the in-flight state), this render shows it idle, since the key
+      // changed back. A device no longer listed (the usual success) has no
+      // card left.
       this.render(store.getState().available);
       if (lost && focusDropped()) {
         // Listed again by now (a poll brought it back): its own card takes

@@ -422,11 +422,24 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+export interface AvailableEdit {
+  friendlyName?: string;
+  maxRate?: number;
+}
+
 export interface MockServer {
   url: string;
   // pushNotification sends the live error notification to every open event
   // stream, so the UI raises its error toast.
   pushNotification(): void;
+  // failPaths makes GET requests to these paths (for example "/api/v1/devices"
+  // or "/licenses.json") answer 503, until it is called again; an empty list
+  // ends the failure.
+  failPaths(paths: readonly string[]): void;
+  // editAvailable changes the one available device the way a poll would find
+  // it changed (a new friendly name, a lower top probed rate), until it is
+  // called again; no argument puts the fixture back.
+  editAvailable(edit?: AvailableEdit): void;
   close(): Promise<void>;
 }
 
@@ -440,7 +453,10 @@ function eventFilter(req: IncomingMessage): Set<string> | null {
 }
 
 // startMockServer serves distDir and the mock API on 127.0.0.1:port (0 picks a
-// free port).
+// free port). Three test hooks sit beside the API: POST /__mock/notify pushes
+// the live error notification; POST /__mock/fail (or the returned failPaths)
+// makes chosen GET paths answer 503; and POST /__mock/edit-available (or
+// editAvailable) changes the available device between polls.
 export async function startMockServer(distDir: string, port: number = DEFAULT_PORT): Promise<MockServer> {
   const root = resolve(distDir);
   // Each open event stream, with the event types its ?events= filter asked
@@ -460,6 +476,11 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
     // Heartbeats pass every filter.
     for (const res of streams.keys()) res.write("event: heartbeat\ndata: {}\n\n");
   }, 15_000);
+
+  // Paths whose GET answers 503, as the appliance does when a read fails.
+  let failing = new Set<string>();
+  // What GET /devices/available answers: the fixture, or an edited copy.
+  let available: AvailableDevice[] = AVAILABLE;
 
   async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
     const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname).replace(/^\/+/, "");
@@ -487,7 +508,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
       case "GET /devices":
         return sendJSON(res, 200, DEVICES);
       case "GET /devices/available":
-        return sendJSON(res, 200, AVAILABLE);
+        return sendJSON(res, 200, available);
       case "GET /config":
         return sendJSON(res, 200, CONFIG);
       case "GET /system":
@@ -544,11 +565,31 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
     const url = new URL(req.url ?? "/", "http://mock");
     const method = req.method ?? "GET";
     let work: Promise<void>;
-    if (url.pathname.startsWith("/api/v1/")) {
+    if (method === "GET" && failing.has(url.pathname)) {
+      res.writeHead(503, { "Content-Type": "application/problem+json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ title: "Service Unavailable", status: 503, detail: "failing by request of the sweep" }));
+      return;
+    } else if (url.pathname.startsWith("/api/v1/")) {
       work = serveAPI(method, url.pathname.slice("/api/v1".length), req, res);
     } else if (url.pathname === "/__mock/notify" && method === "POST") {
       // Test hook for the sweep; not part of the appliance API.
       pushNotification();
+      res.writeHead(204);
+      res.end();
+      return;
+    } else if (url.pathname === "/__mock/fail" && method === "POST") {
+      // Test hook for manual runs: ?paths=/api/v1/devices,/licenses.json fails
+      // those paths, and no paths ends the failure.
+      failPaths((url.searchParams.get("paths") ?? "").split(",").filter(Boolean));
+      res.writeHead(204);
+      res.end();
+      return;
+    } else if (url.pathname === "/__mock/edit-available" && method === "POST") {
+      // Test hook for manual runs: ?name=&maxRate= edits the available device,
+      // and no parameters put it back.
+      const name = url.searchParams.get("name");
+      const rate = url.searchParams.get("maxRate");
+      editAvailable(name === null && rate === null ? undefined : { friendlyName: name ?? undefined, maxRate: rate === null ? undefined : Number(rate) });
       res.writeHead(204);
       res.end();
       return;
@@ -561,6 +602,19 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
       else res.end();
     });
   });
+
+  function failPaths(paths: readonly string[]): void {
+    failing = new Set(paths);
+  }
+
+  function editAvailable(edit?: AvailableEdit): void {
+    const { friendlyName, maxRate } = edit ?? {};
+    available = AVAILABLE.map((d) => ({
+      ...d,
+      friendlyName: friendlyName ?? d.friendlyName,
+      supportedRates: maxRate === undefined ? d.supportedRates : d.supportedRates?.filter((r) => r <= maxRate),
+    }));
+  }
 
   function pushNotification(): void {
     send(NOTIFICATION_EVENT, `event: ${NOTIFICATION_EVENT}\ndata: ${JSON.stringify(liveNotification())}\n\n`);
@@ -576,6 +630,8 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
   return {
     url: `http://127.0.0.1:${actualPort}`,
     pushNotification,
+    failPaths,
+    editAvailable,
     close(): Promise<void> {
       clearInterval(levelTimer);
       clearInterval(heartbeatTimer);

@@ -12,6 +12,9 @@ export interface Page {
   click(selector: string): Promise<void>;
   waitForSelector(selector: string, options?: { state?: "attached" | "visible"; timeout?: number }): Promise<unknown>;
   waitForTimeout(ms: number): Promise<void>;
+  waitForFunction<A>(fn: (arg: A) => unknown, arg: A, options?: { timeout?: number }): Promise<unknown>;
+  focus(selector: string): Promise<void>;
+  reload(): Promise<unknown>;
   evaluate<R>(fn: () => R | Promise<R>): Promise<R>;
   evaluate<R, A>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R>;
   addInitScript<A>(fn: (arg: A) => void, arg?: A): Promise<void>;

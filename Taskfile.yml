@@ -185,7 +185,7 @@ tasks:
       - task: web:build
 
   web:sweep:
-    desc: Rendered UI sweep in Chromium against a mock API at 16, 20 and 24 px browser font sizes (composited contrast, text scaling, horizontal overflow, meter row stability); pass flags after --, e.g. task web:sweep -- --only-view system
+    desc: Rendered UI sweep in Chromium against a mock API at 16, 20 and 24 px browser font sizes (composited contrast, text scaling, horizontal overflow, meter row stability, load-error Retry focus); pass flags after --, e.g. task web:sweep -- --only-view system
     # Optional and not part of web:verify or check: it needs Playwright's
     # Chromium build in ~/.cache/ms-playwright (`npx -p playwright@1.59.0
     # playwright install chromium` fetches it once). The UI is compiled into a
