@@ -494,6 +494,56 @@ func CheckRootOnly(dir string) error {
 	return checkRootOnly(dir, fileOwner)
 }
 
+// PathDirs resolves dir one component at a time, the way the kernel does and
+// as CheckRootOnly walks it, and returns every real directory it passes: "/",
+// each directory a symlink on the way leads through, and the one it ends at.
+// Whoever owns any of them can change what dir resolves to.
+func PathDirs(dir string) ([]string, error) {
+	if !filepath.IsAbs(dir) {
+		return nil, fmt.Errorf("%s is not an absolute path", dir)
+	}
+	dirs := []string{"/"}
+	pending := strings.Split(strings.Trim(dir, "/"), "/")
+	cur, hops := "/", 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur) // cur is a real directory, already listed
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return nil, err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			hops++
+			if hops > maxSymlinkHops {
+				return nil, fmt.Errorf("%s: too many levels of symbolic links", dir)
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return nil, err
+			}
+			if filepath.IsAbs(target) {
+				cur = "/"
+			}
+			pending = append(strings.Split(strings.Trim(target, "/"), "/"), pending...)
+			continue
+		}
+		if !fi.IsDir() {
+			return nil, fmt.Errorf("%s is not a directory", next)
+		}
+		cur = next
+		dirs = append(dirs, cur)
+	}
+	return dirs, nil
+}
+
 // maxSymlinkHops bounds the resolution, like the kernel's ELOOP limit.
 const maxSymlinkHops = 40
 

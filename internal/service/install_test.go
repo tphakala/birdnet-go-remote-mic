@@ -1282,3 +1282,53 @@ func TestCheckNotOverBinDirReportsUnreadablePaths(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckNotOverBinDirFollowsTheNamedPath pins that a config or state
+// directory holding a symlink on the way to the bin directory is refused,
+// however many links the way takes, not only one on the resolved path.
+func TestCheckNotOverBinDirFollowsTheNamedPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mk := func(p string) string {
+		t.Helper()
+		p = filepath.Join(root, p)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	link := func(target, name string) string {
+		t.Helper()
+		name = filepath.Join(root, name)
+		if err := os.Symlink(target, name); err != nil {
+			t.Fatal(err)
+		}
+		return name
+	}
+	// One hop: tools/bin leads to srv/bin; the config dir is tools.
+	mk("srv/bin")
+	tools := mk("tools")
+	link(root+"/srv/bin", "tools/bin")
+	cfgTools := link(tools, "cfg-tools")
+	// Two hops: a/bin leads to b/bin, which leads to c/bin; the config dir is b.
+	mk("a")
+	b := mk("b")
+	mk("c/bin")
+	link(root+"/c/bin", "b/bin")
+	link(root+"/b/bin", "a/bin")
+	cfgB := link(b, "cfg-b")
+	other := mk("other")
+	tests := []struct {
+		name string
+		spec ServiceSpec
+	}{
+		{"one link", ServiceSpec{BinPath: filepath.Join(tools, "bin", "remote-mic"), ConfigPath: filepath.Join(cfgTools, "config.yaml"), StateDir: other}},
+		{"a chain of links", ServiceSpec{BinPath: filepath.Join(root, "a", "bin", "remote-mic"), ConfigPath: filepath.Join(cfgB, "config.yaml"), StateDir: other}},
+	}
+	for _, tc := range tests {
+		err := checkNotOverBinDir(tc.spec)
+		if err == nil || !strings.Contains(err.Error(), labelConfigDir) {
+			t.Errorf("%s: checkNotOverBinDir = %v, want a refusal naming the config directory", tc.name, err)
+		}
+	}
+}

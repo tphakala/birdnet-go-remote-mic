@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1220,5 +1221,55 @@ func TestApplyAcceptsExtraVersionOutput(t *testing.T) {
 	}
 	if got := env.installed(t); got != newBinary {
 		t.Errorf("installed %q, want the new binary", got)
+	}
+}
+
+// TestPathDirs pins the directories a resolution passes: those a link leads
+// through, with ".." taken after the link as the kernel does, and the refusal
+// of a loop and of a file on the way.
+func TestPathDirs(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"x/y", "z"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// z/l leads to x/y; "l/.." is then x, not z.
+	if err := os.Symlink(root+"/x/y", root+"/z/l"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := PathDirs(root + "/z/l/..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/", filepath.Join(root, "z"), filepath.Join(root, "x"), root + "/x/y"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("PathDirs = %v, want it to contain %s", got, want)
+		}
+	}
+	if err := os.Symlink("loop", filepath.Join(root, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PathDirs(filepath.Join(root, "loop")); err == nil || !strings.Contains(err.Error(), "too many levels") {
+		t.Errorf("PathDirs(loop) = %v, want a hop limit error", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PathDirs(filepath.Join(root, "f", "d")); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("PathDirs(file/d) = %v, want not a directory", err)
+	}
+	if got, err := PathDirs(root + "/./x//y"); err != nil || !slices.Contains(got, root+"/x/y") {
+		t.Errorf("PathDirs(./x//y) = %v, %v, want x/y resolved", got, err)
+	}
+	if _, err := PathDirs(root + "/missing/d"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("PathDirs(missing) = %v, want not exist", err)
+	}
+	if _, err := PathDirs("relative"); err == nil {
+		t.Error("PathDirs accepted a relative path")
 	}
 }

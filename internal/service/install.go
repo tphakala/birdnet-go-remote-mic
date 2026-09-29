@@ -477,8 +477,10 @@ func checkBinDir(dir string) error {
 }
 
 // checkNotOverBinDir refuses a config or state directory that is, through a
-// link or a mount, the bin directory or a directory above it. Install hands
-// both to the service user and purge deletes both, so either would reach the
+// link or a mount, a directory on the way to the bin directory: the bin
+// directory itself, a directory above it, or one a symlink on its path leads
+// through (update.PathDirs). Install hands both to the service user and purge
+// deletes both, and the owner of any directory on that way can change which
 // binary the root updater runs. Directories are compared by identity, not by
 // name, which a link or bind mount gets past. A config or state directory
 // that does not exist yet is skipped (install creates it fresh), and so is
@@ -500,27 +502,26 @@ func checkNotOverBinDir(s ServiceSpec) error {
 		d.info = info
 		dirs = append(dirs, d)
 	}
-	binDir, err := filepath.EvalSymlinks(filepath.Dir(s.BinPath))
+	binDir := filepath.Dir(s.BinPath)
+	onPath, err := update.PathDirs(binDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("resolve the bin directory: %w", err)
 	}
-	for above := binDir; ; above = filepath.Dir(above) {
-		info, err := os.Stat(above)
+	for _, p := range onPath {
+		info, err := os.Stat(p)
 		if err != nil {
 			return fmt.Errorf("resolve the bin directory: %w", err)
 		}
 		for _, d := range dirs {
 			if os.SameFile(d.info, info) {
-				return fmt.Errorf("the %s %s is %s, which holds the bin directory %s; the service user would own the binary the root updater runs", d.label, d.path, above, binDir)
+				return fmt.Errorf("the %s %s is %s, which is on the way to the bin directory %s; the service user could change the binary the root updater runs", d.label, d.path, p, binDir)
 			}
 		}
-		if filepath.Dir(above) == above {
-			return nil
-		}
 	}
+	return nil
 }
 
 // ensureBinDir creates the bin directory and any missing parents with mode
