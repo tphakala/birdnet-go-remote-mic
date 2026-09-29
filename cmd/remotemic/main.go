@@ -720,6 +720,9 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// The release update check and the one-button update exist only with the
 	// management API, their only consumer besides the notification bell.
 	updateDir := updateDirFor(&cfg, cfgPath)
+	// Before anything here can write a request of its own, withdraw one an
+	// earlier run left unclaimed, which nothing would otherwise track.
+	update.WithdrawOrphanedRequest(updateDir, version, center, log.Printf)
 	var updates *update.Manager
 	if mgmtEnabled {
 		updates = newUpdateManager(ctx, updateDir, center)
