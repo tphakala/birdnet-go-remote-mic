@@ -70,7 +70,9 @@ not break.
   installed binary still fails the root-only check. Under the bin lock it
   clears the kept copy (`.prev`) of an interrupted update before it replaces
   the binary and its journal (`<bin>.pending`) after; it also refuses a config or
-  state file with a second hard link instead of chowning it.
+  state file with a second hard link instead of chowning it, and a config or
+  state directory that is the bin directory or one above it (compared by
+  identity, so links and bind mounts count; purge checks the same).
 - `runlock`: advisory lock at `<config path>.lock` marking a live appliance,
   so token commands use its API instead of editing its config.
 - `atomicfile`: atomic durable file replace (config, certs).
@@ -82,7 +84,11 @@ not break.
   `remote-mic-update.path`), which re-verifies everything through an
   `os.Root`, swaps the binary, and rolls back unless the new version writes
   its health file from the unit's main process and stays up for a settle
-  period; `Boot` reports the outcome and writes that file. The file names and
+  period; `Boot` reports the outcome and writes that file.
+  `WithdrawOrphanedRequest` runs at startup, before the API, and withdraws a
+  request an earlier process left unclaimed. `Install.RerunInstall` words
+  every hint to re-run `service install`, and names the service binary only
+  when it passes the root-only check. The file names and
   JSON fields here are contracts between versions (root file, Releases).
 - `releasemanifest`: the signed release manifest schema, Ed25519 signing and
   verification, and the trusted release keys. Platform-neutral, standard

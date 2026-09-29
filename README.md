@@ -395,7 +395,9 @@ install elsewhere.
 `service install` hands the config and state directories to the service user
 and refuses a file in them that has a second hard link, which would hand
 whatever else that link reaches to the service user too; remove the extra link
-and re-run it.
+and re-run it. It also refuses a config or state directory that is, through a
+symlink or a bind mount, the bin directory or a directory above it, and
+`service uninstall --purge` refuses the same before it removes anything.
 
 `service install` and the updater take one lock (`<bin-path>.lock`) while they
 replace the binary, so running install during an update waits for it to finish
@@ -410,7 +412,12 @@ update and the command to install it instead (`update.upgradeHint`). After
 (by default in `/usr/local/bin`, see `--bin-path`), which updates itself; the
 package's copy does not. An install that warned it was installed without
 automatic updates has no button until that is fixed and `service install` is
-run again.
+run again. The button is also off, and the hint says what to fix, while anyone
+but root could change the service's binary or a directory above it; the hint
+then names no command to run as root, only the permissions to fix and to
+re-run the install from the release binary. If the appliance restarts before
+the updater has taken an update it asked for, it withdraws the request at
+startup and reports the update as failed; start it again.
 
 ## Authentication
 
