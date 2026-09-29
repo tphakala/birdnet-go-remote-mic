@@ -4,7 +4,7 @@ import { availableCardKey, availableCardShape, availableGoneMessage, availableLa
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import type { AvailableDevice, Device } from "../../lib/types.ts";
-import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
+import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setAttr, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue } from "./config-queue.ts";
 
 // AvailableCard is one detected but unconfigured capture device: its name,
@@ -76,7 +76,7 @@ class AvailableCard {
     if (busy) setBusy(this.enableBtn, "Enabling...");
     else clearBusy(this.enableBtn, "Enable");
     const name = `${busy ? "Enabling" : "Enable"} ${this.label}`;
-    if (this.enableBtn.getAttribute("aria-label") !== name) this.enableBtn.setAttribute("aria-label", name);
+    setAttr(this.enableBtn, "aria-label", name);
   }
 }
 

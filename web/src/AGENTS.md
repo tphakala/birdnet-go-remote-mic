@@ -57,8 +57,8 @@ reconcile:
   store event (each System card with a form keeps its own `dirty` flag and
   skips a config read while it is set).
 - Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries,
-  create each once, patch only changed fields (`setText`/`setHidden` write
-  only on change), rebuild an element only when its shape changes, and
+  create each once, patch only changed fields (`setText`/`setHidden`/`setAttr`
+  write only on change), rebuild an element only when its shape changes, and
   reorder with a diff so steady-state renders move no nodes. Replacing
   `innerHTML` or re-creating a list per update is a bug: it drops keyboard
   focus and screen reader position on every poll or SSE tick.
@@ -138,7 +138,7 @@ reconcile:
   `addEventListener`). Strings become text nodes; `false`, `null`,
   `undefined` and `""` children are skipped, so an empty value stays
   `:empty` for the loading placeholders. It only builds: keep the elements
-  you update in fields and patch them with `setText`/`setHidden`.
+  you update in fields and patch them with `setText`/`setHidden`/`setAttr`.
   `StatTile` and `views/about.ts` show the style.
 
 ## DOM safety

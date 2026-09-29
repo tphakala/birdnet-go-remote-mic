@@ -1,6 +1,6 @@
 import { VUMeter } from "../../components/vu-meter.ts";
 import { channelHiddenMessage, focusFallbackRow, hiddenRows, tallyStates } from "../../lib/dashboard-core.ts";
-import { announce, h, holdsFocus, setHidden } from "../../lib/ui.ts";
+import { announce, h, holdsFocus, setAttr, setHidden } from "../../lib/ui.ts";
 
 // The dB marks along the top of the console, shared by every row.
 const SCALE_MARKS = ["-60", "-48", "-36", "-24", "-18", "-12", "-6", "-3", "0 dBFS"];
@@ -104,7 +104,7 @@ export class MeterConsole {
       const meter = this.meters[i];
       if (meter) { if (hide) meter.pause(); else meter.resume(); }
       const title = on ? `Channel ${i + 1}: streamed` : `Channel ${i + 1}: not streamed`;
-      if (row.title !== title) row.title = title;
+      setAttr(row, "title", title);
       // The tally light is aria-hidden, so carry its streamed/not-streamed
       // meaning on the row's own exposed control: the clip button.
       const clip = this.clips[i];

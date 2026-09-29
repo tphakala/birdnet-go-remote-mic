@@ -12,7 +12,7 @@
 // step. Each row keeps its uptime in a data attribute so restampRows can re-map
 // it after a later re-sync moves the anchor.
 
-import { formatRelative, h, setText } from "../lib/ui.ts";
+import { formatRelative, h, setAttr, setText } from "../lib/ui.ts";
 import { TOAST_ICONS, type ToastType } from "./toast.ts";
 import { formatDuration, isoOrNull, type Lifecycle } from "../lib/events-core.ts";
 import type { Notification, NotificationSeverity } from "../lib/types.ts";
@@ -89,7 +89,7 @@ function isoTime(ms: number): string {
 // an empty datetime is not a valid value.
 function setDatetime(t: HTMLElement, iso: string): void {
   if (iso === "") t.removeAttribute("datetime");
-  else if (t.getAttribute("datetime") !== iso) t.setAttribute("datetime", iso);
+  else setAttr(t, "datetime", iso);
 }
 
 function chip(label: string, extraClass: string, facet: ChipFacet, value: string, opts: RowOptions): HTMLElement {
@@ -198,7 +198,7 @@ export function restampRows(root: ParentNode, toMs: UptimeToMs): void {
     t.dataset.at = at;
     setDatetime(t, isoTime(atMs));
     const full = fullTimestamp(atMs);
-    if (t.title !== full) t.title = full;
+    setAttr(t, "title", full);
     // Full rows show an absolute time beside the relative one, in the same slot.
     const abs = t.parentElement?.querySelector<HTMLElement>(".ev-abs-time");
     if (abs) setText(abs, absTime(atMs));

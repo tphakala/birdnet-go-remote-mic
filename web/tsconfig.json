@@ -18,7 +18,8 @@
     "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "sourceMap": false
+    "sourceMap": false,
+    "removeComments": true
   },
   "include": ["src/**/*"]
 }

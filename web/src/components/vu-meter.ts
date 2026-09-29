@@ -1,4 +1,4 @@
-import { REDUCED_MOTION_QUERY } from "../lib/ui.ts";
+import { REDUCED_MOTION_QUERY, setAttr } from "../lib/ui.ts";
 import { FLOOR_DB, FrameScheduler, levelBand, levelRatio, MeterController, WAITING_READOUT, WAITING_TITLE } from "../lib/meter-core.ts";
 
 // The 2D context cannot read CSS variables, so the theme is tracked here: a cheap
@@ -115,7 +115,7 @@ export class VUMeter {
           // connection indicator instead.
           // Written on change only: the text changes up to ten times a second.
           const title = text === WAITING_READOUT ? WAITING_TITLE : "";
-          if (this.peakValEl.title !== title) this.peakValEl.title = title;
+          setAttr(this.peakValEl, "title", title);
         },
       },
       meterFrames,

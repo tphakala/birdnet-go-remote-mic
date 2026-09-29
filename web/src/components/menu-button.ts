@@ -10,7 +10,7 @@
 // element (.menu-wrap) the popover anchors to. The state, key and focus rules
 // live in lib/menu-core.ts (MenuController); this file is the DOM side.
 import { MenuController, type FocusTarget, type MenuItem } from "../lib/menu-core.ts";
-import { focusTarget, h, iconSpan, svgIcon } from "../lib/ui.ts";
+import { focusTarget, h, iconSpan, setAttr, svgIcon } from "../lib/ui.ts";
 
 export interface MenuChoice extends MenuItem {
   // Static, trusted inline SVG markup (an ICON_* constant), shown before the label.
@@ -46,7 +46,7 @@ export class MenuButton {
         setChecked: (index) => {
           this.items.forEach((item, i) => {
             const on = String(i === index);
-            if (item.getAttribute("aria-checked") !== on) item.setAttribute("aria-checked", on);
+            setAttr(item, "aria-checked", on);
           });
         },
         focusItem: (index) => this.items[index]?.focus(),

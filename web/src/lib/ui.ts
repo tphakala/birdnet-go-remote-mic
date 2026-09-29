@@ -279,6 +279,18 @@ export function copyText(value: string, successMessage: string): void {
 export function setText(el: HTMLElement, text: string): void {
   if (el.textContent !== text) el.textContent = text;
 }
+
+// setAttr writes an attribute only when its value changes, like setText. A poll
+// re-renders every card, and an unchanged write still costs a mutation record and
+// can make a screen reader repeat the attribute. An empty value means the
+// attribute is absent: it is removed, never written empty, so an empty title does
+// not mask an ancestor's tooltip. Covers title, class, aria-* and data-*; a write
+// that also swaps other state stays inline.
+export function setAttr(el: Element, name: string, value: string): void {
+  if (value === "") {
+    if (el.hasAttribute(name)) el.removeAttribute(name);
+  } else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+}
 // announce puts a message in a polite live region (role=status, present in the
 // page from load so the first message is read). The region is cleared first,
 // so a repeat of the same message is announced again.

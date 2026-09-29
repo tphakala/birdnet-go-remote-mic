@@ -1,4 +1,4 @@
-import { deviceStateBadge, h, orderChildren, setLoading, setText } from "../../lib/ui.ts";
+import { deviceStateBadge, h, orderChildren, setAttr, setLoading, setText } from "../../lib/ui.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import { clientSummary, streamFormats, streamSummary } from "../../lib/dashboard-core.ts";
 import type { Config, Device } from "../../lib/types.ts";
@@ -118,7 +118,7 @@ export class StreamStatus {
     // goes in the tooltip.
     setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
     const alsaTitle = deviceIdTitle(d.device);
-    if (r.alsa.title !== alsaTitle) r.alsa.title = alsaTitle;
+    setAttr(r.alsa, "title", alsaTitle);
     // By the device id, which a rename does not change.
     const deviceCfg = cfg?.devices.find((c) => c.device === d.device);
     const streams = streamSummary(d, deviceCfg);
@@ -129,7 +129,7 @@ export class StreamStatus {
     setText(r.codec, streamFormats(d, deviceCfg).join("\n"));
     setText(r.client, clientSummary(streams));
     const badge = deviceStateBadge(d.state);
-    if (r.stateSpan.className !== badge.cls) r.stateSpan.className = badge.cls;
+    setAttr(r.stateSpan, "class", badge.cls);
     setText(r.stateSpan, badge.label);
   }
 }
