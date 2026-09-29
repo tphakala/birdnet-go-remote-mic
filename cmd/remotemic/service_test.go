@@ -122,9 +122,9 @@ func TestDispatchServiceInstall(t *testing.T) {
 	saveServiceSeams(t)
 	geteuid = func() int { return 0 } // skip escalation
 	var gotSpec service.ServiceSpec
-	var gotStart bool
-	installService = func(spec service.ServiceSpec, start bool) error {
-		gotSpec, gotStart = spec, start
+	var gotStart, gotAllow bool
+	installService = func(spec service.ServiceSpec, start, allowDowngrade bool) error {
+		gotSpec, gotStart, gotAllow = spec, start, allowDowngrade
 		return nil
 	}
 	var stdout, stderr bytes.Buffer
@@ -135,6 +135,7 @@ func TestDispatchServiceInstall(t *testing.T) {
 		"--state-dir", "/var/lib/bird",
 		"--bin-path", "/usr/local/bin/bird",
 		"--no-start",
+		"--allow-downgrade",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, stderr.String())
@@ -146,6 +147,9 @@ func TestDispatchServiceInstall(t *testing.T) {
 	}
 	if gotStart {
 		t.Error("--no-start should pass start=false")
+	}
+	if !gotAllow {
+		t.Error("--allow-downgrade should pass allowDowngrade=true")
 	}
 }
 
@@ -217,5 +221,20 @@ func TestServiceInstallBadFlagNoEscalation(t *testing.T) {
 	var stderr bytes.Buffer
 	if err := runServiceInstall([]string{"--nope"}, false, &stderr); err == nil {
 		t.Fatal("bad flag = nil error, want usage error")
+	}
+}
+
+// TestNewInstaller pins that the production installer knows this binary's
+// version and the --allow-downgrade choice, which its downgrade guard needs.
+func TestNewInstaller(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v9.9.9"
+	in := newInstaller(service.ServiceSpec{}, true)
+	if in.Version != "v9.9.9" || !in.AllowDowngrade {
+		t.Errorf("got Version %q, AllowDowngrade %t; want v9.9.9, true", in.Version, in.AllowDowngrade)
+	}
+	if newInstaller(service.ServiceSpec{}, false).AllowDowngrade {
+		t.Error("AllowDowngrade set without the flag")
 	}
 }

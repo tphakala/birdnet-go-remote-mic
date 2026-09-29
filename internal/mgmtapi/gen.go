@@ -1014,7 +1014,7 @@ type UpdateStatus struct {
 	// Available Whether latestVersion is newer than the running version.
 	Available bool `json:"available"`
 
-	// CanApply Whether `POST /system/update` can install an update here: a service installation whose root updater units are installed.
+	// CanApply Whether `POST /system/update` can install an update here: the binary the installed service unit runs, with the root updater units installed for that same path.
 	CanApply bool `json:"canApply"`
 
 	// CheckEnabled Whether the daily check is on (`updates.check`).
@@ -1025,7 +1025,7 @@ type UpdateStatus struct {
 	// Examples: v0.2.0
 	CurrentVersion string `json:"currentVersion"`
 
-	// InstallMethod How the running binary was installed. `service` is `remote-mic service install`; `deb` and `homebrew` belong to a package manager, which is never bypassed; `manual` is a binary run from where it was unpacked.
+	// InstallMethod How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, whether it came from a tarball, a `.deb` or Homebrew; `deb` and `homebrew` are a package manager's own copy, which is never bypassed; `manual` is a binary run by hand, or one that is not the service's.
 	InstallMethod UpdateStatusInstallMethod `json:"installMethod"`
 
 	// LastCheck When the last check finished (appliance wall clock); absent before the first check.
@@ -1055,7 +1055,7 @@ type UpdateStatus struct {
 	UpgradeHint *string `json:"upgradeHint,omitempty"`
 }
 
-// UpdateStatusInstallMethod How the running binary was installed. `service` is `remote-mic service install`; `deb` and `homebrew` belong to a package manager, which is never bypassed; `manual` is a binary run from where it was unpacked.
+// UpdateStatusInstallMethod How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, whether it came from a tarball, a `.deb` or Homebrew; `deb` and `homebrew` are a package manager's own copy, which is never bypassed; `manual` is a binary run by hand, or one that is not the service's.
 type UpdateStatusInstallMethod string
 
 // UpdateStatusPhase Where a one-button update stands. `installing` means the root updater has the release and restarts the appliance when it is done; `failed` means the last attempt failed (see phaseMessage).

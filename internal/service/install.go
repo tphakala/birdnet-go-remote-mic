@@ -3,15 +3,19 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/atomicfile"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
@@ -26,6 +30,11 @@ type Installer struct {
 	Init InitSystem
 	Run  Runner
 	Plat Platform
+	// Version is the running binary's version, which the downgrade guard
+	// compares with the installed binary's.
+	Version string
+	// AllowDowngrade lets install replace a newer installed binary.
+	AllowDowngrade bool
 
 	selfExe    func() (string, error)
 	userExists func(name string) bool
@@ -37,6 +46,9 @@ type Installer struct {
 	// makeBinDir creates the bin directory when it is missing and leaves an
 	// existing one as it is (see ensureBinDir).
 	makeBinDir func(path string) error
+	// binVersion reports the version the binary at path prints, and whether
+	// a binary is there at all (see installedVersion).
+	binVersion func(path string) (version string, present bool, err error)
 	// isLink reports whether path is a symlink, for the warning that the
 	// install replaces it.
 	isLink    func(path string) bool
@@ -56,7 +68,8 @@ type Installer struct {
 }
 
 // NewInstaller builds an Installer for spec with the production init system,
-// command runner, detected platform, and real filesystem and user operations.
+// command runner, detected platform, and real filesystem, user and
+// installed-version operations. The caller sets Version and AllowDowngrade.
 func NewInstaller(spec ServiceSpec) *Installer {
 	return &Installer{
 		Spec:       spec,
@@ -69,6 +82,7 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		ensureDir:  ensureDir,
 		binDirOK:   checkBinDir,
 		makeBinDir: ensureBinDir,
+		binVersion: installedVersion,
 		isLink:     isSymlink,
 		chownTree:  chownTree,
 		copyFile:   copyFile,
@@ -85,7 +99,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // directories to the service user, then reloads systemd and enables the unit
 // and the updater's path unit (starting both too when now is true). A bin
 // directory (or a directory above it) that anyone but root can write is
-// refused before anything is written. Since the root updater runs the
+// refused before anything is written, and so is an install that would replace
+// a newer installed binary with this older one (see checkDowngrade). Since the root updater runs the
 // installed binary, an installed binary that still fails the root-only check
 // gets no updater: install warns, removes updater units an earlier install
 // left, and installs the appliance alone. That check runs on the installed
@@ -110,6 +125,9 @@ func (in *Installer) Install(now bool) error {
 	// root's writes below somewhere of their choosing.
 	if err := in.binDirOK(filepath.Dir(s.BinPath)); err != nil {
 		return fmt.Errorf("service: refusing to install to %s: %w; install it somewhere only root can write (the default is %s)", s.BinPath, err, DefaultBinPath)
+	}
+	if err := in.checkDowngrade(s.BinPath); err != nil {
+		return err
 	}
 
 	if err := in.ensureUser(s); err != nil {
@@ -431,4 +449,52 @@ func copyFile(src, dst string, perm os.FileMode) error {
 		return err
 	}
 	return atomicfile.Replace(dst, data, perm)
+}
+
+// checkDowngrade refuses to replace the binary at path with an older one: an
+// unpacked tarball stays at the version it was extracted at while the
+// installed copy updates itself, and re-running install from the old copy
+// would otherwise write it over the newer one and report success. An
+// installed binary that is absent, will not run, or names a version that
+// cannot be compared with this one (a development build) is the repair case:
+// install goes ahead, with a warning where something looked wrong.
+func (in *Installer) checkDowngrade(path string) error {
+	installed, present, err := in.binVersion(path)
+	if !present {
+		return nil
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(in.warn, "warning: cannot tell the version of the installed %s (%v); replacing it\n", path, err)
+		return nil
+	}
+	newer, err := update.Newer(installed, in.Version)
+	if err != nil {
+		_, _ = fmt.Fprintf(in.warn, "warning: cannot compare the installed %s (%s) with this binary (%s): %v; replacing it\n", path, installed, in.Version, err)
+		return nil
+	}
+	if newer && !in.AllowDowngrade {
+		return fmt.Errorf("service: %s is %s, newer than this binary (%s); run the installed one (sudo %s service install) or pass --allow-downgrade", path, installed, in.Version, path)
+	}
+	return nil
+}
+
+// installedVersion runs the binary at path and reads its version from the
+// first line of `version` output, `remote-mic <version>`, which is a
+// contract between versions. present is false when nothing is at path.
+func installedVersion(path string) (version string, present bool, err error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", !errors.Is(err, fs.ErrNotExist), err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "version").Output() //nolint:gosec // the binary this install is about to replace, at the validated bin path
+	if err != nil {
+		return "", true, fmt.Errorf("run %s version: %w", path, err)
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	name, v, ok := strings.Cut(strings.TrimSpace(line), " ")
+	if !ok || name != "remote-mic" || v == "" {
+		return "", true, fmt.Errorf("unexpected version output %q", line)
+	}
+	return v, true, nil
 }

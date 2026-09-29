@@ -1056,11 +1056,11 @@ export interface components {
             /** @description Why the last check failed; absent after a success. */
             lastError?: string;
             /**
-             * @description How the running binary was installed. `service` is `remote-mic service install`; `deb` and `homebrew` belong to a package manager, which is never bypassed; `manual` is a binary run from where it was unpacked.
+             * @description How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, whether it came from a tarball, a `.deb` or Homebrew; `deb` and `homebrew` are a package manager's own copy, which is never bypassed; `manual` is a binary run by hand, or one that is not the service's.
              * @enum {string}
              */
             installMethod: "service" | "deb" | "homebrew" | "manual";
-            /** @description Whether `POST /system/update` can install an update here: a service installation whose root updater units are installed. */
+            /** @description Whether `POST /system/update` can install an update here: the binary the installed service unit runs, with the root updater units installed for that same path. */
             canApply: boolean;
             /** @description How to update by hand when canApply is false. */
             upgradeHint?: string;

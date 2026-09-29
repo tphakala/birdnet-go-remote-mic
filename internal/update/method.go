@@ -10,14 +10,17 @@ import (
 type Method string
 
 const (
-	// MethodService is a `remote-mic service install` install. With the root
-	// updater units in place it gets the one-button update.
+	// MethodService is a `remote-mic service install` install, from a
+	// tarball, a .deb or Homebrew alike: the binary is the one the service
+	// unit runs. With the root updater units in place it gets the one-button
+	// update.
 	MethodService Method = "service"
 	// MethodDeb is the .deb package; dpkg owns the binary.
 	MethodDeb Method = "deb"
 	// MethodHomebrew is the Homebrew formula; brew owns the binary.
 	MethodHomebrew Method = "homebrew"
-	// MethodManual is anything else: a binary run from where it was unpacked.
+	// MethodManual is anything else: a binary run by hand, or a copy that is
+	// not the one the service unit runs. It is never replaced.
 	MethodManual Method = "manual"
 )
 
@@ -45,9 +48,13 @@ type InstallEnv struct {
 	DpkgOwns func(path string) bool
 }
 
-// DetectInstall classifies the running installation. A package manager's
-// binary is never replaced behind its back: dpkg and Homebrew installs get
-// the upgrade command instead of the button.
+// DetectInstall classifies the running installation. What decides the button
+// is not which artifact the binary came from but whether it is the binary the
+// installed service unit runs, with the root updater installing to that same
+// path: a tarball, .deb or Homebrew install that ran `sudo remote-mic service
+// install` gets it. A package manager's own copy is never replaced behind its
+// back (dpkg and Homebrew get the upgrade command), and neither is a binary
+// run by hand.
 func DetectInstall(env InstallEnv) Install {
 	exe := filepath.Clean(env.Exe)
 	switch {
@@ -61,7 +68,7 @@ func DetectInstall(env InstallEnv) Install {
 		}
 		return Install{Method: MethodService, Hint: "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to enable one-button updates (if install warns that others can write the binary's directory, fix that first), or install the release by hand"}
 	default:
-		return Install{Method: MethodManual, Hint: "Download the release for this system from the release page and replace " + exe}
+		return Install{Method: MethodManual, Hint: manualHint(exe, env.ServiceBinPath)}
 	}
 }
 
@@ -69,4 +76,15 @@ func DetectInstall(env InstallEnv) Install {
 // Cellar, or the standard Linux prefix.
 func isHomebrew(path string) bool {
 	return strings.Contains(path, "/Cellar/") || strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/")
+}
+
+// manualHint tells the operator how to update a binary that is not the
+// service's: with no service unit, `service install` is what turns on
+// one-button updates; with one that runs another binary, that binary is the
+// one that updates.
+func manualHint(exe, serviceBin string) string {
+	if serviceBin == "" {
+		return "This binary is run by hand and is never replaced. Run sudo " + exe + " service install to install it as a service that updates with one button, or download the release for this system from the release page and replace " + exe
+	}
+	return "This is not the binary the service runs (" + filepath.Clean(serviceBin) + "), which is the one that updates itself, and it is never replaced. Download the release for this system from the release page and replace " + exe
 }

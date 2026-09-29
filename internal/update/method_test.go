@@ -47,10 +47,16 @@ func TestDetectInstall(t *testing.T) {
 			hint:   "brew upgrade",
 		},
 		{
-			name:   "unpacked tarball",
+			name:   "unpacked tarball beside a service that runs another binary",
 			env:    InstallEnv{Exe: "/home/pi/remote-mic", ServiceBinPath: serviceBin},
 			method: MethodManual,
-			hint:   "/home/pi/remote-mic",
+			hint:   "not the binary the service runs (" + serviceBin + ")",
+		},
+		{
+			name:   "run by hand with no service",
+			env:    InstallEnv{Exe: "/home/pi/remote-mic"},
+			method: MethodManual,
+			hint:   "sudo /home/pi/remote-mic service install",
 		},
 	}
 	for _, tt := range tests {
