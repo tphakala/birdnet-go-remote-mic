@@ -76,10 +76,12 @@ func (g Group) Apply(s *Settings) {
 	}
 }
 
-// Wait blocks until every member with a Done channel (a monitor that runs its
-// own goroutine) is done, or until timeout has passed for the whole group. The
-// appliance calls it after cancelling the monitors' context, so the last log
-// lines a monitor owes are written before the process exits.
+// Wait blocks until every member that has a Done channel is done, or until
+// timeout has passed for the whole group. Members without one (the signal
+// monitor and the update manager stop on their context but are not waited for)
+// are skipped. The appliance calls it after cancelling the monitors' context, so
+// the last log lines a waited-for monitor owes are written before the process
+// exits.
 func (g Group) Wait(timeout time.Duration) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

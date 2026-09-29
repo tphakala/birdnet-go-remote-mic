@@ -49,6 +49,35 @@ func TestGroupWaitBounded(t *testing.T) {
 	})
 }
 
+// The timeout covers the whole group, not each member, and Wait does not
+// return before the slowest member is done.
+func TestGroupWaitWholeGroup(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		waitGroup(t, Group{
+			&doner{done: make(chan struct{})},
+			&doner{done: make(chan struct{})},
+		}, 2*time.Second)
+		if got := time.Since(start); got != 2*time.Second {
+			t.Errorf("Wait on two stuck members took %v, want one 2s timeout", got)
+		}
+
+		fast, slow := &doner{done: make(chan struct{})}, &doner{done: make(chan struct{})}
+		go func() {
+			time.Sleep(time.Second)
+			close(fast.done)
+			time.Sleep(500 * time.Millisecond)
+			close(slow.done)
+		}()
+		start = time.Now()
+		waitGroup(t, Group{fast, slow}, 5*time.Second)
+		if got := time.Since(start); got != 1500*time.Millisecond {
+			t.Errorf("Wait took %v, want 1.5s (until the slowest member was done)", got)
+		}
+	})
+}
+
 func TestGroupWaitsForLateMember(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -79,6 +108,7 @@ func TestNewHostDoneAlreadyClosed(t *testing.T) {
 // RunHost's Done stays open while the goroutine runs and closes once it has
 // returned.
 func TestRunHostDoneClosesOnReturn(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		s := hostSettings()
 		ctx, cancel := context.WithCancel(t.Context())

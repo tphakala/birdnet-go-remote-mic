@@ -777,9 +777,10 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 		go updates.Run(ctx)
 	}
 	app.monitors = group
-	// The monitors stop on ctx; wait for the ones that run a goroutine on the way out (after closeAll,
-	// which is registered below) so the overrun lines a host monitor owes at
-	// shutdown reach the journal before the process exits.
+	// The monitors stop on ctx. Wait on the way out (after closeAll, which is
+	// registered below) for the ones that report a Done channel, today only the
+	// host monitor, so the overrun lines it owes at shutdown reach the journal
+	// before the process exits.
 	defer func() {
 		stop()
 		group.Wait(monitorStopWait)

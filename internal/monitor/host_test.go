@@ -1590,6 +1590,7 @@ func TestHostOverrunLogOnsetReportsHeld(t *testing.T) {
 // When the appliance shuts down, RunHost writes the line each device's overrun
 // state owes, as a device stop does, and resolves no notification.
 func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		bursts []uint64
@@ -1602,6 +1603,7 @@ func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
 		{"nothing owed", []uint64{1}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				// The RunHost goroutine reads the counter, so the test bumps it atomically.
 				var overruns atomic.Uint64
@@ -1609,11 +1611,25 @@ func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
 					return []DeviceCounters{{Name: nameGarden, Gen: 1, Overruns: overruns.Load()}}
 				}
 				lr := &logRec{}
+				// Done must stay open until the shutdown line is written, or a
+				// waiter would let the process exit before it.
+				var hp atomic.Pointer[Host]
+				var closedEarly atomic.Bool
+				logf := func(format string, args ...any) {
+					lr.logf(format, args...)
+					if strings.Contains(fmt.Sprintf(format, args...), "appliance stopping") {
+						select {
+						case <-hp.Load().Done():
+							closedEarly.Store(true)
+						default:
+						}
+					}
+				}
 				rec := newRecPub()
 				s := hostSettings()
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				RunHost(ctx, nil, src, rec, &s, WithHostLogf(lr.logf))
+				hp.Store(RunHost(ctx, nil, src, rec, &s, WithHostLogf(logf)))
 				// Offset the bumps from the ticks, so each poll sees a settled count.
 				time.Sleep(hostPollInterval + hostPollInterval/2) // first sighting at 10s
 				for _, n := range tc.bursts {
@@ -1630,6 +1646,9 @@ func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
 					t.Errorf("shutdown lines = %q, want none", got)
 				case tc.want != "" && (len(got) != 1 || got[0] != tc.want):
 					t.Errorf("shutdown lines = %q, want [%q]", got, tc.want)
+				}
+				if closedEarly.Load() {
+					t.Error("Done was closed before the shutdown line was written")
 				}
 				if n := rec.resolveCount(deviceOverrunsKey(nameGarden)); n != 0 {
 					t.Errorf("shutdown resolved the overrun notification %d time(s), want 0", n)
