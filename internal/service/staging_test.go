@@ -70,12 +70,12 @@ func TestWithdrawStagedRequest(t *testing.T) {
 
 // withdrawTestInstaller is testInstaller with the host's login shell pinned,
 // and the events it records.
-func withdrawTestInstaller(t *testing.T) (*Installer, *[]string) {
+func withdrawTestInstaller(t *testing.T) (in *Installer, events *[]string) {
 	t.Helper()
 	orig := fileExists
 	t.Cleanup(func() { fileExists = orig })
 	fileExists = func(p string) bool { return p == nologinPath }
-	events := new([]string)
+	events = new([]string)
 	userThere := false
 	return testInstaller(events, &fakeInit{events: events, present: true}, &userThere), events
 }
