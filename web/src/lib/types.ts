@@ -370,15 +370,16 @@ export interface RestartResult {
 
 // LoadError is the detail of the store's "loaderror" event. coreFailed marks a
 // status+devices failure (the dashboard's data, and the appliance is out of
-// reach); devicesFailed marks a /devices failure alone or with it, which
-// leaves the rack and Stream Status with nothing to show; systemFailed marks a /system
-// failure (the system view's data); configFailed marks a /config failure (the
-// System view's network/access/notification cards, which stay in their
-// loading state until a config arrives). A view surfaces the error only for its own resource, so one
-// failing endpoint does not blank another view's valid data. availableFailed marks
-// a /devices/available failure; it is advisory (a stale unconfigured-hardware list
-// that the next poll refreshes) and never triggers the error on its own, but it is
-// carried here for completeness so no view has to guess.
+// reach). devicesFailed marks a /devices failure, alone or together with
+// /status, which leaves the rack and Stream Status with nothing to show.
+// systemFailed marks a /system failure (the system view's data); configFailed
+// marks a /config failure (the System view's network/access/notification cards,
+// which stay in their loading state until a config arrives). A view surfaces
+// the error only for its own resource, so one failing endpoint does not blank
+// another view's valid data. availableFailed marks a /devices/available
+// failure; it is advisory (a stale unconfigured-hardware list that the next
+// poll refreshes) and never triggers the error on its own, but it is carried
+// here for completeness so no view has to guess.
 export interface LoadError {
   coreFailed: boolean;
   devicesFailed: boolean;

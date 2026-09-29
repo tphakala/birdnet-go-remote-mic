@@ -49,8 +49,8 @@ export class TelemetryTiles {
 
     // Remove a load-error placeholder loadError may have left in the grid, so a
     // recovered poll does not strand it among the gauges: the diffed pass below
-    // tracks only tile nodes, not this foreign child.
-    // Retry may hold focus: park it on the view first.
+    // tracks only tile nodes, not this foreign child. Retry may hold focus, so
+    // clearLoadError parks it on the view first.
     const stale = grid.querySelector<HTMLElement>(":scope > .cfg-empty");
     if (stale) {
       clearLoadError(stale);
