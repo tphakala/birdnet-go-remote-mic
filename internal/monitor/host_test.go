@@ -1638,3 +1638,18 @@ func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
 		})
 	}
 }
+
+// A burst from a fresh baseline raises the warning with nothing held back, and
+// the onset line then carries no held-count suffix.
+func TestHostOverrunLogOnsetNothingHeld(t *testing.T) {
+	t.Parallel()
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	c := newClk()
+	h, lr := newHostLogT(feed.source, newRecPub(), hostSettings(), c)
+	h.poll()
+	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount)
+	want := []string{`device "garden": ` + overrunOnsetText() + `, audio lost; raising an overrun warning`}
+	if got := lr.all(); !slices.Equal(got, want) {
+		t.Errorf("lines = %q, want %q", got, want)
+	}
+}
