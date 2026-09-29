@@ -68,8 +68,8 @@ not break.
   but root can write before writing anything, replaces (never follows) a link
   at the bin path, and leaves the updater units out (with a warning) when the
   installed binary still fails the root-only check. Under the bin lock it
-  clears the journal (`<bin>.pending`) and kept copy (`.prev`) of an
-  interrupted update once the binary is replaced, and it refuses a config or
+  clears the kept copy (`.prev`) of an interrupted update before it replaces
+  the binary and its journal (`<bin>.pending`) after; it also refuses a config or
   state file with a second hard link instead of chowning it.
 - `runlock`: advisory lock at `<config path>.lock` marking a live appliance,
   so token commands use its API instead of editing its config.

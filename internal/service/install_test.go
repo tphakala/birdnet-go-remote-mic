@@ -778,9 +778,9 @@ func indexOf(events []string, want string) int {
 }
 
 // TestInstallClearsAnInterruptedUpdate pins that an install over a journal
-// replaces the binary first, then drops the kept copy, then the journal, and
-// says so: left behind, the journal would roll the next updater start back to
-// a copy older than what install wrote.
+// drops the kept copy before it replaces the binary and the journal after, and
+// says so: with the copy gone first, no crash or failure at a later step can
+// roll the next updater start back to a copy older than what install wrote.
 func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
 	var events []string
 	init := &fakeInit{events: &events, present: true}
@@ -793,8 +793,8 @@ func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	order := []string{
-		evCopySelf,
 		"remove /usr/local/bin/remote-mic.prev",
+		evCopySelf,
 		"remove /usr/local/bin/remote-mic.pending",
 		"syncdir /usr/local/bin",
 	}
@@ -1087,5 +1087,38 @@ func TestChownFile(t *testing.T) {
 		if err := chownFile(locked, os.Getuid(), os.Getgid()); err == nil {
 			t.Error("chownFile on an unreadable file: got no error")
 		}
+	}
+}
+
+// TestInstallSaysWhenTheCopyFailsAfterTheKeptCopyWent pins that a failed
+// binary copy after the kept copy was removed tells the operator that the
+// interrupted update can no longer be rolled back, and leaves the journal.
+func TestInstallSaysWhenTheCopyFailsAfterTheKeptCopyWent(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(string) (bool, error) { return true, nil }
+	in.copyFile = func(string, string, os.FileMode) error { return errors.New("no space left on device") }
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "no space left") || !strings.Contains(err.Error(), "will not be rolled back") {
+		t.Fatalf("Install: got %v, want the copy error and the lost rollback named", err)
+	}
+	if indexOf(events, "remove /usr/local/bin/remote-mic.pending") >= 0 {
+		t.Errorf("journal removed although the binary was not replaced: %v", events)
+	}
+}
+
+// TestInstallReportsAFailedCopyPlainly pins that a failed binary copy with no
+// interrupted update says nothing about a rollback.
+func TestInstallReportsAFailedCopyPlainly(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.copyFile = func(string, string, os.FileMode) error { return errors.New("no space left on device") }
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "no space left") || strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("Install: got %v, want the copy error alone", err)
 	}
 }

@@ -122,9 +122,9 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // version check to the end it holds the lock the root updater takes around
 // replacing the binary (update.LockBin), waiting for an update in progress and
 // failing if one outlasts the wait (with a hint to try again) or if the lock
-// cannot be taken at all. Once the binary is replaced it clears the journal and
-// kept copy of an update that was cut off (clearInterrupted), and the ownership
-// handover refuses a file with a second hard link (chownTree). Since the root updater runs the
+// cannot be taken at all. Around replacing the binary it clears an update that
+// was cut off: the kept copy before, the journal after (dropKeptCopy,
+// dropJournal). The ownership handover refuses a file with a second hard link (chownTree). Since the root updater runs the
 // installed binary, an installed binary that still fails the root-only check
 // gets no updater: install warns, removes updater units an earlier install
 // left, and installs the appliance alone. That check runs on the installed
@@ -183,14 +183,7 @@ func (in *Installer) Install(now bool) error {
 	if err != nil {
 		return fmt.Errorf("service: locate the running binary: %w", err)
 	}
-	replacesLink := in.isLink(s.BinPath)
-	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
-		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
-	}
-	if replacesLink {
-		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", s.BinPath)
-	}
-	if err := in.clearInterrupted(s.BinPath); err != nil {
+	if err := in.installBinary(self, s.BinPath); err != nil {
 		return err
 	}
 	unit, err := Render(s)
@@ -268,26 +261,56 @@ func (in *Installer) Install(now bool) error {
 	return nil
 }
 
-// clearInterrupted removes the journal and the kept copy of an update that was
-// cut off before it was confirmed healthy, once the binary has been replaced
-// under the lock. The install supersedes that update: left behind, the journal
-// would make the next updater start roll back to the kept copy, which is older
-// than what install just wrote. The kept copy goes first, so a crash between
-// the two removals leaves a journal whose kept copy is missing, which the
-// updater reports and leaves the installed binary alone for.
-func (in *Installer) clearInterrupted(bin string) error {
-	journal := bin + update.JournalSuffix
-	present, err := in.lexists(journal)
+// installBinary replaces the binary at bin with self, clearing the update
+// that was cut off around it (dropKeptCopy before, dropJournal after).
+func (in *Installer) installBinary(self, bin string) error {
+	replacesLink := in.isLink(bin)
+	interrupted, err := in.dropKeptCopy(bin)
 	if err != nil {
-		return fmt.Errorf("service: look for the journal of an interrupted update: %w", err)
+		return err
+	}
+	if err := in.copyFile(self, bin, 0o755); err != nil {
+		if interrupted {
+			return fmt.Errorf("service: install binary to %s: %w (the kept copy of the interrupted update was already removed, so that update will not be rolled back)", bin, err)
+		}
+		return fmt.Errorf("service: install binary to %s: %w", bin, err)
+	}
+	if replacesLink {
+		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", bin)
+	}
+	if interrupted {
+		return in.dropJournal(bin)
+	}
+	return nil
+}
+
+// dropKeptCopy removes the kept copy of an update that was cut off before it
+// was confirmed healthy, when its journal is present, and reports whether it
+// was. It runs before the binary is replaced, under the lock, so that nothing
+// later can roll the install back: a crash or failure after this point leaves
+// a journal with no kept copy, which the updater reports and leaves the
+// installed binary alone for. Left in place, the pair would roll the next
+// updater start back to a copy older than what install writes. A failure here
+// aborts the install before the binary is touched.
+func (in *Installer) dropKeptCopy(bin string) (interrupted bool, err error) {
+	present, err := in.lexists(bin + update.JournalSuffix)
+	if err != nil {
+		return false, fmt.Errorf("service: look for the journal of an interrupted update: %w", err)
 	}
 	if !present {
-		return nil
+		return false, nil
 	}
 	if err := in.removeFile(bin + ".prev"); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("service: remove the kept copy of an interrupted update: %w", err)
+		return false, fmt.Errorf("service: remove the kept copy of an interrupted update: %w", err)
 	}
-	if err := in.removeFile(journal); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	return true, nil
+}
+
+// dropJournal removes the journal of the interrupted update whose kept copy
+// dropKeptCopy removed, once the binary is replaced, and says the update will
+// not be rolled back.
+func (in *Installer) dropJournal(bin string) error {
+	if err := in.removeFile(bin + update.JournalSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("service: remove the journal of an interrupted update: %w", err)
 	}
 	in.syncDir(filepath.Dir(bin))
