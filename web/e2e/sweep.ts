@@ -11,7 +11,10 @@
 //   - meter rows that keep their height while the live levels change;
 //   - focus after a load failure: with chosen endpoints failing, focus on Retry
 //     lands on the view section once the load recovers, the alert role goes, and
-//     the Dashboard announces "Devices loaded." (once, in the first combination).
+//     the Dashboard announces "Devices loaded." (once, in the first combination);
+//   - an Available Devices card patched in place: after the device's name and
+//     capabilities change between polls, a selection in its id row survives and
+//     the card shows the new text (also once).
 //
 // It runs every combination of theme, viewport width and browser default font
 // size, over each view plus the open notification panel, theme menu and error
@@ -778,6 +781,73 @@ async function checkRetryFocus(page: Page, server: MockServer, views: readonly V
   }
 }
 
+// AVAILABLE_EDIT is what checkAvailablePatch changes the available device to:
+// a new name (the card title and the Enable button's name) and a lower top
+// rate (the capabilities text), both text on rows the card already has.
+const AVAILABLE_EDIT = { friendlyName: "Renamed by the sweep", maxRate: 96000, caps: "up to 96 kHz" };
+
+// checkAvailablePatch changes the available device between polls and checks
+// that its card took the change in place: the id row, selected the way an
+// operator copying it would, is the same node with its selection intact
+// (a node identity check only: a rename leaves the id text unchanged), and the
+// title, capabilities and Enable button's name show the new values.
+async function checkAvailablePatch(page: Page, server: MockServer, findings: Finding[]): Promise<void> {
+  const where = "available device patch";
+  const fail = (key: string, detail: string): void => {
+    findings.push({ kind: "focus", where, key: `${where}: ${key}`, detail: `${where}: ${detail}` });
+  };
+  try {
+    await page.evaluate(() => {
+      location.hash = "#/dashboard";
+    });
+    await page.waitForSelector("#available-section:not([hidden]) .available-id", { state: "visible", timeout: RECOVERY_MS });
+    const selected = await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>(".available-id");
+      const sel = window.getSelection();
+      if (!el || !sel) return "";
+      el.dataset.sweepMark = "1";
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return sel.toString();
+    });
+    if (!selected) {
+      fail("nothing selected", "the device id row could not be selected");
+      return;
+    }
+    server.editAvailable(AVAILABLE_EDIT);
+    try {
+      await page.waitForFunction(
+        (want: { name: string; caps: string }) =>
+          document.querySelector(".available-card .device-title")?.textContent === want.name &&
+          [...document.querySelectorAll(".available-card .available-caps")].some((e) => e.textContent?.includes(want.caps) === true),
+        { name: AVAILABLE_EDIT.friendlyName, caps: AVAILABLE_EDIT.caps },
+        { timeout: RECOVERY_MS },
+      );
+    } catch {
+      fail("card not updated", `the card never showed "${AVAILABLE_EDIT.friendlyName}" and "${AVAILABLE_EDIT.caps}" after the device changed`);
+      return;
+    }
+    const at = await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>(".available-id[data-sweep-mark]");
+      return {
+        kept: el?.isConnected === true,
+        selection: window.getSelection()?.toString() ?? "",
+        expected: el?.textContent ?? "",
+        label: document.querySelector(".available-enable")?.getAttribute("aria-label") ?? "",
+      };
+    });
+    if (!at.kept) fail("card rebuilt", "the device id row is not the node that was selected: the card was rebuilt, not patched");
+    else if (at.selection !== at.expected) fail("selection lost", `the selection is "${at.selection}" after the patch, want "${at.expected}"`);
+    if (!at.label.includes(AVAILABLE_EDIT.friendlyName)) fail("Enable name stale", `the Enable button is named "${at.label}", want it to carry "${AVAILABLE_EDIT.friendlyName}"`);
+  } catch {
+    fail("no Available Devices card", "the Available Devices card never showed");
+  } finally {
+    server.editAvailable();
+  }
+}
+
 async function sweep(flags: Flags, browser: Browser, server: MockServer): Promise<number> {
   const serverUrl = server.url;
 
@@ -955,7 +1025,10 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
 
     // The load-failure paths behave the same in every combination, so the
     // first one is enough.
-    if (combo === combos[0]) await checkRetryFocus(page, server, views, findings);
+    if (combo === combos[0]) {
+      await checkRetryFocus(page, server, views, findings);
+      if (views.includes("dashboard")) await checkAvailablePatch(page, server, findings);
+    }
 
     // Open states, checked on the dashboard: only the overlay is audited for
     // contrast (the page under it was checked above), the whole page for
