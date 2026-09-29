@@ -3,7 +3,7 @@
 // web/test/dashboard-core.test.ts) without a DOM.
 
 import type { FieldProblem } from "./api.ts";
-import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
+import { DEVICE_FIELD_LABELS, defaultOpusBitrate } from "./device-settings-core.ts";
 import type { ViewName } from "./router-core.ts";
 import type { Timers } from "./timers.ts";
 import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
@@ -49,19 +49,16 @@ export function streamSummary(
   return { paths, modes, connected: counts.filter((n) => n > 0).length, clients: counts.reduce((a, n) => a + n, 0) };
 }
 
-// The Opus encoder's rate and default bitrate (see OpusDefaultBitrate in
-// internal/config): every Opus stream is 48 kHz, and an unset bitrate is 128
-// kbps per channel carried, capped at the 510 kbps Opus maximum.
+// Every Opus stream is 48 kHz; its default bitrate is defaultOpusBitrate's.
 const OPUS_RATE_HZ = 48000;
-const OPUS_BITRATE_PER_CHANNEL = 128000;
-const OPUS_MAX_BITRATE = 510000;
 // The line for a stream whose format the record does not carry.
 const FORMAT_UNKNOWN = "Format unknown";
 
 // streamFormats is the Codec / Rate cell's lines, one per stream in the same
 // order as StreamSummary.paths. It describes the stream a client receives, not
 // the hardware capture: PCM is 16-bit L16 at the capture rate, and Opus has no
-// bit depth, so it shows its bitrate. The labels mirror modeLabel's (lib/ui.ts,
+// bit depth, so it shows its bitrate (the configured one when positive, else
+// the default for its channel count). The labels mirror modeLabel's (lib/ui.ts,
 // which this DOM-free module cannot import). The config lists every stream;
 // without it the record's flat fields describe the first stream alone, and a
 // serving record with more runtime streams gets "Format unknown" for the rest.
@@ -76,7 +73,8 @@ export function streamFormats(
     : [{ mode: d.mode, channels: d.channels, opus: d.opus }];
   const lines = streams.map((s) => {
     if (s.mode === "pcm") return `PCM L16 ${captureRate.toLocaleString("en-US")} Hz · 16-bit`;
-    const kbps = (s.opus?.bitrate || Math.min(OPUS_BITRATE_PER_CHANNEL * Math.max(1, s.channels.length), OPUS_MAX_BITRATE)) / 1000;
+    const configuredBitrate = s.opus?.bitrate ?? 0;
+    const kbps = (configuredBitrate > 0 ? configuredBitrate : defaultOpusBitrate(s.channels.length)) / 1000;
     return `OPUS ${OPUS_RATE_HZ.toLocaleString("en-US")} Hz · ${kbps.toLocaleString("en-US")} kbps`;
   });
   // Without a config the runtime streams carry no format, and the flat fields

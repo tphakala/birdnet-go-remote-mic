@@ -705,6 +705,11 @@ test("streamFormats describes each stream, not the hardware capture", () => {
     { path: "/c", mode: "opus" as const, channels: [1, 2, 3, 4, 5] },
   ] };
   assert.deepEqual(streamFormats(rec, cfg), ["OPUS 48,000 Hz · 32 kbps", "PCM L16 48,000 Hz · 16-bit", "OPUS 48,000 Hz · 510 kbps"]);
+  // A bitrate that is not positive selects the default, as the appliance does.
+  assert.deepEqual(streamFormats({ ...rec, opus: { bitrate: 0 } }), ["OPUS 48,000 Hz · 256 kbps"]);
+  assert.deepEqual(streamFormats({ ...rec, opus: { bitrate: -1 } }), ["OPUS 48,000 Hz · 256 kbps"]);
+  // No channels reads as one, as the default's floor does.
+  assert.deepEqual(streamFormats({ ...rec, channels: [] }), ["OPUS 48,000 Hz · 128 kbps"]);
   // A fractional kbps keeps its decimals.
   assert.deepEqual(streamFormats({ ...rec, opus: { bitrate: 24500 } }), ["OPUS 48,000 Hz · 24.5 kbps"]);
   // A serving record with more streams than the flat fields describe (no
