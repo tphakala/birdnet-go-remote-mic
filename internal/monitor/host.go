@@ -655,10 +655,15 @@ func (h *Host) logOverruns(st *counterState, now time.Time, name string, delta u
 
 // flushOverruns writes the line every tracked device's overrun state owes, for
 // the appliance shutting down. It only logs: no notification is resolved, since
-// the center goes away with the process. It runs on the RunHost goroutine, the
-// only one that touches the device state.
+// the center goes away with the process, so a raised warning is reported as
+// still raised. Counts are as of the last poll, as they are for a device stop.
+// It runs on the RunHost goroutine, the only one that touches the device state.
 func (h *Host) flushOverruns(reason string) {
 	for name, st := range h.devs {
+		if st.ov.Active() {
+			h.logf("device %q: %s; overrun warning still raised after %d overrun(s) since the check that raised it", name, reason, st.ovEpisode)
+			continue
+		}
 		h.endOverruns(st, name, reason)
 	}
 }

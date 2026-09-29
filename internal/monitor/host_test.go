@@ -1598,7 +1598,7 @@ func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
 		{"held back", []uint64{1, 2},
 			`device "garden": appliance stopping; 2 capture overrun(s) since the last overrun report, audio lost`},
 		{"raised", []uint64{overrunOnsetCount + 3, 2},
-			fmt.Sprintf(`device "garden": appliance stopping; overrun warning resolved after %d overrun(s) since the check that raised it`, overrunOnsetCount+5)},
+			fmt.Sprintf(`device "garden": appliance stopping; overrun warning still raised after %d overrun(s) since the check that raised it`, overrunOnsetCount+5)},
 		{"nothing owed", []uint64{1}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
