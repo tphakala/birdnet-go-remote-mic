@@ -82,6 +82,7 @@ func TestCleanSSID(t *testing.T) {
 		{"plain", []byte("garden-ap"), "garden-ap"},
 		{"trailing NUL", []byte(testSSID + "\x00"), testSSID},
 		{"hidden", []byte("\x00\x00\x00"), ""},
+		{"text after the NUL is stale buffer bytes", []byte("a\x00b"), "a"},
 		{"no bytes", nil, ""},
 		{"invalid UTF-8", []byte("a\xffb"), "a�b"},
 		{"control and bidi", []byte("a\x1b[31m\u202Eb\u2066c"), "a[31mbc"},
