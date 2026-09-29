@@ -38,7 +38,9 @@ const RESTART_NOTE =
 // describeUpdate decides the card's text and actions. The order matters: an
 // update in progress (any phase but idle or failed) outranks everything, a
 // failed update outranks the check result it came from, and a build that names
-// no release never checks at all. Backend messages go through sentence().
+// no release never checks at all. With checks off, or on but with no release
+// known yet, the view is empty: the Last Check and Next Check rows say the
+// rest. Backend messages go through sentence().
 export function describeUpdate(u: UpdateStatus): UpdateView {
   const latest = u.latestVersion ?? "";
   const view: UpdateView = {
@@ -86,11 +88,9 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     if (u.checkEnabled) offer();
     return view;
   }
-  if (!u.checkEnabled) {
-    view.headline = "Update checks are off";
-    view.detail = `Running ${u.currentVersion}. Turn on the daily check to hear about new releases; while it is off the appliance makes no update requests.`;
-    return view;
-  }
+  // With checks off there is nothing to report: the Next Check row says Off
+  // and the switch shows it, so the card adds no status text.
+  if (!u.checkEnabled) return view;
   if (u.available && latest) {
     view.tone = "accent";
     view.headline = `${latest} is available`;
@@ -112,12 +112,9 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
   // the last check was never, and the card shows no status.
   if (!u.lastCheck) return view;
   // Up to date needs a known newest release: turning checks off forgets it
-  // while keeping the time of the last check.
-  if (!latest) {
-    view.headline = "Checking soon";
-    view.detail = `Running ${u.currentVersion}. The newest release is looked up again a few minutes after checks are turned on; Check Now asks at once.`;
-    return view;
-  }
+  // while keeping the time of the last check, and until the next check finds
+  // it again the Next Check row is all the card says.
+  if (!latest) return view;
   view.tone = "ok";
   view.headline = "Up to date";
   view.detail = `Running ${u.currentVersion}, the newest release.`;
@@ -158,6 +155,24 @@ export function lastCheckText(lastCheck: string | undefined, nowMs: number, rela
   if (!lastCheck) return "Never";
   const t = Date.parse(lastCheck);
   return Number.isFinite(t) ? relative(t, nowMs) : "Unknown";
+}
+
+// nextCheckText renders when the next periodic check is due. Off means checks
+// are off; Soon is a check the appliance has not yet scheduled (just turned
+// on). The appliance counts the delay on a monotonic timer and stamps it with
+// its wall clock when it answers, so the remaining time is only as right as
+// that clock and the browser's agree, as with lastCheckText.
+export function nextCheckText(u: UpdateStatus, nowMs: number): string {
+  if (!u.checkEnabled) return "Off";
+  if (!u.nextCheck) return "Soon";
+  const t = Date.parse(u.nextCheck);
+  if (!Number.isFinite(t)) return "Unknown";
+  const s = Math.floor((t - nowMs) / 1000);
+  if (s <= 0) return "Due now";
+  if (s < 60) return "in under a minute";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `in ${m}m`;
+  return `in ${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 // INSTALL_WAIT_TIMEOUT_MS bounds the wait once the release is handed to the

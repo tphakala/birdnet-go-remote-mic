@@ -34,8 +34,10 @@ export type CertificateInstallRequest = Schemas["CertificateInstallRequest"];
 export type CertificateRegenerateRequest = Schemas["CertificateRegenerateRequest"];
 export type AvailableDevice = Schemas["AvailableDevice"];
 export type ProvisionDeviceRequest = Schemas["ProvisionDeviceRequest"];
-export type NetworkInterface = Schemas["NetworkInterface"];
-export type SystemInfo = Schemas["SystemInfo"];
+export type WifiLink = Schemas["WifiLink"];
+export type SystemInfo = Without<Schemas["SystemInfo"], "network"> & {
+  network: NetworkInterface[];
+};
 export type UpdateStatus = Schemas["UpdateStatus"];
 export type ChannelLevels = Schemas["ChannelLevels"];
 export type DeviceLevels = Schemas["DeviceLevels"];
@@ -56,6 +58,16 @@ export type NotificationSnapshot = Schemas["NotificationSnapshot"];
 export type DownCause =
   | Exclude<Schemas["Device"]["downCause"], undefined>
   | (string & {});
+
+// NetworkInterface.kind values the API documents. A later appliance may add
+// values, so any other string is accepted too (and treated as "other").
+export type NetworkInterfaceKind =
+  | Exclude<Schemas["NetworkInterface"]["kind"], undefined>
+  | (string & {});
+
+export type NetworkInterface = Without<Schemas["NetworkInterface"], "kind"> & {
+  kind?: NetworkInterfaceKind;
+};
 
 // How many clients are playing the stream; absent from an older appliance.
 export type StreamStatus = Without<Schemas["StreamStatus"], "clientCount"> & {

@@ -10,6 +10,7 @@ import {
   formatElapsed,
   INSTALL_WAIT_TIMEOUT_MS,
   lastCheckText,
+  nextCheckText,
   safeNotesUrl,
   withChecksSetting,
   TICK_GAP_MS,
@@ -84,11 +85,31 @@ test("describeUpdate: never checked", () => {
   assert.equal(v.canCheck, true);
 });
 
-test("describeUpdate: checks off offer neither a check nor an update", () => {
+test("describeUpdate: checks off offer neither a check nor an update, and say nothing", () => {
   const v = describeUpdate(status({ checkEnabled: false, latestVersion: "v0.3.0", available: true }));
-  assert.equal(v.headline, "Update checks are off");
+  assert.equal(v.headline, "", "the Next Check row and the switch already say checks are off");
+  assert.equal(v.detail, "");
+  assert.equal(v.note, "");
+  assert.equal(v.hint, "");
   assert.equal(v.canCheck, false);
   assert.equal(v.applyVersion, "");
+});
+
+test("nextCheckText counts down to the due time and says why it cannot", () => {
+  const now = Date.parse("2026-09-29T12:00:00Z");
+  const at = (offsetMs: number): UpdateStatus => status({ nextCheck: new Date(now + offsetMs).toISOString() });
+  const cases: Array<[string, UpdateStatus, string]> = [
+    ["a day", at(23 * 3600_000 + 47 * 60_000 + 30_000), "in 23h 47m"],
+    ["an exact hour", at(3600_000), "in 1h 0m"],
+    ["minutes", at(5 * 60_000 + 59_000), "in 5m"],
+    ["under a minute", at(59_000), "in under a minute"],
+    ["due", at(0), "Due now"],
+    ["overdue, a check is running", at(-20_000), "Due now"],
+    ["not scheduled yet", status({ nextCheck: undefined }), "Soon"],
+    ["an unreadable time", status({ nextCheck: "not a time" }), "Unknown"],
+    ["checks off ignore a stale time", status({ checkEnabled: false, nextCheck: at(3600_000).nextCheck }), "Off"],
+  ];
+  for (const [what, u, want] of cases) assert.equal(nextCheckText(u, now), want, what);
 });
 
 test("describeUpdate: a development build never checks", () => {
@@ -150,8 +171,8 @@ test("describeUpdate: a failed update with nothing newer offers no update", () =
 test("describeUpdate: up to date only when the newest release is known", () => {
   // Checks turned off and on again forget the latest release but keep lastCheck.
   const v = describeUpdate(status({ latestVersion: undefined }));
-  assert.equal(v.headline, "Checking soon");
-  assert.ok(v.detail.includes("checks are turned on"), v.detail);
+  assert.equal(v.headline, "", "no claim of being up to date, and no status text either");
+  assert.equal(v.detail, "");
   const never = describeUpdate(status({ latestVersion: undefined, lastCheck: undefined }));
   assert.equal(never.headline, "");
 });

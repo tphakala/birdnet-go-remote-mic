@@ -78,17 +78,41 @@ test("supportDetails lists the build and host without identifying details", () =
     network: [{ name: "wlan0", up: true, addresses: ["192.0.2.10"], rxBytes: 0, txBytes: 0 }],
   } as SystemInfo;
   const got = supportDetails(status, system);
-  assert.equal(got, "remote-mic version: v0.3.0\nPlatform: linux/arm64\nOS: Debian GNU/Linux 13\nKernel: 6.12.0\nCPU: Cortex-A53 (4 cores)");
+  assert.equal(got, "remote-mic version: v0.3.0\nPlatform: linux/arm64\nOS: Debian GNU/Linux 13\nKernel: 6.12.0\nCPU: Cortex-A53 (4 cores)\nNetwork: none detected");
   assert.ok(!got.includes("field-mic") && !got.includes("192.0.2.10"));
   assert.equal(supportDetails(null, null), "remote-mic version: unknown");
+});
+
+test("supportDetails lists each shown link by type, signal and band, and no address, network name or MAC", () => {
+  const status = { version: "v0.3.0" } as ApplianceStatus;
+  const system = {
+    platform: "linux/arm64",
+    hostname: "field-mic",
+    cpuCores: 0,
+    network: [
+      {
+        name: "wlan0", kind: "wifi", up: true, mac: "b8:27:eb:12:34:56", rxBytes: 0, txBytes: 0,
+        addresses: ["192.0.2.10/24", "2001:db8::10/64"],
+        wifi: { ssid: "garden-ap", signalDbm: -52, frequencyMhz: 5220 },
+      },
+      { name: "eth0", kind: "ethernet", up: true, mac: "b8:27:eb:65:43:21", addresses: ["192.0.2.11/24"], rxBytes: 0, txBytes: 0 },
+      { name: "eth1", kind: "ethernet", up: false, addresses: [], rxBytes: 0, txBytes: 0 },
+      { name: "docker0", kind: "other", up: true, addresses: ["172.17.0.1/16"], rxBytes: 0, txBytes: 0 },
+    ],
+  } as SystemInfo;
+  const got = supportDetails(status, system);
+  assert.equal(got, "remote-mic version: v0.3.0\nPlatform: linux/arm64\nNetwork: Wi-Fi, -52 dBm (Good), 5 GHz\nNetwork: Ethernet");
+  for (const secret of ["192.0.2", "2001:db8", "garden-ap", "b8:27", "172.17", "field-mic", "wlan0", "eth0"]) {
+    assert.ok(!got.includes(secret), `leaked ${secret}`);
+  }
 });
 
 test("supportDetails leaves out what the host does not report", () => {
   const status = { version: "" } as ApplianceStatus;
   const bare = { platform: "", hostname: "h", cpuCores: 0, network: [] } as unknown as SystemInfo;
-  assert.equal(supportDetails(status, bare), "remote-mic version: unknown\nPlatform: unknown");
+  assert.equal(supportDetails(status, bare), "remote-mic version: unknown\nPlatform: unknown\nNetwork: none detected");
   const noCores = { platform: "linux/arm", cpuModel: "ARMv6", cpuCores: 0, hostname: "h", network: [] } as unknown as SystemInfo;
-  assert.equal(supportDetails(status, noCores), "remote-mic version: unknown\nPlatform: linux/arm\nCPU: ARMv6");
+  assert.equal(supportDetails(status, noCores), "remote-mic version: unknown\nPlatform: linux/arm\nCPU: ARMv6\nNetwork: none detected");
 });
 
 // device builds a serving device record with every required field defaulted, so

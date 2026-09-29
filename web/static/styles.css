@@ -3097,19 +3097,49 @@ select.field-input {
   overflow-wrap: anywhere;
 }
 
-/* System Information: two labelled columns (Hardware / Software), each its own
-   info-grid. The wrapper drops to a single column when the card is too narrow
-   for two side by side. */
+/* System Information: two columns. Hardware over Network on the left; on the
+   right Software with the update status and its controls under it. The wrapper
+   drops to a single column (Hardware, Network, Software, update) when the card
+   is too narrow for two side by side.
+   Each column is one grid with a label track and a value track that its groups
+   share through subgrid, so every value in a column starts at the same x
+   whatever label is widest. Without subgrid support a group keeps its own
+   label track, as the rest of the app's info grids do. */
 .sysinfo-cols {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 18px 32px;
 }
-.sysinfo-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.sysinfo-col {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 20px;
+  row-gap: 18px;
+  align-content: start;
   min-width: 0;
+}
+.sysinfo-col > * {
+  grid-column: 1 / -1;
+}
+.sysinfo-group {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: subgrid;
+  row-gap: 10px;
+  min-width: 0;
+}
+.sysinfo-group > * {
+  grid-column: 1 / -1;
+}
+.sysinfo-group .info-grid {
+  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: subgrid;
+}
+/* The update controls close the Software column, under a rule like the one that
+   used to close the whole card; the column's row gap spaces them. */
+.sysinfo-col > .network-actions {
+  margin-top: 0;
+  padding-top: 12px;
 }
 .sysinfo-group-title {
   margin: 0;
@@ -3353,13 +3383,13 @@ select.field-input {
   color: var(--signal-warn-text);
 }
 /* Update status in System Information: a headline coloured by the state and
-   the sentences under it, above the columns. */
+   the sentences under it, in the Software column under its rows. */
 .update-state {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-/* The card's own gap spaces its sections. An empty status (before the first
+/* The column's row gap spaces its sections. An empty status (before the first
    check) leaves the flow so it adds no gap, but stays in the page as the live
    region that announces the next status. */
 .update-state.is-empty {

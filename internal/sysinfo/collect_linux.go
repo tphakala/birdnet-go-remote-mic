@@ -576,8 +576,9 @@ func readUndervoltage(root string) (now, ok bool) {
 	return
 }
 
-// readInterfaces lists non-loopback network interfaces with their addresses and
-// byte counters.
+// readInterfaces lists non-loopback network interfaces with their addresses,
+// byte counters and link kind, plus the Wi-Fi facts of wireless links that are
+// up.
 func readInterfaces() []mgmtserver.NetworkInterface {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -601,8 +602,12 @@ func readInterfaces() []mgmtserver.NetworkInterface {
 		}
 		ni.RxBytes = readCounter(ifc.Name, "rx_bytes")
 		ni.TxBytes = readCounter(ifc.Name, "tx_bytes")
+		if f := readIfaceFacts(sysClassNet, ifc.Name); f.wireless || f.arpType >= 0 {
+			ni.Kind = classifyInterface(f)
+		}
 		out = append(out, ni)
 	}
+	addWifiLinks(out, procNetWireless, openWext)
 	return out
 }
 

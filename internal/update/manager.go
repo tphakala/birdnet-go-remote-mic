@@ -92,6 +92,11 @@ type Status struct {
 	// is why it failed, empty after a success.
 	LastCheck time.Time
 	LastError string
+	// NextCheck is when the next periodic check is due, zero while checks are
+	// off or the build names no release. It is measured on the monotonic
+	// clock and stamped on the current wall clock when read, so a clock step
+	// (a Pi without an RTC after NTP) does not move it.
+	NextCheck time.Time
 	// Install says how the binary was installed and whether it can update
 	// itself.
 	Install Install
@@ -138,12 +143,15 @@ type Manager struct {
 	latest    *Release
 	available bool
 	lastCheck time.Time
-	lastErr   string
-	lastCause string
-	failures  int    // consecutive failed checks
-	announced string // the version last logged as available
-	phase     Phase
-	phaseMsg  string
+	// nextDeadline is when the armed check timer fires, zero when none is
+	// armed; it carries a monotonic reading (time.Now().Add).
+	nextDeadline time.Time
+	lastErr      string
+	lastCause    string
+	failures     int    // consecutive failed checks
+	announced    string // the version last logged as available
+	phase        Phase
+	phaseMsg     string
 	// cancelApply stops an in-flight download when checks are turned off.
 	cancelApply context.CancelCauseFunc
 	// cancelCheck stops an in-flight check when checks are turned off.
@@ -216,13 +224,16 @@ func (m *Manager) Run(ctx context.Context) {
 			timer.Stop()
 			timer = nil
 		}
+		m.setNextCheck(0)
 	}
 	defer stop()
 	for {
 		on := m.enabled.Load()
 		switch {
 		case on && timer == nil:
-			timer = time.NewTimer(firstCheckDelay + m.cfg.Jitter(firstCheckJitter))
+			d := firstCheckDelay + m.cfg.Jitter(firstCheckJitter)
+			timer = time.NewTimer(d)
+			m.setNextCheck(d)
 		case !on:
 			stop()
 		}
@@ -236,9 +247,22 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-m.wake:
 		case <-tick:
 			failures := m.check(ctx, false)
-			timer = time.NewTimer(nextCheck(failures, m.cfg.Jitter))
+			d := nextCheck(failures, m.cfg.Jitter)
+			timer = time.NewTimer(d)
+			m.setNextCheck(d)
 		}
 	}
+}
+
+// setNextCheck records that the check timer fires d from now; zero clears it.
+func (m *Manager) setNextCheck(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d <= 0 {
+		m.nextDeadline = time.Time{}
+		return
+	}
+	m.nextDeadline = time.Now().Add(d)
 }
 
 // nextCheck is the delay after a check: about a day after a success, and
@@ -409,6 +433,12 @@ func (m *Manager) statusLocked() Status {
 	}
 	if m.latest != nil {
 		s.Latest, s.NotesURL = m.latest.Manifest.Version, m.latest.Manifest.NotesURL
+	}
+	// Only while checks are on: Apply(off) reaches enabled before the loop
+	// clears the deadline. The wall time is taken from the monotonic deadline
+	// now, so a wall-clock step since the timer was armed is not carried over.
+	if s.CheckEnabled && !m.nextDeadline.IsZero() {
+		s.NextCheck = time.Now().Add(time.Until(m.nextDeadline))
 	}
 	return s
 }

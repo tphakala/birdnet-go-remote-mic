@@ -2,6 +2,7 @@
 // of licenses.json (written by tools/licensegen from the build's module graph,
 // so the page never drifts from what the binary links), and the plain-text
 // system details a bug report asks for. No DOM, network, or storage here.
+import { networkSummary, shownInterfaces } from "./system-core.ts";
 import type { ApplianceStatus, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.ts";
 
 export const REPO_URL = "https://github.com/tphakala/birdnet-go-remote-mic";
@@ -75,10 +76,12 @@ export function componentTitle(e: LicenseEntry): string {
 
 // supportDetails is the plain text the "Copy System Details" button puts on the
 // clipboard for a bug report: the build, the host, and the capture devices, and
-// nothing identifying (no hostname, addresses, token, USB serial, device name,
+// nothing identifying (no hostname, addresses, network name, token, USB serial, device name,
 // or stream path), since the report is public. The version line always appears
-// and the Platform line whenever host details are known, each reading "unknown"
-// when empty; any other field the host does not report is left out. The device
+// and, whenever host details are known, the Platform line and a Network line
+// for each Ethernet or Wi-Fi link that is up ("none detected" when none), the
+// version and Platform lines each reading "unknown" when empty; any other field
+// the host does not report is left out. The device
 // section appears whenever devices is given, even empty, so a report shows that
 // no device was configured. configs, when loaded, adds every stream's mode and
 // channels (the device record carries only the first stream's).
@@ -94,6 +97,11 @@ export function supportDetails(
     if (system.os) lines.push(`OS: ${system.os}`);
     if (system.kernel) lines.push(`Kernel: ${system.kernel}`);
     if (system.cpuModel) lines.push(system.cpuCores > 0 ? `CPU: ${system.cpuModel} (${system.cpuCores} cores)` : `CPU: ${system.cpuModel}`);
+    // Link type, signal and band only: the address, network name and MAC
+    // identify the site.
+    const links = shownInterfaces(system);
+    if (links.length === 0) lines.push("Network: none detected");
+    for (const n of links) lines.push(`Network: ${networkSummary(n)}`);
   }
   if (devices) lines.push("", ...deviceDetails(devices, configs ?? []));
   return lines.join("\n");

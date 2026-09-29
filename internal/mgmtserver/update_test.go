@@ -50,6 +50,7 @@ func availableStatus() update.Status {
 		NotesURL:     "https://github.com/tphakala/birdnet-go-remote-mic/releases/tag/" + vLatest,
 		Available:    true,
 		LastCheck:    time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC),
+		NextCheck:    time.Date(2026, 9, 27, 11, 30, 0, 0, time.UTC),
 		Install:      update.Install{Method: update.MethodDeb, Hint: "apt install"},
 		Phase:        update.PhaseIdle,
 	}
@@ -74,6 +75,9 @@ func TestGetSystemIncludesUpdate(t *testing.T) {
 	if !u.LastCheck.Equal(availableStatus().LastCheck) {
 		t.Errorf("lastCheck %v", u.LastCheck)
 	}
+	if u.NextCheck == nil || !u.NextCheck.Equal(availableStatus().NextCheck) {
+		t.Errorf("nextCheck %v, want %v", u.NextCheck, availableStatus().NextCheck)
+	}
 
 	// Without an update provider the field is omitted.
 	s = New(&fakeProvider{}, WithSystemInfo(&fakeSystem{}))
@@ -84,11 +88,11 @@ func TestGetSystemIncludesUpdate(t *testing.T) {
 }
 
 // TestUpdateToWireOmitsEmpty pins that a status before any check carries no
-// empty optional strings.
+// empty optional strings and no next check.
 func TestUpdateToWireOmitsEmpty(t *testing.T) {
 	t.Parallel()
 	w := updateToWire(&update.Status{Current: "dev", Install: update.Install{Method: update.MethodManual}, Phase: update.PhaseIdle})
-	if w.LatestVersion != nil || w.NotesUrl != nil || w.LastCheck != nil || w.LastError != nil || w.UpgradeHint != nil || w.PhaseMessage != nil {
+	if w.LatestVersion != nil || w.NotesUrl != nil || w.LastCheck != nil || w.NextCheck != nil || w.LastError != nil || w.UpgradeHint != nil || w.PhaseMessage != nil {
 		t.Errorf("empty optional fields present: %+v", w)
 	}
 }
