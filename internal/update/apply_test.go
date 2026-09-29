@@ -1,6 +1,7 @@
 package update
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,10 @@ type applyEnv struct {
 // oldBinary is the installed binary's content; its first line is what the
 // fake version command prints.
 const oldBinary = "remote-mic v0.2.0\nold"
+
+// notNewerInstalled is an installed binary of the version a release is
+// offered for, so an updater running it has nothing newer to install.
+const notNewerInstalled = "remote-mic v0.3.0\nold"
 
 // newBinary is the staged release's content (see newApplyEnv).
 const newBinary = "remote-mic v0.3.0\nnew"
@@ -270,6 +275,8 @@ func TestApplyRefusesBeforeTouchingTheBinary(t *testing.T) {
 		name   string
 		mutate func(t *testing.T, env *applyEnv)
 		want   string
+		// installed is the binary left in place when it is not oldBinary.
+		installed string
 	}{
 		{
 			name:   wantUntrusted,
@@ -277,9 +284,18 @@ func TestApplyRefusesBeforeTouchingTheBinary(t *testing.T) {
 			want:   wantUntrusted,
 		},
 		{
-			name:   wantNotNewer,
-			mutate: func(_ *testing.T, env *applyEnv) { env.a.Running = vNew },
-			want:   wantNotNewer,
+			name: wantNotNewer,
+			mutate: func(t *testing.T, env *applyEnv) {
+				t.Helper()
+				// An updater of the version being offered, with that version
+				// installed.
+				env.a.Running = vNew
+				if err := os.WriteFile(env.binPath, []byte(notNewerInstalled), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:      wantNotNewer,
+			installed: notNewerInstalled,
 		},
 		{
 			name:   wantNoTarget,
@@ -312,14 +328,26 @@ func TestApplyRefusesBeforeTouchingTheBinary(t *testing.T) {
 		{
 			name: "new binary reports another version",
 			mutate: func(_ *testing.T, env *applyEnv) {
-				env.a.Version = func(context.Context, string) (string, error) { return "remote-mic v9.9.9\n", nil }
+				installedVersion := env.a.Version
+				env.a.Version = func(ctx context.Context, bin string) (string, error) {
+					if bin == env.binPath {
+						return installedVersion(ctx, bin)
+					}
+					return "remote-mic v9.9.9\n", nil
+				}
 			},
 			want: "reports",
 		},
 		{
 			name: "new binary does not run",
 			mutate: func(_ *testing.T, env *applyEnv) {
-				env.a.Version = func(context.Context, string) (string, error) { return "", errors.New("exec format error") }
+				installedVersion := env.a.Version
+				env.a.Version = func(ctx context.Context, bin string) (string, error) {
+					if bin == env.binPath {
+						return installedVersion(ctx, bin)
+					}
+					return "", errors.New("exec format error")
+				}
 			},
 			want: "does not run",
 		},
@@ -333,7 +361,8 @@ func TestApplyRefusesBeforeTouchingTheBinary(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Apply: got %v, want an error containing %q", err, tt.want)
 			}
-			if got := env.installed(t); got != oldBinary {
+			wantInstalled := cmp.Or(tt.installed, oldBinary)
+			if got := env.installed(t); got != wantInstalled {
 				t.Errorf("installed binary changed to %q", got)
 			}
 			if env.restarts != 0 {
@@ -517,7 +546,11 @@ func TestApplyCancelledBeforeSwap(t *testing.T) {
 	t.Parallel()
 	env := newApplyEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	env.a.Version = func(context.Context, string) (string, error) {
+	installedVersion := env.a.Version
+	env.a.Version = func(ctx context.Context, bin string) (string, error) {
+		if bin == env.binPath {
+			return installedVersion(ctx, bin)
+		}
 		cancel() // stopped while checking the new binary, which the stop kills
 		return "", errors.New("signal: killed")
 	}
