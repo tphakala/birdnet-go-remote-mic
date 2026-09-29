@@ -54,7 +54,9 @@ type InstallEnv struct {
 // path: a tarball, .deb or Homebrew install that ran `sudo remote-mic service
 // install` gets it. A package manager's own copy is never replaced behind its
 // back (dpkg and Homebrew get the upgrade command), and neither is a binary
-// run by hand.
+// run by hand. A hint that tells the operator to run `service install` names
+// the service binary's own path, not a bare command a package copy on PATH
+// could answer.
 func DetectInstall(env InstallEnv) Install {
 	exe := filepath.Clean(env.Exe)
 	switch {
@@ -66,7 +68,7 @@ func DetectInstall(env InstallEnv) Install {
 		if env.UpdaterBinPath != "" && filepath.Clean(env.UpdaterBinPath) == exe {
 			return Install{Method: MethodService, CanApply: true}
 		}
-		return Install{Method: MethodService, Hint: "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to enable one-button updates (if install warns that others can write the binary's directory, fix that first), or install the release by hand"}
+		return Install{Method: MethodService, Hint: "Re-run sudo " + ShellQuote(exe) + " service install and restart the service (sudo systemctl restart remote-mic) to enable one-button updates (if install warns that others can write the binary's directory, fix that first), or install the release by hand"}
 	default:
 		return Install{Method: MethodManual, Hint: manualHint(exe, env.ServiceBinPath)}
 	}

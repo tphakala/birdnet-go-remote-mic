@@ -95,6 +95,9 @@ type Applier struct {
 	HealthTimeout time.Duration
 	HealthSettle  time.Duration
 	Poll          time.Duration
+	// LockWait bounds the wait for a `service install` holding the binary's
+	// lock; DefaultBinLockWait when zero.
+	LockWait time.Duration
 	// Now stamps the result; time.Now when nil.
 	Now func() time.Time
 	// Logf logs progress; log.Printf when nil.
@@ -107,7 +110,10 @@ type Applier struct {
 // so the path unit does not start it again, and removes the claim at exit;
 // it writes the outcome to the status file for the appliance to
 // report. It first refuses a binary or bin directory that anyone but root
-// could write (checkBinDir). When an install journal is found, a previous run
+// could write (checkBinDir), then takes the lock `service install` also takes
+// (LockBin), waiting up to LockWait and failing the request if it is still
+// held; under the lock it checks the binary again (revalidate), since an
+// install may have replaced it since this updater started. When an install journal is found, a previous run
 // was cut off mid-install, and Apply rolls that back (recoverInterrupted)
 // instead of installing anything; that recovery runs even when the state
 // directory cannot be opened (the status is then only logged). The returned
@@ -140,9 +146,26 @@ func (a *Applier) Apply(ctx context.Context) error {
 		}
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: reason})
 	}
+	// From here to the end the binary, its journal and its rollback copy are
+	// this run's alone: a `service install` takes the same lock, so it cannot
+	// copy over what the swap just installed, and the swap cannot land between
+	// its version check and its copy.
+	release, err := a.lockBin(ctx)
+	if err != nil {
+		defer remove(reqPath)
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
+	}
+	defer release()
 	if _, err := os.Lstat(a.journalPath()); err == nil {
 		defer remove(reqPath)
 		return a.finish(root, a.recoverInterrupted(root))
+	}
+	// A `service install` may have replaced the binary between this updater's
+	// start and the lock, so what was checked before taking it no longer
+	// stands.
+	if err := a.revalidate(ctx); err != nil {
+		defer remove(reqPath)
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
 	}
 	if rootErr != nil {
 		return rootErr
@@ -181,6 +204,45 @@ func (a *Applier) Apply(ctx context.Context) error {
 		}
 	}
 	return a.finish(root, res)
+}
+
+// lockBin takes the lock that serializes replacing the binary (LockBin).
+func (a *Applier) lockBin(ctx context.Context) (release func(), err error) {
+	wait := a.LockWait
+	if wait <= 0 {
+		wait = DefaultBinLockWait
+	}
+	release, err = LockBin(ctx, a.BinPath, wait, func() {
+		a.logf("apply-update: waiting for a service install to finish")
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cannot start: %w", err)
+	}
+	return release, nil
+}
+
+// revalidate repeats, under the lock, what Apply checked before taking it: the
+// binary and its directory are still root-only, and the installed binary is
+// still the version this updater is (a.Running), so a release staged for that
+// version is not installed over a newer one.
+func (a *Applier) revalidate(ctx context.Context) error {
+	if err := a.checkBinDir(); err != nil {
+		return fmt.Errorf("refusing to update: %w", err)
+	}
+	vctx, cancel := context.WithTimeout(ctx, versionTimeout)
+	defer cancel()
+	out, err := a.Version(vctx, a.BinPath)
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("the updater was stopped: %w", cerr)
+	}
+	if err != nil {
+		return fmt.Errorf("the installed binary changed since this updater started and does not run: %w", err)
+	}
+	first, _, _ := strings.Cut(out, "\n")
+	if got, want := strings.TrimSpace(first), "remote-mic "+a.Running; got != want {
+		return fmt.Errorf("the installed binary changed since this updater started: it reports %q, this updater is %q", got, want)
+	}
+	return nil
 }
 
 // verifyStaged checks the staged manifest pair with this binary's keys, that

@@ -36,7 +36,9 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 // Uninstall stops and disables the unit and the root updater's units, clears
 // the updater units' failed state, removes their unit files, and reloads
 // systemd. With purge it also removes the
-// binary (with the copies the updater keeps beside it), the config and state
+// binary (with the copies the updater keeps beside it; the lock file beside it
+// stays, since unlinking a lock a waiting process has open lets a second one
+// take a new file under the same name), the config and state
 // directories, and the service user.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
