@@ -87,7 +87,7 @@ not break.
   period; `Boot` reports the outcome and writes that file.
   `WithdrawOrphanedRequest` runs at startup, before the API, and withdraws a
   request an earlier process left unclaimed. `Install.RerunInstall` words
-  every hint to re-run `service install`, and names the service binary only
+  the appliance's hints to re-run `service install`, and names the service binary only
   when it passes the root-only check. The file names and
   JSON fields here are contracts between versions (root file, Releases).
 - `releasemanifest`: the signed release manifest schema, Ed25519 signing and

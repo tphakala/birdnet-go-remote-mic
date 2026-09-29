@@ -414,10 +414,10 @@ package's copy does not. An install that warned it was installed without
 automatic updates has no button until that is fixed and `service install` is
 run again. The button is also off, and the hint says what to fix, while anyone
 but root could change the service's binary or a directory above it; the hint
-then names no command to run as root, only the permissions to fix and to
+then names no command that runs that binary as root, only the permissions to fix and to
 re-run the install from the release binary. If the appliance restarts before
 the updater has taken an update it asked for, it withdraws the request at
-startup and reports the update as failed; start it again.
+startup and reports the update as failed, unless the version it asked for, or a newer one, is already running; start it again.
 
 ## Authentication
 

@@ -301,9 +301,10 @@ func (in *Installer) installBinary(self, bin string) error {
 // later can roll the install back: a crash or failure after this point leaves
 // a journal with no kept copy, which the updater reports and leaves the
 // installed binary alone for. Left in place, the pair would roll the next
-// updater start back to a copy older than what install writes. The removal is
-// synced before the binary is replaced. A failure here aborts the install
-// before the binary is touched.
+// updater start back to a copy older than what install writes. The directory
+// is synced after the removal, before the binary is replaced (best effort,
+// like every syncDir). A failure here aborts the install before the binary is
+// touched.
 func (in *Installer) dropKeptCopy(bin string) (interrupted bool, err error) {
 	present, err := in.lexists(bin + update.JournalSuffix)
 	if err != nil {
