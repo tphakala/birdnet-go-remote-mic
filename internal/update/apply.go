@@ -142,7 +142,7 @@ func (a *Applier) Apply(ctx context.Context) error {
 		defer remove(reqPath)
 		reason := "refusing to update: " + err.Error()
 		if _, jerr := os.Lstat(a.journalPath()); jerr == nil {
-			reason += "; an interrupted update will be rolled back once only root can write there: fix that, then re-run sudo remote-mic service install"
+			reason += "; an interrupted update is pending: once only root can write there, re-run service install from a release binary you trust, which replaces this binary and discards that update"
 		}
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: reason})
 	}
@@ -607,7 +607,7 @@ func writeFresh(name string, data []byte, perm os.FileMode) error {
 	return atomicfile.Write(name, data, perm)
 }
 
-func (a *Applier) journalPath() string { return a.BinPath + ".pending" }
+func (a *Applier) journalPath() string { return a.BinPath + JournalSuffix }
 
 func (a *Applier) removeJournal() {
 	if err := os.Remove(a.journalPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {

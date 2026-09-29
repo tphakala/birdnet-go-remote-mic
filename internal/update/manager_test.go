@@ -329,6 +329,12 @@ func TestNextCheck(t *testing.T) {
 // that writes the request file as the real stager would.
 func applyManager(t *testing.T, stage func(ctx context.Context, rel *Release) error) (*Manager, *notify.Center, string) {
 	t.Helper()
+	return applyManagerFor(t, stage, "")
+}
+
+// applyManagerFor is applyManager for a service whose binary is serviceBin.
+func applyManagerFor(t *testing.T, stage func(ctx context.Context, rel *Release) error, serviceBin string) (*Manager, *notify.Center, string) {
+	t.Helper()
 	dir := t.TempDir()
 	if stage == nil {
 		stage = func(context.Context, *Release) error {
@@ -344,6 +350,8 @@ func applyManager(t *testing.T, stage func(ctx context.Context, rel *Release) er
 		Install:   Install{Method: MethodService, CanApply: true},
 		Publisher: c,
 		Logf:      (&logSink{}).logf,
+
+		ServiceBin: serviceBin,
 	})
 	m.Apply(on())
 	if _, err := m.CheckNow(t.Context()); err != nil {
@@ -493,6 +501,41 @@ func TestStartApplyUpdaterMissing(t *testing.T) {
 			t.Errorf("request not withdrawn: %v", err)
 		}
 	})
+}
+
+// spacedBin is a service binary path that needs shell quoting.
+const spacedBin = "/opt/Remote Mic/remote-mic"
+
+// TestStartApplyUpdaterMissingNamesTheServiceBinary pins that the hint names
+// the service's own binary, quoted, and never a bare command that a package
+// copy earlier on PATH could answer.
+func TestStartApplyUpdaterMissingNamesTheServiceBinary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, bin, want string
+	}{
+		{"known", spacedBin, "re-run sudo '" + spacedBin + "' service install"},
+		{"unknown", "", "re-run service install from the release binary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				m, _, _ := applyManagerFor(t, nil, tc.bin)
+				if _, err := m.StartApply(); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(updaterStartTimeout + 3*resultPoll)
+				synctest.Wait()
+				st := m.Status()
+				if st.Phase != PhaseFailed || !strings.Contains(st.PhaseMessage, tc.want) {
+					t.Errorf("status %+v, want the message to contain %q", st, tc.want)
+				}
+				if strings.Contains(st.PhaseMessage, "sudo remote-mic ") {
+					t.Errorf("message %q names a bare command", st.PhaseMessage)
+				}
+			})
+		})
+	}
 }
 
 func TestStartApplyStageFails(t *testing.T) {

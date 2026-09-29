@@ -54,6 +54,8 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 			return nil
 		},
 		removeFile: func(path string) error { *events = append(*events, "remove "+path); return nil },
+		lexists:    func(string) (bool, error) { return false, nil },
+		syncDir:    func(dir string) { *events = append(*events, "syncdir "+dir) },
 		warn:       io.Discard,
 	}
 }
@@ -78,7 +80,7 @@ func TestInstallSequence(t *testing.T) {
 		evGroupadd,
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
-		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
+		evCopySelf,
 		"write /etc/systemd/system/remote-mic.service",
 		"mkdir /etc/remote-mic",
 		evChownConfig,
@@ -173,11 +175,15 @@ func TestChownTreeStaysShallow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "inside"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	orig := lchown
-	t.Cleanup(func() { lchown = orig })
+	origL, origF := lchown, fchown
+	t.Cleanup(func() { lchown, fchown = origL, origF })
 	var visited []string
 	lchown = func(p string, _, _ int) error {
 		visited = append(visited, p)
+		return nil
+	}
+	fchown = func(f *os.File, _, _ int) error {
+		visited = append(visited, f.Name())
 		return nil
 	}
 	if err := chownTree(root, 990, 990); err != nil {
@@ -284,7 +290,7 @@ func TestInstallWithoutUpdaterOnUntrustedBin(t *testing.T) {
 		"bindir /usr/local/bin",
 		"mkbindir /usr/local/bin",
 		evGroupadd,
-		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
+		evCopySelf,
 		"write /etc/systemd/system/remote-mic.service",
 		"mkdir /etc/remote-mic",
 		evChownConfig,
@@ -551,7 +557,7 @@ func TestInstallDowngradeGuard(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Install: %v", err)
 			}
-			if !slices.Contains(events, "copy /home/pi/remote-mic -> /usr/local/bin/remote-mic") {
+			if !slices.Contains(events, evCopySelf) {
 				t.Errorf("install did not copy the binary: %v", events)
 			}
 			if tt.wantWarn == "" && warn.Len() != 0 {
@@ -662,7 +668,7 @@ func TestInstallHoldsTheLockAcrossTheDowngradeCheckAndCopy(t *testing.T) {
 		t.Fatalf("event %q missing from %v", want, events)
 		return -1
 	}
-	lock, version, cp, unlock := idx("lock /usr/local/bin/remote-mic"), idx("version /usr/local/bin/remote-mic"), idx("copy /home/pi/remote-mic -> /usr/local/bin/remote-mic"), idx("unlock /usr/local/bin/remote-mic")
+	lock, version, cp, unlock := idx("lock /usr/local/bin/remote-mic"), idx("version /usr/local/bin/remote-mic"), idx(evCopySelf), idx("unlock /usr/local/bin/remote-mic")
 	if lock >= version || version >= cp || cp >= unlock {
 		t.Errorf("want lock < version < copy < unlock, got %d %d %d %d in %v", lock, version, cp, unlock, events)
 	}
@@ -758,5 +764,328 @@ func TestInstallDoesNotSuggestRetryingAfterALockError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "try again") {
 		t.Errorf("error %q suggests retrying a failure that is not transient", err)
+	}
+}
+
+// indexOf returns the position of the first event equal to want, or -1.
+func indexOf(events []string, want string) int {
+	for i, e := range events {
+		if e == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestInstallClearsAnInterruptedUpdate pins that an install over a journal
+// replaces the binary first, then drops the kept copy, then the journal, and
+// says so: left behind, the journal would roll the next updater start back to
+// a copy older than what install wrote.
+func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(p string) (bool, error) { return p == "/usr/local/bin/remote-mic.pending", nil }
+	var warn strings.Builder
+	in.warn = &warn
+	if err := in.Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	order := []string{
+		evCopySelf,
+		"remove /usr/local/bin/remote-mic.prev",
+		"remove /usr/local/bin/remote-mic.pending",
+		"syncdir /usr/local/bin",
+	}
+	last := -1
+	for _, e := range order {
+		i := indexOf(events, e)
+		if i <= last {
+			t.Fatalf("event %q at %d, want it after index %d\nevents: %v", e, i, last, events)
+		}
+		last = i
+	}
+	if got := warn.String(); !strings.Contains(got, "interrupted") || !strings.Contains(got, "will not be rolled back") {
+		t.Errorf("warning %q, want it to say the interrupted update is dropped", got)
+	}
+}
+
+// TestInstallWithoutAJournalRemovesNothing pins that a clean install neither
+// removes the kept copy nor warns.
+func TestInstallWithoutAJournalRemovesNothing(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	var warn strings.Builder
+	in.warn = &warn
+	if err := in.Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if i := indexOf(events, "remove /usr/local/bin/remote-mic.prev"); i >= 0 {
+		t.Errorf("removed the kept copy without a journal: %v", events)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("unexpected warning %q", warn.String())
+	}
+}
+
+// TestInstallFailsWhenTheJournalCannotBeRemoved pins that a journal that stays
+// fails the install, naming it, instead of leaving a rollback armed.
+func TestInstallFailsWhenTheJournalCannotBeRemoved(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(string) (bool, error) { return true, nil }
+	in.removeFile = func(p string) error {
+		if strings.HasSuffix(p, ".pending") {
+			return errors.New("read-only file system")
+		}
+		return nil
+	}
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "journal") || !strings.Contains(err.Error(), "read-only file system") {
+		t.Fatalf("Install: got %v, want the journal named", err)
+	}
+	if indexOf(events, evReload) >= 0 {
+		t.Errorf("install went on after the journal failed: %v", events)
+	}
+}
+
+func TestRerunCommand(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "remote-mic")
+	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(bin, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, self, want string
+	}{
+		{"another copy", "/home/pi/remote mic", "sudo '/home/pi/remote mic' service install"},
+		{"the installed binary", bin, "run from the release binary you installed from"},
+		{"a link to it", link, "run from the release binary you installed from"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := rerunCommand(tc.self, bin)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("rerunCommand = %q, want it to contain %q", got, tc.want)
+			}
+			if strings.Contains(got, "sudo remote-mic ") {
+				t.Errorf("rerunCommand = %q names a bare command", got)
+			}
+		})
+	}
+}
+
+// TestInstallWarningNamesWhereItRanFrom pins that the no-updater warning tells
+// the operator to re-run the copy this install ran from, and never the
+// installed binary that just failed the root-only check.
+func TestInstallWarningNamesWhereItRanFrom(t *testing.T) {
+	for _, tc := range []struct {
+		name, self, want, notWant string
+	}{
+		{"another copy", "/home/pi/remote-mic", "sudo /home/pi/remote-mic service install", "sudo remote-mic "},
+		{"the installed binary", DefaultBinPath, "run from the release binary", "sudo /usr/local/bin/remote-mic service install"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []string
+			init := &fakeInit{events: &events, present: true}
+			userThere := true
+			in := testInstaller(&events, init, &userThere)
+			in.selfExe = func() (string, error) { return tc.self, nil }
+			in.rootOnly = func(string) error { return errors.New("/opt is writable by group 50") }
+			var warn strings.Builder
+			in.warn = &warn
+			if err := in.Install(true); err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			got := warn.String()
+			if !strings.Contains(got, tc.want) || strings.Contains(got, tc.notWant) {
+				t.Errorf("warning %q, want %q and not %q", got, tc.want, tc.notWant)
+			}
+		})
+	}
+}
+
+// TestChownTreeRefusesAHardLink pins that a file with a second name, which
+// the service user could have linked from elsewhere on the host, is not handed
+// over.
+func TestChownTreeRefusesAHardLink(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "secret")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, filepath.Join(root, "config.yaml")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	origL, origF := lchown, fchown
+	t.Cleanup(func() { lchown, fchown = origL, origF })
+	lchown = func(string, int, int) error { return nil }
+	fchown = func(f *os.File, _, _ int) error {
+		t.Errorf("chowned %s despite its second link", f.Name())
+		return nil
+	}
+	err := chownTree(root, 990, 990)
+	if err == nil || !strings.Contains(err.Error(), "config.yaml") || !strings.Contains(err.Error(), "hard link") {
+		t.Fatalf("chownTree: got %v, want the linked file named", err)
+	}
+}
+
+// TestChownTreeLeavesLinksAlone pins that a symlink entry is passed to
+// neither chown, and that a regular file beside it still is.
+func TestChownTreeLeavesLinksAlone(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "secret")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "planted")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origL, origF := lchown, fchown
+	t.Cleanup(func() { lchown, fchown = origL, origF })
+	var touched []string
+	lchown = func(p string, _, _ int) error { touched = append(touched, p); return nil }
+	fchown = func(f *os.File, _, _ int) error { touched = append(touched, f.Name()); return nil }
+	if err := chownTree(root, 990, 990); err != nil {
+		t.Fatalf("chownTree: %v", err)
+	}
+	want := []string{root, filepath.Join(root, "config.yaml")}
+	if !slices.Equal(touched, want) {
+		t.Errorf("touched %v, want %v", touched, want)
+	}
+}
+
+// TestInstallLeavesTheUpdaterOutWhenTheChownReachesTheBinary models a state
+// directory aliased onto the bin directory through a link: the ownership
+// handover reaches the binary, so the root-only check that follows it must
+// refuse, and the appliance is installed without the updater. Moving that
+// check above the handover would let the alias slip past it.
+func TestInstallLeavesTheUpdaterOutWhenTheChownReachesTheBinary(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.Spec = ServiceSpec{BinPath: "/opt/rm/bin/remote-mic", StateDir: "/var/lib/rm-alias"}
+	handedOver := false
+	in.chownTree = func(root string, uid, gid int) error {
+		events = append(events, fmt.Sprintf("chown %s %d:%d", root, uid, gid))
+		if root == "/var/lib/rm-alias" { // a link there leads to the bin directory
+			handedOver = true
+		}
+		return nil
+	}
+	in.rootOnly = func(string) error {
+		if handedOver {
+			return errors.New("/opt/rm/bin is owned by the service user")
+		}
+		return nil
+	}
+	var warn strings.Builder
+	in.warn = &warn
+	if err := in.Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if !strings.Contains(warn.String(), "without automatic updates") {
+		t.Errorf("warning %q, want the updater left out", warn.String())
+	}
+	for _, e := range events {
+		if strings.HasPrefix(e, "staging ") || e == "write /etc/systemd/system/remote-mic-update.path" {
+			t.Errorf("updater set up after the handover reached the binary: %q", e)
+		}
+	}
+	if indexOf(events, "remove /etc/systemd/system/remote-mic-update.path") < 0 {
+		t.Errorf("earlier updater units not removed: %v", events)
+	}
+}
+
+func TestLexists(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{{file, true}, {dangling, true}, {filepath.Join(dir, "none"), false}} {
+		got, err := lexists(tc.path)
+		if err != nil || got != tc.want {
+			t.Errorf("lexists(%s) = %t, %v; want %t", tc.path, got, err, tc.want)
+		}
+	}
+	if _, err := lexists(filepath.Join(file, "below")); err == nil {
+		t.Error("lexists below a file: got no error, want ENOTDIR")
+	}
+}
+
+func TestInstallStopsWhenTheJournalCannotBeLookedUp(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(string) (bool, error) { return false, errors.New("permission denied") }
+	if err := in.Install(true); err == nil || !strings.Contains(err.Error(), "journal") {
+		t.Fatalf("Install: got %v, want the journal lookup named", err)
+	}
+}
+
+func TestInstallFailsWhenTheKeptCopyCannotBeRemoved(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(string) (bool, error) { return true, nil }
+	in.removeFile = func(p string) error {
+		if strings.HasSuffix(p, ".prev") {
+			return errors.New("read-only file system")
+		}
+		t.Errorf("removed %s after the kept copy failed", p)
+		return nil
+	}
+	if err := in.Install(true); err == nil || !strings.Contains(err.Error(), "kept copy") {
+		t.Fatalf("Install: got %v, want the kept copy named", err)
+	}
+}
+
+// TestChownFile covers the production handle chown on the caller's own ids,
+// a file that vanished, and one that cannot be opened.
+func TestChownFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := chownFile(file, os.Getuid(), os.Getgid()); err != nil {
+		t.Errorf("chownFile: %v", err)
+	}
+	if err := chownFile(filepath.Join(dir, "gone"), os.Getuid(), os.Getgid()); err != nil {
+		t.Errorf("chownFile on a vanished file: %v", err)
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.WriteFile(locked, []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getuid() != 0 {
+		if err := chownFile(locked, os.Getuid(), os.Getgid()); err == nil {
+			t.Error("chownFile on an unreadable file: got no error")
+		}
 	}
 }

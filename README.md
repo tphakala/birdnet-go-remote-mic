@@ -372,7 +372,10 @@ version does not come up within two minutes and stay up for ten seconds, or
 the updater is stopped before it has, the updater puts the previous binary
 back and restarts it, and the appliance reports the rollback in the
 notification bell. An update cut off by a power loss is rolled back the same
-way when the updater next starts, even after a reboot. The appliance itself
+way when the updater next starts, even after a reboot, unless you run
+`service install` first: it replaces the binary and discards the interrupted
+update (it warns), so the rollback does not put an older binary over the new
+install. The appliance itself
 never gets write access to its own binary. A symlink at the binary's path is
 replaced by the binary itself (install warns; the file it pointed to is left
 unchanged). `service install` refuses a bin path whose directory, or any
@@ -381,11 +384,17 @@ binary still is not root-only after install hands the config and state
 directories to the service user, install warns and installs the service
 without the updater, and the updater checks again before it acts. After
 fixing the permissions, re-run `sudo remote-mic service install` (without
-`--no-start`, or the updater waits for the next boot); that also revives an
+`--no-start`, or the updater waits for the next boot), run from the release
+binary you installed from; that also revives an
 updater that stopped after repeated failures. Some older Debian installs keep
 `/usr/local/bin` group-writable (`root:staff`, mode 2775); run
 `sudo chmod 755 /usr/local /usr/local/bin` there, or pass `--bin-path` to
 install elsewhere.
+
+`service install` hands the config and state directories to the service user
+and refuses a file in them that has a second hard link, which would hand
+whatever else that link reaches to the service user too; remove the extra link
+and re-run it.
 
 `service install` and the updater take one lock (`<bin-path>.lock`) while they
 replace the binary, so running install during an update waits for it to finish

@@ -117,6 +117,9 @@ type Config struct {
 	Dir string
 	// Install is the detected installation.
 	Install Install
+	// ServiceBin is the binary the installed service unit runs, "" when
+	// unknown; hints that send the operator to `service install` name it.
+	ServiceBin string
 	// Publisher receives the available condition and update events.
 	Publisher notify.Publisher
 	// Logf logs; log.Printf when nil.
@@ -563,7 +566,7 @@ func (m *Manager) awaitUpdater(v string) {
 		case !withdrawTried && time.Since(start) > updaterStartTimeout:
 			withdrawTried = true
 			if os.Remove(filepath.Join(m.cfg.Dir, RequestFile)) == nil {
-				m.fail(v, errors.New("the root updater did not start; re-run sudo remote-mic service install"))
+				m.fail(v, errors.New("the root updater did not start; "+m.rerunInstall()))
 				return
 			}
 		case time.Since(start) > updaterStartTimeout+DefaultHealthTimeout+time.Minute:
@@ -571,6 +574,16 @@ func (m *Manager) awaitUpdater(v string) {
 			return
 		}
 	}
+}
+
+// rerunInstall is the advice to re-run the install. It names the service's own
+// binary when it is known: a bare command name could resolve to a package copy
+// earlier on PATH.
+func (m *Manager) rerunInstall() string {
+	if m.cfg.ServiceBin == "" {
+		return "re-run service install from the release binary you installed from"
+	}
+	return "re-run sudo " + ShellQuote(m.cfg.ServiceBin) + " service install"
 }
 
 func (m *Manager) setPhase(p Phase, msg string) {

@@ -13,6 +13,7 @@ const (
 	evReload       = "reload"
 	nologinPath    = "/usr/sbin/nologin"
 	evGroupadd     = "run groupadd --system --force remote-mic"
+	evCopySelf     = "copy /home/pi/remote-mic -> /usr/local/bin/remote-mic"
 	evChownConfig  = "chown /etc/remote-mic 990:990"
 	evEnableNowApp = "enable --now remote-mic.service"
 	evStopPath     = "stop remote-mic-update.path"

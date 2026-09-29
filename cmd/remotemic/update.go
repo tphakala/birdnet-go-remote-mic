@@ -53,13 +53,15 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 	ua := "remote-mic/" + version
 	fetcher := &update.Fetcher{Client: http.DefaultClient, Base: update.DefaultBase, Trusted: trusted, UserAgent: ua}
 	stager := &update.Stager{Dir: dir, Client: http.DefaultClient, UserAgent: ua, Target: update.RunningTarget()}
+	inst, serviceBin := detectInstall(dir)
 	return update.NewManager(ctx, &update.Config{
-		Running:   version,
-		Fetch:     fetcher.Latest,
-		Stage:     stager.Stage,
-		Dir:       dir,
-		Install:   detectInstall(dir),
-		Publisher: center,
+		Running:    version,
+		Fetch:      fetcher.Latest,
+		Stage:      stager.Stage,
+		Dir:        dir,
+		Install:    inst,
+		ServiceBin: serviceBin,
+		Publisher:  center,
 	})
 }
 
@@ -71,20 +73,20 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 // that send the operator to `service install` name this binary's path. A binary
 // that would otherwise be called run by hand gets the neutral by-hand hint
 // (see unreadableUnitHint).
-func detectInstall(dir string) update.Install {
+func detectInstall(dir string) (inst update.Install, serviceBin string) {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
 	if err != nil {
 		log.Printf("update: locate the running binary: %v", err)
-		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}
+		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}, ""
 	}
 	app, upd, err := service.InstalledBinPaths()
 	if err != nil {
 		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
-	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns})
+	inst = update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns})
 	inst = unreadableUnitHint(inst, exe, app, err)
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -92,7 +94,7 @@ func detectInstall(dir string) update.Install {
 			inst.Hint = stagingDirHint(exe, dir)
 		}
 	}
-	return inst
+	return inst, app
 }
 
 // stagingDirHint tells the operator to re-run install from the service's own
