@@ -22,7 +22,7 @@ import {
 import { router } from "../lib/router.ts";
 import { store } from "../lib/store.ts";
 import type { ApplianceStatus, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
-import { button, copyText, externalLink, h, ICON_COPY, ICON_VERSION, infoRow, renderLoadError, sectionHead, setText, svgIcon } from "../lib/ui.ts";
+import { button, clearLoadError, copyText, externalLink, h, ICON_COPY, ICON_VERSION, infoRow, renderLoadError, sectionHead, setText, svgIcon } from "../lib/ui.ts";
 
 // Section and link icons: static, trusted markup.
 const ICON_INFO = svgIcon('<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>');
@@ -237,7 +237,7 @@ export class AboutView {
     this.licenses = "loading";
     // A visit after a failed load starts from the loading text, not the old
     // error and its Retry button (as Retry itself does).
-    el.removeAttribute("role");
+    clearLoadError(el);
     el.textContent = LOADING_TEXT;
     let doc: LicenseDoc | null = null;
     // A deadline, so a stalled request ends in the error and Retry rather than
@@ -265,7 +265,7 @@ export class AboutView {
     }
     const el = this.thirdPartyEl;
     if (!el) return;
-    el.removeAttribute("role");
+    clearLoadError(el);
     el.replaceChildren(
       h("p", { class: "about-text" }, `${doc.components.length} components. Open one to read its full license text.`),
       h("ul", { class: "license-list" }, ...doc.components.map((c) => this.componentItem(c))),

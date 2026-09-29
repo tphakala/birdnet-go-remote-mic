@@ -2100,7 +2100,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   border-bottom: none;
 }
 
-/* A device with several streams lists one path per line. */
+/* A device with several streams lists one path, and one format, per line. */
 .client-table td.stream-paths {
   white-space: pre-line;
 }

@@ -1,5 +1,5 @@
 import { store } from "../../lib/store.ts";
-import { elem, orderChildren, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
+import { clearLoadError, elem, orderChildren, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
 import { TILE_SLOTS, tileSpecs, type TileSpec } from "../../lib/system-core.ts";
 import type { SystemInfo } from "../../lib/types.ts";
 
@@ -50,7 +50,12 @@ export class TelemetryTiles {
     // Remove a load-error placeholder loadError may have left in the grid, so a
     // recovered poll does not strand it among the gauges: the diffed pass below
     // tracks only tile nodes, not this foreign child.
-    grid.querySelector(":scope > .cfg-empty")?.remove();
+    // Retry may hold focus: park it on the view first.
+    const stale = grid.querySelector<HTMLElement>(":scope > .cfg-empty");
+    if (stale) {
+      clearLoadError(stale);
+      stale.remove();
+    }
 
     const specs = tileSpecs(sys);
     const want = new Set(specs.map((s) => s.key));

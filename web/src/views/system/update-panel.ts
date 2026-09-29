@@ -246,10 +246,9 @@ export class UpdatePanel {
     }
     const want = input.checked;
     this.toggling = true;
-    // aria-disabled too: screen readers ignore aria-busy on a checkbox, and a
-    // flip made now is undone (see above).
-    input.setAttribute("aria-busy", "true");
-    input.setAttribute("aria-disabled", "true");
+    // setBusy sets aria-disabled too: screen readers ignore aria-busy on a
+    // checkbox, and a flip made now is undone (see above).
+    setBusy(input);
     try {
       const res = await api.patchConfig({ updates: { check: want } });
       store.applyConfig(res.config);
@@ -270,8 +269,7 @@ export class UpdatePanel {
       }
     } finally {
       this.toggling = false;
-      input.removeAttribute("aria-busy");
-      input.removeAttribute("aria-disabled");
+      clearBusy(input);
     }
     await store.refreshSystem();
     this.render();

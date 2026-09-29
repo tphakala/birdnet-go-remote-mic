@@ -49,6 +49,39 @@ export function streamSummary(
   return { paths, modes, connected: counts.filter((n) => n > 0).length, clients: counts.reduce((a, n) => a + n, 0) };
 }
 
+// The Opus encoder's rate and default bitrate (see OpusDefaultBitrate in
+// internal/config): every Opus stream is 48 kHz, and an unset bitrate is 128
+// kbps per channel carried, capped at the 510 kbps Opus maximum.
+const OPUS_RATE_HZ = 48000;
+const OPUS_BITRATE_PER_CHANNEL = 128000;
+const OPUS_MAX_BITRATE = 510000;
+
+// streamFormats is the Codec / Rate cell's lines, one per stream in the same
+// order as StreamSummary.paths. It describes the stream a client receives, not
+// the hardware capture: PCM is 16-bit L16 at the capture rate, and Opus has no
+// bit depth, so it shows its bitrate. The labels are modeLabel's (lib/ui.ts,
+// which this DOM-free module cannot import). The config lists every stream; without
+// it the record's flat fields describe the first stream alone.
+export function streamFormats(
+  d: Pick<Device, "mode" | "rate" | "negotiatedRate" | "channels" | "opus" | "streams">,
+  cfg?: Pick<DeviceConfig, "streams">,
+): string[] {
+  const captureRate = d.negotiatedRate ?? d.rate;
+  const configured = cfg?.streams ?? [];
+  const streams = configured.length > 0
+    ? configured
+    : [{ mode: d.mode, channels: d.channels, opus: d.opus }];
+  const lines = streams.map((s) => {
+    if (s.mode === "pcm") return `PCM L16 ${captureRate.toLocaleString("en-US")} Hz · 16-bit`;
+    const kbps = (s.opus?.bitrate || Math.min(OPUS_BITRATE_PER_CHANNEL * Math.max(1, s.channels.length), OPUS_MAX_BITRATE)) / 1000;
+    return `OPUS ${OPUS_RATE_HZ.toLocaleString("en-US")} Hz · ${kbps.toLocaleString("en-US")} kbps`;
+  });
+  // A serving record with more runtime streams than the flat fields describe
+  // (the config has not loaded): repeat the first line rather than misalign.
+  for (let i = lines.length; i < (d.streams?.length ?? 0); i++) lines.push(lines[0] ?? "");
+  return lines;
+}
+
 // clientSummary is the Client cell: a device with several streams says how many
 // of them have a client, and a single stream says Connected or "-", or the count
 // when more than one client plays it.
@@ -345,9 +378,10 @@ export function capsSummary(d: Pick<AvailableDevice, "supportedChannels" | "supp
   const parts: string[] = [];
   const ch = d.supportedChannels ?? [];
   if (ch.length) {
-    if (ch.includes(1) && ch.includes(2)) parts.push("mono/stereo");
-    else if (ch.includes(2)) parts.push("stereo");
-    else parts.push("mono");
+    if (ch.includes(1) && ch.includes(2) && ch.length === 2) parts.push("mono/stereo");
+    else if (ch.length === 1 && ch[0] === 1) parts.push("mono");
+    else if (ch.length === 1 && ch[0] === 2) parts.push("stereo");
+    else parts.push(`${[...ch].sort((a, b) => a - b).join("/")} channels`);
   }
   const rates = d.supportedRates ?? [];
   if (rates.length) {

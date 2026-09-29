@@ -108,7 +108,8 @@ reconcile:
 - Ids for `aria-labelledby`/`aria-describedby` come from a module-level
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
-  failure with Retry), `apiErrorMessage`/`firstProblem`/`setFieldError`,
+  failure with Retry) and `clearLoadError` (call it before rewriting or
+  removing that container: it drops the alert role and parks focus), `apiErrorMessage`/`firstProblem`/`setFieldError`,
   `focusDropped`/`focusOnOrDropped`/`focusWorkspace` (focus fallback when a
   control went away), `showUnconfirmed`, `failureReason`,
   `scrollBehavior` (a scripted scroll that follows reduced motion),

@@ -53,6 +53,7 @@ import {
   nonServingFooterText,
   pendingStop,
   rtspUrl,
+  streamFormats,
   streamSummary,
   tallyStates,
   tokenHiddenMessage,
@@ -680,4 +681,35 @@ test("capsSummary names the channel support and the top rate", () => {
   assert.equal(capsSummary({ supportedChannels: [1] }), "mono");
   assert.equal(capsSummary({ supportedRates: [384000] }), "up to 384 kHz");
   assert.equal(capsSummary({}), "");
+  // Hardware that only offers wider layouts names the counts it found, never "mono".
+  assert.equal(capsSummary({ supportedChannels: [4] }), "4 channels");
+  assert.equal(capsSummary({ supportedChannels: [8, 4, 6], supportedRates: [48000] }), "4/6/8 channels · up to 48 kHz");
+  assert.equal(capsSummary({ supportedChannels: [1, 2, 4] }), "1/2/4 channels");
+  assert.equal(capsSummary({ supportedChannels: [2, 4] }), "2/4 channels");
+});
+
+test("streamFormats describes each stream, not the hardware capture", () => {
+  const rec = { mode: "opus" as const, rate: 48000, channels: [1, 2], streams: undefined };
+  // No config: the record's flat fields describe the one stream. Opus is 48 kHz
+  // whatever the capture rate, at the default 128 kbps per channel carried.
+  assert.deepEqual(streamFormats({ ...rec, negotiatedRate: 96000 }), ["OPUS 48,000 Hz · 256 kbps"]);
+  assert.deepEqual(streamFormats({ ...rec, channels: [1] }), ["OPUS 48,000 Hz · 128 kbps"]);
+  assert.deepEqual(streamFormats({ ...rec, opus: { bitrate: 64000 } }), ["OPUS 48,000 Hz · 64 kbps"]);
+  // PCM is L16 at the negotiated capture rate.
+  assert.deepEqual(streamFormats({ mode: "pcm", rate: 384000, channels: [1] }), ["PCM L16 384,000 Hz · 16-bit"]);
+  assert.deepEqual(streamFormats({ mode: "pcm", rate: 192000, negotiatedRate: 384000, channels: [1] }), ["PCM L16 384,000 Hz · 16-bit"]);
+  // The config lists every stream, in path order, each with its own settings.
+  const cfg = { streams: [
+    { path: "/a", mode: "opus" as const, channels: [1], opus: { bitrate: 32000 } },
+    { path: "/b", mode: "pcm" as const, channels: [1, 2] },
+    { path: "/c", mode: "opus" as const, channels: [1, 2, 3, 4, 5] },
+  ] };
+  assert.deepEqual(streamFormats(rec, cfg), ["OPUS 48,000 Hz · 32 kbps", "PCM L16 48,000 Hz · 16-bit", "OPUS 48,000 Hz · 510 kbps"]);
+  // A fractional kbps keeps its decimals.
+  assert.deepEqual(streamFormats({ ...rec, opus: { bitrate: 24500 } }), ["OPUS 48,000 Hz · 24.5 kbps"]);
+  // A serving record with more streams than the flat fields describe (no
+  // config yet) still yields one line per stream, so the cell stays aligned
+  // with the paths.
+  const runtime = [0, 1].map((i) => ({ path: `/${i}`, clientConnected: false, droppedFrames: 0 }));
+  assert.equal(streamFormats({ ...rec, streams: runtime }).length, 2);
 });

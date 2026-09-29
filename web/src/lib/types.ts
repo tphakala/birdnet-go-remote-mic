@@ -369,7 +369,9 @@ export interface RestartResult {
 }
 
 // LoadError is the detail of the store's "loaderror" event. coreFailed marks a
-// status+devices failure (the dashboard's data); systemFailed marks a /system
+// status+devices failure (the dashboard's data, and the appliance is out of
+// reach); devicesFailed marks a /devices failure alone or with it, which
+// leaves the rack and Stream Status with nothing to show; systemFailed marks a /system
 // failure (the system view's data); configFailed marks a /config failure (the
 // System view's network/access/notification cards, which stay in their
 // loading state until a config arrives). A view surfaces the error only for its own resource, so one
@@ -379,6 +381,7 @@ export interface RestartResult {
 // carried here for completeness so no view has to guess.
 export interface LoadError {
   coreFailed: boolean;
+  devicesFailed: boolean;
   systemFailed: boolean;
   configFailed: boolean;
   availableFailed: boolean;

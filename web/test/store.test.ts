@@ -600,23 +600,40 @@ async function loadFailing(h: Harness, failing: (keyof typeof ENDPOINTS)[]): Pro
 
 test("a failed initial load announces which views' data is missing", async () => {
   const message = "Could not reach the appliance.";
+  const none = { coreFailed: false, devicesFailed: false, systemFailed: false, configFailed: false, availableFailed: false, message };
   const cases: { failing: (keyof typeof ENDPOINTS)[]; want: LoadError | null }[] = [
     { failing: [], want: null },
-    // The dashboard needs status or devices; one of them alone is enough.
+    // A failed /status alone leaves the rack and Stream Status their devices.
     { failing: ["getStatus"], want: null },
-    { failing: ["getDevices"], want: null },
-    { failing: ["getStatus", "getDevices"], want: { coreFailed: true, systemFailed: false, configFailed: false, availableFailed: false, message } },
-    { failing: ["getSystem"], want: { coreFailed: false, systemFailed: true, configFailed: false, availableFailed: false, message } },
-    { failing: ["getConfig"], want: { coreFailed: false, systemFailed: false, configFailed: true, availableFailed: false, message } },
+    // A failed /devices alone leaves them nothing, though the appliance answers.
+    { failing: ["getDevices"], want: { ...none, devicesFailed: true } },
+    { failing: ["getStatus", "getDevices"], want: { ...none, coreFailed: true, devicesFailed: true } },
+    { failing: ["getSystem"], want: { ...none, systemFailed: true } },
+    { failing: ["getConfig"], want: { ...none, configFailed: true } },
     // The available list is advisory: its failure alone raises nothing, and it
     // rides along in the detail when something else failed.
     { failing: ["getAvailableDevices"], want: null },
-    { failing: ["getSystem", "getAvailableDevices"], want: { coreFailed: false, systemFailed: true, configFailed: false, availableFailed: true, message } },
+    { failing: ["getSystem", "getAvailableDevices"], want: { ...none, systemFailed: true, availableFailed: true } },
+    { failing: ["getDevices", "getAvailableDevices"], want: { ...none, devicesFailed: true, availableFailed: true } },
   ];
   for (const c of cases) {
     const got = await loadFailing(harness(), c.failing);
     assert.deepEqual(got, c.want ? [c.want] : [], `failing ${c.failing.join(", ") || "nothing"}`);
   }
+});
+
+test("a devices-only failure settles the device list as failed, and a later poll recovers it", async () => {
+  const h = harness();
+  const errors = await loadFailing(h, ["getDevices"]);
+  assert.equal(errors.length, 1);
+  // The Dashboard shows the error only while no list was read: the store must
+  // already say so when it announces the failure.
+  assert.equal(h.store.devicesRead(), "failed");
+  h.push("getDevices", [{ device: "mic", channels: [1] }] as unknown as Device[]);
+  await h.store.refreshDevices();
+  assert.equal(h.store.devicesRead(), "loaded");
+  assert.equal(h.events.get("devices"), 1, "the first good read after a failed one is announced");
+  assert.equal(errors.length, 1, "a poll must not raise the load error again");
 });
 
 test("a 401 during the initial load leaves the failure to the login prompt", async () => {

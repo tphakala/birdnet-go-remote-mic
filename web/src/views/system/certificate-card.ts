@@ -1,5 +1,5 @@
 import { api, ApiError, apiErrorMessage, failureReason, isRefusal, problemFor, problemReason } from "../../lib/api.ts";
-import { clearBusy, copyText, downloadBlob, infoRow, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, clearLoadError, copyText, downloadBlob, infoRow, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { CERT_LABELS, certRows, certTooLargeReason, parseExtraSans, type CertLabel } from "../../lib/certificate-core.ts";
 import { sentence } from "../../lib/text.ts";
@@ -113,8 +113,8 @@ export class CertificateCard {
     this.failures = 0;
     this.errorShown = false;
     if (this.errorEl) {
+      clearLoadError(this.errorEl);
       this.errorEl.hidden = true;
-      this.errorEl.removeAttribute("role");
       this.errorEl.textContent = "";
     }
     if (this.infoEl) this.infoEl.hidden = false;
