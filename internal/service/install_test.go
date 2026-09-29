@@ -35,6 +35,7 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		ensureDir:  func(p string, _ os.FileMode) error { *events = append(*events, "mkdir "+p); return nil },
 		binDirOK:   func(d string) error { *events = append(*events, "bindir "+d); return nil },
 		makeBinDir: func(p string) error { *events = append(*events, "mkbindir "+p); return nil },
+		dirsOK:     func(ServiceSpec) error { *events = append(*events, "dirs"); return nil },
 		trustedBin: func(string) error { return nil },
 		lockBin:    func(string, func()) (func(), error) { return func() {}, nil },
 		binVersion: func(string) (string, bool, error) { return "", false, nil },
@@ -77,6 +78,7 @@ func TestInstallSequence(t *testing.T) {
 	wantSeq(t, events, []string{
 		"bindir /usr/local/bin",
 		"mkbindir /usr/local/bin",
+		"dirs",
 		evGroupadd,
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
@@ -289,6 +291,7 @@ func TestInstallWithoutUpdaterOnUntrustedBin(t *testing.T) {
 	wantSeq(t, events, []string{
 		"bindir /usr/local/bin",
 		"mkbindir /usr/local/bin",
+		"dirs",
 		evGroupadd,
 		evCopySelf,
 		"write /etc/systemd/system/remote-mic.service",
@@ -768,9 +771,10 @@ func TestInstallDoesNotSuggestRetryingAfterALockError(t *testing.T) {
 }
 
 // TestInstallClearsAnInterruptedUpdate pins that an install over a journal
-// drops the kept copy before it replaces the binary and the journal after, and
-// says so: with the copy gone first, no crash or failure at a later step can
-// roll the next updater start back to a copy older than what install wrote.
+// drops the kept copy and syncs that removal before it replaces the binary,
+// and drops the journal after, and says so: with the copy gone first, and
+// durably, no crash or failure at a later step can roll the next updater
+// start back to a copy older than what install wrote.
 func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
 	var events []string
 	init := &fakeInit{events: &events, present: true}
@@ -782,16 +786,44 @@ func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
 	if err := in.Install(true); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	order := []string{
+	want := []string{
 		"remove /usr/local/bin/remote-mic.prev",
+		"syncdir /usr/local/bin",
 		evCopySelf,
 		"remove /usr/local/bin/remote-mic.pending",
 		"syncdir /usr/local/bin",
 	}
-	wantOrder(t, events, order...)
+	var got []string
+	for _, e := range events {
+		if slices.Contains(want, e) {
+			got = append(got, e)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("binary steps = %v, want %v", got, want)
+	}
 	if got := warn.String(); !strings.Contains(got, "interrupted") || !strings.Contains(got, "will not be rolled back") {
 		t.Errorf("warning %q, want it to say the interrupted update is dropped", got)
 	}
+}
+
+// TestInstallRefusesADirectoryOverTheBinDir pins that a config or state
+// directory reaching the bin directory is refused right after the bin
+// directory exists, before the lock, the copy, a unit or any handover.
+func TestInstallRefusesADirectoryOverTheBinDir(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.dirsOK = func(ServiceSpec) error {
+		events = append(events, "dirs")
+		return errors.New("the config directory /etc/remote-mic is /usr/local/bin")
+	}
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "refusing to install") || !strings.Contains(err.Error(), "config directory") {
+		t.Fatalf("Install error = %v, want a refusal naming the config directory", err)
+	}
+	wantSeq(t, events, []string{"bindir /usr/local/bin", "mkbindir /usr/local/bin", "dirs"})
 }
 
 // TestInstallWithoutAJournalRemovesNothing pins that a clean install neither
@@ -1157,5 +1189,98 @@ func TestInstallToleratesAClearedInterruptedUpdate(t *testing.T) {
 	}
 	if err := in.Install(true); err != nil {
 		t.Fatalf("Install: %v", err)
+	}
+}
+
+// TestCheckNotOverBinDir pins which config and state directories reach the
+// bin directory, compared by identity through links, on real directories.
+func TestCheckNotOverBinDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	top := filepath.Join(root, "top")
+	bin := filepath.Join(top, "bin")
+	other := filepath.Join(root, "other")
+	for _, d := range []string{bin, filepath.Join(bin, "sub"), other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := map[string]string{
+		"to-bin":  bin,
+		"to-top":  top,
+		"loop":    root,
+		"to-sub":  filepath.Join(bin, "sub"),
+		"binlink": bin,
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfgIn := func(dir string) string { return filepath.Join(dir, "config.yaml") }
+	tests := []struct {
+		name    string
+		spec    ServiceSpec
+		wantErr string // substring; empty means allowed
+	}{
+		{"config dir links to the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-bin")), StateDir: other}, "config directory"},
+		{"config dir links above the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-top")), StateDir: other}, "config directory"},
+		{"intermediate link reaches the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "loop", "top", "bin")), StateDir: other}, "config directory"},
+		{"state dir links above the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(other), StateDir: filepath.Join(root, "to-top")}, "state directory"},
+		{"bin path through a link, config dir is its real parent", ServiceSpec{BinPath: filepath.Join(root, "binlink", "remote-mic"), ConfigPath: cfgIn(top), StateDir: other}, "config directory"},
+		{"config dir below the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-sub")), StateDir: other}, ""},
+		{"unrelated dirs", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(other), StateDir: other}, ""},
+		{"missing config dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "new", "cfg")), StateDir: other}, ""},
+		{"missing bin dir", ServiceSpec{BinPath: filepath.Join(root, "nobin", "remote-mic"), ConfigPath: cfgIn(root), StateDir: other}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkNotOverBinDir(tc.spec)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("checkNotOverBinDir = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("checkNotOverBinDir = %v, want an error naming the %s", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestCheckNotOverBinDirReportsUnreadablePaths pins that a bin, config or
+// state path the check cannot look at is an error, not a pass.
+func TestCheckNotOverBinDirReportsUnreadablePaths(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 0 directory")
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	bin := filepath.Join(root, "bin")
+	for _, d := range []string{filepath.Join(locked, "inner"), bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	tests := []struct {
+		name string
+		spec ServiceSpec
+		want string
+	}{
+		{"bin dir", ServiceSpec{BinPath: filepath.Join(locked, "inner", "remote-mic"), ConfigPath: filepath.Join(root, "config.yaml"), StateDir: root}, "resolve the bin directory"},
+		{"config dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: filepath.Join(locked, "inner", "config.yaml"), StateDir: root}, "check the config directory"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkNotOverBinDir(tc.spec)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("checkNotOverBinDir = %v, want an error containing %q", err, tc.want)
+			}
+		})
 	}
 }

@@ -20,6 +20,9 @@ type Uninstaller struct {
 	removeFile func(path string) error
 	removeAll  func(path string) error
 	userExists func(name string) bool
+	// dirsOK refuses a purge whose config or state directory is the bin
+	// directory or one above it (checkNotOverBinDir).
+	dirsOK func(s ServiceSpec) error
 }
 
 // NewUninstaller builds an Uninstaller with the production init system, runner,
@@ -32,6 +35,7 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 		removeFile: os.Remove,
 		removeAll:  os.RemoveAll,
 		userExists: userExists,
+		dirsOK:     checkNotOverBinDir,
 	}
 }
 
@@ -41,7 +45,9 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 // binary (with the copies the updater keeps beside it; the lock file beside it
 // stays, since unlinking a lock a waiting process has open lets a second one
 // take a new file under the same name), the config and state
-// directories, and the service user.
+// directories, and the service user. A purge whose config or state directory
+// is the bin directory or one above it (checkNotOverBinDir) is refused before
+// anything is stopped or removed.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
 // enabled is not an error, so a partial or repeated uninstall still converges.
@@ -52,6 +58,13 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 	s := un.Spec.withDefaults()
 	if err := s.Validate(); err != nil {
 		return err
+	}
+	// Removing a config or state directory that is the bin directory, or
+	// holds it, would delete the binary with it; refuse before any teardown.
+	if purge {
+		if err := un.dirsOK(s); err != nil {
+			return fmt.Errorf("service: refusing to purge: %w", err)
+		}
 	}
 
 	// The path unit goes first, so it cannot start the updater while the

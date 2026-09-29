@@ -46,6 +46,9 @@ type Installer struct {
 	// makeBinDir creates the bin directory when it is missing and leaves an
 	// existing one as it is (see ensureBinDir).
 	makeBinDir func(path string) error
+	// dirsOK refuses a config or state directory that is the bin directory
+	// or a directory above it (see checkNotOverBinDir).
+	dirsOK func(s ServiceSpec) error
 	// trustedBin refuses to run the binary at path unless it is a regular
 	// file only root owns and can write (update.CheckRootOnlyFile): install
 	// runs as root, so it must not execute a file someone else can change or
@@ -96,6 +99,7 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		ensureDir:  ensureDir,
 		binDirOK:   checkBinDir,
 		makeBinDir: ensureBinDir,
+		dirsOK:     checkNotOverBinDir,
 		trustedBin: update.CheckRootOnlyFile,
 		lockBin:    lockBin,
 		binVersion: installedVersion,
@@ -117,7 +121,9 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // directories to the service user, then reloads systemd and enables the unit
 // and the updater's path unit (starting both too when now is true). A bin
 // directory (or a directory above it) that anyone but root can write is
-// refused before anything is written, and so is an install that would replace
+// refused before anything is written, a config or state directory that is the
+// bin directory or one above it (checkNotOverBinDir) before anything but the
+// bin directory is, and an install that would replace
 // a newer installed binary with this older one (see checkDowngrade). From the
 // version check to the end it holds the lock the root updater takes around
 // replacing the binary (update.LockBin), waiting for an update in progress and
@@ -153,6 +159,11 @@ func (in *Installer) Install(now bool) error {
 	// The lock file lives in the bin directory, so it has to exist first.
 	if err := in.makeBinDir(filepath.Dir(s.BinPath)); err != nil {
 		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
+	}
+	// The config and state directories are handed to the service user below;
+	// one that is the bin directory, or holds it, would hand that over too.
+	if err := in.dirsOK(s); err != nil {
+		return fmt.Errorf("service: refusing to install: %w", err)
 	}
 	// The root updater replaces the same binary; hold its lock from the
 	// version check to the end, so an update cannot land between the check
@@ -291,8 +302,9 @@ func (in *Installer) installBinary(self, bin string) error {
 // later can roll the install back: a crash or failure after this point leaves
 // a journal with no kept copy, which the updater reports and leaves the
 // installed binary alone for. Left in place, the pair would roll the next
-// updater start back to a copy older than what install writes. A failure here
-// aborts the install before the binary is touched.
+// updater start back to a copy older than what install writes. The removal is
+// synced before the binary is replaced. A failure here aborts the install
+// before the binary is touched.
 func (in *Installer) dropKeptCopy(bin string) (interrupted bool, err error) {
 	present, err := in.lexists(bin + update.JournalSuffix)
 	if err != nil {
@@ -304,6 +316,10 @@ func (in *Installer) dropKeptCopy(bin string) (interrupted bool, err error) {
 	if err := in.removeFile(bin + update.PrevSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, fmt.Errorf("service: remove the kept copy of an interrupted update: %w", err)
 	}
+	// Only the later rename is synced by the copy: without this, a power cut
+	// could persist the new binary but not the removal, and the next updater
+	// start would roll the fresh install back to the kept copy.
+	in.syncDir(filepath.Dir(bin))
 	return true, nil
 }
 
@@ -459,6 +475,56 @@ func checkBinDir(dir string) error {
 		}
 		dir = parent
 	}
+}
+
+// checkNotOverBinDir refuses a config or state directory that is, through a
+// link or a mount, the bin directory or a directory above it. Install hands
+// both to the service user and purge deletes both, so either would reach the
+// binary the root updater runs. Directories are compared by identity, not by
+// name, which a link or bind mount gets past. A config or state directory
+// that does not exist yet is skipped (install creates it fresh), and so is
+// the check when the bin directory is missing (nothing to reach).
+func checkNotOverBinDir(s ServiceSpec) error {
+	binDir, err := filepath.EvalSymlinks(filepath.Dir(s.BinPath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve the bin directory: %w", err)
+	}
+	type dirID struct {
+		path string
+		info fs.FileInfo
+	}
+	var above []dirID
+	for d := binDir; ; d = filepath.Dir(d) {
+		info, err := os.Stat(d)
+		if err != nil {
+			return fmt.Errorf("resolve the bin directory: %w", err)
+		}
+		above = append(above, dirID{d, info})
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	for _, d := range []struct{ label, path string }{
+		{"config directory", s.ConfigDir()},
+		{"state directory", s.StateDir},
+	} {
+		info, err := os.Stat(d.path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("check the %s %s: %w", d.label, d.path, err)
+		}
+		for _, a := range above {
+			if os.SameFile(info, a.info) {
+				return fmt.Errorf("the %s %s is %s, which holds the bin directory %s; the service user would own the binary the root updater runs", d.label, d.path, a.path, binDir)
+			}
+		}
+	}
+	return nil
 }
 
 // ensureBinDir creates the bin directory and any missing parents with mode
