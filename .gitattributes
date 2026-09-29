@@ -2,3 +2,9 @@
 # checkout (a core.autocrlf=true clone would otherwise fail the check).
 THIRD_PARTY_LICENSES.md text eol=lf
 web/static/licenses.json text eol=lf
+
+# The generated API code is checked byte for byte (api:verify diffs gen.go,
+# web:types:verify compares the TypeScript file), so keep it LF on every
+# checkout, and collapse it in GitHub diffs.
+internal/mgmtapi/gen.go text eol=lf linguist-generated=true
+web/src/lib/api-schema.gen.ts text eol=lf linguist-generated=true
