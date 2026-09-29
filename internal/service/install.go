@@ -46,8 +46,9 @@ type Installer struct {
 	// makeBinDir creates the bin directory when it is missing and leaves an
 	// existing one as it is (see ensureBinDir).
 	makeBinDir func(path string) error
-	// dirsOK refuses a config or state directory that is the bin directory
-	// or a directory above it (see checkNotOverBinDir).
+	// dirsOK refuses a config or state directory that is the bin directory,
+	// a directory above it or one a link on its path leads through, and a
+	// staging directory that is any of those (see checkNotOverBinDir).
 	dirsOK func(s ServiceSpec) error
 	// trustedBin refuses to run the binary at path unless it is a regular
 	// file only root owns and can write (update.CheckRootOnlyFile): install
@@ -70,6 +71,9 @@ type Installer struct {
 	// stagingDir creates the update staging directory inside the state
 	// directory and hands it to the service user.
 	stagingDir func(stateDir string, uid, gid int) error
+	// withdrawRequest removes a request the root updater has not claimed
+	// from the staging directory, and reports whether there was one.
+	withdrawRequest func(stateDir string) (withdrawn bool, err error)
 	// rootOnly refuses an installed binary that is not a regular file only
 	// root can write, in directories only root can write
 	// (update.CheckRootOnlyFile).
@@ -77,7 +81,8 @@ type Installer struct {
 	removeFile func(path string) error
 	// lexists reports whether anything, a link included, is at path.
 	lexists func(path string) (bool, error)
-	// syncDir makes the removals in dir durable (atomicfile.SyncDir).
+	// syncDir makes the removals in dir durable as far as the file system
+	// allows (atomicfile.SyncDir is best effort and reports nothing).
 	syncDir func(dir string)
 	// packageOwns reports whether the .deb package owns the file at path
 	// (PackageOwns): such a binary is run in place, never copied.
@@ -101,34 +106,35 @@ type Installer struct {
 // command runner, detected platform, and real filesystem, user and
 // installed-version operations (running the installed binary only when it is
 // a root-only regular file), the lock shared with the root updater, the
-// dpkg file lists that say whether the .deb package owns a binary, and the
-// installed unit's files, read for a drop-in that overrides ExecStart=. The
-// caller sets Version and AllowDowngrade.
+// withdrawal of a leftover update request, the dpkg file lists that say whether
+// the .deb package owns a binary, and the installed unit's files, read for a
+// drop-in that overrides ExecStart=. The caller sets Version and AllowDowngrade.
 func NewInstaller(spec ServiceSpec) *Installer {
 	return &Installer{
-		Spec:       spec,
-		Init:       NewSystemd(),
-		Run:        execRunner,
-		Plat:       Detect(),
-		selfExe:    os.Executable,
-		userExists: userExists,
-		lookupUser: lookupUser,
-		ensureDir:  ensureDir,
-		binDirOK:   checkBinDir,
-		makeBinDir: ensureBinDir,
-		dirsOK:     checkNotOverBinDir,
-		trustedBin: update.CheckRootOnlyFile,
-		lockBin:    lockBin,
-		binVersion: installedVersion,
-		isLink:     isSymlink,
-		chownTree:  chownTree,
-		copyFile:   copyFile,
-		writeFile:  atomicfile.Write,
-		stagingDir: ensureStagingDir,
-		rootOnly:   update.CheckRootOnlyFile,
-		removeFile: os.Remove,
-		lexists:    lexists,
-		syncDir:    atomicfile.SyncDir,
+		Spec:            spec,
+		Init:            NewSystemd(),
+		Run:             execRunner,
+		Plat:            Detect(),
+		selfExe:         os.Executable,
+		userExists:      userExists,
+		lookupUser:      lookupUser,
+		ensureDir:       ensureDir,
+		binDirOK:        checkBinDir,
+		makeBinDir:      ensureBinDir,
+		dirsOK:          checkNotOverBinDir,
+		trustedBin:      update.CheckRootOnlyFile,
+		lockBin:         lockBin,
+		binVersion:      installedVersion,
+		isLink:          isSymlink,
+		chownTree:       chownTree,
+		copyFile:        copyFile,
+		writeFile:       atomicfile.Write,
+		stagingDir:      ensureStagingDir,
+		withdrawRequest: withdrawStagedRequest,
+		rootOnly:        update.CheckRootOnlyFile,
+		removeFile:      os.Remove,
+		lexists:         lexists,
+		syncDir:         atomicfile.SyncDir,
 
 		packageOwns:     PackageOwns,
 		installed:       InstalledSpec,
@@ -148,8 +154,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // updater units and no staging directory, and the rest of this comment
 // describes the copy route. A bin
 // directory (or a directory above it) that anyone but root can write is
-// refused before anything is written, a config or state directory that is the
-// bin directory or one above it (checkNotOverBinDir) before anything but the
+// refused before anything is written, a config, state or staging directory on
+// the way to the bin directory (checkNotOverBinDir) before anything but the
 // bin directory is, and an install that would replace
 // a newer installed binary with this older one (see checkDowngrade). From the
 // version check to the end it holds the lock the root updater takes around
@@ -157,7 +163,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // failing if one outlasts the wait (with a hint to try again) or if the lock
 // cannot be taken at all. Around replacing the binary it clears an update that
 // was cut off: the kept copy before, the journal after (dropKeptCopy,
-// dropJournal). The ownership handover refuses a file with a second hard link (chownTree). Since the root updater runs the
+// dropJournal). The ownership handover refuses a file with a second hard link (chownTree). A request left in the staging directory is
+// withdrawn before the updater's path unit is enabled (prepareStaging). Since the root updater runs the
 // installed binary, an installed binary that still fails the root-only check
 // gets no updater: install warns, removes updater units an earlier install
 // left, and installs the appliance alone. That check runs on the installed
@@ -263,8 +270,8 @@ func (in *Installer) Install(now bool) error {
 	// The staging directory sits in the state directory the service user
 	// owns, so it is handled on its own (see ensureStagingDir).
 	if updater {
-		if err := in.stagingDir(s.StateDir, uid, gid); err != nil {
-			return fmt.Errorf("service: update staging directory %s: %w", s.UpdateDir(), err)
+		if err := in.prepareStaging(s, uid, gid); err != nil {
+			return err
 		}
 	}
 
@@ -675,8 +682,9 @@ func checkBinDir(dir string) error {
 // through (update.PathDirs). Install hands both to the service user and purge
 // deletes both, and the owner of any directory on that way can change which
 // binary the root updater runs. Directories are compared by identity, not by
-// name, which a link or bind mount gets past. A config or state directory
-// that does not exist yet is skipped (install creates it fresh), and so is
+// name, which a link or bind mount gets past. The staging directory is
+// included because install chmods and chowns it to the service user. A
+// directory that does not exist yet is skipped (install creates it fresh), and so is
 // the check when the bin directory is missing (nothing to reach).
 func checkNotOverBinDir(s ServiceSpec) error {
 	type owned struct {
@@ -684,7 +692,7 @@ func checkNotOverBinDir(s ServiceSpec) error {
 		info        fs.FileInfo
 	}
 	var dirs []owned
-	for _, d := range []owned{{label: "config directory", path: s.ConfigDir()}, {label: "state directory", path: s.StateDir}} {
+	for _, d := range []owned{{label: configDirLabel, path: s.ConfigDir()}, {label: stateDirLabel, path: s.StateDir}, {label: "update staging directory", path: s.UpdateDir()}} {
 		info, err := os.Stat(d.path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue

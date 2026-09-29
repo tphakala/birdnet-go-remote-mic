@@ -355,27 +355,39 @@ func TestBootKeepsTheRollbackForTheRestoredVersion(t *testing.T) {
 }
 
 // TestWithdrawOrphanedRequestForTheRunningVersion pins that a withdrawn
-// request is reported as a failed update only when it asked for a version
-// newer than the running one: when that version or a newer one already runs
-// (installed by hand meanwhile), there is nothing to start again.
+// request is reported as a failed update unless it cleanly asked for a
+// version that is not newer than the running one: when that version or a newer
+// one already runs (installed by hand meanwhile), there is nothing to start
+// again. A request that cannot be read or decoded, a build that is not a
+// release and an empty version are reported, since nothing says the update
+// is moot.
 func TestWithdrawOrphanedRequestForTheRunningVersion(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name, requested, running string
+		raw                      string // written instead of a request when set
 		wantReport               bool
 	}{
-		{"requested version runs", vNew, vNew, false},
-		{"newer version runs", vOld, vNew, false},
-		{"older version runs", vNew, vOld, true},
-		{"development build of the requested version runs", vNew, vNew + "-3-gabc1234", false},
-		{"development build of an older version runs", vNew, vOld + "-3-gabc1234", true},
-		{"build that is not a release runs", vNew, devBuildVersion, true},
-		{"unreadable request", "", vNew, true},
+		{"requested version runs", vNew, vNew, "", false},
+		{"newer version runs", vOld, vNew, "", false},
+		{"older version runs", vNew, vOld, "", true},
+		{"development build of the requested version runs", vNew, vNew + "-3-gabc1234", "", false},
+		{"development build of an older version runs", vNew, vOld + "-3-gabc1234", "", true},
+		{"build that is not a release runs", vNew, devBuildVersion, "", true},
+		{"empty version", "", vNew, "", true},
+		{"undecodable request", "", vNew, `{"version":"v0.3.0"} x`, true},
+		{"oversized request", "", vNew, `{"version":"v0.3.0","pad":"` + strings.Repeat("x", maxSmallFile) + `"}`, true},
 	}
 	for _, tt := range tests {
 		dir := t.TempDir()
 		req := filepath.Join(dir, RequestFile)
-		writeJSON(t, req, Request{Version: tt.requested})
+		if tt.raw != "" {
+			if err := os.WriteFile(req, []byte(tt.raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			writeJSON(t, req, Request{Version: tt.requested})
+		}
 		c := notify.NewCenter()
 		WithdrawOrphanedRequest(dir, tt.running, c, t.Logf)
 		if exists(req) {

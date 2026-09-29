@@ -58,6 +58,13 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 	})
 }
 
+// Seams for the running binary and the installed units, so a test can stand
+// in for a service install without one on the host.
+var (
+	runningExe        = os.Executable
+	installedBinPaths = service.InstalledBinPaths
+)
+
 // detectInstall classifies this installation from the running binary's path,
 // the installed systemd units, and dpkg's file lists. The one-button update
 // also needs the staging directory the installer creates; without it the
@@ -68,7 +75,7 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 // that would otherwise be called run by hand gets the neutral by-hand hint
 // (see unreadableUnitHint).
 func detectInstall(dir string) update.Install {
-	exe, err := os.Executable()
+	exe, err := runningExe()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
@@ -76,7 +83,7 @@ func detectInstall(dir string) update.Install {
 		log.Printf("update: locate the running binary: %v", err)
 		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}
 	}
-	app, upd, err := service.InstalledBinPaths()
+	app, upd, err := installedBinPaths()
 	if err != nil {
 		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}

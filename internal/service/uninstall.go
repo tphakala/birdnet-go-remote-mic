@@ -20,8 +20,8 @@ type Uninstaller struct {
 	removeFile func(path string) error
 	removeAll  func(path string) error
 	userExists func(name string) bool
-	// dirsOK refuses a purge whose config or state directory is the bin
-	// directory or one above it (checkNotOverBinDir).
+	// dirsOK refuses a purge whose config or state directory is on the way to
+	// the bin directory or has a mount inside it (checkPurgeDirs).
 	dirsOK func(s ServiceSpec) error
 	// packageOwns reports whether the .deb package owns the file at path
 	// (PackageOwns); purge leaves such a binary to dpkg.
@@ -29,7 +29,8 @@ type Uninstaller struct {
 }
 
 // NewUninstaller builds an Uninstaller with the production init system, runner,
-// filesystem and user operations, and the dpkg file lists that say whether the
+// filesystem and user operations, the purge's directory check (checkPurgeDirs,
+// which reads the host's mounts), and the dpkg file lists that say whether the
 // .deb package owns the binary.
 func NewUninstaller(spec ServiceSpec) *Uninstaller {
 	return &Uninstaller{
@@ -39,7 +40,7 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 		removeFile: os.Remove,
 		removeAll:  os.RemoveAll,
 		userExists: userExists,
-		dirsOK:     checkNotOverBinDir,
+		dirsOK:     checkPurgeDirs,
 
 		packageOwns: PackageOwns,
 	}
@@ -53,8 +54,8 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 // take a new file under the same name), unless the .deb package owns it: that
 // is left for apt to remove. It also removes the config and state
 // directories, and the service user. A purge whose config or state directory
-// is the bin directory or one above it (checkNotOverBinDir) is refused before
-// anything is stopped or removed.
+// is on the way to the bin directory (checkNotOverBinDir) or has a mount inside
+// it (purgeDirsOK) is refused before anything is stopped or removed.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
 // enabled is not an error, so a partial or repeated uninstall still converges.

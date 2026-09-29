@@ -926,6 +926,44 @@ func TestStartApplyBusyOnDisk(t *testing.T) {
 	})
 }
 
+// TestStartApplyRefusesWhileAnInterruptedUpdateIsPending pins that the
+// journal beside the service binary, which the root updater recovers from
+// before it claims anything, holds a new request back.
+func TestStartApplyRefusesWhileAnInterruptedUpdateIsPending(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		bin := filepath.Join(t.TempDir(), "remote-mic")
+		m, _, _ := applyManagerFor(t, nil, bin)
+		journal := bin + JournalSuffix
+		if err := os.WriteFile(journal, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := m.StartApply()
+		switch {
+		case !errors.Is(err, ErrBusy):
+			t.Fatalf("journal present: got %v, want ErrBusy", err)
+		case errors.Is(err, errEarlierAttempt):
+			t.Errorf("journal present: reported as an earlier attempt: %v", err)
+		case !strings.Contains(err.Error(), journal):
+			t.Errorf("journal present: message %q does not name %s", err, journal)
+		case strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "update in progress"):
+			// The journal also exists through a healthy update's health wait, so
+			// the message must not call it an interrupted one.
+			t.Errorf("journal present: message %q does not say an update is in progress", err)
+		}
+		if got := m.Status().Phase; got != PhaseIdle {
+			t.Errorf("phase after the refusal is %q, want %q", got, PhaseIdle)
+		}
+		if err := os.Remove(journal); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.StartApply(); err != nil {
+			t.Errorf("journal removed: %v", err)
+		}
+		synctest.Wait()
+	})
+}
+
 // TestStartApplyShutdownQuiet pins that the appliance shutting down during a
 // download is not reported as a failed update.
 func TestStartApplyShutdownQuiet(t *testing.T) {

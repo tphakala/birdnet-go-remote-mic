@@ -410,9 +410,15 @@ install elsewhere.
 `service install` hands the config and state directories to the service user
 and refuses a file in them that has a second hard link, which would hand
 whatever else that link reaches to the service user too; remove the extra link
-and re-run it. It also refuses a config or state directory that is, through a
-symlink or a bind mount, the bin directory or a directory above it, and
-`service uninstall --purge` refuses the same before it removes anything.
+and re-run it. It also refuses a config or state directory (or the `update`
+directory in the state directory) that is, through a symlink or a bind mount,
+a directory on the way to the bin directory: the bin directory, a directory
+above it, or one a symlink on its path leads through. `service uninstall
+--purge` refuses the same before it removes anything, and also refuses while
+something is mounted inside the config or state directory, since removing the
+directory would delete what is on that mount; unmount it first. `service
+install` removes an update request left in the `update` directory (with a
+warning) so the updater does not start on a request nothing tracks.
 
 `service install` and the updater take one lock (`<bin-path>.lock`) while they
 replace the binary, so running install during an update waits for it to finish
@@ -435,6 +441,10 @@ then names no command that runs that binary as root, only the permissions to fix
 re-run the install from the release binary. If the appliance restarts before
 the updater has taken an update it asked for, it withdraws the request at
 startup and reports the update as failed, unless the version it asked for, or a newer one, is already running; start it again.
+The button is refused while the install journal (`<bin-path>.pending`) is
+beside the service binary: the updater keeps it from the swap until the new
+version is confirmed healthy, and recovers from it (restarting the appliance)
+after a cut off install.
 
 ## Authentication
 

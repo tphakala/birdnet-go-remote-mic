@@ -54,9 +54,10 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 			*events = append(*events, fmt.Sprintf("staging %s %d:%d", stateDir, uid, gid))
 			return nil
 		},
-		removeFile: func(path string) error { *events = append(*events, "remove "+path); return nil },
-		lexists:    func(string) (bool, error) { return false, nil },
-		syncDir:    func(dir string) { *events = append(*events, "syncdir "+dir) },
+		withdrawRequest: func(string) (bool, error) { return false, nil },
+		removeFile:      func(path string) error { *events = append(*events, "remove "+path); return nil },
+		lexists:         func(string) (bool, error) { return false, nil },
+		syncDir:         func(dir string) { *events = append(*events, "syncdir "+dir) },
 
 		packageOwns:     func(string) bool { return false },
 		installed:       func() (ServiceSpec, error) { return ServiceSpec{}, nil },
