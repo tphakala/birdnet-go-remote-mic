@@ -109,7 +109,10 @@ reconcile:
   sequence counter (see `dropdownSeq`, `chipsSeq`).
 - Reuse before adding: `showToast`, `confirmDialog`, `renderLoadError` (load
   failure with Retry) and `clearLoadError` (call it before rewriting or
-  removing that container: it drops the alert role and parks focus), `apiErrorMessage`/`firstProblem`/`setFieldError`,
+  removing that container: it drops the alert role and parks focus; only the
+  Dashboard announces the recovery, elsewhere focus parks on the view section
+  when Retry held it, and a screen reader typically reads its label),
+  `apiErrorMessage`/`firstProblem`/`setFieldError`,
   `focusDropped`/`focusOnOrDropped`/`focusWorkspace` (focus fallback when a
   control went away), `showUnconfirmed`, `failureReason`,
   `scrollBehavior` (a scripted scroll that follows reduced motion),
