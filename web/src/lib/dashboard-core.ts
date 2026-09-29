@@ -55,13 +55,16 @@ export function streamSummary(
 const OPUS_RATE_HZ = 48000;
 const OPUS_BITRATE_PER_CHANNEL = 128000;
 const OPUS_MAX_BITRATE = 510000;
+// The line for a stream whose format the record does not carry.
+const FORMAT_UNKNOWN = "Format unknown";
 
 // streamFormats is the Codec / Rate cell's lines, one per stream in the same
 // order as StreamSummary.paths. It describes the stream a client receives, not
 // the hardware capture: PCM is 16-bit L16 at the capture rate, and Opus has no
-// bit depth, so it shows its bitrate. The labels are modeLabel's (lib/ui.ts,
-// which this DOM-free module cannot import). The config lists every stream; without
-// it the record's flat fields describe the first stream alone.
+// bit depth, so it shows its bitrate. The labels mirror modeLabel's (lib/ui.ts,
+// which this DOM-free module cannot import). The config lists every stream;
+// without it the record's flat fields describe the first stream alone, and a
+// serving record with more runtime streams gets "Format unknown" for the rest.
 export function streamFormats(
   d: Pick<Device, "mode" | "rate" | "negotiatedRate" | "channels" | "opus" | "streams">,
   cfg?: Pick<DeviceConfig, "streams">,
@@ -76,9 +79,13 @@ export function streamFormats(
     const kbps = (s.opus?.bitrate || Math.min(OPUS_BITRATE_PER_CHANNEL * Math.max(1, s.channels.length), OPUS_MAX_BITRATE)) / 1000;
     return `OPUS ${OPUS_RATE_HZ.toLocaleString("en-US")} Hz · ${kbps.toLocaleString("en-US")} kbps`;
   });
-  // A serving record with more runtime streams than the flat fields describe
-  // (the config has not loaded): repeat the first line rather than misalign.
-  for (let i = lines.length; i < (d.streams?.length ?? 0); i++) lines.push(lines[0] ?? "");
+  // Without a config the runtime streams carry no format, and the flat fields
+  // describe the first stream alone: say so for the rest, so the cell stays
+  // aligned with the paths without giving them the first stream's format. With
+  // a config the lines already match the paths.
+  if (configured.length === 0) {
+    for (let i = lines.length; i < (d.streams?.length ?? 0); i++) lines.push(FORMAT_UNKNOWN);
+  }
   return lines;
 }
 

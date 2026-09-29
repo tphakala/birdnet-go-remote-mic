@@ -711,5 +711,10 @@ test("streamFormats describes each stream, not the hardware capture", () => {
   // config yet) still yields one line per stream, so the cell stays aligned
   // with the paths.
   const runtime = [0, 1].map((i) => ({ path: `/${i}`, clientConnected: false, droppedFrames: 0 }));
-  assert.equal(streamFormats({ ...rec, streams: runtime }).length, 2);
+  assert.deepEqual(streamFormats({ ...rec, streams: runtime }), ["OPUS 48,000 Hz · 256 kbps", "Format unknown"]);
+  // With a config the lines follow the config, however many streams the record
+  // lists: a stale runtime record must not add lines beyond the paths.
+  assert.deepEqual(streamFormats({ ...rec, streams: runtime }, { streams: [cfg.streams[0]] as never }), ["OPUS 48,000 Hz · 32 kbps"]);
+  // No streams and no config: the flat record's one line.
+  assert.deepEqual(streamFormats(rec), ["OPUS 48,000 Hz · 256 kbps"]);
 });
