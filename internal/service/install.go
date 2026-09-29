@@ -331,9 +331,11 @@ func lexists(path string) (bool, error) {
 // rerunCommand is the command to re-run the install with. It names the binary
 // this install ran from, since a bare command name could resolve to another
 // copy on PATH, unless that is the installed binary at bin: the one that just
-// failed the root-only check, which root must not be told to run.
+// failed the root-only check, which root must not be told to run, or a path
+// that no longer exists (os.Executable drops the " (deleted)" suffix Linux adds
+// to the link of a removed executable, so the path it returns can be gone).
 func rerunCommand(self, bin string) string {
-	if sameFile(self, bin) {
+	if _, err := os.Stat(self); err != nil || sameFile(self, bin) {
 		return "service install, run from the release binary you installed from"
 	}
 	return "sudo " + update.ShellQuote(self) + " service install"

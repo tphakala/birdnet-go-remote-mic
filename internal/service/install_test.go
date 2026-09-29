@@ -837,6 +837,9 @@ func TestInstallFailsWhenTheJournalCannotBeRemoved(t *testing.T) {
 	}
 }
 
+// fromRelease is the advice that names no command.
+const fromRelease = "run from the release binary you installed from"
+
 func TestRerunCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -848,12 +851,17 @@ func TestRerunCommand(t *testing.T) {
 	if err := os.Symlink(bin, link); err != nil {
 		t.Fatal(err)
 	}
+	other := filepath.Join(dir, "remote mic")
+	if err := os.WriteFile(other, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, self, want string
 	}{
-		{"another copy", "/home/pi/remote mic", "sudo '/home/pi/remote mic' service install"},
-		{"the installed binary", bin, "run from the release binary you installed from"},
-		{"a link to it", link, "run from the release binary you installed from"},
+		{"another copy", other, "sudo '" + other + "' service install"},
+		{"the installed binary", bin, fromRelease},
+		{"a link to it", link, fromRelease},
+		{"a path that no longer exists", filepath.Join(dir, "gone", "remote-mic"), fromRelease},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -872,10 +880,14 @@ func TestRerunCommand(t *testing.T) {
 // the operator to re-run the copy this install ran from, and never the
 // installed binary that just failed the root-only check.
 func TestInstallWarningNamesWhereItRanFrom(t *testing.T) {
+	copyPath := filepath.Join(t.TempDir(), "remote-mic")
+	if err := os.WriteFile(copyPath, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, self, want, notWant string
 	}{
-		{"another copy", "/home/pi/remote-mic", "sudo /home/pi/remote-mic service install", "sudo remote-mic "},
+		{"another copy", copyPath, "sudo " + copyPath + " service install", "sudo remote-mic "},
 		{"the installed binary", DefaultBinPath, "run from the release binary", "sudo /usr/local/bin/remote-mic service install"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

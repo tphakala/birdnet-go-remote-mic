@@ -383,10 +383,11 @@ directory above it, can be written by anyone but root. If the installed
 binary still is not root-only after install hands the config and state
 directories to the service user, install warns and installs the service
 without the updater, and the updater checks again before it acts. After
-fixing the permissions, re-run `sudo remote-mic service install` (without
-`--no-start`, or the updater waits for the next boot), run from the release
-binary you installed from; that also revives an
-updater that stopped after repeated failures. Some older Debian installs keep
+fixing the permissions, re-run the install with the full path of the release
+binary you installed from, for example
+`sudo /path/to/release/remote-mic service install` (without `--no-start`, or
+the updater waits for the next boot); that also revives an updater that
+stopped after repeated failures. Some older Debian installs keep
 `/usr/local/bin` group-writable (`root:staff`, mode 2775); run
 `sudo chmod 755 /usr/local /usr/local/bin` there, or pass `--bin-path` to
 install elsewhere.
