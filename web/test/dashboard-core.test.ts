@@ -686,6 +686,8 @@ test("capsSummary names the channel support and the top rate", () => {
   assert.equal(capsSummary({ supportedChannels: [8, 4, 6], supportedRates: [48000] }), "4/6/8 channels · up to 48 kHz");
   assert.equal(capsSummary({ supportedChannels: [1, 2, 4] }), "1/2/4 channels");
   assert.equal(capsSummary({ supportedChannels: [2, 4] }), "2/4 channels");
+  // Sorted by number, not as text.
+  assert.equal(capsSummary({ supportedChannels: [10, 2] }), "2/10 channels");
 });
 
 test("streamFormats describes each stream, not the hardware capture", () => {
@@ -720,6 +722,8 @@ test("streamFormats describes each stream, not the hardware capture", () => {
   // With a config the lines follow the config, however many streams the record
   // lists: a stale runtime record must not add lines beyond the paths.
   assert.deepEqual(streamFormats({ ...rec, streams: runtime }, { streams: [cfg.streams[0]] as never }), ["OPUS 48,000 Hz · 32 kbps"]);
+  // An empty config stream list falls back to the flat fields, as no config does.
+  assert.deepEqual(streamFormats(rec, { streams: [] }), ["OPUS 48,000 Hz · 256 kbps"]);
   // No streams and no config: the flat record's one line.
   assert.deepEqual(streamFormats(rec), ["OPUS 48,000 Hz · 256 kbps"]);
 });

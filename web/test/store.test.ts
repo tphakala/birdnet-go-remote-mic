@@ -624,10 +624,13 @@ test("a failed initial load announces which views' data is missing", async () =>
 
 test("a devices-only failure settles the device list as failed, and a later poll recovers it", async () => {
   const h = harness();
+  // The Dashboard shows the error only while no list was read: the store must
+  // already say so when it announces the failure, not just once the load ends.
+  const readAtEmit: string[] = [];
+  h.store.on("loaderror", () => readAtEmit.push(h.store.devicesRead()));
   const errors = await loadFailing(h, ["getDevices"]);
   assert.equal(errors.length, 1);
-  // The Dashboard shows the error only while no list was read: the store must
-  // already say so when it announces the failure.
+  assert.deepEqual(readAtEmit, ["failed"]);
   assert.equal(h.store.devicesRead(), "failed");
   h.push("getDevices", [{ device: "mic", channels: [1] }] as unknown as Device[]);
   await h.store.refreshDevices();
