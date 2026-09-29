@@ -91,6 +91,29 @@ func TestPurgeDirsOK(t *testing.T) {
 	}
 }
 
+// TestPurgeDirsOKResolvesALinkedParent pins that a directory reached through a
+// symlinked parent is compared by its target path, the form mountinfo lists.
+func TestPurgeDirsOKResolvesALinkedParent(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(target, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	via := filepath.Join(root, "via")
+	if err := os.Symlink(target, via); err != nil {
+		t.Fatal(err)
+	}
+	s := ServiceSpec{ConfigPath: filepath.Join(root, "missing", "config.yaml"), StateDir: filepath.Join(via, "state")}
+	mounts := func() ([]string, error) { return []string{filepath.Join(target, "state", "bin")}, nil }
+	if err := purgeDirsOK(s, mounts); err == nil || !strings.Contains(err.Error(), "state directory") {
+		t.Errorf("got %v, want the refusal for a mount inside the state directory", err)
+	}
+}
+
 func TestCheckPurgeDirsStillRefusesADirectoryOverTheBinDir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
