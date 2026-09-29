@@ -858,8 +858,11 @@ func TestApplyRefusesUntrustedBinDir(t *testing.T) {
 		env := interruptedEnv(t)
 		env.a.Owner = func(os.FileInfo) (uint32, uint32, bool) { return 1000, 1000, true }
 		err := env.a.Apply(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "interrupted update will be rolled back") || !strings.Contains(err.Error(), "re-run sudo remote-mic service install") {
-			t.Errorf("Apply: got %v, want the pending rollback and the way to revive it named", err)
+		if err == nil || !strings.Contains(err.Error(), "interrupted update is pending") || !strings.Contains(err.Error(), "re-run service install") {
+			t.Errorf("Apply: got %v, want the pending update and the way to revive it named", err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "sudo remote-mic") || strings.Contains(err.Error(), "rolled back")) {
+			t.Errorf("Apply: %v names a bare command or promises a rollback the install no longer does", err)
 		}
 		if got := env.installed(t); got != newBinary || !exists(env.binPath+".pending") {
 			t.Errorf("installed %q, journal kept %t: a recovery ran in an untrusted directory", got, exists(env.binPath+".pending"))

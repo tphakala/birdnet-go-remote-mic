@@ -30,7 +30,7 @@ func TestDetectInstall(t *testing.T) {
 		},
 		{
 			name:   "service without updater, path with a space",
-			env:    InstallEnv{Exe: "/opt/Remote Mic/remote-mic", ServiceBinPath: "/opt/Remote Mic/remote-mic"},
+			env:    InstallEnv{Exe: spacedBin, ServiceBinPath: spacedBin},
 			method: MethodService,
 			hint:   "sudo '/opt/Remote Mic/remote-mic' service install",
 		},

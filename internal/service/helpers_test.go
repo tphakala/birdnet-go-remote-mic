@@ -3,6 +3,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,7 @@ const (
 	evReload       = "reload"
 	nologinPath    = "/usr/sbin/nologin"
 	evGroupadd     = "run groupadd --system --force remote-mic"
+	evCopySelf     = "copy /home/pi/remote-mic -> /usr/local/bin/remote-mic"
 	evChownConfig  = "chown /etc/remote-mic 990:990"
 	evEnableNowApp = "enable --now remote-mic.service"
 	evStopPath     = "stop remote-mic-update.path"
@@ -71,6 +73,19 @@ func wantSeq(t *testing.T, got, want []string) {
 		if got[i] != want[i] {
 			t.Errorf("event %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// wantOrder fails unless every event in want appears in events, in that order.
+func wantOrder(t *testing.T, events []string, want ...string) {
+	t.Helper()
+	last := -1
+	for _, e := range want {
+		i := slices.Index(events, e)
+		if i <= last {
+			t.Fatalf("event %q at %d, want it after index %d\nevents: %v", e, i, last, events)
+		}
+		last = i
 	}
 }
 

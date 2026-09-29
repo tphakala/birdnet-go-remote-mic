@@ -72,6 +72,10 @@ type Installer struct {
 	// (update.CheckRootOnlyFile).
 	rootOnly   func(path string) error
 	removeFile func(path string) error
+	// lexists reports whether anything, a link included, is at path.
+	lexists func(path string) (bool, error)
+	// syncDir makes the removals in dir durable (atomicfile.SyncDir).
+	syncDir func(dir string)
 	// warn receives a warning that does not fail the install.
 	warn io.Writer
 }
@@ -102,6 +106,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		stagingDir: ensureStagingDir,
 		rootOnly:   update.CheckRootOnlyFile,
 		removeFile: os.Remove,
+		lexists:    lexists,
+		syncDir:    atomicfile.SyncDir,
 		warn:       os.Stderr,
 	}
 }
@@ -116,7 +122,9 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // version check to the end it holds the lock the root updater takes around
 // replacing the binary (update.LockBin), waiting for an update in progress and
 // failing if one outlasts the wait (with a hint to try again) or if the lock
-// cannot be taken at all. Since the root updater runs the
+// cannot be taken at all. Around replacing the binary it clears an update that
+// was cut off: the kept copy before, the journal after (dropKeptCopy,
+// dropJournal). The ownership handover refuses a file with a second hard link (chownTree). Since the root updater runs the
 // installed binary, an installed binary that still fails the root-only check
 // gets no updater: install warns, removes updater units an earlier install
 // left, and installs the appliance alone. That check runs on the installed
@@ -175,12 +183,8 @@ func (in *Installer) Install(now bool) error {
 	if err != nil {
 		return fmt.Errorf("service: locate the running binary: %w", err)
 	}
-	replacesLink := in.isLink(s.BinPath)
-	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
-		return fmt.Errorf("service: install binary to %s: %w", s.BinPath, err)
-	}
-	if replacesLink {
-		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", s.BinPath)
+	if err := in.installBinary(self, s.BinPath); err != nil {
+		return err
 	}
 	unit, err := Render(s)
 	if err != nil {
@@ -218,7 +222,7 @@ func (in *Installer) Install(now bool) error {
 	updater := true
 	if err := in.rootOnly(s.BinPath); err != nil {
 		updater = false
-		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the binary and its directories writable only by root (or install it somewhere only root can write) and re-run sudo remote-mic service install\n", s.BinPath, err)
+		_, _ = fmt.Fprintf(in.warn, "warning: installing without automatic updates: the root updater would run %s, but %v; make the binary and its directories writable only by root (or install it somewhere only root can write) and re-run %s\n", s.BinPath, err, rerunCommand(self, s.BinPath))
 	}
 	if updater {
 		if err := in.writeUpdaterUnits(s); err != nil {
@@ -255,6 +259,96 @@ func (in *Installer) Install(now bool) error {
 		return fmt.Errorf("service: enable %s: %w", UpdatePathUnit, err)
 	}
 	return nil
+}
+
+// installBinary replaces the binary at bin with self, clearing the update
+// that was cut off around it (dropKeptCopy before, dropJournal after).
+func (in *Installer) installBinary(self, bin string) error {
+	replacesLink := in.isLink(bin)
+	interrupted, err := in.dropKeptCopy(bin)
+	if err != nil {
+		return err
+	}
+	if err := in.copyFile(self, bin, 0o755); err != nil {
+		err = fmt.Errorf("service: install binary to %s: %w", bin, err)
+		if interrupted {
+			err = fmt.Errorf("%w (the kept copy of the interrupted update was already removed, so that update will not be rolled back)", err)
+		}
+		return err
+	}
+	if replacesLink {
+		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", bin)
+	}
+	if interrupted {
+		return in.dropJournal(bin)
+	}
+	return nil
+}
+
+// dropKeptCopy removes the kept copy of an update that was cut off before it
+// was confirmed healthy, when its journal is present, and reports whether it
+// was. It runs before the binary is replaced, under the lock, so that nothing
+// later can roll the install back: a crash or failure after this point leaves
+// a journal with no kept copy, which the updater reports and leaves the
+// installed binary alone for. Left in place, the pair would roll the next
+// updater start back to a copy older than what install writes. A failure here
+// aborts the install before the binary is touched.
+func (in *Installer) dropKeptCopy(bin string) (interrupted bool, err error) {
+	present, err := in.lexists(bin + update.JournalSuffix)
+	if err != nil {
+		return false, fmt.Errorf("service: look for the journal of an interrupted update: %w", err)
+	}
+	if !present {
+		return false, nil
+	}
+	if err := in.removeFile(bin + update.PrevSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("service: remove the kept copy of an interrupted update: %w", err)
+	}
+	return true, nil
+}
+
+// dropJournal removes the journal of the interrupted update whose kept copy
+// dropKeptCopy removed, once the binary is replaced, and says the update will
+// not be rolled back.
+func (in *Installer) dropJournal(bin string) error {
+	if err := in.removeFile(bin + update.JournalSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("service: remove the journal of an interrupted update: %w", err)
+	}
+	in.syncDir(filepath.Dir(bin))
+	_, _ = fmt.Fprintf(in.warn, "warning: an earlier update of %s was interrupted before it was confirmed healthy; this install replaces the binary, so that update will not be rolled back\n", bin)
+	return nil
+}
+
+// lexists reports whether something, a dangling link included, is at path.
+func lexists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// rerunCommand is the command to re-run the install with. It names the binary
+// this install ran from, since a bare command name could resolve to another
+// copy on PATH, unless that is the installed binary at bin: the one that just
+// failed the root-only check, which root must not be told to run, or a path
+// that no longer exists (os.Executable drops the " (deleted)" suffix Linux adds
+// to the link of a removed executable, so the path it returns can be gone).
+func rerunCommand(self, bin string) string {
+	if _, err := os.Stat(self); err != nil || sameFile(self, bin) {
+		return "service install, run from the release binary you installed from"
+	}
+	return "sudo " + update.ShellQuote(self) + " service install"
+}
+
+// sameFile reports whether a and b name one file, links and all.
+func sameFile(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
 // writeUpdaterUnits writes the root updater's service and path units.
@@ -404,31 +498,65 @@ func isSymlink(path string) bool {
 	return err == nil && fi.Mode()&fs.ModeSymlink != 0
 }
 
-// chownTree chowns root and its immediate flat-file entries to uid/gid, without
-// descending into subdirectories, using Lchown so a symlink entry is retargeted
-// rather than followed. Staying shallow both matches the flat layout (config,
-// lock, cert, key, pin) and closes the subdirectory-swap TOCTOU noted in the
-// callback.
-// lchown is a seam so chownTree's traversal (which paths it touches, and that it
-// does not descend) is testable without a second uid.
-var lchown = os.Lchown
+// lchown and fchown are seams so chownTree's traversal (which paths it
+// touches, and that it does not descend) is testable without a second uid.
+var (
+	lchown = os.Lchown
+	fchown = func(f *os.File, uid, gid int) error { return f.Chown(uid, gid) }
+)
 
+// chownTree chowns root and its immediate regular files to uid/gid, without
+// descending into subdirectories. Staying shallow matches the flat layout
+// (config, lock, cert, key, pin) and closes a TOCTOU where an unprivileged
+// user swaps a subdirectory for a symlink between the walk's stat and its
+// read, which would otherwise let the chown escape to a linked-to tree. Other
+// entries (links, sockets, devices) are left alone: owning a link grants
+// nothing, and chowning it by name would race with a swap. A file with a
+// second hard link is refused (see chownFile).
 func chownTree(root string, uid, gid int) error {
 	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		// Do not descend into subdirectories: the config and state dirs hold only
-		// flat files (config, run lock, certificate, key, pin marker) apart from
-		// the update staging directory, which ensureStagingDir handles, and refusing
-		// to recurse closes a TOCTOU where an unprivileged user swaps a
-		// subdirectory for a symlink between the walk's stat and its read, which
-		// would otherwise let the chown escape to a linked-to tree.
-		if p != root && d.IsDir() {
+		if p == root {
+			return lchown(p, uid, gid)
+		}
+		if d.IsDir() {
 			return filepath.SkipDir
 		}
-		return lchown(p, uid, gid)
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return chownFile(p, uid, gid)
 	})
+}
+
+// chownFile hands the regular file at p to uid/gid. The service user owns the
+// directory p is in and can swap or hard link entries there, so the check and
+// the chown act on one open handle, not the name: a file that another name
+// also reaches (a link to something elsewhere on the host, such as a file only
+// root should own) would otherwise be handed over too. A file that vanished
+// meanwhile is skipped.
+func chownFile(p string, uid, gid int) error {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // p is an entry of the config or state directory
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+		return fmt.Errorf("%s has more than one hard link; remove the extra link and re-run the install", p)
+	}
+	return fchown(f, uid, gid)
 }
 
 // ensureStagingDir creates UpdateDirName inside stateDir with mode 0700 and

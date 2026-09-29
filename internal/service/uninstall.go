@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // Uninstaller removes a service installed by Installer. Its side effects are
@@ -77,7 +79,7 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 	}
 	// The root updater leaves the previous binary beside the installed one,
 	// and a cut-off update can leave its staged copy and journal.
-	for _, p := range []string{s.BinPath, s.BinPath + ".prev", s.BinPath + ".new", s.BinPath + ".pending"} {
+	for _, p := range []string{s.BinPath, s.BinPath + update.PrevSuffix, s.BinPath + update.NewSuffix, s.BinPath + update.JournalSuffix} {
 		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("service: remove binary %s: %w", p, err)
 		}
