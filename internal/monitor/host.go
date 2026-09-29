@@ -179,12 +179,26 @@ type Host struct {
 	reader   HostReader
 	counters CounterSource
 	set      atomic.Pointer[Settings]
+	// done is closed when the RunHost goroutine has returned; a Host nothing
+	// drives has nothing to wait for, so NewHost starts it closed.
+	done <-chan struct{}
 
 	// Owned by the poll goroutine.
 	applied                  *Settings
 	cpu, mem, temp, disk, vt *hostCond
 	devs                     map[string]*counterState
 }
+
+// closedChan is the Done of a Host that no goroutine drives.
+var closedChan = func() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+// Done returns a channel that is closed once the RunHost goroutine has returned,
+// its shutdown flush included.
+func (h *Host) Done() <-chan struct{} { return h.done }
 
 // Host implements the appliance's Monitors handle.
 var _ Monitors = (*Host)(nil)
@@ -216,7 +230,7 @@ func WithHostLogf(fn func(format string, args ...any)) HostOption {
 // NewHost builds a host monitor publishing to center. A nil reader or counter
 // source disables that half of the monitor. A nil center becomes a typed-nil
 // *notify.Center (a no-op Publisher), matching NewSignal. Call poll on a ticker
-// (RunHost does this) to drive it.
+// (RunHost does this) to drive it; until then its Done channel is already closed.
 func NewHost(reader HostReader, counters CounterSource, center notify.Publisher, s *Settings, opts ...HostOption) *Host {
 	if center == nil {
 		center = (*notify.Center)(nil)
@@ -225,6 +239,7 @@ func NewHost(reader HostReader, counters CounterSource, center notify.Publisher,
 		pub:      center,
 		clock:    time.Now,
 		logf:     log.Printf,
+		done:     closedChan,
 		reader:   reader,
 		counters: counters,
 		cpu:      newHostCond(hostCPUKey, cpuEnterAfter, cpuClearAfter),
@@ -251,10 +266,14 @@ func (h *Host) Apply(set *Settings) {
 
 // RunHost builds the monitor and polls it every hostPollInterval until ctx is
 // done, then writes the overrun lines its devices still owe. It returns the
-// monitor so the caller can hand it to the appliance as one of its Monitors.
+// monitor so the caller can hand it to the appliance as one of its Monitors;
+// the monitor's Done channel closes once that goroutine has returned.
 func RunHost(ctx context.Context, reader HostReader, counters CounterSource, center notify.Publisher, s *Settings, opts ...HostOption) *Host {
 	h := NewHost(reader, counters, center, s, opts...)
+	done := make(chan struct{})
+	h.done = done
 	go func() {
+		defer close(done)
 		t := time.NewTicker(hostPollInterval)
 		defer t.Stop()
 		for {

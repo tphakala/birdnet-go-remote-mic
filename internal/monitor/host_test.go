@@ -1614,7 +1614,8 @@ func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				RunHost(ctx, nil, src, rec, &s, WithHostLogf(lr.logf))
-				time.Sleep(hostPollInterval) // first sighting
+				// Offset the bumps from the ticks, so each poll sees a settled count.
+				time.Sleep(hostPollInterval + hostPollInterval/2) // first sighting at 10s
 				for _, n := range tc.bursts {
 					overruns.Add(n)
 					time.Sleep(hostPollInterval)
