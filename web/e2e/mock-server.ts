@@ -275,11 +275,16 @@ const SYSTEM: SystemInfo = {
       name: "wlan0",
       mac: "b8:27:eb:12:34:56",
       up: true,
-      addresses: ["192.168.1.40/24", "fe80::ba27:ebff:fe12:3456/64"],
+      // A long global IPv6 address exercises wrapping at 320 px.
+      addresses: ["192.168.1.40/24", "2001:db8:1234:5678:ba27:ebff:fe12:3456/64", "fe80::ba27:ebff:fe12:3456/64"],
       rxBytes: 18_734_112_904,
       txBytes: 402_118_553_771,
+      kind: "wifi",
+      wifi: { ssid: "garden-ap", signalDbm: -63, frequencyMhz: 2437 },
     },
-    { name: "eth0", mac: "b8:27:eb:65:43:21", up: false, addresses: [], rxBytes: 0, txBytes: 0 },
+    { name: "eth0", mac: "b8:27:eb:65:43:21", up: false, addresses: [], rxBytes: 0, txBytes: 0, kind: "ethernet" },
+    // Up, with an address, but not a physical link: must not appear in the card.
+    { name: "docker0", mac: "02:42:ac:11:00:01", up: true, addresses: ["172.17.0.1/16"], rxBytes: 0, txBytes: 0, kind: "other" },
   ],
   update: UPDATE,
 };

@@ -44,7 +44,7 @@ func TestGetSystemMapsFields(t *testing.T) {
 		DiskUsed:    8_000_000_000,
 		TempCelsius: &temp,
 		Network: []NetworkInterface{
-			{Name: "eth0", MAC: "dc:a6:32:00:11:22", Up: true, Addresses: []string{"192.168.1.20/24"}, RxBytes: 100, TxBytes: 200},
+			{Name: ifaceEth0, MAC: "dc:a6:32:00:11:22", Up: true, Addresses: []string{"192.168.1.20/24"}, RxBytes: 100, TxBytes: 200},
 			{Name: "wlan0", Up: false},
 		},
 	}}
@@ -93,6 +93,46 @@ func TestGetSystemMapsFields(t *testing.T) {
 	}
 	if wlan.Addresses == nil {
 		t.Error("wlan0 addresses = nil, want empty slice")
+	}
+}
+
+const (
+	ifaceEth0    = "eth0"
+	kindWifiTest = "wifi"
+)
+
+func TestSystemToWireNetworkKindAndWifi(t *testing.T) {
+	t.Parallel()
+	sig, freq := -52, 5220
+	si := &SystemInfo{Network: []NetworkInterface{
+		{Name: "wlan0", Kind: kindWifiTest, Wifi: &WifiLink{SSID: "garden-ap", SignalDBM: &sig, FrequencyMHz: &freq}},
+		{Name: "wlan1", Kind: kindWifiTest, Wifi: &WifiLink{SignalDBM: &sig}},
+		{Name: "wlan2", Kind: kindWifiTest, Wifi: &WifiLink{}},
+		{Name: ifaceEth0, Kind: "ethernet"},
+		{Name: "tun0"},
+	}}
+	got := systemToWire(si).Network
+
+	w := got[0]
+	if w.Kind == nil || *w.Kind != mgmtapi.Wifi {
+		t.Errorf("wlan0 kind = %v, want wifi", w.Kind)
+	}
+	if w.Wifi == nil || w.Wifi.Ssid == nil || *w.Wifi.Ssid != "garden-ap" ||
+		w.Wifi.SignalDbm == nil || *w.Wifi.SignalDbm != -52 ||
+		w.Wifi.FrequencyMhz == nil || *w.Wifi.FrequencyMhz != 5220 {
+		t.Errorf("wlan0 wifi = %+v, want all three facts", w.Wifi)
+	}
+	if w1 := got[1].Wifi; w1 == nil || w1.Ssid != nil || w1.FrequencyMhz != nil || w1.SignalDbm == nil {
+		t.Errorf("wlan1 wifi = %+v, want only the signal", w1)
+	}
+	if got[2].Wifi != nil {
+		t.Errorf("wlan2 wifi = %+v, want nil for a link with no known field", got[2].Wifi)
+	}
+	if got[3].Kind == nil || *got[3].Kind != mgmtapi.Ethernet || got[3].Wifi != nil {
+		t.Errorf("eth0 = kind %v wifi %v, want ethernet and no wifi", got[3].Kind, got[3].Wifi)
+	}
+	if got[4].Kind != nil || got[4].Wifi != nil {
+		t.Errorf("tun0 = kind %v wifi %v, want both omitted", got[4].Kind, got[4].Wifi)
 	}
 }
 

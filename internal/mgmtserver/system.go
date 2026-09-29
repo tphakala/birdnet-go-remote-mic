@@ -22,6 +22,16 @@ type NetworkInterface struct {
 	Addresses []string
 	RxBytes   int64
 	TxBytes   int64
+	Kind      string    // "ethernet", "wifi" or "other"; empty when unknown
+	Wifi      *WifiLink // nil unless Kind is "wifi" and a fact is known
+}
+
+// WifiLink is what is known about a wireless interface's association. Nil
+// pointers and an empty SSID mean "unknown".
+type WifiLink struct {
+	SSID         string
+	SignalDBM    *int
+	FrequencyMHz *int
 }
 
 // SystemInfo is the host's hardware facts and live metrics. The optional
@@ -114,8 +124,32 @@ func (s *Server) PostSystemRestart(_ context.Context, _ mgmtapi.PostSystemRestar
 	}), nil
 }
 
+// wifiToWire maps a WifiLink, returning nil when it holds no known field so
+// the wire object is omitted rather than sent empty.
+func wifiToWire(w *WifiLink) *mgmtapi.WifiLink {
+	if w == nil {
+		return nil
+	}
+	out := mgmtapi.WifiLink{}
+	if w.SSID != "" {
+		out.Ssid = new(w.SSID)
+	}
+	if w.SignalDBM != nil {
+		out.SignalDbm = new(int32(*w.SignalDBM)) //nolint:gosec // G115: the reader bounds dBm to -150..-1
+	}
+	if w.FrequencyMHz != nil {
+		out.FrequencyMhz = new(int32(*w.FrequencyMHz)) //nolint:gosec // G115: the reader bounds MHz to 1..100000
+	}
+	if out == (mgmtapi.WifiLink{}) {
+		return nil
+	}
+	return &out
+}
+
 // systemToWire maps host system info to the generated wire type. Empty optional
-// strings become nil so the field is omitted rather than sent as "".
+// strings become nil so the field is omitted rather than sent as "". An
+// interface's kind is omitted when empty, and its Wi-Fi object when it holds no
+// known fact.
 func systemToWire(si *SystemInfo) mgmtapi.SystemInfo {
 	nets := make([]mgmtapi.NetworkInterface, 0, len(si.Network))
 	for i := range si.Network {
@@ -134,6 +168,10 @@ func systemToWire(si *SystemInfo) mgmtapi.SystemInfo {
 		if n.MAC != "" {
 			iface.Mac = new(n.MAC)
 		}
+		if n.Kind != "" {
+			iface.Kind = new(mgmtapi.NetworkInterfaceKind(n.Kind))
+		}
+		iface.Wifi = wifiToWire(n.Wifi)
 		nets = append(nets, iface)
 	}
 	out := mgmtapi.SystemInfo{

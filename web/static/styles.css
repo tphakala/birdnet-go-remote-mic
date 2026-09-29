@@ -3097,13 +3097,20 @@ select.field-input {
   overflow-wrap: anywhere;
 }
 
-/* System Information: two labelled columns (Hardware / Software), each its own
-   info-grid. The wrapper drops to a single column when the card is too narrow
-   for two side by side. */
+/* System Information: two columns, each holding labelled groups with their own
+   info-grid: Hardware over Network on the left, Software on the right. The
+   wrapper drops to a single column (Hardware, Network, Software) when the card
+   is too narrow for two side by side. */
 .sysinfo-cols {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 18px 32px;
+}
+.sysinfo-col {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
 }
 .sysinfo-group {
   display: flex;

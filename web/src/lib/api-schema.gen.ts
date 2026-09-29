@@ -1095,6 +1095,33 @@ export interface components {
              * @description Bytes transmitted since boot.
              */
             txBytes: number;
+            /**
+             * @description What sort of link this is. `ethernet` is a physical wired interface, `wifi` a wireless one, `other` anything else (bridge, VPN tunnel, virtual). Absent when the appliance cannot tell. Later appliances may add values; clients treat an unknown value as `other`.
+             * @enum {string}
+             */
+            kind?: "ethernet" | "wifi" | "other";
+            wifi?: components["schemas"]["WifiLink"];
+        };
+        /** @description Wi-Fi facts for a wireless interface. Present only when `kind` is `wifi` and at least one field is known. */
+        WifiLink: {
+            /**
+             * @description Network name; absent for a hidden network or when unreadable.
+             * @example garden-ap
+             */
+            ssid?: string;
+            /**
+             * Format: int32
+             * @description Received signal strength in dBm.
+             * @example -52
+             */
+            signalDbm?: number;
+            /**
+             * Format: int32
+             * @description Current channel frequency in MHz.
+             * @example 2437
+             * @example 5220
+             */
+            frequencyMhz?: number;
         };
     };
     responses: {

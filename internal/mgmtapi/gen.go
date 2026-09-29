@@ -140,6 +140,27 @@ func (e HealthStatus) Valid() bool {
 	}
 }
 
+// Defines values for NetworkInterfaceKind.
+const (
+	Ethernet NetworkInterfaceKind = "ethernet"
+	Other    NetworkInterfaceKind = "other"
+	Wifi     NetworkInterfaceKind = "wifi"
+)
+
+// Valid indicates whether the value is a known member of the NetworkInterfaceKind enum.
+func (e NetworkInterfaceKind) Valid() bool {
+	switch e {
+	case Ethernet:
+		return true
+	case Other:
+		return true
+	case Wifi:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NotificationCategory.
 const (
 	NotificationCategoryAudio  NotificationCategory = "audio"
@@ -740,6 +761,9 @@ type NetworkInterface struct {
 	// Addresses Assigned IP addresses in CIDR notation.
 	Addresses []string `json:"addresses"`
 
+	// Kind What sort of link this is. `ethernet` is a physical wired interface, `wifi` a wireless one, `other` anything else (bridge, VPN tunnel, virtual). Absent when the appliance cannot tell. Later appliances may add values; clients treat an unknown value as `other`.
+	Kind *NetworkInterfaceKind `json:"kind,omitempty"`
+
 	// Mac Hardware (MAC) address; absent for interfaces without one.
 	//
 	// Examples: dc:a6:32:00:11:22
@@ -756,7 +780,13 @@ type NetworkInterface struct {
 
 	// Up Whether the interface is up and running.
 	Up bool `json:"up"`
+
+	// Wifi Wi-Fi facts for a wireless interface. Present only when `kind` is `wifi` and at least one field is known.
+	Wifi *WifiLink `json:"wifi,omitempty"`
 }
+
+// NetworkInterfaceKind What sort of link this is. `ethernet` is a physical wired interface, `wifi` a wireless one, `other` anything else (bridge, VPN tunnel, virtual). Absent when the appliance cannot tell. Later appliances may add values; clients treat an unknown value as `other`.
+type NetworkInterfaceKind string
 
 // Notification One notification entry.
 type Notification struct {
@@ -1075,6 +1105,24 @@ type ValidationProblem struct {
 	Status   *int    `json:"status,omitempty"`
 	Title    *string `json:"title,omitempty"`
 	Type     *string `json:"type,omitempty"`
+}
+
+// WifiLink Wi-Fi facts for a wireless interface. Present only when `kind` is `wifi` and at least one field is known.
+type WifiLink struct {
+	// FrequencyMhz Current channel frequency in MHz.
+	//
+	// Examples: 2437, 5220
+	FrequencyMhz *int32 `json:"frequencyMhz,omitempty"`
+
+	// SignalDbm Received signal strength in dBm.
+	//
+	// Examples: -52
+	SignalDbm *int32 `json:"signalDbm,omitempty"`
+
+	// Ssid Network name; absent for a hidden network or when unreadable.
+	//
+	// Examples: garden-ap
+	Ssid *string `json:"ssid,omitempty"`
 }
 
 // StreamEventsParams defines parameters for StreamEvents.

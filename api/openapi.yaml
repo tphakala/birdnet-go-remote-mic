@@ -1934,3 +1934,37 @@ components:
           format: int64
           minimum: 0
           description: Bytes transmitted since boot.
+        kind:
+          type: string
+          enum: [ethernet, wifi, other]
+          description: >-
+            What sort of link this is. `ethernet` is a physical wired
+            interface, `wifi` a wireless one, `other` anything else (bridge,
+            VPN tunnel, virtual). Absent when the appliance cannot tell. Later
+            appliances may add values; clients treat an unknown value as
+            `other`.
+        wifi:
+          $ref: "#/components/schemas/WifiLink"
+    WifiLink:
+      type: object
+      description: >-
+        Wi-Fi facts for a wireless interface. Present only when `kind` is
+        `wifi` and at least one field is known.
+      properties:
+        ssid:
+          type: string
+          description: Network name; absent for a hidden network or when unreadable.
+          examples: ["garden-ap"]
+        signalDbm:
+          type: integer
+          format: int32
+          minimum: -150
+          maximum: 0
+          description: Received signal strength in dBm.
+          examples: [-52]
+        frequencyMhz:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Current channel frequency in MHz.
+          examples: [2437, 5220]
