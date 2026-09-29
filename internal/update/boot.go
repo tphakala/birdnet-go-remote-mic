@@ -47,8 +47,7 @@ const resultPoll = 2 * time.Second
 // directory; nothing happens when it or the request does not exist.
 func WithdrawOrphanedRequest(dir, running string, pub notify.Publisher, logf func(string, ...any)) {
 	p := filepath.Join(dir, RequestFile)
-	fi, err := os.Lstat(p)
-	if err != nil {
+	if _, err := os.Lstat(p); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			logf("update: look for an unclaimed update request: %v", err)
 		}
@@ -56,11 +55,7 @@ func WithdrawOrphanedRequest(dir, running string, pub notify.Publisher, logf fun
 	}
 	// The version is only for the report; the request goes either way.
 	var req Request
-	if regularFile(RequestFile, fi) == nil {
-		if b, err := os.ReadFile(p); err == nil { //nolint:gosec // p is the fixed request file in the staging directory
-			_ = decodeSmall(RequestFile, b, &req)
-		}
-	}
+	_ = readSmall(dir, RequestFile, &req)
 	if err := os.Remove(p); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			logf("update: withdraw an unclaimed update request: %v", err)
@@ -68,10 +63,7 @@ func WithdrawOrphanedRequest(dir, running string, pub notify.Publisher, logf fun
 		return
 	}
 	logf("update: withdrew an update request to %q that an earlier run left unclaimed", req.Version)
-	if pub == nil {
-		pub = (*notify.Center)(nil) // a no-op, where a nil interface would panic
-	}
-	pub.Publish(resultNotification(&Result{
+	orNop(pub).Publish(resultNotification(&Result{
 		Outcome: OutcomeFailed,
 		From:    running,
 		To:      req.Version,
@@ -98,9 +90,7 @@ func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf f
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return
 	}
-	if pub == nil {
-		pub = (*notify.Center)(nil) // a no-op, where a nil interface would panic
-	}
+	pub = orNop(pub)
 	h, err := json.Marshal(Health{Version: version, PID: os.Getpid()})
 	if err == nil {
 		err = atomicfile.Write(filepath.Join(dir, HealthFile), h, 0o644)
@@ -222,28 +212,45 @@ func takeResult(dir, version string) (*Result, error) {
 	return res, nil
 }
 
-// readResult reads the status file without consuming it. A file that is not
-// a regular file, or does not parse, is removed and reported as an error.
+// readResult reads the status file without consuming it. A file that is there
+// but is not a regular file, cannot be read, or does not parse is removed and
+// reported as an error.
 func readResult(dir string) (*Result, error) {
-	p := filepath.Join(dir, StatusFile)
-	fi, err := os.Lstat(p)
-	if err != nil {
-		return nil, err
-	}
-	if err := regularFile(StatusFile, fi); err != nil {
-		_ = os.Remove(p)
-		return nil, err
-	}
-	b, err := os.ReadFile(p) //nolint:gosec // p is the fixed status file in the staging directory
-	if err != nil {
-		return nil, err
-	}
 	var res Result
-	if err := decodeSmall(StatusFile, b, &res); err != nil {
-		_ = os.Remove(p)
+	if err := readSmall(dir, StatusFile, &res); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			_ = os.Remove(filepath.Join(dir, StatusFile))
+		}
 		return nil, err
 	}
 	return &res, nil
+}
+
+// readSmall decodes the small JSON file name in dir into v, refusing one that
+// is not a regular file.
+func readSmall(dir, name string, v any) error {
+	p := filepath.Join(dir, name)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return err
+	}
+	if err := regularFile(name, fi); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // p is a fixed file name in the staging directory
+	if err != nil {
+		return err
+	}
+	return decodeSmall(name, b, v)
+}
+
+// orNop returns pub, or a no-op publisher when it is nil, where a nil
+// interface would panic.
+func orNop(pub notify.Publisher) notify.Publisher {
+	if pub == nil {
+		return (*notify.Center)(nil)
+	}
+	return pub
 }
 
 func resultMessage(res *Result) string {

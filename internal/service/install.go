@@ -225,10 +225,9 @@ func (in *Installer) Install(now bool) error {
 
 	// The root updater runs this binary, so nobody but root may be able to
 	// replace it; otherwise the appliance is installed without the updater.
-	// The installed file is checked, not just its directory, and only after
-	// the ownership handover, which a config or state path aliased onto the
-	// bin directory through a link would otherwise slip past. An
-	// install that fails before here leaves an earlier install's updater
+	// The installed file is checked, not just its directory, and after the
+	// ownership handover, as a backstop to checkNotOverBinDir. An install
+	// that fails before here leaves an earlier install's updater
 	// units in place; the updater makes this same check before it acts.
 	updater := true
 	if err := in.rootOnly(s.BinPath); err != nil {
@@ -485,32 +484,12 @@ func checkBinDir(dir string) error {
 // that does not exist yet is skipped (install creates it fresh), and so is
 // the check when the bin directory is missing (nothing to reach).
 func checkNotOverBinDir(s ServiceSpec) error {
-	binDir, err := filepath.EvalSymlinks(filepath.Dir(s.BinPath))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+	type owned struct {
+		label, path string
+		info        fs.FileInfo
 	}
-	if err != nil {
-		return fmt.Errorf("resolve the bin directory: %w", err)
-	}
-	type dirID struct {
-		path string
-		info fs.FileInfo
-	}
-	var above []dirID
-	for d := binDir; ; d = filepath.Dir(d) {
-		info, err := os.Stat(d)
-		if err != nil {
-			return fmt.Errorf("resolve the bin directory: %w", err)
-		}
-		above = append(above, dirID{d, info})
-		if filepath.Dir(d) == d {
-			break
-		}
-	}
-	for _, d := range []struct{ label, path string }{
-		{"config directory", s.ConfigDir()},
-		{"state directory", s.StateDir},
-	} {
+	var dirs []owned
+	for _, d := range []owned{{label: "config directory", path: s.ConfigDir()}, {label: "state directory", path: s.StateDir}} {
 		info, err := os.Stat(d.path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -518,13 +497,30 @@ func checkNotOverBinDir(s ServiceSpec) error {
 		if err != nil {
 			return fmt.Errorf("check the %s %s: %w", d.label, d.path, err)
 		}
-		for _, a := range above {
-			if os.SameFile(info, a.info) {
-				return fmt.Errorf("the %s %s is %s, which holds the bin directory %s; the service user would own the binary the root updater runs", d.label, d.path, a.path, binDir)
+		d.info = info
+		dirs = append(dirs, d)
+	}
+	binDir, err := filepath.EvalSymlinks(filepath.Dir(s.BinPath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve the bin directory: %w", err)
+	}
+	for above := binDir; ; above = filepath.Dir(above) {
+		info, err := os.Stat(above)
+		if err != nil {
+			return fmt.Errorf("resolve the bin directory: %w", err)
+		}
+		for _, d := range dirs {
+			if os.SameFile(d.info, info) {
+				return fmt.Errorf("the %s %s is %s, which holds the bin directory %s; the service user would own the binary the root updater runs", d.label, d.path, above, binDir)
 			}
 		}
+		if filepath.Dir(above) == above {
+			return nil
+		}
 	}
-	return nil
 }
 
 // ensureBinDir creates the bin directory and any missing parents with mode

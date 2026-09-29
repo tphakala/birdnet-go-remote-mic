@@ -99,7 +99,7 @@ func detectInstall(dir string) update.Install {
 // stagingDirHint tells the operator to re-run install (see
 // update.Install.RerunInstall) to create the staging directory dir.
 func stagingDirHint(inst update.Install, dir string) string {
-	return "To create the update staging directory " + dir + ", " + inst.RerunInstall() + ", and restart the service (sudo systemctl restart remote-mic)"
+	return "To create the update staging directory " + dir + ", " + inst.RerunInstall() + ", and " + update.RestartService
 }
 
 // unreadableUnitHint keeps a manual install from being told it is run by hand,

@@ -799,9 +799,7 @@ func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
 			got = append(got, e)
 		}
 	}
-	if !slices.Equal(got, want) {
-		t.Errorf("binary steps = %v, want %v", got, want)
-	}
+	wantSeq(t, got, want)
 	if got := warn.String(); !strings.Contains(got, "interrupted") || !strings.Contains(got, "will not be rolled back") {
 		t.Errorf("warning %q, want it to say the interrupted update is dropped", got)
 	}

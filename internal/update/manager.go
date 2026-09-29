@@ -168,10 +168,7 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 	if cfg.Logf == nil {
 		cfg.Logf = log.Printf
 	}
-	if cfg.Publisher == nil {
-		// A nil *Center is a no-op Publisher; a nil interface would panic.
-		cfg.Publisher = (*notify.Center)(nil)
-	}
+	cfg.Publisher = orNop(cfg.Publisher)
 	if cfg.Jitter == nil {
 		cfg.Jitter = func(n time.Duration) time.Duration { return time.Duration(rand.Int64N(int64(n))) }
 	}

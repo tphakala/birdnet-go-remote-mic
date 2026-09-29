@@ -40,6 +40,10 @@ type Install struct {
 	ServiceBinUnsafe string
 }
 
+// RestartService is the advice to restart the appliance after re-running
+// install, for the hints that follow RerunInstall with it.
+const RestartService = "restart the service (sudo systemctl restart remote-mic)"
+
 // RerunInstall is the advice to re-run `service install`, as a lowercase
 // clause to follow a colon or semicolon. It names the service's own binary
 // when that is known and only root can change it: a bare command name could
@@ -100,13 +104,12 @@ func DetectInstall(env InstallEnv) Install {
 			inst.ServiceBinUnsafe = err.Error()
 		}
 		updater := env.UpdaterBinPath != "" && filepath.Clean(env.UpdaterBinPath) == exe
-		switch {
-		case updater && inst.ServiceBinUnsafe == "":
-			inst.CanApply = true
-		case inst.ServiceBinUnsafe != "":
-			inst.Hint = "The root updater does not replace a binary others can change. To enable one-button updates, " + inst.RerunInstall() + ", and restart the service (sudo systemctl restart remote-mic), or install the release by hand"
-		default:
-			inst.Hint = "To enable one-button updates, " + inst.RerunInstall() + ", and restart the service (sudo systemctl restart remote-mic), or install the release by hand"
+		inst.CanApply = updater && inst.ServiceBinUnsafe == ""
+		if !inst.CanApply {
+			inst.Hint = "To enable one-button updates, " + inst.RerunInstall() + ", and " + RestartService + ", or install the release by hand"
+			if inst.ServiceBinUnsafe != "" {
+				inst.Hint = "The root updater does not replace a binary others can change. " + inst.Hint
+			}
 		}
 		return inst
 	default:
