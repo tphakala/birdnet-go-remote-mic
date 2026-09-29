@@ -97,7 +97,10 @@ changelog:
 # .deb packages for amd64 and arm64. Binary only, by design: the installed
 # binary sets up its own hardened systemd service (dedicated user, unit, state
 # dirs) via `remote-mic service install`, so the package ships no unit file and
-# starts nothing on `apt install`. It installs /usr/bin/remote-mic and the docs.
+# never enables or starts anything. It installs /usr/bin/remote-mic and the
+# docs. `service install` run from that binary runs it in place, and the two
+# maintainer scripts (packaging/deb) only restart such a service after an
+# upgrade and stop it on removal.
 nfpms:
   - id: remote-mic
     package_name: birdnet-go-remote-mic
@@ -109,11 +112,15 @@ nfpms:
       Remote microphone appliance for BirdNET-Go.
       Captures local ALSA audio and serves it over RTSP/RTP for BirdNET-Go to pull.
       After install, run `sudo remote-mic service install` to run it at boot.
+      Update it with apt; the service runs the packaged binary.
     license: Apache-2.0
     formats:
       - deb
     bindir: /usr/bin
     section: sound
+    scripts:
+      postinstall: packaging/deb/postinst
+      preremove: packaging/deb/prerm
     contents:
       - src: README.md
         dst: /usr/share/doc/birdnet-go-remote-mic/README.md

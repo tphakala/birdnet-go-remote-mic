@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -29,6 +30,7 @@ var (
 	geteuid      = os.Geteuid
 	lookPath     = exec.LookPath
 	osExecutable = os.Executable
+	packageOwns  = service.PackageOwns
 	execSelf     = syscall.Exec //nolint:gosec // argv0 is our own binary via os.Executable, run under sudo
 )
 
@@ -136,7 +138,9 @@ func ensureRoot(escalated bool) error {
 // runServiceInstall parses install flags, escalates to root, and installs the
 // service. Flags are parsed before escalation so -h and a bad flag report
 // without a sudo prompt. The install refuses to replace a newer installed
-// binary unless --allow-downgrade is given.
+// binary unless --allow-downgrade is given. With no --bin-path, a binary the
+// .deb package owns is installed in place (packagedSelf); any other binary
+// takes the installed unit's bin path, else the default.
 func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -149,7 +153,7 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	user := fs.String("user", "", "system user to create and run the service as"+installedDefault(service.DefaultUser))
 	cfg := fs.String("config", "", "config path baked into the unit"+installedDefault(service.DefaultConfigPath))
 	stateDir := fs.String("state-dir", "", "state directory for the management certificate"+installedDefault(service.DefaultStateDir))
-	binPath := fs.String("bin-path", "", "path to install the binary to"+installedDefault(service.DefaultBinPath))
+	binPath := fs.String("bin-path", "", "path to install the binary to; unset, the .deb package's own binary runs in place"+installedDefault(service.DefaultBinPath))
 	noStart := fs.Bool("no-start", false, "enable at boot but do not start the service now")
 	allowDowngrade := fs.Bool("allow-downgrade", false, "replace an installed binary that is newer than this one")
 	if err := parseNoArgs(fs, args); err != nil {
@@ -158,12 +162,27 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	if err := ensureRoot(escalated); err != nil {
 		return err
 	}
-	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: *binPath}, specInstall, stderr)
+	bin := *binPath
+	packaged := false
+	if bin == "" {
+		bin, packaged = packagedSelf()
+		if packaged {
+			out(stderr, "running the packaged %s in place; apt updates it\n", bin)
+		}
+	}
+	spec, err := specFromFlags(service.ServiceSpec{User: *user, ConfigPath: *cfg, StateDir: *stateDir, BinPath: bin}, specInstall, stderr)
 	if err != nil {
 		return err
 	}
 	if err := installService(spec, !*noStart, *allowDowngrade); err != nil {
 		return err
+	}
+	if packaged {
+		out(stderr, "installed and enabled remote-mic.service running the packaged binary (update it with apt)\n")
+		if *noStart {
+			out(stderr, "not started; start with: systemctl start remote-mic\n")
+		}
+		return nil
 	}
 	if *noStart {
 		out(stderr, "installed and enabled remote-mic.service (not started; start with: systemctl start remote-mic)\n")
@@ -174,7 +193,8 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 }
 
 // runServiceUninstall parses uninstall flags, escalates to root, and removes the
-// service.
+// service. With --purge it also removes the binary, unless the .deb package
+// owns it, which is left for apt.
 func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error {
 	fs := flag.NewFlagSet("service uninstall", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -204,14 +224,33 @@ func runServiceUninstall(args []string, escalated bool, stderr io.Writer) error 
 		return err
 	}
 	if *purge {
-		out(stderr, "purging config directory %s, state directory %s, binary %s, and user %s\n",
-			spec.ConfigDir(), spec.StateDir, spec.BinPath, spec.User)
+		bin := "binary " + spec.BinPath
+		if packageOwns(spec.BinPath) {
+			bin = "(the package owns " + spec.BinPath + ", so apt removes it)"
+		}
+		out(stderr, "purging config directory %s, state directory %s, %s, and user %s\n",
+			spec.ConfigDir(), spec.StateDir, bin, spec.User)
 	}
 	if err := uninstallService(spec, *purge); err != nil {
 		return err
 	}
 	out(stderr, "removed remote-mic.service\n")
 	return nil
+}
+
+// packagedSelf returns the running binary's resolved path and whether the
+// .deb package owns it, in which case service install runs it in place. A
+// binary that cannot be located reports false, and install takes the
+// default path as it does for a tarball.
+func packagedSelf() (string, bool) {
+	exe, err := osExecutable()
+	if err == nil {
+		exe, err = filepath.EvalSymlinks(exe)
+	}
+	if err != nil || !packageOwns(exe) {
+		return "", false
+	}
+	return exe, true
 }
 
 // installedSpec reports the spec the installed unit was written from. A
@@ -236,7 +275,8 @@ const (
 // specFromFlags completes s, the service flags as given, with defaults.
 // Install takes each unset field from the installed unit, so a reinstall
 // keeps a custom install's paths and account; each adopted value is
-// reported. Purge adopts only values equal to the package defaults: a custom
+// reported. Purge adopts only values equal to the package defaults, and a bin
+// path the .deb package owns, which purge does not delete: a custom
 // user may be an existing login account the install merely reused, and a
 // custom directory may hold more than the install put there, so deleting
 // them takes the flag given explicitly. The installed unit counts only when
@@ -267,7 +307,7 @@ func specFromFlags(s service.ServiceSpec, mode specMode, stderr io.Writer) (serv
 			} {
 				switch {
 				case *f.dst != "":
-				case mode == specPurge && f.installed != f.def:
+				case mode == specPurge && f.installed != f.def && (f.name != "bin-path" || !packageOwns(f.installed)):
 					custom = append(custom, "--"+f.name+"="+f.installed)
 				default:
 					*f.dst = f.installed

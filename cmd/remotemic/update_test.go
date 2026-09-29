@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,23 +71,6 @@ func TestUpdateDirFor(t *testing.T) {
 	cfg.Management.CertDir = "/var/lib/remote-mic"
 	if got := updateDirFor(&cfg, "/etc/remote-mic/config.yaml"); got != "/var/lib/remote-mic/update" {
 		t.Errorf("cert dir: %q", got)
-	}
-}
-
-func TestFileListHas(t *testing.T) {
-	t.Parallel()
-	list := filepath.Join(t.TempDir(), "birdnet-go-remote-mic.list")
-	if err := os.WriteFile(list, []byte("/.\n/usr\n/usr/bin\n/usr/bin/remote-mic\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !fileListHas(list, "/usr/bin/remote-mic") {
-		t.Error("listed path not found")
-	}
-	if fileListHas(list, "/usr/local/bin/remote-mic") || fileListHas(list, "/usr/bin/remote") {
-		t.Error("unlisted path found")
-	}
-	if fileListHas(filepath.Join(t.TempDir(), "missing.list"), "/usr/bin/remote-mic") {
-		t.Error("missing list reported a path")
 	}
 }
 

@@ -1,0 +1,21 @@
+#!/bin/sh
+# prerm of birdnet-go-remote-mic.
+#
+# On removal, stop and disable the appliance when its unit runs this package's
+# binary: the binary is about to go, and the unit's Restart=always would loop
+# on it. dpkg runs the OLD package's prerm during an upgrade, with "upgrade" as
+# the argument, and this does nothing then. Always exit 0.
+case "$1" in
+remove) ;;
+*) exit 0 ;;
+esac
+command -v systemctl >/dev/null 2>&1 || exit 0
+# The effective ExecStart, drop-ins included, not the unit file's own text.
+exec_start=$(systemctl show --property=ExecStart --value remote-mic.service 2>/dev/null) || exit 0
+case "$exec_start" in
+*"path=/usr/bin/remote-mic ;"*)
+	systemctl disable --now remote-mic.service || true
+	echo "remote-mic.service is stopped and disabled. Reinstall the package and run: sudo remote-mic service install" >&2
+	;;
+esac
+exit 0

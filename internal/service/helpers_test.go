@@ -102,13 +102,19 @@ type fakeInit struct {
 	enabled  bool
 	resetErr error
 	active   bool
+	// activeUnits, when set, decides IsActive per unit name instead of active.
+	activeUnits map[string]bool
+	restartErr  error
+	reloadErr   error
+	activeErr   map[string]error
+	enableErr   error
 }
 
 func (f *fakeInit) log(s string)  { *f.events = append(*f.events, s) }
 func (f *fakeInit) Present() bool { return f.present }
 func (f *fakeInit) DaemonReload() error {
 	f.log(evReload)
-	return nil
+	return f.reloadErr
 }
 
 func (f *fakeInit) Enable(unit string, now bool) error {
@@ -117,7 +123,7 @@ func (f *fakeInit) Enable(unit string, now bool) error {
 	} else {
 		f.log("enable " + unit)
 	}
-	return nil
+	return f.enableErr
 }
 
 func (f *fakeInit) Disable(unit string) error {
@@ -136,4 +142,17 @@ func (f *fakeInit) ResetFailed(unit string) error {
 }
 
 func (f *fakeInit) IsEnabled(string) (bool, error) { return f.enabled, nil }
-func (f *fakeInit) IsActive(string) (bool, error)  { return f.active, nil }
+func (f *fakeInit) IsActive(unit string) (bool, error) {
+	if err := f.activeErr[unit]; err != nil {
+		return false, err
+	}
+	if f.activeUnits != nil {
+		return f.activeUnits[unit], nil
+	}
+	return f.active, nil
+}
+
+func (f *fakeInit) Restart(unit string) error {
+	f.log("restart " + unit)
+	return f.restartErr
+}

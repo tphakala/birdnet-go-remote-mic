@@ -63,6 +63,25 @@ func InstalledBinPaths() (appliance, updater string, err error) {
 	return appliance, updater, errors.Join(errA, errU)
 }
 
+// execStartDropIn returns the path of a drop-in of the unit named name that
+// sets ExecStart=, or "" when none does. Such a drop-in decides what the unit
+// runs, whatever the unit file says.
+func execStartDropIn(name string) (string, error) {
+	files, err := loadUnit(name)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	if files == nil {
+		return "", nil
+	}
+	for _, f := range files[1:] {
+		if fileSets(f, keyExecStart) {
+			return f.path, nil
+		}
+	}
+	return "", nil
+}
+
 // unitBinPath returns the program of the unit named name's first ExecStart=
 // line, without systemd's special-executable prefixes (-, @, :, +, !), or ""
 // (see InstalledBinPaths).

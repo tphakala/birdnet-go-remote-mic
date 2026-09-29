@@ -207,7 +207,7 @@ func TestConfigRefExplain(t *testing.T) {
 func TestServiceDefaultsFromInstalledUnit(t *testing.T) {
 	saveServiceSeams(t)
 	geteuid = func() int { return 0 }
-	inst := service.ServiceSpec{User: "mic", ConfigPath: "/srv/rm/config.yaml", StateDir: "/srv/rm-state", BinPath: "/opt/bin/remote-mic"}
+	inst := service.ServiceSpec{User: micUser, ConfigPath: rmConfig, StateDir: rmState, BinPath: optBin}
 	prev := installedSpec
 	reads := 0
 	installedSpec = func() (service.ServiceSpec, error) { reads++; return inst, nil }

@@ -25,6 +25,10 @@ type InitSystem interface {
 	Stop(unit string) error
 	// ResetFailed clears a unit's failed state and start-limit counter.
 	ResetFailed(unit string) error
+	// Restart restarts a unit, starting it if it is not running.
+	Restart(unit string) error
+	// IsActive reports whether a unit is currently running.
+	IsActive(unit string) (bool, error)
 }
 
 // Systemd drives systemctl through the Runner seam.

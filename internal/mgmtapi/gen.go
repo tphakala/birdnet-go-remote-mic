@@ -1055,7 +1055,7 @@ type UpdateStatus struct {
 	// Examples: v0.2.0
 	CurrentVersion string `json:"currentVersion"`
 
-	// InstallMethod How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, whether it came from a tarball, a `.deb` or Homebrew; `deb` and `homebrew` are a package manager's own copy, which is never bypassed; `manual` is a binary run by hand, or one that is not the service's.
+	// InstallMethod How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, when it is a copy the installer made (from a tarball, or from a package binary given another `--bin-path`); `deb` is the `.deb` package's own binary, which the service unit runs in place after `sudo remote-mic service install`, and `homebrew` is Homebrew's own copy; a package manager's binary is never bypassed and is updated by that package manager; `manual` is a binary run by hand, or one that is not the service's.
 	InstallMethod UpdateStatusInstallMethod `json:"installMethod"`
 
 	// LastCheck When the last check finished (appliance wall clock); absent before the first check.
@@ -1088,7 +1088,7 @@ type UpdateStatus struct {
 	UpgradeHint *string `json:"upgradeHint,omitempty"`
 }
 
-// UpdateStatusInstallMethod How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, whether it came from a tarball, a `.deb` or Homebrew; `deb` and `homebrew` are a package manager's own copy, which is never bypassed; `manual` is a binary run by hand, or one that is not the service's.
+// UpdateStatusInstallMethod How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, when it is a copy the installer made (from a tarball, or from a package binary given another `--bin-path`); `deb` is the `.deb` package's own binary, which the service unit runs in place after `sudo remote-mic service install`, and `homebrew` is Homebrew's own copy; a package manager's binary is never bypassed and is updated by that package manager; `manual` is a binary run by hand, or one that is not the service's.
 type UpdateStatusInstallMethod string
 
 // UpdateStatusPhase Where a one-button update stands. `installing` means the root updater has the release and restarts the appliance when it is done; `failed` means the last attempt failed (see phaseMessage).
