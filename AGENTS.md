@@ -203,7 +203,10 @@ later update is refused or rolled back for good:
   which the old updater compares with the manifest;
 - the staging file names in `internal/update/files.go` and the JSON fields
   of `health.json`, `status.json` and `request.json`;
-- the install journal (`<bin>.pending`) and its fields;
+- the install journal (`<bin>.pending`) and its fields, and the lock file
+  beside it (`<bin>.lock`, `update.BinLockSuffix`) that `service install` and
+  the updater both hold while they replace the binary; an updater without it
+  simply does not take it;
 - the appliance unit's text: the CLI accepts an installed unit only when it
   renders byte for byte from a template in `releasedUnitTexts`
   (`internal/service/unit.go`). A released template is never edited or

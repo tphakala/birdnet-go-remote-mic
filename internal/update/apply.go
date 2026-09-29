@@ -95,6 +95,9 @@ type Applier struct {
 	HealthTimeout time.Duration
 	HealthSettle  time.Duration
 	Poll          time.Duration
+	// LockWait bounds the wait for a `service install` holding the binary's
+	// lock; DefaultBinLockWait when zero.
+	LockWait time.Duration
 	// Now stamps the result; time.Now when nil.
 	Now func() time.Time
 	// Logf logs progress; log.Printf when nil.
@@ -107,7 +110,9 @@ type Applier struct {
 // so the path unit does not start it again, and removes the claim at exit;
 // it writes the outcome to the status file for the appliance to
 // report. It first refuses a binary or bin directory that anyone but root
-// could write (checkBinDir). When an install journal is found, a previous run
+// could write (checkBinDir), then takes the lock `service install` also takes
+// (LockBin), waiting up to LockWait and failing the request if it is still
+// held. When an install journal is found, a previous run
 // was cut off mid-install, and Apply rolls that back (recoverInterrupted)
 // instead of installing anything; that recovery runs even when the state
 // directory cannot be opened (the status is then only logged). The returned
@@ -140,6 +145,16 @@ func (a *Applier) Apply(ctx context.Context) error {
 		}
 		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: reason})
 	}
+	// From here to the end the binary, its journal and its rollback copy are
+	// this run's alone: a `service install` takes the same lock, so it cannot
+	// copy over what the swap just installed, and the swap cannot land between
+	// its version check and its copy.
+	release, err := a.lockBin(ctx)
+	if err != nil {
+		defer remove(reqPath)
+		return a.finish(root, &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running, Reason: err.Error()})
+	}
+	defer release()
 	if _, err := os.Lstat(a.journalPath()); err == nil {
 		defer remove(reqPath)
 		return a.finish(root, a.recoverInterrupted(root))
@@ -181,6 +196,21 @@ func (a *Applier) Apply(ctx context.Context) error {
 		}
 	}
 	return a.finish(root, res)
+}
+
+// lockBin takes the lock that serializes replacing the binary (LockBin).
+func (a *Applier) lockBin(ctx context.Context) (release func(), err error) {
+	wait := a.LockWait
+	if wait <= 0 {
+		wait = DefaultBinLockWait
+	}
+	release, err = LockBin(ctx, a.BinPath, wait, func() {
+		a.logf("apply-update: waiting for a service install to finish")
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cannot start: %w", err)
+	}
+	return release, nil
 }
 
 // verifyStaged checks the staged manifest pair with this binary's keys, that

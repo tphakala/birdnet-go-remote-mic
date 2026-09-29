@@ -51,6 +51,10 @@ type Installer struct {
 	// runs as root, so it must not execute a file someone else can change or
 	// a link that leads elsewhere.
 	trustedBin func(path string) error
+	// lockBin takes the lock the root updater also takes around replacing the
+	// binary (update.LockBin) and returns its release; waiting is called once
+	// if another process holds it.
+	lockBin func(path string, waiting func()) (release func(), err error)
 	// binVersion reports the version the binary at path prints, and whether
 	// a binary is there at all (see installedVersion).
 	binVersion func(path string) (version string, present bool, err error)
@@ -75,7 +79,7 @@ type Installer struct {
 // NewInstaller builds an Installer for spec with the production init system,
 // command runner, detected platform, and real filesystem, user and
 // installed-version operations (running the installed binary only when it is
-// a root-only regular file). The caller sets Version and AllowDowngrade.
+// a root-only regular file) and the lock shared with the root updater. The caller sets Version and AllowDowngrade.
 func NewInstaller(spec ServiceSpec) *Installer {
 	return &Installer{
 		Spec:       spec,
@@ -89,6 +93,7 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		binDirOK:   checkBinDir,
 		makeBinDir: ensureBinDir,
 		trustedBin: update.CheckRootOnlyFile,
+		lockBin:    lockBin,
 		binVersion: installedVersion,
 		isLink:     isSymlink,
 		chownTree:  chownTree,
@@ -107,7 +112,10 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // and the updater's path unit (starting both too when now is true). A bin
 // directory (or a directory above it) that anyone but root can write is
 // refused before anything is written, and so is an install that would replace
-// a newer installed binary with this older one (see checkDowngrade). Since the root updater runs the
+// a newer installed binary with this older one (see checkDowngrade). From the
+// version check to the end it holds the lock the root updater takes around
+// replacing the binary (update.LockBin), waiting for an update in progress and
+// failing if one outlasts the wait. Since the root updater runs the
 // installed binary, an installed binary that still fails the root-only check
 // gets no updater: install warns, removes updater units an earlier install
 // left, and installs the appliance alone. That check runs on the installed
@@ -133,6 +141,20 @@ func (in *Installer) Install(now bool) error {
 	if err := in.binDirOK(filepath.Dir(s.BinPath)); err != nil {
 		return fmt.Errorf("service: refusing to install to %s: %w; install it somewhere only root can write (the default is %s)", s.BinPath, err, DefaultBinPath)
 	}
+	// The lock file lives in the bin directory, so it has to exist first.
+	if err := in.makeBinDir(filepath.Dir(s.BinPath)); err != nil {
+		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
+	}
+	// The root updater replaces the same binary; hold its lock from the
+	// version check to the end, so an update cannot land between the check
+	// and the copy or be overwritten by it.
+	release, err := in.lockBin(s.BinPath, func() {
+		_, _ = fmt.Fprintf(in.warn, "waiting for an update of %s in progress to finish\n", s.BinPath)
+	})
+	if err != nil {
+		return fmt.Errorf("service: %s: %w; try again in a few minutes", s.BinPath, err)
+	}
+	defer release()
 	if err := in.checkDowngrade(s.BinPath); err != nil {
 		return err
 	}
@@ -148,9 +170,6 @@ func (in *Installer) Install(now bool) error {
 	self, err := in.selfExe()
 	if err != nil {
 		return fmt.Errorf("service: locate the running binary: %w", err)
-	}
-	if err := in.makeBinDir(filepath.Dir(s.BinPath)); err != nil {
-		return fmt.Errorf("service: create %s: %w", filepath.Dir(s.BinPath), err)
 	}
 	replacesLink := in.isLink(s.BinPath)
 	if err := in.copyFile(self, s.BinPath, 0o755); err != nil {
@@ -492,6 +511,11 @@ func (in *Installer) checkDowngrade(path string) error {
 		return fmt.Errorf("service: %s is %s, newer than this binary (%s); run the installed one (sudo %s service install) or pass --allow-downgrade", path, installed, in.Version, update.ShellQuote(path))
 	}
 	return nil
+}
+
+// lockBin takes the bin path's lock for up to update.InstallBinLockWait.
+func lockBin(path string, waiting func()) (release func(), err error) {
+	return update.LockBin(context.Background(), path, update.InstallBinLockWait, waiting)
 }
 
 // installedVersion runs the binary at path and reads its version from the

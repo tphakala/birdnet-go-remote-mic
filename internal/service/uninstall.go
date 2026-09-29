@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // Uninstaller removes a service installed by Installer. Its side effects are
@@ -36,7 +38,7 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 // Uninstall stops and disables the unit and the root updater's units, clears
 // the updater units' failed state, removes their unit files, and reloads
 // systemd. With purge it also removes the
-// binary (with the copies the updater keeps beside it), the config and state
+// binary (with the copies and lock file the updater keeps beside it), the config and state
 // directories, and the service user.
 //
 // Stop and disable are best-effort: a unit that is already stopped or was never
@@ -75,7 +77,7 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 	}
 	// The root updater leaves the previous binary beside the installed one,
 	// and a cut-off update can leave its staged copy and journal.
-	for _, p := range []string{s.BinPath, s.BinPath + ".prev", s.BinPath + ".new", s.BinPath + ".pending"} {
+	for _, p := range []string{s.BinPath, s.BinPath + ".prev", s.BinPath + ".new", s.BinPath + ".pending", s.BinPath + update.BinLockSuffix} {
 		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("service: remove binary %s: %w", p, err)
 		}

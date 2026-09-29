@@ -384,6 +384,11 @@ updater that stopped after repeated failures. Some older Debian installs keep
 `sudo chmod 755 /usr/local /usr/local/bin` there, or pass `--bin-path` to
 install elsewhere.
 
+`service install` and the updater take one lock (`<bin-path>.lock`) while they
+replace the binary, so running install during an update waits for it to finish
+(up to five minutes) instead of overwriting it. An updater from a release
+before that lock does not take it.
+
 An install set up with `sudo remote-mic service install` updates with the
 button, whatever it was installed from (tarball, `.deb` or Homebrew). A binary
 run by hand, or a package manager's own copy, is never replaced: it shows the

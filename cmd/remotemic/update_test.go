@@ -133,3 +133,16 @@ func TestUnreadableUnitHint(t *testing.T) {
 		t.Errorf("non-manual install: got %+v, want it unchanged", got)
 	}
 }
+
+// TestStagingDirHintNamesTheServiceBinary pins that the hint runs install from
+// the service's own binary, quoted, not from whatever `remote-mic` is first on
+// PATH.
+func TestStagingDirHintNamesTheServiceBinary(t *testing.T) {
+	t.Parallel()
+	got := stagingDirHint("/opt/Remote Mic/remote-mic", "/var/lib/remote-mic/update")
+	for _, want := range []string{"sudo '/opt/Remote Mic/remote-mic' service install", "/var/lib/remote-mic/update"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hint %q lacks %q", got, want)
+		}
+	}
+}

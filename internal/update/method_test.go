@@ -26,13 +26,13 @@ func TestDetectInstall(t *testing.T) {
 			name:   "service without updater",
 			env:    InstallEnv{Exe: serviceBin, ServiceBinPath: serviceBin, DpkgOwns: dpkg},
 			method: MethodService,
-			hint:   "service install",
+			hint:   "sudo " + serviceBin + " service install",
 		},
 		{
 			name:   "updater installs another binary",
 			env:    InstallEnv{Exe: serviceBin, ServiceBinPath: serviceBin, UpdaterBinPath: "/opt/remote-mic"},
 			method: MethodService,
-			hint:   "service install",
+			hint:   "sudo " + serviceBin + " service install",
 		},
 		{
 			name:   "deb, even when a unit runs it",

@@ -36,6 +36,7 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		binDirOK:   func(d string) error { *events = append(*events, "bindir "+d); return nil },
 		makeBinDir: func(p string) error { *events = append(*events, "mkbindir "+p); return nil },
 		trustedBin: func(string) error { return nil },
+		lockBin:    func(string, func()) (func(), error) { return func() {}, nil },
 		binVersion: func(string) (string, bool, error) { return "", false, nil },
 		isLink:     func(string) bool { return false },
 		chownTree: func(root string, uid, gid int) error {
@@ -73,10 +74,10 @@ func TestInstallSequence(t *testing.T) {
 	}
 	wantSeq(t, events, []string{
 		"bindir /usr/local/bin",
+		"mkbindir /usr/local/bin",
 		evGroupadd,
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
-		"mkbindir /usr/local/bin",
 		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
 		"write /etc/systemd/system/remote-mic.service",
 		"mkdir /etc/remote-mic",
@@ -281,8 +282,8 @@ func TestInstallWithoutUpdaterOnUntrustedBin(t *testing.T) {
 	}
 	wantSeq(t, events, []string{
 		"bindir /usr/local/bin",
-		evGroupadd,
 		"mkbindir /usr/local/bin",
+		evGroupadd,
 		"copy /home/pi/remote-mic -> /usr/local/bin/remote-mic",
 		"write /etc/systemd/system/remote-mic.service",
 		"mkdir /etc/remote-mic",
@@ -605,4 +606,137 @@ func TestNewInstallerReadsInstalledVersion(t *testing.T) {
 	if NewInstaller(ServiceSpec{}).binVersion == nil {
 		t.Error("NewInstaller left binVersion unset; the downgrade guard would panic or be skipped")
 	}
+}
+
+// TestNewInstallerWiresTheTrustedBinaryCheck pins that the production installer
+// has the root-only check before it runs the installed binary: a nil func would
+// panic on every real install, and a no-op would let root run any file at the
+// bin path. Only a file root owns passes, and a test's temporary file is not
+// root's.
+func TestNewInstallerWiresTheTrustedBinaryCheck(t *testing.T) {
+	t.Parallel()
+	in := NewInstaller(ServiceSpec{})
+	if in.trustedBin == nil {
+		t.Fatal("NewInstaller left trustedBin unset; checkDowngrade would panic")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root owns the temporary file, so it would pass the check")
+	}
+	f := filepath.Join(t.TempDir(), "remote-mic")
+	if err := os.WriteFile(f, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.trustedBin(f); err == nil {
+		t.Error("trustedBin accepted a file root does not own")
+	}
+	if in.lockBin == nil {
+		t.Error("NewInstaller left lockBin unset; install would not serialize with the updater")
+	}
+}
+
+// TestInstallHoldsTheLockAcrossTheDowngradeCheckAndCopy pins the order the
+// lock exists for: taken before the installed version is read, released only
+// after the copy.
+func TestInstallHoldsTheLockAcrossTheDowngradeCheckAndCopy(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lockBin = func(p string, _ func()) (func(), error) {
+		events = append(events, "lock "+p)
+		return func() { events = append(events, "unlock "+p) }, nil
+	}
+	in.binVersion = func(p string) (string, bool, error) {
+		events = append(events, "version "+p)
+		return "", false, nil
+	}
+	if err := in.Install(false); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	idx := func(want string) int {
+		for i, e := range events {
+			if e == want {
+				return i
+			}
+		}
+		t.Fatalf("event %q missing from %v", want, events)
+		return -1
+	}
+	lock, version, cp, unlock := idx("lock /usr/local/bin/remote-mic"), idx("version /usr/local/bin/remote-mic"), idx("copy /home/pi/remote-mic -> /usr/local/bin/remote-mic"), idx("unlock /usr/local/bin/remote-mic")
+	if lock >= version || version >= cp || cp >= unlock {
+		t.Errorf("want lock < version < copy < unlock, got %d %d %d %d in %v", lock, version, cp, unlock, events)
+	}
+}
+
+// TestInstallStopsWhenTheLockIsBusy pins that install writes nothing when an
+// update holds the binary's lock past the wait, and says to try again.
+func TestInstallStopsWhenTheLockIsBusy(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lockBin = func(string, func()) (func(), error) { return nil, update.ErrBinBusy }
+	err := in.Install(true)
+	if !errors.Is(err, update.ErrBinBusy) || !strings.Contains(err.Error(), "try again") {
+		t.Fatalf("Install: got %v, want ErrBinBusy with a retry hint", err)
+	}
+	for _, e := range events {
+		if strings.HasPrefix(e, "copy ") || strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "run ") {
+			t.Errorf("install acted without the lock: %q", e)
+		}
+	}
+}
+
+// TestInstallSaysWhenItWaitsForAnUpdate pins that a busy lock is reported to
+// the operator, since the wait can last minutes.
+func TestInstallSaysWhenItWaitsForAnUpdate(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	var warn strings.Builder
+	in.warn = &warn
+	in.lockBin = func(_ string, waiting func()) (func(), error) {
+		waiting()
+		return func() {}, nil
+	}
+	if err := in.Install(false); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if got := warn.String(); !strings.Contains(got, "waiting for an update of /usr/local/bin/remote-mic") {
+		t.Errorf("warning %q, want it to say install is waiting", got)
+	}
+}
+
+// TestInstallStopsWhenTheBinDirCannotBeCreated pins that the lock file's
+// directory is made before anything else is written.
+func TestInstallStopsWhenTheBinDirCannotBeCreated(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.makeBinDir = func(string) error { return errors.New("read-only file system") }
+	if err := in.Install(true); err == nil || !strings.Contains(err.Error(), "read-only file system") {
+		t.Fatalf("Install: got %v, want the mkdir error", err)
+	}
+	for _, e := range events {
+		if strings.HasPrefix(e, "copy ") || strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "run ") {
+			t.Errorf("install acted after the bin dir failed: %q", e)
+		}
+	}
+}
+
+// TestProductionLockBinTakesTheUpdaterLock pins that the installer's lock is
+// the one the updater takes: while it is held, update.LockBin finds it busy.
+func TestProductionLockBinTakesTheUpdaterLock(t *testing.T) {
+	t.Parallel()
+	bin := filepath.Join(t.TempDir(), "remote-mic")
+	release, err := lockBin(bin, nil)
+	if err != nil {
+		t.Fatalf("lockBin: %v", err)
+	}
+	if _, err := update.LockBin(t.Context(), bin, 0, nil); !errors.Is(err, update.ErrBinBusy) {
+		t.Errorf("updater lock while install holds it: got %v, want ErrBinBusy", err)
+	}
+	release()
 }

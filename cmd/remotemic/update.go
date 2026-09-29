@@ -67,7 +67,8 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 // the installed systemd units, and dpkg's file lists. The one-button update
 // also needs the staging directory the installer creates; without it the
 // root updater has nothing to watch. An installed unit that cannot be read
-// means this install cannot update itself; the reason is logged, and a binary
+// means this install cannot update itself; the reason is logged, and the hints
+// that send the operator to `service install` name this binary's path. A binary
 // that would otherwise be called run by hand gets the neutral by-hand hint
 // (see unreadableUnitHint).
 func detectInstall(dir string) update.Install {
@@ -88,10 +89,17 @@ func detectInstall(dir string) update.Install {
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			inst.CanApply = false
-			inst.Hint = "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to create the update staging directory " + dir
+			inst.Hint = stagingDirHint(exe, dir)
 		}
 	}
 	return inst
+}
+
+// stagingDirHint tells the operator to re-run install from the service's own
+// binary, exe, which a bare command name might not resolve to: a package copy
+// earlier on PATH would run instead.
+func stagingDirHint(exe, dir string) string {
+	return "Re-run sudo " + update.ShellQuote(exe) + " service install and restart the service (sudo systemctl restart remote-mic) to create the update staging directory " + dir
 }
 
 // unreadableUnitHint keeps a manual install from being told it is run by hand,

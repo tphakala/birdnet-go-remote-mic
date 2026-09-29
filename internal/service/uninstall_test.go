@@ -61,6 +61,7 @@ func TestUninstallPurge(t *testing.T) {
 		"rm /usr/local/bin/remote-mic.prev",
 		"rm /usr/local/bin/remote-mic.new",
 		"rm /usr/local/bin/remote-mic.pending",
+		"rm /usr/local/bin/remote-mic.lock",
 		"rmall /etc/remote-mic",
 		"rmall /var/lib/remote-mic",
 		"run userdel remote-mic",
