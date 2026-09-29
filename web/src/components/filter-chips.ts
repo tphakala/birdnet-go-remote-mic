@@ -5,7 +5,7 @@
 // counts and selection back in. The component keeps only a mirror of the current
 // selection, used to drive its own pressed and dimmed styling.
 
-import { elem, setText } from "../lib/ui.ts";
+import { h, setText } from "../lib/ui.ts";
 import type { ToastType } from "./toast.ts";
 
 // Module counter for unique label ids, so each group's aria-labelledby points at
@@ -39,29 +39,20 @@ export class FilterChips {
 
   constructor(opts: FilterChipsOptions) {
     this.onChange = opts.onChange;
-    this.el = elem("div", "filter-chips");
-    this.el.setAttribute("role", "group");
-    const labelEl = elem("span", "filter-chips-label", opts.label);
-    labelEl.id = `filter-chips-label-${++chipsSeq}`;
-    this.el.setAttribute("aria-labelledby", labelEl.id);
-    this.el.append(labelEl);
+    const labelId = `filter-chips-label-${++chipsSeq}`;
+    this.el = h("div", { class: "filter-chips", role: "group", "aria-labelledby": labelId }, h("span", { class: "filter-chips-label", id: labelId }, opts.label));
     for (const o of opts.options) this.addChip(o);
   }
 
   private addChip(o: ChipOption): void {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "filter-chip";
-    btn.setAttribute("aria-pressed", "false");
-    btn.dataset.value = o.value;
-    if (o.tone) {
-      const dot = elem("span", `filter-chip-dot tone-${o.tone}`);
-      dot.setAttribute("aria-hidden", "true");
-      btn.append(dot);
-    }
-    btn.append(elem("span", "filter-chip-label", o.label));
-    const count = elem("span", "filter-chip-count mono", "0");
-    btn.append(count);
+    const count = h("span", { class: "filter-chip-count mono" }, "0");
+    const btn = h(
+      "button",
+      { type: "button", class: "filter-chip", "aria-pressed": "false", "data-value": o.value },
+      o.tone && h("span", { class: `filter-chip-dot tone-${o.tone}`, "aria-hidden": "true" }),
+      h("span", { class: "filter-chip-label" }, o.label),
+      count,
+    );
     btn.addEventListener("click", () => this.toggle(o.value));
     this.el.append(btn);
     this.chips.set(o.value, { btn, count });

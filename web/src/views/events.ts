@@ -12,7 +12,7 @@
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.ts";
-import { button, clearBusy, downloadBlob, elem, focusDropped, focusOnOrDropped, h, iconSpan, orderChildren, sectionHead, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
+import { button, clearBusy, downloadBlob, focusDropped, focusOnOrDropped, h, iconSpan, orderChildren, sectionHead, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
 import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { showToast } from "../components/toast.ts";
 import { FilterChips } from "../components/filter-chips.ts";
@@ -217,7 +217,6 @@ export class EventsView {
   // ---------- construction ----------
 
   private build(): void {
-    const tilesEl = elem("div", "ev-tiles");
     this.tiles = {
       active: new StatTile({ label: "Active Issues", tone: "ok" }),
       error: new StatTile({ label: "Errors", tone: "error", onClick: () => this.soloSeverity("error") }),
@@ -225,33 +224,24 @@ export class EventsView {
       info: new StatTile({ label: "Info", tone: "info", onClick: () => this.soloSeverity("info") }),
       retained: new StatTile({ label: "Retained", tone: "neutral" }),
     };
-    tilesEl.append(
-      this.tiles.active.el,
-      this.tiles.error.el,
-      this.tiles.warning.el,
-      this.tiles.info.el,
-      this.tiles.retained.el,
-    );
+    const tilesEl = h("div", { class: "ev-tiles" }, this.tiles.active.el, this.tiles.error.el, this.tiles.warning.el, this.tiles.info.el, this.tiles.retained.el);
 
     this.root.append(tilesEl, this.buildActiveCard(), this.buildLogCard());
   }
 
   private buildActiveCard(): HTMLElement {
-    const card = elem("section", "config-section-card ev-active-card");
-    card.setAttribute("aria-label", "Active Issues");
+    const card = h("section", { class: "config-section-card ev-active-card", "aria-label": "Active Issues", hidden: true });
     const { head, descEl } = sectionHead(ICON_ALERT, "Active Issues", "", "ev-section-head");
     head.append(h("div", { class: "ev-head-actions" }));
     this.activeDesc = descEl;
-    this.activeList = elem("div", "ev-list ev-active-list");
+    this.activeList = h("div", { class: "ev-list ev-active-list" });
     card.append(head, this.activeList);
-    card.hidden = true;
     this.activeCard = card;
     return card;
   }
 
   private buildLogCard(): HTMLElement {
-    const card = elem("section", "config-section-card ev-log-card");
-    card.setAttribute("aria-label", "Event Log");
+    const card = h("section", { class: "config-section-card ev-log-card", "aria-label": "Event Log" });
     const { head, titleEl } = sectionHead(
       ICON_LOG,
       "Event Log",
@@ -262,8 +252,7 @@ export class EventsView {
     // condition clears, or the ring trims it); see restoreFocus.
     titleEl.tabIndex = -1;
     this.logTitle = titleEl;
-    this.unreadPill = elem("span", "ev-unread-pill");
-    this.unreadPill.hidden = true;
+    this.unreadPill = h("span", { class: "ev-unread-pill", hidden: true });
     titleEl.append(this.unreadPill);
 
     head.append(h("div", { class: "ev-head-actions" },
@@ -272,16 +261,14 @@ export class EventsView {
     ));
 
     // Toolbar: search plus the two facet groups.
-    const toolbar = elem("div", "ev-toolbar");
-    const searchWrap = elem("label", "ev-search");
-    searchWrap.append(iconSpan(ICON_SEARCH, "ev-search-icon"));
-    this.search = document.createElement("input");
-    this.search.type = "search";
-    this.search.className = "field-input ev-search-input";
-    this.search.placeholder = "Search title, message or source";
-    this.search.setAttribute("aria-label", "Search events");
-    this.search.autocomplete = "off";
-    this.search.spellcheck = false;
+    this.search = h("input", {
+      type: "search",
+      class: "field-input ev-search-input",
+      placeholder: "Search title, message or source",
+      "aria-label": "Search events",
+      autocomplete: "off",
+      spellcheck: "false",
+    });
     this.search.addEventListener("input", () => {
       this.filter.query = this.search.value;
       this.render();
@@ -294,9 +281,8 @@ export class EventsView {
         setText(this.announceEl, this.resultText.textContent ?? "");
       }, 500);
     });
-    this.searchKbd = elem("kbd", "ev-search-kbd", "/");
-    this.searchKbd.setAttribute("aria-hidden", "true");
-    searchWrap.append(this.search, this.searchKbd);
+    this.searchKbd = h("kbd", { class: "ev-search-kbd", "aria-hidden": "true" }, "/");
+    const searchWrap = h("label", { class: "ev-search" }, iconSpan(ICON_SEARCH, "ev-search-icon"), this.search, this.searchKbd);
     this.applySlashShortcut();
 
     this.sevChips = new FilterChips({
@@ -317,20 +303,24 @@ export class EventsView {
         this.render();
       },
     });
-    const facets = elem("div", "ev-facets");
-    facets.append(this.sevChips.el, this.catChips.el);
     // The "/" shortcut switch sits beside the search box it jumps to, where an
     // operator looking for it will look.
-    const searchRow = elem("div", "ev-search-row");
-    searchRow.append(searchWrap, this.buildSlashToggle());
-    toolbar.append(searchRow, facets);
+    const toolbar = h(
+      "div",
+      { class: "ev-toolbar" },
+      h("div", { class: "ev-search-row" }, searchWrap, this.buildSlashToggle()),
+      h("div", { class: "ev-facets" }, this.sevChips.el, this.catChips.el),
+    );
 
     // Filter status line: an optional source pill, the result count, Reset.
-    this.filterBar = elem("div", "ev-filterbar");
-    this.sourcePill = elem("button", "ev-source-pill");
-    this.sourcePill.setAttribute("type", "button");
-    this.sourcePillText = elem("span", "mono");
-    this.sourcePill.append(elem("span", "ev-source-pill-key", "Source"), this.sourcePillText, iconSpan(ICON_X, "ev-source-pill-x"));
+    this.sourcePillText = h("span", { class: "mono" });
+    this.sourcePill = h(
+      "button",
+      { type: "button", class: "ev-source-pill", hidden: true },
+      h("span", { class: "ev-source-pill-key" }, "Source"),
+      this.sourcePillText,
+      iconSpan(ICON_X, "ev-source-pill-x"),
+    );
     this.sourcePill.addEventListener("click", () => {
       this.filter.source = null;
       this.announce = true;
@@ -339,36 +329,28 @@ export class EventsView {
       // the search box (as resetFilters does).
       this.search.focus();
     });
-    this.sourcePill.hidden = true;
-    this.resultText = elem("span", "ev-result-text");
-    this.announceEl = elem("span", "visually-hidden");
-    this.announceEl.setAttribute("role", "status");
-    this.resetBtn = elem("button", "btn-link ev-reset", "Reset filters") as HTMLButtonElement;
-    this.resetBtn.type = "button";
+    this.resultText = h("span", { class: "ev-result-text" });
+    this.announceEl = h("span", { class: "visually-hidden", role: "status" });
+    this.resetBtn = h("button", { type: "button", class: "btn-link ev-reset" }, "Reset filters");
     this.resetBtn.addEventListener("click", () => this.resetFilters());
-    this.filterBar.append(this.sourcePill, this.resultText, this.announceEl, this.resetBtn);
+    this.filterBar = h("div", { class: "ev-filterbar" }, this.sourcePill, this.resultText, this.announceEl, this.resetBtn);
 
     // A failed snapshot while entries are listed (live events, or an earlier
     // snapshot): the log may be missing events, so say so and offer Retry. With
     // nothing listed the empty state below carries the failure instead.
-    this.loadNotice = elem("div", "ev-load-notice");
     this.noticeRetry = button({ variant: "secondary", label: "Retry", onClick: () => this.retryFromNotice() });
-    this.loadNotice.append(elem("p", "ev-load-notice-text", NOTICE_TEXT), this.noticeRetry);
-    this.loadNotice.hidden = true;
+    this.loadNotice = h("div", { class: "ev-load-notice", hidden: true }, h("p", { class: "ev-load-notice-text" }, NOTICE_TEXT), this.noticeRetry);
 
-    this.listEl = elem("div", "ev-list ev-log-list");
+    this.listEl = h("div", { class: "ev-list ev-log-list" });
 
-    this.emptyEl = elem("div", "ev-empty");
-    this.emptyTitle = elem("p", "ev-empty-title");
-    this.emptyBody = elem("p", "ev-empty-body");
+    this.emptyTitle = h("p", { class: "ev-empty-title" });
+    this.emptyBody = h("p", { class: "ev-empty-body" });
     this.emptyReset = button({ variant: "secondary", label: "Reset filters", onClick: () => this.resetFilters() });
     this.emptyRetry = button({ variant: "secondary", label: "Retry", onClick: () => this.retryLoad() });
-    this.emptyEl.append(this.emptyTitle, this.emptyBody, this.emptyReset, this.emptyRetry);
-    this.emptyEl.hidden = true;
+    this.emptyEl = h("div", { class: "ev-empty", hidden: true }, this.emptyTitle, this.emptyBody, this.emptyReset, this.emptyRetry);
 
-    const foot = elem("div", "ev-log-foot");
-    this.retentionNote = elem("p", "ev-retention-note");
-    foot.append(this.retentionNote);
+    this.retentionNote = h("p", { class: "ev-retention-note" });
+    const foot = h("div", { class: "ev-log-foot" }, this.retentionNote);
 
     card.append(head, toolbar, this.filterBar, this.loadNotice, this.listEl, this.emptyEl, foot);
     return card;
@@ -791,20 +773,20 @@ export class EventsView {
         lastDay = key;
         const label = Number.isFinite(ms) ? dayLabel(ms, ctx.nowMs) : "Unknown time";
         const dayKeyLabel = `${key}|${label}`;
-        let h: HTMLElement;
+        let dayHead: HTMLElement;
         if (keepDays.has(dayKeyLabel)) {
           // This day group already appeared earlier in this render. Rows are
           // ordered by id; uptime-derived times follow id order, but a browser
           // clock change between re-syncs (or two runs of "Unknown time") can
           // still split one label. The cache holds a single node per key and a
           // node cannot sit in two places, so the repeat gets an uncached header.
-          h = elem("h3", "ev-day", label);
+          dayHead = h("h3", { class: "ev-day" }, label);
         } else {
-          h = this.dayCache.get(dayKeyLabel) ?? elem("h3", "ev-day", label);
-          this.dayCache.set(dayKeyLabel, h);
+          dayHead = this.dayCache.get(dayKeyLabel) ?? h("h3", { class: "ev-day" }, label);
+          this.dayCache.set(dayKeyLabel, dayHead);
           keepDays.add(dayKeyLabel);
         }
-        nodes.push(h);
+        nodes.push(dayHead);
       }
       // Log rows sit under h3 day headers, so their titles are h4.
       nodes.push(this.cachedRow(this.rowCache, n, ctx, "h4"));

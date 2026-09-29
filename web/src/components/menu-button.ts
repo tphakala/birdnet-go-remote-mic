@@ -10,7 +10,7 @@
 // element (.menu-wrap) the popover anchors to. The state, key and focus rules
 // live in lib/menu-core.ts (MenuController); this file is the DOM side.
 import { MenuController, type FocusTarget, type MenuItem } from "../lib/menu-core.ts";
-import { elem, focusTarget, iconSpan, svgIcon } from "../lib/ui.ts";
+import { focusTarget, h, iconSpan, svgIcon } from "../lib/ui.ts";
 
 export interface MenuChoice extends MenuItem {
   // Static, trusted inline SVG markup (an ICON_* constant), shown before the label.
@@ -39,11 +39,7 @@ export class MenuButton {
   constructor(button: HTMLElement, opts: MenuButtonOptions) {
     this.button = button;
     const uid = ++menuSeq;
-    this.menu = elem("div", "menu-popover");
-    this.menu.id = `menu-${uid}`;
-    this.menu.setAttribute("role", "menu");
-    this.menu.setAttribute("aria-label", opts.label);
-    this.menu.hidden = true;
+    this.menu = h("div", { class: "menu-popover", id: `menu-${uid}`, role: "menu", "aria-label": opts.label, hidden: true });
     this.ctl = new MenuController(
       {
         setOpen: (open) => this.setOpen(open),
@@ -60,15 +56,14 @@ export class MenuButton {
       opts.onSelect,
     );
     this.items = opts.choices.map((c) => {
-      const item = elem("button", "menu-item");
-      item.setAttribute("type", "button");
-      item.setAttribute("role", "menuitemradio");
-      item.setAttribute("aria-checked", "false");
-      // Roving focus: arrows move it; Tab leaves the menu and closes it.
-      item.tabIndex = -1;
-      if (c.icon) item.appendChild(iconSpan(c.icon, "menu-item-icon"));
-      item.appendChild(elem("span", "menu-item-label", c.label));
-      item.appendChild(iconSpan(ICON_CHECK, "menu-item-check"));
+      const item = h(
+        "button",
+        // Roving focus (tabindex -1): arrows move it; Tab leaves the menu and closes it.
+        { class: "menu-item", type: "button", role: "menuitemradio", "aria-checked": "false", tabindex: -1 },
+        c.icon && iconSpan(c.icon, "menu-item-icon"),
+        h("span", { class: "menu-item-label" }, c.label),
+        iconSpan(ICON_CHECK, "menu-item-check"),
+      );
       item.addEventListener("click", () => this.ctl.pick(c.value));
       this.menu.appendChild(item);
       return item;

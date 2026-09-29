@@ -1,5 +1,5 @@
 import { store } from "../../lib/store.ts";
-import { clearLoadError, elem, orderChildren, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
+import { clearLoadError, h, orderChildren, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
 import { TILE_SLOTS, tileSpecs, type TileSpec } from "../../lib/system-core.ts";
 import type { SystemInfo } from "../../lib/types.ts";
 
@@ -84,7 +84,7 @@ export class TelemetryTiles {
     // The tiles were just detached, so drop their stale refs; otherwise a later
     // render would reuse detached nodes and the diffed pass would not rebuild.
     this.tiles.clear();
-    const p = elem("p", "cfg-empty");
+    const p = h("p", { class: "cfg-empty" });
     this.gridEl.appendChild(p);
     renderLoadError(p, message, "Loading system telemetry...", () => void store.retry());
   }
@@ -94,22 +94,18 @@ export class TelemetryTiles {
   // rebuilt), so render can update it in place across polls. The label is
   // fixed per tile key, so it is written once here.
   private build(label: string): TileRefs {
-    const tile = elem("div", "system-tile");
-    const header = elem("div", "tile-header");
-    const sub = elem("span", "mono");
-    header.append(elem("span", undefined, label), sub);
-    tile.appendChild(header);
-
-    const val = elem("div", "tile-value mono");
-    const value = elem("span");
-    const unit = elem("span", "telemetry-unit");
-    val.append(value, unit);
-    tile.appendChild(val);
-
-    const bar = elem("div", "progress-bar-bg");
-    const barFill = elem("div", "progress-bar-fill");
-    bar.appendChild(barFill);
-    tile.appendChild(bar);
+    const sub = h("span", { class: "mono" });
+    const value = h("span");
+    const unit = h("span", { class: "telemetry-unit" });
+    const barFill = h("div", { class: "progress-bar-fill" });
+    const bar = h("div", { class: "progress-bar-bg" }, barFill);
+    const tile = h(
+      "div",
+      { class: "system-tile" },
+      h("div", { class: "tile-header" }, h("span", label), sub),
+      h("div", { class: "tile-value mono" }, value, unit),
+      bar,
+    );
 
     return { tile, sub, value, unit, bar, barFill };
   }

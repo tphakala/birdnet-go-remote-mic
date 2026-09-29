@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, elem, part, setBusy, setLoading, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, h, part, setBusy, setLoading, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { overrideLines, overridesSignature } from "../../lib/system-core.ts";
 import { showToast } from "../../components/toast.ts";
@@ -55,9 +55,9 @@ export class NetworkCard {
       return;
     }
     this.overridesEl.hidden = false;
-    this.overridesEl.appendChild(elem("span", "staged-badge", "Serve overrides active"));
+    this.overridesEl.appendChild(h("span", { class: "staged-badge" }, "Serve overrides active"));
     for (const line of overrideLines(overrides)) {
-      this.overridesEl.appendChild(elem("span", "override-line", line));
+      this.overridesEl.appendChild(h("span", { class: "override-line" }, line));
     }
   }
 

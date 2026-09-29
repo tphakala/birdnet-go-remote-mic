@@ -1,5 +1,5 @@
 import { CustomDropdown } from "./custom-dropdown.ts";
-import { button, copyText, elem, ICON_COPY, svgIcon, switchControl } from "../lib/ui.ts";
+import { button, copyText, h, ICON_COPY, svgIcon, switchControl } from "../lib/ui.ts";
 import {
   DEVICE_FIELD_LABELS,
   MAX_NAME_LEN,
@@ -123,7 +123,7 @@ export class DeviceSettingsForm {
     this.hardware = hardware;
     this.onDirty = onDirty;
     this.display = display;
-    this.element = elem("div", "device-settings");
+    this.element = h("div", { class: "device-settings" });
     this.build();
     this.ready = true;
   }
@@ -132,7 +132,7 @@ export class DeviceSettingsForm {
     const d = this.device;
     const uid = ++formSeq;
 
-    const grid = elem("div", "form-grid-2col");
+    const grid = h("div", { class: "form-grid-2col" });
 
     // A device with several streams: say first, before any field, which fields
     // are the first stream's. The first-stream fields point at the note too
@@ -140,7 +140,7 @@ export class DeviceSettingsForm {
     const streamsNote = extraStreamsNote(d.streams);
     const noteId = streamsNote ? `set-${uid}-streams-note` : "";
     if (streamsNote) {
-      const note = elem("p", "field-hint form-grid-note", streamsNote);
+      const note = h("p", { class: "field-hint form-grid-note" }, streamsNote);
       note.id = noteId;
       grid.appendChild(note);
     }
@@ -169,7 +169,7 @@ export class DeviceSettingsForm {
     this.buildIdentity(grid, uid);
 
     // Rate
-    const rateField = elem("div", "form-field");
+    const rateField = h("div", { class: "form-field" });
     rateField.appendChild(this.label(DEVICE_FIELD_LABELS.rate));
     const rateOpts = this.rateOptions(d.rate);
     const rate = this.buildDropdown(DEVICE_FIELD_LABELS.rate, rateOpts, this.pick(rateOpts, String(d.rate)));
@@ -188,7 +188,7 @@ export class DeviceSettingsForm {
     // one channel is a mono stream, two is stereo (Opus accepts one or two), and
     // three or more is a multi-channel PCM stream. The number of selectable
     // channels is the largest probed channel count, defaulting to stereo when unknown.
-    const chField = elem("div", "form-field");
+    const chField = h("div", { class: "form-field" });
     chField.appendChild(this.label(DEVICE_FIELD_LABELS.channels));
     const chGroup = this.buildChannelSelect(this.maxChannels(), d.channels);
     this.channelsGroup = chGroup;
@@ -215,7 +215,7 @@ export class DeviceSettingsForm {
     // it), so it stays outside collect() and the save/dirty flow. Only
     // meaningful when the device has more than one channel.
     if (this.maxChannels() > 1) {
-      const hideField = elem("div", "form-field");
+      const hideField = h("div", { class: "form-field" });
       const hideId = `set-${uid}-hideinactive`;
       const hideLabel = this.label("Hide Inactive Channels");
       hideLabel.setAttribute("for", hideId);
@@ -258,7 +258,7 @@ export class DeviceSettingsForm {
     // Mode: Opus is offered only when the device can do 48 kHz (Opus is a 48 kHz
     // codec, mono or stereo). On a device that cannot, only PCM L16 is offered and
     // a saved opus mode is coerced to pcm so the form is never in an unsaveable state.
-    const modeField = elem("div", "form-field");
+    const modeField = h("div", { class: "form-field" });
     modeField.appendChild(this.label(DEVICE_FIELD_LABELS.mode));
     const mode = this.buildDropdown(DEVICE_FIELD_LABELS.mode, modeOpts, modeInitial);
     this.modeHidden = mode.hidden;
@@ -288,7 +288,7 @@ export class DeviceSettingsForm {
     grid.appendChild(modeField);
 
     // Bitrate
-    this.bitrateField = elem("div", "form-field");
+    this.bitrateField = h("div", { class: "form-field" });
     this.bitrateField.appendChild(this.label(DEVICE_FIELD_LABELS.bitrate));
     // An unset bitrate (absent or 0) is the per-channel default, and so is a
     // saved value that equals it: both keep following the channel count. Opus
@@ -317,7 +317,7 @@ export class DeviceSettingsForm {
     // it off for a device expected to be silent for long stretches (a bat mic by
     // day) so it does not raise the very-quiet warning. Stuck-at-zero and
     // clipping are unaffected. Stored via collect() as DeviceConfig.quietAlert.
-    const quietField = elem("div", "form-field");
+    const quietField = h("div", { class: "form-field" });
     const quietId = `set-${uid}-quiet`;
     const quietLabel = this.label("Very Quiet Alert");
     quietLabel.setAttribute("for", quietId);
@@ -381,13 +381,13 @@ export class DeviceSettingsForm {
   // and, for a card-index id, the remedy (remove and re-add to pin by identity).
   // Read-only: it carries no change listener and is never read by collect().
   private buildIdentity(grid: HTMLElement, uid: number): void {
-    const field = elem("div", "form-field device-identity");
+    const field = h("div", { class: "form-field device-identity" });
     const inputId = `set-${uid}-devid`;
     const label = this.label(DEVICE_FIELD_LABELS.device);
     label.setAttribute("for", inputId);
     field.appendChild(label);
 
-    const row = elem("div", "auth-token-row");
+    const row = h("div", { class: "auth-token-row" });
     const input = document.createElement("input");
     input.type = "text";
     input.className = "field-input mono";
@@ -586,36 +586,36 @@ export class DeviceSettingsForm {
   // groupTitle appends a full-width heading that visually separates the field
   // groups within the two-column grid.
   private groupTitle(grid: HTMLElement, text: string): void {
-    grid.appendChild(elem("div", "form-group-title", text));
+    grid.appendChild(h("div", { class: "form-group-title" }, text));
   }
 
   private buildDropdown(
     ariaLabel: string, options: DropdownOption[], selected: string
   ): { container: HTMLElement; hidden: HTMLInputElement; dropdown: CustomDropdown } {
-    const container = elem("div", "custom-dropdown");
+    const container = h("div", { class: "custom-dropdown" });
     container.dataset.value = selected;
     const hidden = document.createElement("input");
     hidden.type = "hidden";
     hidden.value = selected;
     container.appendChild(hidden);
 
-    const trigger = elem("div", "dropdown-trigger");
+    const trigger = h("div", { class: "dropdown-trigger" });
     trigger.tabIndex = 0;
     trigger.setAttribute("role", "combobox");
     trigger.setAttribute("aria-expanded", "false");
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-label", ariaLabel);
-    trigger.appendChild(elem("div", "dropdown-value-group"));
-    const chevron = elem("span", "dropdown-chevron");
+    trigger.appendChild(h("div", { class: "dropdown-value-group" }));
+    const chevron = h("span", { class: "dropdown-chevron" });
     chevron.innerHTML = CHEVRON;
     trigger.appendChild(chevron);
     container.appendChild(trigger);
 
-    const menu = elem("div", "dropdown-menu");
+    const menu = h("div", { class: "dropdown-menu" });
     menu.setAttribute("role", "listbox");
     menu.setAttribute("aria-label", ariaLabel);
     for (const opt of options) {
-      const item = elem("div", "dropdown-item");
+      const item = h("div", { class: "dropdown-item" });
       item.dataset.val = opt.val;
       if (opt.tag) item.dataset.tag = opt.tag;
       if (opt.tagClass) item.dataset.tagClass = opt.tagClass;
@@ -623,10 +623,10 @@ export class DeviceSettingsForm {
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(opt.val === selected));
       if (opt.val === selected) item.classList.add("selected");
-      const titleWrap = elem("div", "item-title");
-      titleWrap.appendChild(elem("span", undefined, opt.label));
+      const titleWrap = h("div", { class: "item-title" });
+      titleWrap.appendChild(h("span", opt.label));
       item.appendChild(titleWrap);
-      const check = elem("span", "item-check");
+      const check = h("span", { class: "item-check" });
       check.innerHTML = CHECK;
       item.appendChild(check);
       menu.appendChild(item);
@@ -644,7 +644,7 @@ export class DeviceSettingsForm {
   private field(
     grid: HTMLElement, id: string, labelText: string, value: string, type: string, hint: string
   ): { input: HTMLInputElement; error: HTMLElement } {
-    const field = elem("div", "form-field");
+    const field = h("div", { class: "form-field" });
     const l = this.label(labelText);
     l.setAttribute("for", id);
     field.appendChild(l);
@@ -674,13 +674,11 @@ export class DeviceSettingsForm {
   }
 
   private label(text: string): HTMLElement {
-    return elem("label", "field-label", text);
+    return h("label", { class: "field-label" }, text);
   }
 
   private hint(text: string, id?: string): HTMLElement {
-    const h = elem("span", "field-hint", text);
-    if (id) h.id = id;
-    return h;
+    return h("span", { class: "field-hint", id }, text);
   }
 
   // describe points a dropdown's trigger (its focusable, announced element) at
@@ -720,9 +718,7 @@ export class DeviceSettingsForm {
   }
 
   private error(id: string): HTMLElement {
-    const e = elem("span", "field-error");
-    e.id = id;
-    return e;
+    return h("span", { class: "field-error", id });
   }
 
   // mark toggles the field's invalid state: the red border/message via the
@@ -779,13 +775,13 @@ export class DeviceSettingsForm {
   // clearing the lowest-numbered other channel if a further box is checked.
   private buildChannelSelect(maxCh: number, selected: number[]): HTMLElement {
     const want = new Set(selected);
-    const group = elem("div", "channel-select");
+    const group = h("div", { class: "channel-select" });
     group.setAttribute("role", "group");
     // The accessible name is written by applyChannelMode (the single writer, it
     // varies with the codec mode), called right after this in build().
     this.channelBoxes = [];
     for (let ch = 1; ch <= maxCh; ch++) {
-      const wrap = elem("label", "channel-checkbox");
+      const wrap = h("label", { class: "channel-checkbox" });
       const box = document.createElement("input");
       box.type = "checkbox";
       box.value = String(ch);
@@ -818,7 +814,7 @@ export class DeviceSettingsForm {
         this.validate();
       });
       wrap.appendChild(box);
-      wrap.appendChild(elem("span", undefined, `Ch ${ch}`));
+      wrap.appendChild(h("span", `Ch ${ch}`));
       group.appendChild(wrap);
       this.channelBoxes.push(box);
     }

@@ -138,13 +138,12 @@ reconcile:
   `addEventListener`). Strings become text nodes; `false`, `null`,
   `undefined` and `""` children are skipped, so an empty value stays
   `:empty` for the loading placeholders. It only builds: keep the elements
-  you update in fields and patch them with `setText`/`setHidden`. `elem()`
-  is the older single-element helper; code built with it moves to `h()`
-  when reworked (`StatTile` and `views/about.ts` show the style).
+  you update in fields and patch them with `setText`/`setHidden`.
+  `StatTile` and `views/about.ts` show the style.
 
 ## DOM safety
 
-- Runtime data is only written with `textContent` (via `h`, `elem`,
+- Runtime data is only written with `textContent` (via `h` or
   `setText`) or attributes. `innerHTML` is allowed solely for trusted,
   static inline SVG constants; mark each new such assignment with
   `// static, trusted markup`. Never interpolate device names, config

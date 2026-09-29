@@ -1,7 +1,7 @@
 // Shared modal primitives: a focus trap, an app-background inert toggle, and a
 // generic confirm dialog. Kept in one place so every dialog traps focus, hides
 // the background from assistive tech, and behaves consistently.
-import { button, elem } from "./ui.ts";
+import { button, h } from "./ui.ts";
 
 // Monotonic counter giving each confirmDialog invocation unique element ids, so
 // two dialogs cannot collide on aria-labelledby/aria-describedby targets.
@@ -102,27 +102,19 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     const titleId = `confirm-title-${uid}`;
     const descId = `confirm-desc-${uid}`;
 
-    const overlay = elem("div", "modal-overlay open");
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-modal", "true");
-    overlay.setAttribute("aria-labelledby", titleId);
-    overlay.setAttribute("aria-describedby", descId);
-
-    const card = elem("div", "modal-card");
-
-    const title = elem("h3", "modal-title", opts.title);
-    title.id = titleId;
-
-    const body = elem("p", "modal-text", opts.body);
-    body.id = descId;
-
-    const actions = elem("div", "settings-actions");
     const cancel = button({ variant: "secondary", label: opts.cancelLabel ?? "Cancel" });
     const confirm = button({ variant: opts.danger ? "danger" : "primary", label: opts.confirmLabel ?? "Confirm" });
-
-    actions.append(cancel, confirm);
-    card.append(title, body, actions);
-    overlay.appendChild(card);
+    const overlay = h(
+      "div",
+      { class: "modal-overlay open", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, "aria-describedby": descId },
+      h(
+        "div",
+        { class: "modal-card" },
+        h("h3", { class: "modal-title", id: titleId }, opts.title),
+        h("p", { class: "modal-text", id: descId }, opts.body),
+        h("div", { class: "settings-actions" }, cancel, confirm),
+      ),
+    );
 
     const release = trapFocus(overlay);
     const onKey = (e: KeyboardEvent): void => {

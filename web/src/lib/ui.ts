@@ -10,15 +10,6 @@ import { svgIcon } from "./svg.ts";
 
 export { h, svgIcon };
 
-// elem creates an element with an optional class and text content. New code
-// builds with h() (lib/h.ts); elem remains for the call sites not moved yet.
-export function elem(tag: string, className?: string, text?: string): HTMLElement {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
 // ICON_COPY is the shared copy glyph for every copy-to-clipboard control, so the
 // affordance reads the same on the dashboard, the system view, and the device
 // settings form. It lived in dashboard.ts, where only the dashboard's own copy
@@ -69,9 +60,9 @@ export function sectionHead(icon: string, title: string, desc: string, className
 
 // button builds a .btn control: variant fill, an optional leading icon, a label,
 // and the attributes every button repeats (type=button, aria-label, id, click).
-// It replaces the elem("button", "btn btn-…") + setAttribute("type","button")
-// pattern that was copied at each call site, so a button cannot drift from the
-// shared shape. It covers the button-shaped variants only; the inline text link
+// It replaces the createElement + setAttribute("type","button") pattern that
+// was copied at each call site, so a button cannot drift from the shared shape.
+// It covers the button-shaped variants only; the inline text link
 // (.btn-link) and the chip controls (.copy-btn, .icon-btn, .clip-latch-btn) keep
 // their own construction.
 export interface ButtonOptions {
@@ -95,7 +86,7 @@ export function button(opts: ButtonOptions = {}): HTMLButtonElement {
   if (opts.icon) b.appendChild(iconSpan(opts.icon, "btn-icon"));
   // Label lives in its own span so setButtonLabel/setBusy can rewrite the text
   // without wiping a leading icon.
-  if (opts.label !== undefined) b.appendChild(elem("span", "btn-label", opts.label));
+  if (opts.label !== undefined) b.appendChild(h("span", { class: "btn-label" }, opts.label));
   if (opts.ariaLabel) b.setAttribute("aria-label", opts.ariaLabel);
   if (opts.id) b.id = opts.id;
   if (opts.title) b.title = opts.title;
@@ -151,14 +142,14 @@ export function switchControl(opts: SwitchOptions): { el: HTMLLabelElement; inpu
   if (opts.describedBy) input.setAttribute("aria-describedby", opts.describedBy);
   if (opts.ariaLabel !== undefined) input.setAttribute("aria-label", opts.ariaLabel);
   if (opts.caption !== undefined) {
-    const caption = elem("span", "switch-caption", opts.caption);
+    const caption = h("span", { class: "switch-caption" }, opts.caption);
     caption.setAttribute("aria-hidden", "true");
     el.append(caption);
   }
-  const track = elem("span", "switch-track");
-  track.append(elem("span", "switch-thumb"));
+  const track = h("span", { class: "switch-track" });
+  track.append(h("span", { class: "switch-thumb" }));
   el.append(input, track);
-  if (opts.label !== undefined) el.append(elem("span", "switch-label", opts.label));
+  if (opts.label !== undefined) el.append(h("span", { class: "switch-label" }, opts.label));
   return { el, input };
 }
 
@@ -171,7 +162,7 @@ export function setButtonLabel(el: HTMLElement, text: string): void {
   // An icon-only button has a .btn-icon but no label span; add one rather than
   // wiping the icon via textContent.
   if (!label && el.querySelector(".btn-icon")) {
-    label = elem("span", "btn-label");
+    label = h("span", { class: "btn-label" });
     el.appendChild(label);
   }
   // A render may re-apply the same busy label on every poll.
@@ -549,11 +540,11 @@ export function externalLink(href: string, text: string, opts: { className?: str
   // repository URL), which must still wrap to fit a narrow screen. One label
   // span holds both parts, so a .btn link's flex gap does not split them.
   const cut = externalTailStart(text);
-  const tail = elem("span", "external-tail", text.slice(cut));
+  const tail = h("span", { class: "external-tail" }, text.slice(cut));
   tail.appendChild(iconSpan(ICON_EXTERNAL, "external-icon"));
-  const label = elem("span", undefined, text.slice(0, cut));
+  const label = h("span", text.slice(0, cut));
   label.appendChild(tail);
   a.appendChild(label);
-  a.appendChild(elem("span", "visually-hidden", " (opens in a new tab)"));
+  a.appendChild(h("span", { class: "visually-hidden" }, " (opens in a new tab)"));
   return a;
 }
