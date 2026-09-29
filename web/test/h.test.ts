@@ -66,7 +66,7 @@ test("children keep their order and skip false, null, undefined and empty text",
   const code = h("code", "journalctl");
   const e = fake(h("li", { class: "x" }, "The log: ", false, code, null, undefined, "", "."));
   assert.deepEqual(e.children, ["The log: ", code, "."]);
-  // An empty text leaves the element :empty, as elem(tag, cls, "") does.
+  // An empty text leaves the element :empty, as the loading placeholders expect.
   assert.deepEqual(fake(h("span", { class: "info-val" }, "")).children, []);
 });
 

@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, elem, part, setBusy, setFieldError, setLoading, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, h, part, setBusy, setFieldError, setLoading, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { sentence } from "../../lib/text.ts";
 import {
@@ -50,32 +50,28 @@ export class NotificationsCard {
   // bounds, so there is no live validation here beyond the native min/max.
   private buildField(container: HTMLElement, spec: NotifyFieldSpec): void {
     const id = `sys-notify-${spec.key}`;
-    const field = elem("div", "form-field");
-    const label = elem("label", "field-label", spec.label);
-    label.setAttribute("for", id);
-    field.appendChild(label);
-
-    const input = document.createElement("input");
-    input.type = "number";
-    input.className = "field-input mono";
-    input.id = id;
-    input.min = String(spec.min);
-    input.max = String(spec.max);
-    input.step = "1";
-    // Only hint the digits-only keypad for non-negative fields: a numeric
-    // inputMode omits the minus sign on mobile, which would block editing a
-    // negative-bounded field (quietDbfs, min -99); its default keyboard keeps it.
-    if (spec.min >= 0) input.inputMode = "numeric";
-    input.setAttribute("aria-describedby", `${id}-err ${id}-hint`);
+    const input = h("input", {
+      type: "number",
+      class: "field-input mono",
+      id,
+      min: spec.min,
+      max: spec.max,
+      step: 1,
+      // Only hint the digits-only keypad for non-negative fields: a numeric
+      // inputmode omits the minus sign on mobile, which would block editing a
+      // negative-bounded field (quietDbfs, min -99); its default keyboard keeps it.
+      inputmode: spec.min >= 0 ? "numeric" : null,
+      "aria-describedby": `${id}-err ${id}-hint`,
+    });
     input.addEventListener("input", () => this.markDirty(spec.key));
-    field.appendChild(input);
-
-    const error = elem("span", "field-error");
-    error.id = `${id}-err`;
-    field.appendChild(error);
-    const hint = elem("span", "field-hint", spec.hint);
-    hint.id = `${id}-hint`;
-    field.appendChild(hint);
+    const field = h(
+      "div",
+      { class: "form-field" },
+      h("label", { class: "field-label", for: id }, spec.label),
+      input,
+      h("span", { class: "field-error", id: `${id}-err` }),
+      h("span", { class: "field-hint", id: `${id}-hint` }, spec.hint),
+    );
 
     container.appendChild(field);
     this.inputs.set(spec.key, input);

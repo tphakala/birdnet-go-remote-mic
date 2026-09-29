@@ -3,7 +3,7 @@
 // concerns (open/close, focus, keyboard, DOM). All state lives in the store and
 // its pure core.
 
-import { button, elem, focusTarget, setHidden, setText } from "../lib/ui.ts";
+import { button, focusTarget, h, setHidden, setText } from "../lib/ui.ts";
 import { PopoverController, type FocusTarget } from "../lib/menu-core.ts";
 import { ICON_CLOSE } from "./toast.ts";
 import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.ts";
@@ -58,41 +58,21 @@ export class NotificationCenter {
   }
 
   private buildPanel(): HTMLElement {
-    const panel = elem("div", "notif-panel");
-    panel.id = "notif-panel";
-    panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-label", "Notifications");
-    panel.tabIndex = -1;
-    panel.hidden = true;
-
-    const head = elem("div", "notif-panel-head");
-    const title = elem("h2", "notif-panel-title", "Notifications");
-    const actions = elem("div", "notif-panel-actions");
-
     const readBtn = button({ variant: "secondary", extraClass: "notif-panel-btn", label: "Mark all read", onClick: () => this.store.markAllRead() });
 
     const clearBtn = button({ variant: "secondary", extraClass: "notif-panel-btn", label: "Clear", onClick: () => this.store.clearAll() });
 
-    const closeBtn = elem("button", "icon-btn notif-panel-close");
-    closeBtn.setAttribute("type", "button");
-    closeBtn.setAttribute("aria-label", "Close notifications");
+    const closeBtn = h("button", { type: "button", class: "icon-btn notif-panel-close", "aria-label": "Close notifications" });
     closeBtn.innerHTML = ICON_CLOSE; // static, trusted markup
     closeBtn.addEventListener("click", () => this.ctl.close(true));
 
-    actions.append(readBtn, clearBtn, closeBtn);
-    head.append(title, actions);
-
-    this.activeEl = elem("div", "notif-active");
-    this.listEl = elem("div", "notif-list");
-    this.emptyEl = elem("p", "notif-empty", "No notifications. Older and cleared events are on the Events page.");
-    const body = elem("div", "notif-body");
-    body.append(this.activeEl, this.listEl, this.emptyEl);
+    this.activeEl = h("div", { class: "notif-active" });
+    this.listEl = h("div", { class: "notif-list" });
+    this.emptyEl = h("p", { class: "notif-empty" }, "No notifications. Older and cleared events are on the Events page.");
 
     // The popover shows what is still undismissed; the Events page keeps the full
     // log (cleared entries included), so point there for anything older.
-    const foot = elem("div", "notif-panel-foot");
-    const all = elem("a", "notif-panel-all", "View all events");
-    all.setAttribute("href", "#/events");
+    const all = h("a", { class: "notif-panel-all", href: "#/events" }, "View all events");
     // Already on #/events the hash does not change, so close explicitly too.
     all.addEventListener("click", () => {
       this.ctl.close(false);
@@ -106,12 +86,20 @@ export class NotificationCenter {
       // hashchange, the view is still hidden and the focus is a no-op.)
       requestAnimationFrame(() => document.getElementById("view-events")?.focus({ preventScroll: true }));
     });
-    this.countEl = elem("span", "notif-panel-count");
-    this.countEl.hidden = true;
-    foot.append(this.countEl, all);
+    this.countEl = h("span", { class: "notif-panel-count", hidden: true });
 
-    panel.append(head, body, foot);
-    return panel;
+    return h(
+      "div",
+      { class: "notif-panel", id: "notif-panel", role: "dialog", "aria-label": "Notifications", tabindex: -1, hidden: true },
+      h(
+        "div",
+        { class: "notif-panel-head" },
+        h("h2", { class: "notif-panel-title" }, "Notifications"),
+        h("div", { class: "notif-panel-actions" }, readBtn, clearBtn, closeBtn),
+      ),
+      h("div", { class: "notif-body" }, this.activeEl, this.listEl, this.emptyEl),
+      h("div", { class: "notif-panel-foot" }, this.countEl, all),
+    );
   }
 
   private onChange(): void {
@@ -142,7 +130,7 @@ export class NotificationCenter {
     this.activeEl.replaceChildren();
     if (active.length > 0) {
       const label = `${active.length} active ${active.length === 1 ? "issue" : "issues"}`;
-      this.activeEl.append(elem("div", "notif-group-head", label));
+      this.activeEl.append(h("div", { class: "notif-group-head" }, label));
       for (const n of active) this.activeEl.append(renderNotificationRow(n, { nowMs, toMs }));
     }
 

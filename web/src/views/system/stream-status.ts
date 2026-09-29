@@ -1,4 +1,4 @@
-import { deviceStateBadge, elem, orderChildren, setLoading, setText } from "../../lib/ui.ts";
+import { deviceStateBadge, h, orderChildren, setLoading, setText } from "../../lib/ui.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import { clientSummary, streamFormats, streamSummary } from "../../lib/dashboard-core.ts";
 import type { Config, Device } from "../../lib/types.ts";
@@ -37,10 +37,8 @@ export class StreamStatus {
   constructor(body: HTMLElement | null) {
     this.bodyEl = body;
     this.cardEl = body?.closest<HTMLElement>(".client-card") ?? null;
-    this.messageRow = document.createElement("tr");
-    this.messageCell = elem("td", undefined, "Loading streams...");
-    this.messageCell.setAttribute("colspan", "6");
-    this.messageRow.appendChild(this.messageCell);
+    this.messageCell = h("td", { colspan: 6 }, "Loading streams...");
+    this.messageRow = h("tr", this.messageCell);
     body?.replaceChildren(this.messageRow);
     if (this.cardEl) setLoading(this.cardEl, true);
   }
@@ -102,16 +100,13 @@ export class StreamStatus {
   }
 
   private buildRow(): DeviceRowRefs {
-    const tr = document.createElement("tr");
-    const name = td("");
-    const alsa = td("", true);
-    const path = elem("td", "mono stream-paths");
-    const codec = elem("td", "mono stream-paths");
-    const client = td("", true);
-    const stateTd = document.createElement("td");
-    const stateSpan = elem("span");
-    stateTd.appendChild(stateSpan);
-    tr.append(name, alsa, path, codec, client, stateTd);
+    const name = h("td");
+    const alsa = h("td", { class: "mono" });
+    const path = h("td", { class: "mono stream-paths" });
+    const codec = h("td", { class: "mono stream-paths" });
+    const client = h("td", { class: "mono" });
+    const stateSpan = h("span");
+    const tr = h("tr", name, alsa, path, codec, client, h("td", stateSpan));
     return { tr, name, alsa, path, codec, client, stateSpan };
   }
 
@@ -137,8 +132,4 @@ export class StreamStatus {
     if (r.stateSpan.className !== badge.cls) r.stateSpan.className = badge.cls;
     setText(r.stateSpan, badge.label);
   }
-}
-
-function td(text: string, mono = false): HTMLElement {
-  return elem("td", mono ? "mono" : undefined, text);
 }

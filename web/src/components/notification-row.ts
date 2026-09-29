@@ -12,7 +12,7 @@
 // step. Each row keeps its uptime in a data attribute so restampRows can re-map
 // it after a later re-sync moves the anchor.
 
-import { elem, formatRelative, setText } from "../lib/ui.ts";
+import { formatRelative, h, setText } from "../lib/ui.ts";
 import { TOAST_ICONS, type ToastType } from "./toast.ts";
 import { formatDuration, isoOrNull, type Lifecycle } from "../lib/events-core.ts";
 import type { Notification, NotificationSeverity } from "../lib/types.ts";
@@ -93,11 +93,8 @@ function setDatetime(t: HTMLElement, iso: string): void {
 }
 
 function chip(label: string, extraClass: string, facet: ChipFacet, value: string, opts: RowOptions): HTMLElement {
-  if (!opts.onChip) return elem("span", `notif-chip ${extraClass}`.trim(), label);
-  const b = elem("button", `notif-chip notif-chip-btn ${extraClass}`.trim(), label);
-  b.setAttribute("type", "button");
-  b.setAttribute("aria-label", `Show only ${facet} ${value}`);
-  b.title = `Filter by ${facet}`;
+  if (!opts.onChip) return h("span", { class: `notif-chip ${extraClass}`.trim() }, label);
+  const b = h("button", { type: "button", class: `notif-chip notif-chip-btn ${extraClass}`.trim(), "aria-label": `Show only ${facet} ${value}`, title: `Filter by ${facet}` }, label);
   const onChip = opts.onChip;
   b.addEventListener("click", () => onChip(facet, value));
   return b;
@@ -120,68 +117,67 @@ function lifecycleText(lc: Lifecycle, n: Notification, opts: RowOptions): string
 
 function lifecycleBadge(lc: Lifecycle, n: Notification, opts: RowOptions): HTMLElement {
   const cls = lc.state === "ongoing" ? "ev-life ev-life-ongoing" : "ev-life ev-life-resolved";
-  const badge = elem("span", cls, lifecycleText(lc, n, opts));
-  if (lc.state === "ongoing") {
-    // Restamped in place while the page stays open; see restampRows.
-    badge.dataset.since = String(lc.sinceUptimeMs);
-  }
-  return badge;
+  // An ongoing badge is restamped in place while the page stays open; see
+  // restampRows.
+  return h("span", { class: cls, "data-since": lc.state === "ongoing" ? lc.sinceUptimeMs : null }, lifecycleText(lc, n, opts));
 }
 
 export function renderNotificationRow(n: Notification, opts: RowOptions): HTMLElement {
   // One lookup feeds both the severity badge colour and the glyph, so a row can
   // never end up with an error colour and an info icon.
   const sev = SEVERITY_TO_TOAST[n.severity] ?? "info";
-  const row = elem(opts.full ? "article" : "div", `notif-row sev-${sev}${opts.full ? " ev-row" : ""}`);
-  if (opts.unread) row.classList.add("is-unread");
-  row.dataset.id = String(n.id);
+  const atMs = opts.toMs(n.uptimeMs);
+  const iso = isoTime(atMs);
+  const time = h(
+    "time",
+    {
+      class: "notif-row-time",
+      "data-uptime": n.uptimeMs,
+      // The instant the absolute fields below were formatted for; restampRows
+      // re-formats them only when the mapped instant moves.
+      "data-at": atMs,
+      datetime: iso === "" ? null : iso,
+      title: fullTimestamp(atMs),
+    },
+    relTime(atMs, opts.nowMs),
+  );
 
-  const icon = elem("span", "notif-row-icon sev-badge");
-  icon.setAttribute("aria-hidden", "true");
+  const icon = h("span", { class: "notif-row-icon sev-badge", "aria-hidden": "true" });
   icon.innerHTML = TOAST_ICONS[sev]; // static, trusted markup
 
-  const main = elem("div", "notif-row-main");
-
-  const top = elem("div", "notif-row-top");
-  const titleWrap = elem("div", "notif-row-titlewrap");
-  const title = elem(opts.full ? (opts.headingLevel ?? "h3") : "span", "notif-row-title");
-  title.append(elem("span", "visually-hidden", `${SEVERITY_LABEL[n.severity]}: `));
-  title.append(document.createTextNode(n.title));
-  titleWrap.append(title);
-  if (opts.unread) {
-    const dot = elem("span", "ev-unread-dot");
-    dot.title = "Unread";
-    dot.append(elem("span", "visually-hidden", "(unread)"));
-    titleWrap.append(dot);
-  }
-  top.append(titleWrap);
-
-  const atMs = opts.toMs(n.uptimeMs);
-  const time = elem("time", "notif-row-time", relTime(atMs, opts.nowMs));
-  time.dataset.uptime = String(n.uptimeMs);
-  // The instant the absolute fields below were formatted for; restampRows
-  // re-formats them only when the mapped instant moves.
-  time.dataset.at = String(atMs);
-  setDatetime(time, isoTime(atMs));
-  time.title = fullTimestamp(atMs);
-  if (opts.full) {
-    const when = elem("div", "ev-when");
-    when.append(elem("span", "ev-abs-time mono", absTime(atMs)), time);
-    top.append(when);
-  } else {
-    top.append(time);
-  }
-
-  const meta = elem("div", "notif-row-meta");
-  meta.append(chip(n.category, "", "category", n.category, opts));
-  if (n.source) meta.append(chip(n.source, "notif-chip-source", "source", n.source, opts));
-  if (opts.lifecycle) meta.append(lifecycleBadge(opts.lifecycle, n, opts));
-
-  main.append(top, meta);
-  if (n.message) main.append(elem("div", "notif-row-msg", n.message));
-
-  row.append(icon, main);
-  return row;
+  return h(
+    opts.full ? "article" : "div",
+    { class: `notif-row sev-${sev}${opts.full ? " ev-row" : ""}${opts.unread ? " is-unread" : ""}`, "data-id": n.id },
+    icon,
+    h(
+      "div",
+      { class: "notif-row-main" },
+      h(
+        "div",
+        { class: "notif-row-top" },
+        h(
+          "div",
+          { class: "notif-row-titlewrap" },
+          h(
+            opts.full ? (opts.headingLevel ?? "h3") : "span",
+            { class: "notif-row-title" },
+            h("span", { class: "visually-hidden" }, `${SEVERITY_LABEL[n.severity]}: `),
+            n.title,
+          ),
+          opts.unread && h("span", { class: "ev-unread-dot", title: "Unread" }, h("span", { class: "visually-hidden" }, "(unread)")),
+        ),
+        opts.full ? h("div", { class: "ev-when" }, h("span", { class: "ev-abs-time mono" }, absTime(atMs)), time) : time,
+      ),
+      h(
+        "div",
+        { class: "notif-row-meta" },
+        chip(n.category, "", "category", n.category, opts),
+        n.source && chip(n.source, "notif-chip-source", "source", n.source, opts),
+        opts.lifecycle && lifecycleBadge(opts.lifecycle, n, opts),
+      ),
+      n.message && h("div", { class: "notif-row-msg" }, n.message),
+    ),
+  );
 }
 
 // restampRows refreshes every relative time and every ongoing-duration badge
