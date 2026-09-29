@@ -946,6 +946,10 @@ func TestStartApplyRefusesWhileAnInterruptedUpdateIsPending(t *testing.T) {
 			t.Errorf("journal present: reported as an earlier attempt: %v", err)
 		case !strings.Contains(err.Error(), journal):
 			t.Errorf("journal present: message %q does not name %s", err, journal)
+		case strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "update in progress"):
+			// The journal also exists through a healthy update's health wait, so
+			// the message must not call it an interrupted one.
+			t.Errorf("journal present: message %q does not say an update is in progress", err)
 		}
 		if got := m.Status().Phase; got != PhaseIdle {
 			t.Errorf("phase after the refusal is %q, want %q", got, PhaseIdle)

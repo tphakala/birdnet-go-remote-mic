@@ -99,7 +99,7 @@ not break.
   `WithdrawOrphanedRequest` runs at startup, before the API, and withdraws a
   request an earlier process left unclaimed. `StartApply` refuses while the
   journal (`<bin>.pending`) beside the service binary exists, since the
-  updater is then recovering. `Install.RerunInstall` words
+  updater is then finishing an update or recovering one. `Install.RerunInstall` words
   the appliance's hints to re-run `service install`, and names the service binary only
   when it passes the root-only check. The file names and
   JSON fields here are contracts between versions (root file, Releases).

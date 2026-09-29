@@ -441,9 +441,10 @@ then names no command that runs that binary as root, only the permissions to fix
 re-run the install from the release binary. If the appliance restarts before
 the updater has taken an update it asked for, it withdraws the request at
 startup and reports the update as failed, unless the version it asked for, or a newer one, is already running; start it again.
-The button is refused while an interrupted install's journal
-(`<bin-path>.pending`) is beside the service binary, because the updater is then
-recovering it and restarts the appliance when it is done.
+The button is refused while the install journal (`<bin-path>.pending`) is
+beside the service binary: the updater keeps it from the swap until the new
+version is confirmed healthy, and recovers from it (restarting the appliance)
+after a cut off install.
 
 ## Authentication
 
