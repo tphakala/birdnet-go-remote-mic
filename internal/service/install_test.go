@@ -740,3 +740,23 @@ func TestProductionLockBinTakesTheUpdaterLock(t *testing.T) {
 	}
 	release()
 }
+
+// TestInstallDoesNotSuggestRetryingAfterALockError pins that only a busy lock
+// gets the retry hint: any other failure to take it (a link where the lock
+// file belongs, a read-only directory) fails the same way next time.
+func TestInstallDoesNotSuggestRetryingAfterALockError(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lockBin = func(string, func()) (func(), error) {
+		return nil, errors.New("open /usr/local/bin/remote-mic.lock: too many levels of symbolic links")
+	}
+	err := in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "symbolic links") {
+		t.Fatalf("Install: got %v, want the lock error", err)
+	}
+	if strings.Contains(err.Error(), "try again") {
+		t.Errorf("error %q suggests retrying a failure that is not transient", err)
+	}
+}

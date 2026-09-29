@@ -115,7 +115,8 @@ func NewInstaller(spec ServiceSpec) *Installer {
 // a newer installed binary with this older one (see checkDowngrade). From the
 // version check to the end it holds the lock the root updater takes around
 // replacing the binary (update.LockBin), waiting for an update in progress and
-// failing if one outlasts the wait. Since the root updater runs the
+// failing if one outlasts the wait (with a hint to try again) or if the lock
+// cannot be taken at all. Since the root updater runs the
 // installed binary, an installed binary that still fails the root-only check
 // gets no updater: install warns, removes updater units an earlier install
 // left, and installs the appliance alone. That check runs on the installed
@@ -152,7 +153,10 @@ func (in *Installer) Install(now bool) error {
 		_, _ = fmt.Fprintf(in.warn, "waiting for an update of %s in progress to finish\n", s.BinPath)
 	})
 	if err != nil {
-		return fmt.Errorf("service: %s: %w; try again in a few minutes", s.BinPath, err)
+		if errors.Is(err, update.ErrBinBusy) {
+			return fmt.Errorf("service: %s: %w; try again in a few minutes", s.BinPath, err)
+		}
+		return fmt.Errorf("service: lock %s: %w", s.BinPath, err)
 	}
 	defer release()
 	if err := in.checkDowngrade(s.BinPath); err != nil {
