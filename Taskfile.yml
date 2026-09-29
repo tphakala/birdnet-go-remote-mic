@@ -81,9 +81,10 @@ tasks:
       - golangci-lint run ./...
 
   api:generate:
-    desc: Regenerate the management API code from the OpenAPI spec
+    desc: Regenerate the management API code (Go and the web UI's TypeScript types) from the OpenAPI spec
     cmds:
       - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config api/oapi-codegen.yaml api/openapi.yaml
+      - task: web:types:generate
 
   api:lint:
     desc: Lint the OpenAPI spec with vacuum
@@ -141,6 +142,25 @@ tasks:
       - npx -p typescript@7.0.2 tsc -p web/tsconfig.json
       - cp -r web/static/* web/dist/
 
+  web:types:generate:
+    desc: Regenerate web/src/lib/api-schema.gen.ts (the wire types) from api/openapi.yaml
+    cmds:
+      - npx -p openapi-typescript@7.13.0 openapi-typescript api/openapi.yaml -o web/src/lib/api-schema.gen.ts
+
+  web:types:verify:
+    desc: Fail if web/src/lib/api-schema.gen.ts is stale relative to api/openapi.yaml
+    # Generates into a temp file and compares, so it does not depend on what is
+    # staged (api:verify diffs against the git index instead).
+    cmds:
+      - |
+        tmp=$(mktemp)
+        trap 'rm -f "$tmp"' EXIT
+        npx -p openapi-typescript@7.13.0 openapi-typescript api/openapi.yaml -o "$tmp" >/dev/null
+        if ! cmp -s "$tmp" web/src/lib/api-schema.gen.ts; then
+          echo "web/src/lib/api-schema.gen.ts is out of date; run: task web:types:generate"
+          exit 1
+        fi
+
   web:typecheck:
     desc: Type-check web UI TypeScript, its unit tests, and the rendered sweep in web/e2e without emitting
     cmds:
@@ -178,6 +198,7 @@ tasks:
     # a11y audit and its unit tests, and compiles cleanly into web/dist. The
     # binary-build steps (task build:*) then verify go:embed against that output.
     cmds:
+      - task: web:types:verify
       - task: web:typecheck
       - task: web:lint
       - task: web:a11y
