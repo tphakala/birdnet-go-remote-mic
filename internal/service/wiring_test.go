@@ -12,8 +12,8 @@ import (
 )
 
 // wantWired fails unless every function field of the struct v points at, is
-// set to the production function in want, and unless every function field has
-// an entry: a seam that a test replaces is otherwise a nil function in the
+// set to the production function in want (a nil entry means a closure, which
+// is only checked to be set), and unless every function field has an entry: a seam that a test replaces is otherwise a nil function in the
 // binary the day its wiring is dropped, and a new seam cannot go unwired.
 func wantWired(t *testing.T, v any, want map[string]any) {
 	t.Helper()
@@ -26,6 +26,12 @@ func wantWired(t *testing.T, v any, want map[string]any) {
 		w, ok := want[f.Name]
 		if !ok {
 			t.Errorf("%s has no entry in the wiring table", f.Name)
+			continue
+		}
+		if w == nil {
+			if rv.Field(i).IsNil() {
+				t.Errorf("%s is not set", f.Name)
+			}
 			continue
 		}
 		if got := rv.Field(i).Pointer(); got != reflect.ValueOf(w).Pointer() {
@@ -64,6 +70,11 @@ func TestNewInstallerWiresEverySeam(t *testing.T) {
 		"removeFile":      os.Remove,
 		"lexists":         lexists,
 		"syncDir":         atomicfile.SyncDir,
+		"packageOwns":     PackageOwns,
+		"installed":       InstalledSpec,
+		"execStartDropIn": nil,
+		"removeStaging":   removeStagingDir,
+		"isRegular":       isRegularFile,
 	})
 	if in.Init == nil || in.warn != os.Stderr {
 		t.Error("Init or warn is not set")
@@ -74,11 +85,12 @@ func TestNewUninstallerWiresEverySeam(t *testing.T) {
 	t.Parallel()
 	un := NewUninstaller(ServiceSpec{})
 	wantWired(t, un, map[string]any{
-		"Run":        execRunner,
-		"removeFile": os.Remove,
-		"removeAll":  os.RemoveAll,
-		"userExists": userExists,
-		"dirsOK":     checkPurgeDirs,
+		"Run":         execRunner,
+		"removeFile":  os.Remove,
+		"removeAll":   os.RemoveAll,
+		"userExists":  userExists,
+		"dirsOK":      checkPurgeDirs,
+		"packageOwns": PackageOwns,
 	})
 	if un.Init == nil {
 		t.Error("Init is not set")
