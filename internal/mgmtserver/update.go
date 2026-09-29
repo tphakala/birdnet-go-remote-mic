@@ -91,6 +91,9 @@ func updateToWire(st *update.Status) mgmtapi.UpdateStatus {
 	if !st.LastCheck.IsZero() {
 		out.LastCheck = new(st.LastCheck.UTC())
 	}
+	if !st.NextCheck.IsZero() {
+		out.NextCheck = new(st.NextCheck.UTC())
+	}
 	if st.LastError != "" {
 		out.LastError = new(st.LastError)
 	}

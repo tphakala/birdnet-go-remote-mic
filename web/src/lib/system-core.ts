@@ -3,7 +3,7 @@
 // elements and render what these functions decide.
 
 import type { ApplianceStatus, ConfigOverride, NetworkInterface, SystemInfo } from "./types.ts";
-import { lastCheckText } from "./update-core.ts";
+import { lastCheckText, nextCheckText } from "./update-core.ts";
 
 // formatByteSize renders a byte count as GB (>= 1 GB) or MB, for the static
 // Memory and Storage totals in System Information. The live usage of each is in
@@ -69,7 +69,7 @@ export function tileSpecs(sys: SystemInfo): TileSpec[] {
 export type InfoLabel =
   | "Platform" | "CPU" | "Memory" | "Storage"
   | "Connection" | "IPv4" | "IPv6" | "Wi-Fi Network" | "Signal" | "Band"
-  | "Hostname" | "OS" | "Kernel" | "Version" | "Latest Release" | "Last Check" | "Uptime";
+  | "Hostname" | "OS" | "Kernel" | "Version" | "Latest Release" | "Last Check" | "Next Check" | "Uptime";
 
 // InfoRow is one System Information line: which column group it belongs to,
 // its identity, its label, and the value string. key identifies the row across
@@ -225,6 +225,7 @@ export function infoRows(
   if (u?.supported) {
     rows.push(row("sw", "Latest Release", u.latestVersion ?? "-"));
     rows.push(row("sw", "Last Check", lastCheckText(u.lastCheck, now, formatRelative)));
+    rows.push(row("sw", "Next Check", nextCheckText(u, now)));
   }
   if (st) rows.push(row("sw", "Uptime", formatUptime(st.uptimeSeconds)));
   return rows;
@@ -246,6 +247,7 @@ export const INFO_ORDER: readonly InfoRow[] = [
   row("sw", "Version", ""),
   row("sw", "Latest Release", ""),
   row("sw", "Last Check", ""),
+  row("sw", "Next Check", ""),
   row("sw", "Uptime", ""),
 ];
 

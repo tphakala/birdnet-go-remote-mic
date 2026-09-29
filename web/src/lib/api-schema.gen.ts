@@ -1053,6 +1053,11 @@ export interface components {
              * @description When the last check finished (appliance wall clock); absent before the first check.
              */
             lastCheck?: string;
+            /**
+             * Format: date-time
+             * @description When the next periodic check is due (appliance wall clock). It is counted on a monotonic timer, so a clock step does not move it. Absent while checks are off or for a build that names no release. A time in the past means a check is running or about to.
+             */
+            nextCheck?: string;
             /** @description Why the last check failed; absent after a success. */
             lastError?: string;
             /**

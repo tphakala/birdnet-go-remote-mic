@@ -1069,6 +1069,9 @@ type UpdateStatus struct {
 	// Examples: v0.3.0
 	LatestVersion *string `json:"latestVersion,omitempty"`
 
+	// NextCheck When the next periodic check is due (appliance wall clock). It is counted on a monotonic timer, so a clock step does not move it. Absent while checks are off or for a build that names no release. A time in the past means a check is running or about to.
+	NextCheck *time.Time `json:"nextCheck,omitempty"`
+
 	// NotesUrl The newest release's release notes; absent before a successful check.
 	NotesUrl *string `json:"notesUrl,omitempty"`
 

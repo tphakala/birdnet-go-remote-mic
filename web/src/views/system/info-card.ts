@@ -41,6 +41,9 @@ const ICON_SIGNAL =
 const ICON_RADIO =
   svgIcon('<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path>', 14);
 
+const ICON_TIMER =
+  svgIcon('<line x1="10" x2="14" y1="2" y2="2"></line><line x1="12" x2="15" y1="14" y2="11"></line><circle cx="12" cy="14" r="8"></circle>', 14);
+
 const INFO_ICONS: Record<InfoLabel, string> = {
   Platform: ICON_PLATFORM,
   CPU: ICON_CPU,
@@ -58,6 +61,7 @@ const INFO_ICONS: Record<InfoLabel, string> = {
   Version: ICON_VERSION,
   "Latest Release": ICON_RELEASE,
   "Last Check": ICON_HISTORY,
+  "Next Check": ICON_TIMER,
   Uptime: ICON_CLOCK,
 };
 

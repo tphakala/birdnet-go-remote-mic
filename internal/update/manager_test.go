@@ -77,6 +77,10 @@ func (l *logSink) count(sub string) int {
 	return n
 }
 
+// devBuildVersion is a version that names no release, so a Manager never
+// checks.
+const devBuildVersion = "dev"
+
 func noJitter(time.Duration) time.Duration { return 0 }
 
 func on() *monitor.Settings  { return &monitor.Settings{UpdateCheck: true} }
@@ -129,6 +133,58 @@ func TestManagerChecksOnlyWhenEnabled(t *testing.T) {
 			t.Fatalf("after turning checks off: %d fetches, want 2", n)
 		}
 	})
+}
+
+// TestManagerReportsNextCheck pins that the status names when the check timer
+// fires while checks are on, moves it to the next interval after each check,
+// and reports none the moment checks are turned off (before the loop has run
+// to clear its timer) or on a build that never checks.
+func TestManagerReportsNextCheck(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeFetch{rel: fakeRelease(vOld)}
+		m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Jitter: noJitter, Logf: (&logSink{}).logf})
+		go m.Run(t.Context())
+		synctest.Wait()
+		if got := m.Status().NextCheck; !got.IsZero() {
+			t.Fatalf("checks off: NextCheck %v, want none", got)
+		}
+		m.Apply(on())
+		synctest.Wait()
+		armed := time.Now()
+		if got, want := m.Status().NextCheck, armed.Add(firstCheckDelay); !got.Equal(want) {
+			t.Fatalf("after turning checks on: NextCheck %v, want %v", got, want)
+		}
+		time.Sleep(time.Minute)
+		if got, want := m.Status().NextCheck, armed.Add(firstCheckDelay); !got.Equal(want) {
+			t.Errorf("a minute later: NextCheck %v, want the same deadline %v", got, want)
+		}
+		time.Sleep(firstCheckDelay)
+		synctest.Wait()
+		if n := f.count(); n != 1 {
+			t.Fatalf("%d fetches after the first delay, want 1", n)
+		}
+		// The check fired at armed+firstCheckDelay, and the next one is due a
+		// jitter-free interval after it.
+		if got, want := m.Status().NextCheck, armed.Add(firstCheckDelay).Add(checkInterval-checkJitter); !got.Equal(want) {
+			t.Errorf("after the first check: NextCheck %v, want %v", got, want)
+		}
+		m.Apply(off())
+		// No Wait: the loop has not yet run to clear its timer.
+		if st := m.Status(); st.CheckEnabled || !st.NextCheck.IsZero() {
+			t.Errorf("just after turning checks off: %+v, want checks off and no NextCheck", st)
+		}
+		synctest.Wait()
+		if got := m.Status().NextCheck; !got.IsZero() {
+			t.Errorf("checks off: NextCheck %v, want none", got)
+		}
+	})
+	dev := NewManager(t.Context(), &Config{Running: devBuildVersion, Logf: (&logSink{}).logf})
+	dev.Apply(on())
+	dev.Run(t.Context()) // returns at once for a dev build
+	if got := dev.Status().NextCheck; !got.IsZero() {
+		t.Errorf("dev build: NextCheck %v, want none", got)
+	}
 }
 
 // TestManagerFailureIsQuiet pins that repeated failures of one kind log once,

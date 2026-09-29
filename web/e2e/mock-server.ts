@@ -252,6 +252,8 @@ const UPDATE: UpdateStatus = {
   notesUrl: "https://github.com/tphakala/birdnet-go-remote-mic/releases/tag/v1.5.0",
   available: true,
   lastCheck: "2026-09-26T06:12:40Z",
+  // The longest text the row shows (hours and minutes), whatever the date is.
+  nextCheck: new Date(Date.now() + (23 * 60 + 47) * 60_000).toISOString(),
   installMethod: "service",
   canApply: true,
   phase: "idle",

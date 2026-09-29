@@ -107,16 +107,22 @@ test("infoRows orders the groups and adds the release rows only when updates are
   assert.deepEqual(rows.filter((r) => r.group === "net").map((r) => r.label), ["Connection"]);
   assert.deepEqual(
     rows.filter((r) => r.group === "sw").map((r) => r.label),
-    ["Hostname", "OS", "Kernel", "Version", "Latest Release", "Last Check", "Uptime"],
+    ["Hostname", "OS", "Kernel", "Version", "Latest Release", "Last Check", "Next Check", "Uptime"],
   );
   const value = (label: string): string | undefined => rows.find((r) => r.label === label)?.value;
   assert.equal(value("CPU"), "Cortex-A72 (4 cores)");
   assert.equal(value("Memory"), "4.0 GB");
   assert.equal(value("Last Check"), "10000 ms ago");
+  assert.equal(value("Next Check"), "Soon", "checks on but not yet scheduled");
   assert.equal(value("Uptime"), "up 3600");
 
   const dev = infoRows(sysInfo({ update: { ...update, supported: false } }), status(), now, uptime, relative);
-  assert.equal(dev.some((r) => r.label === "Latest Release" || r.label === "Last Check"), false);
+  assert.equal(dev.some((r) => r.label === "Latest Release" || r.label === "Last Check" || r.label === "Next Check"), false);
+  // Checks off: the row says so instead of counting down.
+  const off = infoRows(sysInfo({ update: { ...update, checkEnabled: false, nextCheck: "2026-09-01T00:05:00Z" } }), status(), now, uptime, relative);
+  assert.equal(off.find((r) => r.label === "Next Check")?.value, "Off");
+  const due = infoRows(sysInfo({ update: { ...update, nextCheck: "2026-09-01T23:47:10Z" } }), status(), now, uptime, relative);
+  assert.equal(due.find((r) => r.label === "Next Check")?.value, "in 23h 47m");
 });
 
 test("infoRows shows what arrived: status alone, or system alone", () => {

@@ -350,9 +350,10 @@ it never raises a notification and never affects audio.
 In the web UI, the System Information card on the System page has a Network
 group that lists each wired and Wi-Fi link that is up with its IP addresses
 and, for Wi-Fi, the network name, signal strength and band (read on request,
-never in the background). The card also shows the running and newest versions
-and the last check, with a switch for the daily check and a Check Now button. Where the installation can update itself it
-offers an Update button. The page stays usable while the release downloads,
+never in the background). The card also shows the running and newest versions,
+the last check and when the next one is due, with a switch for the daily check
+and a Check Now button. Where the installation can update itself it offers an
+Update button. The page stays usable while the release downloads,
 shows the install while the appliance restarts, and reloads once the new
 version answers; any other open page is told to reload. Otherwise the card
 shows how to update by hand.

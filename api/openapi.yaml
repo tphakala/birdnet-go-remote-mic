@@ -1871,6 +1871,14 @@ components:
           description: >
             When the last check finished (appliance wall clock); absent
             before the first check.
+        nextCheck:
+          type: string
+          format: date-time
+          description: >
+            When the next periodic check is due (appliance wall clock). It is
+            counted on a monotonic timer, so a clock step does not move it.
+            Absent while checks are off or for a build that names no release.
+            A time in the past means a check is running or about to.
         lastError:
           type: string
           description: Why the last check failed; absent after a success.
