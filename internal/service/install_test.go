@@ -507,6 +507,7 @@ func TestInstallDowngradeGuard(t *testing.T) {
 		wantWarn  string
 	}{
 		{name: "newer installed refuses", installed: v040, present: true, running: v030, wantErr: "is " + v040 + ", newer than this binary (" + v030 + ")"},
+		{name: "newer installed prerelease refuses", installed: "v0.4.0-rc.1", present: true, running: v030, wantErr: "is v0.4.0-rc.1, newer than this binary"},
 		{name: "newer installed with allow-downgrade proceeds", installed: v040, present: true, running: v030, allow: true},
 		{name: "same version proceeds", installed: v030, present: true, running: v030},
 		{name: "older installed proceeds", installed: "v0.2.0", present: true, running: v030},

@@ -84,7 +84,7 @@ func detectInstall(dir string) update.Install {
 		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
 	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns})
-	inst = unreadableUnitHint(inst, exe, err)
+	inst = unreadableUnitHint(inst, exe, app, err)
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			inst.CanApply = false
@@ -96,9 +96,11 @@ func detectInstall(dir string) update.Install {
 
 // unreadableUnitHint keeps a manual install from being told it is run by hand,
 // or to install a service, when the reason it has no service path is that the
-// installed unit could not be read: the service may well be there.
-func unreadableUnitHint(inst update.Install, exe string, unitErr error) update.Install {
-	if unitErr != nil && inst.Method == update.MethodManual {
+// installed unit could not be read: the service may well be there. An error
+// from the updater unit alone leaves the service path known (serviceBin), and
+// the hint that names it stays.
+func unreadableUnitHint(inst update.Install, exe, serviceBin string, unitErr error) update.Install {
+	if unitErr != nil && serviceBin == "" && inst.Method == update.MethodManual {
 		inst.Hint = "Download the release for this system from the release page and replace " + exe
 	}
 	return inst

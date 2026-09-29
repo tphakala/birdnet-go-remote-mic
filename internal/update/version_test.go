@@ -68,3 +68,47 @@ func TestNewerRefusesUnusableVersions(t *testing.T) {
 		t.Error("unprefixed latest: got nil error")
 	}
 }
+
+func TestAhead(t *testing.T) {
+	t.Parallel()
+	const newer, describe = "v0.4.0", "v0.3.0-25-gf26d800"
+	tests := []struct {
+		installed, running string
+		want               bool
+	}{
+		{newer, vNew, true},
+		{"v0.4.0-rc.1", vNew, true}, // a prerelease is still ahead of an older release
+		{vNew, vNew, false},
+		{vNew, newer, false},
+		{"v0.3.0-rc.1", vNew, false},
+		{describe, vNew, false}, // a describe build derives from its tag
+		{newer, describe, true},
+	}
+	for _, tt := range tests {
+		got, err := Ahead(tt.installed, tt.running)
+		if err != nil || got != tt.want {
+			t.Errorf("Ahead(%q, %q) = %t, %v; want %t", tt.installed, tt.running, got, err, tt.want)
+		}
+	}
+	for _, bad := range [][2]string{{"not-a-version", vNew}, {vNew, "not-a-version"}, {"", vNew}} {
+		if _, err := Ahead(bad[0], bad[1]); err == nil {
+			t.Errorf("Ahead(%q, %q) = nil error, want one", bad[0], bad[1])
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"/usr/local/bin/remote-mic": "/usr/local/bin/remote-mic",
+		"/home/pi/Remote Mic/rm":    "'/home/pi/Remote Mic/rm'",
+		"/tmp/it's":                 `'/tmp/it'\''s'`,
+		"/tmp/$(id)":                "'/tmp/$(id)'",
+		"":                          "''",
+	}
+	for in, want := range tests {
+		if got := ShellQuote(in); got != want {
+			t.Errorf("ShellQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

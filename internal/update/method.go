@@ -85,7 +85,7 @@ func isHomebrew(path string) bool {
 // says so itself when the cause was an unreadable one (see detectInstall).
 func manualHint(exe, serviceBin string) string {
 	if serviceBin == "" {
-		return "This binary is run by hand and is never replaced. Run sudo " + exe + " service install to install it as a service that updates with one button, or download the release for this system from the release page and replace " + exe
+		return "This binary is run by hand and is never replaced. Run sudo " + ShellQuote(exe) + " service install to install it as a service that updates with one button, or download the release for this system from the release page and replace " + exe
 	}
 	return "This is not the binary the service runs (" + filepath.Clean(serviceBin) + "), so it is never replaced. Download the release for this system from the release page and replace " + exe
 }

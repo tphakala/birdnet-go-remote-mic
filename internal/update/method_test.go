@@ -80,3 +80,11 @@ func TestRunningTarget(t *testing.T) {
 		t.Errorf("RunningTarget() = %q, want %s/%s", got, runtime.GOOS, runtime.GOARCH)
 	}
 }
+
+func TestManualHintQuotesThePath(t *testing.T) {
+	t.Parallel()
+	got := DetectInstall(InstallEnv{Exe: "/home/pi/Remote Mic/remote-mic"}).Hint
+	if !strings.Contains(got, "sudo '/home/pi/Remote Mic/remote-mic' service install") {
+		t.Errorf("hint %q, want the path shell-quoted", got)
+	}
+}

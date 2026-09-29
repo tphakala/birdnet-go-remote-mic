@@ -483,13 +483,13 @@ func (in *Installer) checkDowngrade(path string) error {
 		_, _ = fmt.Fprintf(in.warn, "warning: cannot tell the version of the installed %s (%v); replacing it\n", path, err)
 		return nil
 	}
-	newer, err := update.Newer(installed, in.Version)
+	newer, err := update.Ahead(installed, in.Version)
 	if err != nil {
 		_, _ = fmt.Fprintf(in.warn, "warning: cannot compare the installed %s (%s) with this binary (%s): %v; replacing it\n", path, installed, in.Version, err)
 		return nil
 	}
 	if newer && !in.AllowDowngrade {
-		return fmt.Errorf("service: %s is %s, newer than this binary (%s); run the installed one (sudo %s service install) or pass --allow-downgrade", path, installed, in.Version, path)
+		return fmt.Errorf("service: %s is %s, newer than this binary (%s); run the installed one (sudo %s service install) or pass --allow-downgrade", path, installed, in.Version, update.ShellQuote(path))
 	}
 	return nil
 }

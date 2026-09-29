@@ -65,3 +65,35 @@ func Newer(latest, running string) (bool, error) {
 	}
 	return c > 0, nil
 }
+
+// Ahead reports whether the installed build is a later release than the
+// running one, for a decision that must not replace a newer binary with an
+// older one. Unlike Newer it compares raw SemVer, so an installed prerelease
+// (v0.4.0-rc.1) is ahead of a running v0.3.0. Both sides are reduced to the
+// release they derive from (see BaseVersion), and a build that names no
+// release (such as "dev") on either side is an error, not an answer.
+func Ahead(installed, running string) (bool, error) {
+	ib, ok := BaseVersion(installed)
+	if !ok {
+		return false, ErrNotRelease
+	}
+	rb, ok := BaseVersion(running)
+	if !ok {
+		return false, ErrNotRelease
+	}
+	c, err := releasemanifest.CompareVersions(ib, rb)
+	if err != nil {
+		return false, err
+	}
+	return c > 0, nil
+}
+
+// ShellQuote quotes s for a POSIX shell so a copyable command keeps a path
+// with spaces or metacharacters as one argument. A plain path is returned
+// as it is.
+func ShellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+=:,@%") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
