@@ -205,6 +205,40 @@ func TestReadResultRefusesLinkAndGarbage(t *testing.T) {
 	}
 }
 
+// TestReadResultKeepsAFileItCannotRead pins that a status file the appliance
+// cannot read right now stays for the next poll, while one that is not a
+// regular file or does not decode is removed.
+func TestReadResultKeepsAFileItCannotRead(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 0 file")
+	}
+	dir := t.TempDir()
+	status := filepath.Join(dir, StatusFile)
+	writeJSON(t, status, Result{Outcome: OutcomeUpdated, From: vOld, To: vNew, Installed: vNew})
+	if err := os.Chmod(status, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readResult(dir); err == nil {
+		t.Fatal("an unreadable status file was read")
+	}
+	if !exists(status) {
+		t.Fatal("an unreadable status file was removed")
+	}
+	if err := os.Remove(status); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(status, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readResult(dir); err == nil {
+		t.Fatal("a directory in place of the status file was read")
+	}
+	if exists(status) {
+		t.Error("a directory in place of the status file was left")
+	}
+}
+
 // TestResultMessage pins that a failed result says whether the new version
 // stayed installed (a restore that failed) or was never installed.
 func TestResultMessage(t *testing.T) {

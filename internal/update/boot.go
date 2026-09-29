@@ -212,22 +212,33 @@ func takeResult(dir, version string) (*Result, error) {
 	return res, nil
 }
 
-// readResult reads the status file without consuming it. A file that is there
-// but is not a regular file, cannot be read, or does not parse is removed and
-// reported as an error.
+// readResult reads the status file without consuming it. A file that is not
+// a regular file, or does not parse, is removed and reported as an error; one
+// that cannot be read right now is left for the next look.
 func readResult(dir string) (*Result, error) {
+	p := filepath.Join(dir, StatusFile)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	if err := regularFile(StatusFile, fi); err != nil {
+		_ = os.Remove(p)
+		return nil, err
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // p is the fixed status file in the staging directory
+	if err != nil {
+		return nil, err
+	}
 	var res Result
-	if err := readSmall(dir, StatusFile, &res); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			_ = os.Remove(filepath.Join(dir, StatusFile))
-		}
+	if err := decodeSmall(StatusFile, b, &res); err != nil {
+		_ = os.Remove(p)
 		return nil, err
 	}
 	return &res, nil
 }
 
 // readSmall decodes the small JSON file name in dir into v, refusing one that
-// is not a regular file.
+// is not a regular file. It removes nothing.
 func readSmall(dir, name string, v any) error {
 	p := filepath.Join(dir, name)
 	fi, err := os.Lstat(p)
