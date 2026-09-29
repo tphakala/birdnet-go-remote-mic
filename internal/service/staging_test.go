@@ -68,39 +68,39 @@ func TestWithdrawStagedRequest(t *testing.T) {
 	})
 }
 
-func TestInstallWithdrawsALeftoverRequestBeforeEnablingTheUpdater(t *testing.T) {
+// withdrawTestInstaller is testInstaller with the host's login shell pinned,
+// and the events it records.
+func withdrawTestInstaller(t *testing.T) (*Installer, *[]string) {
+	t.Helper()
 	orig := fileExists
 	t.Cleanup(func() { fileExists = orig })
 	fileExists = func(p string) bool { return p == nologinPath }
-
-	var events []string
+	events := new([]string)
 	userThere := false
-	in := testInstaller(&events, &fakeInit{events: &events, present: true}, &userThere)
+	return testInstaller(events, &fakeInit{events: events, present: true}, &userThere), events
+}
+
+func TestInstallWithdrawsALeftoverRequestBeforeEnablingTheUpdater(t *testing.T) {
+	in, events := withdrawTestInstaller(t)
 	var warned bytes.Buffer
 	in.warn = &warned
-	in.withdrawRequest = func(d string) (bool, error) { events = append(events, "withdraw "+d); return true, nil }
+	in.withdrawRequest = func(d string) (bool, error) { *events = append(*events, "withdraw "+d); return true, nil }
 	if err := in.Install(true); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	wantOrder(t, events, "staging /var/lib/remote-mic 990:990", "withdraw /var/lib/remote-mic", evReload, "enable --now remote-mic-update.path")
+	wantOrder(t, *events, "staging /var/lib/remote-mic 990:990", "withdraw /var/lib/remote-mic", evReload, "enable --now remote-mic-update.path")
 	if !strings.Contains(warned.String(), "update request") {
 		t.Errorf("warning %q does not mention the update request", warned.String())
 	}
 }
 
 func TestInstallStopsWhenTheRequestCannotBeWithdrawn(t *testing.T) {
-	orig := fileExists
-	t.Cleanup(func() { fileExists = orig })
-	fileExists = func(p string) bool { return p == nologinPath }
-
-	var events []string
-	userThere := false
-	in := testInstaller(&events, &fakeInit{events: &events, present: true}, &userThere)
+	in, events := withdrawTestInstaller(t)
 	in.withdrawRequest = func(string) (bool, error) { return false, errors.New("boom") }
 	if err := in.Install(true); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("got %v, want the withdrawal error", err)
 	}
-	for _, e := range events {
+	for _, e := range *events {
 		if e == evReload || strings.HasPrefix(e, "enable") {
 			t.Errorf("event %q ran after the withdrawal failed", e)
 		}
