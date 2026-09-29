@@ -78,8 +78,10 @@ export function componentTitle(e: LicenseEntry): string {
 // clipboard for a bug report: the build, the host, and the capture devices, and
 // nothing identifying (no hostname, addresses, network name, token, USB serial, device name,
 // or stream path), since the report is public. The version line always appears
-// and the Platform line whenever host details are known, each reading "unknown"
-// when empty; any other field the host does not report is left out. The device
+// and, whenever host details are known, the Platform line and a Network line
+// for each Ethernet or Wi-Fi link that is up ("none detected" when none), the
+// version and Platform lines each reading "unknown" when empty; any other field
+// the host does not report is left out. The device
 // section appears whenever devices is given, even empty, so a report shows that
 // no device was configured. configs, when loaded, adds every stream's mode and
 // channels (the device record carries only the first stream's).
