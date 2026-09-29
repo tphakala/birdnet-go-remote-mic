@@ -81,6 +81,10 @@ tar xzf birdnet-go-remote-mic_*_linux_arm64.tar.gz
 sudo install -m 0755 remote-mic /usr/local/bin/remote-mic
 ```
 
+A binary run this way is never replaced by an update. To get one-button
+updates, install it as a service with `sudo remote-mic service install` (see
+[Run at boot](#run-at-boot-systemd-service)).
+
 ### Build from source
 
 Requires Go (version in `go.mod`) and Node 26 (for the web UI; its unit tests
@@ -213,11 +217,16 @@ It also installs the root updater behind [one-button updates](#updates):
 `remote-mic-update.service` when the appliance stages a release there.
 Re-running `service install` on an existing install adds them; restart the
 service afterwards (`sudo systemctl restart remote-mic`) so the running
-appliance offers the one-button update.
+appliance offers the one-button update. Since the appliance updates the
+installed copy, an unpacked tarball or package binary is often older than it:
+`service install` refuses to replace a newer installed binary with an older
+one and names the installed version. Run `service install` from the installed
+binary instead (by default `sudo /usr/local/bin/remote-mic service install`),
+or pass `--allow-downgrade` to go back on purpose.
 
 Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
 your password for the privileged steps. Flags override the defaults (`--user`,
-`--config`, `--state-dir`, `--bin-path`, and `--no-start` to enable without
+`--config`, `--state-dir`, `--bin-path`, `--allow-downgrade`, and `--no-start` to enable without
 starting). Re-running `install` without them keeps the values of the unit it
 installed before, and says which it kept; if that unit was edited by hand, it
 asks for all four flags. `uninstall --purge` prints what it removes first, and
@@ -375,9 +384,15 @@ updater that stopped after repeated failures. Some older Debian installs keep
 `sudo chmod 755 /usr/local /usr/local/bin` there, or pass `--bin-path` to
 install elsewhere.
 
-Installs managed by a package manager are never replaced behind its back: a
-`.deb` or Homebrew install, or a binary run from where it was unpacked, shows
-the update and the command to install it instead (`update.upgradeHint`).
+An install set up with `sudo remote-mic service install` updates with the
+button, whatever it was installed from (tarball, `.deb` or Homebrew). A binary
+run by hand, or a package manager's own copy, is never replaced: it shows the
+update and the command to install it instead (`update.upgradeHint`). After
+`service install` from a `.deb` or Homebrew, the service runs its own copy
+(by default in `/usr/local/bin`, see `--bin-path`), which updates itself; the
+package's copy does not. An install that warned it was installed without
+automatic updates has no button until that is fixed and `service install` is
+run again.
 
 ## Authentication
 

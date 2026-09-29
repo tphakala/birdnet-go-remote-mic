@@ -5,12 +5,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
 
 // cmdApplyUpdate is the root updater's subcommand.
@@ -110,5 +112,24 @@ func TestTruncate(t *testing.T) {
 		if got := truncate(in, 10); got != want {
 			t.Errorf("truncate(%q, 10) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestUnreadableUnitHint(t *testing.T) {
+	t.Parallel()
+	manual := update.Install{Method: update.MethodManual, Hint: "run by hand"}
+	if got := unreadableUnitHint(manual, "/opt/remote-mic", "", errors.New("drop-in")); !strings.Contains(got.Hint, "replace /opt/remote-mic") || strings.Contains(got.Hint, "by hand") {
+		t.Errorf("unreadable unit: hint %q, want the neutral one", got.Hint)
+	}
+	if got := unreadableUnitHint(manual, "/opt/remote-mic", "", nil); got != manual {
+		t.Errorf("readable units: got %+v, want it unchanged", got)
+	}
+	// An updater-only error leaves the service path known: keep its hint.
+	if got := unreadableUnitHint(manual, "/opt/remote-mic", "/usr/local/bin/remote-mic", errors.New("updater unit")); got != manual {
+		t.Errorf("service path known: got %+v, want it unchanged", got)
+	}
+	svc := update.Install{Method: update.MethodService, Hint: "keep"}
+	if got := unreadableUnitHint(svc, "/opt/remote-mic", "", errors.New("x")); got != svc {
+		t.Errorf("non-manual install: got %+v, want it unchanged", got)
 	}
 }

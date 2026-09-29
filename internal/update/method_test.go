@@ -47,10 +47,16 @@ func TestDetectInstall(t *testing.T) {
 			hint:   "brew upgrade",
 		},
 		{
-			name:   "unpacked tarball",
+			name:   "unpacked tarball beside a service that runs another binary",
 			env:    InstallEnv{Exe: "/home/pi/remote-mic", ServiceBinPath: serviceBin},
 			method: MethodManual,
-			hint:   "/home/pi/remote-mic",
+			hint:   "not the binary the service runs (" + serviceBin + ")",
+		},
+		{
+			name:   "run by hand with no service",
+			env:    InstallEnv{Exe: "/home/pi/remote-mic"},
+			method: MethodManual,
+			hint:   "sudo /home/pi/remote-mic service install",
 		},
 	}
 	for _, tt := range tests {
@@ -72,5 +78,13 @@ func TestRunningTarget(t *testing.T) {
 	}
 	if runtime.GOARCH != "arm" && got != runtime.GOOS+"/"+runtime.GOARCH {
 		t.Errorf("RunningTarget() = %q, want %s/%s", got, runtime.GOOS, runtime.GOARCH)
+	}
+}
+
+func TestManualHintQuotesThePath(t *testing.T) {
+	t.Parallel()
+	got := DetectInstall(InstallEnv{Exe: "/home/pi/Remote Mic/remote-mic"}).Hint
+	if !strings.Contains(got, "sudo '/home/pi/Remote Mic/remote-mic' service install") {
+		t.Errorf("hint %q, want the path shell-quoted", got)
 	}
 }

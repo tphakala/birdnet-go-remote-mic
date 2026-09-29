@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -34,6 +35,8 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		ensureDir:  func(p string, _ os.FileMode) error { *events = append(*events, "mkdir "+p); return nil },
 		binDirOK:   func(d string) error { *events = append(*events, "bindir "+d); return nil },
 		makeBinDir: func(p string) error { *events = append(*events, "mkbindir "+p); return nil },
+		trustedBin: func(string) error { return nil },
+		binVersion: func(string) (string, bool, error) { return "", false, nil },
 		isLink:     func(string) bool { return false },
 		chownTree: func(root string, uid, gid int) error {
 			*events = append(*events, fmt.Sprintf("chown %s %d:%d", root, uid, gid))
@@ -482,5 +485,124 @@ func TestBinDirUnderAFile(t *testing.T) {
 	}
 	if err := ensureBinDir(bin); !errors.Is(err, syscall.ENOTDIR) {
 		t.Errorf("ensureBinDir: got %v, want ENOTDIR", err)
+	}
+}
+
+// TestInstallDowngradeGuard pins that install refuses to replace a newer
+// installed binary before it writes anything, and that every case that
+// cannot be compared or run goes ahead as the repair path. Removing the
+// guard makes the newer-installed cases fail.
+func TestInstallDowngradeGuard(t *testing.T) {
+	t.Parallel()
+	const v030, v040 = "v0.3.0", "v0.4.0"
+	tests := []struct {
+		name      string
+		installed string
+		present   bool
+		runErr    error
+		running   string
+		allow     bool
+		untrusted error  // trustedBin's verdict; nil means a root-only regular file
+		wantErr   string // substring; "" means the install proceeds
+		wantWarn  string
+	}{
+		{name: "newer installed refuses", installed: v040, present: true, running: v030, wantErr: "is " + v040 + ", newer than this binary (" + v030 + ")"},
+		{name: "newer installed prerelease refuses", installed: "v0.4.0-rc.1", present: true, running: v030, wantErr: "is v0.4.0-rc.1, newer than this binary"},
+		{name: "newer installed with allow-downgrade proceeds", installed: v040, present: true, running: v030, allow: true},
+		{name: "same version proceeds", installed: v030, present: true, running: v030},
+		{name: "older installed proceeds", installed: "v0.2.0", present: true, running: v030},
+		{name: "nothing installed proceeds", running: v030},
+		{name: "unrunnable installed binary proceeds with a warning", present: true, runErr: errors.New("exec format error"), running: v030, wantWarn: "cannot tell the version"},
+		{name: "development build proceeds with a warning", installed: v040, present: true, running: "dev", wantWarn: "cannot compare"},
+		{name: "installed binary others can change is not run", installed: v040, present: true, running: v030, untrusted: errors.New("owned by uid 1000"), wantWarn: "not running the installed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var events []string
+			userThere := true
+			in := testInstaller(&events, &fakeInit{events: &events, present: true}, &userThere)
+			in.Version, in.AllowDowngrade = tt.running, tt.allow
+			in.trustedBin = func(string) error { return tt.untrusted }
+			in.binVersion = func(path string) (string, bool, error) {
+				if tt.untrusted != nil {
+					t.Error("ran the installed binary although it is not root-only")
+				}
+				if path != DefaultBinPath {
+					t.Errorf("version read from %q, want %q", path, DefaultBinPath)
+				}
+				return tt.installed, tt.present, tt.runErr
+			}
+			var warn strings.Builder
+			in.warn = &warn
+			err := in.Install(true)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) || !strings.Contains(err.Error(), "--allow-downgrade") || !strings.Contains(err.Error(), "sudo "+DefaultBinPath+" service install") {
+					t.Fatalf("Install error = %v, want one containing %q, the installed binary's command and --allow-downgrade", err, tt.wantErr)
+				}
+				for _, e := range events {
+					if strings.HasPrefix(e, "copy ") || strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "run ") {
+						t.Errorf("refused install still did %q", e)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			if !slices.Contains(events, "copy /home/pi/remote-mic -> /usr/local/bin/remote-mic") {
+				t.Errorf("install did not copy the binary: %v", events)
+			}
+			if tt.wantWarn == "" && warn.Len() != 0 {
+				t.Errorf("unexpected warning %q", warn.String())
+			}
+			if tt.wantWarn != "" && !strings.Contains(warn.String(), tt.wantWarn) {
+				t.Errorf("warning %q, want it to contain %q", warn.String(), tt.wantWarn)
+			}
+		})
+	}
+}
+
+// TestInstalledVersion pins the parse of `remote-mic version` output and the
+// absent-binary case, against a real script standing in for the binary.
+func TestInstalledVersion(t *testing.T) {
+	t.Parallel()
+	script := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "remote-mic")
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil { //nolint:gosec // a test script must be executable
+			t.Fatal(err)
+		}
+		return p
+	}
+	if v, present, err := installedVersion(script(t, "echo remote-mic v0.4.0\necho more\n")); v != "v0.4.0" || !present || err != nil {
+		t.Errorf("got %q, %t, %v; want v0.4.0, true, nil", v, present, err)
+	}
+	if _, present, err := installedVersion(script(t, "echo something else\n")); !present || err == nil {
+		t.Errorf("unexpected output: present=%t err=%v, want present and an error", present, err)
+	}
+	if _, present, err := installedVersion(script(t, "exit 3\n")); !present || err == nil {
+		t.Errorf("failing binary: present=%t err=%v, want present and an error", present, err)
+	}
+	if _, present, _ := installedVersion(filepath.Join(t.TempDir(), "absent")); present {
+		t.Error("an absent binary reported as present")
+	}
+	// A path that cannot be looked at (a directory component is a file) is
+	// not "absent": the guard must report it, not skip it.
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, present, err := installedVersion(filepath.Join(file, "remote-mic")); !present || err == nil {
+		t.Errorf("unreadable path: present=%t err=%v, want present and an error", present, err)
+	}
+}
+
+// TestNewInstallerReadsInstalledVersion pins that the production installer
+// reads the installed binary's version, so the downgrade guard is live.
+func TestNewInstallerReadsInstalledVersion(t *testing.T) {
+	t.Parallel()
+	if NewInstaller(ServiceSpec{}).binVersion == nil {
+		t.Error("NewInstaller left binVersion unset; the downgrade guard would panic or be skipped")
 	}
 }

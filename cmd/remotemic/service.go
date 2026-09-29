@@ -35,14 +35,24 @@ var (
 // Action seams so subcommand routing and flag parsing are testable without
 // creating real users, writing units, or driving systemctl.
 var (
-	installService = func(spec service.ServiceSpec, start bool) error {
-		return service.NewInstaller(spec).Install(start)
+	installService = func(spec service.ServiceSpec, start, allowDowngrade bool) error {
+		return newInstaller(spec, allowDowngrade).Install(start)
 	}
 	uninstallService = func(spec service.ServiceSpec, purge bool) error {
 		return service.NewUninstaller(spec).Uninstall(purge)
 	}
 	statusService = runServiceStatusDefault
 )
+
+// newInstaller builds the production installer for spec, told which version
+// this binary is so it can refuse to replace a newer installed one unless
+// allowDowngrade is set.
+func newInstaller(spec service.ServiceSpec, allowDowngrade bool) *service.Installer {
+	in := service.NewInstaller(spec)
+	in.Version = version
+	in.AllowDowngrade = allowDowngrade
+	return in
+}
 
 // runService routes the service command group and returns the exit code.
 func runService(args []string, stdout, stderr io.Writer) int {
@@ -125,7 +135,8 @@ func ensureRoot(escalated bool) error {
 
 // runServiceInstall parses install flags, escalates to root, and installs the
 // service. Flags are parsed before escalation so -h and a bad flag report
-// without a sudo prompt.
+// without a sudo prompt. The install refuses to replace a newer installed
+// binary unless --allow-downgrade is given.
 func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -140,6 +151,7 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	stateDir := fs.String("state-dir", "", "state directory for the management certificate"+installedDefault(service.DefaultStateDir))
 	binPath := fs.String("bin-path", "", "path to install the binary to"+installedDefault(service.DefaultBinPath))
 	noStart := fs.Bool("no-start", false, "enable at boot but do not start the service now")
+	allowDowngrade := fs.Bool("allow-downgrade", false, "replace an installed binary that is newer than this one")
 	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
@@ -150,7 +162,7 @@ func runServiceInstall(args []string, escalated bool, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := installService(spec, !*noStart); err != nil {
+	if err := installService(spec, !*noStart, *allowDowngrade); err != nil {
 		return err
 	}
 	if *noStart {

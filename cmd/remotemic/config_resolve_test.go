@@ -214,7 +214,7 @@ func TestServiceDefaultsFromInstalledUnit(t *testing.T) {
 	t.Cleanup(func() { installedSpec = prev })
 
 	var got service.ServiceSpec
-	installService = func(s service.ServiceSpec, _ bool) error { got = s; return nil }
+	installService = func(s service.ServiceSpec, _, _ bool) error { got = s; return nil }
 	code, _, errOut := runCLI(cmdService, cmdInstall, "--state-dir", "/srv/other", "--no-start")
 	want := inst
 	want.StateDir = "/srv/other"
@@ -276,7 +276,7 @@ func TestServiceDefaultsRefuseHandEditedUnit(t *testing.T) {
 	t.Cleanup(func() { installedSpec = prev })
 	called := false
 	uninstallService = func(service.ServiceSpec, bool) error { called = true; return nil }
-	installService = func(service.ServiceSpec, bool) error { called = true; return nil }
+	installService = func(service.ServiceSpec, bool, bool) error { called = true; return nil }
 
 	for _, args := range [][]string{{cmdService, subRemove, argPurge}, {cmdService, cmdInstall}} {
 		code, _, errOut := runCLI(args...)
