@@ -198,6 +198,6 @@ not say: UI-only types such as `LoadError`, and overrides where the UI must be
 looser than the spec (`DownCause` accepts any string; a field an older appliance
 omits, such as `Device.clientCount` or `Health.authRequired`, stays optional).
 A new override says why. When the spec changes, regenerate, then update the
-`api.ts` methods in the same change; a renamed field fails `web:typecheck` where
-the UI reads it.
+`api.ts` methods in the same change; a renamed field fails `web:typecheck`, where
+the UI reads it or in the override that names it.
 SSE event names and payloads must match the spec's `/events` documentation.

@@ -8,6 +8,10 @@ import type { components } from "./api-schema.gen.ts";
 
 type Schemas = components["schemas"];
 
+// Omit that only accepts keys T has, so an override naming a field the spec
+// renamed or dropped fails to compile here instead of leaving a stale field.
+type Without<T, K extends keyof T> = Omit<T, K>;
+
 export type StreamMode = Schemas["StreamMode"];
 export type DeviceState = Schemas["DeviceState"];
 export type OpusSettings = Schemas["OpusSettings"];
@@ -54,12 +58,12 @@ export type DownCause =
   | (string & {});
 
 // How many clients are playing the stream; absent from an older appliance.
-export type StreamStatus = Omit<Schemas["StreamStatus"], "clientCount"> & {
+export type StreamStatus = Without<Schemas["StreamStatus"], "clientCount"> & {
   clientCount?: number;
 };
 
 // clientCount and overruns are absent from an older appliance.
-export type Device = Omit<
+export type Device = Without<
   Schemas["Device"],
   "downCause" | "clientCount" | "overruns" | "streams"
 > & {
@@ -70,13 +74,13 @@ export type Device = Omit<
 };
 
 // authRequired is absent on an older appliance that predates token auth.
-export type Health = Omit<Schemas["Health"], "authRequired"> & {
+export type Health = Without<Schemas["Health"], "authRequired"> & {
   authRequired?: boolean;
 };
 
 // The client keeps only the fields a problem body carries, so type is optional
 // here although the spec defaults it to about:blank.
-export type Problem = Omit<Schemas["Problem"], "type"> & { type?: string };
+export type Problem = Without<Schemas["Problem"], "type"> & { type?: string };
 
 // A validation entry the server malformed is still shown, so both fields are
 // optional here.
@@ -85,7 +89,10 @@ export interface ValidationErrorItem {
   reason?: string;
 }
 
-export type ValidationProblem = Problem & { errors?: ValidationErrorItem[] };
+export type ValidationProblem = Without<Schemas["ValidationProblem"], "type" | "errors"> & {
+  type?: string;
+  errors?: ValidationErrorItem[];
+};
 
 // The spec's inline enums, named for the UI.
 export type InstallMethod = UpdateStatus["installMethod"];
