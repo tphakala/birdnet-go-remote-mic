@@ -220,8 +220,9 @@ service afterwards (`sudo systemctl restart remote-mic`) so the running
 appliance offers the one-button update. Since the appliance updates the
 installed copy, an unpacked tarball or package binary is often older than it:
 `service install` refuses to replace a newer installed binary with an older
-one and names the installed version. Run the installed binary's `service
-install` instead, or pass `--allow-downgrade` to go back on purpose.
+one and names the installed version. Run `service install` from the installed
+binary instead (by default `sudo /usr/local/bin/remote-mic service install`),
+or pass `--allow-downgrade` to go back on purpose.
 
 Run it as a normal user: `install` re-runs itself under `sudo` and prompts for
 your password for the privileged steps. Flags override the defaults (`--user`,
@@ -387,8 +388,11 @@ An install set up with `sudo remote-mic service install` updates with the
 button, whatever it was installed from (tarball, `.deb` or Homebrew). A binary
 run by hand, or a package manager's own copy, is never replaced: it shows the
 update and the command to install it instead (`update.upgradeHint`). After
-`service install` from a `.deb` or Homebrew, the service runs its own copy in
-`/usr/local/bin`, which updates itself; the package's copy does not.
+`service install` from a `.deb` or Homebrew, the service runs its own copy
+(by default in `/usr/local/bin`, see `--bin-path`), which updates itself; the
+package's copy does not. An install that warned it was installed without
+automatic updates has no button until that is fixed and `service install` is
+run again.
 
 ## Authentication
 

@@ -238,3 +238,25 @@ func TestNewInstaller(t *testing.T) {
 		t.Error("AllowDowngrade set without the flag")
 	}
 }
+
+// TestServiceInstallDoesNotAllowDowngradeByDefault pins that a plain
+// `service install` keeps the downgrade guard on.
+func TestServiceInstallDoesNotAllowDowngradeByDefault(t *testing.T) {
+	saveServiceSeams(t)
+	geteuid = func() int { return 0 } // skip escalation
+	oldSpec := installedSpec
+	t.Cleanup(func() { installedSpec = oldSpec })
+	installedSpec = func() (service.ServiceSpec, error) { return service.ServiceSpec{}, nil }
+	got := true
+	installService = func(_ service.ServiceSpec, _, allowDowngrade bool) error {
+		got = allowDowngrade
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := dispatch([]string{cmdService, cmdInstall, "--no-start"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+	if got {
+		t.Error("allowDowngrade = true without --allow-downgrade")
+	}
+}

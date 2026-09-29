@@ -35,6 +35,7 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		ensureDir:  func(p string, _ os.FileMode) error { *events = append(*events, "mkdir "+p); return nil },
 		binDirOK:   func(d string) error { *events = append(*events, "bindir "+d); return nil },
 		makeBinDir: func(p string) error { *events = append(*events, "mkbindir "+p); return nil },
+		trustedBin: func(string) error { return nil },
 		binVersion: func(string) (string, bool, error) { return "", false, nil },
 		isLink:     func(string) bool { return false },
 		chownTree: func(root string, uid, gid int) error {
@@ -501,6 +502,7 @@ func TestInstallDowngradeGuard(t *testing.T) {
 		runErr    error
 		running   string
 		allow     bool
+		untrusted error  // trustedBin's verdict; nil means a root-only regular file
 		wantErr   string // substring; "" means the install proceeds
 		wantWarn  string
 	}{
@@ -511,6 +513,7 @@ func TestInstallDowngradeGuard(t *testing.T) {
 		{name: "nothing installed proceeds", running: v030},
 		{name: "unrunnable installed binary proceeds with a warning", present: true, runErr: errors.New("exec format error"), running: v030, wantWarn: "cannot tell the version"},
 		{name: "development build proceeds with a warning", installed: v040, present: true, running: "dev", wantWarn: "cannot compare"},
+		{name: "installed binary others can change is not run", installed: v040, present: true, running: v030, untrusted: errors.New("owned by uid 1000"), wantWarn: "not running the installed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -519,7 +522,11 @@ func TestInstallDowngradeGuard(t *testing.T) {
 			userThere := true
 			in := testInstaller(&events, &fakeInit{events: &events, present: true}, &userThere)
 			in.Version, in.AllowDowngrade = tt.running, tt.allow
+			in.trustedBin = func(string) error { return tt.untrusted }
 			in.binVersion = func(path string) (string, bool, error) {
+				if tt.untrusted != nil {
+					t.Error("ran the installed binary although it is not root-only")
+				}
 				if path != DefaultBinPath {
 					t.Errorf("version read from %q, want %q", path, DefaultBinPath)
 				}
@@ -529,8 +536,8 @@ func TestInstallDowngradeGuard(t *testing.T) {
 			in.warn = &warn
 			err := in.Install(true)
 			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) || !strings.Contains(err.Error(), "--allow-downgrade") {
-					t.Fatalf("Install error = %v, want one containing %q and --allow-downgrade", err, tt.wantErr)
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) || !strings.Contains(err.Error(), "--allow-downgrade") || !strings.Contains(err.Error(), "sudo "+DefaultBinPath+" service install") {
+					t.Fatalf("Install error = %v, want one containing %q, the installed binary's command and --allow-downgrade", err, tt.wantErr)
 				}
 				for _, e := range events {
 					if strings.HasPrefix(e, "copy ") || strings.HasPrefix(e, "write ") || strings.HasPrefix(e, "run ") {
@@ -544,6 +551,9 @@ func TestInstallDowngradeGuard(t *testing.T) {
 			}
 			if !slices.Contains(events, "copy /home/pi/remote-mic -> /usr/local/bin/remote-mic") {
 				t.Errorf("install did not copy the binary: %v", events)
+			}
+			if tt.wantWarn == "" && warn.Len() != 0 {
+				t.Errorf("unexpected warning %q", warn.String())
 			}
 			if tt.wantWarn != "" && !strings.Contains(warn.String(), tt.wantWarn) {
 				t.Errorf("warning %q, want it to contain %q", warn.String(), tt.wantWarn)
@@ -575,6 +585,15 @@ func TestInstalledVersion(t *testing.T) {
 	}
 	if _, present, _ := installedVersion(filepath.Join(t.TempDir(), "absent")); present {
 		t.Error("an absent binary reported as present")
+	}
+	// A path that cannot be looked at (a directory component is a file) is
+	// not "absent": the guard must report it, not skip it.
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, present, err := installedVersion(filepath.Join(file, "remote-mic")); !present || err == nil {
+		t.Errorf("unreadable path: present=%t err=%v, want present and an error", present, err)
 	}
 }
 

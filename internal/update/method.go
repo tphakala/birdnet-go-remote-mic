@@ -79,12 +79,13 @@ func isHomebrew(path string) bool {
 }
 
 // manualHint tells the operator how to update a binary that is not the
-// service's: with no service unit, `service install` is what turns on
-// one-button updates; with one that runs another binary, that binary is the
-// one that updates.
+// service's: with no service path, `service install` is what turns on
+// one-button updates; with a unit that runs another binary, this one is a
+// stray copy. The caller passes "" only when it found no readable unit, and
+// says so itself when the cause was an unreadable one (see detectInstall).
 func manualHint(exe, serviceBin string) string {
 	if serviceBin == "" {
 		return "This binary is run by hand and is never replaced. Run sudo " + exe + " service install to install it as a service that updates with one button, or download the release for this system from the release page and replace " + exe
 	}
-	return "This is not the binary the service runs (" + filepath.Clean(serviceBin) + "), which is the one that updates itself, and it is never replaced. Download the release for this system from the release page and replace " + exe
+	return "This is not the binary the service runs (" + filepath.Clean(serviceBin) + "), so it is never replaced. Download the release for this system from the release page and replace " + exe
 }

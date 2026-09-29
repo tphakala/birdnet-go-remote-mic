@@ -67,7 +67,9 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 // the installed systemd units, and dpkg's file lists. The one-button update
 // also needs the staging directory the installer creates; without it the
 // root updater has nothing to watch. An installed unit that cannot be read
-// means this install cannot update itself; the reason is logged.
+// means this install cannot update itself; the reason is logged, and a binary
+// that would otherwise be called run by hand gets the neutral by-hand hint
+// (see unreadableUnitHint).
 func detectInstall(dir string) update.Install {
 	exe, err := os.Executable()
 	if err == nil {
@@ -82,11 +84,22 @@ func detectInstall(dir string) update.Install {
 		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
 	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns})
+	inst = unreadableUnitHint(inst, exe, err)
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			inst.CanApply = false
 			inst.Hint = "Re-run sudo remote-mic service install and restart the service (sudo systemctl restart remote-mic) to create the update staging directory " + dir
 		}
+	}
+	return inst
+}
+
+// unreadableUnitHint keeps a manual install from being told it is run by hand,
+// or to install a service, when the reason it has no service path is that the
+// installed unit could not be read: the service may well be there.
+func unreadableUnitHint(inst update.Install, exe string, unitErr error) update.Install {
+	if unitErr != nil && inst.Method == update.MethodManual {
+		inst.Hint = "Download the release for this system from the release page and replace " + exe
 	}
 	return inst
 }

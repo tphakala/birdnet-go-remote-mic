@@ -46,6 +46,11 @@ type Installer struct {
 	// makeBinDir creates the bin directory when it is missing and leaves an
 	// existing one as it is (see ensureBinDir).
 	makeBinDir func(path string) error
+	// trustedBin refuses to run the binary at path unless it is a regular
+	// file only root owns and can write (update.CheckRootOnlyFile): install
+	// runs as root, so it must not execute a file someone else can change or
+	// a link that leads elsewhere.
+	trustedBin func(path string) error
 	// binVersion reports the version the binary at path prints, and whether
 	// a binary is there at all (see installedVersion).
 	binVersion func(path string) (version string, present bool, err error)
@@ -69,7 +74,8 @@ type Installer struct {
 
 // NewInstaller builds an Installer for spec with the production init system,
 // command runner, detected platform, and real filesystem, user and
-// installed-version operations. The caller sets Version and AllowDowngrade.
+// installed-version operations (running the installed binary only when it is
+// a root-only regular file). The caller sets Version and AllowDowngrade.
 func NewInstaller(spec ServiceSpec) *Installer {
 	return &Installer{
 		Spec:       spec,
@@ -82,6 +88,7 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		ensureDir:  ensureDir,
 		binDirOK:   checkBinDir,
 		makeBinDir: ensureBinDir,
+		trustedBin: update.CheckRootOnlyFile,
 		binVersion: installedVersion,
 		isLink:     isSymlink,
 		chownTree:  chownTree,
@@ -457,8 +464,17 @@ func copyFile(src, dst string, perm os.FileMode) error {
 // would otherwise write it over the newer one and report success. An
 // installed binary that is absent, will not run, or names a version that
 // cannot be compared with this one (a development build) is the repair case:
-// install goes ahead, with a warning where something looked wrong.
+// install goes ahead, with a warning where something looked wrong. An
+// installed binary that is not a root-only regular file is never run (root
+// would be executing something another account can change, or a link to it):
+// its version is unknown, so install goes ahead and replaces it.
 func (in *Installer) checkDowngrade(path string) error {
+	if err := in.trustedBin(path); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			_, _ = fmt.Fprintf(in.warn, "warning: not running the installed %s to read its version (%v); replacing it\n", path, err)
+		}
+		return nil
+	}
 	installed, present, err := in.binVersion(path)
 	if !present {
 		return nil
