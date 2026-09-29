@@ -427,6 +427,10 @@ export interface MockServer {
   // pushNotification sends the live error notification to every open event
   // stream, so the UI raises its error toast.
   pushNotification(): void;
+  // failPaths makes GET requests to these paths (for example "/api/v1/devices"
+  // or "/licenses.json") answer 503, until it is called again; an empty list
+  // ends the failure.
+  failPaths(paths: readonly string[]): void;
   close(): Promise<void>;
 }
 
@@ -440,7 +444,9 @@ function eventFilter(req: IncomingMessage): Set<string> | null {
 }
 
 // startMockServer serves distDir and the mock API on 127.0.0.1:port (0 picks a
-// free port).
+// free port). Two test hooks sit beside the API: POST /__mock/notify pushes the
+// live error notification, and POST /__mock/fail (or the returned failPaths)
+// makes chosen GET paths answer 503.
 export async function startMockServer(distDir: string, port: number = DEFAULT_PORT): Promise<MockServer> {
   const root = resolve(distDir);
   // Each open event stream, with the event types its ?events= filter asked
@@ -460,6 +466,9 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
     // Heartbeats pass every filter.
     for (const res of streams.keys()) res.write("event: heartbeat\ndata: {}\n\n");
   }, 15_000);
+
+  // Paths whose GET answers 503, as the appliance does when a read fails.
+  let failing = new Set<string>();
 
   async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
     const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname).replace(/^\/+/, "");
@@ -544,11 +553,22 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
     const url = new URL(req.url ?? "/", "http://mock");
     const method = req.method ?? "GET";
     let work: Promise<void>;
-    if (url.pathname.startsWith("/api/v1/")) {
+    if (method === "GET" && failing.has(url.pathname)) {
+      res.writeHead(503, { "Content-Type": "application/problem+json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ title: "Service Unavailable", status: 503, detail: "failing by request of the sweep" }));
+      return;
+    } else if (url.pathname.startsWith("/api/v1/")) {
       work = serveAPI(method, url.pathname.slice("/api/v1".length), req, res);
     } else if (url.pathname === "/__mock/notify" && method === "POST") {
       // Test hook for the sweep; not part of the appliance API.
       pushNotification();
+      res.writeHead(204);
+      res.end();
+      return;
+    } else if (url.pathname === "/__mock/fail" && method === "POST") {
+      // Test hook for manual runs: ?paths=/api/v1/devices,/licenses.json fails
+      // those paths, and no paths ends the failure.
+      failPaths((url.searchParams.get("paths") ?? "").split(",").filter(Boolean));
       res.writeHead(204);
       res.end();
       return;
@@ -561,6 +581,10 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
       else res.end();
     });
   });
+
+  function failPaths(paths: readonly string[]): void {
+    failing = new Set(paths);
+  }
 
   function pushNotification(): void {
     send(NOTIFICATION_EVENT, `event: ${NOTIFICATION_EVENT}\ndata: ${JSON.stringify(liveNotification())}\n\n`);
@@ -576,6 +600,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
   return {
     url: `http://127.0.0.1:${actualPort}`,
     pushNotification,
+    failPaths,
     close(): Promise<void> {
       clearInterval(levelTimer);
       clearInterval(heartbeatTimer);

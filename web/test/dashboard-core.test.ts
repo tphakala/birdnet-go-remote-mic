@@ -13,6 +13,7 @@ import { at, FakeTimers } from "./fixtures.ts";
 
 import {
   availableCardKey,
+  availableCardShape,
   availableGoneMessage,
   availableLabel,
   deviceConfigKey,
@@ -264,57 +265,69 @@ test("focus messages name the device, the control and why it went", () => {
   assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
 });
 
-test("availablePlan keeps unchanged cards and rebuilds only changed ones", () => {
-  const shown = new Map([
-    ["a", "ka"],
-    ["b", "kb"],
-    ["c", "kc"],
-  ]);
-  const plan = availablePlan(shown, [
-    { id: "a", key: "ka" },
-    { id: "b", key: "kb2" },
-    { id: "d", key: "kd" },
+const shown = (entries: [string, string, string][]) => new Map(entries.map(([id, shape, key]) => [id, { shape, key }]));
+
+test("availablePlan keeps unchanged cards and builds only new ones or ones with other rows", () => {
+  const plan = availablePlan(shown([["a", "s", "ka"], ["b", "s", "kb"], ["c", "s", "kc"]]), [
+    { id: "a", shape: "s", key: "ka" },
+    { id: "b", shape: "t", key: "kb2" },
+    { id: "d", shape: "s", key: "kd" },
   ]);
   assert.deepEqual(plan.remove, ["c"]);
-  assert.deepEqual(plan.build, ["b", "d"], "only the changed and the new card are built");
+  assert.deepEqual(plan.build, ["b", "d"], "only the reshaped and the new card are built");
+  assert.deepEqual(plan.patch, [], "a rebuilt card is not also patched");
+});
+
+test("availablePlan patches a card whose text changed in place", () => {
+  const plan = availablePlan(shown([["a", "s", "ka"], ["b", "s", "kb"]]), [
+    { id: "a", shape: "s", key: "ka" },
+    { id: "b", shape: "s", key: "kb2" },
+  ]);
+  assert.deepEqual(plan.patch, ["b"]);
+  assert.deepEqual(plan.build, [], "a same-shaped change keeps the node");
 });
 
 test("availablePlan builds a new card mid-list and orders it there", () => {
-  const shown = new Map([
-    ["a", "ka"],
-    ["c", "kc"],
-  ]);
-  const plan = availablePlan(shown, [
-    { id: "a", key: "ka" },
-    { id: "b", key: "kb" },
-    { id: "c", key: "kc" },
+  const plan = availablePlan(shown([["a", "s", "ka"], ["c", "s", "kc"]]), [
+    { id: "a", shape: "s", key: "ka" },
+    { id: "b", shape: "s", key: "kb" },
+    { id: "c", shape: "s", key: "kc" },
   ]);
   assert.deepEqual(plan.build, ["b"]);
   assert.deepEqual(plan.order, ["a", "b", "c"], "a new card is ordered by its place in the list, not appended");
 });
 
 test("availablePlan orders cards like the list", () => {
-  const shown = new Map([
-    ["a", "ka"],
-    ["b", "kb"],
-  ]);
-  const plan = availablePlan(shown, [
-    { id: "b", key: "kb" },
-    { id: "a", key: "ka" },
+  const plan = availablePlan(shown([["a", "s", "ka"], ["b", "s", "kb"]]), [
+    { id: "b", shape: "s", key: "kb" },
+    { id: "a", shape: "s", key: "ka" },
   ]);
   assert.deepEqual(plan.order, ["b", "a"]);
   assert.deepEqual(plan.build, [], "a reorder rebuilds nothing");
+  assert.deepEqual(plan.patch, []);
   assert.deepEqual(plan.remove, []);
 });
 
-test("availablePlan rebuilds a card whose busy state changed", () => {
+test("availablePlan patches a card whose busy state changed", () => {
   const d = { device: "hw:1,0", friendlyName: "USB mic" } as unknown as AvailableDevice;
-  const shown = new Map([[d.device, availableCardKey(d, true)]]);
+  const shape = availableCardShape(d);
   // The Enable settled: the same device, no longer in flight.
-  const plan = availablePlan(shown, [{ id: d.device, key: availableCardKey(d, false) }]);
-  assert.deepEqual(plan.build, [d.device], "a card left busy must be rebuilt idle");
+  const plan = availablePlan(shown([[d.device, shape, availableCardKey(d, true)]]), [{ id: d.device, shape, key: availableCardKey(d, false) }]);
+  assert.deepEqual(plan.patch, [d.device], "a card left busy is patched idle");
+  assert.deepEqual(plan.build, []);
   assert.notEqual(availableCardKey(d, true), availableCardKey(d, false));
   assert.equal(availableCardKey(d, false), availableCardKey({ ...d }, false), "equal data gives equal keys");
+});
+
+test("availableCardShape changes only when an optional row appears or goes", () => {
+  const base = { device: "usb-serial-1", hwAddr: "hw:1,0", supportedChannels: [1], supportedRates: [48000] } as unknown as AvailableDevice;
+  const shape = availableCardShape(base);
+  assert.equal(availableCardShape({ ...base, friendlyName: "Renamed" } as AvailableDevice), shape, "a name is text, not a row");
+  assert.equal(availableCardShape({ ...base, supportedRates: [96000] }), shape, "other capability text is the same row");
+  assert.notEqual(availableCardShape({ ...base, supportedChannels: [], supportedRates: [] }), shape, "no probe result drops the capabilities row");
+  assert.notEqual(availableCardShape({ ...base, idStable: false }), shape, "the no stable ID note is a row");
+  assert.notEqual(availableCardShape({ ...base, hwAddr: undefined }), shape, "no address drops the id row");
+  assert.notEqual(availableCardShape({ ...base, device: "hw:1,0" }), shape, "an id equal to the address is not shown twice");
 });
 
 test("neighbourOrder prefers the nearest item after, then the nearest before", () => {

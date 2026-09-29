@@ -397,30 +397,52 @@ export function capsSummary(d: Pick<AvailableDevice, "supportedChannels" | "supp
 }
 
 // availableCardKey is what an Available Devices card shows: the device's data
-// and whether an Enable is in flight for it. A card is rebuilt only when this
-// changes. A render during an Enable therefore builds the card busy, and the
-// render after it settles builds it idle again.
+// and whether an Enable is in flight for it. A card is patched when this
+// changes, so a render during an Enable shows the card busy, and the render
+// after it settles shows it idle again.
 export function availableCardKey(d: AvailableDevice, enabling: boolean): string {
   return JSON.stringify([d, enabling]);
 }
 
+// availableCardShape is which optional rows an Available Devices card has: the
+// "no stable ID" note, the capabilities and the device id. A card whose shape
+// is unchanged takes a change to its text in place; one whose rows appear or
+// go is rebuilt.
+export function availableCardShape(d: Pick<AvailableDevice, "device" | "hwAddr" | "idStable" | "supportedChannels" | "supportedRates">): string {
+  return JSON.stringify([d.idStable === false, capsSummary(d) !== "", !!d.hwAddr && d.device !== d.hwAddr]);
+}
+
+// AvailableShown is the shape and key an Available Devices card was built or
+// last patched for.
+export interface AvailableShown {
+  shape: string;
+  key: string;
+}
+
 // AvailablePlan is how to turn the cards on screen into the ones for a new
-// list: which to remove, which to build (new, or changed since shown), and the
-// order to show them in.
+// list: which to remove, which to build (new, or with rows added or gone),
+// which to patch in place (same rows, other text), and the order to show them
+// in.
 export interface AvailablePlan {
   remove: string[];
   build: string[];
+  patch: string[];
   order: string[];
 }
 
-// availablePlan diffs the shown cards (device id to card key) against the
+// availablePlan diffs the shown cards (device id to shape and key) against the
 // next list, so an unchanged card keeps its node, and with it the operator's
-// focus and text selection.
-export function availablePlan(shown: ReadonlyMap<string, string>, next: readonly { id: string; key: string }[]): AvailablePlan {
+// focus and text selection, and so does one that only changed its text.
+export function availablePlan(shown: ReadonlyMap<string, AvailableShown>, next: readonly (AvailableShown & { id: string })[]): AvailablePlan {
   const nextIds = new Set(next.map((c) => c.id));
+  const on = (c: { id: string }) => shown.get(c.id);
   return {
     remove: [...shown.keys()].filter((id) => !nextIds.has(id)),
-    build: next.filter((c) => shown.get(c.id) !== c.key).map((c) => c.id),
+    build: next.filter((c) => on(c)?.shape !== c.shape).map((c) => c.id),
+    patch: next.filter((c) => {
+      const was = on(c);
+      return was !== undefined && was.shape === c.shape && was.key !== c.key;
+    }).map((c) => c.id),
     order: next.map((c) => c.id),
   };
 }

@@ -8,7 +8,10 @@
 //   - no horizontal page overflow at a phone and a desktop width;
 //   - text that grows with the browser's default font size (compared with the
 //     same element at the stock 16 px);
-//   - meter rows that keep their height while the live levels change.
+//   - meter rows that keep their height while the live levels change;
+//   - focus after a load failure: with chosen endpoints failing, focus on Retry
+//     lands on the view section once the load recovers, the alert role goes, and
+//     the Dashboard announces "Devices loaded." (once, in the first combination).
 //
 // It runs every combination of theme, viewport width and browser default font
 // size, over each view plus the open notification panel, theme menu and error
@@ -39,7 +42,7 @@ import { existsSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { startMockServer } from "./mock-server.ts";
+import { startMockServer, type MockServer } from "./mock-server.ts";
 import type { Browser, BrowserContext, Page, Playwright } from "./playwright.d.ts";
 
 const PLAYWRIGHT_VERSION = "1.59.0";
@@ -86,7 +89,7 @@ const STABILITY_MAX_MS = 8600;
 // ---------------------------------------------------------------------------
 // Findings and report
 
-type Kind = "contrast" | "overflow" | "stability" | "scaling" | "render" | "js-error";
+type Kind = "contrast" | "overflow" | "stability" | "scaling" | "render" | "js-error" | "focus";
 
 interface Finding {
   kind: Kind;
@@ -650,7 +653,7 @@ async function run(): Promise<number> {
   let browser: Browser | null = null;
   try {
     browser = await pw.chromium.launch({ headless: !flags.headed });
-    return await sweep(flags, browser, server.url);
+    return await sweep(flags, browser, server);
   } finally {
     // A failure part way (a control that never appeared) must not leave the
     // browser and the mock's timers keeping the process alive, and a browser
@@ -663,7 +666,120 @@ async function run(): Promise<number> {
   }
 }
 
-async function sweep(flags: Flags, browser: Browser, serverUrl: string): Promise<number> {
+// RetryCase is a view whose load can fail with a Retry button: which paths to
+// fail, the alert and its Retry, how the load recovers, what shows once it has,
+// and the view section that should then hold focus.
+interface RetryCase {
+  view: ViewName;
+  fail: string[];
+  alert: string;
+  retry: string;
+  // "poll": the failure clears and a background poll recovers the load. "click":
+  // the operator presses Retry from the keyboard.
+  recovery: "poll" | "click";
+  settled: string;
+  section: string;
+  // What the polite status region says once recovered, when the view says it.
+  announcement?: { region: string; text: string };
+}
+
+const RETRY_CASES: RetryCase[] = [
+  {
+    view: "dashboard",
+    fail: ["/api/v1/devices"],
+    alert: "#rack-empty[role='alert']",
+    retry: "#rack-empty[role='alert'] button",
+    recovery: "poll",
+    settled: "#channel-rack .rack-card",
+    section: "view-dashboard",
+    announcement: { region: "#dashboard-announce", text: "Devices loaded." },
+  },
+  {
+    view: "system",
+    fail: ["/api/v1/system"],
+    alert: "#sys-tiles [role='alert']",
+    retry: "#sys-tiles [role='alert'] button",
+    recovery: "poll",
+    settled: "#sys-tiles .system-tile",
+    section: "view-system",
+  },
+  {
+    view: "about",
+    fail: ["/licenses.json"],
+    alert: "#view-about [role='alert']",
+    retry: "#view-about [role='alert'] button",
+    recovery: "click",
+    settled: "#view-about .license-list",
+    section: "view-about",
+  },
+];
+
+// RECOVERY_MS covers one 3 s poll plus a render.
+const RECOVERY_MS = 8000;
+
+// checkRetryFocus fails each RetryCase's paths, loads the view, puts focus on
+// its Retry button, lets the load recover, and checks that focus landed on the
+// view section instead of dropping to the page, that the alert role went with
+// the error, and that the view announced the recovery where it does. These are
+// the paths clearLoadError serves; the unit tests are DOM-free and cannot reach
+// them.
+async function checkRetryFocus(page: Page, server: MockServer, views: readonly ViewName[], findings: Finding[]): Promise<void> {
+  for (const c of RETRY_CASES) {
+    if (!views.includes(c.view)) continue;
+    const where = `${c.view} load error`;
+    const fail = (key: string, detail: string): void => {
+      findings.push({ kind: "focus", where, key: `${where}: ${key}`, detail: `${where}: ${detail}` });
+    };
+    server.failPaths(c.fail);
+    try {
+      await page.evaluate((v: string) => {
+        location.hash = `#/${v}`;
+      }, c.view);
+      await page.reload();
+      try {
+        await page.waitForSelector(c.retry, { state: "visible", timeout: RECOVERY_MS });
+      } catch {
+        fail("no Retry", `${c.retry} never appeared with ${c.fail.join(", ")} failing`);
+        continue;
+      }
+      await page.focus(c.retry);
+      const held = await page.evaluate((sel: string) => document.activeElement?.matches(sel) === true, c.retry);
+      if (!held) {
+        fail("Retry not focusable", "focus did not reach the Retry button");
+        continue;
+      }
+      server.failPaths([]);
+      if (c.recovery === "click") await page.keyboard.press("Enter");
+      try {
+        await page.waitForSelector(c.settled, { state: "attached", timeout: RECOVERY_MS });
+      } catch {
+        fail("did not recover", `${c.settled} never appeared once ${c.fail.join(", ")} answered`);
+        continue;
+      }
+      const at = await page.evaluate(
+        (alert: string) => ({
+          active: document.activeElement?.id || document.activeElement?.tagName || "none",
+          alerts: document.querySelectorAll(alert).length,
+        }),
+        c.alert,
+      );
+      if (at.active !== c.section) fail("focus dropped", `focus is on ${at.active} after recovery, want #${c.section}`);
+      if (at.alerts !== 0) fail("alert role left", `${at.alerts} element(s) still match ${c.alert} after recovery`);
+      if (c.announcement) {
+        try {
+          await page.waitForFunction((a: { region: string; text: string }) => document.querySelector(a.region)?.textContent === a.text, c.announcement, { timeout: 3000 });
+        } catch {
+          fail("not announced", `${c.announcement.region} never said "${c.announcement.text}"`);
+        }
+      }
+    } finally {
+      server.failPaths([]);
+    }
+  }
+}
+
+async function sweep(flags: Flags, browser: Browser, server: MockServer): Promise<number> {
+  const serverUrl = server.url;
 
   const combos: Combo[] = [];
   for (const theme of THEMES) {
@@ -837,6 +953,10 @@ async function sweep(flags: Flags, browser: Browser, serverUrl: string): Promise
       }
     }
 
+    // The load-failure paths behave the same in every combination, so the
+    // first one is enough.
+    if (combo === combos[0]) await checkRetryFocus(page, server, views, findings);
+
     // Open states, checked on the dashboard: only the overlay is audited for
     // contrast (the page under it was checked above), the whole page for
     // overflow.
@@ -905,7 +1025,7 @@ async function sweep(flags: Flags, browser: Browser, serverUrl: string): Promise
     }
   }
   out.push("", `=== Unique findings (${merged.size}) ===`);
-  for (const kind of ["render", "js-error", "overflow", "stability", "scaling", "contrast"] as const) {
+  for (const kind of ["render", "js-error", "focus", "overflow", "stability", "scaling", "contrast"] as const) {
     const list = [...merged.values()].filter((m) => m.kind === kind);
     if (!list.length) continue;
     out.push("", `${kind} (${list.length}):`);
