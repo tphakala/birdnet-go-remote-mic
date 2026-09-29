@@ -354,6 +354,39 @@ func TestBootKeepsTheRollbackForTheRestoredVersion(t *testing.T) {
 	}
 }
 
+// TestWithdrawOrphanedRequestForTheRunningVersion pins that a withdrawn
+// request is reported as a failed update only when it asked for a version
+// newer than the running one: when that version or a newer one already runs
+// (installed by hand meanwhile), there is nothing to start again.
+func TestWithdrawOrphanedRequestForTheRunningVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, requested, running string
+		wantReport               bool
+	}{
+		{"requested version runs", vNew, vNew, false},
+		{"newer version runs", vOld, vNew, false},
+		{"older version runs", vNew, vOld, true},
+		{"development build of the requested version runs", vNew, vNew + "-3-gabc1234", false},
+		{"development build of an older version runs", vNew, vOld + "-3-gabc1234", true},
+		{"build that is not a release runs", vNew, devBuildVersion, true},
+		{"unreadable request", "", vNew, true},
+	}
+	for _, tt := range tests {
+		dir := t.TempDir()
+		req := filepath.Join(dir, RequestFile)
+		writeJSON(t, req, Request{Version: tt.requested})
+		c := notify.NewCenter()
+		WithdrawOrphanedRequest(dir, tt.running, c, t.Logf)
+		if exists(req) {
+			t.Errorf("%s: the request is still there", tt.name)
+		}
+		if got := len(c.Snapshot().Notifications) == 1; got != tt.wantReport {
+			t.Errorf("%s: reported %t, want %t", tt.name, got, tt.wantReport)
+		}
+	}
+}
+
 // TestWithdrawOrphanedRequest pins that a request left unclaimed by an
 // earlier run is removed and reported as a failed update, while a claim, a
 // missing request and a missing staging directory are left alone.

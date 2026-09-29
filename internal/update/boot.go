@@ -36,7 +36,8 @@ const notifySource = "update"
 const resultPoll = 2 * time.Second
 
 // WithdrawOrphanedRequest removes an update request an earlier appliance
-// process left unclaimed, and reports the attempt as failed. It runs at
+// process left unclaimed, and reports the attempt as failed unless the version
+// it asked for, or a newer one, is already running. It runs at
 // startup, before this process can write a request of its own. Only the
 // process that wrote a request waits to withdraw it (Manager.awaitUpdater),
 // so one left by a process that stopped during that wait would otherwise stay
@@ -63,6 +64,11 @@ func WithdrawOrphanedRequest(dir, running string, pub notify.Publisher, logf fun
 		return
 	}
 	logf("update: withdrew an update request to %q that an earlier run left unclaimed", req.Version)
+	// That version, or a newer one, already runs (installed by hand
+	// meanwhile): nothing failed that the operator could start again.
+	if newer, err := Newer(req.Version, running); err == nil && !newer {
+		return
+	}
 	orNop(pub).Publish(resultNotification(&Result{
 		Outcome: OutcomeFailed,
 		From:    running,
