@@ -453,9 +453,9 @@ function eventFilter(req: IncomingMessage): Set<string> | null {
 }
 
 // startMockServer serves distDir and the mock API on 127.0.0.1:port (0 picks a
-// free port). Two test hooks sit beside the API: POST /__mock/notify pushes the
-// live error notification, POST /__mock/fail (or the returned failPaths) makes
-// chosen GET paths answer 503, and POST /__mock/edit-available (or
+// free port). Three test hooks sit beside the API: POST /__mock/notify pushes
+// the live error notification; POST /__mock/fail (or the returned failPaths)
+// makes chosen GET paths answer 503; and POST /__mock/edit-available (or
 // editAvailable) changes the available device between polls.
 export async function startMockServer(distDir: string, port: number = DEFAULT_PORT): Promise<MockServer> {
   const root = resolve(distDir);
