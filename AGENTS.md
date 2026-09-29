@@ -272,8 +272,10 @@ Apache-2.0 (`LICENSE`, `NOTICE`).
   `GET /api/v1/events` with a named `heartbeat` every 15 s (the UI uses `fetch`
   streaming because `EventSource` cannot send `Authorization`).
 - After editing `api/openapi.yaml`: `task api:lint`, `task api:generate`, then
-  commit the regenerated `internal/mgmtapi/gen.go` with the spec, and update
-  `web/src/lib/types.ts` and `api.ts` in the same change.
+  commit the regenerated `internal/mgmtapi/gen.go` and
+  `web/src/lib/api-schema.gen.ts` with the spec, and update `api.ts` (and the
+  overrides in `web/src/lib/types.ts`, if the change needs one) in the same
+  change.
 
 ## Layout
 

@@ -78,7 +78,8 @@ The output must stay plain ES modules (plus the one classic script,
   `UpdateFollow` for an update this tab started, and `VersionWatch`, which
   notices the appliance running another version than the page loaded
   against: the following tab reloads, any other tab is told to),
-  `types.ts` (API types).
+  `api-schema.gen.ts` (the wire types, generated from the spec; never edit)
+  and `types.ts` (names them for the UI, plus the UI-only types and overrides).
 - `src/components/`: reusable widgets (`StatTile`, `FilterChips`,
   `CustomDropdown`, `MenuButton`, `VUMeter`, `DeviceSettingsForm`,
   `NotificationCenter`, toast, modals).
@@ -189,6 +190,14 @@ The output must stay plain ES modules (plus the one classic script,
 
 ## Keeping the UI and API in sync
 
-`src/lib/types.ts` is hand-written to mirror `../api/openapi.yaml`. When the
-spec changes, update `types.ts` and the `api.ts` methods in the same change.
+`src/lib/api-schema.gen.ts` is generated from `../api/openapi.yaml` by a pinned
+`openapi-typescript` (`task web:types:generate`, also run by `task api:generate`);
+`task web:types:verify`, part of `web:verify`, fails when it is stale. `types.ts`
+re-exports the schemas under the names the UI uses and keeps what the spec does
+not say: UI-only types such as `LoadError`, and overrides where the UI must be
+looser than the spec (`DownCause` accepts any string; a field an older appliance
+omits, such as `Device.clientCount` or `Health.authRequired`, stays optional).
+A new override says why. When the spec changes, regenerate, then update the
+`api.ts` methods in the same change; a renamed field fails `web:typecheck`, where
+the UI reads it or in the override that names it.
 SSE event names and payloads must match the spec's `/events` documentation.
