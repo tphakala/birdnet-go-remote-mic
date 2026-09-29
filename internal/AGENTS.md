@@ -71,10 +71,13 @@ not break.
   clears the kept copy (`.prev`) of an interrupted update before it replaces
   the binary and its journal (`<bin>.pending`) after; it also refuses a config or
   state file with a second hard link instead of chowning it, and a config or
-  state directory that is the bin directory or one above it (compared by
-  identity, so links and bind mounts count; purge checks the same). From a
-  binary the .deb owns (`PackageOwns`, a dpkg file list) it runs that binary in
-  place instead: no copy, no updater units, no staging directory, and it
+  state directory (and the `update` staging directory) that is on the way to
+  the bin directory (compared by identity, so links and bind mounts count;
+  purge checks the same, and also refuses a mount inside either directory
+  because `RemoveAll` descends into it). It withdraws a leftover
+  `request.json` from the staging directory before it enables the path unit.
+  From a binary the .deb owns (`PackageOwns`, a dpkg file list) it runs that
+  binary in place instead: no copy, no updater units, no staging directory, and it
   migrates an earlier copy install (locked, downgrade-guarded, refused while
   an updater runs, removed once the unit runs the package binary; a drop-in
   that sets `ExecStart=` is refused); purge leaves a package-owned binary to
@@ -94,7 +97,9 @@ not break.
   its health file from the unit's main process and stays up for a settle
   period; `Boot` reports the outcome and writes that file.
   `WithdrawOrphanedRequest` runs at startup, before the API, and withdraws a
-  request an earlier process left unclaimed. `Install.RerunInstall` words
+  request an earlier process left unclaimed. `StartApply` refuses while the
+  journal (`<bin>.pending`) beside the service binary exists, since the
+  updater is then recovering. `Install.RerunInstall` words
   the appliance's hints to re-run `service install`, and names the service binary only
   when it passes the root-only check. The file names and
   JSON fields here are contracts between versions (root file, Releases).

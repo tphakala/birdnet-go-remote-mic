@@ -720,13 +720,9 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 	// The release update check and the one-button update exist only with the
 	// management API, their only consumer besides the notification bell.
 	updateDir := updateDirFor(&cfg, cfgPath)
-	// Before anything here can write a request of its own, withdraw one an
-	// earlier run left unclaimed, which nothing would otherwise track.
-	update.WithdrawOrphanedRequest(updateDir, version, center, log.Printf)
-	var updates *update.Manager
-	if mgmtEnabled {
-		updates = newUpdateManager(ctx, updateDir, center)
-	}
+	updates := prepareUpdates(updateDir, mgmtEnabled, center, func() *update.Manager {
+		return newUpdateManager(ctx, updateDir, center)
+	})
 	// GET /system reports host CPU utilization from a gauge that reads /proc/stat
 	// only when a request asks, so an appliance with no browser open does no
 	// sampling work at all. It exists only while the management API is enabled (its
@@ -892,6 +888,19 @@ func run(cfgPath string, ov serveOverrides, check bool, pprofAddr string) error 
 			return nil
 		}
 	}
+}
+
+// prepareUpdates withdraws an update request an earlier run left unclaimed,
+// which nothing would otherwise track, and only then builds the update manager
+// (nil while the management API is off). The order matters: once the manager
+// and the API exist, a request on disk may be this process's own, and
+// withdrawing it would cancel a live update.
+func prepareUpdates(dir string, mgmtEnabled bool, center notify.Publisher, newManager func() *update.Manager) *update.Manager {
+	update.WithdrawOrphanedRequest(dir, version, center, log.Printf)
+	if !mgmtEnabled {
+		return nil
+	}
+	return newManager()
 }
 
 // startupExit is run()'s exit decision after the initial reconcile: nil keeps

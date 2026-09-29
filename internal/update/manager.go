@@ -444,7 +444,9 @@ func (m *Manager) statusLocked() Status {
 // stages the release in the background and hands it to the root updater,
 // which restarts the appliance. It returns at once with the new phase. It
 // refuses while checks are off, since staging downloads the release, and
-// while an attempt is in flight, here or on disk.
+// while an attempt is in flight, here or on disk, or while the root updater
+// is recovering an interrupted install (the journal beside the service
+// binary), which would race a new request against the rollback.
 func (m *Manager) StartApply() (Status, error) {
 	if !m.cfg.Install.CanApply {
 		return m.Status(), ErrCannotApply
@@ -463,6 +465,11 @@ func (m *Manager) StartApply() (Status, error) {
 	// may be the new version the updater is still watching) has not ended.
 	if inFlight(m.cfg.Dir) {
 		return m.statusLocked(), errEarlierAttempt
+	}
+	if bin := m.cfg.Install.ServiceBin; bin != "" {
+		if _, err := os.Lstat(bin + JournalSuffix); err == nil {
+			return m.statusLocked(), fmt.Errorf("%w: the root updater is recovering an interrupted update (%s is present) and restarts the appliance when it is done; if this lasts, %s, which discards that update", ErrBusy, bin+JournalSuffix, m.cfg.Install.RerunInstall())
+		}
 	}
 	if !m.available || m.latest == nil {
 		return m.statusLocked(), ErrNoUpdate

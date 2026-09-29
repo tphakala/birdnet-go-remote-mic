@@ -148,8 +148,8 @@ func (s ServiceSpec) Validate() error {
 		}
 	}
 	for label, dir := range map[string]string{
-		"config directory": s.ConfigDir(),
-		"state directory":  s.StateDir,
+		configDirLabel: s.ConfigDir(),
+		stateDirLabel:  s.StateDir,
 	} {
 		// The service may see privateDirs differently from the CLI.
 		if inPrivateDir(dir) {
