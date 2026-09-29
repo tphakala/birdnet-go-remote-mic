@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1449,7 +1450,7 @@ func TestHostOverrunLogOnsetAndClear(t *testing.T) {
 	episode := uint64(overrunOnsetCount-3) + 2
 	want := []string{
 		gardenOneOverrunLine,
-		`device "garden": ` + overrunOnsetText() + `, audio lost; raising an overrun warning`,
+		`device "garden": ` + overrunOnsetText() + `, audio lost; raising an overrun warning (2 earlier overrun(s) not yet reported)`,
 		fmt.Sprintf(`device "garden": no capture overruns for %s, overrun warning cleared (%d overrun(s) since the check that raised it)`,
 			humanDuration(int(overrunClearAfter/time.Second)), episode),
 		gardenOneOverrunLine,
@@ -1541,6 +1542,98 @@ func TestHostOverrunLogFlushOnStop(t *testing.T) {
 			if len(got)-before != wantNew || len(got) == 0 || got[len(got)-1] != tc.last {
 				t.Errorf("lines = %q, want %d new line(s) ending with %q", got, wantNew, tc.last)
 			}
+		})
+	}
+}
+
+// The lines for one device add up to its counter: the overruns held back by
+// the rate limit are reported in the onset line rather than dropped.
+func TestHostOverrunLogOnsetReportsHeld(t *testing.T) {
+	t.Parallel()
+	feed := &counterFeed{devs: []DeviceCounters{{Name: nameGarden, Gen: 1}}}
+	c := newClk()
+	h, lr := newHostLogT(feed.source, newRecPub(), hostSettings(), c)
+	h.poll()
+	overrunPoll(h, c, feed, 10*time.Second, 1)                   // logged at once
+	overrunPoll(h, c, feed, 10*time.Second, 2)                   // held back
+	overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount-3) // onset
+	pollEvery(h, c, 10*time.Second, pollsIn(overrunClearAfter))
+	var total uint64
+	for _, l := range lr.all() {
+		var name string
+		var n, m uint64
+		switch {
+		case strings.Contains(l, "raising an overrun warning"):
+			_, rest, _ := strings.Cut(l, "warning (")
+			if _, err := fmt.Sscanf(rest, "%d earlier overrun(s)", &m); err != nil {
+				t.Fatalf("onset line %q lacks the held count: %v", l, err)
+			}
+			total += m
+		case strings.Contains(l, "overrun warning cleared"):
+			_, rest, _ := strings.Cut(l, "cleared (")
+			if _, err := fmt.Sscanf(rest, "%d overrun(s)", &m); err != nil {
+				t.Fatalf("clear line %q: %v", l, err)
+			}
+			total += m
+		default:
+			if _, err := fmt.Sscanf(l, "device %q: %d capture overrun(s)", &name, &n); err != nil {
+				t.Fatalf("unexpected line %q: %v", l, err)
+			}
+			total += n
+		}
+	}
+	if want := uint64(1 + 2 + overrunOnsetCount - 3); total != want {
+		t.Errorf("lines account for %d overruns, want %d (the counter)", total, want)
+	}
+}
+
+// When the appliance shuts down, RunHost writes the line each device's overrun
+// state owes, as a device stop does, and resolves no notification.
+func TestRunHostFlushesOverrunsOnShutdown(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bursts []uint64
+		want   string
+	}{
+		{"held back", []uint64{1, 2},
+			`device "garden": appliance stopping; 2 capture overrun(s) since the last overrun report, audio lost`},
+		{"raised", []uint64{overrunOnsetCount + 3, 2},
+			fmt.Sprintf(`device "garden": appliance stopping; overrun warning resolved after %d overrun(s) since the check that raised it`, overrunOnsetCount+5)},
+		{"nothing owed", []uint64{1}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// The RunHost goroutine reads the counter, so the test bumps it atomically.
+				var overruns atomic.Uint64
+				src := func() []DeviceCounters {
+					return []DeviceCounters{{Name: nameGarden, Gen: 1, Overruns: overruns.Load()}}
+				}
+				lr := &logRec{}
+				rec := newRecPub()
+				s := hostSettings()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				RunHost(ctx, nil, src, rec, &s, WithHostLogf(lr.logf))
+				time.Sleep(hostPollInterval) // first sighting
+				for _, n := range tc.bursts {
+					overruns.Add(n)
+					time.Sleep(hostPollInterval)
+				}
+				synctest.Wait()
+				before := len(lr.all())
+				cancel()
+				synctest.Wait()
+				got := lr.all()[before:]
+				switch {
+				case tc.want == "" && len(got) != 0:
+					t.Errorf("shutdown lines = %q, want none", got)
+				case tc.want != "" && (len(got) != 1 || got[0] != tc.want):
+					t.Errorf("shutdown lines = %q, want [%q]", got, tc.want)
+				}
+				if n := rec.resolveCount(deviceOverrunsKey(nameGarden)); n != 0 {
+					t.Errorf("shutdown resolved the overrun notification %d time(s), want 0", n)
+				}
+			})
 		})
 	}
 }
