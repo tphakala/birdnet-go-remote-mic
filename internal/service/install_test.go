@@ -35,7 +35,7 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		ensureDir:  func(p string, _ os.FileMode) error { *events = append(*events, "mkdir "+p); return nil },
 		binDirOK:   func(d string) error { *events = append(*events, "bindir "+d); return nil },
 		makeBinDir: func(p string) error { *events = append(*events, "mkbindir "+p); return nil },
-		dirsOK:     func(ServiceSpec) error { *events = append(*events, "dirs"); return nil },
+		dirsOK:     func(ServiceSpec) error { *events = append(*events, evDirs); return nil },
 		trustedBin: func(string) error { return nil },
 		lockBin:    func(string, func()) (func(), error) { return func() {}, nil },
 		binVersion: func(string) (string, bool, error) { return "", false, nil },
@@ -76,9 +76,9 @@ func TestInstallSequence(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	wantSeq(t, events, []string{
-		"bindir /usr/local/bin",
-		"mkbindir /usr/local/bin",
-		"dirs",
+		evBinDir,
+		evMkBinDir,
+		evDirs,
 		evGroupadd,
 		"run useradd --system --no-create-home --shell /usr/sbin/nologin --gid remote-mic remote-mic",
 		"run usermod --append --groups audio remote-mic",
@@ -289,9 +289,9 @@ func TestInstallWithoutUpdaterOnUntrustedBin(t *testing.T) {
 		t.Errorf("warning %q, want it to name the reason updates are off", got)
 	}
 	wantSeq(t, events, []string{
-		"bindir /usr/local/bin",
-		"mkbindir /usr/local/bin",
-		"dirs",
+		evBinDir,
+		evMkBinDir,
+		evDirs,
 		evGroupadd,
 		evCopySelf,
 		"write /etc/systemd/system/remote-mic.service",
@@ -816,14 +816,14 @@ func TestInstallRefusesADirectoryOverTheBinDir(t *testing.T) {
 	userThere := true
 	in := testInstaller(&events, init, &userThere)
 	in.dirsOK = func(ServiceSpec) error {
-		events = append(events, "dirs")
+		events = append(events, evDirs)
 		return errors.New("the config directory /etc/remote-mic is /usr/local/bin")
 	}
 	err := in.Install(true)
 	if err == nil || !strings.Contains(err.Error(), "refusing to install") || !strings.Contains(err.Error(), "config directory") {
 		t.Fatalf("Install error = %v, want a refusal naming the config directory", err)
 	}
-	wantSeq(t, events, []string{"bindir /usr/local/bin", "mkbindir /usr/local/bin", "dirs"})
+	wantSeq(t, events, []string{evBinDir, evMkBinDir, evDirs})
 }
 
 // TestInstallWithoutAJournalRemovesNothing pins that a clean install neither
@@ -1223,11 +1223,11 @@ func TestCheckNotOverBinDir(t *testing.T) {
 		spec    ServiceSpec
 		wantErr string // substring; empty means allowed
 	}{
-		{"config dir links to the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-bin")), StateDir: other}, "config directory"},
-		{"config dir links above the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-top")), StateDir: other}, "config directory"},
-		{"intermediate link reaches the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "loop", "top", "bin")), StateDir: other}, "config directory"},
+		{"config dir links to the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-bin")), StateDir: other}, labelConfigDir},
+		{"config dir links above the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-top")), StateDir: other}, labelConfigDir},
+		{"intermediate link reaches the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "loop", "top", "bin")), StateDir: other}, labelConfigDir},
 		{"state dir links above the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(other), StateDir: filepath.Join(root, "to-top")}, "state directory"},
-		{"bin path through a link, config dir is its real parent", ServiceSpec{BinPath: filepath.Join(root, "binlink", "remote-mic"), ConfigPath: cfgIn(top), StateDir: other}, "config directory"},
+		{"bin path through a link, config dir is its real parent", ServiceSpec{BinPath: filepath.Join(root, "binlink", "remote-mic"), ConfigPath: cfgIn(top), StateDir: other}, labelConfigDir},
 		{"config dir below the bin dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "to-sub")), StateDir: other}, ""},
 		{"unrelated dirs", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(other), StateDir: other}, ""},
 		{"missing config dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: cfgIn(filepath.Join(root, "new", "cfg")), StateDir: other}, ""},
@@ -1272,7 +1272,7 @@ func TestCheckNotOverBinDirReportsUnreadablePaths(t *testing.T) {
 		want string
 	}{
 		{"bin dir", ServiceSpec{BinPath: filepath.Join(locked, "inner", "remote-mic"), ConfigPath: filepath.Join(root, "config.yaml"), StateDir: root}, "resolve the bin directory"},
-		{"config dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: filepath.Join(locked, "inner", "config.yaml"), StateDir: root}, "check the config directory"},
+		{"config dir", ServiceSpec{BinPath: filepath.Join(bin, "remote-mic"), ConfigPath: filepath.Join(locked, "inner", "config.yaml"), StateDir: root}, "check the " + labelConfigDir},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

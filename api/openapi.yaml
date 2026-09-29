@@ -1897,7 +1897,8 @@ components:
           description: >
             Whether `POST /system/update` can install an update here: the
             binary the installed service unit runs, with the root updater
-            units installed for that same path.
+            units installed for that same path, and only root able to change
+            that binary and the directories above it.
         upgradeHint:
           type: string
           description: How to update by hand when canApply is false.

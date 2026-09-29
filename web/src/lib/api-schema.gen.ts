@@ -1065,7 +1065,7 @@ export interface components {
              * @enum {string}
              */
             installMethod: "service" | "deb" | "homebrew" | "manual";
-            /** @description Whether `POST /system/update` can install an update here: the binary the installed service unit runs, with the root updater units installed for that same path. */
+            /** @description Whether `POST /system/update` can install an update here: the binary the installed service unit runs, with the root updater units installed for that same path, and only root able to change that binary and the directories above it. */
             canApply: boolean;
             /** @description How to update by hand when canApply is false. */
             upgradeHint?: string;

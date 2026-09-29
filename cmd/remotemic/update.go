@@ -53,15 +53,13 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 	ua := "remote-mic/" + version
 	fetcher := &update.Fetcher{Client: http.DefaultClient, Base: update.DefaultBase, Trusted: trusted, UserAgent: ua}
 	stager := &update.Stager{Dir: dir, Client: http.DefaultClient, UserAgent: ua, Target: update.RunningTarget()}
-	inst, serviceBin := detectInstall(dir)
 	return update.NewManager(ctx, &update.Config{
-		Running:    version,
-		Fetch:      fetcher.Latest,
-		Stage:      stager.Stage,
-		Dir:        dir,
-		Install:    inst,
-		ServiceBin: serviceBin,
-		Publisher:  center,
+		Running:   version,
+		Fetch:     fetcher.Latest,
+		Stage:     stager.Stage,
+		Dir:       dir,
+		Install:   detectInstall(dir),
+		Publisher: center,
 	})
 }
 
@@ -70,38 +68,38 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 // also needs the staging directory the installer creates; without it the
 // root updater has nothing to watch. An installed unit that cannot be read
 // means this install cannot update itself; the reason is logged, and the hints
-// that send the operator to `service install` name this binary's path. A binary
+// that send the operator to `service install` name this binary's path when
+// only root can change it (update.CheckRootOnlyFile). A binary
 // that would otherwise be called run by hand gets the neutral by-hand hint
 // (see unreadableUnitHint).
-func detectInstall(dir string) (inst update.Install, serviceBin string) {
+func detectInstall(dir string) update.Install {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
 	if err != nil {
 		log.Printf("update: locate the running binary: %v", err)
-		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}, ""
+		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}
 	}
 	app, upd, err := service.InstalledBinPaths()
 	if err != nil {
 		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
-	inst = update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns})
+	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns, RootOnly: update.CheckRootOnlyFile})
 	inst = unreadableUnitHint(inst, exe, app, err)
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			inst.CanApply = false
-			inst.Hint = stagingDirHint(exe, dir)
+			inst.Hint = stagingDirHint(inst, dir)
 		}
 	}
-	return inst, app
+	return inst
 }
 
-// stagingDirHint tells the operator to re-run install from the service's own
-// binary, exe, which a bare command name might not resolve to: a package copy
-// earlier on PATH would run instead.
-func stagingDirHint(exe, dir string) string {
-	return "Re-run sudo " + update.ShellQuote(exe) + " service install and restart the service (sudo systemctl restart remote-mic) to create the update staging directory " + dir
+// stagingDirHint tells the operator to re-run install (see
+// update.Install.RerunInstall) to create the staging directory dir.
+func stagingDirHint(inst update.Install, dir string) string {
+	return "To create the update staging directory " + dir + ", " + inst.RerunInstall() + ", and restart the service (sudo systemctl restart remote-mic)"
 }
 
 // unreadableUnitHint keeps a manual install from being told it is run by hand,

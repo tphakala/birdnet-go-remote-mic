@@ -19,7 +19,7 @@ func testUninstaller(events *[]string, init *fakeInit, userThere bool) *Uninstal
 		removeFile: func(p string) error { *events = append(*events, "rm "+p); return nil },
 		removeAll:  func(p string) error { *events = append(*events, "rmall "+p); return nil },
 		userExists: func(string) bool { return userThere },
-		dirsOK:     func(ServiceSpec) error { *events = append(*events, "dirs"); return nil },
+		dirsOK:     func(ServiceSpec) error { *events = append(*events, evDirs); return nil },
 	}
 }
 
@@ -51,7 +51,7 @@ func TestUninstallPurge(t *testing.T) {
 		t.Fatalf("Uninstall purge: %v", err)
 	}
 	wantSeq(t, events, []string{
-		"dirs",
+		evDirs,
 		evStopPath,
 		evDisablePath,
 		evStopUpdater,
