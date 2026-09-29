@@ -144,13 +144,22 @@ func TestReadWifiFromIoctls(t *testing.T) {
 	if got := readWifi(fakeIoctl(nil, 6, 0), testWlan, nil); got != nil {
 		t.Errorf("channel number: readWifi = %+v, want nil", got)
 	}
-	// A length past the buffer is clamped, never read beyond it.
-	long := make([]byte, essidBuf)
-	for i := range long {
-		long[i] = 'a'
+	// A driver that reports a length past the 33-byte buffer is clamped, never
+	// read beyond it (slicing past the array would panic the /system handler).
+	overlong := func(req uintptr, arg unsafe.Pointer) syscall.Errno {
+		if req != siocgiwessid {
+			return syscall.EOPNOTSUPP
+		}
+		r := (*iwreqEssid)(arg)
+		buf := unsafe.Slice((*byte)(r.ptr), essidBuf) //nolint:gosec // G103: the reader passes an essidBuf-byte buffer
+		for i := range buf {
+			buf[i] = 'a'
+		}
+		r.length = 4 * essidBuf
+		return 0
 	}
-	if got := readWifi(fakeIoctl(long, 0, 0), testWlan, nil); got == nil || len(got.SSID) != ssidMaxBytes {
-		t.Errorf("long name: readWifi = %+v, want a %d-byte name", got, ssidMaxBytes)
+	if got := readWifi(overlong, testWlan, nil); got == nil || len(got.SSID) != ssidMaxBytes {
+		t.Errorf("overlong length: readWifi = %+v, want a %d-byte name", got, ssidMaxBytes)
 	}
 }
 
