@@ -12,8 +12,11 @@ import (
 const BinLockSuffix = ".lock"
 
 // DefaultBinLockWait is how long the updater waits for a `service install`
-// that holds the lock, which is a matter of seconds.
-const DefaultBinLockWait = 2 * time.Minute
+// that holds the lock, which is a matter of seconds. It ends well before the
+// appliance withdraws a request the updater has not claimed, which the
+// updater does only after taking the lock, so a busy lock fails the request
+// with its own reason instead of a false "did not start".
+const DefaultBinLockWait = updaterStartTimeout / 2
 
 // InstallBinLockWait is how long `service install` waits for an update in
 // progress: the updater holds the lock until the new version has reported
