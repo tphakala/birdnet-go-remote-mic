@@ -1063,6 +1063,9 @@ func TestInstallFailsWhenTheKeptCopyCannotBeRemoved(t *testing.T) {
 	if err := in.Install(true); err == nil || !strings.Contains(err.Error(), "kept copy") {
 		t.Fatalf("Install: got %v, want the kept copy named", err)
 	}
+	if indexOf(events, evCopySelf) >= 0 {
+		t.Errorf("the binary was replaced although the kept copy could not be removed: %v", events)
+	}
 }
 
 // TestChownFile covers the production handle chown on the caller's own ids,
@@ -1120,5 +1123,51 @@ func TestInstallReportsAFailedCopyPlainly(t *testing.T) {
 	err := in.Install(true)
 	if err == nil || !strings.Contains(err.Error(), "no space left") || strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("Install: got %v, want the copy error alone", err)
+	}
+}
+
+// TestInstallClearsAnInterruptedUpdateUnderTheLock pins that both removals
+// fall inside the bin lock: outside it, install could delete the journal and
+// kept copy of a newer update the root updater has just started.
+func TestInstallClearsAnInterruptedUpdateUnderTheLock(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(string) (bool, error) { return true, nil }
+	in.lockBin = func(string, func()) (func(), error) {
+		events = append(events, "lock")
+		return func() { events = append(events, "unlock") }, nil
+	}
+	if err := in.Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	order := []string{"lock", "remove /usr/local/bin/remote-mic.prev", evCopySelf, "remove /usr/local/bin/remote-mic.pending", "unlock"}
+	last := -1
+	for _, e := range order {
+		i := indexOf(events, e)
+		if i <= last {
+			t.Fatalf("event %q at %d, want it after index %d\nevents: %v", e, i, last, events)
+		}
+		last = i
+	}
+}
+
+// TestInstallToleratesAClearedInterruptedUpdate pins that a re-run after a
+// crash, when the kept copy or the journal is already gone, still installs.
+func TestInstallToleratesAClearedInterruptedUpdate(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	userThere := true
+	in := testInstaller(&events, init, &userThere)
+	in.lexists = func(string) (bool, error) { return true, nil }
+	in.removeFile = func(p string) error {
+		if strings.HasSuffix(p, ".prev") || strings.HasSuffix(p, ".pending") {
+			return fs.ErrNotExist
+		}
+		return nil
+	}
+	if err := in.Install(true); err != nil {
+		t.Fatalf("Install: %v", err)
 	}
 }
