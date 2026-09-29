@@ -608,16 +608,19 @@ func TestNewInstallerReadsInstalledVersion(t *testing.T) {
 	}
 }
 
-// TestNewInstallerWiresTheTrustedBinaryCheck pins that the production installer
+// TestNewInstallerWiresTheTrustedBinaryCheckAndTheLock pins that the production installer
 // has the root-only check before it runs the installed binary: a nil func would
 // panic on every real install, and a no-op would let root run any file at the
 // bin path. Only a file root owns passes, and a test's temporary file is not
 // root's.
-func TestNewInstallerWiresTheTrustedBinaryCheck(t *testing.T) {
+func TestNewInstallerWiresTheTrustedBinaryCheckAndTheLock(t *testing.T) {
 	t.Parallel()
 	in := NewInstaller(ServiceSpec{})
 	if in.trustedBin == nil {
 		t.Fatal("NewInstaller left trustedBin unset; checkDowngrade would panic")
+	}
+	if in.lockBin == nil {
+		t.Error("NewInstaller left lockBin unset; install would not serialize with the updater")
 	}
 	if os.Geteuid() == 0 {
 		t.Skip("root owns the temporary file, so it would pass the check")
@@ -628,9 +631,6 @@ func TestNewInstallerWiresTheTrustedBinaryCheck(t *testing.T) {
 	}
 	if err := in.trustedBin(f); err == nil {
 		t.Error("trustedBin accepted a file root does not own")
-	}
-	if in.lockBin == nil {
-		t.Error("NewInstaller left lockBin unset; install would not serialize with the updater")
 	}
 }
 

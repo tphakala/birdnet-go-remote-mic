@@ -44,15 +44,20 @@ func TestLockBinWaitsForTheHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		time.Sleep(150 * time.Millisecond)
+	// The holder lets go from inside the waiter's first wait, so the waiter
+	// has seen the lock held before it can get it.
+	waited := false
+	release2, err := LockBin(t.Context(), bin, 10*time.Second, func() {
+		waited = true
 		release()
-	}()
-	release2, err := LockBin(t.Context(), bin, 10*time.Second, nil)
+	})
 	if err != nil {
 		t.Fatalf("LockBin should get the lock once the holder releases: %v", err)
 	}
 	release2()
+	if !waited {
+		t.Error("LockBin never saw the lock held")
+	}
 }
 
 func TestLockBinStopsOnCancel(t *testing.T) {
@@ -101,18 +106,52 @@ func TestApplyWaitsForInstallLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.a.LockWait = 10 * time.Second
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		if got := env.installed(t); got != oldBinary {
-			t.Errorf("binary replaced while install held the lock: %q", got)
+	// Apply logs that it is waiting from its own goroutine, the test's, once
+	// it has found the lock held: check the binary there, then let go.
+	waited := false
+	env.a.Logf = func(format string, args ...any) {
+		if strings.Contains(format, "waiting for a service install") {
+			waited = true
+			if got := env.installed(t); got != oldBinary {
+				t.Errorf("binary replaced while install held the lock: %q", got)
+			}
+			release()
 		}
-		release()
-	}()
+	}
 	if err := env.a.Apply(t.Context()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
+	if !waited {
+		t.Error("Apply never waited for the lock")
+	}
 	if got := env.installed(t); got != newBinary {
 		t.Errorf("installed %q, want the new binary", got)
+	}
+}
+
+// TestApplyTakesTheLockBeforeRecoveringAnInterruptedInstall pins that the
+// journal recovery, which rolls the binary back from .prev, runs under the
+// lock too: with a `service install` holding it, nothing is touched.
+func TestApplyTakesTheLockBeforeRecoveringAnInterruptedInstall(t *testing.T) {
+	t.Parallel()
+	env := interruptedEnv(t)
+	release, err := LockBin(t.Context(), env.binPath, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	env.a.LockWait = 150 * time.Millisecond
+	if err := env.a.Apply(t.Context()); err == nil || !strings.Contains(err.Error(), ErrBinBusy.Error()) {
+		t.Fatalf("Apply: got %v, want a failure naming the busy lock", err)
+	}
+	if got := env.installed(t); got != newBinary {
+		t.Errorf("installed %q: the recovery rolled back without the lock", got)
+	}
+	if _, err := os.Stat(env.binPath + ".pending"); err != nil {
+		t.Errorf("journal gone without the lock: %v", err)
+	}
+	if env.restarts != 0 {
+		t.Errorf("unit restarted %d times without the lock", env.restarts)
 	}
 }
 
