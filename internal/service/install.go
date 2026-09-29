@@ -270,10 +270,11 @@ func (in *Installer) installBinary(self, bin string) error {
 		return err
 	}
 	if err := in.copyFile(self, bin, 0o755); err != nil {
+		err = fmt.Errorf("service: install binary to %s: %w", bin, err)
 		if interrupted {
-			return fmt.Errorf("service: install binary to %s: %w (the kept copy of the interrupted update was already removed, so that update will not be rolled back)", bin, err)
+			err = fmt.Errorf("%w (the kept copy of the interrupted update was already removed, so that update will not be rolled back)", err)
 		}
-		return fmt.Errorf("service: install binary to %s: %w", bin, err)
+		return err
 	}
 	if replacesLink {
 		_, _ = fmt.Fprintf(in.warn, "warning: %s was a symlink; it was replaced by the binary itself, not written through, so the file it pointed to is unchanged\n", bin)
@@ -300,7 +301,7 @@ func (in *Installer) dropKeptCopy(bin string) (interrupted bool, err error) {
 	if !present {
 		return false, nil
 	}
-	if err := in.removeFile(bin + ".prev"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := in.removeFile(bin + update.PrevSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, fmt.Errorf("service: remove the kept copy of an interrupted update: %w", err)
 	}
 	return true, nil

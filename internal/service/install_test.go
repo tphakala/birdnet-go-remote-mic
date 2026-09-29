@@ -767,16 +767,6 @@ func TestInstallDoesNotSuggestRetryingAfterALockError(t *testing.T) {
 	}
 }
 
-// indexOf returns the position of the first event equal to want, or -1.
-func indexOf(events []string, want string) int {
-	for i, e := range events {
-		if e == want {
-			return i
-		}
-	}
-	return -1
-}
-
 // TestInstallClearsAnInterruptedUpdate pins that an install over a journal
 // drops the kept copy before it replaces the binary and the journal after, and
 // says so: with the copy gone first, no crash or failure at a later step can
@@ -798,14 +788,7 @@ func TestInstallClearsAnInterruptedUpdate(t *testing.T) {
 		"remove /usr/local/bin/remote-mic.pending",
 		"syncdir /usr/local/bin",
 	}
-	last := -1
-	for _, e := range order {
-		i := indexOf(events, e)
-		if i <= last {
-			t.Fatalf("event %q at %d, want it after index %d\nevents: %v", e, i, last, events)
-		}
-		last = i
-	}
+	wantOrder(t, events, order...)
 	if got := warn.String(); !strings.Contains(got, "interrupted") || !strings.Contains(got, "will not be rolled back") {
 		t.Errorf("warning %q, want it to say the interrupted update is dropped", got)
 	}
@@ -823,7 +806,7 @@ func TestInstallWithoutAJournalRemovesNothing(t *testing.T) {
 	if err := in.Install(true); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if i := indexOf(events, "remove /usr/local/bin/remote-mic.prev"); i >= 0 {
+	if i := slices.Index(events, "remove /usr/local/bin/remote-mic.prev"); i >= 0 {
 		t.Errorf("removed the kept copy without a journal: %v", events)
 	}
 	if warn.Len() != 0 {
@@ -849,7 +832,7 @@ func TestInstallFailsWhenTheJournalCannotBeRemoved(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "journal") || !strings.Contains(err.Error(), "read-only file system") {
 		t.Fatalf("Install: got %v, want the journal named", err)
 	}
-	if indexOf(events, evReload) >= 0 {
+	if slices.Index(events, evReload) >= 0 {
 		t.Errorf("install went on after the journal failed: %v", events)
 	}
 }
@@ -1006,7 +989,7 @@ func TestInstallLeavesTheUpdaterOutWhenTheChownReachesTheBinary(t *testing.T) {
 			t.Errorf("updater set up after the handover reached the binary: %q", e)
 		}
 	}
-	if indexOf(events, "remove /etc/systemd/system/remote-mic-update.path") < 0 {
+	if slices.Index(events, "remove /etc/systemd/system/remote-mic-update.path") < 0 {
 		t.Errorf("earlier updater units not removed: %v", events)
 	}
 }
@@ -1063,7 +1046,7 @@ func TestInstallFailsWhenTheKeptCopyCannotBeRemoved(t *testing.T) {
 	if err := in.Install(true); err == nil || !strings.Contains(err.Error(), "kept copy") {
 		t.Fatalf("Install: got %v, want the kept copy named", err)
 	}
-	if indexOf(events, evCopySelf) >= 0 {
+	if slices.Index(events, evCopySelf) >= 0 {
 		t.Errorf("the binary was replaced although the kept copy could not be removed: %v", events)
 	}
 }
@@ -1107,7 +1090,7 @@ func TestInstallSaysWhenTheCopyFailsAfterTheKeptCopyWent(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no space left") || !strings.Contains(err.Error(), "will not be rolled back") {
 		t.Fatalf("Install: got %v, want the copy error and the lost rollback named", err)
 	}
-	if indexOf(events, "remove /usr/local/bin/remote-mic.pending") >= 0 {
+	if slices.Index(events, "remove /usr/local/bin/remote-mic.pending") >= 0 {
 		t.Errorf("journal removed although the binary was not replaced: %v", events)
 	}
 }
@@ -1143,14 +1126,7 @@ func TestInstallClearsAnInterruptedUpdateUnderTheLock(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	order := []string{"lock", "remove /usr/local/bin/remote-mic.prev", evCopySelf, "remove /usr/local/bin/remote-mic.pending", "unlock"}
-	last := -1
-	for _, e := range order {
-		i := indexOf(events, e)
-		if i <= last {
-			t.Fatalf("event %q at %d, want it after index %d\nevents: %v", e, i, last, events)
-		}
-		last = i
-	}
+	wantOrder(t, events, order...)
 }
 
 // TestInstallToleratesAClearedInterruptedUpdate pins that a re-run after a

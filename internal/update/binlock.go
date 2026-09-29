@@ -17,6 +17,14 @@ const BinLockSuffix = ".lock"
 // when it replaces the binary.
 const JournalSuffix = ".pending"
 
+// PrevSuffix and NewSuffix name the kept copy of the installed binary and the
+// staged replacement, beside the binary and its journal. Like JournalSuffix
+// they are contracts between versions.
+const (
+	PrevSuffix = ".prev"
+	NewSuffix  = ".new"
+)
+
 // DefaultBinLockWait is how long the updater waits for a `service install`
 // that holds the lock, which is a matter of seconds. It ends well before the
 // appliance withdraws a request the updater has not claimed, which the

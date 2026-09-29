@@ -300,7 +300,7 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 		res.Outcome, res.Reason = OutcomeFailed, err.Error()
 		return res
 	}
-	newPath := a.BinPath + ".new"
+	newPath := a.BinPath + NewSuffix
 	if err := writeFresh(newPath, bin, 0o755); err != nil {
 		return fail(err)
 	}
@@ -324,7 +324,7 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 	if err != nil {
 		return fail(fmt.Errorf("read the installed binary: %w", err))
 	}
-	if err := writeFresh(a.BinPath+".prev", prev, 0o755); err != nil {
+	if err := writeFresh(a.BinPath+PrevSuffix, prev, 0o755); err != nil {
 		return fail(fmt.Errorf("keep the installed binary: %w", err))
 	}
 	j, err := json.Marshal(journal{From: a.Running, To: m.Version, PrevSHA256: sha256Hex(prev), NewSHA256: sha256Hex(bin)})
@@ -367,7 +367,7 @@ func (a *Applier) install(ctx context.Context, root *os.Root, m *releasemanifest
 func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 	res.Outcome, res.Reason = OutcomeRolledBack, cause.Error()
 	a.logf("apply-update: %s did not come up (%v); restoring %s", res.To, cause, res.From)
-	if err := os.Rename(a.BinPath+".prev", a.BinPath); err != nil {
+	if err := os.Rename(a.BinPath+PrevSuffix, a.BinPath); err != nil {
 		res.Outcome = OutcomeFailed
 		res.Reason += fmt.Sprintf("; restoring %s failed, so %s stays installed: %v", res.From, res.To, err)
 	} else {
@@ -399,7 +399,7 @@ func (a *Applier) rollback(root *os.Root, res *Result, cause error) *Result {
 func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 	res := &Result{Outcome: OutcomeFailed, From: a.Running, Installed: a.Running}
 	defer func() {
-		_ = os.Remove(a.BinPath + ".new") // a cut before the swap leaves it
+		_ = os.Remove(a.BinPath + NewSuffix) // a cut before the swap leaves it
 		a.removeJournal()
 		if err := a.writeResult(root, res); err != nil {
 			a.logf("apply-update: write status: %v", err)
@@ -428,8 +428,8 @@ func (a *Applier) recoverInterrupted(root *os.Root) *Result {
 	switch {
 	case installed == j.PrevSHA256:
 		res.Outcome, res.Installed = OutcomeRolledBack, j.From
-	case installed == j.NewSHA256 && fileSHA256(a.BinPath+".prev") == j.PrevSHA256:
-		if err := os.Rename(a.BinPath+".prev", a.BinPath); err != nil {
+	case installed == j.NewSHA256 && fileSHA256(a.BinPath+PrevSuffix) == j.PrevSHA256:
+		if err := os.Rename(a.BinPath+PrevSuffix, a.BinPath); err != nil {
 			res.Installed = j.To
 			res.Reason += fmt.Sprintf("; restoring %s failed, so %s stays installed: %v", j.From, j.To, err)
 			return res
