@@ -3,7 +3,7 @@
 // web/test/dashboard-core.test.ts) without a DOM.
 
 import type { FieldProblem } from "./api.ts";
-import { DEVICE_FIELD_LABELS } from "./device-settings-core.ts";
+import { DEVICE_FIELD_LABELS, defaultOpusBitrate } from "./device-settings-core.ts";
 import type { ViewName } from "./router-core.ts";
 import type { Timers } from "./timers.ts";
 import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
@@ -47,6 +47,44 @@ export function streamSummary(
   const modes = configured.length > 0 ? [...new Set(configured.map((s) => s.mode))] : [d.mode];
   const counts = d.streams ? d.streams.map(clientCountOf) : [clientCountOf(d)];
   return { paths, modes, connected: counts.filter((n) => n > 0).length, clients: counts.reduce((a, n) => a + n, 0) };
+}
+
+// Every Opus stream is 48 kHz; its default bitrate is defaultOpusBitrate's.
+const OPUS_RATE_HZ = 48000;
+// The line for a stream whose format the record does not carry.
+const FORMAT_UNKNOWN = "Format unknown";
+
+// streamFormats is the Codec / Rate cell's lines, one per stream in the same
+// order as StreamSummary.paths. It describes the stream a client receives, not
+// the hardware capture: PCM is 16-bit L16 at the capture rate, and Opus has no
+// bit depth, so it shows its bitrate (the configured one when positive, else
+// the default for its channel count). The labels mirror modeLabel's (lib/ui.ts,
+// which this DOM-free module cannot import). The config lists every stream;
+// without it the record's flat fields describe the first stream alone, and a
+// serving record with more runtime streams gets "Format unknown" for the rest.
+export function streamFormats(
+  d: Pick<Device, "mode" | "rate" | "negotiatedRate" | "channels" | "opus" | "streams">,
+  cfg?: Pick<DeviceConfig, "streams">,
+): string[] {
+  const captureRate = d.negotiatedRate ?? d.rate;
+  const configured = cfg?.streams ?? [];
+  const streams = configured.length > 0
+    ? configured
+    : [{ mode: d.mode, channels: d.channels, opus: d.opus }];
+  const lines = streams.map((s) => {
+    if (s.mode === "pcm") return `PCM L16 ${captureRate.toLocaleString("en-US")} Hz · 16-bit`;
+    const configuredBitrate = s.opus?.bitrate ?? 0;
+    const kbps = (configuredBitrate > 0 ? configuredBitrate : defaultOpusBitrate(s.channels.length)) / 1000;
+    return `OPUS ${OPUS_RATE_HZ.toLocaleString("en-US")} Hz · ${kbps.toLocaleString("en-US")} kbps`;
+  });
+  // Without a config the runtime streams carry no format, and the flat fields
+  // describe the first stream alone: say so for the rest, so the cell stays
+  // aligned with the paths without giving them the first stream's format. With
+  // a config the lines already match the paths.
+  if (configured.length === 0) {
+    for (let i = lines.length; i < (d.streams?.length ?? 0); i++) lines.push(FORMAT_UNKNOWN);
+  }
+  return lines;
 }
 
 // clientSummary is the Client cell: a device with several streams says how many
@@ -345,9 +383,10 @@ export function capsSummary(d: Pick<AvailableDevice, "supportedChannels" | "supp
   const parts: string[] = [];
   const ch = d.supportedChannels ?? [];
   if (ch.length) {
-    if (ch.includes(1) && ch.includes(2)) parts.push("mono/stereo");
-    else if (ch.includes(2)) parts.push("stereo");
-    else parts.push("mono");
+    if (ch.includes(1) && ch.includes(2) && ch.length === 2) parts.push("mono/stereo");
+    else if (ch.length === 1 && ch[0] === 1) parts.push("mono");
+    else if (ch.length === 1 && ch[0] === 2) parts.push("stereo");
+    else parts.push(`${[...ch].sort((a, b) => a - b).join("/")} channels`);
   }
   const rates = d.supportedRates ?? [];
   if (rates.length) {

@@ -1,5 +1,5 @@
 import { api, ApiError, apiErrorMessage, failureReason, isRefusal, problemFor, problemReason } from "../../lib/api.ts";
-import { clearBusy, copyText, downloadBlob, infoRow, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, clearLoadError, copyText, downloadBlob, infoRow, part, renderLoadError, setBusy, setFieldError, setLoading, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { CERT_LABELS, certRows, certTooLargeReason, parseExtraSans, type CertLabel } from "../../lib/certificate-core.ts";
 import { sentence } from "../../lib/text.ts";
@@ -105,16 +105,16 @@ export class CertificateCard {
     setFieldError(input?.closest(".form-field") ?? null, input, errorEl, message);
   }
 
-  // clearLoadError resets the load-failure state and swaps the load-error
+  // resetLoadFailure resets the load-failure state and swaps the load-error
   // region back for the info grid. Fresh metadata from any source (a poll, the
   // Retry button, a regenerate or an install) routes through here so the card
   // never keeps showing a stale error over data it now has.
-  private clearLoadError(): void {
+  private resetLoadFailure(): void {
     this.failures = 0;
     this.errorShown = false;
     if (this.errorEl) {
+      clearLoadError(this.errorEl);
       this.errorEl.hidden = true;
-      this.errorEl.removeAttribute("role");
       this.errorEl.textContent = "";
     }
     if (this.infoEl) this.infoEl.hidden = false;
@@ -139,7 +139,7 @@ export class CertificateCard {
       const info = await api.getCertificate();
       if (this.gen !== gen) return;
       this.cert = info;
-      this.clearLoadError();
+      this.resetLoadFailure();
       this.render();
     } catch (err: unknown) {
       if (this.gen !== gen) return;
@@ -238,7 +238,7 @@ export class CertificateCard {
       const info = await api.regenerateCertificate(parsed.sans.length ? { extraSans: parsed.sans } : {});
       this.cert = info;
       this.gen++;
-      this.clearLoadError();
+      this.resetLoadFailure();
       this.render();
       void this.fetch();
       showToast("Certificate regenerated and applied to new connections. Download and trust the new certificate where needed.");
@@ -298,7 +298,7 @@ export class CertificateCard {
       this.setFieldError(this.keyEl, this.keyErrorEl, "");
       this.cert = info;
       this.gen++;
-      this.clearLoadError();
+      this.resetLoadFailure();
       this.render();
       void this.fetch();
       showToast("Custom certificate installed and applied to new connections.");

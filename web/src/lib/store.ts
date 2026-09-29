@@ -295,6 +295,9 @@ export class AppStore extends Emitter<StoreEvents> {
     // own data instead of a "Loading..." placeholder that never resolves, and
     // so one failing endpoint does not blank another view that loaded fine.
     const coreFailed = !statusOk && !devicesOk;
+    // The device list alone failing while /status answers: the Dashboard rack
+    // and Stream Status have nothing to show, though the appliance is reachable.
+    const devicesFailed = !devicesOk;
     const systemFailed = !systemOk;
     // A config-only failure leaves the System view's network/access/notification
     // cards loading (the "config" event fills them). Surface it so the miss is
@@ -306,8 +309,8 @@ export class AppStore extends Emitter<StoreEvents> {
     const availableFailed = !availableOk;
     // A rejected token is handled by the login prompt, not the retry state.
     if (this.loginPending) return;
-    if (coreFailed || systemFailed || configFailed) {
-      this.emit("loaderror", { coreFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." });
+    if (devicesFailed || systemFailed || configFailed) {
+      this.emit("loaderror", { coreFailed, devicesFailed, systemFailed, configFailed, availableFailed, message: "Could not reach the appliance." });
     }
   }
 

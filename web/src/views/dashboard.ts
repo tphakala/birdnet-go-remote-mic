@@ -1,7 +1,7 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
-import { announce, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, parkFocus, renderLoadError, setHidden, setText } from "../lib/ui.ts";
+import { announce, clearLoadError, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, renderLoadError, setHidden, setText } from "../lib/ui.ts";
 import { clientCountOf, deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { hideInactivePrefDevice, onPrefChange, parseBoolPref } from "../lib/prefs.ts";
 import type { ApplianceStatus, DeviceConfig, SystemInfo } from "../lib/types.ts";
@@ -121,8 +121,13 @@ export class DashboardView {
     // meters would contradict them.
     store.on("connection", (connected) => this.updateConnection(connected));
     store.on("loaderror", (failure) => {
-      if (!failure.coreFailed) return;
-      this.renderLoadError(failure.message);
+      // Only while the rack has no list to show: a load that fails after a
+      // list was read (a login's reload) leaves the cards as they are.
+      if (!failure.devicesFailed || store.devicesRead() === "loaded") return;
+      // A failed /status as well means the appliance is out of reach; with
+      // /status answering, only the device list is missing. A poll that later
+      // recovers it clears this through reconcile.
+      this.renderLoadError(failure.coreFailed ? failure.message : "Could not load the device list.");
       this.available.syncShown();
     });
   }
@@ -182,11 +187,11 @@ export class DashboardView {
       // button (the message is rewritten or hidden): park focus on the view
       // (a click on Retry parks it too) and announce the recovery, instead of
       // dropping focus to <body>.
-      const retryHadFocus = holdsFocus(this.emptyEl);
+      // clearLoadError also drops the alert live-region role set by
+      // renderLoadError, so the benign empty/loaded state is not re-announced
+      // as an error.
+      const retryHadFocus = clearLoadError(this.emptyEl);
       this.emptyEl.hidden = devices.length > 0;
-      // Clear the alert live-region role set by renderLoadError so the benign
-      // empty/loaded state is not re-announced as an error.
-      this.emptyEl.removeAttribute("role");
       // Replace the static "Loading devices..." placeholder once we know there
       // are genuinely zero configured devices, and point to the next step: the
       // Available Devices section below is where a detected device is enabled.
@@ -196,10 +201,7 @@ export class DashboardView {
           ? "No capture devices are configured yet. Enable one from Available Devices below to start streaming."
           : "No capture devices are configured. Connect capture hardware; it appears under Available Devices below, ready to enable.");
       }
-      if (retryHadFocus) {
-        parkFocus(this.emptyEl);
-        announce(this.announceEl, "Devices loaded.");
-      }
+      if (retryHadFocus) announce(this.announceEl, "Devices loaded.");
     }
 
     // Index the persisted config by device id once per pass so the per-card

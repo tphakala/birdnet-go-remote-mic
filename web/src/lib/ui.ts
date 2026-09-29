@@ -495,18 +495,27 @@ export function renderLoadError(
   container.textContent = `${message} `;
   const retry = button({ variant: "secondary", label: "Retry" });
   retry.addEventListener("click", () => {
-    // Drop the assertive alert role before showing the benign loading text so
-    // the screen reader does not read "Loading..." as an alert. A later failure
-    // re-adds it when renderLoadError runs again.
-    container.removeAttribute("role");
-    // Replacing the content removes the focused Retry button; park focus so it
-    // does not drop to the page body.
-    const hadFocus = holdsFocus(container);
+    // Replacing the content removes the focused Retry button; clearLoadError
+    // parks focus so it does not drop to the page body, and drops the alert
+    // role so the loading text is not read as an alert. A later failure re-adds
+    // the role when renderLoadError runs again.
+    clearLoadError(container);
     container.textContent = loadingText;
-    if (hadFocus) parkFocus(container);
     onRetry();
   });
   container.appendChild(retry);
+}
+
+// clearLoadError ends a load-error state ahead of the caller rewriting or
+// removing the container: it drops the alert role, so the benign text that
+// follows is not announced as an error, and parks focus (see parkFocus) when
+// the Retry button held it, since that button is about to go. It returns
+// whether focus was parked, so the caller can announce the recovery.
+export function clearLoadError(container: HTMLElement): boolean {
+  container.removeAttribute("role");
+  if (!holdsFocus(container)) return false;
+  parkFocus(container);
+  return true;
 }
 
 // The longest last word kept whole next to the new-tab icon; a longer word

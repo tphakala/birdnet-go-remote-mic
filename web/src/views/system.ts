@@ -80,7 +80,7 @@ export class SystemView {
     });
     store.on("loaderror", (failure) => {
       if (failure.systemFailed) this.tiles.loadError(failure.message);
-      if (failure.coreFailed) this.streams.loadFailed();
+      if (failure.devicesFailed) this.streams.loadFailed();
       // A config-only failure leaves the network/access/notification cards
       // loading with no other signal. Surface it so the miss is not invisible;
       // polling recovers the config on a later tick and fills the cards.

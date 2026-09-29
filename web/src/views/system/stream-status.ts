@@ -1,6 +1,6 @@
-import { deviceStateBadge, elem, modeLabel, orderChildren, setLoading, setText } from "../../lib/ui.ts";
+import { deviceStateBadge, elem, orderChildren, setLoading, setText } from "../../lib/ui.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
-import { captureFormatLabel, clientSummary, streamSummary } from "../../lib/dashboard-core.ts";
+import { clientSummary, streamFormats, streamSummary } from "../../lib/dashboard-core.ts";
 import type { Config, Device } from "../../lib/types.ts";
 
 // DeviceRowRefs are the stable cells of one Stream Status table row, reused
@@ -61,9 +61,8 @@ export class StreamStatus {
   }
 
   // loadFailed says so in place of the loading row; a later read that
-  // succeeds fills the table. SystemView calls it when the first status and
-  // devices reads both failed (coreFailed), so a failed devices read alone
-  // keeps the loading row until a poll brings the devices.
+  // succeeds fills the table. SystemView calls it when the first devices read
+  // failed (devicesFailed), whether or not /status answered.
   public loadFailed(): void {
     if (this.loaded) return;
     setText(this.messageCell, "Stream status could not be loaded. Retrying shortly.");
@@ -107,7 +106,7 @@ export class StreamStatus {
     const name = td("");
     const alsa = td("", true);
     const path = elem("td", "mono stream-paths");
-    const codec = td("", true);
+    const codec = elem("td", "mono stream-paths");
     const client = td("", true);
     const stateTd = document.createElement("td");
     const stateSpan = elem("span");
@@ -126,17 +125,13 @@ export class StreamStatus {
     const alsaTitle = deviceIdTitle(d.device);
     if (r.alsa.title !== alsaTitle) r.alsa.title = alsaTitle;
     // By the device id, which a rename does not change.
-    const streams = streamSummary(d, cfg?.devices.find((c) => c.device === d.device));
+    const deviceCfg = cfg?.devices.find((c) => c.device === d.device);
+    const streams = streamSummary(d, deviceCfg);
     // One path per line (the cell keeps the line breaks), in stream order.
     setText(r.path, streams.paths.join("\n"));
-    const rate = d.negotiatedRate ?? d.rate;
-    const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
-    setText(r.codec, `${streams.modes.map(modeLabel).join(" + ")} ${rate.toLocaleString("en-US")} Hz${negFormat}`);
-    // The format is the hardware capture depth; the RTSP stream stays 16-bit.
-    const codecTitle = d.negotiatedFormat
-      ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
-      : "";
-    if (r.codec.title !== codecTitle) r.codec.title = codecTitle;
+    // One line per stream, in path order: the stream's own format, not the
+    // hardware capture depth (the Dashboard card shows that).
+    setText(r.codec, streamFormats(d, deviceCfg).join("\n"));
     setText(r.client, clientSummary(streams));
     const badge = deviceStateBadge(d.state);
     if (r.stateSpan.className !== badge.cls) r.stateSpan.className = badge.cls;
