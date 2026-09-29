@@ -487,27 +487,6 @@ textarea {
   border-color: var(--border-subtle);
 }
 
-.nav-badge {
-  font-size: var(--font-size-caption);
-  padding: 1px 5px;
-  border-radius: var(--radius-full);
-  background: var(--accent-cyan-bg);
-  color: var(--accent-cyan-text);
-  font-weight: 600;
-  /* Grow-in with the standard ease, not an overshoot curve: the badge settles at
-     size rather than punching past it. */
-  animation: badge-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.nav-badge[hidden] {
-  display: none;
-}
-
-@keyframes badge-pop {
-  0% { transform: scale(0.6); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
-}
-
 /* Header Utilities */
 .header-actions {
   display: flex;
@@ -987,16 +966,6 @@ textarea {
   gap: 2px;
 }
 
-.dropdown-item .item-desc {
-  font-size: var(--font-size-caption);
-  color: var(--text-muted);
-  font-weight: 500;
-}
-
-.dropdown-item.selected .item-desc {
-  color: var(--text-secondary);
-}
-
 .dropdown-item .item-check {
   color: var(--accent-cyan-text);
   opacity: 0;
@@ -1329,7 +1298,7 @@ textarea {
   justify-content: space-between;
 }
 
-.field-input, .field-select {
+.field-input {
   background: var(--bg-page);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-sm);
@@ -1349,7 +1318,7 @@ textarea.field-input {
   line-height: 1.5;
 }
 
-.field-input:focus, .field-select:focus {
+.field-input:focus {
   border-color: var(--border-active);
 }
 /* :focus (any focus, including a pointer) sets only the active border colour; the
@@ -1699,35 +1668,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   margin-top: 8px;
 }
 
-/* Sticky Action Bar for Staged Changes */
-.floating-actionbar {
-  position: sticky;
-  bottom: 20px;
-  background: var(--bg-surface-raised);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-md);
-  padding: 12px 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  box-shadow: var(--shadow-lg);
-  gap: 16px;
-  z-index: 100;
-  backdrop-filter: blur(8px);
-  animation: slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes slide-up {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.actionbar-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .staged-badge {
   background: var(--signal-warn-bg);
   color: var(--signal-warn-text);
@@ -1774,12 +1714,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   margin-bottom: 16px;
   font-size: var(--font-size-body);
   line-height: 1.4;
-}
-
-.action-buttons {
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 /* Button Variants */
@@ -1888,8 +1822,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
    The transparent outline is not decoration: forced-colors mode (Windows High
    Contrast) drops box-shadow but paints outlines in a system colour, so it
    keeps a visible focus indicator there. */
-.field-input:focus-visible,
-.field-select:focus-visible {
+.field-input:focus-visible {
   border-color: var(--accent-cyan);
   box-shadow: var(--focus-glow);
   outline: 2px solid transparent;
@@ -2039,12 +1972,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   display: flex;
   align-items: baseline;
   gap: 4px;
-}
-
-.tile-sub {
-  font-size: var(--font-size-caption);
-  font-weight: 500;
-  color: var(--text-muted);
 }
 
 .progress-bar-bg {
@@ -3121,10 +3048,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   .meter-stats {
     justify-content: space-between;
   }
-  .floating-actionbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
 }
 
 /* Dynamic dashboard / config / system containers (rendered by TS from live data). */
@@ -3134,11 +3057,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   font-size: var(--font-size-body);
   padding: 24px;
   text-align: center;
-}
-.cfg-devices {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
 }
 .config-device-card {
   display: flex;
@@ -3150,18 +3068,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .config-device-card:last-child {
   border-bottom: 0;
   padding-bottom: 0;
-}
-.device-config-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--font-size-body);
-  color: var(--text-primary);
-}
-.device-config-hw {
-  color: var(--text-muted);
-  font-size: var(--font-size-caption);
-  font-weight: 500;
 }
 select.field-input {
   cursor: pointer;

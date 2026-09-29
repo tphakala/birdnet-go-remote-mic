@@ -1,6 +1,6 @@
 import { api, apiErrorMessage, failureReason, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
-import { clearBusy, externalLink, part, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
+import { clearBusy, externalLink, part, setAttr, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { showUpdateModal, type UpdateModal } from "../../components/restart-modal.ts";
 import { describeUpdate, followEndText, safeNotesUrl, TickGuard, UpdateFollow, updateUnderway, VersionWatch, withChecksSetting } from "../../lib/update-core.ts";
@@ -104,7 +104,7 @@ export class UpdatePanel {
     const headline = part(this.root, "sys-update-headline");
     if (headline) {
       const cls = `update-headline tone-${view.tone}`;
-      if (headline.className !== cls) headline.className = cls;
+      setAttr(headline, "class", cls);
       setText(headline, view.headline);
       setHidden(headline, view.headline === "");
     }

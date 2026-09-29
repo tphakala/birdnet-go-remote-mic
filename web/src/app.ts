@@ -13,7 +13,7 @@ import { initTheme, PREFERS_LIGHT_QUERY, THEME_KEY, type Theme, type ThemeMode }
 import { onPrefChange, prefSaveNotice } from "./lib/prefs.ts";
 import { ERROR_TTL_MS, showToast } from "./components/toast.ts";
 import { MenuButton } from "./components/menu-button.ts";
-import { svgIcon } from "./lib/ui.ts";
+import { setAttr, svgIcon } from "./lib/ui.ts";
 import { AboutView } from "./views/about.ts";
 
 // How long the boot waits for the stream's connect re-sync to deliver the
@@ -103,9 +103,9 @@ class App {
     const show = (mode: ThemeMode, theme: Theme): void => {
       if (!btn) return;
       const label = mode === "system" ? `Theme: System (${MODE_LABEL[theme]})` : `Theme: ${MODE_LABEL[mode]}`;
-      if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
-      if (btn.title !== label) btn.title = label;
-      if (btn.dataset.mode !== mode) btn.dataset.mode = mode;
+      setAttr(btn, "aria-label", label);
+      setAttr(btn, "title", label);
+      setAttr(btn, "data-mode", mode);
       menu?.set(mode);
     };
     const controller = initTheme({

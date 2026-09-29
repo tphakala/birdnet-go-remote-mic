@@ -7,7 +7,7 @@ import { hideInactiveKey, readBoolPref, writeBoolPref } from "../../lib/prefs.ts
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import type { Device, DeviceConfig } from "../../lib/types.ts";
-import { announce, clearBusy, deviceStateBadge, focusOnOrDropped, h, holdsFocus, ICON_COPY, iconSpan, modeLabel, reportClipboardFailure, setBusy, setHidden, setText, showUnconfirmed, svgIcon, switchControl, writeToClipboard } from "../../lib/ui.ts";
+import { announce, clearBusy, deviceStateBadge, focusOnOrDropped, h, holdsFocus, ICON_COPY, iconSpan, modeLabel, reportClipboardFailure, setAttr, setBusy, setHidden, setText, showUnconfirmed, svgIcon, switchControl, writeToClipboard } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue, STALE_BASE_TEXT } from "./config-queue.ts";
 import { MeterConsole } from "./meter-console.ts";
 import { SettingsPanel } from "./settings-panel.ts";
@@ -456,7 +456,7 @@ export class DeviceCard {
     // The persisted id is long, so it goes in the tooltip rather than the line.
     setText(p.hwEl, hardwareLine(d));
     const hwTitle = deviceIdTitle(d.device);
-    if (p.hwEl.title !== hwTitle) p.hwEl.title = hwTitle;
+    setAttr(p.hwEl, "title", hwTitle);
 
     // Chips describe the live stream and are shown only while serving.
     const rate = d.negotiatedRate ?? d.rate;
@@ -484,15 +484,15 @@ export class DeviceCard {
     }
 
     const badge = deviceStateBadge(d.state);
-    if (p.statusEl.className !== badge.cls) p.statusEl.className = badge.cls;
+    setAttr(p.statusEl, "class", badge.cls);
     setText(p.statusEl, badge.label);
 
     const toggleAria = `Stream ${d.name}`;
-    if (p.toggleInput.getAttribute("aria-label") !== toggleAria) p.toggleInput.setAttribute("aria-label", toggleAria);
+    setAttr(p.toggleInput, "aria-label", toggleAria);
     // The settings disclosure reads "Settings" for every card; name the device so
     // a screen-reader user can tell which card's settings the button opens.
     const settingsAria = `Settings for ${d.name}`;
-    if (p.settingsBtn.getAttribute("aria-label") !== settingsAria) p.settingsBtn.setAttribute("aria-label", settingsAria);
+    setAttr(p.settingsBtn, "aria-label", settingsAria);
     // Do not fight the user mid-interaction (a PATCH is queued or in flight);
     // otherwise keep it in sync with the persisted flag.
     if (this.pendingWant === null && p.toggleInput.checked !== configEnabled) {
@@ -506,7 +506,7 @@ export class DeviceCard {
     if (p.live) {
       const url = rtspUrl(window.location.hostname, status?.rtspListen, d.path);
       setText(p.live.urlEl, url);
-      if (p.live.urlEl.title !== url) p.live.urlEl.title = url;
+      setAttr(p.live.urlEl, "title", url);
       const counters = footerMetrics(d);
       setText(p.live.clientsEl, counters.clients);
       setText(p.live.droppedEl, counters.dropped);
@@ -518,7 +518,7 @@ export class DeviceCard {
       const negTitle = d.negotiatedFormat
         ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
         : "";
-      if (p.live.negotiatedEl.title !== negTitle) p.live.negotiatedEl.title = negTitle;
+      setAttr(p.live.negotiatedEl, "title", negTitle);
       // The tally lights follow every streamed channel, as the channel tag does.
       p.live.meterConsole.sync(d.streamedChannels ?? d.channels, this.hideInactive);
     }

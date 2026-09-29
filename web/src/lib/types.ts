@@ -83,11 +83,9 @@ export type Health = Without<Schemas["Health"], "authRequired"> & {
 export type Problem = Without<Schemas["Problem"], "type"> & { type?: string };
 
 // A validation entry the server malformed is still shown, so both fields are
-// optional here.
-export interface ValidationErrorItem {
-  field?: string;
-  reason?: string;
-}
+// optional here. Derived from the schema so that a rename of errors[].field or
+// errors[].reason fails web:typecheck where the UI reads it.
+export type ValidationErrorItem = Partial<NonNullable<Schemas["ValidationProblem"]["errors"]>[number]>;
 
 export type ValidationProblem = Without<Schemas["ValidationProblem"], "type" | "errors"> & {
   type?: string;
