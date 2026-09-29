@@ -87,19 +87,18 @@ func iwFreqMHz(m int32, e int16) (int, bool) {
 
 // cleanSSID turns the raw ESSID buffer into text safe to show: cut at the
 // first NUL (brcmfmac counts a trailing NUL in the length), invalid UTF-8
-// replaced, control and bidi-override characters dropped. Empty means the
-// network name is unknown or hidden.
+// replaced, and control, bidi-control and line or paragraph separator
+// characters dropped. Other format characters stay: zero-width joiners are part
+// of emoji sequences and of Persian and Indic names. Empty means the network
+// name is unknown or hidden.
 func cleanSSID(b []byte) string {
 	b = b[:min(len(b), ssidMaxBytes)]
 	if i := strings.IndexByte(string(b), 0); i >= 0 {
 		b = b[:i]
 	}
-	s := strings.ToValidUTF8(string(b), "�")
+	s := strings.ToValidUTF8(string(b), "\uFFFD")
 	return strings.Map(func(r rune) rune {
-		switch {
-		case unicode.IsControl(r),
-			r >= 0x202A && r <= 0x202E, // bidi embeddings and overrides
-			r >= 0x2066 && r <= 0x2069: // bidi isolates
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || unicode.In(r, unicode.Zl, unicode.Zp) {
 			return -1
 		}
 		return r

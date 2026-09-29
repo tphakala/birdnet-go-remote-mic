@@ -85,6 +85,8 @@ func TestCleanSSID(t *testing.T) {
 		{"no bytes", nil, ""},
 		{"invalid UTF-8", []byte("a\xffb"), "a�b"},
 		{"control and bidi", []byte("a\x1b[31m\u202Eb\u2066c"), "a[31mbc"},
+		{"bidi marks and separators", []byte("a\u200Eb\u200Fc\u061Cd\u2028e\u2029f"), "abcdef"},
+		{"joiners are kept", []byte("a\u200Db\u200Cc"), "a\u200Db\u200Cc"},
 		{"utf-8", []byte("Kämpe 🐦"), "Kämpe 🐦"},
 		{"capped at 32 bytes", []byte("0123456789012345678901234567890123456789"), "01234567890123456789012345678901"},
 	}
