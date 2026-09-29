@@ -79,6 +79,17 @@ type Installer struct {
 	lexists func(path string) (bool, error)
 	// syncDir makes the removals in dir durable (atomicfile.SyncDir).
 	syncDir func(dir string)
+	// packageOwns reports whether the .deb package owns the file at path
+	// (PackageOwns): such a binary is run in place, never copied.
+	packageOwns func(path string) bool
+	// installed reads the spec the installed unit was written from
+	// (InstalledSpec), for the copy an earlier install left.
+	installed func() (ServiceSpec, error)
+	// removeStaging removes the update staging directory in the state
+	// directory, which a package-managed install has no use for.
+	removeStaging func(stateDir string) error
+	// isRegular reports whether path is a regular file, not a link.
+	isRegular func(path string) bool
 	// warn receives a warning that does not fail the install.
 	warn io.Writer
 }
@@ -86,7 +97,9 @@ type Installer struct {
 // NewInstaller builds an Installer for spec with the production init system,
 // command runner, detected platform, and real filesystem, user and
 // installed-version operations (running the installed binary only when it is
-// a root-only regular file) and the lock shared with the root updater. The caller sets Version and AllowDowngrade.
+// a root-only regular file), the lock shared with the root updater, and the
+// dpkg file lists that say whether the .deb package owns a binary. The caller
+// sets Version and AllowDowngrade.
 func NewInstaller(spec ServiceSpec) *Installer {
 	return &Installer{
 		Spec:       spec,
@@ -112,14 +125,23 @@ func NewInstaller(spec ServiceSpec) *Installer {
 		removeFile: os.Remove,
 		lexists:    lexists,
 		syncDir:    atomicfile.SyncDir,
-		warn:       os.Stderr,
+
+		packageOwns:   PackageOwns,
+		installed:     InstalledSpec,
+		removeStaging: removeStagingDir,
+		isRegular:     isRegularFile,
+		warn:          os.Stderr,
 	}
 }
 
 // Install creates the service user, installs the binary, the unit and the root
 // updater's path and service units, hands the config, state and update staging
 // directories to the service user, then reloads systemd and enables the unit
-// and the updater's path unit (starting both too when now is true). A bin
+// and the updater's path unit (starting both too when now is true). When the
+// .deb package owns the binary at the bin path it takes the packaged route
+// instead (installPackaged): the binary is run in place, with no copy, no
+// updater units and no staging directory, and the rest of this comment
+// describes the copy route. A bin
 // directory (or a directory above it) that anyone but root can write is
 // refused before anything is written, a config or state directory that is the
 // bin directory or one above it (checkNotOverBinDir) before anything but the
@@ -150,6 +172,9 @@ func (in *Installer) Install(now bool) error {
 	if !in.Init.Present() {
 		return errors.New("service: systemd is not the active init system (no /run/systemd/system); cannot install a service unit")
 	}
+	if in.packageOwns(s.BinPath) {
+		return in.installPackaged(s, now)
+	}
 	// Before anything is written: in a bin directory, or a directory above
 	// it, that someone else can write, they could plant a link that sends
 	// root's writes below somewhere of their choosing.
@@ -178,7 +203,7 @@ func (in *Installer) Install(now bool) error {
 		return fmt.Errorf("service: lock %s: %w", s.BinPath, err)
 	}
 	defer release()
-	if err := in.checkDowngrade(s.BinPath); err != nil {
+	if err := in.checkDowngrade(s.BinPath, "run the installed one (sudo "+update.ShellQuote(s.BinPath)+" service install) or pass --allow-downgrade"); err != nil {
 		return err
 	}
 
@@ -194,6 +219,9 @@ func (in *Installer) Install(now bool) error {
 	if err != nil {
 		return fmt.Errorf("service: locate the running binary: %w", err)
 	}
+	if in.packageOwns(self) {
+		_, _ = fmt.Fprintf(in.warn, "warning: installing a copy of the packaged %s at %s; apt will not update that copy, and the root updater will; to run the packaged binary in place, leave --bin-path unset\n", self, s.BinPath)
+	}
 	if err := in.installBinary(self, s.BinPath); err != nil {
 		return err
 	}
@@ -204,23 +232,8 @@ func (in *Installer) Install(now bool) error {
 	if err := in.writeFile(s.UnitPath(), unit, 0o644); err != nil {
 		return fmt.Errorf("service: write unit %s: %w", s.UnitPath(), err)
 	}
-	// Create the config and state directories and hand them to the service user
-	// recursively, so a pre-existing root-owned config.yaml or config.yaml.lock
-	// (left by an earlier hand-run `sudo remote-mic serve`) is handed over too.
-	dirs := []struct {
-		path string
-		perm os.FileMode
-	}{
-		{s.ConfigDir(), 0o750},
-		{s.StateDir, 0o700},
-	}
-	for _, d := range dirs {
-		if err := in.ensureDir(d.path, d.perm); err != nil {
-			return fmt.Errorf("service: create %s: %w", d.path, err)
-		}
-		if err := in.chownTree(d.path, uid, gid); err != nil {
-			return fmt.Errorf("service: chown %s to %s: %w", d.path, s.User, err)
-		}
+	if err := in.handOverDirs(s, uid, gid); err != nil {
+		return err
 	}
 
 	// The root updater runs this binary, so nobody but root may be able to
@@ -267,6 +280,159 @@ func (in *Installer) Install(now bool) error {
 	// Only the path unit is enabled: it starts the updater service on demand.
 	if err := in.Init.Enable(UpdatePathUnit, now); err != nil {
 		return fmt.Errorf("service: enable %s: %w", UpdatePathUnit, err)
+	}
+	return nil
+}
+
+// installPackaged installs the appliance to run the .deb package's own binary
+// in place: apt replaces that file on upgrade, so nothing is copied, no root
+// updater units are installed (the root updater must not replace a file dpkg
+// owns) and no staging directory is kept. It refuses to run for a binary
+// other than the packaged one at s.BinPath, since the package owns that path.
+//
+// An earlier install may have copied the binary elsewhere (the default is
+// DefaultBinPath) and pointed the unit and the updater at the copy; this
+// migrates it. The copy is left alone unless the installed unit names it, and
+// it is then treated like the installed binary of a normal install: refused
+// while an updater is running or the copy is newer than this binary (the
+// downgrade guard), and locked (update.LockBin) while the unit is rewritten.
+// Once the new unit is enabled, and the appliance restarted if it was running,
+// the old copy and the files an update leaves beside it are removed, except
+// its lock file (see Uninstaller.Uninstall).
+func (in *Installer) installPackaged(s ServiceSpec, now bool) error {
+	self, err := in.selfExe()
+	if err != nil {
+		return fmt.Errorf("service: locate the running binary: %w", err)
+	}
+	if !sameFile(self, s.BinPath) {
+		return fmt.Errorf("service: %s belongs to the .deb package and %s cannot replace it; run the packaged binary (sudo %s service install) or choose another --bin-path", s.BinPath, self, update.ShellQuote(s.BinPath))
+	}
+	if err := in.binDirOK(filepath.Dir(s.BinPath)); err != nil {
+		return fmt.Errorf("service: refusing to install: %w", err)
+	}
+	if err := in.dirsOK(s); err != nil {
+		return fmt.Errorf("service: refusing to install: %w", err)
+	}
+	prev := in.previousCopy(s)
+	if prev != "" {
+		// A running updater installs the copy in place; an updater from before
+		// the bin lock does not take it. Wait for it rather than pull the unit
+		// out from under it.
+		if active, _ := in.Init.IsActive(UpdateServiceUnit); active {
+			return fmt.Errorf("service: an update of %s is being installed; try again in a few minutes", prev)
+		}
+		release, err := in.lockBin(prev, func() {
+			_, _ = fmt.Fprintf(in.warn, "waiting for an update of %s in progress to finish\n", prev)
+		})
+		if err != nil {
+			if errors.Is(err, update.ErrBinBusy) {
+				return fmt.Errorf("service: %s: %w; try again in a few minutes", prev, err)
+			}
+			return fmt.Errorf("service: lock %s: %w", prev, err)
+		}
+		defer release()
+		if err := in.checkDowngrade(prev, "install the newer .deb first, or pass --allow-downgrade"); err != nil {
+			return err
+		}
+	}
+
+	if err := in.ensureUser(s); err != nil {
+		return err
+	}
+	uid, gid, err := in.lookupUser(s.User)
+	if err != nil {
+		return fmt.Errorf("service: resolve user %q after creation: %w", s.User, err)
+	}
+	unit, err := Render(s)
+	if err != nil {
+		return err
+	}
+	if err := in.writeFile(s.UnitPath(), unit, 0o644); err != nil {
+		return fmt.Errorf("service: write unit %s: %w", s.UnitPath(), err)
+	}
+	if err := in.handOverDirs(s, uid, gid); err != nil {
+		return err
+	}
+	if err := in.removeUpdaterUnits(s); err != nil {
+		return err
+	}
+	if err := in.removeStaging(s.StateDir); err != nil {
+		_, _ = fmt.Fprintf(in.warn, "warning: cannot remove the update staging directory %s: %v\n", s.UpdateDir(), err)
+	}
+
+	if err := in.Init.DaemonReload(); err != nil {
+		return fmt.Errorf("service: daemon-reload: %w", err)
+	}
+	wasActive := false
+	if prev != "" {
+		wasActive, _ = in.Init.IsActive(DefaultUnitName)
+	}
+	if err := in.Init.Enable(DefaultUnitName, now); err != nil {
+		return fmt.Errorf("service: enable %s: %w", DefaultUnitName, err)
+	}
+	// enable --now leaves a running unit alone, and it still runs the copy.
+	if wasActive && now {
+		if err := in.Init.Restart(DefaultUnitName); err != nil {
+			return fmt.Errorf("service: restart %s onto %s: %w", DefaultUnitName, s.BinPath, err)
+		}
+	}
+	if prev != "" {
+		in.dropCopy(prev)
+	}
+	return nil
+}
+
+// previousCopy is the binary an earlier install pointed the unit at, when it
+// is a different file from the one being installed and not another packaged
+// one, or "" when there is nothing to migrate (no unit, a unit that is not
+// what the installer wrote, or the same binary).
+func (in *Installer) previousCopy(s ServiceSpec) string {
+	inst, err := in.installed()
+	if err != nil || inst.BinPath == "" {
+		return ""
+	}
+	if sameFile(inst.BinPath, s.BinPath) || in.packageOwns(inst.BinPath) {
+		return ""
+	}
+	return inst.BinPath
+}
+
+// dropCopy removes the binary an earlier install left, with the kept copy,
+// staged file and journal an update leaves beside it. It removes only regular
+// files, never a link, and only warns: the unit no longer runs any of them.
+// The lock file stays, since unlinking a lock a waiting process has open lets
+// a second one take a new file under the same name.
+func (in *Installer) dropCopy(bin string) {
+	for _, p := range []string{bin, bin + update.PrevSuffix, bin + update.NewSuffix, bin + update.JournalSuffix} {
+		if !in.isRegular(p) {
+			continue
+		}
+		if err := in.removeFile(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			_, _ = fmt.Fprintf(in.warn, "warning: cannot remove %s: %v\n", p, err)
+		}
+	}
+	in.syncDir(filepath.Dir(bin))
+}
+
+// handOverDirs creates the config and state directories and hands them to the
+// service user recursively, so a pre-existing root-owned config.yaml or
+// config.yaml.lock (left by an earlier hand-run `sudo remote-mic serve`) is
+// handed over too.
+func (in *Installer) handOverDirs(s ServiceSpec, uid, gid int) error {
+	dirs := []struct {
+		path string
+		perm os.FileMode
+	}{
+		{s.ConfigDir(), 0o750},
+		{s.StateDir, 0o700},
+	}
+	for _, d := range dirs {
+		if err := in.ensureDir(d.path, d.perm); err != nil {
+			return fmt.Errorf("service: create %s: %w", d.path, err)
+		}
+		if err := in.chownTree(d.path, uid, gid); err != nil {
+			return fmt.Errorf("service: chown %s to %s: %w", d.path, s.User, err)
+		}
 	}
 	return nil
 }
@@ -556,6 +722,27 @@ func ensureBinDir(path string) error {
 	return nil
 }
 
+// isRegularFile reports whether path is a regular file, not a link to one.
+func isRegularFile(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// removeStagingDir removes UpdateDirName inside stateDir, through an os.Root
+// so a link the service user planted there is removed itself, not followed.
+// A state directory that does not exist has nothing to remove.
+func removeStagingDir(stateDir string) error {
+	root, err := os.OpenRoot(stateDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return root.RemoveAll(UpdateDirName)
+}
+
 // isSymlink reports whether path is a symlink itself.
 func isSymlink(path string) bool {
 	fi, err := os.Lstat(path)
@@ -676,14 +863,16 @@ func copyFile(src, dst string, perm os.FileMode) error {
 // checkDowngrade refuses to replace the binary at path with an older one: an
 // unpacked tarball stays at the version it was extracted at while the
 // installed copy updates itself, and re-running install from the old copy
-// would otherwise write it over the newer one and report success. An
+// would otherwise write it over the newer one and report success. The
+// refusal ends with advice, which says how to get past it for the route the
+// caller is on. An
 // installed binary that is absent, will not run, or names a version that
 // cannot be compared with this one (a development build) is the repair case:
 // install goes ahead, with a warning where something looked wrong. An
 // installed binary that is not a root-only regular file is never run (root
 // would be executing something another account can change, or a link to it):
 // its version is unknown, so install goes ahead and replaces it.
-func (in *Installer) checkDowngrade(path string) error {
+func (in *Installer) checkDowngrade(path, advice string) error {
 	if err := in.trustedBin(path); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			_, _ = fmt.Fprintf(in.warn, "warning: not running the installed %s to read its version (%v); replacing it\n", path, err)
@@ -704,7 +893,7 @@ func (in *Installer) checkDowngrade(path string) error {
 		return nil
 	}
 	if newer && !in.AllowDowngrade {
-		return fmt.Errorf("service: %s is %s, newer than this binary (%s); run the installed one (sudo %s service install) or pass --allow-downgrade", path, installed, in.Version, update.ShellQuote(path))
+		return fmt.Errorf("service: %s is %s, newer than this binary (%s); %s", path, installed, in.Version, advice)
 	}
 	return nil
 }

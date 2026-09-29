@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -24,10 +23,6 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/update"
 )
-
-// dpkgListGlob matches the file list dpkg keeps for the .deb package (the
-// package name is set in .goreleaser.yaml).
-const dpkgListGlob = "/var/lib/dpkg/info/birdnet-go-remote-mic*.list"
 
 // updateDirFor is the update staging directory: DirName inside the directory
 // holding the management certificate, which a service install points at its
@@ -85,7 +80,7 @@ func detectInstall(dir string) update.Install {
 	if err != nil {
 		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
-	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: dpkgOwns, RootOnly: update.CheckRootOnlyFile})
+	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: service.PackageOwns, RootOnly: update.CheckRootOnlyFile})
 	inst = unreadableUnitHint(inst, exe, app, err)
 	if inst.CanApply {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -112,32 +107,6 @@ func unreadableUnitHint(inst update.Install, exe, serviceBin string, unitErr err
 		inst.Hint = "Download the release for this system from the release page and replace " + exe
 	}
 	return inst
-}
-
-// dpkgOwns reports whether a dpkg file list of the package names path.
-func dpkgOwns(path string) bool {
-	lists, _ := filepath.Glob(dpkgListGlob)
-	for _, l := range lists {
-		if fileListHas(l, path) {
-			return true
-		}
-	}
-	return false
-}
-
-func fileListHas(list, path string) bool {
-	f, err := os.Open(list) //nolint:gosec // a dpkg file list matched by dpkgListGlob
-	if err != nil {
-		return false
-	}
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if sc.Text() == path {
-			return true
-		}
-	}
-	return false
 }
 
 // runServiceApplyUpdate is `remote-mic service apply-update`, the root

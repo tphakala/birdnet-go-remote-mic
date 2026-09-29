@@ -69,7 +69,20 @@ sudo apt install ./birdnet-go-remote-mic_*_linux_arm64.deb   # or _amd64
 ```
 
 The package installs `/usr/bin/remote-mic` and starts nothing on its own. Set up
-the service when you are ready (see [Run at boot](#run-at-boot-systemd-service)).
+the service when you are ready (see [Run at boot](#run-at-boot-systemd-service)):
+run from the package, `sudo remote-mic service install` runs `/usr/bin/remote-mic`
+in place, so apt is what updates the appliance. To update, download the newer
+`.deb` and install it the same way; the service restarts onto the new version.
+There is no APT repository yet, and no one-button update for this install.
+
+Upgrading from a release that copied the binary to `/usr/local/bin`: after
+installing the new `.deb`, run `sudo /usr/bin/remote-mic service install` once
+(by its full path, since a bare `remote-mic` may resolve to the old copy). It
+points the service at the packaged binary, removes the updater units and the
+old copy, and restarts the service. It refuses while an update is running, and
+refuses to replace a copy newer than the package unless you pass
+`--allow-downgrade`. Removing the package (`apt remove`) stops and disables the
+service; run `sudo remote-mic service uninstall` first to remove the unit too.
 
 ### Tarball
 
@@ -205,7 +218,9 @@ sudo remote-mic service install
 ```
 
 This creates a dedicated `remote-mic` system user (added to the `audio` group
-for device access), copies the binary to `/usr/local/bin/remote-mic`, writes and
+for device access), copies the binary to `/usr/local/bin/remote-mic` (run from a
+`.deb` install, it uses `/usr/bin/remote-mic` in place instead, with no copy and
+no updater, see above), writes and
 enables `/etc/systemd/system/remote-mic.service`, and starts it. The service
 reads its config from `/etc/remote-mic/config.yaml` and keeps its management
 certificate under `/var/lib/remote-mic`, both owned by the service user. There
@@ -405,12 +420,14 @@ replace the binary, so running install during an update waits for it to finish
 before that lock does not take it.
 
 An install set up with `sudo remote-mic service install` updates with the
-button, whatever it was installed from (tarball, `.deb` or Homebrew). A binary
+button, whatever it was installed from (tarball or Homebrew). A binary
 run by hand, or a package manager's own copy, is never replaced: it shows the
-update and the command to install it instead (`update.upgradeHint`). After
-`service install` from a `.deb` or Homebrew, the service runs its own copy
+update and the command to install it instead (`update.upgradeHint`). A `.deb`
+install runs the packaged binary in place and updates with apt, so it has no
+button. After `service install` from Homebrew, the service runs its own copy
 (by default in `/usr/local/bin`, see `--bin-path`), which updates itself; the
-package's copy does not. An install that warned it was installed without
+package's copy does not. Passing `--bin-path` from the `.deb` binary makes a
+copy the same way, with a warning, and gives up apt updates for that copy. An install that warned it was installed without
 automatic updates has no button until that is fixed and `service install` is
 run again. The button is also off, and the hint says what to fix, while anyone
 but root could change the service's binary or a directory above it; the hint

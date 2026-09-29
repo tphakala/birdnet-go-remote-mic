@@ -23,10 +23,14 @@ type Uninstaller struct {
 	// dirsOK refuses a purge whose config or state directory is the bin
 	// directory or one above it (checkNotOverBinDir).
 	dirsOK func(s ServiceSpec) error
+	// packageOwns reports whether the .deb package owns the file at path
+	// (PackageOwns); purge leaves such a binary to dpkg.
+	packageOwns func(path string) bool
 }
 
 // NewUninstaller builds an Uninstaller with the production init system, runner,
-// and filesystem and user operations.
+// filesystem and user operations, and the dpkg file lists that say whether the
+// .deb package owns the binary.
 func NewUninstaller(spec ServiceSpec) *Uninstaller {
 	return &Uninstaller{
 		Spec:       spec,
@@ -36,6 +40,8 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 		removeAll:  os.RemoveAll,
 		userExists: userExists,
 		dirsOK:     checkNotOverBinDir,
+
+		packageOwns: PackageOwns,
 	}
 }
 
@@ -44,7 +50,8 @@ func NewUninstaller(spec ServiceSpec) *Uninstaller {
 // systemd. With purge it also removes the
 // binary (with the copies the updater keeps beside it; the lock file beside it
 // stays, since unlinking a lock a waiting process has open lets a second one
-// take a new file under the same name), the config and state
+// take a new file under the same name), unless the .deb package owns it: that
+// is left for apt to remove. It also removes the config and state
 // directories, and the service user. A purge whose config or state directory
 // is the bin directory or one above it (checkNotOverBinDir) is refused before
 // anything is stopped or removed.
@@ -91,10 +98,13 @@ func (un *Uninstaller) Uninstall(purge bool) error {
 		return nil
 	}
 	// The root updater leaves the previous binary beside the installed one,
-	// and a cut-off update can leave its staged copy and journal.
-	for _, p := range []string{s.BinPath, s.BinPath + update.PrevSuffix, s.BinPath + update.NewSuffix, s.BinPath + update.JournalSuffix} {
-		if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("service: remove binary %s: %w", p, err)
+	// and a cut-off update can leave its staged copy and journal. A binary the
+	// package owns is dpkg's to remove.
+	if !un.packageOwns(s.BinPath) {
+		for _, p := range []string{s.BinPath, s.BinPath + update.PrevSuffix, s.BinPath + update.NewSuffix, s.BinPath + update.JournalSuffix} {
+			if err := un.removeFile(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("service: remove binary %s: %w", p, err)
+			}
 		}
 	}
 	for _, dir := range []string{s.ConfigDir(), s.StateDir} {

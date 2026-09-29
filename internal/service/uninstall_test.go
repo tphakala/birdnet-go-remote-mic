@@ -20,6 +20,8 @@ func testUninstaller(events *[]string, init *fakeInit, userThere bool) *Uninstal
 		removeAll:  func(p string) error { *events = append(*events, "rmall "+p); return nil },
 		userExists: func(string) bool { return userThere },
 		dirsOK:     func(ServiceSpec) error { *events = append(*events, evDirs); return nil },
+
+		packageOwns: func(string) bool { return false },
 	}
 }
 

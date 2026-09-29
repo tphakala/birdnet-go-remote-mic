@@ -29,7 +29,7 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 			return nil, nil
 		},
 		Plat:       Platform{Family: FamilyDebian},
-		selfExe:    func() (string, error) { return "/home/pi/remote-mic", nil },
+		selfExe:    func() (string, error) { return handRun, nil },
 		userExists: func(string) bool { return *userThere },
 		lookupUser: func(string) (int, int, error) { return 990, 990, nil },
 		ensureDir:  func(p string, _ os.FileMode) error { *events = append(*events, "mkdir "+p); return nil },
@@ -57,7 +57,12 @@ func testInstaller(events *[]string, init *fakeInit, userThere *bool) *Installer
 		removeFile: func(path string) error { *events = append(*events, "remove "+path); return nil },
 		lexists:    func(string) (bool, error) { return false, nil },
 		syncDir:    func(dir string) { *events = append(*events, "syncdir "+dir) },
-		warn:       io.Discard,
+
+		packageOwns:   func(string) bool { return false },
+		installed:     func() (ServiceSpec, error) { return ServiceSpec{}, nil },
+		removeStaging: func(dir string) error { *events = append(*events, "rmstaging "+dir); return nil },
+		isRegular:     func(string) bool { return true },
+		warn:          io.Discard,
 	}
 }
 

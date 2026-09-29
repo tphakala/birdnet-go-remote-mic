@@ -296,6 +296,10 @@ Apache-2.0 (`LICENSE`, `NOTICE`).
 - `web/`: vanilla TypeScript UI embedded with `go:embed`. See `web/AGENTS.md`.
 - `api/openapi.yaml`: the OpenAPI 3.1 contract, committed as source.
 - `rules/rules.go`: gocritic ruleguard rules.
+- `packaging/deb`: the .deb's maintainer scripts (`postinst`, `prerm`), wired in
+  `.goreleaser.yaml`. dpkg runs the OLD package's `prerm` on an upgrade, so
+  `prerm` acts on `remove` only, and `postinst` never enables or starts a
+  service and always exits 0.
 
 ## Gotchas
 

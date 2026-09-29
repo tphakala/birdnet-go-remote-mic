@@ -1,0 +1,26 @@
+#!/bin/sh
+# postinst of birdnet-go-remote-mic.
+#
+# After an upgrade, restart the appliance when its unit runs this package's
+# binary, so it runs the new version. Nothing else: it never enables or starts
+# the service (an operator may have disabled it) and never rewrites a unit.
+# Always exit 0, since a failure here must not fail the dpkg transaction.
+case "$1" in
+configure) ;;
+*) exit 0 ;;
+esac
+# $2 is the previously configured version; empty on a first install, when no
+# unit runs this package's binary yet.
+[ -n "$2" ] || exit 0
+command -v systemctl >/dev/null 2>&1 || exit 0
+unit=$(systemctl cat remote-mic.service 2>/dev/null) || exit 0
+case "$unit" in
+*"ExecStart=/usr/bin/remote-mic serve"*)
+	systemctl try-restart remote-mic.service || true
+	;;
+*"ExecStart="*)
+	echo "remote-mic.service runs a copy of the binary that apt does not update." >&2
+	echo "To run the packaged binary and let apt update it: sudo /usr/bin/remote-mic service install" >&2
+	;;
+esac
+exit 0

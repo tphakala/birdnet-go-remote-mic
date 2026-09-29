@@ -10,12 +10,14 @@ import (
 type Method string
 
 const (
-	// MethodService is a `remote-mic service install` install, from a
-	// tarball, a .deb or Homebrew alike: the binary is the one the service
-	// unit runs. With the root updater units in place it gets the one-button
-	// update.
+	// MethodService is a `remote-mic service install` install of a copy the
+	// installer made (from a tarball, or from a package binary given another
+	// bin path): the binary is the one the service unit runs. With the root
+	// updater units in place it gets the one-button update.
 	MethodService Method = "service"
-	// MethodDeb is the .deb package; dpkg owns the binary.
+	// MethodDeb is the .deb package; dpkg owns the binary, also when the
+	// service unit runs it in place (`service install` from a package
+	// binary), and apt is what updates it.
 	MethodDeb Method = "deb"
 	// MethodHomebrew is the Homebrew formula; brew owns the binary.
 	MethodHomebrew Method = "homebrew"
@@ -81,9 +83,9 @@ type InstallEnv struct {
 // DetectInstall classifies the running installation. What decides the button
 // is not which artifact the binary came from but whether it is the binary the
 // installed service unit runs, with the root updater installing to that same
-// path: a tarball, .deb or Homebrew install that ran `sudo remote-mic service
-// install` gets it. A package manager's own copy is never replaced behind its
-// back (dpkg and Homebrew get the upgrade command), and neither is a binary
+// path: a copy that `sudo remote-mic service install` made gets it. A package
+// manager's own copy is never replaced behind its back (dpkg and Homebrew get
+// the upgrade command, also when the service runs that copy in place), and neither is a binary
 // run by hand. The root updater refuses to replace a service binary anyone
 // but root could change, so such a binary gets no button either. A hint that
 // tells the operator to run `service install` names the service binary's own

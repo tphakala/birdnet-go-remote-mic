@@ -72,7 +72,13 @@ not break.
   the binary and its journal (`<bin>.pending`) after; it also refuses a config or
   state file with a second hard link instead of chowning it, and a config or
   state directory that is the bin directory or one above it (compared by
-  identity, so links and bind mounts count; purge checks the same).
+  identity, so links and bind mounts count; purge checks the same). From a
+  binary the .deb owns (`PackageOwns`, a dpkg file list) it runs that binary in
+  place instead: no copy, no updater units, no staging directory, and it
+  migrates an earlier copy install (locked, downgrade-guarded, refused while
+  an updater runs, removed once the unit runs the package binary); purge
+  leaves a package-owned binary to dpkg. `packaging/deb/{postinst,prerm}`
+  only try-restart such a unit after an upgrade and stop it on removal.
 - `runlock`: advisory lock at `<config path>.lock` marking a live appliance,
   so token commands use its API instead of editing its config.
 - `atomicfile`: atomic durable file replace (config, certs).
