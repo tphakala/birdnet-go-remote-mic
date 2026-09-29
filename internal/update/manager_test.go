@@ -347,11 +347,9 @@ func applyManagerFor(t *testing.T, stage func(ctx context.Context, rel *Release)
 		Fetch:     (&fakeFetch{rel: fakeRelease(vNew)}).fetch,
 		Stage:     stage,
 		Dir:       dir,
-		Install:   Install{Method: MethodService, CanApply: true},
+		Install:   Install{Method: MethodService, CanApply: true, ServiceBin: serviceBin},
 		Publisher: c,
 		Logf:      (&logSink{}).logf,
-
-		ServiceBin: serviceBin,
 	})
 	m.Apply(on())
 	if _, err := m.CheckNow(t.Context()); err != nil {

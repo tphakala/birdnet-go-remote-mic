@@ -136,13 +136,18 @@ func TestUnreadableUnitHint(t *testing.T) {
 
 // TestStagingDirHintNamesTheServiceBinary pins that the hint runs install from
 // the service's own binary, quoted, not from whatever `remote-mic` is first on
-// PATH.
+// PATH, and names no command at all when others could change that binary.
 func TestStagingDirHintNamesTheServiceBinary(t *testing.T) {
 	t.Parallel()
-	got := stagingDirHint("/opt/Remote Mic/remote-mic", "/var/lib/remote-mic/update")
-	for _, want := range []string{"sudo '/opt/Remote Mic/remote-mic' service install", "/var/lib/remote-mic/update"} {
+	const dir = "/var/lib/remote-mic/update"
+	got := stagingDirHint(update.Install{Method: update.MethodService, ServiceBin: "/opt/Remote Mic/remote-mic"}, dir)
+	for _, want := range []string{"sudo '/opt/Remote Mic/remote-mic' service install", dir} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hint %q lacks %q", got, want)
 		}
+	}
+	got = stagingDirHint(update.Install{Method: update.MethodService, ServiceBin: "/opt/remote-mic", ServiceBinUnsafe: "it is writable by others"}, dir)
+	if strings.Contains(got, "sudo /opt/remote-mic") || !strings.Contains(got, "writable only by root") {
+		t.Errorf("hint %q, want permissions advice and no command", got)
 	}
 }

@@ -117,9 +117,6 @@ type Config struct {
 	Dir string
 	// Install is the detected installation.
 	Install Install
-	// ServiceBin is the binary the installed service unit runs, "" when
-	// unknown; hints that send the operator to `service install` name it.
-	ServiceBin string
 	// Publisher receives the available condition and update events.
 	Publisher notify.Publisher
 	// Logf logs; log.Printf when nil.
@@ -171,10 +168,7 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 	if cfg.Logf == nil {
 		cfg.Logf = log.Printf
 	}
-	if cfg.Publisher == nil {
-		// A nil *Center is a no-op Publisher; a nil interface would panic.
-		cfg.Publisher = (*notify.Center)(nil)
-	}
+	cfg.Publisher = orNop(cfg.Publisher)
 	if cfg.Jitter == nil {
 		cfg.Jitter = func(n time.Duration) time.Duration { return time.Duration(rand.Int64N(int64(n))) }
 	}
@@ -539,7 +533,8 @@ func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *
 // it refused the update or could not complete it. A request still unclaimed
 // after updaterStartTimeout is withdrawn by removing it: the updater claims
 // one by renaming it, so a failed remove means the updater has it and is
-// working, however slowly.
+// working, however slowly. A withdrawn request fails the attempt with the
+// advice to re-run install (Install.RerunInstall).
 func (m *Manager) awaitUpdater(v string) {
 	start := time.Now()
 	t := time.NewTicker(resultPoll)
@@ -566,7 +561,7 @@ func (m *Manager) awaitUpdater(v string) {
 		case !withdrawTried && time.Since(start) > updaterStartTimeout:
 			withdrawTried = true
 			if os.Remove(filepath.Join(m.cfg.Dir, RequestFile)) == nil {
-				m.fail(v, errors.New("the root updater did not start; "+m.rerunInstall()))
+				m.fail(v, errors.New("the root updater did not start; "+m.cfg.Install.RerunInstall()))
 				return
 			}
 		case time.Since(start) > updaterStartTimeout+DefaultHealthTimeout+time.Minute:
@@ -574,16 +569,6 @@ func (m *Manager) awaitUpdater(v string) {
 			return
 		}
 	}
-}
-
-// rerunInstall is the advice to re-run the install. It names the service's own
-// binary when it is known: a bare command name could resolve to a package copy
-// earlier on PATH.
-func (m *Manager) rerunInstall() string {
-	if m.cfg.ServiceBin == "" {
-		return "re-run service install from the release binary you installed from"
-	}
-	return "re-run sudo " + ShellQuote(m.cfg.ServiceBin) + " service install"
 }
 
 func (m *Manager) setPhase(p Phase, msg string) {

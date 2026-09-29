@@ -32,6 +32,33 @@ type Install struct {
 	CanApply bool
 	// Hint tells the operator how to update when CanApply is false.
 	Hint string
+	// ServiceBin is the binary the installed service unit runs, set only for
+	// MethodService; advice to re-run `service install` names it.
+	ServiceBin string
+	// ServiceBinUnsafe says why root must not run ServiceBin (someone other
+	// than root could change it), or is "" when it may.
+	ServiceBinUnsafe string
+}
+
+// RestartService is the advice to restart the appliance after re-running
+// install, for the hints that follow RerunInstall with it.
+const RestartService = "restart the service (sudo systemctl restart remote-mic)"
+
+// RerunInstall is the advice to re-run `service install`, as a lowercase
+// clause to follow a colon or semicolon. It names the service's own binary
+// when that is known and only root can change it: a bare command name could
+// resolve to a package copy earlier on PATH, and root must not run a file
+// others can write. Otherwise it points at the release binary the operator
+// installed from.
+func (in Install) RerunInstall() string {
+	switch {
+	case in.ServiceBin == "":
+		return "re-run service install from the release binary you installed from"
+	case in.ServiceBinUnsafe != "":
+		return "make " + in.ServiceBin + " and the directories above it writable only by root (" + in.ServiceBinUnsafe + "), then re-run service install from the release binary you installed from, by its full path"
+	default:
+		return "re-run sudo " + ShellQuote(in.ServiceBin) + " service install"
+	}
 }
 
 // InstallEnv is what DetectInstall needs to know about the host.
@@ -46,6 +73,9 @@ type InstallEnv struct {
 	UpdaterBinPath string
 	// DpkgOwns reports whether dpkg lists path as installed by a package.
 	DpkgOwns func(path string) bool
+	// RootOnly refuses a service binary anyone but root could change
+	// (CheckRootOnlyFile). Nil refuses every binary.
+	RootOnly func(path string) error
 }
 
 // DetectInstall classifies the running installation. What decides the button
@@ -54,9 +84,11 @@ type InstallEnv struct {
 // path: a tarball, .deb or Homebrew install that ran `sudo remote-mic service
 // install` gets it. A package manager's own copy is never replaced behind its
 // back (dpkg and Homebrew get the upgrade command), and neither is a binary
-// run by hand. A hint that tells the operator to run `service install` names
-// the service binary's own path, not a bare command a package copy on PATH
-// could answer.
+// run by hand. The root updater refuses to replace a service binary anyone
+// but root could change, so such a binary gets no button either. A hint that
+// tells the operator to run `service install` names the service binary's own
+// path, not a bare command a package copy on PATH could answer, and only when
+// root may run it (see Install.RerunInstall).
 func DetectInstall(env InstallEnv) Install {
 	exe := filepath.Clean(env.Exe)
 	switch {
@@ -65,10 +97,21 @@ func DetectInstall(env InstallEnv) Install {
 	case isHomebrew(exe):
 		return Install{Method: MethodHomebrew, Hint: "Run brew upgrade birdnet-go-remote-mic"}
 	case env.ServiceBinPath != "" && filepath.Clean(env.ServiceBinPath) == exe:
-		if env.UpdaterBinPath != "" && filepath.Clean(env.UpdaterBinPath) == exe {
-			return Install{Method: MethodService, CanApply: true}
+		inst := Install{Method: MethodService, ServiceBin: exe}
+		if env.RootOnly == nil {
+			inst.ServiceBinUnsafe = "its permissions were not checked"
+		} else if err := env.RootOnly(exe); err != nil {
+			inst.ServiceBinUnsafe = err.Error()
 		}
-		return Install{Method: MethodService, Hint: "Re-run sudo " + ShellQuote(exe) + " service install and restart the service (sudo systemctl restart remote-mic) to enable one-button updates (if install warns that others can write the binary's directory, fix that first), or install the release by hand"}
+		updater := env.UpdaterBinPath != "" && filepath.Clean(env.UpdaterBinPath) == exe
+		inst.CanApply = updater && inst.ServiceBinUnsafe == ""
+		if !inst.CanApply {
+			inst.Hint = "To enable one-button updates, " + inst.RerunInstall() + ", and " + RestartService + ", or install the release by hand"
+			if inst.ServiceBinUnsafe != "" {
+				inst.Hint = "The root updater does not replace a binary others can change. " + inst.Hint
+			}
+		}
+		return inst
 	default:
 		return Install{Method: MethodManual, Hint: manualHint(exe, env.ServiceBinPath)}
 	}

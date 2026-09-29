@@ -2,7 +2,11 @@
 
 package service
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func testUninstaller(events *[]string, init *fakeInit, userThere bool) *Uninstaller {
 	return &Uninstaller{
@@ -15,6 +19,7 @@ func testUninstaller(events *[]string, init *fakeInit, userThere bool) *Uninstal
 		removeFile: func(p string) error { *events = append(*events, "rm "+p); return nil },
 		removeAll:  func(p string) error { *events = append(*events, "rmall "+p); return nil },
 		userExists: func(string) bool { return userThere },
+		dirsOK:     func(ServiceSpec) error { *events = append(*events, evDirs); return nil },
 	}
 }
 
@@ -46,6 +51,7 @@ func TestUninstallPurge(t *testing.T) {
 		t.Fatalf("Uninstall purge: %v", err)
 	}
 	wantSeq(t, events, []string{
+		evDirs,
 		evStopPath,
 		evDisablePath,
 		evStopUpdater,
@@ -77,5 +83,25 @@ func TestUninstallPurgeSkipsUserdelWhenAbsent(t *testing.T) {
 		if e == "run userdel remote-mic" {
 			t.Error("userdel should be skipped when the user does not exist")
 		}
+	}
+}
+
+// TestUninstallPurgeRefusesADirectoryOverTheBinDir pins that a purge whose
+// config or state directory reaches the bin directory stops before any
+// teardown, while a plain uninstall does not look.
+func TestUninstallPurgeRefusesADirectoryOverTheBinDir(t *testing.T) {
+	var events []string
+	init := &fakeInit{events: &events, present: true}
+	un := testUninstaller(&events, init, true)
+	un.dirsOK = func(ServiceSpec) error { return errors.New("the state directory /var/lib/remote-mic is /usr/local") }
+	err := un.Uninstall(true)
+	if err == nil || !strings.Contains(err.Error(), "refusing to purge") {
+		t.Fatalf("Uninstall(true) = %v, want a refusal", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("events = %v, want none before the refusal", events)
+	}
+	if err := un.Uninstall(false); err != nil {
+		t.Errorf("Uninstall(false) = %v, want nil", err)
 	}
 }

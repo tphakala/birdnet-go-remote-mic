@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -115,11 +116,10 @@ func TestBootCleansAbandonedAttempt(t *testing.T) {
 	}
 }
 
-// TestBootWatchesPendingUpdate pins that a boot with a fresh request (this
-// process is the new version the updater is waiting on) leaves the staged
-// files alone, reports a result the updater writes only after the boot (the
-// normal order: the updater waits for this process's health file first), and
-// stops watching once the updater's wait has passed.
+// TestBootWatchesPendingUpdate pins that a boot with a fresh request (one
+// this process wrote after it came up, since WithdrawOrphanedRequest clears an
+// earlier run's) leaves the staged files alone, reports a result written after
+// the boot, and stops watching once the updater's wait has passed.
 func TestBootWatchesPendingUpdate(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -205,6 +205,40 @@ func TestReadResultRefusesLinkAndGarbage(t *testing.T) {
 	}
 }
 
+// TestReadResultKeepsAFileItCannotRead pins that a status file the appliance
+// cannot read right now stays for the next poll, while one that is not a
+// regular file or does not decode is removed.
+func TestReadResultKeepsAFileItCannotRead(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 0 file")
+	}
+	dir := t.TempDir()
+	status := filepath.Join(dir, StatusFile)
+	writeJSON(t, status, Result{Outcome: OutcomeUpdated, From: vOld, To: vNew, Installed: vNew})
+	if err := os.Chmod(status, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readResult(dir); err == nil {
+		t.Fatal("an unreadable status file was read")
+	}
+	if !exists(status) {
+		t.Fatal("an unreadable status file was removed")
+	}
+	if err := os.Remove(status); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(status, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readResult(dir); err == nil {
+		t.Fatal("a directory in place of the status file was read")
+	}
+	if exists(status) {
+		t.Error("a directory in place of the status file was left")
+	}
+}
+
 // TestResultMessage pins that a failed result says whether the new version
 // stayed installed (a restore that failed) or was never installed.
 func TestResultMessage(t *testing.T) {
@@ -228,15 +262,29 @@ func TestResultMessage(t *testing.T) {
 
 // TestBootResultForAnotherVersion pins that Boot reports only results
 // addressed to its own version: one for another version is left in place
-// while an attempt is in flight (its owner may still read it) and dropped,
-// unreported, when nothing is.
+// while an attempt is in flight (its owner may still read it) and when it is
+// the updater's rollback away from this version (the restored version reports
+// it), and dropped, unreported, otherwise.
 func TestBootResultForAnotherVersion(t *testing.T) {
 	t.Parallel()
-	for _, inFlight := range []bool{true, false} {
+	rolledBackFromNew := Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew, Installed: vOld}
+	tests := []struct {
+		name     string
+		inFlight bool
+		res      Result
+		wantKept bool
+	}{
+		{"in flight", true, rolledBackFromNew, true},
+		{"rollback away from this version", false, rolledBackFromNew, true},
+		{"rollback away from another version", false, Result{Outcome: OutcomeRolledBack, From: "v0.1.0", To: vOld, Installed: "v0.1.0"}, false},
+		{"failure for another version", false, Result{Outcome: OutcomeFailed, From: vOld, To: vNew, Installed: vOld}, false},
+		{"rollback with no installed version", false, Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew}, false},
+	}
+	for _, tt := range tests {
 		// A bubble, so the in-flight watcher has settled before the checks.
 		synctest.Test(t, func(t *testing.T) {
 			dir := t.TempDir()
-			if inFlight {
+			if tt.inFlight {
 				taken := filepath.Join(dir, TakenFile)
 				writeJSON(t, taken, Request{Version: vNew})
 				now := time.Now()
@@ -244,20 +292,200 @@ func TestBootResultForAnotherVersion(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// The rolled-back result belongs to the restored old version.
-			writeJSON(t, filepath.Join(dir, StatusFile), Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew, Installed: vOld})
+			writeJSON(t, filepath.Join(dir, StatusFile), tt.res)
 			c := notify.NewCenter()
 			Boot(t.Context(), dir, vNew, c, t.Logf)
 			time.Sleep(3 * resultPoll)
 			synctest.Wait()
 			if n := len(c.Snapshot().Notifications); n != 0 {
-				t.Errorf("in flight %t: %d notifications, want none", inFlight, n)
+				t.Errorf("%s: %d notifications, want none", tt.name, n)
 			}
-			if got := exists(filepath.Join(dir, StatusFile)); got != inFlight {
-				t.Errorf("in flight %t: status file present %t, want %t", inFlight, got, inFlight)
+			if got := exists(filepath.Join(dir, StatusFile)); got != tt.wantKept {
+				t.Errorf("%s: status file present %t, want %t", tt.name, got, tt.wantKept)
 			}
 		})
 	}
+}
+
+// TestBootKeepsTheRollbackForTheRestoredVersion pins the reboot mid-install
+// case: the new version boots while the updater's recovery rolls it back, and
+// the claim looks abandoned (a long power cut, or a clock restored far off).
+// The new version must leave the rollback result for the restored version,
+// which reports it once.
+func TestBootKeepsTheRollbackForTheRestoredVersion(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		claimAge time.Duration
+	}{
+		{"claim two hours old", 2 * time.Hour},
+		{"claim an hour in the future", -time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			taken := filepath.Join(dir, TakenFile)
+			writeJSON(t, taken, Request{Version: vNew})
+			when := time.Now().Add(-tc.claimAge)
+			if err := os.Chtimes(taken, when, when); err != nil {
+				t.Fatal(err)
+			}
+			status := filepath.Join(dir, StatusFile)
+			writeJSON(t, status, Result{Outcome: OutcomeRolledBack, From: vOld, To: vNew, Installed: vOld, Reason: "power lost mid-install"})
+
+			c := notify.NewCenter()
+			Boot(t.Context(), dir, vNew, c, t.Logf)
+			if n := len(c.Snapshot().Notifications); n != 0 {
+				t.Fatalf("the rolled-back version published %d notifications, want none", n)
+			}
+			if !exists(status) {
+				t.Fatal("the rolled-back version dropped the result meant for the restored one")
+			}
+
+			Boot(t.Context(), dir, vOld, c, t.Logf)
+			snap := c.Snapshot()
+			if len(snap.Notifications) != 1 || snap.Notifications[0].Title != "Update rolled back" {
+				t.Fatalf("notifications %+v, want one rollback report", snap.Notifications)
+			}
+			if exists(status) {
+				t.Error("the restored version left the reported result in place")
+			}
+		})
+	}
+}
+
+// TestWithdrawOrphanedRequestForTheRunningVersion pins that a withdrawn
+// request is reported as a failed update only when it asked for a version
+// newer than the running one: when that version or a newer one already runs
+// (installed by hand meanwhile), there is nothing to start again.
+func TestWithdrawOrphanedRequestForTheRunningVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, requested, running string
+		wantReport               bool
+	}{
+		{"requested version runs", vNew, vNew, false},
+		{"newer version runs", vOld, vNew, false},
+		{"older version runs", vNew, vOld, true},
+		{"development build of the requested version runs", vNew, vNew + "-3-gabc1234", false},
+		{"development build of an older version runs", vNew, vOld + "-3-gabc1234", true},
+		{"build that is not a release runs", vNew, devBuildVersion, true},
+		{"unreadable request", "", vNew, true},
+	}
+	for _, tt := range tests {
+		dir := t.TempDir()
+		req := filepath.Join(dir, RequestFile)
+		writeJSON(t, req, Request{Version: tt.requested})
+		c := notify.NewCenter()
+		WithdrawOrphanedRequest(dir, tt.running, c, t.Logf)
+		if exists(req) {
+			t.Errorf("%s: the request is still there", tt.name)
+		}
+		if got := len(c.Snapshot().Notifications) == 1; got != tt.wantReport {
+			t.Errorf("%s: reported %t, want %t", tt.name, got, tt.wantReport)
+		}
+	}
+}
+
+// TestWithdrawOrphanedRequest pins that a request left unclaimed by an
+// earlier run is removed and reported as a failed update, while a claim, a
+// missing request and a missing staging directory are left alone.
+func TestWithdrawOrphanedRequest(t *testing.T) {
+	t.Parallel()
+	t.Run("request", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		req := filepath.Join(dir, RequestFile)
+		writeJSON(t, req, Request{Version: vNew})
+		c := notify.NewCenter()
+		logs := &logSink{}
+		WithdrawOrphanedRequest(dir, vOld, c, logs.logf)
+		if exists(req) {
+			t.Error("the request is still there")
+		}
+		snap := c.Snapshot()
+		if len(snap.Notifications) != 1 || snap.Notifications[0].Title != "Update failed" || !strings.Contains(snap.Notifications[0].Message, vNew) {
+			t.Fatalf("notifications %+v, want one failure naming %s", snap.Notifications, vNew)
+		}
+		if n := logs.count("withdrew"); n != 1 {
+			t.Errorf("%d withdrawal log lines, want 1: %q", n, logs.lines)
+		}
+	})
+	t.Run("unreadable request", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		req := filepath.Join(dir, RequestFile)
+		if err := os.WriteFile(req, []byte("{"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		c := notify.NewCenter()
+		WithdrawOrphanedRequest(dir, vOld, nil, t.Logf)
+		WithdrawOrphanedRequest(dir, vOld, c, t.Logf)
+		if exists(req) {
+			t.Error("the malformed request is still there")
+		}
+		if n := len(c.Snapshot().Notifications); n != 0 {
+			t.Errorf("%d notifications for a request already withdrawn, want none", n)
+		}
+	})
+	t.Run("claim", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		taken := filepath.Join(dir, TakenFile)
+		writeJSON(t, taken, Request{Version: vNew})
+		c := notify.NewCenter()
+		WithdrawOrphanedRequest(dir, vOld, c, t.Logf)
+		if !exists(taken) {
+			t.Error("the updater's claim was removed")
+		}
+		if n := len(c.Snapshot().Notifications); n != 0 {
+			t.Errorf("%d notifications, want none", n)
+		}
+	})
+	t.Run("staging directory it cannot change", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		for _, tc := range []struct {
+			mode os.FileMode
+			want string
+		}{
+			{0o500, "withdraw an unclaimed update request"},
+			{0, "look for an unclaimed update request"},
+		} {
+			dir := t.TempDir()
+			req := filepath.Join(dir, RequestFile)
+			writeJSON(t, req, Request{Version: vNew})
+			if err := os.Chmod(dir, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			c := notify.NewCenter()
+			logs := &logSink{}
+			WithdrawOrphanedRequest(dir, vOld, c, logs.logf)
+			if err := os.Chmod(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if n := logs.count(tc.want); n != 1 {
+				t.Errorf("mode %o: log %q, want one line with %q", tc.mode, logs.lines, tc.want)
+			}
+			if n := len(c.Snapshot().Notifications); n != 0 {
+				t.Errorf("mode %o: %d notifications for a request not withdrawn, want none", tc.mode, n)
+			}
+			if !exists(req) {
+				t.Errorf("mode %o: the request is gone", tc.mode)
+			}
+		}
+	})
+	t.Run("no staging directory", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), DirName)
+		logs := &logSink{}
+		WithdrawOrphanedRequest(dir, vOld, nil, logs.logf)
+		if n := logs.count("update:"); n != 0 {
+			t.Errorf("%d log lines, want none: %q", n, logs.lines)
+		}
+	})
 }
 
 // TestBootWatchesClaimedRequest pins that a request the updater has already

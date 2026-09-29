@@ -16,7 +16,8 @@ import (
 
 // An attempt is in flight while its root updater may still be running: a
 // request not yet picked up, for updaterStartTimeout (after which the
-// appliance withdraws it) plus a margin, or the updater's claim, which it
+// process that wrote it withdraws it; a later process withdraws it at
+// startup, see WithdrawOrphanedRequest) plus a margin, or the updater's claim, which it
 // touches on taking it, for the updater unit's 10 min start timeout plus a
 // margin. Anything older is abandoned: the updater units were removed, never
 // ran, or were stopped. A file dated in the future (the clock stepped back)
@@ -34,6 +35,48 @@ const notifySource = "update"
 // an update is in flight.
 const resultPoll = 2 * time.Second
 
+// WithdrawOrphanedRequest removes an update request an earlier appliance
+// process left unclaimed, and reports the attempt as failed unless the version
+// it asked for, or a newer one, is already running. It runs at
+// startup, before this process can write a request of its own. Only the
+// process that wrote a request waits to withdraw it (Manager.awaitUpdater),
+// so one left by a process that stopped during that wait would otherwise stay
+// on disk, and the next start of the updater's path unit (a reboot, a
+// re-run install) would install an update no one is tracking. The updater
+// claims a request by renaming it, so exactly one of the claim and this
+// removal wins; a claim is left for Boot to watch. dir is the staging
+// directory; nothing happens when it or the request does not exist.
+func WithdrawOrphanedRequest(dir, running string, pub notify.Publisher, logf func(string, ...any)) {
+	p := filepath.Join(dir, RequestFile)
+	if _, err := os.Lstat(p); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logf("update: look for an unclaimed update request: %v", err)
+		}
+		return
+	}
+	// The version is only for the report; the request goes either way.
+	var req Request
+	_ = readSmall(dir, RequestFile, &req)
+	if err := os.Remove(p); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logf("update: withdraw an unclaimed update request: %v", err)
+		}
+		return
+	}
+	logf("update: withdrew an update request to %q that an earlier run left unclaimed", req.Version)
+	// That version, or a newer one, already runs (installed by hand
+	// meanwhile): nothing failed that the operator could start again.
+	if newer, err := Newer(req.Version, running); err == nil && !newer {
+		return
+	}
+	orNop(pub).Publish(resultNotification(&Result{
+		Outcome: OutcomeFailed,
+		From:    running,
+		To:      req.Version,
+		Reason:  "the appliance restarted before the root updater took the request; start the update again",
+	}))
+}
+
 // Boot is the appliance's startup step for the update path, run once the
 // appliance is up and serving. dir is the staging directory; Boot does
 // nothing when it does not exist (the root updater is not installed).
@@ -42,16 +85,18 @@ const resultPoll = 2 * time.Second
 // an update addressed to this version, and clears leftovers of an abandoned
 // attempt, logging each abandoned request. While an attempt is in flight
 // (a request or claim within its age limit, see attempts: this process may
-// be the new version the updater is watching), it keeps looking for the result in the background until ctx
-// ends or the updater's health wait has passed, and leaves results addressed
-// to another version for the process they belong to.
+// be the new version the updater is watching, or have started an attempt of
+// its own since WithdrawOrphanedRequest ran), it keeps looking for the result
+// in the background until ctx ends or the updater's health wait has passed,
+// and leaves results addressed to another version for the process they
+// belong to. With nothing in flight it drops a result addressed to another
+// version, unless the updater rolled back from this very version and will
+// restart the appliance onto the one the result is for (see restoredFrom).
 func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf func(string, ...any)) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return
 	}
-	if pub == nil {
-		pub = (*notify.Center)(nil) // a no-op, where a nil interface would panic
-	}
+	pub = orNop(pub)
 	h, err := json.Marshal(Health{Version: version, PID: os.Getpid()})
 	if err == nil {
 		err = atomicfile.Write(filepath.Join(dir, HealthFile), h, 0o644)
@@ -67,15 +112,30 @@ func Boot(ctx context.Context, dir, version string, pub notify.Publisher, logf f
 	for _, since := range abandoned {
 		logf("update: removing an update request abandoned since %s", since.UTC().Format(time.RFC3339))
 	}
-	// Nothing is in flight, so a result not addressed to this version will
-	// never be reported by anyone: drop it.
+	// Nothing looks in flight, so a result not addressed to this version
+	// will never be reported by anyone: drop it. The exception is a rollback
+	// away from this version: the claim can look abandoned while its updater
+	// still runs (a reboot mid-install, a clock stepped by more than the
+	// claim's age limit), and that updater restarts the appliance onto the
+	// restored version, which reports it.
 	if reportResult(dir, version, pub, logf) == nil {
 		if res, err := readResult(dir); err == nil {
-			logf("update: dropping a result for %s (this is %s): %s", res.Installed, version, resultMessage(res))
-			_ = os.Remove(filepath.Join(dir, StatusFile))
+			if restoredFrom(res, version) {
+				logf("update: leaving the rollback result for %s, which the updater restored in place of %s", res.Installed, version)
+			} else {
+				logf("update: dropping a result for %s (this is %s): %s", res.Installed, version, resultMessage(res))
+				_ = os.Remove(filepath.Join(dir, StatusFile))
+			}
 		}
 	}
 	(&Stager{Dir: dir}).clean()
+}
+
+// restoredFrom reports whether res is the updater's rollback away from
+// version: the binary on disk is now res.Installed, and the appliance the
+// updater restarts runs that version and reports res.
+func restoredFrom(res *Result, version string) bool {
+	return res.Outcome == OutcomeRolledBack && res.To == version && res.Installed != "" && res.Installed != version
 }
 
 // inFlight reports whether an update attempt may still be running in dir.
@@ -159,7 +219,8 @@ func takeResult(dir, version string) (*Result, error) {
 }
 
 // readResult reads the status file without consuming it. A file that is not
-// a regular file, or does not parse, is removed and reported as an error.
+// a regular file, or does not parse, is removed and reported as an error; one
+// that cannot be read right now is left for the next look.
 func readResult(dir string) (*Result, error) {
 	p := filepath.Join(dir, StatusFile)
 	fi, err := os.Lstat(p)
@@ -180,6 +241,33 @@ func readResult(dir string) (*Result, error) {
 		return nil, err
 	}
 	return &res, nil
+}
+
+// readSmall decodes the small JSON file name in dir into v, refusing one that
+// is not a regular file. It removes nothing.
+func readSmall(dir, name string, v any) error {
+	p := filepath.Join(dir, name)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return err
+	}
+	if err := regularFile(name, fi); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // p is a fixed file name in the staging directory
+	if err != nil {
+		return err
+	}
+	return decodeSmall(name, b, v)
+}
+
+// orNop returns pub, or a no-op publisher when it is nil, where a nil
+// interface would panic.
+func orNop(pub notify.Publisher) notify.Publisher {
+	if pub == nil {
+		return (*notify.Center)(nil)
+	}
+	return pub
 }
 
 func resultMessage(res *Result) string {

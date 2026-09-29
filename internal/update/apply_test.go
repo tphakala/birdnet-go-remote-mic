@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1220,5 +1221,70 @@ func TestApplyAcceptsExtraVersionOutput(t *testing.T) {
 	}
 	if got := env.installed(t); got != newBinary {
 		t.Errorf("installed %q, want the new binary", got)
+	}
+}
+
+// TestPathDirs pins the directories a resolution passes: those a link leads
+// through, with ".." taken after the link as the kernel does, and the refusal
+// of a loop and of a file on the way.
+func TestPathDirs(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"x/y", "x/w", "z"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// z/l leads to x/y, so "l/../w" is x/w: neither y/w (".." ignored) nor
+	// z/w (".." taken lexically) exists. z/r is a relative link through "..".
+	if err := os.Symlink(root+"/x/y", root+"/z/l"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../x/y", root+"/z/r"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{root + "/z/l/../w", []string{"/", filepath.Join(root, "z"), filepath.Join(root, "x"), root + "/x/y", root + "/x/w"}},
+		{root + "/z/r", []string{"/", filepath.Join(root, "z"), filepath.Join(root, "x"), root + "/x/y"}},
+	} {
+		got, err := PathDirs(tc.path)
+		if err != nil {
+			t.Fatalf("PathDirs(%s): %v", tc.path, err)
+		}
+		for _, want := range tc.want {
+			if !slices.Contains(got, want) {
+				t.Errorf("PathDirs(%s) = %v, want it to contain %s", tc.path, got, want)
+			}
+		}
+		if end := tc.want[len(tc.want)-1]; got[len(got)-1] != end {
+			t.Errorf("PathDirs(%s) ends at %s, want %s", tc.path, got[len(got)-1], end)
+		}
+	}
+	if err := os.Symlink("loop", filepath.Join(root, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PathDirs(filepath.Join(root, "loop")); err == nil || !strings.Contains(err.Error(), "too many levels") {
+		t.Errorf("PathDirs(loop) = %v, want a hop limit error", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PathDirs(filepath.Join(root, "f", "d")); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("PathDirs(file/d) = %v, want not a directory", err)
+	}
+	if got, err := PathDirs(root + "/./x//y"); err != nil || !slices.Contains(got, root+"/x/y") {
+		t.Errorf("PathDirs(./x//y) = %v, %v, want x/y resolved", got, err)
+	}
+	if _, err := PathDirs(root + "/missing/d"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("PathDirs(missing) = %v, want not exist", err)
+	}
+	if _, err := PathDirs("relative"); err == nil {
+		t.Error("PathDirs accepted a relative path")
 	}
 }

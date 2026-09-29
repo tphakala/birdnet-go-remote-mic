@@ -12,6 +12,10 @@ import (
 // expected event sequences readable.
 const (
 	evReload       = "reload"
+	evBinDir       = "bindir /usr/local/bin"
+	evMkBinDir     = "mkbindir /usr/local/bin"
+	evDirs         = "dirs"
+	labelConfigDir = "config directory"
 	nologinPath    = "/usr/sbin/nologin"
 	evGroupadd     = "run groupadd --system --force remote-mic"
 	evCopySelf     = "copy /home/pi/remote-mic -> /usr/local/bin/remote-mic"
