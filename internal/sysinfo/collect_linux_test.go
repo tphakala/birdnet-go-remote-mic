@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -673,12 +674,23 @@ func TestDiskBytesRatioIsUnitIndependent(t *testing.T) {
 	t.Parallel()
 	var want float64
 	for i, unit := range []int64{512, 4096, 1048576} {
-		_, used, avail := diskBytes(1000, 400, 350, unit, unit)
+		_, used, avail := diskBytes(1000, 400, 350, unit, 1048576)
 		got := float64(used) / float64(used+avail)
 		if i == 0 {
 			want = got
 		} else if got != want {
 			t.Errorf("unit %d: used/(used+avail) = %v, want %v", unit, got, want)
 		}
+	}
+}
+
+func TestStatfsBytesUsesFragmentSize(t *testing.T) {
+	t.Parallel()
+	// The issue's mount: bsize 1 MiB, frsize 4 KiB. Swapping the two fields at
+	// the statfs call site reintroduces a 256x overstatement.
+	st := syscall.Statfs_t{Blocks: 1000, Bfree: 400, Bavail: 350, Frsize: 4096, Bsize: 1048576}
+	total, used, avail := statfsBytes(&st)
+	if total != 1000*4096 || used != 600*4096 || avail != 350*4096 {
+		t.Errorf("statfsBytes = (%d, %d, %d), want (%d, %d, %d)", total, used, avail, 1000*4096, 600*4096, 350*4096)
 	}
 }

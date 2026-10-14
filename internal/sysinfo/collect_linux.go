@@ -296,12 +296,17 @@ func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, 0, 0, false
 	}
+	total, used, avail = statfsBytes(&st)
+	return total, used, avail, true
+}
+
+// statfsBytes reads the block counts and unit sizes out of st.
+func statfsBytes(st *syscall.Statfs_t) (total, used, avail int64) {
 	// Frsize and Bsize are int32 on ILP32 (arm, 386) and int64 on LP64; widen
 	// them to int64 on every architecture. The conversion is required on
 	// 32-bit; unconvert only sees the 64-bit build, where it is a no-op, hence
 	// the suppression.
-	total, used, avail = diskBytes(st.Blocks, st.Bfree, st.Bavail, int64(st.Frsize), int64(st.Bsize)) //nolint:unconvert // required on 32-bit where Frsize and Bsize are int32
-	return total, used, avail, true
+	return diskBytes(st.Blocks, st.Bfree, st.Bavail, int64(st.Frsize), int64(st.Bsize)) //nolint:unconvert // required on 32-bit where Frsize and Bsize are int32
 }
 
 // diskBytes converts statfs block counts to bytes. Linux counts f_blocks,
