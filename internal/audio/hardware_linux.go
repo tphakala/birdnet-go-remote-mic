@@ -3,7 +3,6 @@
 package audio
 
 import (
-	"errors"
 	"slices"
 
 	capture "github.com/tphakala/go-audio-capture"
@@ -13,8 +12,8 @@ import (
 var enumerateDevices = capture.Devices
 
 // supportedRatesFn is a package var so tests can inject a fake capability query.
-// It backs ProbeChannels and DeviceInUse, which only need the fast refine-based
-// query (channel support and busy detection do not require a rate commit).
+// It backs ProbeChannels and ResolveOpenChannels, which only need the fast
+// refine-based query (channel support does not require a rate commit).
 var supportedRatesFn = capture.SupportedRates
 
 // verifiedRatesFn backs ProbeRates. It is the HW_PARAMS-committing probe, which
@@ -162,12 +161,13 @@ func rateProbeChannel(supported []int) int {
 
 // ProbeRates returns the subset of candidates the device accepts, for the config
 // UI's rate dropdown. It uses go-audio-capture's SupportedRatesVerified, which
-// refines to filter the advertised rates and then commits HW_PARAMS on a fresh
-// O_NONBLOCK open per candidate to VERIFY each one. This rejects rates a USB Audio
-// Class device advertises at refine time but cannot actually deliver (the refine
-// lie), which HW_REFINE alone reported as supported. The opens are O_NONBLOCK, so
-// the probe still fails fast on a busy device rather than blocking, and it may run
-// while the device is free.
+// refines to filter the advertised rates and then, on one open per (device,
+// channels, format), commits HW_PARAMS for each advertised rate on that one fd
+// with HW_FREE between commits, under one identity check, to VERIFY each one.
+// This rejects rates a USB Audio Class device advertises at refine time but
+// cannot actually deliver (the refine lie), which HW_REFINE alone reported as
+// supported. The open is O_NONBLOCK, so the probe fails fast on a busy device
+// rather than blocking, and it may run while the device is free.
 //
 // It queries every format in captureFormats (S16LE, S32LE, and the 24-bit
 // S24LE / S24_3LE) and keeps the union, because OpenCaptureAt negotiates the
@@ -201,8 +201,8 @@ func ProbeRates(deviceID string, channels int, candidates []int) []int {
 }
 
 // ProbeChannels returns the subset of candidate channel counts the device accepts,
-// for the config UI's Channels control. It reuses the same non-blocking HW_REFINE
-// capability query as ProbeRates (no exclusive open), querying each candidate
+// for the config UI's Channels control. It uses the refine-only, non-blocking
+// SupportedRates query (no rate commit), querying each candidate
 // against every format in captureFormats and keeping any count at least one
 // format accepts.
 //
@@ -229,35 +229,4 @@ func ProbeChannels(deviceID string, candidates []int) []int {
 		return nil
 	}
 	return out
-}
-
-// DeviceInUse reports whether the device is currently held exclusively by another
-// process. It uses the same non-blocking capability query as the probes, which
-// opens the device with O_NONBLOCK and so fails promptly with ErrDeviceInUse when
-// the device is busy, rather than blocking the way a streaming open can. The
-// caller uses it to skip a contended device without stalling on the exclusive
-// open.
-//
-// It probes the configured channel count across every format in captureFormats.
-// A nil error, or any error other than ErrDeviceInUse, means the device is not held
-// exclusively by another process (a *BadFormatError is only reachable after a
-// successful O_NONBLOCK open, and ErrDeviceGone means the device is missing, not
-// busy), so the real open should proceed and surface any failure. Only when every
-// attempt reports ErrDeviceInUse is the device treated as busy.
-func DeviceInUse(deviceID string, channels int) bool {
-	busy := false
-	for _, f := range captureFormats {
-		_, err := supportedRatesFn(deviceID, channels, f)
-		if err == nil {
-			return false
-		}
-		if errors.Is(err, capture.ErrDeviceInUse) {
-			busy = true
-			continue
-		}
-		// Any other error (BadFormatError, ErrDeviceGone, ErrCapabilitiesUnsupported)
-		// means the device is not held exclusively; let the real open decide.
-		return false
-	}
-	return busy
 }

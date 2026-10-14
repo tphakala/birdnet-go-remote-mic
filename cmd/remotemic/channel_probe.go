@@ -30,30 +30,28 @@ var openProbeCapture = func(device string, rate, channels int) (audio.Source, er
 	return src, err
 }
 
-// probeOpenSlot admits one probe device open at a time. The capture open cannot
-// be cancelled (the capture library takes no context), so an open that never
-// returns strands the goroutine running it. Holding the slot for the duration
-// of the open bounds that to a single goroutine: while an earlier open is still
-// stuck, later probes fail fast instead of stranding one goroutine each.
+// probeOpenSlot admits one probe device open at a time. A device another process
+// holds fails the open at once with ErrDeviceInUse, but the capture open still
+// cannot be cancelled (the capture library takes no context), so an open stuck
+// in a driver ioctl would strand the goroutine running it. Holding the slot for
+// the duration of the open bounds that to a single goroutine: while an earlier
+// open is still stuck, later probes fail fast instead of stranding one goroutine
+// each.
 var probeOpenSlot = make(chan struct{}, 1)
 
 // probeChannelLevels is the provisioning channel probe (mgmtserver.ChannelProbe):
 // it opens an unconfigured device at rate and channels, lets the capture settle,
 // and returns each channel's RMS level in dBFS over the measurement window. A
-// device another process already holds exclusively is rejected without opening.
+// device another process already holds exclusively fails the open at once with
+// ErrDeviceInUse.
 // The open and the read run on a goroutine, so the probe itself returns as soon
 // as ctx is done. A stalled read is then ended by closing the source, and a
 // source that opens only after the cancel is closed by the goroutine. An open
-// that blocks and never returns cannot be interrupted: its goroutine stays parked
+// that never returns cannot be interrupted: its goroutine stays parked
 // in the open, and probeOpenSlot keeps that to one at a time. The accumulator is
 // read only on the success path, after the goroutine has finished with it, so the
 // main path never races it.
 func probeChannelLevels(ctx context.Context, device string, rate, channels int) ([]float64, error) {
-	// A device another process holds exclusively is skipped with a fast,
-	// non-blocking check, so a busy device never reaches the blocking open below.
-	if deviceInUse(device, channels) {
-		return nil, errors.New("channel probe: device busy")
-	}
 	select {
 	case probeOpenSlot <- struct{}{}:
 	default:

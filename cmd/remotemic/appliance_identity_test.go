@@ -569,7 +569,8 @@ func TestAbsentDeviceFailureIsDisconnectAndArms(t *testing.T) {
 	center := applianceCenter(t, app)
 
 	// The unplug removed the device from the host listing, and the pump reported
-	// a raw errno rather than ErrDeviceGone.
+	// a raw errno rather than ErrDeviceGone: the re-resolve safety net for a loss
+	// the library does not report as ErrDeviceGone.
 	host.devs = nil
 	killDevice(t, app, log, "moth", errors.New("file descriptor in bad state"))
 

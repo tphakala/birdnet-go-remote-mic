@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	capture "github.com/tphakala/go-audio-capture"
+
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 )
 
@@ -47,11 +49,9 @@ func (b *stalledSource) Close() error { close(b.closed); return nil }
 
 func stubProbeCapture(t *testing.T, src audio.Source) {
 	t.Helper()
-	prevOpen, prevBusy := openProbeCapture, deviceInUse
+	prevOpen := openProbeCapture
 	openProbeCapture = func(string, int, int) (audio.Source, error) { return src, nil }
-	// No real hardware under test, so the busy check is always "free".
-	deviceInUse = func(string, int) bool { return false }
-	t.Cleanup(func() { openProbeCapture, deviceInUse = prevOpen, prevBusy })
+	t.Cleanup(func() { openProbeCapture = prevOpen })
 }
 
 // closeFlagSource records that Close was called, over a scriptedSource base.
@@ -93,41 +93,48 @@ func TestProbeChannelLevelsTimesOut(t *testing.T) {
 	}
 }
 
-// TestProbeChannelLevelsSkipsBusyDevice asserts a device another process holds
-// exclusively is rejected before any blocking open.
-func TestProbeChannelLevelsSkipsBusyDevice(t *testing.T) {
-	prevOpen, prevBusy := openProbeCapture, deviceInUse
-	opened := false
+// TestProbeChannelLevelsReportsBusyDevice asserts a device another process holds
+// exclusively fails the probe at once with ErrDeviceInUse and releases the open
+// slot, so the next probe is not refused as "still opening".
+func TestProbeChannelLevelsReportsBusyDevice(t *testing.T) {
+	prevOpen := openProbeCapture
+	var busy atomic.Bool
+	busy.Store(true)
 	openProbeCapture = func(string, int, int) (audio.Source, error) {
-		opened = true
+		if busy.Load() {
+			return nil, capture.ErrDeviceInUse
+		}
 		return &scriptedSource{rate: 48000, frames: 480}, nil
 	}
-	deviceInUse = func(string, int) bool { return true }
-	t.Cleanup(func() { openProbeCapture, deviceInUse = prevOpen, prevBusy })
+	t.Cleanup(func() { openProbeCapture = prevOpen })
 
-	if _, err := probeChannelLevels(context.Background(), "hw:9", 48000, 2); err == nil {
-		t.Fatal("probe on a busy device returned no error")
+	start := time.Now()
+	if _, err := probeChannelLevels(context.Background(), "hw:9", 48000, 2); !errors.Is(err, capture.ErrDeviceInUse) {
+		t.Fatalf("probe on a busy device err = %v, want ErrDeviceInUse", err)
 	}
-	if opened {
-		t.Error("probe opened a device reported busy")
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("busy probe took %v, want an immediate failure", elapsed)
+	}
+	busy.Store(false)
+	if _, err := probeChannelLevels(context.Background(), "hw:9", 48000, 2); err != nil && strings.Contains(err.Error(), "still opening") {
+		t.Fatalf("probe after a busy one err = %v, the open slot was not released", err)
 	}
 }
 
-// TestProbeChannelLevelsBoundsBlockingOpen asserts a blocking ALSA open is
-// bounded by ctx (the probe returns promptly), and a source that opens only
+// TestProbeChannelLevelsBoundsBlockingOpen asserts an open that does not return
+// is bounded by ctx (the probe returns promptly), and a source that opens only
 // after the deadline is closed rather than leaked.
 func TestProbeChannelLevelsBoundsBlockingOpen(t *testing.T) {
 	release := make(chan struct{})
 	lateClosed := make(chan struct{})
-	prevOpen, prevBusy := openProbeCapture, deviceInUse
+	prevOpen := openProbeCapture
 	var opens atomic.Int32
 	openProbeCapture = func(string, int, int) (audio.Source, error) {
 		opens.Add(1)
 		<-release // block the open until the test releases it
 		return &closeFlagSource{scriptedSource: scriptedSource{rate: 48000, frames: 480}, closed: lateClosed}, nil
 	}
-	deviceInUse = func(string, int) bool { return false }
-	t.Cleanup(func() { openProbeCapture, deviceInUse = prevOpen, prevBusy })
+	t.Cleanup(func() { openProbeCapture = prevOpen })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -136,7 +143,7 @@ func TestProbeChannelLevelsBoundsBlockingOpen(t *testing.T) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("probe took %v after a 50 ms deadline; the blocking open was not bounded", elapsed)
+		t.Fatalf("probe took %v after a 50 ms deadline; the stuck open was not bounded", elapsed)
 	}
 	// While that open is still stuck, a second probe must fail fast without
 	// opening, so stuck opens cannot pile up one goroutine per request.

@@ -5,8 +5,11 @@ package main
 import (
 	"errors"
 	"io"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	capture "github.com/tphakala/go-audio-capture"
 
@@ -17,13 +20,6 @@ import (
 
 // devMissing is an ALSA id no test host exposes, so a real open fails fast.
 const devMissing = "hw:9,9"
-
-// swapDeviceInUse substitutes the busy-check seam and returns a restore func.
-func swapDeviceInUse(fn func(string, int) bool) func() {
-	prev := deviceInUse
-	deviceInUse = fn
-	return func() { deviceInUse = prev }
-}
 
 // swapResolveOpenChannels substitutes the channel-resolution seam and returns a
 // restore func, so a test can drive the per-attempt resolution without probing
@@ -42,64 +38,56 @@ func swapOpenCaptureAt(fn func(*config.Device, int) (audio.Source, capture.Forma
 	return func() { openCaptureAt = prev }
 }
 
-// TestOpenDeviceRetrySkipsBusyDevice verifies the non-blocking busy gate: a
-// device that stays busy is reported as ErrDeviceInUse without ever attempting
-// the blocking capture open, so a contended device does not stall the
-// capture-open phase (#19). If the gate did not fire, openDevice would
-// run against nonexistent hardware and return a different (open) error.
-func TestOpenDeviceRetrySkipsBusyDevice(t *testing.T) {
+// TestOpenDeviceRetryReportsBusyDevice pins that a device the capture open
+// reports as held by another process (ErrDeviceInUse, which the library's
+// O_NONBLOCK open returns at once) is retried the full budget, not treated as
+// permanent, and surfaces an error that still matches ErrDeviceInUse so the
+// device is reported skipped and retried on backoff.
+func TestOpenDeviceRetryReportsBusyDevice(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int { return 1 })()
-	restore := swapDeviceInUse(func(string, int) bool { return true })
-	defer restore()
+	calls := 0
+	defer swapOpenCaptureAt(func(*config.Device, int) (audio.Source, capture.Format, error) {
+		calls++
+		return nil, 0, capture.ErrDeviceInUse
+	})()
 
 	dev := &config.Device{Name: "busy", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
-	_, err := openDeviceRetry(dev, levels.NewHub())
-	if !errors.Is(err, capture.ErrDeviceInUse) {
-		t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
+	synctest.Test(t, func(t *testing.T) {
+		_, err := openDeviceRetry(dev, levels.NewHub())
+		if !errors.Is(err, capture.ErrDeviceInUse) {
+			t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
+		}
+		if !strings.Contains(err.Error(), "in use") {
+			t.Errorf("openDeviceRetry error = %q, want text naming the device in use", err)
+		}
+	})
+	if calls != 5 {
+		t.Errorf("open attempts = %d, want 5 (a busy device is retried, not permanent)", calls)
 	}
 }
 
-// TestOpenDeviceRetryPassesGateWhenFree verifies the gate is transparent when the
-// device is not busy: the retry proceeds to the real open (which fails here
-// against nonexistent hardware), so the surfaced error is the open error, not the
-// busy sentinel. This guards against the gate falsely skipping a free device.
-func TestOpenDeviceRetryPassesGateWhenFree(t *testing.T) {
-	defer swapResolveOpenChannels(func(string, []int) int { return 1 })()
-	restore := swapDeviceInUse(func(string, int) bool { return false })
-	defer restore()
-
-	dev := &config.Device{Name: "free", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
-	_, err := openDeviceRetry(dev, levels.NewHub())
-	if err == nil {
-		t.Fatal("openDeviceRetry on nonexistent hardware should fail")
-	}
-	if errors.Is(err, capture.ErrDeviceInUse) {
-		t.Fatalf("openDeviceRetry error = %v, want a non-busy open error when the gate reports free", err)
-	}
-}
-
-// TestOpenDeviceRetryGatesOnResolvedOpenCount verifies the busy gate probes at
-// the count the resolver returns for this attempt, so the gate and the open
-// within one attempt agree.
-func TestOpenDeviceRetryGatesOnResolvedOpenCount(t *testing.T) {
+// TestOpenDeviceRetryOpensAtResolvedCount verifies every open attempt uses the
+// count the resolver returns for that attempt.
+func TestOpenDeviceRetryOpensAtResolvedCount(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int { return 2 })()
 	var seen []int
-	restore := swapDeviceInUse(func(_ string, count int) bool {
-		seen = append(seen, count)
-		return true
-	})
-	defer restore()
+	defer swapOpenCaptureAt(func(_ *config.Device, openCh int) (audio.Source, capture.Format, error) {
+		seen = append(seen, openCh)
+		return nil, 0, capture.ErrDeviceInUse
+	})()
 
 	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{2}}}}
-	if _, err := openDeviceRetry(dev, levels.NewHub()); !errors.Is(err, capture.ErrDeviceInUse) {
-		t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		if _, err := openDeviceRetry(dev, levels.NewHub()); !errors.Is(err, capture.ErrDeviceInUse) {
+			t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
+		}
+	})
 	if len(seen) == 0 {
-		t.Fatal("the busy gate was never consulted")
+		t.Fatal("the capture open was never attempted")
 	}
 	for _, c := range seen {
 		if c != 2 {
-			t.Fatalf("busy gate probed at %d channels, want the resolved count 2", c)
+			t.Fatalf("open attempted at %d channels, want the resolved count 2", c)
 		}
 	}
 }
@@ -108,10 +96,10 @@ func TestOpenDeviceRetryGatesOnResolvedOpenCount(t *testing.T) {
 // per-attempt resolution regression. The card is transiently busy at the first
 // probe, so the resolver falls back to max(selection)=1 (a count a stereo-only
 // card cannot open); once it frees, the resolver reports the true count 2. Because
-// the resolution happens per attempt rather than once up front, the later attempts
-// gate and open at 2, so the device is not permanently skipped. Pre-fix, the count
-// was pinned from the single up-front resolution, so a card freed between attempts
-// stayed stuck at the wrong count and the device was skipped.
+// the resolution happens per attempt rather than once up front, the later attempt
+// opens at 2 and succeeds, so the device is not permanently skipped. Pre-fix, the
+// count was pinned from the single up-front resolution, so a card freed between
+// attempts stayed stuck at the wrong count and the device was skipped.
 func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 	calls := 0
 	defer swapResolveOpenChannels(func(string, []int) int {
@@ -123,22 +111,24 @@ func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 	})()
 
 	var seen []int
-	restore := swapDeviceInUse(func(_ string, count int) bool {
-		seen = append(seen, count)
-		return count == 1 // busy only at the wrong fallback count
-	})
-	defer restore()
+	defer swapOpenCaptureAt(func(_ *config.Device, openCh int) (audio.Source, capture.Format, error) {
+		seen = append(seen, openCh)
+		if openCh == 1 {
+			return nil, 0, capture.ErrDeviceInUse // busy only at the wrong fallback count
+		}
+		return newOverrunCapture(0), capture.FormatS16LE, nil
+	})()
 
-	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1, 2}}}}
-	_, err := openDeviceRetry(dev, levels.NewHub())
-	// Once the count corrects to 2 the gate reports free and the open is attempted
-	// at 2; it fails here only because devMissing is not real hardware. The point
-	// is the device is no longer skipped as busy.
-	if errors.Is(err, capture.ErrDeviceInUse) {
-		t.Fatalf("device stayed skipped as busy after the card freed: %v", err)
-	}
-	if len(seen) < 2 || seen[0] != 1 || seen[1] != 2 {
-		t.Fatalf("busy gate counts = %v, want the fallback 1 then the corrected 2", seen)
+	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/stereo", Mode: config.ModePCM, Channels: []int{1, 2}}}}
+	synctest.Test(t, func(t *testing.T) {
+		rt, err := openDeviceRetry(dev, levels.NewHub())
+		if err != nil {
+			t.Fatalf("device stayed skipped after the card freed: %v", err)
+		}
+		_ = rt.fanout.Close()
+	})
+	if !slices.Equal(seen, []int{1, 2}) {
+		t.Fatalf("open counts = %v, want the fallback 1 then the corrected 2", seen)
 	}
 }
 
@@ -146,9 +136,8 @@ func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 // change between attempts (here a malformed stable id the library rejects) is
 // returned after one attempt instead of spending the retry budget.
 func TestOpenDeviceRetryStopsOnPermanentError(t *testing.T) {
-	defer swapResolveOpenChannels(func(string, []int) int { return 1 })()
 	attempts := 0
-	defer swapDeviceInUse(func(string, int) bool { attempts++; return false })()
+	defer swapResolveOpenChannels(func(string, []int) int { attempts++; return 1 })()
 
 	dev := &config.Device{Name: "bad", Device: "usb:zz", Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
 	_, err := openDeviceRetry(dev, levels.NewHub())
@@ -174,6 +163,7 @@ func TestPermanentOpenError(t *testing.T) {
 		// depend on it, so a later attempt can succeed.
 		{&capture.BadRateError{Requested: 48000}, false},
 		{&capture.BadFormatError{Channels: 1}, false},
+		{&capture.GeometryError{Rate: 48000}, false},
 		{capture.ErrDeviceInUse, false},
 		{capture.ErrDeviceGone, false},
 		{errors.New("EIO"), false},

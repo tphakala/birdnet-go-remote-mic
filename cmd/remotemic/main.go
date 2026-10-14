@@ -46,11 +46,6 @@ import (
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-// deviceInUse reports whether a capture device is held exclusively by another
-// process, via a non-blocking capability query. It is a package var so the open
-// retry is testable without hardware.
-var deviceInUse = audio.DeviceInUse
-
 // resolveOpenChannels resolves the hardware channel count to open a device at,
 // rounding its selection up to a count the card supports. It is a package var
 // so the open retry's per-attempt resolution is testable without hardware.
@@ -331,33 +326,23 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 // during that window fails, so ResolveOpenChannels falls back to max(selection).
 // Re-resolving per attempt lets a card freed between attempts be opened at the
 // count it actually needs (a stereo-only card whose mono fallback would fail to
-// open), instead of a wrong value pinned from the first probe. The busy gate and
-// the capture open within one attempt share that attempt's resolved count, so
-// they never disagree.
+// open), instead of a wrong value pinned from the first probe.
+//
+// The capture open is non-blocking (go-audio-capture opens O_NONBLOCK), so a
+// device another process holds fails at once with ErrDeviceInUse and is retried,
+// then reported skipped, without parking the reconcile goroutine that runs this.
 func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
 	const attempts = 5
 	const delay = 50 * time.Millisecond
 	var err error
 	for i := range attempts {
 		openCh := resolveOpenChannels(dev.Device, dev.StreamChannelUnion())
-		// Gate the blocking capture open on a non-blocking busy check. A device
-		// held exclusively by another process can make the ALSA open block rather
-		// than fail promptly, which would park the single reconcile goroutine and
-		// stall the whole capture-open phase (no records publish, RTSP never comes
-		// up). The O_NONBLOCK capability query returns at once, so a busy device is
-		// retried and then skipped instead of blocking. The retry also rides out
-		// the transient EBUSY window right after a hot-reload Close, before the
-		// kernel releases the card, so a same-card restart is not falsely skipped.
-		if deviceInUse(dev.Device, openCh) {
-			err = capture.ErrDeviceInUse
-		} else {
-			var rt *deviceRuntime
-			if rt, err = openDevice(dev, openCh, hub); err == nil {
-				return rt, nil
-			}
-			if permanentOpenError(err) {
-				return nil, err
-			}
+		var rt *deviceRuntime
+		if rt, err = openDevice(dev, openCh, hub); err == nil {
+			return rt, nil
+		}
+		if permanentOpenError(err) {
+			return nil, err
 		}
 		if i < attempts-1 {
 			time.Sleep(delay)
@@ -371,7 +356,7 @@ func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error
 // retry budget: a malformed id (BadDeviceError), an id that names no device
 // (DeviceNotFoundError) or several (AmbiguousDeviceError), and an invalid config
 // (ConfigError). A rate, format or channel rejection (BadRateError,
-// BadFormatError) is NOT treated as permanent: openDeviceRetry re-resolves the
+// BadFormatError, GeometryError) is NOT treated as permanent: openDeviceRetry re-resolves the
 // open channel count each attempt, and the rates and formats a device accepts
 // can depend on that count, so a stereo-only card that failed at the mono
 // fallback can open once it frees and resolves to stereo. Everything else (a

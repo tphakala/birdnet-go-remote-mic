@@ -5,6 +5,7 @@ package audio
 import (
 	"encoding/binary"
 	"errors"
+	"syscall"
 	"testing"
 
 	capture "github.com/tphakala/go-audio-capture"
@@ -537,6 +538,58 @@ func TestOpenCapturePrefersRateErrorAcrossFormats(t *testing.T) {
 	}
 }
 
+func TestOpenCapturePrefersGeometryError(t *testing.T) {
+	// A *GeometryError means the rate, channels and format were accepted and only
+	// the period geometry commit failed, so it must surface over a
+	// *BadFormatError or a raw errno from another format. It ranks equal to a
+	// *BadRateError and the FIRST of two equal-rank errors is kept. Rate
+	// identifies which instance survived.
+	defer swapMonoProbe()()
+	raw := errors.New("alsa: HW_REFINE: invalid argument")
+	badFmt := &capture.BadFormatError{Rate: 384000, Channels: 1, Format: capture.FormatS16LE}
+	geoA := &capture.GeometryError{Rate: 111, Err: syscall.EINVAL}
+	geoB := &capture.GeometryError{Rate: 222, Err: syscall.EINVAL}
+	badRate := &capture.BadRateError{Requested: 384000, Min: 16000, Max: 96000}
+	cases := []struct {
+		name     string
+		s16, s32 error
+		wantGeo  int // Rate of the surfaced GeometryError, 0 for none
+		wantRate bool
+	}{
+		{"bad_format_then_geometry", badFmt, geoA, 111, false},
+		{"raw_then_geometry", raw, geoA, 111, false},
+		{"geometry_then_raw", geoA, raw, 111, false},
+		{"geometry_then_bad_rate", geoA, badRate, 111, false},
+		{"bad_rate_then_geometry", badRate, geoA, 0, true},
+		{"geometry_then_geometry", geoA, geoB, 111, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := openStream
+			openStream = func(cfg capture.Config) (captureStream, error) {
+				if cfg.Format == capture.FormatS16LE {
+					return nil, tc.s16
+				}
+				return nil, tc.s32
+			}
+			defer func() { openStream = prev }()
+
+			_, err := OpenCapture(&config.Device{Device: testDevID, Rate: 384000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
+			ge, isGeo := errors.AsType[*capture.GeometryError](err)
+			if tc.wantGeo != 0 {
+				if !isGeo || ge.Rate != tc.wantGeo {
+					t.Fatalf("surfaced error = %v, want GeometryError with Rate %d", err, tc.wantGeo)
+				}
+			} else if isGeo {
+				t.Fatalf("surfaced error = %v, want no GeometryError", err)
+			}
+			if _, isRate := errors.AsType[*capture.BadRateError](err); isRate != tc.wantRate {
+				t.Errorf("BadRateError surfaced = %v, want %v (err=%v)", isRate, tc.wantRate, err)
+			}
+		})
+	}
+}
+
 func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// Requested 256000 but the driver negotiated 48000: OpenCapture must refuse
 	// rather than silently deliver the wrong rate.
@@ -575,7 +628,7 @@ func TestOpenCaptureStartsAndReads(t *testing.T) {
 
 // TestOpenCaptureAtOpensAtGivenCount verifies the caller-resolved open channel
 // count is what reaches the hardware open, so the appliance can resolve it once
-// (for the rate probe, the busy gate and the open) instead of re-probing here.
+// (for the rate probe and the open) instead of re-probing here.
 func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
 	var got int
 	prev := openStream
