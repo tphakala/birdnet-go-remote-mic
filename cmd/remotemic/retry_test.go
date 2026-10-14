@@ -1018,3 +1018,46 @@ func TestBackoffDelay(t *testing.T) {
 		}
 	}
 }
+
+// TestRetryableCause pins which down causes an unattended restart can fix.
+func TestRetryableCause(t *testing.T) {
+	t.Parallel()
+	for cause, want := range map[string]bool{
+		downNotConnected: false,
+		downAmbiguous:    false,
+		downMalformed:    false,
+		downResolve:      true,
+		downSameHardware: false,
+		downOpenFailed:   true,
+		downDisconnected: false,
+		downFailed:       true,
+		downStalled:      true,
+	} {
+		if got := retryableCause(cause); got != want {
+			t.Errorf("retryableCause(%q) = %v, want %v", cause, got, want)
+		}
+	}
+}
+
+// TestSameCondition pins that failed and stalled are one condition for a
+// present device and nothing else is.
+func TestSameCondition(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{downFailed, downFailed, true},
+		{downStalled, downStalled, true},
+		{downOpenFailed, downOpenFailed, true},
+		{downFailed, downStalled, true},
+		{downStalled, downFailed, true},
+		{downFailed, downOpenFailed, false},
+		{downStalled, downDisconnected, false},
+		{downStalled, downOpenFailed, false},
+	} {
+		if got := sameCondition(tc.a, tc.b); got != tc.want {
+			t.Errorf("sameCondition(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

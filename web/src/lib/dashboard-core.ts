@@ -164,6 +164,8 @@ export function downCauseTitle(cause: string | undefined): string {
       return "Device unavailable";
     case "disconnected":
       return "Device disconnected";
+    case "stalled":
+      return "Device stalled";
     case "failed":
       return "Device failed";
     default:

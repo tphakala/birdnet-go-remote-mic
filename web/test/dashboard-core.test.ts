@@ -71,6 +71,7 @@ test("needsNotificationsFallback loads when nothing loaded or the stream is down
 test("bannerIsError: a failed device is an error unless it was unplugged", () => {
   assert.equal(bannerIsError("failed", "failed"), true);
   assert.equal(bannerIsError("failed", undefined), true);
+  assert.equal(bannerIsError("failed", "stalled"), true);
   assert.equal(bannerIsError("failed", "disconnected"), false);
   assert.equal(bannerIsError("skipped", "not-connected"), false);
   assert.equal(bannerIsError("skipped", "open-failed"), false);
@@ -84,6 +85,7 @@ test("downCauseTitle names each cause as its notification does and falls back", 
   assert.equal(downCauseTitle("resolve-failed"), "Device unavailable");
   assert.equal(downCauseTitle("open-failed"), "Device unavailable");
   assert.equal(downCauseTitle("disconnected"), "Device disconnected");
+  assert.equal(downCauseTitle("stalled"), "Device stalled");
   assert.equal(downCauseTitle("failed"), "Device failed");
   // An older appliance sends no cause, and a newer one may add a class.
   assert.equal(downCauseTitle(undefined), "Device excluded from streaming");
@@ -99,7 +101,7 @@ test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go
   const src = readFileSync(APPLIANCE_GO, "utf8");
   const causes = [
     "not-connected", "ambiguous", "malformed", "resolve-failed",
-    "same-hardware", "open-failed", "disconnected", "failed",
+    "same-hardware", "open-failed", "disconnected", "stalled", "failed",
   ];
   for (const cause of causes) {
     const title = downCauseTitle(cause);

@@ -163,13 +163,13 @@ func isDown(s mgmtserver.DeviceState) bool {
 
 // retryableCause reports whether a down cause is one a later restart of the same
 // device can fix on its own: an open error (busy in another process, a transient
-// driver error), a pump that died while the device stayed present, or a resolve
-// failure that was not about the device itself. A device that is absent,
+// driver error), a pump that died or stalled while the device stayed present,
+// or a resolve failure that was not about the device itself. A device that is absent,
 // ambiguous, malformed, or shadowed by another entry needs a hardware change or a
 // config save instead, and a disconnect is retried by the hardware-change path.
 func retryableCause(cause string) bool {
 	switch cause {
-	case downOpenFailed, downFailed, downResolve:
+	case downOpenFailed, downFailed, downStalled, downResolve:
 		return true
 	default:
 		return false
@@ -455,7 +455,7 @@ func (a *appliance) attemptRetry(d *config.Device, st *retryState, forced bool) 
 	// unopenable; raise it again as the failure it now waits out, even over
 	// markDown's keep-the-first-cause exception (an open failure then this
 	// restart would otherwise leave "Device unavailable" on a serving
-	// device). A device already down as failed, as after a timer retry,
+	// device). A device already down as failed or stalled, as after a timer retry,
 	// still reads "Capture stopped ... return 404": its condition is kept
 	// and only its text rewritten in place (see replaceDown), so the wait is
 	// not a fresh notification on every attempt.

@@ -507,7 +507,7 @@ func (p *provider) Device(name string) (mgmtserver.DeviceStatus, bool) {
 // published, then read lock-free), so the stale-address suppression for a failed
 // device is done at read time in status() instead, which keeps the field
 // immutable-after-publish and free of a data race with the API readers.
-// cause is the down class (downDisconnected or downFailed) the API reports.
+// cause is the down class (downDisconnected, downStalled or downFailed) the API reports.
 func (rt *deviceRuntime) markFailed(err error, cause string) {
 	rt.mu.Lock()
 	rt.state = mgmtserver.StateFailed

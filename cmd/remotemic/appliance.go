@@ -217,6 +217,7 @@ const (
 	downSameHardware = "same-hardware"
 	downOpenFailed   = "open-failed"
 	downDisconnected = "disconnected"
+	downStalled      = "stalled"
 	downFailed       = "failed"
 )
 
@@ -228,12 +229,23 @@ const (
 // open that failed): the existing condition is kept, so a device alternating
 // between them is not re-notified on every attempt. The trade-off is that the
 // active notification keeps the first cause's text; the device record's error
-// always carries the latest one.
+// always carries the latest one. A switch between failed and stalled is not an
+// exception: it is one condition (see sameCondition), rewritten in place.
 func (a *appliance) markDown(name, cause string, n *notify.Notification) {
-	if prev, ok := a.downReason[name]; ok && prev != cause && a.retrying(name) && retryableCause(prev) && retryableCause(cause) {
+	if prev, ok := a.downReason[name]; ok && !sameCondition(prev, cause) && a.retrying(name) && retryableCause(prev) && retryableCause(cause) {
 		return
 	}
 	a.replaceDown(name, cause, n)
+}
+
+// sameCondition reports whether two causes are one down condition: equal, or
+// both a present device's death (failed or stalled), whose title and text
+// follow the latest cause without a new notification.
+func sameCondition(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return (a == downFailed || a == downStalled) && (b == downFailed || b == downStalled)
 }
 
 // replaceDown raises the device's down condition for cause, resolving an active
@@ -242,10 +254,12 @@ func (a *appliance) markDown(name, cause string, n *notify.Notification) {
 // idempotent per key); its text is rewritten in place instead when it differs
 // (see notify.Updater), so it says what the device is doing now without a
 // fresh notification, however often the device moves between two states of
-// one cause (serving but waiting to prove its encoder, and failed again).
+// one cause (serving but waiting to prove its encoder, and failed again), or
+// a failed device that stalls and the reverse (see sameCondition).
 func (a *appliance) replaceDown(name, cause string, n *notify.Notification) {
 	prev, ok := a.downReason[name]
-	if ok && prev == cause {
+	if ok && sameCondition(prev, cause) {
+		a.downReason[name] = cause
 		if a.updater != nil {
 			a.updater.Update(n.Key, n.Title, n.Message)
 		}
@@ -952,7 +966,12 @@ func (a *appliance) onPumpDone(res pumpResult) {
 		// Mark it failed before the re-resolve below (a host enumeration), so the
 		// API does not keep reporting a dead pump as serving for its duration; a
 		// confirmed loss then reclassifies the cause as disconnected.
-		res.rt.markFailed(res.err, downFailed)
+		stalled := errors.Is(res.err, capture.ErrDeviceStalled)
+		cause := downFailed
+		if stalled {
+			cause = downStalled
+		}
+		res.rt.markFailed(res.err, cause)
 		name := res.rt.dev.Name
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Decide whether the device was LOST (unplugged or
@@ -1011,9 +1030,9 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			restart := restartHint(&res.rt.dev)
 			// A stall (the library's ErrDeviceStalled: *StallError, *ShortfallError)
 			// on a device that still resolves is the same failed-while-present case,
-			// named as a stall in the log and the message. Its cause and title stay
-			// failed, so the banner pairing and the one-onset rule hold.
-			stalled := errors.Is(res.err, capture.ErrDeviceStalled)
+			// named as a stall in the log, the message, the cause and the title. It
+			// is retryable and one condition with failed (see sameCondition), so the
+			// banner pairing and the one-onset rule hold.
 			if a.nextFailureLogged(name) {
 				if stalled {
 					log.Printf("device %q failed: stalled, the device stopped delivering audio (%v); its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
@@ -1025,8 +1044,12 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			if stalled {
 				msg = fmt.Sprintf("Capture stalled: the device stopped delivering audio (%v); the RTSP path(s) return 404 until %s", res.err, restart)
 			}
-			n := deviceDownOnset(name, "Device failed", msg)
-			a.markDown(name, downFailed, &n)
+			title := "Device failed"
+			if stalled {
+				title = "Device stalled"
+			}
+			n := deviceDownOnset(name, title, msg)
+			a.markDown(name, cause, &n)
 			a.scheduleRetry(&res.rt.dev, false)
 			// Only a device scheduleRetry keeps retrying records its fault: a
 			// card-index id is never retried unattended, so the config save its

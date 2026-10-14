@@ -27,6 +27,7 @@ const (
 	// assert it, so it lives here rather than as a repeated literal.
 	titleDisconnected = "Device disconnected"
 	titleFailed       = "Device failed"
+	titleStalled      = "Device stalled"
 	titleNotConnected = "Device not connected"
 )
 
