@@ -28,7 +28,6 @@ export function showToast(message: string, type?: ToastType, durationMs?: number
   const v = toastView(type, durationMs);
   const container = document.getElementById(v.alert ? "toast-alerts" : "toast-root");
   if (!container) return;
-  const ttl = v.ttlMs;
 
   const icon = h("span", { class: "toast-icon sev-badge" });
   icon.innerHTML = TOAST_ICONS[v.type]; // static, trusted markup
@@ -54,7 +53,7 @@ export function showToast(message: string, type?: ToastType, durationMs?: number
   let focused = false;
   const disarm = (): void => window.clearTimeout(timer);
   const rearm = (): void => {
-    if (!removed && !hovered && !focused) timer = window.setTimeout(remove, ttl);
+    if (!removed && !hovered && !focused) timer = window.setTimeout(remove, v.ttlMs);
   };
   toast.addEventListener("mouseenter", () => { hovered = true; disarm(); });
   toast.addEventListener("mouseleave", () => { hovered = false; rearm(); });

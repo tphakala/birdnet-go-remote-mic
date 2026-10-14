@@ -111,9 +111,9 @@ func preferRateError(existing, next error) error {
 		return next
 	}
 	if openErrorRank(next) == openErrorRank(existing) {
-		prev, ok := errors.AsType[*capture.BadFormatError](existing)
-		cur, ok2 := errors.AsType[*capture.BadFormatError](next)
-		if ok && ok2 && prev.MaxChannels == 0 && cur.MaxChannels > 0 {
+		prev, okPrev := errors.AsType[*capture.BadFormatError](existing)
+		cur, okCur := errors.AsType[*capture.BadFormatError](next)
+		if okPrev && okCur && prev.MaxChannels == 0 && cur.MaxChannels > 0 {
 			return next
 		}
 	}

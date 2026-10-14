@@ -1,9 +1,8 @@
 // Pure, DOM-free toast decisions, split out so they can be unit tested with
 // node:test (see web/test/toast-core.test.ts) without a DOM.
 
-export type ToastType = "ok" | "info" | "warn" | "error";
-
-export const TOAST_TYPES: readonly ToastType[] = ["ok", "info", "warn", "error"];
+export const TOAST_TYPES = ["ok", "info", "warn", "error"] as const;
+export type ToastType = (typeof TOAST_TYPES)[number];
 
 export const INFO_TTL_MS = 3200;
 // A failed provisioning, removal or save deserves more than a glance: errors
