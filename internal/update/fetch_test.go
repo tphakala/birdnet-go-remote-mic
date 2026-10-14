@@ -178,6 +178,19 @@ func TestFetcherLatestRefuses(t *testing.T) {
 			},
 		},
 		{
+			// A release from before the manifest step has neither file; the
+			// manifest is asked for first, so this is no manifest, not a
+			// missing signature.
+			name: "release predates manifests",
+			setup: func(g *fakeGitHub) {
+				tag := vNew
+				g.latest.Store(&tag)
+			},
+			check: func(err error) bool {
+				return errors.Is(err, ErrNoManifest) && strings.Contains(err.Error(), vNew)
+			},
+		},
+		{
 			name: "manifest 503",
 			setup: func(g *fakeGitHub) {
 				g.publish(newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x")))
