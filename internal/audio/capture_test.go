@@ -590,6 +590,38 @@ func TestOpenCapturePrefersGeometryError(t *testing.T) {
 	}
 }
 
+func TestOpenCaptureKeepsBusyError(t *testing.T) {
+	// A device held by another process fails every format with ErrDeviceInUse; the
+	// caller (the open retry) must still be able to match it. When a later format
+	// fails differently, the first error is kept.
+	defer swapMonoProbe()()
+	raw := errors.New("alsa: HW_REFINE: invalid argument")
+	cases := []struct {
+		name     string
+		s16, s32 error
+	}{
+		{"all_busy", capture.ErrDeviceInUse, capture.ErrDeviceInUse},
+		{"busy_then_raw", capture.ErrDeviceInUse, raw},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := openStream
+			openStream = func(cfg capture.Config) (captureStream, error) {
+				if cfg.Format == capture.FormatS16LE {
+					return nil, tc.s16
+				}
+				return nil, tc.s32
+			}
+			defer func() { openStream = prev }()
+
+			_, err := OpenCapture(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
+			if !errors.Is(err, capture.ErrDeviceInUse) {
+				t.Fatalf("OpenCapture error = %v, want ErrDeviceInUse", err)
+			}
+		})
+	}
+}
+
 func TestOpenCaptureRejectsRateMismatch(t *testing.T) {
 	// Requested 256000 but the driver negotiated 48000: OpenCapture must refuse
 	// rather than silently deliver the wrong rate.
