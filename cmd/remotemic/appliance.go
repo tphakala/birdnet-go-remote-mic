@@ -91,9 +91,10 @@ type appliance struct {
 	// downReason holds the cause class of each device's active down condition,
 	// keyed by device name, so a change of cause (not connected becoming
 	// ambiguous) re-raises the condition instead of being swallowed by the
-	// idempotent Onset. The exception is a switch between two retryable causes
-	// while an unattended retry is in flight, which keeps the first cause (see
-	// markDown). An entry exists exactly while the down key is active.
+	// idempotent Onset. The exceptions are a switch between two retryable causes
+	// while an unattended retry is in flight, which keeps the first cause, and
+	// a switch between failed and stalled, which rewrites the one condition in
+	// place (see markDown). An entry exists exactly while the down key is active.
 	downReason map[string]string
 	// capsCache holds the last non-empty probed capabilities per device id. A
 	// re-probe during a hot reload can transiently report nothing (the card is
@@ -205,7 +206,8 @@ type hwResult struct {
 
 // Cause classes for a device's down condition. A change of class while the
 // device stays down re-raises the condition, except between two retryable
-// classes during an unattended retry (see markDown). They are also the API's
+// classes during an unattended retry, and between failed and stalled, which
+// are one condition rewritten in place (see markDown). They are also the API's
 // downCause values, so a new class needs the enum in api/openapi.yaml, an entry
 // in TestDownCausesAreWireEnumMembers's list (which checks it against that
 // enum), and a banner title in the web UI's downCauseTitle.
