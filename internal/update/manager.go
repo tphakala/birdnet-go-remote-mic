@@ -161,8 +161,8 @@ type Manager struct {
 	nextDeadline time.Time
 	lastErr      string
 	lastNotice   string
-	noticeLogged string // the notice last logged, cleared by a verified success
-	lastCause    string
+	noticeLogged string // the notice last logged, cleared by a verified success or by turning checks off
+	lastCause    string // the failure kind last logged, cleared the same way
 	failures     int    // consecutive failed checks
 	announced    string // the version last logged as available
 	phase        Phase
@@ -192,11 +192,11 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 
 // Apply turns the periodic check on or off from the config. Turning it off
 // forgets the release found and any notice of a missing manifest, clears its
-// notification, and stops a check or
-// download in progress, so the appliance makes no update request with checks
-// off. An update already handed to the root updater is past that point and
-// goes on. Checks turned back on start the schedule over from the startup
-// delay.
+// notification, starts the log dedupe over (a notice or failure seen before is
+// logged again once checks are back on), and stops a check or download in
+// progress, so the appliance makes no update request with checks off. An
+// update already handed to the root updater is past that point and goes on.
+// Checks turned back on start the schedule over from the startup delay.
 func (m *Manager) Apply(s *monitor.Settings) {
 	was := m.enabled.Swap(s.UpdateCheck)
 	if was == s.UpdateCheck {
@@ -207,6 +207,7 @@ func (m *Manager) Apply(s *monitor.Settings) {
 		m.mu.Lock()
 		m.latest, m.available = nil, false
 		m.lastNotice = ""
+		m.noticeLogged, m.lastCause = "", ""
 		cancel := m.cancelApply
 		// Under m.mu, so a check finishing now either sees checks off or has
 		// already raised the condition this resolves.
@@ -389,7 +390,7 @@ func (m *Manager) check(ctx context.Context, manual bool) checkResult {
 			m.cfg.Logf("update: no update information: %v", err)
 		}
 		// The host answered: not a failure. lastCause is left alone so a
-		// failure kind seen before is not logged again if it comes back.
+		// failure kind seen before is not logged again if it comes back until checks are turned off.
 		m.lastErr, m.failures, m.lastNotice = "", 0, notice
 		if errors.Is(err, ErrNoRelease) {
 			// Nothing is published: an earlier offer was withdrawn.

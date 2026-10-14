@@ -1397,3 +1397,60 @@ func TestManagerNextCheckAfterSuccessUnchanged(t *testing.T) {
 		}
 	})
 }
+
+// TestManagerTurnOffRestartsLogDedupe pins that a notice or a failure kind is
+// logged once per enabled period: turning checks off and on logs it again.
+func TestManagerTurnOffRestartsLogDedupe(t *testing.T) {
+	t.Parallel()
+	type outcome int
+	const (
+		notice outcome = iota
+		failure
+		success
+		toggle
+	)
+	tests := []struct {
+		name                               string
+		steps                              []outcome
+		notices, failures, recoveredLogged int
+	}{
+		{"notice, notice, toggle, notice", []outcome{notice, notice, toggle, notice}, 2, 0, 0},
+		{"failure, failure, toggle, failure", []outcome{failure, failure, toggle, failure}, 0, 2, 0},
+		{"notice, toggle, failure, notice", []outcome{notice, toggle, failure, notice}, 2, 1, 0},
+		{"failure, toggle, success", []outcome{failure, toggle, success}, 0, 1, 0},
+		{"control: notice three times", []outcome{notice, notice, notice}, 1, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeFetch{}
+			logs := &logSink{}
+			m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Jitter: noJitter, Logf: logs.logf, Publisher: notify.NewCenter()})
+			m.Apply(on())
+			for _, s := range tt.steps {
+				switch s {
+				case toggle:
+					m.Apply(off())
+					m.Apply(on())
+					continue
+				case notice:
+					f.set(nil, errNoManifest(vNew))
+				case failure:
+					f.set(nil, &StatusError{URL: "u", Code: 503})
+				case success:
+					f.set(fakeRelease(vOld), nil)
+				}
+				m.check(t.Context(), false)
+			}
+			if n := logs.count("no update information"); n != tt.notices {
+				t.Errorf("logged %d notices, want %d", n, tt.notices)
+			}
+			if n := logs.count("check failed"); n != tt.failures {
+				t.Errorf("logged %d failures, want %d", n, tt.failures)
+			}
+			if n := logs.count("succeed again"); n != tt.recoveredLogged {
+				t.Errorf("logged %d recoveries, want %d", n, tt.recoveredLogged)
+			}
+		})
+	}
+}
