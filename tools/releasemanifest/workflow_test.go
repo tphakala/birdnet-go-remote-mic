@@ -188,3 +188,28 @@ func TestWorkflowMarkLatestStep(t *testing.T) {
 		})
 	}
 }
+
+// TestGoReleaserPublishesNonLatest pins that GoReleaser never makes a release
+// latest itself: the workflow's last step does, once the manifest verifies.
+func TestGoReleaserPublishesNonLatest(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("../../.goreleaser.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Release struct {
+			Prerelease string `yaml:"prerelease"`
+			MakeLatest string `yaml:"make_latest"`
+		} `yaml:"release"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yaml: %v", err)
+	}
+	if got := cfg.Release.MakeLatest; got != "false" {
+		t.Errorf("release.make_latest = %q, want \"false\"", got)
+	}
+	if got := cfg.Release.Prerelease; got != "auto" {
+		t.Errorf("release.prerelease = %q, want \"auto\"", got)
+	}
+}
