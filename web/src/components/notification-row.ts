@@ -18,7 +18,8 @@ import { formatDuration, isoOrNull, type Lifecycle } from "../lib/events-core.ts
 import type { Notification, NotificationSeverity } from "../lib/types.ts";
 
 // Notification severity maps onto the toast icon set so every surface shows the
-// same glyphs (warning uses the "warn" toast icon).
+// same glyphs (warning uses the "warn" toast icon, info the neutral "i"). The
+// "ok" toast type is for action confirmations only, never a severity.
 export const SEVERITY_TO_TOAST: Record<NotificationSeverity, ToastType> = {
   error: "error",
   warning: "warn",

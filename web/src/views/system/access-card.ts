@@ -227,7 +227,7 @@ export class AccessCard {
           ? "Access token saved and active. Restart the appliance to finish applying the configuration."
           : "Open access saved and active. Restart the appliance to finish applying the configuration.", "warn");
       } else {
-        showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "info" : "warn");
+        showToast(token ? "Access token saved. BirdNET-Go and players now need it." : "Open access enabled.", token ? "ok" : "warn");
       }
       // Re-hide the token after a successful save: it may have been revealed to
       // copy it, and leaving a saved secret in plain sight is needless exposure.

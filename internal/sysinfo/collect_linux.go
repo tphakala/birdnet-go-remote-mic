@@ -285,6 +285,9 @@ func DiskUsage(path string) (total, used int64, ok bool) {
 // df's Use% column, so it does not fire "disk almost full" at, say, 95% of raw
 // size while the unprivileged service still has reserved-free headroom, nor stay
 // quiet once unprivileged writes are already failing.
+//
+// Byte figures use the filesystem's fragment size (Frsize), the unit statfs
+// counts blocks in.
 func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 	if path == "" {
 		return 0, 0, 0, false
@@ -293,19 +296,31 @@ func DiskUsageDetail(path string) (total, used, avail int64, ok bool) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, 0, 0, false
 	}
-	// Bsize is int32 on ILP32 (arm, 386) and int64 on LP64; widen once so the
-	// multiplications below are int64 on every architecture. The conversion is
-	// required on 32-bit; unconvert only sees the 64-bit build, where it is a
-	// no-op, hence the suppression.
-	bsize := int64(st.Bsize)         //nolint:unconvert // required on 32-bit where Bsize is int32
-	total = int64(st.Blocks) * bsize //nolint:gosec // block counts fit int64 on real filesystems
-	free := int64(st.Bfree) * bsize  //nolint:gosec // block counts fit int64 on real filesystems
-	avail = int64(st.Bavail) * bsize //nolint:gosec // block counts fit int64 on real filesystems
-	used = max(total-free, 0)
-	if avail < 0 {
-		avail = 0
-	}
+	// Frsize and Bsize are int32 on ILP32 (arm, 386) and int64 on LP64; widen
+	// them to int64 on every architecture. The conversion is required on
+	// 32-bit; unconvert only sees the 64-bit build, where it is a no-op, hence
+	// the suppression.
+	total, used, avail = diskBytes(st.Blocks, st.Bfree, st.Bavail, int64(st.Frsize), int64(st.Bsize)) //nolint:unconvert // required on 32-bit where Frsize and Bsize are int32
 	return total, used, avail, true
+}
+
+// diskBytes converts statfs block counts to bytes. Linux counts f_blocks,
+// f_bfree and f_bavail in f_frsize units, which differ from f_bsize (the
+// preferred I/O size) on some filesystems, such as a macOS bind mount in a
+// container (bsize 1 MiB, frsize 4 KiB). frsize falls back to bsize when a
+// filesystem reports 0.
+func diskBytes(blocks, bfree, bavail uint64, frsize, bsize int64) (total, used, avail int64) {
+	unit := frsize
+	if unit <= 0 {
+		unit = bsize
+	}
+	if unit <= 0 {
+		return 0, 0, 0
+	}
+	total = int64(blocks) * unit //nolint:gosec // block counts fit int64 on real filesystems
+	free := int64(bfree) * unit  //nolint:gosec // block counts fit int64 on real filesystems
+	avail = int64(bavail) * unit //nolint:gosec // block counts fit int64 on real filesystems
+	return total, max(total-free, 0), max(avail, 0)
 }
 
 // HostCPU reads host CPU utilization by diffing /proc/stat over the caller's own

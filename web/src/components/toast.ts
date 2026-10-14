@@ -1,20 +1,23 @@
 import { h } from "../lib/h.ts";
 import { svgIcon } from "../lib/svg.ts";
 
-export type ToastType = "info" | "warn" | "error";
+export type ToastType = "ok" | "info" | "warn" | "error";
 
 // Trusted static icon markup (never interpolated with runtime data).
 const ICON_WARN = svgIcon('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>', 15);
 const ICON_ERROR = svgIcon('<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>', 15);
 const ICON_OK = svgIcon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>', 15);
+const ICON_INFO = svgIcon('<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>', 15);
 // Exported so the notification center reuses the same close glyph on its panel.
 export const ICON_CLOSE = svgIcon('<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>', 13);
 
 // The leading icon per toast type. A lookup keyed by type replaces a nested
 // ternary so a new type is one entry, not another branch. Exported so the
-// notification center renders the same severity glyphs as the toasts.
+// notification center renders the same severity glyphs as the toasts. ok is a
+// completed action (the green check); info is neutral (an i).
 export const TOAST_ICONS: Record<ToastType, string> = {
-  info: ICON_OK,
+  ok: ICON_OK,
+  info: ICON_INFO,
   warn: ICON_WARN,
   error: ICON_ERROR,
 };
@@ -25,7 +28,7 @@ const INFO_TTL_MS = 3200;
 // can any other toast given this long a duration).
 export const ERROR_TTL_MS = 8000;
 
-export function showToast(message: string, type: ToastType = "info", durationMs?: number): void {
+export function showToast(message: string, type: ToastType = "ok", durationMs?: number): void {
   const isError = type === "error";
   // Errors go to the role=alert container so a screen reader announces them
   // at once; notices stay in the polite region.
@@ -34,9 +37,9 @@ export function showToast(message: string, type: ToastType = "info", durationMs?
   const ttl = durationMs ?? (isError ? ERROR_TTL_MS : INFO_TTL_MS);
 
   const icon = h("span", { class: "toast-icon sev-badge" });
-  // Fall back to ICON_OK so an off-contract type cannot render "undefined"
-  // (the replaced ternary had a default; the lookup must keep one).
-  icon.innerHTML = TOAST_ICONS[type] ?? ICON_OK; // static, trusted markup
+  // Fall back to the neutral glyph so an off-contract type (a severity from a
+  // newer appliance) cannot render "undefined" or pass for a success.
+  icon.innerHTML = TOAST_ICONS[type] ?? ICON_INFO; // static, trusted markup
   // sev-* drives the shared severity surface (badge fill, border and wash).
   const toast = h("div", { class: `toast sev-${type}` }, icon, h("span", { class: "toast-msg" }, message));
 

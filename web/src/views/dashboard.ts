@@ -2,6 +2,7 @@ import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
 import { announce, clearLoadError, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, renderLoadError, setHidden, setText } from "../lib/ui.ts";
+import { formatReading } from "../lib/system-core.ts";
 import { clientCountOf, deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { hideInactivePrefDevice, onPrefChange, parseBoolPref } from "../lib/prefs.ts";
 import type { ApplianceStatus, DeviceConfig, SystemInfo } from "../lib/types.ts";
@@ -293,10 +294,15 @@ export class DashboardView {
   }
 
   private updateTelemetryFromSystem(sys: SystemInfo): void {
-    const cpuEl = document.getElementById("cpu-load-display");
-    if (cpuEl) cpuEl.textContent = sys.cpuPercent !== undefined ? sys.cpuPercent.toFixed(1) : "n/a";
-    const tempEl = document.getElementById("soc-temp-display");
-    if (tempEl) tempEl.textContent = sys.tempCelsius !== undefined ? sys.tempCelsius.toFixed(1) : "n/a";
+    const show = (valueId: string, unitId: string, v: number | undefined, unit: string): void => {
+      const r = formatReading(v, unit);
+      const valueEl = document.getElementById(valueId);
+      if (valueEl) setText(valueEl, r.value);
+      const unitEl = document.getElementById(unitId);
+      if (unitEl) setHidden(unitEl, r.unit === "");
+    };
+    show("cpu-load-display", "cpu-load-unit", sys.cpuPercent, "%");
+    show("soc-temp-display", "soc-temp-unit", sys.tempCelsius, "°C");
   }
 
   private updateConnection(connected: boolean): void {

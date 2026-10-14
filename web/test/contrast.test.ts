@@ -268,6 +268,13 @@ const PAIRS: Pair[] = [
   // 1.4.11 applies: they still have to be distinguishable from the tile.
   { what: "ok glyph in its severity badge", fg: "--signal-ok-text", bg: ["--bg-surface", "--signal-ok-glow"], min: AA_NON_TEXT },
   { what: "warn glyph in its severity badge", fg: "--signal-warn-text", bg: ["--bg-surface", "--signal-warn-glow"], min: AA_NON_TEXT },
+  { what: "info glyph in its severity badge", fg: "--signal-info-text", bg: ["--bg-surface", "--signal-info-glow"], min: AA_NON_TEXT },
+  // Toasts sit on the raised surface, which the badge pairs above do not cover.
+  { what: "info glyph in a toast badge", fg: "--signal-info-text", bg: ["--bg-surface-raised", "--signal-info-glow"], min: AA_NON_TEXT },
+  { what: "ok glyph in a toast badge", fg: "--signal-ok-text", bg: ["--bg-surface-raised", "--signal-ok-glow"], min: AA_NON_TEXT },
+  { what: "info label on a card (Events Info tile value)", fg: "--signal-info-text", bg: ["--bg-surface"], min: AA },
+  { what: "info label on a raised card (selected Events Info tile)", fg: "--signal-info-text", bg: ["--bg-surface-raised"], min: AA },
+  { what: "info badge label", fg: "--signal-info-text", bg: ["--bg-surface", "--signal-info-bg"], min: AA },
   { what: "crit glyph in its severity badge", fg: "--signal-crit-text", bg: ["--bg-surface", "--signal-crit-glow"], min: AA_NON_TEXT },
 
   // The keyboard focus ring (a 2px --accent-cyan outline, 2px outside the
@@ -364,4 +371,20 @@ test("a theme override only redefines tokens the base theme declares", () => {
   const light = blockDeclarations(css, /^:root\[data-theme="light"\]\s*\{/m);
   const unknown = [...light.keys()].filter((k) => !dark.has(k));
   assert.deepEqual(unknown, [], `light theme declares tokens the base theme does not: ${unknown.join(", ")}`);
+});
+
+test("info surfaces never take the ok colour", () => {
+  const source = stripComments(css);
+  const declarations = (selector: string): string => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rule = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
+    assert.ok(rule, `${selector} rule not found`);
+    return group(rule, 1);
+  };
+  for (const selector of [".sev-info", ".stat-tile.tone-info", ".filter-chip-dot.tone-info"]) {
+    const body = declarations(selector);
+    assert.ok(/--signal-info/.test(body), `${selector} must use --signal-info`);
+    assert.ok(!/--signal-ok/.test(body), `${selector} must not use --signal-ok`);
+  }
+  assert.ok(/--signal-ok/.test(declarations(".sev-ok")), ".sev-ok must use --signal-ok");
 });

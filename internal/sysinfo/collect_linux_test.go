@@ -637,3 +637,48 @@ func TestReadAlarmAt(t *testing.T) {
 		}
 	})
 }
+
+func TestDiskBytes(t *testing.T) {
+	t.Parallel()
+	const blocks, bfree, bavail = 120700413, 60000000, 55000000
+	tests := []struct {
+		name                           string
+		blocks, bfree, bavail          uint64
+		frsize, bsize                  int64
+		wantTotal, wantUsed, wantAvail int64
+	}{
+		{"frsize differs from bsize", blocks, bfree, bavail, 4096, 1048576,
+			blocks * 4096, (blocks - bfree) * 4096, bavail * 4096},
+		{"frsize equals bsize", blocks, bfree, bavail, 4096, 4096,
+			blocks * 4096, (blocks - bfree) * 4096, bavail * 4096},
+		{"frsize zero falls back to bsize", blocks, bfree, bavail, 0, 4096,
+			blocks * 4096, (blocks - bfree) * 4096, bavail * 4096},
+		{"both zero", blocks, bfree, bavail, 0, 0, 0, 0, 0},
+		{"bfree above blocks clamps used to zero", 100, 150, 10, 4096, 4096,
+			100 * 4096, 0, 10 * 4096},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			total, used, avail := diskBytes(tt.blocks, tt.bfree, tt.bavail, tt.frsize, tt.bsize)
+			if total != tt.wantTotal || used != tt.wantUsed || avail != tt.wantAvail {
+				t.Errorf("diskBytes = (%d, %d, %d), want (%d, %d, %d)",
+					total, used, avail, tt.wantTotal, tt.wantUsed, tt.wantAvail)
+			}
+		})
+	}
+}
+
+func TestDiskBytesRatioIsUnitIndependent(t *testing.T) {
+	t.Parallel()
+	var want float64
+	for i, unit := range []int64{512, 4096, 1048576} {
+		_, used, avail := diskBytes(1000, 400, 350, unit, unit)
+		got := float64(used) / float64(used+avail)
+		if i == 0 {
+			want = got
+		} else if got != want {
+			t.Errorf("unit %d: used/(used+avail) = %v, want %v", unit, got, want)
+		}
+	}
+}
