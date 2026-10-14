@@ -71,7 +71,7 @@
     },
     {
       "name": "github.com/tphakala/go-audio-capture",
-      "version": "v0.7.1",
+      "version": "v0.8.0",
       "license": "MIT",
       "files": [
         {
