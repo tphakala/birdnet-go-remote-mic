@@ -398,7 +398,7 @@ func (h *Host) evaluateHost(now time.Time, set *Settings) {
 		},
 		func() notify.Notification { return tempOnset(c, intVal(hs.TempCelsius)) },
 		func() notify.Notification {
-			return conditionClear("Temperature back to normal", fmt.Sprintf("SoC temperature is back at or below %d C", intVal(hs.TempClearCelsius)))
+			return conditionClear("Temperature back to normal", fmt.Sprintf("SoC temperature is back at or below %d °C", intVal(hs.TempClearCelsius)))
 		})
 
 	// usedPct is computed once here (only when the reading is valid, so an empty
@@ -709,7 +709,7 @@ func memOnset(avail, total int64) notify.Notification {
 }
 
 func tempOnset(c float64, threshold int) notify.Notification {
-	return hostOnset(hostTempKey, "High temperature", fmt.Sprintf("SoC temperature is %.0f C, at or above the %d C threshold (check cooling)", c, threshold), notify.SeverityWarning)
+	return hostOnset(hostTempKey, "High temperature", fmt.Sprintf("SoC temperature is %.0f °C, at or above the %d °C threshold (check cooling)", c, threshold), notify.SeverityWarning)
 }
 
 func diskOnset(pct float64) notify.Notification {

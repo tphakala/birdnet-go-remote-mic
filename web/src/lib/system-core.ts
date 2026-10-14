@@ -35,13 +35,19 @@ export const TILE_SLOTS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "disk", label: "Disk" },
 ];
 
+// formatReading renders a gauge value with its unit, or "n/a" with no unit:
+// a unit beside "n/a" reads as a reading. 0 is a reading, not a missing one.
+export function formatReading(v: number | undefined, unit: string): { value: string; unit: string } {
+  return v !== undefined ? { value: v.toFixed(1), unit } : { value: "n/a", unit: "" };
+}
+
 // tileSpecs lists the live resource gauges in display order. Memory and Disk
 // are left out when the host reports no total for them.
 export function tileSpecs(sys: SystemInfo): TileSpec[] {
   const specs: TileSpec[] = [];
   specs.push({
     key: "cpu", label: "CPU Utilization", sub: sys.cpuCores > 0 ? `${sys.cpuCores} Cores` : "",
-    value: sys.cpuPercent !== undefined ? sys.cpuPercent.toFixed(1) : "n/a", unit: "%", barPct: sys.cpuPercent,
+    ...formatReading(sys.cpuPercent, "%"), barPct: sys.cpuPercent,
   });
   if (sys.memTotalBytes > 0) {
     specs.push({
@@ -52,7 +58,7 @@ export function tileSpecs(sys: SystemInfo): TileSpec[] {
   }
   specs.push({
     key: "temp", label: "SoC Temperature", sub: "",
-    value: sys.tempCelsius !== undefined ? sys.tempCelsius.toFixed(1) : "n/a", unit: "deg C",
+    ...formatReading(sys.tempCelsius, "°C"),
     barPct: sys.tempCelsius !== undefined ? (sys.tempCelsius / 85) * 100 : undefined,
   });
   if (sys.diskTotalBytes > 0) {

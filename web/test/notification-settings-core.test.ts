@@ -89,3 +89,11 @@ test("fieldForServerPath resolves every catalogue path and the paired clear path
   assert.equal(fieldForServerPath("notifications.audio.unknown"), null);
   assert.equal(fieldForServerPath("devices.0.name"), null);
 });
+
+test("temperature labels spell the unit as (°C), never (C)", () => {
+  const labels = NOTIFY_FIELDS.filter((f) => f.key === "tempCelsius" || f.key === "tempClearCelsius").map((f) => f.label);
+  assert.equal(labels.length, 2);
+  for (const label of labels) {
+    assert.ok(label.endsWith("(°C)"), label);
+  }
+});

@@ -216,7 +216,7 @@ export class NotificationsCard {
       if (this.actionsEl) this.actionsEl.hidden = true;
       showToast(res.restartRequired
         ? "Notification settings saved. Restart the appliance to finish applying the configuration."
-        : "Notification settings applied.", res.restartRequired ? "warn" : "info");
+        : "Notification settings applied.", res.restartRequired ? "warn" : "ok");
       // Disabling the Save button the operator just activated dropped keyboard
       // focus to <body>, and hiding the actions bar on success removes the
       // landing spot; re-enabling in the finally does not restore focus. Move it

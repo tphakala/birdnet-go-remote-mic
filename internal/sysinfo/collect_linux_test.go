@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -636,4 +637,46 @@ func TestReadAlarmAt(t *testing.T) {
 			t.Error("readAlarmAt ok with a missing alarm file")
 		}
 	})
+}
+
+func TestDiskBytes(t *testing.T) {
+	t.Parallel()
+	const blocks, bfree, bavail = 120700413, 60000000, 55000000
+	tests := []struct {
+		name                           string
+		blocks, bfree, bavail          uint64
+		frsize, bsize                  int64
+		wantTotal, wantUsed, wantAvail int64
+	}{
+		{"frsize differs from bsize", blocks, bfree, bavail, 4096, 1048576,
+			blocks * 4096, (blocks - bfree) * 4096, bavail * 4096},
+		{"frsize equals bsize", blocks, bfree, bavail, 4096, 4096,
+			blocks * 4096, (blocks - bfree) * 4096, bavail * 4096},
+		{"frsize zero falls back to bsize", blocks, bfree, bavail, 0, 4096,
+			blocks * 4096, (blocks - bfree) * 4096, bavail * 4096},
+		{"both zero", blocks, bfree, bavail, 0, 0, 0, 0, 0},
+		{"bfree above blocks clamps used to zero", 100, 150, 10, 4096, 4096,
+			100 * 4096, 0, 10 * 4096},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			total, used, avail := diskBytes(tt.blocks, tt.bfree, tt.bavail, tt.frsize, tt.bsize)
+			if total != tt.wantTotal || used != tt.wantUsed || avail != tt.wantAvail {
+				t.Errorf("diskBytes = (%d, %d, %d), want (%d, %d, %d)",
+					total, used, avail, tt.wantTotal, tt.wantUsed, tt.wantAvail)
+			}
+		})
+	}
+}
+
+func TestStatfsBytesUsesFragmentSize(t *testing.T) {
+	t.Parallel()
+	// The issue's mount: bsize 1 MiB, frsize 4 KiB. Swapping the two fields at
+	// the statfs call site reintroduces a 256x overstatement.
+	st := syscall.Statfs_t{Blocks: 1000, Bfree: 400, Bavail: 350, Frsize: 4096, Bsize: 1048576}
+	total, used, avail := statfsBytes(&st)
+	if total != 1000*4096 || used != 600*4096 || avail != 350*4096 {
+		t.Errorf("statfsBytes = (%d, %d, %d), want (%d, %d, %d)", total, used, avail, 1000*4096, 600*4096, 350*4096)
+	}
 }

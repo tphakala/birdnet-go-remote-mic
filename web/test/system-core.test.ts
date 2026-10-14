@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  displayAddresses, formatByteSize, INFO_ORDER, infoRows, networkRows, networkSummary, overrideLines, overridesSignature,
+  displayAddresses, formatByteSize, formatReading, INFO_ORDER, infoRows, networkRows, networkSummary, overrideLines, overridesSignature,
   shownInterfaces, signalQuality, TILE_SLOTS, tileSpecs, wifiBand, withPlaceholders,
 } from "../src/lib/system-core.ts";
 import { CERT_LABELS, certRows } from "../src/lib/certificate-core.ts";
@@ -77,6 +77,7 @@ test("tileSpecs lists CPU, Memory, Temperature and Disk in order", () => {
   assert.equal(mem?.sub, "4.0 GB Total");
   assert.equal(mem?.barPct, 12.5);
   assert.equal(temp?.value, "42.5");
+  assert.equal(temp?.unit, "°C");
   assert.equal(temp?.barPct, (42.5 / 85) * 100);
   assert.equal(disk?.value, "8.0");
   assert.equal(disk?.barPct, 25);
@@ -94,10 +95,18 @@ test("tileSpecs drops Memory and Disk without a total and shows n/a without a re
   assert.deepEqual(specs.map((s) => s.key), ["cpu", "temp"]);
   const [cpu, temp] = specs;
   assert.equal(cpu?.value, "n/a");
+  assert.equal(cpu?.unit, "");
   assert.equal(cpu?.sub, "");
   assert.equal(cpu?.barPct, undefined);
   assert.equal(temp?.value, "n/a");
+  assert.equal(temp?.unit, "");
   assert.equal(temp?.barPct, undefined);
+});
+
+test("formatReading shows a value with its unit and n/a without one", () => {
+  assert.deepEqual(formatReading(42.46, "°C"), { value: "42.5", unit: "°C" });
+  assert.deepEqual(formatReading(undefined, "°C"), { value: "n/a", unit: "" });
+  assert.deepEqual(formatReading(0, "%"), { value: "0.0", unit: "%" });
 });
 
 test("infoRows orders the groups and adds the release rows only when updates are supported", () => {

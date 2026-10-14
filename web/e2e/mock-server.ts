@@ -338,7 +338,8 @@ function snapshot(): NotificationSnapshot {
     notif(7, 90 * 60_000, { severity: "warning", category: "audio", kind: "onset", key: "audio.Garden.quiet", source: "Garden", title: "Very quiet audio", message: "Garden has stayed below -70 dBFS for 5 minutes. Check the microphone and its cable." }),
     notif(8, 40 * 60_000, { severity: "error", category: "audio", kind: "onset", key: "audio.Garden.clip", source: "Garden", title: "Audio clipping", message: "Garden clipped on 3.4% of samples over the last minute. Lower the input gain." }),
     notif(9, 25 * 60_000, { severity: "error", category: "stream", kind: "event", source: "/garden", title: "Stream stalled", message: "The RTSP client on /garden stopped reading; dropped 12 frames before it recovered." }),
-    notif(10, 10 * 60_000, { severity: "info", category: "device", kind: "onset", key: "device.Feeder.missing", source: "Feeder", title: "Device not connected", message: "Feeder (hw:5,0) is not connected. It is bound by card index, so it is not restarted automatically." }),
+    notif(10, 10 * 60_000, { severity: "error", category: "device", kind: "onset", key: "device.Feeder.missing", source: "Feeder", title: "Device not connected", message: "Feeder (hw:5,0) is not connected. It is bound by card index, so it is not restarted automatically." }),
+    notif(11, 5 * 60_000, { severity: "info", category: "system", kind: "onset", key: "update:available", source: "update", title: "Update available: v1.5.0", message: `remote-mic v1.5.0 is available; this appliance runs ${VERSION}. Release notes: https://github.com/tphakala/birdnet-go-remote-mic/releases/tag/v1.5.0` }),
   ];
   return {
     bootId: BOOT_ID,

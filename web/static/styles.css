@@ -60,6 +60,11 @@
   --signal-crit: #ef4444;
   --signal-crit-glow: rgba(239, 68, 68, 0.35);
   --signal-crit-bg: rgba(239, 68, 68, 0.14);
+  /* Neutral information: blue, so it never reads as success (green) or as the
+     cyan that means selected / interactive. */
+  --signal-info: #60a5fa;
+  --signal-info-glow: rgba(96, 165, 250, 0.25);
+  --signal-info-bg: rgba(96, 165, 250, 0.12);
 
   --ultrasonic-purple: #a855f7;
   --ultrasonic-bg: rgba(168, 85, 247, 0.14);
@@ -84,6 +89,7 @@
   --signal-ok-text: var(--signal-ok);
   --signal-warn-text: var(--signal-warn);
   --signal-crit-text: #f87171;
+  --signal-info-text: var(--signal-info);
   --accent-cyan-text: var(--accent-cyan);
   /* #a855f7 measured 3.4:1 on its own tint over a raised card; purple-400 is
      the same hue with the lightness the label needs. */
@@ -218,6 +224,9 @@
   --signal-crit: #dc2626;
   --signal-crit-glow: rgba(220, 38, 38, 0.2);
   --signal-crit-bg: rgba(220, 38, 38, 0.1);
+  --signal-info: #2563eb;
+  --signal-info-glow: rgba(37, 99, 235, 0.2);
+  --signal-info-bg: rgba(37, 99, 235, 0.1);
 
   --ultrasonic-purple: #7e22ce;
   --ultrasonic-bg: rgba(126, 34, 206, 0.1);
@@ -237,6 +246,9 @@
      ground, where it came out at 4.46:1. #a44908 clears both. */
   --signal-warn-text: #a44908;
   --signal-crit-text: #b91c1c;
+  /* #2563eb fails as a label on its own tint (4.50:1 on card+bg); #1d4ed8 clears
+     AA on every ground (5.83:1 on card+bg). */
+  --signal-info-text: #1d4ed8;
   --accent-cyan-text: #155e75;
   --ultrasonic-text: var(--ultrasonic-purple);
 
@@ -1579,11 +1591,11 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 /* ===== Severity surfaces =====
    Toasts, notification rows and the restart banner all say "this is info / a
-   warning / an error". They used to say it with a 3px bar down the left edge.
-   That bar is gone: it reads as a stray rule rather than part of the card, it
-   breaks the rounded corner it runs into, it is the first thing to look wrong
-   when the card sits in a list, and it carries no meaning a blind user can
-   reach.
+   warning / an error" (or "this worked", for a confirmation). They used to
+   say it with a 3px bar down the left edge. That bar is gone: it reads as a
+   stray rule rather than part of the card, it breaks the rounded corner it
+   runs into, it is the first thing to look wrong when the card sits in a
+   list, and it carries no meaning a blind user can reach.
 
    The replacement encodes severity in the icon badge alone: the glyph shape and
    a filled tile in the severity colour. The card around it keeps the neutral
@@ -1591,7 +1603,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
    one family and the badge is what marks an error. A block opts in by setting
    the --sev pair; the shared badge rule does the painting, so a new severity
    is two custom properties and no new rules. */
-.sev-info    { --sev: var(--signal-ok-text);   --sev-strong: var(--signal-ok-glow); }
+.sev-ok      { --sev: var(--signal-ok-text);   --sev-strong: var(--signal-ok-glow); }
+.sev-info    { --sev: var(--signal-info-text); --sev-strong: var(--signal-info-glow); }
 .sev-warn    { --sev: var(--signal-warn-text); --sev-strong: var(--signal-warn-glow); }
 .sev-error   { --sev: var(--signal-crit-text); --sev-strong: var(--signal-crit-glow); }
 
@@ -2407,7 +2420,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* Rows keep the neutral surface and border for every severity. Severity is on
-   every row regardless: the glyphs are distinct shapes (check, triangle, cross)
+   every row regardless: the glyphs are distinct shapes (an i, a triangle, a cross)
    in their own coloured badge, and the screen-reader prefix in
    .notif-row-title spells the severity out. */
 
@@ -2540,7 +2553,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 .stat-tile.tone-error { --tone: var(--signal-crit-text); }
 .stat-tile.tone-warn  { --tone: var(--signal-warn-text); }
-.stat-tile.tone-info  { --tone: var(--signal-ok-text); }
+.stat-tile.tone-info  { --tone: var(--signal-info-text); }
 .stat-tile.tone-ok    { --tone: var(--signal-ok-text); }
 
 .stat-tile.is-action {
@@ -2748,7 +2761,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 .filter-chip-dot.tone-error { background: var(--signal-crit); }
 .filter-chip-dot.tone-warn  { background: var(--signal-warn); }
-.filter-chip-dot.tone-info  { background: var(--signal-ok); }
+.filter-chip-dot.tone-info  { background: var(--signal-info); }
 
 .filter-chip-count {
   font-size: var(--font-size-caption);

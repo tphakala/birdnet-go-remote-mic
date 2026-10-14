@@ -287,7 +287,7 @@ export class UpdatePanel {
       // without a result; an old error must not read as this check's.
       if (!status.checkEnabled) showToast("The check stopped because update checks were turned off.", "warn");
       else if (status.lastError) showToast(`Update check failed: ${status.lastError.trim()}`, "warn");
-      else if (status.lastNotice) showToast(`No update information yet: ${status.lastNotice.trim()}`);
+      else if (status.lastNotice) showToast(`No update information yet: ${status.lastNotice.trim()}`, "info");
       else if (!status.available && status.latestVersion) showToast(`Up to date: ${status.currentVersion} is the newest release.`);
     } catch (err: unknown) {
       // Any failure reads the same: a check changes no setting, so a lost
