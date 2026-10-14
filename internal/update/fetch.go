@@ -21,8 +21,9 @@ const DefaultBase = "https://github.com/" + releasemanifest.Repository
 var ErrNoRelease = errors.New("no published release")
 
 // ErrNoManifest reports a latest release published without its signed
-// update manifest: the release workflow uploads it just after the release
-// goes live, and a failed upload leaves it missing until rerun.
+// update manifest. The release workflow marks a release latest only after its
+// manifest is attached and verified, so this means a release marked latest
+// before that rule, or by hand.
 var ErrNoManifest = errors.New("its update information is not published yet")
 
 // StatusError reports an unexpected HTTP status from a release download.

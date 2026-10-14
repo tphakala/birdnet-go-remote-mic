@@ -360,9 +360,10 @@ known version, the last check and any error are in `GET /api/v1/system` under
 `updates: {check: false}` in the config or `PATCH /api/v1/config`; with them
 off the appliance makes no outbound update request at all. A check that fails
 (no network, GitHub down) logs one line per kind of failure and retries later;
-it never raises a notification and never affects audio. A release published
-before its signed manifest (the release workflow uploads it a few seconds
-later) is not a failure: the System page says there is no update information
+it never raises a notification and never affects audio. A latest release
+without its signed manifest (the release workflow marks a release latest only
+after the manifest is attached and verified, so this means one marked latest
+by hand or before that rule) is not a failure: the System page says there is no update information
 yet, keeps any update already found, and the periodic check asks again after
 an hour.
 

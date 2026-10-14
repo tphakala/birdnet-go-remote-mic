@@ -23,8 +23,9 @@ import (
 // later ones come about daily, jittered so a fleet does not check in step.
 // A failed check is retried sooner, backing off to the daily interval. A
 // latest release whose update information is not published yet is asked
-// about again after a fixed hour: the gap normally lasts seconds, and a
-// failed upload is fixed by hand at an unknown time.
+// about again after a fixed hour: the release workflow marks a release latest
+// only after its manifest verifies, so such a gap comes from a release marked
+// latest by hand or before that rule, and is closed at an unknown time.
 const (
 	firstCheckDelay  = 3 * time.Minute
 	firstCheckJitter = 2 * time.Minute
