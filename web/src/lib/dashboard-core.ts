@@ -5,8 +5,9 @@
 import type { FieldProblem } from "./api.ts";
 import { DEVICE_FIELD_LABELS, defaultOpusBitrate } from "./device-settings-core.ts";
 import type { ViewName } from "./router-core.ts";
+import { formatReading } from "./system-core.ts";
 import type { Timers } from "./timers.ts";
-import type { AvailableDevice, Device, DeviceConfig, StreamMode } from "./types.ts";
+import type { AvailableDevice, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.ts";
 
 // channelLabel renders a streamed channel selection, e.g. "Ch 1", "Ch 1+2", or
 // "Ch 1+3" for a non-contiguous pair. An empty selection renders nothing.
@@ -716,4 +717,26 @@ export function followLevels(events: LevelsWatchEvents, watch: LevelsWatch): voi
   events.on("levels", () => watch.levels());
   events.on("levelsdropped", () => watch.stopped());
   events.on("connection", (connected) => watch.setConnected(connected));
+}
+
+// TelemetryReading is one dashboard telemetry tile: the ids of its value and
+// unit elements, the text for the value, and whether the unit is hidden (it is
+// when the reading is n/a, since a unit beside "n/a" reads as a reading).
+export interface TelemetryReading {
+  valueId: string;
+  unitId: string;
+  value: string;
+  unitHidden: boolean;
+}
+
+// telemetryReadings lists the dashboard's CPU and temperature tiles in order.
+export function telemetryReadings(sys: Pick<SystemInfo, "cpuPercent" | "tempCelsius">): TelemetryReading[] {
+  const reading = (valueId: string, unitId: string, v: number | undefined, unit: string): TelemetryReading => {
+    const r = formatReading(v, unit);
+    return { valueId, unitId, value: r.value, unitHidden: r.unit === "" };
+  };
+  return [
+    reading("cpu-load-display", "cpu-load-unit", sys.cpuPercent, "%"),
+    reading("soc-temp-display", "soc-temp-unit", sys.tempCelsius, "°C"),
+  ];
 }

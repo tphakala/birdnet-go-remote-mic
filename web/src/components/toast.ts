@@ -1,7 +1,9 @@
 import { h } from "../lib/h.ts";
 import { svgIcon } from "../lib/svg.ts";
+import { ERROR_TTL_MS, toastView, type ToastType } from "../lib/toast-core.ts";
 
-export type ToastType = "ok" | "info" | "warn" | "error";
+export type { ToastType };
+export { ERROR_TTL_MS };
 
 // Trusted static icon markup (never interpolated with runtime data).
 const ICON_WARN = svgIcon('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>', 15);
@@ -22,26 +24,16 @@ export const TOAST_ICONS: Record<ToastType, string> = {
   error: ICON_ERROR,
 };
 
-const INFO_TTL_MS = 3200;
-// A failed provisioning, removal or save deserves more than a glance: errors
-// live in an assertive region, stay longer, and can be dismissed by hand (as
-// can any other toast given this long a duration).
-export const ERROR_TTL_MS = 8000;
-
-export function showToast(message: string, type: ToastType = "ok", durationMs?: number): void {
-  const isError = type === "error";
-  // Errors go to the role=alert container so a screen reader announces them
-  // at once; notices stay in the polite region.
-  const container = document.getElementById(isError ? "toast-alerts" : "toast-root");
+export function showToast(message: string, type?: ToastType, durationMs?: number): void {
+  const v = toastView(type, durationMs);
+  const container = document.getElementById(v.alert ? "toast-alerts" : "toast-root");
   if (!container) return;
-  const ttl = durationMs ?? (isError ? ERROR_TTL_MS : INFO_TTL_MS);
+  const ttl = v.ttlMs;
 
   const icon = h("span", { class: "toast-icon sev-badge" });
-  // Fall back to the neutral glyph so an off-contract type (a severity from a
-  // newer appliance) cannot render "undefined" or pass for a success.
-  icon.innerHTML = TOAST_ICONS[type] ?? ICON_INFO; // static, trusted markup
+  icon.innerHTML = TOAST_ICONS[v.type]; // static, trusted markup
   // sev-* drives the shared severity surface (badge fill, border and wash).
-  const toast = h("div", { class: `toast sev-${type}` }, icon, h("span", { class: "toast-msg" }, message));
+  const toast = h("div", { class: `toast sev-${v.type}` }, icon, h("span", { class: "toast-msg" }, message));
 
   let timer = 0;
   let removed = false;
@@ -69,10 +61,9 @@ export function showToast(message: string, type: ToastType = "ok", durationMs?: 
   toast.addEventListener("focusin", () => { focused = true; disarm(); });
   toast.addEventListener("focusout", () => { focused = false; rearm(); });
 
-  // Errors, and any toast held as long as one, get a dismiss button: it lets
-  // anyone close the toast by hand, and a keyboard user can focus it to hold the
-  // toast open.
-  if (isError || ttl >= ERROR_TTL_MS) {
+  // The dismiss button lets anyone close the toast by hand, and a keyboard user
+  // can focus it to hold the toast open.
+  if (v.dismissible) {
     const dismiss = h("button", { type: "button", class: "toast-dismiss", "aria-label": "Dismiss notification" });
     dismiss.innerHTML = ICON_CLOSE; // static, trusted markup
     dismiss.addEventListener("click", remove);

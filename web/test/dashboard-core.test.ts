@@ -55,6 +55,7 @@ import {
   pendingStop,
   rtspUrl,
   streamFormats,
+  telemetryReadings,
   streamSummary,
   tallyStates,
   tokenHiddenMessage,
@@ -741,4 +742,25 @@ test("streamFormats describes each stream, not the hardware capture", () => {
   assert.deepEqual(streamFormats(rec, { streams: [] }), ["OPUS 48,000 Hz · 256 kbps"]);
   // No streams and no config: the flat record's one line.
   assert.deepEqual(streamFormats(rec), ["OPUS 48,000 Hz · 256 kbps"]);
+});
+
+test("telemetryReadings gives the CPU and temperature readings with units, in tile order", () => {
+  assert.deepEqual(telemetryReadings({ cpuPercent: 12.34, tempCelsius: 48 }), [
+    { valueId: "cpu-load-display", unitId: "cpu-load-unit", value: "12.3", unitHidden: false },
+    { valueId: "soc-temp-display", unitId: "soc-temp-unit", value: "48.0", unitHidden: false },
+  ]);
+});
+
+test("telemetryReadings shows n/a without a unit for a missing reading and keeps a zero", () => {
+  const [cpu, temp] = telemetryReadings({ cpuPercent: undefined, tempCelsius: 0 });
+  assert.deepEqual(cpu, { valueId: "cpu-load-display", unitId: "cpu-load-unit", value: "n/a", unitHidden: true });
+  assert.deepEqual(temp, { valueId: "soc-temp-display", unitId: "soc-temp-unit", value: "0.0", unitHidden: false });
+});
+
+test("every telemetry reading has its unit element right after its value element in index.html", () => {
+  const html = readFileSync(fileURLToPath(new URL("../static/index.html", import.meta.url)), "utf8");
+  for (const { valueId, unitId } of telemetryReadings({ cpuPercent: 1, tempCelsius: 1 })) {
+    const cell = new RegExp(`id="${valueId}"[^>]*>[^<]*</span>\\s*<span class="telemetry-unit" id="${unitId}">`);
+    assert.ok(cell.test(html), `${unitId} must follow ${valueId} in index.html`);
+  }
 });
