@@ -5,9 +5,10 @@
 // The release workflow runs it around GoReleaser: check-key before anything is
 // published, so a missing or untrusted signing key fails the release early
 // rather than after the release is live; generate after GoReleaser has built
-// the archives. The signing key comes from the RELEASE_MANIFEST_KEY
-// environment variable (a base64 Ed25519 seed), never from a flag, so it cannot
-// land in a process listing or a shell history.
+// the archives, and make-latest after the manifest verifies. The signing key
+// comes from the RELEASE_MANIFEST_KEY environment variable (a base64 Ed25519
+// seed), never from a flag, so it cannot land in a process listing or a shell
+// history.
 //
 // Usage, from the repository root:
 //
@@ -173,11 +174,15 @@ func keygen(out string, stdout io.Writer) error {
 // makeLatest reports whether tag should become the repository's "latest"
 // release, which is where update checks fetch the manifest: only when it is
 // not older than the current latest, so a stable release cut on an older line
-// (v1.2.5 after v1.3.0) cannot move update checks backwards. Prereleases never
-// become latest (GoReleaser forces that), so their answer does not matter.
+// (v1.2.5 after v1.3.0) cannot move update checks backwards. A prerelease
+// never does, matching GoReleaser's `prerelease: auto`.
 func makeLatest(tag, latest string) (bool, error) {
 	if !releasemanifest.ValidVersion(tag) {
 		return false, fmt.Errorf("%w: %q", ErrBadTag, tag)
+	}
+	// The version pattern allows "-" only as the prerelease separator.
+	if strings.Contains(tag, "-") {
+		return false, nil
 	}
 	if latest == "" {
 		return true, nil
