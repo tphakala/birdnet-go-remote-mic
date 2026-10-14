@@ -126,6 +126,14 @@ function blockDeclarations(source: string, selector: RegExp): Map<string, string
   return out;
 }
 
+// The declarations of the rule whose selector list is exactly `selector`, in
+// comment-stripped CSS, or undefined when there is no such rule.
+function ruleBody(source: string, selector: string): string | undefined {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rule = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
+  return rule ? group(rule, 1) : undefined;
+}
+
 // The light theme is the base :root block with the light block layered over it,
 // which is exactly the cascade a browser applies for :root[data-theme="light"].
 function tokensFor(css: string, theme: "dark" | "light"): Map<string, string> {
@@ -346,9 +354,8 @@ test("every decorative accent icon rule still paints the base accent", () => {
   const source = stripComments(css);
   const stale: string[] = [];
   for (const selector of DECORATIVE.keys()) {
-    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const rule = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
-    if (!rule || !PAINTS_ACCENT.test(group(rule, 1))) stale.push(selector);
+    const body = ruleBody(source, selector);
+    if (body === undefined || !PAINTS_ACCENT.test(body)) stale.push(selector);
   }
   assert.deepEqual(stale, [], "update DECORATIVE: these rules no longer paint --accent-cyan");
 });
@@ -378,10 +385,9 @@ test("a theme override only redefines tokens the base theme declares", () => {
 test("info surfaces never take the ok colour", () => {
   const source = stripComments(css);
   const declarations = (selector: string): string => {
-    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const rule = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
-    assert.ok(rule, `${selector} rule not found`);
-    return group(rule, 1);
+    const body = ruleBody(source, selector);
+    assert.ok(body !== undefined, `${selector} rule not found`);
+    return body;
   };
   for (const selector of [".sev-info", ".stat-tile.tone-info", ".filter-chip-dot.tone-info"]) {
     const body = declarations(selector);

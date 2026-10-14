@@ -1591,11 +1591,11 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 
 /* ===== Severity surfaces =====
    Toasts, notification rows and the restart banner all say "this is info / a
-   warning / an error" (or "this worked", for a confirmation). They used to say it with a 3px bar down the left edge.
-   That bar is gone: it reads as a stray rule rather than part of the card, it
-   breaks the rounded corner it runs into, it is the first thing to look wrong
-   when the card sits in a list, and it carries no meaning a blind user can
-   reach.
+   warning / an error" (or "this worked", for a confirmation). They used to
+   say it with a 3px bar down the left edge. That bar is gone: it reads as a
+   stray rule rather than part of the card, it breaks the rounded corner it
+   runs into, it is the first thing to look wrong when the card sits in a
+   list, and it carries no meaning a blind user can reach.
 
    The replacement encodes severity in the icon badge alone: the glyph shape and
    a filled tile in the severity colour. The card around it keeps the neutral

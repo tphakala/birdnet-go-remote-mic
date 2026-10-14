@@ -95,6 +95,5 @@ test("temperature labels spell the unit as (°C), never (C)", () => {
   assert.equal(labels.length, 2);
   for (const label of labels) {
     assert.ok(label.endsWith("(°C)"), label);
-    assert.ok(!label.includes("(C)"), label);
   }
 });

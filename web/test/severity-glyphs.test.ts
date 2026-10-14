@@ -12,7 +12,6 @@ import { SEVERITY_TO_TOAST } from "../src/components/notification-row.ts";
 test("every toast type has its own glyph, so info never shows the success check", () => {
   const glyphs = Object.values(TOAST_ICONS);
   assert.equal(new Set(glyphs).size, glyphs.length);
-  assert.notEqual(TOAST_ICONS.info, TOAST_ICONS.ok);
 });
 
 test("notification severities map to info, warn and error, never to the ok confirmation type", () => {

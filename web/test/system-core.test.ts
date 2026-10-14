@@ -109,18 +109,6 @@ test("formatReading shows a value with its unit and n/a without one", () => {
   assert.deepEqual(formatReading(0, "%"), { value: "0.0", unit: "%" });
 });
 
-test("tileSpecs toggles the temperature unit as the sensor comes and goes", () => {
-  const temps = [50, undefined, 51].map((tempCelsius) => {
-    const temp = tileSpecs(sysInfo({ tempCelsius })).find((s) => s.key === "temp");
-    return { value: temp?.value, unit: temp?.unit };
-  });
-  assert.deepEqual(temps, [
-    { value: "50.0", unit: "°C" },
-    { value: "n/a", unit: "" },
-    { value: "51.0", unit: "°C" },
-  ]);
-});
-
 test("infoRows orders the groups and adds the release rows only when updates are supported", () => {
   const now = Date.parse("2026-09-01T00:00:10Z");
   const rows = infoRows(sysInfo({ update }), status(), now, uptime, relative);

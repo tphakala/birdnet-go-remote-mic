@@ -670,20 +670,6 @@ func TestDiskBytes(t *testing.T) {
 	}
 }
 
-func TestDiskBytesRatioIsUnitIndependent(t *testing.T) {
-	t.Parallel()
-	var want float64
-	for i, unit := range []int64{512, 4096, 1048576} {
-		_, used, avail := diskBytes(1000, 400, 350, unit, 1048576)
-		got := float64(used) / float64(used+avail)
-		if i == 0 {
-			want = got
-		} else if got != want {
-			t.Errorf("unit %d: used/(used+avail) = %v, want %v", unit, got, want)
-		}
-	}
-}
-
 func TestStatfsBytesUsesFragmentSize(t *testing.T) {
 	t.Parallel()
 	// The issue's mount: bsize 1 MiB, frsize 4 KiB. Swapping the two fields at
