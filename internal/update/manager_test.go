@@ -1249,3 +1249,208 @@ func TestManagerMissingManifestAfterStop(t *testing.T) {
 		}
 	})
 }
+
+// fetchLog is a fakeFetch whose first call can block until the manager
+// cancels it (checks turned off), as a slow request does.
+type fetchLog struct{ fakeFetch }
+
+func (f *fetchLog) blockFirst(ctx context.Context) (*Release, error) {
+	if f.count() == 0 {
+		f.mu.Lock()
+		f.calls++
+		f.mu.Unlock()
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	}
+	return f.fetch(ctx)
+}
+
+// TestManagerTurnOffRestartsSchedule pins that turning checks off starts the
+// check schedule over from the startup delay once they are back on, however
+// the toggle lines up with a check in flight or with the loop being idle.
+func TestManagerTurnOffRestartsSchedule(t *testing.T) {
+	t.Parallel()
+	type scenario struct {
+		name string
+		// failFirst is the number of failed checks before the run under test.
+		failFirst int
+		run       func(t *testing.T, m *Manager, f *fetchLog)
+	}
+	// duringFetch waits for the first check to be in flight.
+	duringFetch := func(t *testing.T, m *Manager, f *fetchLog) {
+		t.Helper()
+		m.Apply(on())
+		time.Sleep(firstCheckDelay)
+		synctest.Wait()
+		if n := f.count(); n < 1 {
+			t.Fatalf("no check in flight after the startup delay: %d fetches", n)
+		}
+	}
+	scenarios := []scenario{
+		{"off then on during a fetch", 0, func(t *testing.T, m *Manager, f *fetchLog) {
+			t.Helper()
+			duringFetch(t, m, f)
+			m.Apply(off())
+			m.Apply(on())
+			synctest.Wait()
+		}},
+		{"off then on during a fetch after failures", 2, func(t *testing.T, m *Manager, f *fetchLog) {
+			t.Helper()
+			duringFetch(t, m, f)
+			m.Apply(off())
+			m.Apply(on())
+			synctest.Wait()
+		}},
+		{"off then on while idle on a day timer", 0, func(t *testing.T, m *Manager, f *fetchLog) {
+			t.Helper()
+			f.set(fakeRelease(vNew), nil)
+			m.Apply(on())
+			time.Sleep(firstCheckDelay)
+			synctest.Wait()
+			if !m.Status().Available {
+				t.Fatal("the first check found no release")
+			}
+			// No Wait between the two: Run cannot run in between.
+			m.Apply(off())
+			m.Apply(on())
+			synctest.Wait()
+		}},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				f := &fetchLog{}
+				f.set(nil, &StatusError{URL: "u", Code: 503})
+				fetch := f.blockFirst
+				if strings.Contains(sc.name, "idle") {
+					fetch = f.fetch
+				}
+				c := notify.NewCenter()
+				m := NewManager(t.Context(), &Config{Running: vOld, Fetch: fetch, Jitter: noJitter, Logf: (&logSink{}).logf, Publisher: c})
+				m.failures = sc.failFirst
+				go m.Run(t.Context())
+				sc.run(t, m, f)
+				restarted := time.Now()
+				if got, want := m.Status().NextCheck, restarted.Add(firstCheckDelay); !got.Equal(want) {
+					t.Fatalf("NextCheck %v, want %v (the startup delay from the toggle)", got, want)
+				}
+				before := f.count()
+				time.Sleep(firstCheckDelay - time.Second)
+				synctest.Wait()
+				if n := f.count(); n != before {
+					t.Fatalf("%d fetches before the startup delay, want %d", n, before)
+				}
+				time.Sleep(2 * time.Second)
+				synctest.Wait()
+				if n := f.count(); n != before+1 {
+					t.Fatalf("%d fetches after the startup delay, want %d", n, before+1)
+				}
+			})
+		})
+	}
+}
+
+// TestManagerTurnOffRestartsOfferAfterToggle pins that a release found before
+// a quick off and on is found again after the startup delay, with its
+// notification back.
+func TestManagerTurnOffRestartsOfferAfterToggle(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeFetch{rel: fakeRelease(vNew)}
+		c := notify.NewCenter()
+		m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Jitter: noJitter, Logf: (&logSink{}).logf, Publisher: c})
+		go m.Run(t.Context())
+		m.Apply(on())
+		time.Sleep(firstCheckDelay)
+		synctest.Wait()
+		if !m.Status().Available {
+			t.Fatal("the first check found no release")
+		}
+		m.Apply(off())
+		m.Apply(on())
+		synctest.Wait()
+		time.Sleep(firstCheckDelay)
+		synctest.Wait()
+		if !m.Status().Available {
+			t.Error("the offer is not back after the startup delay")
+		}
+		if _, ok := activeKeys(c)[AvailableKey]; !ok {
+			t.Error("the available notification is not back after the startup delay")
+		}
+	})
+}
+
+// TestManagerNextCheckAfterSuccessUnchanged is the control: without a
+// turn-off the next check stays a day after a success.
+func TestManagerNextCheckAfterSuccessUnchanged(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeFetch{rel: fakeRelease(vOld)}
+		m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Jitter: noJitter, Logf: (&logSink{}).logf})
+		go m.Run(t.Context())
+		m.Apply(on())
+		time.Sleep(firstCheckDelay)
+		synctest.Wait()
+		if got, want := m.Status().NextCheck, time.Now().Add(checkInterval-checkJitter); !got.Equal(want) {
+			t.Fatalf("NextCheck %v, want %v", got, want)
+		}
+	})
+}
+
+// TestManagerTurnOffRestartsLogDedupe pins that a notice or a failure kind is
+// logged once per enabled period: turning checks off and on logs it again.
+func TestManagerTurnOffRestartsLogDedupe(t *testing.T) {
+	t.Parallel()
+	type outcome int
+	const (
+		notice outcome = iota
+		failure
+		success
+		toggle
+	)
+	tests := []struct {
+		name                               string
+		steps                              []outcome
+		notices, failures, recoveredLogged int
+	}{
+		{"notice, notice, toggle, notice", []outcome{notice, notice, toggle, notice}, 2, 0, 0},
+		{"failure, failure, toggle, failure", []outcome{failure, failure, toggle, failure}, 0, 2, 0},
+		{"notice, toggle, failure, notice", []outcome{notice, toggle, failure, notice}, 2, 1, 0},
+		{"failure, toggle, success", []outcome{failure, toggle, success}, 0, 1, 0},
+		{"control: notice three times", []outcome{notice, notice, notice}, 1, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeFetch{}
+			logs := &logSink{}
+			m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Jitter: noJitter, Logf: logs.logf, Publisher: notify.NewCenter()})
+			m.Apply(on())
+			for _, s := range tt.steps {
+				switch s {
+				case toggle:
+					m.Apply(off())
+					m.Apply(on())
+					continue
+				case notice:
+					f.set(nil, errNoManifest(vNew))
+				case failure:
+					f.set(nil, &StatusError{URL: "u", Code: 503})
+				case success:
+					f.set(fakeRelease(vOld), nil)
+				}
+				m.check(t.Context(), false)
+			}
+			if n := logs.count("no update information"); n != tt.notices {
+				t.Errorf("logged %d notices, want %d", n, tt.notices)
+			}
+			if n := logs.count("check failed"); n != tt.failures {
+				t.Errorf("logged %d failures, want %d", n, tt.failures)
+			}
+			if n := logs.count("succeed again"); n != tt.recoveredLogged {
+				t.Errorf("logged %d recoveries, want %d", n, tt.recoveredLogged)
+			}
+		})
+	}
+}

@@ -681,3 +681,46 @@ func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
 		t.Errorf("base delivers %d channels, want the 2 opened (unselected)", ch)
 	}
 }
+
+func TestOpenCapturePrefersRangedFormatError(t *testing.T) {
+	// A *BadFormatError that names the device's channel range is kept over one
+	// that does not (an S32-only device rejects S16 at any channel count, with
+	// no range). Only a tie-break between format errors: a rate error still
+	// wins, and a raw error from an earlier format is not replaced.
+	defer swapMonoProbe()()
+	raw := errors.New("alsa: HW_REFINE: invalid argument")
+	unranged := &capture.BadFormatError{Format: capture.FormatS16LE}
+	unranged2 := &capture.BadFormatError{Format: capture.FormatS32LE}
+	ranged := &capture.BadFormatError{Format: capture.FormatS32LE, MaxChannels: 2}
+	ranged2 := &capture.BadFormatError{Format: capture.FormatS24LE, MaxChannels: 4}
+	rate := &capture.BadRateError{Requested: 384000, Min: 44100, Max: 96000}
+	cases := []struct {
+		name     string
+		s16, s32 error
+		want     error
+	}{
+		{"unranged_then_ranged", unranged, ranged, ranged},
+		{"ranged_then_ranged_keeps_first", ranged, ranged2, ranged},
+		{"ranged_then_unranged_keeps_first", ranged, unranged, ranged},
+		{"raw_then_ranged_keeps_raw", raw, ranged, raw},
+		{"unranged_then_unranged_keeps_first", unranged, unranged2, unranged},
+		{"unranged_then_rate", unranged, rate, rate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := openStream
+			openStream = func(cfg capture.Config) (captureStream, error) {
+				if cfg.Format == capture.FormatS16LE {
+					return nil, tc.s16
+				}
+				return nil, tc.s32
+			}
+			defer func() { openStream = prev }()
+
+			_, err := OpenCapture(&config.Device{Device: testDevID, Rate: 384000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("surfaced %v, want %v", err, tc.want)
+			}
+		})
+	}
+}

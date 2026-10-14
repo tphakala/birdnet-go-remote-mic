@@ -94,8 +94,8 @@ type DeviceStatus struct {
 	Error    string
 	// DownCause classifies why a skipped or failed device is not serving (the
 	// wire downCause enum: not-connected, ambiguous, malformed, resolve-failed,
-	// same-hardware, open-failed, disconnected, failed); empty when there is no
-	// specific class.
+	// same-hardware, open-failed, disconnected, stalled, failed); empty when
+	// there is no specific class.
 	DownCause string
 	// FriendlyName is a human-facing label derived from the sound card name,
 	// empty when the device id resolved to no present hardware.

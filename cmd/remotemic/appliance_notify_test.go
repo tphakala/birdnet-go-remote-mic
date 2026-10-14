@@ -81,7 +81,7 @@ func TestDownCausesAreWireEnumMembers(t *testing.T) {
 	t.Parallel()
 	for _, c := range []string{
 		downNotConnected, downAmbiguous, downMalformed, downResolve,
-		downSameHardware, downOpenFailed, downDisconnected, downFailed,
+		downSameHardware, downOpenFailed, downDisconnected, downStalled, downFailed,
 	} {
 		if !mgmtapi.DeviceDownCause(c).Valid() {
 			t.Errorf("down cause %q is not a member of the API downCause enum", c)

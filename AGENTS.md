@@ -184,7 +184,10 @@ Each release also gets a signed manifest (`manifest.json` plus
 `manifest.json.sig`) for update checks, written after GoReleaser by
 `tools/releasemanifest` with the `RELEASE_MANIFEST_KEY` secret (a base64
 Ed25519 seed). The workflow runs `check-key` before publishing, so a key
-missing from `internal/releasemanifest/keys.go` fails the release early. The
+missing from `internal/releasemanifest/keys.go` fails the release early.
+GoReleaser publishes every release as not latest, and the workflow marks it
+latest only after its manifest verifies, so update checks never see a latest
+release without one. The
 schema is additive like `/api/v1`: add optional fields, never repurpose one; a
 field old readers must not ignore goes in `requires`. A `Schema` bump ships
 under a new file name beside `manifest.json`, since installed appliances keep

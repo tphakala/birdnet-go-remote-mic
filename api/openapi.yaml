@@ -970,6 +970,7 @@ components:
             - same-hardware
             - open-failed
             - disconnected
+            - stalled
             - failed
           description: >
             Machine-readable class of why a skipped or failed device is not
@@ -979,8 +980,9 @@ components:
             failed (resolve-failed); another device already captures from the
             same hardware (same-hardware); the capture open failed
             (open-failed); or a serving device stopped because it was
-            unplugged (disconnected) or for a reason not confirmed as an
-            unplug (failed). Absent
+            unplugged (disconnected), stopped delivering audio while still
+            present (stalled), or for a reason not confirmed as an unplug
+            (failed). Absent
             while serving, when disabled, from an older appliance, and in the
             provisional record POST /devices returns when the new device has
             not been applied yet. Clients must tolerate values added later.

@@ -2,8 +2,7 @@ import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
 import { announce, clearLoadError, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, renderLoadError, setHidden, setText } from "../lib/ui.ts";
-import { formatReading } from "../lib/system-core.ts";
-import { clientCountOf, deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, type LevelsTarget } from "../lib/dashboard-core.ts";
+import { clientCountOf, deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, telemetryReadings, type LevelsTarget } from "../lib/dashboard-core.ts";
 import { hideInactivePrefDevice, onPrefChange, parseBoolPref } from "../lib/prefs.ts";
 import type { ApplianceStatus, DeviceConfig, SystemInfo } from "../lib/types.ts";
 import { AvailableDevices } from "./dashboard/available-devices.ts";
@@ -294,15 +293,12 @@ export class DashboardView {
   }
 
   private updateTelemetryFromSystem(sys: SystemInfo): void {
-    const show = (valueId: string, unitId: string, v: number | undefined, unit: string): void => {
-      const r = formatReading(v, unit);
-      const valueEl = document.getElementById(valueId);
+    for (const r of telemetryReadings(sys)) {
+      const valueEl = document.getElementById(r.valueId);
       if (valueEl) setText(valueEl, r.value);
-      const unitEl = document.getElementById(unitId);
-      if (unitEl) setHidden(unitEl, r.unit === "");
-    };
-    show("cpu-load-display", "cpu-load-unit", sys.cpuPercent, "%");
-    show("soc-temp-display", "soc-temp-unit", sys.tempCelsius, "°C");
+      const unitEl = document.getElementById(r.unitId);
+      if (unitEl) setHidden(unitEl, r.unitHidden);
+    }
   }
 
   private updateConnection(connected: boolean): void {

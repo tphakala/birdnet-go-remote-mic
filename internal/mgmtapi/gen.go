@@ -45,6 +45,7 @@ const (
 	DeviceDownCauseOpenFailed    DeviceDownCause = "open-failed"
 	DeviceDownCauseResolveFailed DeviceDownCause = "resolve-failed"
 	DeviceDownCauseSameHardware  DeviceDownCause = "same-hardware"
+	DeviceDownCauseStalled       DeviceDownCause = "stalled"
 )
 
 // Valid indicates whether the value is a known member of the DeviceDownCause enum.
@@ -65,6 +66,8 @@ func (e DeviceDownCause) Valid() bool {
 	case DeviceDownCauseResolveFailed:
 		return true
 	case DeviceDownCauseSameHardware:
+		return true
+	case DeviceDownCauseStalled:
 		return true
 	default:
 		return false
@@ -552,7 +555,7 @@ type Device struct {
 	// Examples: usb:1235:8218:s=S1A2B3:if=0,0, hw:CARD=Loopback,DEV=1
 	Device string `json:"device"`
 
-	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
+	// DownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected), stopped delivering audio while still present (stalled), or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
 	DownCause *DeviceDownCause `json:"downCause,omitempty"`
 
 	// DroppedFrames Audio dropped because a client or the encoder was not keeping up (a client's drop counts once per client per dropped frame; the encoder's once per dropped capture period). Zero for devices that never served.
@@ -638,7 +641,7 @@ type Device struct {
 	SupportedRates *[]int `json:"supportedRates,omitempty"`
 }
 
-// DeviceDownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
+// DeviceDownCause Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected), stopped delivering audio while still present (stalled), or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
 type DeviceDownCause string
 
 // DeviceFormat Sample format (only S16LE is supported).

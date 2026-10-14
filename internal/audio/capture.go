@@ -74,6 +74,9 @@ var captureFormats = []capture.Format{capture.FormatS16LE, capture.FormatS32LE, 
 // remaining attempts. When no format opens it returns the most informative error,
 // preferring a *BadRateError (which carries the supported rate range) or a
 // *GeometryError (the period geometry was refused) over a raw driver error.
+// Among format errors, one that names the device's channel range wins over one
+// that does not (an S32-only or 24-bit-only device rejects S16 at any channel
+// count, with no range).
 func openNegotiate(device string, rate, channels int) (captureStream, capture.Format, error) {
 	var chosenErr error
 	for _, f := range captureFormats {
@@ -97,13 +100,22 @@ func openNegotiate(device string, rate, channels int) (captureStream, capture.Fo
 // failed) both outrank every other error, so a caller sees the specific
 // diagnostic rather than a bare EINVAL or a *BadFormatError from another format.
 // Among errors of equal rank the FIRST is kept, so the reported error is the
-// preferred format's (S16, tried first) rather than a narrower fallback's.
+// preferred format's (S16, tried first) rather than a narrower fallback's. The
+// one tie-break: a *BadFormatError that names the device's channel range
+// replaces an earlier one that does not.
 func preferRateError(existing, next error) error {
 	if existing == nil {
 		return next
 	}
 	if openErrorRank(next) > openErrorRank(existing) {
 		return next
+	}
+	if openErrorRank(next) == openErrorRank(existing) {
+		prev, okPrev := errors.AsType[*capture.BadFormatError](existing)
+		cur, okCur := errors.AsType[*capture.BadFormatError](next)
+		if okPrev && okCur && prev.MaxChannels == 0 && cur.MaxChannels > 0 {
+			return next
+		}
 	}
 	return existing
 }

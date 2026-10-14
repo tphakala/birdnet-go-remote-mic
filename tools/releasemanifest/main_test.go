@@ -474,7 +474,8 @@ func TestVerifyFilesRejectsBrokenPair(t *testing.T) {
 }
 
 // TestMakeLatest pins which releases become "latest": a newer or equal
-// version does, an older line's release does not, and a bad tag fails.
+// version does, an older line's release and a prerelease do not, and a bad tag
+// fails.
 func TestMakeLatest(t *testing.T) {
 	t.Parallel()
 	const v130 = "v1.3.0"
@@ -487,6 +488,9 @@ func TestMakeLatest(t *testing.T) {
 		{v130, v130, true},
 		{"v1.2.5", v130, false},
 		{"v1.10.0", "v1.9.0", true},
+		{"v1.4.0-rc.1", v130, false},
+		{"v1.0.0-rc.1", "", false},
+		{v130, "v1.3.0-rc.1", true},
 	} {
 		got, err := makeLatest(tc.tag, tc.latest)
 		if err != nil {

@@ -23,8 +23,9 @@ import (
 // later ones come about daily, jittered so a fleet does not check in step.
 // A failed check is retried sooner, backing off to the daily interval. A
 // latest release whose update information is not published yet is asked
-// about again after a fixed hour: the gap normally lasts seconds, and a
-// failed upload is fixed by hand at an unknown time.
+// about again after a fixed hour: the release workflow marks a release latest
+// only after its manifest verifies, so such a gap comes from a release marked
+// latest by hand or before that rule, and is closed at an unknown time.
 const (
 	firstCheckDelay  = 3 * time.Minute
 	firstCheckJitter = 2 * time.Minute
@@ -143,8 +144,12 @@ type Manager struct {
 	cfg       Config
 	supported bool
 	enabled   atomic.Bool
-	wake      chan struct{}
-	ctx       context.Context //nolint:containedctx // the appliance's lifetime, for apply goroutines
+	// offGen counts the times checks were turned off. Run starts its
+	// schedule over when it moves, since a quick off and on can reach Run as
+	// one wake.
+	offGen atomic.Uint64
+	wake   chan struct{}
+	ctx    context.Context //nolint:containedctx // the appliance's lifetime, for apply goroutines
 
 	checkMu sync.Mutex // serializes checks
 
@@ -157,8 +162,8 @@ type Manager struct {
 	nextDeadline time.Time
 	lastErr      string
 	lastNotice   string
-	noticeLogged string // the notice last logged, cleared by a verified success
-	lastCause    string
+	noticeLogged string // the notice last logged, cleared by a verified success or by turning checks off
+	lastCause    string // the failure kind last logged, cleared the same way
 	failures     int    // consecutive failed checks
 	announced    string // the version last logged as available
 	phase        Phase
@@ -188,19 +193,22 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 
 // Apply turns the periodic check on or off from the config. Turning it off
 // forgets the release found and any notice of a missing manifest, clears its
-// notification, and stops a check or
-// download in progress, so the appliance makes no update request with checks
-// off. An update already handed to the root updater is past that point and
-// goes on.
+// notification, starts the log dedupe over (a notice or failure seen before is
+// logged again once checks are back on), and stops a check or download in
+// progress, so the appliance makes no update request with checks off. An
+// update already handed to the root updater is past that point and goes on.
+// Checks turned back on start the schedule over from the startup delay.
 func (m *Manager) Apply(s *monitor.Settings) {
 	was := m.enabled.Swap(s.UpdateCheck)
 	if was == s.UpdateCheck {
 		return
 	}
 	if !s.UpdateCheck {
+		m.offGen.Add(1)
 		m.mu.Lock()
 		m.latest, m.available = nil, false
 		m.lastNotice = ""
+		m.noticeLogged, m.lastCause = "", ""
 		cancel := m.cancelApply
 		// Under m.mu, so a check finishing now either sees checks off or has
 		// already raised the condition this resolves.
@@ -222,7 +230,9 @@ func (m *Manager) Apply(s *monitor.Settings) {
 	}
 }
 
-// Run is the check loop; it returns when ctx ends.
+// Run is the check loop; it returns when ctx ends. Turning checks off, even
+// if they are back on before the loop notices, starts the schedule over from
+// the startup delay.
 func (m *Manager) Run(ctx context.Context) {
 	if !m.supported {
 		m.cfg.Logf("update: %s is not a release build; update checks are off", m.cfg.Running)
@@ -237,7 +247,15 @@ func (m *Manager) Run(ctx context.Context) {
 		m.setNextCheck(0)
 	}
 	defer stop()
+	seen := m.offGen.Load()
 	for {
+		// Checks were turned off since the timer was armed, perhaps during a
+		// check and perhaps already back on, so the schedule starts over from
+		// the startup delay.
+		if g := m.offGen.Load(); g != seen {
+			seen = g
+			stop()
+		}
 		on := m.enabled.Load()
 		switch {
 		case on && timer == nil:
@@ -373,7 +391,7 @@ func (m *Manager) check(ctx context.Context, manual bool) checkResult {
 			m.cfg.Logf("update: no update information: %v", err)
 		}
 		// The host answered: not a failure. lastCause is left alone so a
-		// failure kind seen before is not logged again if it comes back.
+		// failure kind seen before is not logged again if it comes back until checks are turned off.
 		m.lastErr, m.failures, m.lastNotice = "", 0, notice
 		if errors.Is(err, ErrNoRelease) {
 			// Nothing is published: an earlier offer was withdrawn.

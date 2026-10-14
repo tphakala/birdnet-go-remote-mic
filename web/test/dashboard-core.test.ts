@@ -55,6 +55,7 @@ import {
   pendingStop,
   rtspUrl,
   streamFormats,
+  telemetryReadings,
   streamSummary,
   tallyStates,
   tokenHiddenMessage,
@@ -71,6 +72,7 @@ test("needsNotificationsFallback loads when nothing loaded or the stream is down
 test("bannerIsError: a failed device is an error unless it was unplugged", () => {
   assert.equal(bannerIsError("failed", "failed"), true);
   assert.equal(bannerIsError("failed", undefined), true);
+  assert.equal(bannerIsError("failed", "stalled"), true);
   assert.equal(bannerIsError("failed", "disconnected"), false);
   assert.equal(bannerIsError("skipped", "not-connected"), false);
   assert.equal(bannerIsError("skipped", "open-failed"), false);
@@ -84,6 +86,7 @@ test("downCauseTitle names each cause as its notification does and falls back", 
   assert.equal(downCauseTitle("resolve-failed"), "Device unavailable");
   assert.equal(downCauseTitle("open-failed"), "Device unavailable");
   assert.equal(downCauseTitle("disconnected"), "Device disconnected");
+  assert.equal(downCauseTitle("stalled"), "Device stalled");
   assert.equal(downCauseTitle("failed"), "Device failed");
   // An older appliance sends no cause, and a newer one may add a class.
   assert.equal(downCauseTitle(undefined), "Device excluded from streaming");
@@ -99,7 +102,7 @@ test("every downCauseTitle is a notification title in cmd/remotemic/appliance.go
   const src = readFileSync(APPLIANCE_GO, "utf8");
   const causes = [
     "not-connected", "ambiguous", "malformed", "resolve-failed",
-    "same-hardware", "open-failed", "disconnected", "failed",
+    "same-hardware", "open-failed", "disconnected", "stalled", "failed",
   ];
   for (const cause of causes) {
     const title = downCauseTitle(cause);
@@ -739,4 +742,25 @@ test("streamFormats describes each stream, not the hardware capture", () => {
   assert.deepEqual(streamFormats(rec, { streams: [] }), ["OPUS 48,000 Hz · 256 kbps"]);
   // No streams and no config: the flat record's one line.
   assert.deepEqual(streamFormats(rec), ["OPUS 48,000 Hz · 256 kbps"]);
+});
+
+test("telemetryReadings gives the CPU and temperature readings with units, in tile order", () => {
+  assert.deepEqual(telemetryReadings({ cpuPercent: 12.34, tempCelsius: 48 }), [
+    { valueId: "cpu-load-display", unitId: "cpu-load-unit", value: "12.3", unitHidden: false },
+    { valueId: "soc-temp-display", unitId: "soc-temp-unit", value: "48.0", unitHidden: false },
+  ]);
+});
+
+test("telemetryReadings shows n/a without a unit for a missing reading and keeps a zero", () => {
+  const [cpu, temp] = telemetryReadings({ cpuPercent: undefined, tempCelsius: 0 });
+  assert.deepEqual(cpu, { valueId: "cpu-load-display", unitId: "cpu-load-unit", value: "n/a", unitHidden: true });
+  assert.deepEqual(temp, { valueId: "soc-temp-display", unitId: "soc-temp-unit", value: "0.0", unitHidden: false });
+});
+
+test("every telemetry reading has its unit element right after its value element in index.html", () => {
+  const html = readFileSync(fileURLToPath(new URL("../static/index.html", import.meta.url)), "utf8");
+  for (const { valueId, unitId } of telemetryReadings({ cpuPercent: 1, tempCelsius: 1 })) {
+    const cell = new RegExp(`id="${valueId}"[^>]*>[^<]*</span>\\s*<span class="telemetry-unit" id="${unitId}">`);
+    assert.ok(cell.test(html), `${unitId} must follow ${valueId} in index.html`);
+  }
 });

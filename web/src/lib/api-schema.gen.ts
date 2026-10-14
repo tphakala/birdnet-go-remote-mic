@@ -539,10 +539,10 @@ export interface components {
             /** @description Why the device is skipped or failed. Absent when serving. */
             error?: string;
             /**
-             * @description Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected) or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
+             * @description Machine-readable class of why a skipped or failed device is not serving, so a client can title the failure without parsing `error`: its id names no connected hardware (not-connected), several identical units (ambiguous), or is malformed; resolving it failed (resolve-failed); another device already captures from the same hardware (same-hardware); the capture open failed (open-failed); or a serving device stopped because it was unplugged (disconnected), stopped delivering audio while still present (stalled), or for a reason not confirmed as an unplug (failed). Absent while serving, when disabled, from an older appliance, and in the provisional record POST /devices returns when the new device has not been applied yet. Clients must tolerate values added later.
              * @enum {string}
              */
-            downCause?: "not-connected" | "ambiguous" | "malformed" | "resolve-failed" | "same-hardware" | "open-failed" | "disconnected" | "failed";
+            downCause?: "not-connected" | "ambiguous" | "malformed" | "resolve-failed" | "same-hardware" | "open-failed" | "disconnected" | "stalled" | "failed";
             /**
              * @description Human-facing label derived from the sound card name (the text before the first comma). Absent when the device id resolved to no present hardware, or the derived label is empty. The UI uses it to default a blank name.
              * @example Scarlett 2i2 USB
