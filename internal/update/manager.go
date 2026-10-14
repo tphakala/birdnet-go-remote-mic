@@ -143,8 +143,12 @@ type Manager struct {
 	cfg       Config
 	supported bool
 	enabled   atomic.Bool
-	wake      chan struct{}
-	ctx       context.Context //nolint:containedctx // the appliance's lifetime, for apply goroutines
+	// offGen counts the times checks were turned off. Run starts its
+	// schedule over when it moves, since a quick off and on can reach Run as
+	// one wake.
+	offGen atomic.Uint64
+	wake   chan struct{}
+	ctx    context.Context //nolint:containedctx // the appliance's lifetime, for apply goroutines
 
 	checkMu sync.Mutex // serializes checks
 
@@ -191,13 +195,15 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 // notification, and stops a check or
 // download in progress, so the appliance makes no update request with checks
 // off. An update already handed to the root updater is past that point and
-// goes on.
+// goes on. Checks turned back on start the schedule over from the startup
+// delay.
 func (m *Manager) Apply(s *monitor.Settings) {
 	was := m.enabled.Swap(s.UpdateCheck)
 	if was == s.UpdateCheck {
 		return
 	}
 	if !s.UpdateCheck {
+		m.offGen.Add(1)
 		m.mu.Lock()
 		m.latest, m.available = nil, false
 		m.lastNotice = ""
@@ -222,7 +228,9 @@ func (m *Manager) Apply(s *monitor.Settings) {
 	}
 }
 
-// Run is the check loop; it returns when ctx ends.
+// Run is the check loop; it returns when ctx ends. Turning checks off, even
+// if they are back on before the loop notices, starts the schedule over from
+// the startup delay.
 func (m *Manager) Run(ctx context.Context) {
 	if !m.supported {
 		m.cfg.Logf("update: %s is not a release build; update checks are off", m.cfg.Running)
@@ -237,7 +245,15 @@ func (m *Manager) Run(ctx context.Context) {
 		m.setNextCheck(0)
 	}
 	defer stop()
+	seen := m.offGen.Load()
 	for {
+		// Checks were turned off since the timer was armed, perhaps during a
+		// check and perhaps already back on, so the schedule starts over from
+		// the startup delay.
+		if g := m.offGen.Load(); g != seen {
+			seen = g
+			stop()
+		}
 		on := m.enabled.Load()
 		switch {
 		case on && timer == nil:
