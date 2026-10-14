@@ -72,8 +72,8 @@ var captureFormats = []capture.Format{capture.FormatS16LE, capture.FormatS32LE, 
 // next: a device can accept the requested rate only in a wider format (S32 or a
 // 24-bit format), so even a *BadRateError from S16 must not short-circuit the
 // remaining attempts. When no format opens it returns the most informative error,
-// preferring a *BadRateError (which carries the supported rate range) over a raw
-// driver error.
+// preferring a *BadRateError (which carries the supported rate range) or a
+// *GeometryError (the period geometry was refused) over a raw driver error.
 func openNegotiate(device string, rate, channels int) (captureStream, capture.Format, error) {
 	var chosenErr error
 	for _, f := range captureFormats {
@@ -91,24 +91,33 @@ func openNegotiate(device string, rate, channels int) (captureStream, capture.Fo
 	return nil, 0, chosenErr
 }
 
-// preferRateError keeps whichever of two open errors is more useful to report:
-// a *BadRateError (it names the supported rate window) wins over a raw driver
-// error, so a caller sees the honest-rate diagnostic rather than a bare EINVAL.
-// When both attempts are *BadRateError the FIRST is kept, so the surfaced range
-// is the preferred format's (S16, tried first) rather than the narrower fallback
-// format's.
+// preferRateError keeps whichever of two open errors is more useful to report.
+// A *BadRateError (it names the supported rate window) and a *GeometryError (the
+// rate, channels and format were accepted and only the period geometry commit
+// failed) both outrank every other error, so a caller sees the specific
+// diagnostic rather than a bare EINVAL or a *BadFormatError from another format.
+// Among errors of equal rank the FIRST is kept, so the reported error is the
+// preferred format's (S16, tried first) rather than a narrower fallback's.
 func preferRateError(existing, next error) error {
 	if existing == nil {
 		return next
 	}
-	var bre *capture.BadRateError
-	if errors.As(existing, &bre) {
-		return existing
-	}
-	if errors.As(next, &bre) {
+	if openErrorRank(next) > openErrorRank(existing) {
 		return next
 	}
 	return existing
+}
+
+// openErrorRank orders open errors for preferRateError: the specific ones
+// (*BadRateError, *GeometryError) rank 1, everything else 0.
+func openErrorRank(err error) int {
+	if _, ok := errors.AsType[*capture.BadRateError](err); ok {
+		return 1
+	}
+	if _, ok := errors.AsType[*capture.GeometryError](err); ok {
+		return 1
+	}
+	return 0
 }
 
 // maxProbeChannels caps how many capture channels ResolveOpenChannels will probe
@@ -163,7 +172,7 @@ func OpenCapture(dev *config.Device) (Source, error) {
 
 // OpenCaptureAt opens and starts a capture stream for dev at openCh hardware
 // channels, which the caller resolved (ResolveOpenChannels over the union of the
-// device's streams) so the rate probe, the busy gate and the open all agree on
+// device's streams) so the rate probe and the open agree on
 // one count without re-probing. It negotiates the hardware capture format (S16LE
 // preferred, then S32LE and the 24-bit S24LE / S24_3LE fallbacks) and, for a
 // wider-than-S16 device, wraps the stream so every period is downconverted to

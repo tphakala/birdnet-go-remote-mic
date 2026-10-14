@@ -929,7 +929,8 @@ func (a *appliance) publish(cfg *config.Config) {
 // and its record marked failed. Its paths return 404 until it starts again. A
 // device that was lost (unplugged or powered off) arms the enumeration retry, so
 // it restarts when it is reconnected (see retryDown). A device that failed while
-// still present is retried on a backoff instead (see scheduleRetry), since
+// still present (an encode fault, an EIO, or a stall the library did not confirm
+// as a loss) is retried on a backoff instead (see scheduleRetry), since
 // re-arming the enumeration retry for a device that keeps failing would restart
 // and re-notify it every enumeration tick; after an encode fault that retry
 // must also prove its encoder before it counts as recovered (see
@@ -956,9 +957,12 @@ func (a *appliance) onPumpDone(res pumpResult) {
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Decide whether the device was LOST (unplugged or
 		// powered off) or merely FAILED while still present. ErrDeviceGone is the
-		// library's clean loss signal, but it does not cover every way a lost device
-		// can surface (its gone-errno set is a fixed few, so some unplugs come back
-		// as a raw errno), so when the error is not ErrDeviceGone also re-resolve
+		// library's loss signal and, since go-audio-capture v0.8.0, also covers a
+		// read that fails with EBADFD on a removed device (the library probes the
+		// device) as well as the device-gone errnos. The re-resolve stays as a
+		// safety net for a loss the library cannot confirm (a pump that died a
+		// moment before the kernel removed the card, an errno outside its set), so
+		// when the error is not ErrDeviceGone also re-resolve
 		// the configured id: a *DeviceNotFoundError means the id no longer names
 		// present hardware, i.e. the device is gone. The re-resolve costs one host
 		// enumeration, acceptable on a spontaneous pump death (it is off every hot
@@ -1005,10 +1009,23 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// card-index entry is not retried unattended, so it waits for a config
 			// save.
 			restart := restartHint(&res.rt.dev)
+			// A stall (the library's ErrDeviceStalled: *StallError, *ShortfallError)
+			// on a device that still resolves is the same failed-while-present case,
+			// named as a stall in the log and the message. Its cause and title stay
+			// failed, so the banner pairing and the one-onset rule hold.
+			stalled := errors.Is(res.err, capture.ErrDeviceStalled)
 			if a.nextFailureLogged(name) {
-				log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
+				if stalled {
+					log.Printf("device %q failed: stalled, the device stopped delivering audio (%v); its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
+				} else {
+					log.Printf("device %q failed: %v; its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
+				}
 			}
-			n := deviceDownOnset(name, "Device failed", fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart))
+			msg := fmt.Sprintf("Capture stopped: %v; the RTSP path(s) return 404 until %s", res.err, restart)
+			if stalled {
+				msg = fmt.Sprintf("Capture stalled: the device stopped delivering audio (%v); the RTSP path(s) return 404 until %s", res.err, restart)
+			}
+			n := deviceDownOnset(name, "Device failed", msg)
 			a.markDown(name, downFailed, &n)
 			a.scheduleRetry(&res.rt.dev, false)
 			// Only a device scheduleRetry keeps retrying records its fault: a

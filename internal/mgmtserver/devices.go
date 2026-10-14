@@ -40,7 +40,7 @@ const (
 	channelTieDb       = 1.0
 	channelSilenceDbfs = -80.0
 	channelProbeWidth  = config.MaxChannels // widest capture probed (the config channel maximum)
-	channelProbeBudget = 3 * time.Second    // bounds the probe: its blocking open, the settle window, and the measurement
+	channelProbeBudget = 3 * time.Second    // bounds the probe: its open, the settle window, and the measurement
 )
 
 // loudestChannel returns the 1-based channel with the highest RMS level in
