@@ -690,6 +690,7 @@ func TestOpenCapturePrefersRangedFormatError(t *testing.T) {
 	defer swapMonoProbe()()
 	raw := errors.New("alsa: HW_REFINE: invalid argument")
 	unranged := &capture.BadFormatError{Format: capture.FormatS16LE}
+	unranged2 := &capture.BadFormatError{Format: capture.FormatS32LE}
 	ranged := &capture.BadFormatError{Format: capture.FormatS32LE, MaxChannels: 2}
 	ranged2 := &capture.BadFormatError{Format: capture.FormatS24LE, MaxChannels: 4}
 	rate := &capture.BadRateError{Requested: 384000, Min: 44100, Max: 96000}
@@ -702,6 +703,7 @@ func TestOpenCapturePrefersRangedFormatError(t *testing.T) {
 		{"ranged_then_ranged_keeps_first", ranged, ranged2, ranged},
 		{"ranged_then_unranged_keeps_first", ranged, unranged, ranged},
 		{"raw_then_ranged_keeps_raw", raw, ranged, raw},
+		{"unranged_then_unranged_keeps_first", unranged, unranged2, unranged},
 		{"unranged_then_rate", unranged, rate, rate},
 	}
 	for _, tc := range cases {
