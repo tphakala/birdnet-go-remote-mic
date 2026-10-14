@@ -360,7 +360,11 @@ known version, the last check and any error are in `GET /api/v1/system` under
 `updates: {check: false}` in the config or `PATCH /api/v1/config`; with them
 off the appliance makes no outbound update request at all. A check that fails
 (no network, GitHub down) logs one line per kind of failure and retries later;
-it never raises a notification and never affects audio.
+it never raises a notification and never affects audio. A release published
+before its signed manifest (the release workflow uploads it a few seconds
+later) is not a failure: the System page says there is no update information
+yet, keeps any update already found, and the periodic check asks again after
+an hour.
 
 In the web UI, the System Information card on the System page has a Network
 group that lists each wired and Wi-Fi link that is up with its IP addresses

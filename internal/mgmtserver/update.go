@@ -48,7 +48,8 @@ func (s *Server) PostSystemUpdate(_ context.Context, _ mgmtapi.PostSystemUpdateR
 }
 
 // PostSystemUpdateCheck handles POST /system/update/check. A failed check is
-// a 200 carrying lastError: the request itself worked.
+// a 200 carrying lastError, and one that finds no update information a 200
+// carrying lastNotice: the request itself worked.
 func (s *Server) PostSystemUpdateCheck(ctx context.Context, _ mgmtapi.PostSystemUpdateCheckRequestObject) (mgmtapi.PostSystemUpdateCheckResponseObject, error) {
 	if s.updates == nil {
 		return mgmtapi.PostSystemUpdateCheckdefaultApplicationProblemPlusJSONResponse{
@@ -96,6 +97,9 @@ func updateToWire(st *update.Status) mgmtapi.UpdateStatus {
 	}
 	if st.LastError != "" {
 		out.LastError = new(st.LastError)
+	}
+	if st.LastNotice != "" {
+		out.LastNotice = new(st.LastNotice)
 	}
 	if st.Install.Hint != "" {
 		out.UpgradeHint = new(st.Install.Hint)

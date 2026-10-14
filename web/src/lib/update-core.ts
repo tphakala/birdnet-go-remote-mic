@@ -6,8 +6,8 @@ import { sentence } from "./text.ts";
 import type { UpdateStatus } from "./types.ts";
 
 // UpdateTone colours the card's headline: ok for up to date, info for a neutral
-// state, accent for an update on offer, warn for a failed check, and error for
-// a failed update.
+// state (also a check that found no update information), accent for an update
+// on offer, warn for a failed check, and error for a failed update.
 export type UpdateTone = "ok" | "info" | "accent" | "warn" | "error";
 
 // UpdateView is what the card shows for one UpdateStatus.
@@ -39,8 +39,10 @@ const RESTART_NOTE =
 // update in progress (any phase but idle or failed) outranks everything, a
 // failed update outranks the check result it came from, and a build that names
 // no release never checks at all. With checks off, or on but with no release
-// known yet, the view is empty: the Last Check and Next Check rows say the
-// rest. Backend messages go through sentence().
+// known yet, the view is empty (a check that found no update information is
+// the exception: it says so, even before any release is known): the Last
+// Check and Next Check rows say the rest. Backend messages go through
+// sentence().
 export function describeUpdate(u: UpdateStatus): UpdateView {
   const latest = u.latestVersion ?? "";
   const view: UpdateView = {
@@ -98,6 +100,7 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
       ? `Running ${u.currentVersion}. ${RESTART_NOTE}`
       : `Running ${u.currentVersion}. This installation cannot update itself.`;
     if (u.lastError) view.note = `The latest check failed: ${sentence(u.lastError)}`;
+    else if (u.lastNotice) view.note = `The latest check found no update information: ${sentence(u.lastNotice)}`;
     offer();
     return view;
   }
@@ -107,6 +110,14 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
     view.detail = sentence(u.lastError);
     view.note = `Running ${u.currentVersion}. The appliance tries again on its own; Check Now asks at once.`;
     return view;
+  }
+  // A newer tag may exist, so this outranks "Up to date", and a first check
+  // that hit the window has no latest version to fall back on.
+  if (u.lastNotice) {
+    view.headline = "No update information yet";
+    view.detail = sentence(u.lastNotice);
+    view.note = `Running ${u.currentVersion}. The appliance checks again on its own; Check Now asks at once.`;
+    return view; // tone stays "info"
   }
   // Before the first check there is nothing to report: the rows already say
   // the last check was never, and the card shows no status.
@@ -123,8 +134,9 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
 
 // withChecksSetting is the update state after the update-check switch was
 // saved, as the appliance makes it: turning checks off forgets the release it
-// found at once. The phase is left to the next read: a cancelled download
-// reaches idle only later, and one past its download may still install.
+// found, and any notice of missing update information, at once. The phase is
+// left to the next read: a cancelled download reaches idle only later, and one
+// past its download may still install.
 export function withChecksSetting(u: UpdateStatus, on: boolean): UpdateStatus {
   if (on) return { ...u, checkEnabled: true };
   return {
@@ -133,6 +145,7 @@ export function withChecksSetting(u: UpdateStatus, on: boolean): UpdateStatus {
     available: false,
     latestVersion: undefined,
     notesUrl: undefined,
+    lastNotice: undefined,
   };
 }
 

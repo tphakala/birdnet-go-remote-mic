@@ -16,8 +16,14 @@ import (
 // DefaultBase is the GitHub repository page releases are published under.
 const DefaultBase = "https://github.com/" + releasemanifest.Repository
 
-// ErrNoRelease reports a repository with no published stable release.
+// ErrNoRelease reports a repository whose latest-release page redirects to
+// the release list: no stable release is published.
 var ErrNoRelease = errors.New("no published release")
+
+// ErrNoManifest reports a latest release published without its signed
+// update manifest: the release workflow uploads it just after the release
+// goes live, and a failed upload leaves it missing until rerun.
+var ErrNoManifest = errors.New("its update information is not published yet")
 
 // StatusError reports an unexpected HTTP status from a release download.
 type StatusError struct {
@@ -58,6 +64,8 @@ type Fetcher struct {
 // tag's manifest and signature and verifies them. Resolving the tag first
 // keeps the pair from one release: two "latest" downloads could straddle a
 // publish and fetch a manifest and signature that do not belong together.
+// It returns ErrNoRelease when no stable release is published and
+// ErrNoManifest when the newest release has no manifest yet.
 func (f *Fetcher) Latest(ctx context.Context) (*Release, error) {
 	tag, err := f.latestTag(ctx)
 	if err != nil {
@@ -66,6 +74,9 @@ func (f *Fetcher) Latest(ctx context.Context) (*Release, error) {
 	dir := f.Base + "/releases/download/" + url.PathEscape(tag) + "/"
 	raw, err := f.download(ctx, dir+releasemanifest.FileName, releasemanifest.MaxManifestSize)
 	if err != nil {
+		if se, ok := errors.AsType[*StatusError](err); ok && se.Code == http.StatusNotFound {
+			return nil, fmt.Errorf("release %s: %w", tag, ErrNoManifest)
+		}
 		return nil, err
 	}
 	sig, err := f.download(ctx, dir+releasemanifest.SignatureFileName, releasemanifest.MaxSignatureSize)
@@ -87,7 +98,8 @@ func (f *Fetcher) Latest(ctx context.Context) (*Release, error) {
 // latestTag asks the repository's "latest release" page where it redirects:
 // GitHub answers with a redirect to /releases/tag/<tag>, or to the release
 // list when there is no stable release (ErrNoRelease). A redirect anywhere
-// else, such as a renamed repository, is reported as an error, not followed.
+// else, such as a renamed repository, is reported as an error, not followed,
+// and so is a 404 (a repository that is missing or private).
 func (f *Fetcher) latestTag(ctx context.Context) (string, error) {
 	u := f.Base + "/releases/latest"
 	req, err := f.newRequest(ctx, u)
@@ -101,9 +113,6 @@ func (f *Fetcher) latestTag(ctx context.Context) (string, error) {
 	}
 	defer drain(resp)
 	if resp.StatusCode < 300 || resp.StatusCode > 399 {
-		if resp.StatusCode == http.StatusNotFound {
-			return "", ErrNoRelease
-		}
 		return "", &StatusError{URL: u, Code: resp.StatusCode}
 	}
 	loc, err := resp.Location()

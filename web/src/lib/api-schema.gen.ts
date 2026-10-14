@@ -282,7 +282,7 @@ export interface paths {
         put?: never;
         /**
          * Check for an update now
-         * @description Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+         * @description Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`. A check that finds no update information is reported in `lastNotice`.
          */
         post: operations["postSystemUpdateCheck"];
         delete?: never;
@@ -1058,8 +1058,13 @@ export interface components {
              * @description When the next periodic check is due (appliance wall clock). It is counted on a monotonic timer, so a clock step does not move it. Absent while checks are off or for a build that names no release. A time in the past means a check is running or about to.
              */
             nextCheck?: string;
-            /** @description Why the last check failed; absent after a success. */
+            /** @description Why the last check failed; absent after a check that did not fail. */
             lastError?: string;
+            /**
+             * @description Why the last check, which reached the release host, found no update information to act on: the newest release is published without its signed update information yet (a periodic check that finds this asks again after an hour), or no stable release is published. Absent otherwise, and never present together with lastError. It is not a failure: with a release published without its update information, latestVersion and available keep what earlier checks verified.
+             * @example release v0.5.0: its update information is not published yet
+             */
+            lastNotice?: string;
             /**
              * @description How the running binary was installed. `service` is the binary the installed service unit runs, from `sudo remote-mic service install`, when it is a copy the installer made (from a tarball, or from a package binary given another `--bin-path`); `deb` is the `.deb` package's own binary, which the service unit runs in place after `sudo remote-mic service install`, and `homebrew` is Homebrew's own copy; a package manager's binary is never bypassed and is updated by that package manager; `manual` is a binary run by hand, or one that is not the service's.
              * @enum {string}

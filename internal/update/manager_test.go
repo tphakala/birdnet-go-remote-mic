@@ -316,11 +316,18 @@ func TestManagerCheckNow(t *testing.T) {
 
 func TestNextCheck(t *testing.T) {
 	t.Parallel()
-	for failures, want := range map[int]time.Duration{
-		0: checkInterval - checkJitter, 1: time.Hour, 2: 2 * time.Hour, 5: 16 * time.Hour, 6: checkInterval, 40: checkInterval,
+	for r, want := range map[checkResult]time.Duration{
+		{}:                           checkInterval - checkJitter,
+		{pending: true}:              time.Hour,
+		{failures: 1}:                time.Hour,
+		{failures: 2}:                2 * time.Hour,
+		{failures: 5}:                16 * time.Hour,
+		{failures: 6}:                checkInterval,
+		{failures: 40}:               checkInterval,
+		{failures: 3, pending: true}: time.Hour,
 	} {
-		if got := nextCheck(failures, noJitter); got != want {
-			t.Errorf("nextCheck(%d) = %v, want %v", failures, got, want)
+		if got := nextCheck(r, noJitter); got != want {
+			t.Errorf("nextCheck(%+v) = %v, want %v", r, got, want)
 		}
 	}
 }
@@ -574,11 +581,10 @@ func TestStartApplyRecoversPanic(t *testing.T) {
 func TestFailureCause(t *testing.T) {
 	t.Parallel()
 	tests := map[string]error{
-		"http 503":   &StatusError{URL: "u", Code: 503},
-		"timeout":    context.DeadlineExceeded,
-		"network":    &net.OpError{Op: "dial", Err: errors.New("no route to host")},
-		"no release": ErrNoRelease,
-		"signature":  releasemanifest.ErrBadSignature,
+		"http 503":  &StatusError{URL: "u", Code: 503},
+		"timeout":   context.DeadlineExceeded,
+		"network":   &net.OpError{Op: "dial", Err: errors.New("no route to host")},
+		"signature": releasemanifest.ErrBadSignature,
 		// Anything else is its own cause, named by its message.
 		"wrapped: other": errors.New("other"),
 	}
@@ -823,7 +829,7 @@ func TestManagerOffClearsAndRefuses(t *testing.T) {
 			m.Apply(on())
 			var failures int
 			var wg sync.WaitGroup
-			wg.Go(func() { failures = m.check(t.Context(), false) })
+			wg.Go(func() { failures = m.check(t.Context(), false).failures })
 			synctest.Wait()
 			m.Apply(off())
 			m.Apply(on())
@@ -998,6 +1004,248 @@ func TestStartApplyShutdownQuiet(t *testing.T) {
 		}
 		if slices.Contains(titles(c), "Update failed") {
 			t.Error("shutting down was reported as a failed update")
+		}
+	})
+}
+
+// errNoManifest is what the Fetcher returns for a release without a manifest.
+func errNoManifest(version string) error {
+	return fmt.Errorf("release %s: %w", version, ErrNoManifest)
+}
+
+// TestManagerMissingManifestRetriesHourly pins that a latest release without
+// its manifest is no failure: it is noted once, asked about again after a
+// fixed hour (no doubling), and the notice goes when the release verifies.
+func TestManagerMissingManifestRetriesHourly(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeFetch{err: errNoManifest(vNew)}
+		logs := &logSink{}
+		c := notify.NewCenter()
+		m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Jitter: noJitter, Logf: logs.logf, Publisher: c})
+		go m.Run(t.Context())
+		m.Apply(on())
+		time.Sleep(firstCheckDelay + time.Second)
+		synctest.Wait()
+		st := m.Status()
+		if st.LastError != "" || !strings.Contains(st.LastNotice, vNew) || st.LastCheck.IsZero() {
+			t.Fatalf("status %+v, want a notice naming v0.3.0 and no error", st)
+		}
+		if got := len(c.Snapshot().Notifications); got != 0 {
+			t.Errorf("got %d notifications, want none", got)
+		}
+		if n := logs.count("no update information"); n != 1 {
+			t.Errorf("logged %d notices, want 1", n)
+		}
+		if want := st.LastCheck.Add(time.Hour); !st.NextCheck.Equal(want) {
+			t.Errorf("NextCheck %v, want %v", st.NextCheck, want)
+		}
+		time.Sleep(3 * time.Hour)
+		synctest.Wait()
+		if n := f.count(); n != 4 {
+			t.Errorf("got %d fetches, want 4: one per hour, not doubling", n)
+		}
+		if n := logs.count("no update information"); n != 1 {
+			t.Errorf("logged %d notices after repeats, want 1", n)
+		}
+		f.set(fakeRelease(vNew), nil)
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		st = m.Status()
+		if st.LastNotice != "" || !st.Available || st.Latest != vNew {
+			t.Errorf("status %+v, want the verified release and no notice", st)
+		}
+		if got, want := time.Until(st.NextCheck), checkInterval-checkJitter; got < want-time.Minute {
+			t.Errorf("next check in %v, want about %v", got, want)
+		}
+	})
+}
+
+// TestManagerNoInformationTransitions walks sequences of check outcomes and
+// pins what each leaves behind: the kept or forgotten release, the condition,
+// the failure count, the log lines, and that a check records a failure or a
+// notice, never both.
+func TestManagerNoInformationTransitions(t *testing.T) {
+	t.Parallel()
+	fail := &StatusError{URL: "u", Code: 503}
+	type step struct {
+		rel       *Release
+		err       error
+		want      checkResult
+		latest    string
+		available bool
+		lastError bool
+		notice    string // substring of LastNotice, "" for none
+	}
+	tests := []struct {
+		name  string
+		steps []step
+		check func(t *testing.T, m *Manager, c *notify.Center, logs *logSink)
+	}{
+		{
+			name: "missing manifest keeps the offer",
+			steps: []step{
+				{rel: fakeRelease(vNew), latest: vNew, available: true},
+				{err: errNoManifest("v0.4.0"), want: checkResult{pending: true}, latest: vNew, available: true, notice: "v0.4.0"},
+				{rel: fakeRelease("v0.4.0"), latest: "v0.4.0", available: true},
+			},
+			check: func(t *testing.T, _ *Manager, c *notify.Center, _ *logSink) {
+				t.Helper()
+				n := activeKeys(c)[AvailableKey]
+				if !strings.Contains(n.Title, "v0.4.0") || len(c.Snapshot().Notifications) != 1 {
+					t.Errorf("condition %+v, want one entry rewritten for v0.4.0", n)
+				}
+			},
+		},
+		{
+			name: "no release forgets the offer",
+			steps: []step{
+				{rel: fakeRelease(vNew), latest: vNew, available: true},
+				{err: ErrNoRelease, notice: "no published release"},
+			},
+			check: func(t *testing.T, _ *Manager, c *notify.Center, _ *logSink) {
+				t.Helper()
+				if _, ok := activeKeys(c)[AvailableKey]; ok {
+					t.Error("condition still active after the release was withdrawn")
+				}
+			},
+		},
+		{
+			name: "a notice after a verified release is logged again",
+			steps: []step{
+				{err: errNoManifest(vNew), want: checkResult{pending: true}, notice: vNew},
+				{rel: fakeRelease(vNew), latest: vNew, available: true},
+				{err: errNoManifest(vNew), want: checkResult{pending: true}, latest: vNew, available: true, notice: vNew},
+			},
+			check: func(t *testing.T, _ *Manager, _ *notify.Center, logs *logSink) {
+				t.Helper()
+				if n := logs.count("no update information"); n != 2 {
+					t.Errorf("logged %d notices, want 2: one per gap", n)
+				}
+			},
+		},
+		{
+			name: "failures and notices alternate",
+			steps: []step{
+				{err: fail, want: checkResult{failures: 1}, lastError: true},
+				{err: fail, want: checkResult{failures: 2}, lastError: true},
+				{err: errNoManifest(vNew), want: checkResult{pending: true}, notice: vNew},
+				{err: fail, want: checkResult{failures: 1}, lastError: true},
+				{err: errNoManifest(vNew), want: checkResult{pending: true}, notice: vNew},
+				{err: fail, want: checkResult{failures: 1}, lastError: true},
+			},
+			check: func(t *testing.T, _ *Manager, _ *notify.Center, logs *logSink) {
+				t.Helper()
+				if n := logs.count("check failed"); n != 1 {
+					t.Errorf("logged %d failures, want 1", n)
+				}
+				if n := logs.count("no update information"); n != 1 {
+					t.Errorf("logged %d notices, want 1", n)
+				}
+				if n := logs.count("succeed again"); n != 0 {
+					t.Errorf("logged %d recoveries, want 0", n)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeFetch{}
+			logs := &logSink{}
+			c := notify.NewCenter()
+			m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Publisher: c, Logf: logs.logf})
+			m.Apply(on())
+			for i, s := range tt.steps {
+				f.set(s.rel, s.err)
+				if got := m.check(t.Context(), false); got != s.want {
+					t.Errorf("step %d: result %+v, want %+v", i, got, s.want)
+				}
+				st := m.Status()
+				if st.Latest != s.latest || st.Available != s.available {
+					t.Errorf("step %d: latest %q available %t, want %q %t", i, st.Latest, st.Available, s.latest, s.available)
+				}
+				if (st.LastError != "") != s.lastError {
+					t.Errorf("step %d: LastError %q, want set %t", i, st.LastError, s.lastError)
+				}
+				if (st.LastNotice == "") != (s.notice == "") || !strings.Contains(st.LastNotice, s.notice) {
+					t.Errorf("step %d: LastNotice %q, want one containing %q", i, st.LastNotice, s.notice)
+				}
+				if st.LastError != "" && st.LastNotice != "" {
+					t.Errorf("step %d: both LastError %q and LastNotice %q set", i, st.LastError, st.LastNotice)
+				}
+			}
+			if tt.check != nil {
+				tt.check(t, m, c, logs)
+			}
+		})
+	}
+}
+
+// TestManagerNoticeClearedByOff pins that turning checks off forgets a
+// notice, so a throttled manual check after turning them back on cannot show
+// an old one.
+func TestManagerNoticeClearedByOff(t *testing.T) {
+	t.Parallel()
+	f := &fakeFetch{err: errNoManifest(vNew)}
+	m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Publisher: notify.NewCenter(), Logf: (&logSink{}).logf})
+	m.Apply(on())
+	m.check(t.Context(), false)
+	if m.Status().LastNotice == "" {
+		t.Fatal("precondition: no notice recorded")
+	}
+	m.Apply(off())
+	if got := m.Status().LastNotice; got != "" {
+		t.Errorf("LastNotice %q after checks were turned off, want none", got)
+	}
+	m.Apply(on())
+	st, err := m.CheckNow(t.Context())
+	if err != nil || st.LastNotice != "" || f.count() != 1 {
+		t.Errorf("CheckNow: status %+v, err %v, %d fetches; want the throttled check to replay no notice", st, err, f.count())
+	}
+}
+
+// TestManagerCheckNowNoInformation pins that a manual check that finds no
+// update information is not an error: the notice rides in the status.
+func TestManagerCheckNowNoInformation(t *testing.T) {
+	t.Parallel()
+	f := &fakeFetch{err: errNoManifest(vNew)}
+	m := NewManager(t.Context(), &Config{Running: vOld, Fetch: f.fetch, Publisher: notify.NewCenter(), Logf: (&logSink{}).logf})
+	m.Apply(on())
+	st, err := m.CheckNow(t.Context())
+	if err != nil || st.LastError != "" || !strings.Contains(st.LastNotice, vNew) {
+		t.Errorf("CheckNow: status %+v, err %v; want a notice and no error", st, err)
+	}
+}
+
+// TestManagerMissingManifestAfterStop pins that a fetch stopped by turning
+// checks off records nothing, even when it returns a missing manifest after
+// checks are back on.
+func TestManagerMissingManifestAfterStop(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		resume := make(chan struct{})
+		logs := &logSink{}
+		m := NewManager(t.Context(), &Config{
+			Running: vOld,
+			Fetch: func(ctx context.Context) (*Release, error) {
+				<-ctx.Done()
+				<-resume
+				return nil, errNoManifest(vNew)
+			},
+			Logf: logs.logf,
+		})
+		m.Apply(on())
+		var r checkResult
+		var wg sync.WaitGroup
+		wg.Go(func() { r = m.check(t.Context(), false) })
+		synctest.Wait()
+		m.Apply(off())
+		m.Apply(on())
+		close(resume)
+		wg.Wait()
+		if st := m.Status(); r.pending || st.LastNotice != "" || !st.LastCheck.IsZero() || logs.count("no update information") != 0 {
+			t.Errorf("result %+v, status %+v; want the stopped check not recorded", r, st)
 		}
 	})
 }

@@ -468,7 +468,8 @@ paths:
         Checks for a newer release immediately instead of waiting for the
         daily check, and returns the result. A check that finished in the
         last few seconds is returned without asking again. A failed check is
-        not an error response: it is reported in `lastError`.
+        not an error response: it is reported in `lastError`. A check that
+        finds no update information is reported in `lastNotice`.
       responses:
         "200":
           description: The update state after the check.
@@ -1881,7 +1882,19 @@ components:
             A time in the past means a check is running or about to.
         lastError:
           type: string
-          description: Why the last check failed; absent after a success.
+          description: Why the last check failed; absent after a check that did not fail.
+        lastNotice:
+          type: string
+          description: >
+            Why the last check, which reached the release host, found no
+            update information to act on: the newest release is published
+            without its signed update information yet (a periodic check that
+            finds this asks again after an hour), or no stable release is
+            published. Absent otherwise, and never present together with
+            lastError. It is not a failure: with a release published without
+            its update information, latestVersion and available keep what
+            earlier checks verified.
+          examples: ["release v0.5.0: its update information is not published yet"]
         installMethod:
           type: string
           enum: [service, deb, homebrew, manual]
