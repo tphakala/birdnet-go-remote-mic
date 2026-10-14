@@ -272,6 +272,8 @@ const PAIRS: Pair[] = [
   // Toasts sit on the raised surface, which the badge pairs above do not cover.
   { what: "info glyph in a toast badge", fg: "--signal-info-text", bg: ["--bg-surface-raised", "--signal-info-glow"], min: AA_NON_TEXT },
   { what: "ok glyph in a toast badge", fg: "--signal-ok-text", bg: ["--bg-surface-raised", "--signal-ok-glow"], min: AA_NON_TEXT },
+  { what: "info filter chip dot (chips sit on the page ground)", fg: "--signal-info", bg: ["--bg-page"], min: AA_NON_TEXT },
+  { what: "info filter chip dot in a selected chip", fg: "--signal-info", bg: ["--bg-page", "--accent-cyan-bg"], min: AA_NON_TEXT },
   { what: "info label on a card (Events Info tile value)", fg: "--signal-info-text", bg: ["--bg-surface"], min: AA },
   { what: "info label on a raised card (selected Events Info tile)", fg: "--signal-info-text", bg: ["--bg-surface-raised"], min: AA },
   { what: "info badge label", fg: "--signal-info-text", bg: ["--bg-surface", "--signal-info-bg"], min: AA },
