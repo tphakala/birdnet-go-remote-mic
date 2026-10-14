@@ -1231,7 +1231,7 @@ func TestManagerMissingManifestAfterStop(t *testing.T) {
 			Fetch: func(ctx context.Context) (*Release, error) {
 				<-ctx.Done()
 				<-resume
-				return nil, fmt.Errorf("release v0.3.0: %w", ErrNoManifest)
+				return nil, errNoManifest(vNew)
 			},
 			Logf: logs.logf,
 		})
@@ -1248,5 +1248,4 @@ func TestManagerMissingManifestAfterStop(t *testing.T) {
 			t.Errorf("result %+v, status %+v; want the stopped check not recorded", r, st)
 		}
 	})
-
 }

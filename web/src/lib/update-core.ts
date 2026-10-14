@@ -40,8 +40,9 @@ const RESTART_NOTE =
 // failed update outranks the check result it came from, and a build that names
 // no release never checks at all. With checks off, or on but with no release
 // known yet, the view is empty (a check that found no update information is
-// the exception: it says so, even before any release is known): the Last Check and Next Check rows say the
-// rest. Backend messages go through sentence().
+// the exception: it says so, even before any release is known): the Last
+// Check and Next Check rows say the rest. Backend messages go through
+// sentence().
 export function describeUpdate(u: UpdateStatus): UpdateView {
   const latest = u.latestVersion ?? "";
   const view: UpdateView = {
@@ -133,8 +134,9 @@ export function describeUpdate(u: UpdateStatus): UpdateView {
 
 // withChecksSetting is the update state after the update-check switch was
 // saved, as the appliance makes it: turning checks off forgets the release it
-// found, and any notice of missing update information, at once. The phase is left to the next read: a cancelled download
-// reaches idle only later, and one past its download may still install.
+// found, and any notice of missing update information, at once. The phase is
+// left to the next read: a cancelled download reaches idle only later, and one
+// past its download may still install.
 export function withChecksSetting(u: UpdateStatus, on: boolean): UpdateStatus {
   if (on) return { ...u, checkEnabled: true };
   return {

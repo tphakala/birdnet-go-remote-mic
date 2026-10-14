@@ -170,10 +170,10 @@ func TestFetcherLatestRefuses(t *testing.T) {
 			name: "missing manifest",
 			setup: func(g *fakeGitHub) {
 				g.publish(newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x")))
-				delete(g.files, "/releases/download/v0.3.0/"+releasemanifest.FileName)
+				delete(g.files, "/releases/download/"+vNew+"/"+releasemanifest.FileName)
 			},
 			check: func(err error) bool {
-				return errors.Is(err, ErrNoManifest) && strings.Contains(err.Error(), "v0.3.0") &&
+				return errors.Is(err, ErrNoManifest) && strings.Contains(err.Error(), vNew) &&
 					!strings.Contains(err.Error(), "://")
 			},
 		},
@@ -181,7 +181,7 @@ func TestFetcherLatestRefuses(t *testing.T) {
 			name: "manifest 503",
 			setup: func(g *fakeGitHub) {
 				g.publish(newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x")))
-				g.status["/releases/download/v0.3.0/"+releasemanifest.FileName] = http.StatusServiceUnavailable
+				g.status["/releases/download/"+vNew+"/"+releasemanifest.FileName] = http.StatusServiceUnavailable
 			},
 			check: func(err error) bool {
 				se, ok := errors.AsType[*StatusError](err)
@@ -193,7 +193,7 @@ func TestFetcherLatestRefuses(t *testing.T) {
 			setup: func(g *fakeGitHub) {
 				rel := newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x"))
 				g.publish(rel)
-				g.files["/releases/download/v0.3.0/"+releasemanifest.FileName] = make([]byte, releasemanifest.MaxManifestSize+1)
+				g.files["/releases/download/"+vNew+"/"+releasemanifest.FileName] = make([]byte, releasemanifest.MaxManifestSize+1)
 			},
 			check: func(err error) bool { return err != nil && strings.Contains(err.Error(), "body over") },
 		},
