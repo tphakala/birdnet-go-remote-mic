@@ -1111,6 +1111,20 @@ func TestManagerNoInformationTransitions(t *testing.T) {
 			},
 		},
 		{
+			name: "a notice after a verified release is logged again",
+			steps: []step{
+				{err: errNoManifest(vNew), want: checkResult{pending: true}, notice: vNew},
+				{rel: fakeRelease(vNew), latest: vNew, available: true},
+				{err: errNoManifest(vNew), want: checkResult{pending: true}, latest: vNew, available: true, notice: vNew},
+			},
+			check: func(t *testing.T, _ *Manager, _ *notify.Center, logs *logSink) {
+				t.Helper()
+				if n := logs.count("no update information"); n != 2 {
+					t.Errorf("logged %d notices, want 2: one per gap", n)
+				}
+			},
+		},
+		{
 			name: "failures and notices alternate",
 			steps: []step{
 				{err: fail, want: checkResult{failures: 1}, lastError: true},
