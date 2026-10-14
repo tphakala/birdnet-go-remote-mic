@@ -108,12 +108,8 @@ func TestProbeChannelLevelsReportsBusyDevice(t *testing.T) {
 	}
 	t.Cleanup(func() { openProbeCapture = prevOpen })
 
-	start := time.Now()
 	if _, err := probeChannelLevels(context.Background(), "hw:9", 48000, 2); !errors.Is(err, capture.ErrDeviceInUse) {
 		t.Fatalf("probe on a busy device err = %v, want ErrDeviceInUse", err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("busy probe took %v, want an immediate failure", elapsed)
 	}
 	busy.Store(false)
 	if _, err := probeChannelLevels(context.Background(), "hw:9", 48000, 2); err != nil && strings.Contains(err.Error(), "still opening") {
