@@ -92,7 +92,7 @@ func TestGetSystemIncludesUpdate(t *testing.T) {
 func TestUpdateToWireOmitsEmpty(t *testing.T) {
 	t.Parallel()
 	w := updateToWire(&update.Status{Current: "dev", Install: update.Install{Method: update.MethodManual}, Phase: update.PhaseIdle})
-	if w.LatestVersion != nil || w.NotesUrl != nil || w.LastCheck != nil || w.NextCheck != nil || w.LastError != nil || w.UpgradeHint != nil || w.PhaseMessage != nil {
+	if w.LatestVersion != nil || w.NotesUrl != nil || w.LastCheck != nil || w.NextCheck != nil || w.LastError != nil || w.LastNotice != nil || w.UpgradeHint != nil || w.PhaseMessage != nil {
 		t.Errorf("empty optional fields present: %+v", w)
 	}
 }
@@ -241,6 +241,7 @@ func TestUpdateToWireEveryField(t *testing.T) {
 	// Each boolean differs from its neighbours, so a swapped mapping shows.
 	st.Supported, st.CheckEnabled = true, false
 	st.LastError = "HTTP 503"
+	st.LastNotice = "release v0.3.0: its update information is not published yet"
 	st.Install = update.Install{Method: update.MethodService, CanApply: true}
 	st.Phase, st.PhaseMessage = update.PhaseInstalling, "Installing v0.3.0"
 	w := updateToWire(&st)
@@ -255,6 +256,8 @@ func TestUpdateToWireEveryField(t *testing.T) {
 		t.Errorf("lastCheck %v", w.LastCheck)
 	case w.LastError == nil || *w.LastError != "HTTP 503":
 		t.Errorf("lastError %v", w.LastError)
+	case w.LastNotice == nil || *w.LastNotice != st.LastNotice:
+		t.Errorf("lastNotice %v", w.LastNotice)
 	case w.InstallMethod != mgmtapi.Service || w.UpgradeHint != nil:
 		t.Errorf("install %q hint %v", w.InstallMethod, w.UpgradeHint)
 	case w.Phase != mgmtapi.UpdateStatusPhaseInstalling || w.PhaseMessage == nil || *w.PhaseMessage != "Installing v0.3.0":

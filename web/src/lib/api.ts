@@ -352,7 +352,8 @@ export class ApiClient {
   }
 
   // checkForUpdate checks for a newer release now; a failed check is not an
-  // error response but a status carrying lastError. A 409 means checks are
+  // error response but a status carrying lastError, and a check that finds no
+  // update information carries lastNotice. A 409 means checks are
   // off or the build is not a release.
   public async checkForUpdate(): Promise<UpdateStatus> {
     return this.request<UpdateStatus>("/system/update/check", {

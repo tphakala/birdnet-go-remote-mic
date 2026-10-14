@@ -190,13 +190,46 @@ test("describeUpdate: neutral states are info toned", () => {
   assert.equal(describeUpdate(status({ lastCheck: undefined })).tone, "info");
 });
 
+const NO_MANIFEST = "release v0.3.0: its update information is not published yet";
+
+test("describeUpdate: no update information outranks up to date", () => {
+  const v = describeUpdate(status({ lastNotice: NO_MANIFEST }));
+  assert.equal(v.headline, "No update information yet");
+  assert.equal(v.tone, "info");
+  assert.equal(v.detail, "Release v0.3.0: its update information is not published yet.");
+  assert.ok(v.note.endsWith("Check Now asks at once."), v.note);
+  assert.equal(v.applyVersion, "");
+});
+
+test("describeUpdate: no update information on a first check", () => {
+  const v = describeUpdate(status({ latestVersion: undefined, lastNotice: "no published release" }));
+  assert.equal(v.headline, "No update information yet");
+});
+
+test("describeUpdate: no update information behind an offered update is a note", () => {
+  const v = describeUpdate(status({ available: true, latestVersion: "v0.3.0", lastNotice: NO_MANIFEST }));
+  assert.equal(v.headline, "v0.3.0 is available");
+  assert.equal(v.applyVersion, "v0.3.0");
+  assert.equal(v.note, `The latest check found no update information: Release v0.3.0: its update information is not published yet.`);
+});
+
+test("describeUpdate: a failed check outranks a notice", () => {
+  const v = describeUpdate(status({ lastError: "HTTP 503", lastNotice: NO_MANIFEST }));
+  assert.equal(v.headline, "Update check failed");
+});
+
+test("describeUpdate: checks off hide a notice", () => {
+  assert.equal(describeUpdate(status({ checkEnabled: false, lastNotice: NO_MANIFEST })).headline, "");
+});
+
 test("withChecksSetting mirrors what the appliance does to its update state", () => {
-  const on = status({ latestVersion: "v0.3.0", available: true, notesUrl: "https://x/notes", phase: "downloading" });
+  const on = status({ latestVersion: "v0.3.0", available: true, notesUrl: "https://x/notes", phase: "downloading", lastNotice: "x" });
   const off = withChecksSetting(on, false);
   assert.equal(off.checkEnabled, false);
   assert.equal(off.available, false);
   assert.equal(off.latestVersion, undefined);
   assert.equal(off.notesUrl, undefined);
+  assert.equal(off.lastNotice, undefined);
   assert.equal(off.phase, "downloading", "the phase is left to the next read");
   assert.deepEqual(withChecksSetting({ ...on, checkEnabled: false }, true), on);
 });

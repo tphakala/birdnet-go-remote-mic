@@ -1061,8 +1061,14 @@ type UpdateStatus struct {
 	// LastCheck When the last check finished (appliance wall clock); absent before the first check.
 	LastCheck *time.Time `json:"lastCheck,omitempty"`
 
-	// LastError Why the last check failed; absent after a success.
+	// LastError Why the last check failed; absent after a check that did not fail.
 	LastError *string `json:"lastError,omitempty"`
+
+	// LastNotice Why the last check, which reached the release host, found no update information to act on: the newest release is published without its signed update information yet (a periodic check that finds this asks again after an hour), or no stable release is published. Absent otherwise, and never present together with lastError. It is not a failure: with a release published without its update information, latestVersion and available keep what earlier checks verified.
+	//
+	//
+	// Examples: release v0.5.0: its update information is not published yet
+	LastNotice *string `json:"lastNotice,omitempty"`
 
 	// LatestVersion The newest stable release found; absent before a successful check.
 	//
@@ -1427,7 +1433,7 @@ type ClientInterface interface {
 
 	// PostSystemUpdateCheck Check for an update now
 	//
-	// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+	// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`. A check that finds no update information is reported in `lastNotice`.
 	//
 	// Corresponds with POST /system/update/check (the `PostSystemUpdateCheck` operationId).
 	PostSystemUpdateCheck(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1860,7 +1866,7 @@ func (c *Client) PostSystemUpdate(ctx context.Context, reqEditors ...RequestEdit
 
 // PostSystemUpdateCheck Check for an update now
 //
-// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`. A check that finds no update information is reported in `lastNotice`.
 //
 // Corresponds with POST /system/update/check (the `PostSystemUpdateCheck` operationId).
 func (c *Client) PostSystemUpdateCheck(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2760,7 +2766,7 @@ type ClientWithResponsesInterface interface {
 
 	// PostSystemUpdateCheckWithResponse Check for an update now
 	//
-	// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+	// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`. A check that finds no update information is reported in `lastNotice`.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -4096,7 +4102,7 @@ func (c *ClientWithResponses) PostSystemUpdateWithResponse(ctx context.Context, 
 
 // PostSystemUpdateCheckWithResponse Check for an update now
 //
-// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`.
+// Checks for a newer release immediately instead of waiting for the daily check, and returns the result. A check that finished in the last few seconds is returned without asking again. A failed check is not an error response: it is reported in `lastError`. A check that finds no update information is reported in `lastNotice`.
 //
 // Returns a wrapper object for the known response body format(s).
 //

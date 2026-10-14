@@ -28,14 +28,20 @@ type fakeGitHub struct {
 	storage *httptest.Server
 	latest  atomic.Pointer[string] // the tag /releases/latest redirects to; nil means no release
 	files   map[string][]byte      // path below the base -> body
+	// status forces a status for a storage path, consulted before files.
+	status map[string]int
 	// assetRedirect, when set, replaces the storage host in asset redirects.
 	assetRedirect string
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
-	g := &fakeGitHub{files: map[string][]byte{}}
+	g := &fakeGitHub{files: map[string][]byte{}, status: map[string]int{}}
 	g.storage = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if code, ok := g.status[r.URL.Path]; ok {
+			w.WriteHeader(code)
+			return
+		}
 		body, ok := g.files[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -157,7 +163,29 @@ func TestFetcherLatestRefuses(t *testing.T) {
 			},
 			check: func(err error) bool {
 				se, ok := errors.AsType[*StatusError](err)
-				return ok && se.Code == http.StatusNotFound
+				return ok && se.Code == http.StatusNotFound && !errors.Is(err, ErrNoManifest)
+			},
+		},
+		{
+			name: "missing manifest",
+			setup: func(g *fakeGitHub) {
+				g.publish(newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x")))
+				delete(g.files, "/releases/download/v0.3.0/"+releasemanifest.FileName)
+			},
+			check: func(err error) bool {
+				return errors.Is(err, ErrNoManifest) && strings.Contains(err.Error(), "v0.3.0") &&
+					!strings.Contains(err.Error(), "://")
+			},
+		},
+		{
+			name: "manifest 503",
+			setup: func(g *fakeGitHub) {
+				g.publish(newRelease(t, priv, vNew, testTarget, g.tarURL(vNew), []byte("x")))
+				g.status["/releases/download/v0.3.0/"+releasemanifest.FileName] = http.StatusServiceUnavailable
+			},
+			check: func(err error) bool {
+				se, ok := errors.AsType[*StatusError](err)
+				return ok && se.Code == http.StatusServiceUnavailable && !errors.Is(err, ErrNoManifest)
 			},
 		},
 		{
@@ -221,14 +249,17 @@ func TestFetcherLatestStatusAndUserAgent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	f := &Fetcher{Client: srv.Client(), Base: srv.URL, UserAgent: "remote-mic/v0.2.0"}
-	if _, err := f.Latest(t.Context()); !errors.Is(err, ErrNoRelease) {
-		t.Errorf("404: got %v, want ErrNoRelease", err)
+	// A 404 on the latest page is a missing or private repository, an error
+	// of its own: only the redirect to the release list means "no release".
+	_, err := f.Latest(t.Context())
+	if se, ok := errors.AsType[*StatusError](err); !ok || se.Code != http.StatusNotFound || errors.Is(err, ErrNoRelease) {
+		t.Errorf("404 on latest: got %v, want a StatusError 404 that is not ErrNoRelease", err)
 	}
 	if got := ua.Load(); got == nil || *got != "remote-mic/v0.2.0" {
 		t.Errorf("User-Agent %v", got)
 	}
 	status = http.StatusBadGateway
-	_, err := f.Latest(t.Context())
+	_, err = f.Latest(t.Context())
 	if se, ok := errors.AsType[*StatusError](err); !ok || se.Code != http.StatusBadGateway {
 		t.Errorf("502: got %v", err)
 	}

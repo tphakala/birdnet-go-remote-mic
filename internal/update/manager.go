@@ -21,13 +21,17 @@ import (
 // Check timing. The first check comes a few minutes after startup (or after
 // checks are turned on), so a boot loop does not hammer the release host;
 // later ones come about daily, jittered so a fleet does not check in step.
-// A failed check is retried sooner, backing off to the daily interval.
+// A failed check is retried sooner, backing off to the daily interval. A
+// latest release whose update information is not published yet is asked
+// about again after a fixed hour: the gap normally lasts seconds, and a
+// failed upload is fixed by hand at an unknown time.
 const (
 	firstCheckDelay  = 3 * time.Minute
 	firstCheckJitter = 2 * time.Minute
 	checkInterval    = 24 * time.Hour
 	checkJitter      = time.Hour
 	retryFirst       = time.Hour
+	retryPending     = time.Hour
 	// checkTimeout bounds a check, and stays under the management server's
 	// 30 s WriteTimeout so a manual check still gets its answer written.
 	checkTimeout = 20 * time.Second
@@ -89,9 +93,14 @@ type Status struct {
 	NotesURL  string
 	Available bool
 	// LastCheck is when the last check finished (zero before one); LastError
-	// is why it failed, empty after a success.
+	// is why it failed, empty after a check that did not fail.
 	LastCheck time.Time
 	LastError string
+	// LastNotice is why the last check, which reached the release host, found
+	// no update information to act on (a release published without its
+	// manifest yet, or no stable release); empty otherwise and never set
+	// together with LastError.
+	LastNotice string
 	// NextCheck is when the next periodic check is due, zero while checks are
 	// off or the build names no release. It is measured on the monotonic
 	// clock and stamped on the current wall clock when read, so a clock step
@@ -147,6 +156,8 @@ type Manager struct {
 	// armed; it carries a monotonic reading (time.Now().Add).
 	nextDeadline time.Time
 	lastErr      string
+	lastNotice   string
+	noticeLogged string // the notice last logged, cleared by a verified success
 	lastCause    string
 	failures     int    // consecutive failed checks
 	announced    string // the version last logged as available
@@ -176,7 +187,8 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 }
 
 // Apply turns the periodic check on or off from the config. Turning it off
-// forgets the release found, clears its notification, and stops a check or
+// forgets the release found and any notice of a missing manifest, clears its
+// notification, and stops a check or
 // download in progress, so the appliance makes no update request with checks
 // off. An update already handed to the root updater is past that point and
 // goes on.
@@ -188,6 +200,7 @@ func (m *Manager) Apply(s *monitor.Settings) {
 	if !s.UpdateCheck {
 		m.mu.Lock()
 		m.latest, m.available = nil, false
+		m.lastNotice = ""
 		cancel := m.cancelApply
 		// Under m.mu, so a check finishing now either sees checks off or has
 		// already raised the condition this resolves.
@@ -243,8 +256,8 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		case <-m.wake:
 		case <-tick:
-			failures := m.check(ctx, false)
-			d := nextCheck(failures, m.cfg.Jitter)
+			r := m.check(ctx, false)
+			d := nextCheck(r, m.cfg.Jitter)
 			timer = time.NewTimer(d)
 			m.setNextCheck(d)
 		}
@@ -262,14 +275,28 @@ func (m *Manager) setNextCheck(d time.Duration) {
 	m.nextDeadline = time.Now().Add(d)
 }
 
-// nextCheck is the delay after a check: about a day after a success, and
-// retryFirst doubling per consecutive failure up to a day after a failure.
-func nextCheck(failures int, jitter func(time.Duration) time.Duration) time.Duration {
-	if failures == 0 {
+// checkResult is what the check loop needs to know about a finished check.
+type checkResult struct {
+	// failures is the number of consecutive failed checks, zero unless this
+	// one failed.
+	failures int
+	// pending reports that the latest release has no update information yet.
+	pending bool
+}
+
+// nextCheck is the delay after a check: about a day after a success or when
+// no release is published, a fixed retryPending while the latest release has
+// no update information yet, and retryFirst doubling per consecutive failure
+// up to a day after a failure.
+func nextCheck(r checkResult, jitter func(time.Duration) time.Duration) time.Duration {
+	if r.pending {
+		return retryPending
+	}
+	if r.failures == 0 {
 		return checkInterval - checkJitter + jitter(2*checkJitter)
 	}
 	d := retryFirst
-	for range failures - 1 {
+	for range r.failures - 1 {
 		d *= 2
 		if d >= checkInterval {
 			return checkInterval
@@ -298,9 +325,10 @@ func (m *Manager) CheckNow(context.Context) (Status, error) {
 // which is then not recorded even if checks are back on when it returns.
 // A manual check skips the fetch when another finished within
 // manualThrottle, re-read after waiting for any check in flight, so a burst
-// of requests makes one fetch. It returns the number of consecutive failures,
-// zero after a success.
-func (m *Manager) check(ctx context.Context, manual bool) int {
+// of requests makes one fetch. A release published without its manifest, and
+// a repository with no release, are not failures: they are recorded as a
+// notice (see Status.LastNotice) and the result says how soon to ask again.
+func (m *Manager) check(ctx context.Context, manual bool) checkResult {
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
 	cctx, stop := context.WithCancelCause(ctx)
@@ -318,7 +346,7 @@ func (m *Manager) check(ctx context.Context, manual bool) int {
 	}
 	m.mu.Unlock()
 	if skip {
-		return failures
+		return checkResult{failures: failures}
 	}
 	fctx, cancel := context.WithTimeout(cctx, checkTimeout)
 	rel, err := m.cfg.Fetch(fctx)
@@ -335,27 +363,45 @@ func (m *Manager) check(ctx context.Context, manual bool) int {
 	// back on before the stopped fetch returned, since its error is not a
 	// failed check.
 	if !m.enabled.Load() || errors.Is(context.Cause(cctx), ErrChecksDisabled) {
-		return m.failures
+		return checkResult{failures: m.failures}
 	}
 	m.lastCheck = time.Now()
+	if errors.Is(err, ErrNoManifest) || errors.Is(err, ErrNoRelease) {
+		notice := err.Error()
+		if notice != m.noticeLogged {
+			m.noticeLogged = notice
+			m.cfg.Logf("update: no update information: %v", err)
+		}
+		// The host answered: not a failure. lastCause is left alone so a
+		// failure kind seen before is not logged again if it comes back.
+		m.lastErr, m.failures, m.lastNotice = "", 0, notice
+		if errors.Is(err, ErrNoRelease) {
+			// Nothing is published: an earlier offer was withdrawn.
+			m.latest, m.available = nil, false
+			m.cfg.Publisher.Resolve(AvailableKey, "No release is published")
+			return checkResult{}
+		}
+		// A newer tag without its manifest: keep what was verified.
+		return checkResult{pending: true}
+	}
 	if err != nil {
-		m.lastErr = err.Error()
+		m.lastErr, m.lastNotice = err.Error(), ""
 		// Log once per cause, not once per attempt: an appliance on an
 		// isolated network fails every check the same way.
 		if c := failureCause(err); c != m.lastCause {
 			m.lastCause = c
 			m.cfg.Logf("update: check failed: %v", err)
 		}
-		return m.failuresLocked()
+		return checkResult{failures: m.failuresLocked()}
 	}
 	if m.lastCause != "" {
 		m.cfg.Logf("update: checks succeed again")
 	}
-	m.lastErr, m.lastCause, m.failures = "", "", 0
+	m.lastErr, m.lastNotice, m.noticeLogged, m.lastCause, m.failures = "", "", "", "", 0
 	m.latest, m.available = rel, newer
 	if !newer {
 		m.cfg.Publisher.Resolve(AvailableKey, "No update available")
-		return 0
+		return checkResult{}
 	}
 	v := rel.Manifest.Version
 	if m.announced != v {
@@ -376,7 +422,7 @@ func (m *Manager) check(ctx context.Context, manual bool) int {
 			u.Update(AvailableKey, title, msg)
 		}
 	}
-	return 0
+	return checkResult{}
 }
 
 func (m *Manager) failuresLocked() int {
@@ -399,8 +445,6 @@ func failureCause(err error) string {
 		return "timeout"
 	case isNetError(err):
 		return "network"
-	case errors.Is(err, ErrNoRelease):
-		return "no release"
 	case errors.Is(err, releasemanifest.ErrBadSignature), errors.Is(err, releasemanifest.ErrUntrustedKey):
 		return "signature"
 	default:
@@ -424,6 +468,7 @@ func (m *Manager) statusLocked() Status {
 		Available:    m.available,
 		LastCheck:    m.lastCheck,
 		LastError:    m.lastErr,
+		LastNotice:   m.lastNotice,
 		Install:      m.cfg.Install,
 		Phase:        m.phase,
 		PhaseMessage: m.phaseMsg,
