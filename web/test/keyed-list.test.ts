@@ -290,7 +290,7 @@ function tracker(swap = false) {
   const parent = parentWith(placeholder);
   const all: TEntry[] = [];
   const retired = new Map<TEntry, number>();
-  const seenInRemove: { keys: string[]; size: number }[] = [];
+  const seenInHooks: { hook: string; keys: string[]; size: number }[] = [];
   const sentinel = new Error("hook failed");
   let armed: { phase: Phase; name: string } | null = null;
   const fire = (phase: Phase, name: string): void => {
@@ -302,12 +302,18 @@ function tracker(swap = false) {
     retired.set(e, (retired.get(e) ?? 0) + 1);
   };
   const holder: { list?: KeyedList<TItem, TEntry> } = {};
+  // look records what the list reports to a hook that is running.
+  const look = (hook: string): void => {
+    const l = holder.list;
+    if (l) seenInHooks.push({ hook, keys: [...l.keys()], size: l.size });
+  };
   const list = new KeyedList<TItem, TEntry>(parent as unknown as Element, {
     key: (i) => {
       fire("key", i.id + i.v);
       return i.id;
     },
     create: (i) => {
+      look("create");
       fire("create", i.id + i.v);
       const e = { id: i.id, v: i.v, el: new FakeNode(i.id + i.v) };
       all.push(e);
@@ -317,21 +323,24 @@ function tracker(swap = false) {
       fire("nodes", e.el.name);
       return [asEl(e.el)];
     },
-    update: (e) => fire("update", e.el.name),
+    update: (e) => {
+      look("update");
+      fire("update", e.el.name);
+    },
     stale: (e, i) => {
       fire("stale", e.el.name);
       return e.v !== i.v;
     },
     replace: (o, n) => {
       retire(o);
+      look("replace");
       fire("replaceBefore", o.el.name);
       if (swap) o.el.replaceWith(n.el);
       fire("replaceAfter", o.el.name);
     },
     remove: (e) => {
       retire(e);
-      const l = holder.list;
-      if (l) seenInRemove.push({ keys: [...l.keys()], size: l.size });
+      look("remove");
       fire("remove", e.el.name);
     },
     retain: (e, k) => {
@@ -344,7 +353,7 @@ function tracker(swap = false) {
     list,
     parent,
     all,
-    seenInRemove,
+    seenInHooks,
     sentinel,
     arm: (phase: Phase, name: string) => {
       armed = { phase, name };
@@ -465,13 +474,41 @@ test("a rebuilt entry swapped in by replace stays tracked when update throws", (
   assert.deepEqual(names(t.parent), ["a1", "placeholder"], "no untracked node is left behind");
 });
 
-test("reads inside hooks of a sync that throws still see the list from before it", () => {
+test("reads inside the create, update, replace and remove hooks of a sync that throws still see the list from before it", () => {
   const t = tracker();
   t.list.sync(S0);
   t.arm("update", "a1");
   propagates(() => t.list.sync(S1), t.sentinel);
-  assert.deepEqual(t.seenInRemove, [{ keys: ["a", "b", "c", "d"], size: 4 }]);
+  // remove b, create e, update e, create c2, replace c, update c2, update a (throws).
+  const last = t.seenInHooks.slice(-7);
+  assert.deepEqual(last.map((r) => r.hook), ["remove", "create", "update", "create", "replace", "update", "update"]);
+  for (const r of last) assert.deepEqual([r.keys, r.size], [["a", "b", "c", "d"], 4], `${r.hook} sees the pre-sync list`);
   assert.ok(![...t.list.keys()].includes("b"));
+});
+
+test("a held entry wanted again is revived and retired once", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.list.sync(S1);
+  const d = t.entry("d1");
+  t.list.sync(versioned("a1", "d1"));
+  assert.equal(t.list.get("d"), d, "the held entry comes back without create");
+  assert.deepEqual(names(t.parent), ["a1", "d1", "placeholder"]);
+  t.list.clear();
+  for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+  assert.deepEqual(names(t.parent), ["placeholder"]);
+});
+
+test("a stale held entry is rebuilt and each version is retired once", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.list.sync(S1);
+  t.list.sync(versioned("a1", "d2"));
+  assert.equal(t.list.get("d")?.el.name, "d2");
+  assert.equal(t.retires(t.entry("d1")), 1, "the held d1 went through replace");
+  t.list.clear();
+  for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+  assert.deepEqual(names(t.parent), ["placeholder"]);
 });
 
 test("clear that throws in a remove hook forgets what it removed and leaves the rest recorded", () => {
