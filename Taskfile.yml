@@ -66,6 +66,9 @@ tasks:
   vet:
     desc: Run go vet for the supported 64-bit and 32-bit architectures
     env:
+      # The appliance is Linux-only, and darwin/arm and darwin/386 are not Go
+      # ports, so vet targets linux on any host, as the build tasks do.
+      GOOS: linux
       CGO_ENABLED: '0' # vet the pure-Go, CGO-off build
       GOARM: '6' # ignored for non-arm arches; matches the arm build target
     # skipfrontend selects the web embed stub so vet needs no compiled web/dist.
@@ -77,6 +80,8 @@ tasks:
 
   lint:
     desc: Run golangci-lint
+    env:
+      GOOS: linux # lint the Linux build; on another host the Linux-only files would be skipped
     cmds:
       - golangci-lint run ./...
 

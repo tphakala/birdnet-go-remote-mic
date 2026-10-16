@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,7 @@ const (
 	unknownText = "All rights reserved."
 	projectName = "remote-mic"
 	apacheID    = "Apache-2.0"
+	patentsName = "PATENTS"
 )
 
 // TestClassify pins the license names recognized from each license's own
@@ -57,7 +59,7 @@ func TestUnrecognizedLicenseFails(t *testing.T) {
 	withNotice := component{name: "example.com/ok", files: []licenseFile{
 		{name: license, text: "Permission is hereby granted, free of charge"},
 		{name: notice, text: "This product includes software developed by someone."},
-		{name: "PATENTS", text: "Additional IP Rights Grant (Patents)"},
+		{name: patentsName, text: "Additional IP Rights Grant (Patents)"},
 	}}
 	if err := checkRecognized(withNotice); err != nil {
 		t.Errorf("recognized LICENSE with NOTICE and PATENTS: err = %v, want nil", err)
@@ -87,6 +89,75 @@ func TestLicenseFilesRequiresOne(t *testing.T) {
 	}
 	if files, err := licenseFiles(dir); err != nil || len(files) != 1 || files[0].name != "COPYING" {
 		t.Fatalf("licenseFiles = %v, %v, want the COPYING file", files, err)
+	}
+}
+
+// TestStdLicenseFiles pins the Go standard library lookup: a complete GOROOT is
+// read as is, a Homebrew-style GOROOT with only PATENTS borrows the Go LICENSE
+// from the directory above it, and nothing else is accepted in its place.
+func TestStdLicenseFiles(t *testing.T) {
+	t.Parallel()
+	const (
+		goLicense = "Copyright 2009 The Go Authors.\n\nRedistribution and use in source and binary forms, with or without\nNeither the name of Google LLC nor the names of its contributors"
+		bsdOther  = "Copyright 2009 Someone Else.\n\nRedistribution and use in source and binary forms, with or without\nNeither the name of Someone nor the names of its contributors"
+		mitGo     = "Copyright The Go Authors.\n\nPermission is hereby granted, free of charge, to any person"
+		patents   = "Additional IP Rights Grant (Patents)"
+	)
+	for _, tc := range []struct {
+		name          string
+		root, up      string // GOROOT LICENSE and parent LICENSE; empty means absent
+		wantNames     []string
+		wantText      string // text of the LICENSE entry, when one is wanted
+		wantNoLicense bool   // checkRecognized must fail with ErrNoLicense
+	}{
+		{"goroot has LICENSE", goLicense, goLicense + "\nabove GOROOT", []string{projectLicense, patentsName}, goLicense, false},
+		{"license one level up", "", goLicense, []string{projectLicense, patentsName}, goLicense, false},
+		{"parent BSD-3 but not Go", "", bsdOther, []string{patentsName}, "", true},
+		{"parent mentions Go Authors but is MIT", "", mitGo, []string{patentsName}, "", true},
+		{"no parent LICENSE", "", "", []string{patentsName}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			keg := t.TempDir()
+			goroot := filepath.Join(keg, "libexec")
+			if err := os.Mkdir(goroot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for path, text := range map[string]string{
+				filepath.Join(goroot, patentsName): patents,
+				filepath.Join(goroot, "LICENSE"):   tc.root,
+				filepath.Join(keg, "LICENSE"):      tc.up,
+			} {
+				if text == "" {
+					continue
+				}
+				if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			files, err := stdLicenseFiles(goroot)
+			if err != nil {
+				t.Fatalf("stdLicenseFiles: %v", err)
+			}
+			names := make([]string, 0, len(files))
+			for _, f := range files {
+				names = append(names, f.name)
+				if f.name == projectLicense && f.text != tc.wantText {
+					t.Errorf("LICENSE text = %q, want %q", f.text, tc.wantText)
+				}
+			}
+			if !slices.Equal(names, tc.wantNames) {
+				t.Errorf("names = %v, want %v", names, tc.wantNames)
+			}
+			err = checkRecognized(component{name: "std", files: files})
+			if tc.wantNoLicense {
+				if !errors.Is(err, ErrNoLicense) {
+					t.Errorf("checkRecognized err = %v, want ErrNoLicense", err)
+				}
+			} else if err != nil {
+				t.Errorf("checkRecognized err = %v, want nil", err)
+			}
+		})
 	}
 }
 
