@@ -126,7 +126,8 @@ export class AvailableDevices {
   // The cards on screen by device id, in screen order; null without a rack.
   private readonly cards: KeyedList<AvailableItem, AvailableCard> | null;
   // The card that held keyboard focus when the render in progress removed it
-  // outside its own Enable; render hands focus to a neighbour afterwards.
+  // outside its own Enable. render resets it before each sync and hands focus
+  // to a neighbour afterwards.
   private stranded: FocusLost | null = null;
   // The card that held keyboard focus when a render removed it during that
   // device's Enable, so the Enable can move focus when it settles (to the new
@@ -186,6 +187,8 @@ export class AvailableDevices {
   // render shows an available-devices read.
   public render(available: AvailableDevice[]): void {
     if (!this.cards || !this.section) return;
+    // A record left by a sync that threw belongs to that sync, not this one.
+    this.stranded = null;
     this.cards.sync(available.map((d) => ({ d, id: d.device, shape: availableCardShape(d), key: availableCardKey(d, this.provisioning.has(d.device)) })));
     this.syncShown();
 

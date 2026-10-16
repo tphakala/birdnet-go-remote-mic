@@ -37,8 +37,8 @@ export class DashboardView {
   // null without a rack. The levels payload is keyed by name, which the levels
   // handler reads from each card.
   private readonly cards: KeyedList<CardSource, DeviceCard> | null;
-  // Set by the cards' remove hook when a removed card held focus, read and
-  // cleared after the sync by reconcile.
+  // Set by the cards' remove hook when a removed card held focus. reconcile
+  // resets it before each sync and reads it after.
   private removedFocus: RemovedFocus | null = null;
   private rack: HTMLElement | null;
   private emptyEl: HTMLElement | null;
@@ -255,6 +255,8 @@ export class DashboardView {
     // #channel-rack also holds the hidden #rack-empty placeholder; the list
     // leaves it after the cards, and in steady state moves no node, so focus
     // inside a card is never dropped by re-inserting its node.
+    // A record left by a sync that threw belongs to that sync, not this one.
+    this.removedFocus = null;
     this.cards.sync(devices.map((d) => ({ d, cfg: cfgByDevice.get(d.device) })));
     const lost = this.takeRemovedFocus();
     if (lost && focusDropped()) {
