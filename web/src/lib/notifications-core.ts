@@ -60,16 +60,24 @@ export function initialState(): CoreState {
 }
 
 // uptimeToMs maps a server uptime onto the browser clock through the anchor. It
-// returns NaN before any anchor exists; callers render that as an unknown time.
+// returns NaN before any anchor exists, and for an instant outside the range a
+// Date can hold; callers render that as an unknown time.
 export function uptimeToMs(state: CoreState, uptimeMs: number): number {
   return anchorToMs(state.anchor, uptimeMs);
 }
 
+// MAX_TIME_MS is the largest magnitude a Date holds (ECMAScript's time value
+// range); toISOString and Intl.DateTimeFormat#format throw a RangeError beyond
+// it.
+const MAX_TIME_MS = 8.64e15;
+
 // anchorToMs maps a server uptime onto the browser clock through anchor, or NaN
-// without one.
+// without one or when the instant is outside the range a Date can hold, so
+// formatting it cannot throw.
 export function anchorToMs(anchor: ClockAnchor | null, uptimeMs: number): number {
   if (!anchor || !Number.isFinite(uptimeMs)) return NaN;
-  return anchor.browserMs - (anchor.uptimeMs - uptimeMs);
+  const ms = anchor.browserMs - (anchor.uptimeMs - uptimeMs);
+  return Math.abs(ms) <= MAX_TIME_MS ? ms : NaN;
 }
 
 // eventTimeMs is when an entry happened, on the browser clock.

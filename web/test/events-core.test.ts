@@ -149,6 +149,13 @@ test("exportJSON carries the clock anchor and a corrected time per entry", () =>
   assert.equal(at(out.events, 0).time, "1970-01-01T00:00:40Z");
 });
 
+test("exportJSON gives a null anchored time for an entry past the Date range", () => {
+  const anchor = { browserMs: Date.parse("2026-09-22T12:00:00Z"), uptimeMs: 0 };
+  const far = notif({ id: 1, uptimeMs: 9e15 });
+  const out = JSON.parse(exportJSON([far], "boot-a", "2026-09-22T12:01:00Z", anchor)) as ExportedLog;
+  assert.equal(at(out.events, 0).anchoredTime, null);
+});
+
 // withTZ runs fn with the process time zone set to tz, restoring it after.
 function withTZ(tz: string, fn: () => void): void {
   const prev = process.env.TZ;
