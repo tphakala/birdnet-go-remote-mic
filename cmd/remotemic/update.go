@@ -134,8 +134,11 @@ func detectInstall(dir string, logf func(format string, args ...any)) update.Ins
 		// The restart advice comes before the missing-directory one: with the
 		// state directory moved, re-running install does not help. It is
 		// advised, never done, because a restart drops every stream.
-		if s := installedStateDir(); s != "" && !sameDir(filepath.Join(s, update.DirName), dir) {
-			updaterDir := filepath.Join(s, update.DirName)
+		updaterDir := ""
+		if s := installedStateDir(); s != "" {
+			updaterDir = filepath.Join(s, update.DirName)
+		}
+		if updaterDir != "" && !sameDir(updaterDir, dir) {
 			inst.CanApply = false
 			inst.Hint = stateDirMovedHint(dir, updaterDir)
 			logf("update: the root updater watches %s, not %s where this process stages; restart the service to use it", updaterDir, dir)
