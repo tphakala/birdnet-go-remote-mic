@@ -143,8 +143,9 @@ export class AvailableDevices {
       ? new KeyedList<AvailableItem, AvailableCard>(rack, {
           key: (n) => n.id,
           create: (n) => {
-            const card = new AvailableCard(n.d, n.key, this.provisioning.has(n.id));
-            card.enableBtn.addEventListener("click", () => void this.provision(n.d, card));
+            const d = n.d;
+            const card = new AvailableCard(d, n.key, this.provisioning.has(n.id));
+            card.enableBtn.addEventListener("click", () => void this.provision(d, card));
             return card;
           },
           nodes: (c) => [c.el],
