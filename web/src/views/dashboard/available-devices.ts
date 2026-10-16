@@ -163,7 +163,7 @@ export class AvailableDevices {
           // A removed card that held focus: during its own Enable the Enable
           // moves focus once it settles; otherwise (the device went away) focus
           // goes to its nearest neighbour still listed, after the render.
-          // before is the keys in screen order.
+          // before is the keys in screen order unless the last sync threw.
           remove: (c, id, before) => {
             if (!holdsFocus(c.el)) return;
             const lost = { id, neighbours: neighbourOrder(before, before.indexOf(id)), label: c.label };

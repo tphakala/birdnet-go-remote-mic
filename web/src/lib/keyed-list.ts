@@ -1,5 +1,6 @@
-// KeyedList owns a parent element and one entry per key, in screen order, and
-// reconciles them against the next items: it creates what is new, updates
+// KeyedList owns a parent element and one entry per key, in screen order
+// (unless the last sync threw), and reconciles them against the next items:
+// it creates what is new, updates
 // what stays, rebuilds what went stale, removes what is gone and puts the
 // nodes in order without moving any that already are (see "Reconcile, never
 // rebuild" in web/src/AGENTS.md). The keep/create/rebuild/drop decision is
@@ -85,9 +86,9 @@ export class KeyedList<T, E, K = string> {
     });
 
     // Work on copies and publish them in the finally, so that a hook that
-    // throws leaves the list describing the DOM as the sync left it, while
-    // reads inside the hooks still see the list as it was before the sync.
-    // Each step records its change as soon as it has made it in the DOM.
+    // throws leaves the list as the sync left it, while reads inside the
+    // hooks still see the list as it was before the sync.
+    // Each step records its change as soon as it has made it.
     let shown = new Map(this.shown);
     const held = new Map(this.held);
     try {
