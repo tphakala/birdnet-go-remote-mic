@@ -161,10 +161,21 @@ func canonDir(p string) string {
 	if err != nil {
 		abs = filepath.Clean(p)
 	}
+	return resolveExisting(abs)
+}
+
+// resolveExisting follows the symlinks of the deepest part of the absolute
+// path abs that exists, so a staging directory not created yet still compares
+// equal through a symlinked state directory.
+func resolveExisting(abs string) string {
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return resolved
 	}
-	return abs
+	parent := filepath.Dir(abs)
+	if parent == abs {
+		return abs
+	}
+	return filepath.Join(resolveExisting(parent), filepath.Base(abs))
 }
 
 // stateDirMovedHint tells the operator that a service install moved the

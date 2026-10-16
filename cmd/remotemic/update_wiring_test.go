@@ -171,8 +171,11 @@ func mkdirs(t *testing.T, dirs ...string) {
 func TestDetectInstallComparesTheUpdaterStateDir(t *testing.T) {
 	_, unit := stateDirFixture(t)
 	root := t.TempDir()
-	mkdirs(t, filepath.Join(root, "state", "update"), filepath.Join(root, "old", "update"), filepath.Join(root, "new", "update"))
+	mkdirs(t, filepath.Join(root, "state", "update"), filepath.Join(root, "old", "update"), filepath.Join(root, "new", "update"), filepath.Join(root, "bare"))
 	if err := os.Symlink(filepath.Join(root, "state"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "bare"), filepath.Join(root, "bare-link")); err != nil {
 		t.Fatal(err)
 	}
 	join := func(parts ...string) string { return filepath.Join(append([]string{root}, parts...)...) }
@@ -201,6 +204,8 @@ func TestDetectInstallComparesTheUpdaterStateDir(t *testing.T) {
 		{name: "unit state directory unknown", unit: "", dir: join("old", "update"), canApply: true},
 		{name: "unit state directory unknown and staging directory missing", unit: "", dir: join("gone", "update"), stagingHint: true},
 		{name: "same directory but no staging directory", unit: join("gone"), dir: join("gone", "update"), stagingHint: true},
+		{name: "unit path through a symlink and no staging directory", unit: join("bare-link"), dir: join("bare", "update"), stagingHint: true},
+		{name: "process path through a symlink and no staging directory", unit: join("bare"), dir: join("bare-link", "update"), stagingHint: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			*unit = tc.unit
