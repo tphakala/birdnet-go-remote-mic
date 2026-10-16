@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1453,4 +1454,163 @@ func TestManagerTurnOffRestartsLogDedupe(t *testing.T) {
 			}
 		})
 	}
+}
+
+// installProbe stands in for Config.Detect: it returns the Install the test
+// last set and counts the reads.
+type installProbe struct {
+	cur   atomic.Pointer[Install]
+	calls atomic.Int32
+}
+
+func newInstallProbe(in Install) *installProbe {
+	p := &installProbe{}
+	p.cur.Store(&in)
+	return p
+}
+
+func (p *installProbe) set(in Install) { p.cur.Store(&in) }
+
+func (p *installProbe) detect() Install {
+	p.calls.Add(1)
+	return *p.cur.Load()
+}
+
+// TestInstallRedetectedOnRequest pins that the installation is read again
+// on request and never on a timer: Status reuses a reading for
+// installRecheck, StartApply always reads afresh and refuses what the
+// current installation cannot do.
+func TestInstallRedetectedOnRequest(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		canApply := Install{Method: MethodService, CanApply: true, ServiceBin: serviceBin}
+		noUpdater := Install{Method: MethodService, ServiceBin: serviceBin, Hint: "to enable one-button updates, re-run service install"}
+		probe := newInstallProbe(canApply)
+		dir := t.TempDir()
+		staged := 0
+		logs := &logSink{}
+		m := NewManager(t.Context(), &Config{
+			Running: vOld,
+			Fetch:   (&fakeFetch{rel: fakeRelease(vNew)}).fetch,
+			Stage: func(context.Context, *Release) error {
+				staged++
+				return os.WriteFile(filepath.Join(dir, RequestFile), []byte(`{"version":"v0.3.0"}`), 0o644)
+			},
+			Dir:       dir,
+			Install:   canApply,
+			Detect:    probe.detect,
+			Publisher: notify.NewCenter(),
+			Logf:      logs.logf,
+		})
+		m.Apply(on())
+		if _, err := m.CheckNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		wantStatus := func(step string, wantCan bool, wantCalls int32) {
+			t.Helper()
+			if got := m.Status().Install.CanApply; got != wantCan {
+				t.Errorf("%s: CanApply %t, want %t", step, got, wantCan)
+			}
+			if got := probe.calls.Load(); got != wantCalls {
+				t.Errorf("%s: %d installation reads, want %d", step, got, wantCalls)
+			}
+		}
+
+		wantStatus("startup value", true, 0)
+		probe.set(noUpdater)
+		wantStatus("inside the window", true, 0)
+
+		st, err := m.StartApply()
+		if !errors.Is(err, ErrCannotApply) || st.Install.CanApply {
+			t.Fatalf("StartApply after the updater went away: %+v, %v; want ErrCannotApply with CanApply false", st, err)
+		}
+		if staged != 0 {
+			t.Errorf("a refused press staged %d times, want 0", staged)
+		}
+		wantStatus("after the refused press", false, 1)
+
+		probe.set(canApply)
+		time.Sleep(installRecheck)
+		wantStatus("after the window", true, 2)
+		wantStatus("inside the new window", true, 2)
+		wantStatus("inside the new window again", true, 2)
+
+		st, err = m.StartApply()
+		if err != nil || st.Phase != PhaseDownloading {
+			t.Fatalf("StartApply with the updater back: %+v, %v", st, err)
+		}
+		if got := probe.calls.Load(); got != 3 {
+			t.Errorf("%d installation reads after the accepted press, want 3", got)
+		}
+		synctest.Wait()
+		if staged != 1 {
+			t.Errorf("staged %d times, want 1", staged)
+		}
+		if got := logs.count("no longer available"); got != 1 {
+			t.Errorf("%d lines for the updater going away, want 1", got)
+		}
+		if got := logs.count("is now available"); got != 1 {
+			t.Errorf("%d lines for the updater coming back, want 1", got)
+		}
+	})
+}
+
+// TestStartApplyKeepsTheInstallItStartedWith pins that an attempt words its
+// withdraw advice from the installation its press read, not a later one.
+func TestStartApplyKeepsTheInstallItStartedWith(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		at := func(bin string) Install {
+			return Install{Method: MethodService, CanApply: true, ServiceBin: bin}
+		}
+		startup, started, later := at("/opt/startup/remote-mic"), at("/opt/started/remote-mic"), at("/opt/later/remote-mic")
+		probe := newInstallProbe(started)
+		dir := t.TempDir()
+		m := NewManager(t.Context(), &Config{
+			Running: vOld,
+			Fetch:   (&fakeFetch{rel: fakeRelease(vNew)}).fetch,
+			Stage: func(context.Context, *Release) error {
+				return os.WriteFile(filepath.Join(dir, RequestFile), []byte(`{"version":"v0.3.0"}`), 0o644)
+			},
+			Dir:       dir,
+			Install:   startup,
+			Detect:    probe.detect,
+			Publisher: notify.NewCenter(),
+			Logf:      (&logSink{}).logf,
+		})
+		m.Apply(on())
+		if _, err := m.CheckNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.StartApply(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		// A later reading, as a status poll would make once the window ends.
+		probe.set(later)
+		time.Sleep(installRecheck + resultPoll)
+		if got := m.Status().Install.ServiceBin; got != later.ServiceBin {
+			t.Fatalf("status names %q after the window, want %q", got, later.ServiceBin)
+		}
+		time.Sleep(updaterStartTimeout + 3*resultPoll)
+		synctest.Wait()
+		st := m.Status()
+		if st.Phase != PhaseFailed || !strings.Contains(st.PhaseMessage, started.RerunInstall()) {
+			t.Errorf("status %+v, want a failure that says %q", st, started.RerunInstall())
+		}
+	})
+}
+
+// TestInstallWithoutDetectIsStatic pins that a Manager configured without
+// Detect keeps reporting the configured Install, whatever the time.
+func TestInstallWithoutDetectIsStatic(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		want := Install{Method: MethodService, CanApply: true, ServiceBin: serviceBin}
+		m := NewManager(t.Context(), &Config{Running: vOld, Install: want, Logf: (&logSink{}).logf})
+		time.Sleep(2 * installRecheck)
+		if got := m.Status().Install; got != want {
+			t.Errorf("Status().Install = %+v, want %+v", got, want)
+		}
+	})
 }
