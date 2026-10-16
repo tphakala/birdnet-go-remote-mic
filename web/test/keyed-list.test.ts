@@ -403,7 +403,7 @@ const THROW_POINTS: [string, Phase, string][] = [
 ];
 
 for (const [label, phase, name] of THROW_POINTS) {
-  test(`a hook that throws in ${label} leaves the list in step with the DOM`, () => {
+  test(`a hook that throws in ${label} leaves no untracked node and no entry whose remove ran`, () => {
     const t = tracker(true);
     t.list.sync(S0);
     t.arm(phase, name);

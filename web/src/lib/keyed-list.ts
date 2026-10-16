@@ -17,9 +17,9 @@ export interface KeyedListHooks<T, E, K> {
   // throws, it must undo its own side effects: there is no entry to remove.
   create(item: T): E;
   // nodes are the entry's elements, in order. Read on every sync, since an
-  // entry's element may change after create. It is read before the step that
-  // moves or removes the entry, so it must not throw for an entry the hooks
-  // are about to change.
+  // entry's element may change after create. For an entry that is going away
+  // it is read before the remove or replace hook runs, and those are the nodes
+  // removed afterwards: a node a hook adds is the hook's to remove.
   nodes(entry: E): readonly Element[];
   // update runs for every shown item, a created one included.
   update?(entry: E, item: T): void;
@@ -33,10 +33,11 @@ export interface KeyedListHooks<T, E, K> {
   replace?(old: E, next: E): void;
   // remove runs for an entry that is gone while a shown entry's nodes are
   // still in the DOM, so the view can read where focus is; before is the keys
-  // in screen order as they were before this sync. The nodes are removed
-  // afterwards. A held entry's nodes are already out of the DOM. It runs at
-  // most once per entry, even when it throws: the entry is then forgotten and
-  // its nodes removed.
+  // as they were before this sync, in screen order unless the last sync threw.
+  // The nodes are removed afterwards. The nodes of a held entry, or of an
+  // entry a sync that threw never attached, are already out of the DOM. It
+  // runs at most once per entry, even when it throws: the entry is then
+  // forgotten and its nodes removed.
   remove?(entry: E, key: K, before: readonly K[]): void;
   // retain keeps a gone entry out of the DOM but held, to be revived without
   // create when its key is wanted again and it is not stale (default: never).
@@ -59,8 +60,8 @@ export class KeyedList<T, E, K = string> {
   // state before the sync until it finishes, so a hook can still look up the
   // entry that is going away and its neighbours. A hook that throws aborts
   // the sync and the error propagates, but what the sync already did stays
-  // recorded (a created entry is kept, a removed one is forgotten), so the
-  // next sync converges; the reads above hold on that path too. A hook must
+  // recorded (a created entry is kept, though a later sync may have to attach
+  // it; a removed one is forgotten), so the next sync converges; the reads above hold on that path too. A hook must
   // not call sync or clear on its own list.
   sync(items: Iterable<T>): void {
     const h = this.hooks;
@@ -160,7 +161,8 @@ export class KeyedList<T, E, K = string> {
     return this.shown.get(key);
   }
 
-  // keys iterates the shown keys in screen order.
+  // keys iterates the shown keys in screen order (after a sync that threw,
+  // until the next sync, the order may differ from the screen).
   keys(): IterableIterator<K> {
     return this.shown.keys();
   }
