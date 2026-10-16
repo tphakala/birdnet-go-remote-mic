@@ -61,7 +61,7 @@ reconcile:
   `keyedPlan` in `lib/keyed-core.ts`), create each once, patch only changed
   fields (`setText`/`setHidden`/`setAttr` write only on change), rebuild an
   element only when its shape changes (the `stale` and `replace` hooks), hand
-  focus on when an entry goes (the `remove` hook runs while its nodes are still
+  focus on when an entry goes (the `remove` hook runs while a shown entry's nodes are still
   attached), and reorder with a diff so steady-state renders move no nodes.
   Replacing `innerHTML` or re-creating a list per update is a bug: it drops
   keyboard focus and screen reader position on every poll or SSE tick.

@@ -22,15 +22,15 @@ export interface KeyedListHooks<T, E, K> {
   // stale says the entry must be rebuilt for item (default: never).
   stale?(entry: E, item: T): boolean;
   // replace runs after a rebuild created next and before the old nodes go; it
-  // may swap them in place. The old nodes are removed afterwards if still
+  // may swap them in place (not for a held entry, whose old nodes are already out of the DOM). The old nodes are removed afterwards if still
   // attached.
   replace?(old: E, next: E): void;
-  // remove runs for an entry that is gone while its nodes are still in the
+  // remove runs for an entry that is gone while a shown entry's nodes are still in the
   // DOM, so the view can read where focus is; before is the keys in screen
-  // order as they were before this sync. The nodes are removed afterwards.
+  // order as they were before this sync. The nodes are removed afterwards. A held entry's nodes are already out of the DOM.
   remove?(entry: E, key: K, before: readonly K[]): void;
   // retain keeps a gone entry out of the DOM but held, to be revived without
-  // create when its key is wanted again (default: never).
+  // create when its key is wanted again and it is not stale (default: never).
   retain?(entry: E, key: K): boolean;
 }
 
