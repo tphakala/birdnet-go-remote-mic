@@ -61,17 +61,23 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 	})
 }
 
-// Seams for the running binary and the installed units, so a test can stand
-// in for a service install without one on the host.
+// Seams for the running binary, the installed units and the root-only check
+// of the service binary, so a test can stand in for a service install without
+// one on the host.
 var (
 	runningExe        = os.Executable
 	installedBinPaths = service.InstalledBinPaths
+	installedStateDir = service.InstalledUpdaterStateDir
+	rootOnlyFile      = update.CheckRootOnlyFile
 )
 
 // installDetector reads the installation for the update manager, which asks
 // again on a status read and on every press of Update (update.Config.Detect),
 // so a service install run while the appliance is up is noticed without a
-// restart. It logs a problem once rather than on every read, and again after
+// restart. A service install that moved the state directory is the exception
+// to what that wins: this process keeps staging into the state directory it
+// started with, so the button stays off until it restarts (see detectInstall).
+// It logs a problem once rather than on every read, and again after
 // the problem cleared and returned.
 type installDetector struct {
 	dir string
@@ -98,7 +104,12 @@ func (d *installDetector) detect() update.Install {
 // detectInstall classifies this installation from the running binary's path,
 // the installed systemd units, and dpkg's file lists. The one-button update
 // also needs the staging directory the installer creates; without it the
-// root updater has nothing to watch. An installed unit that cannot be read
+// root updater has nothing to watch, and it must be the one the installed
+// updater unit watches: a service install run with another --state-dir leaves
+// this process staging into the old one until it restarts, so the button goes
+// off with the restart advice. An updater unit whose state directory cannot be
+// read keeps the button, so an unusual but working install is not locked out.
+// An installed unit that cannot be read
 // means this install cannot update itself; the reason goes to logf, and the hints
 // that send the operator to `service install` name this binary's path when
 // only root can change it (update.CheckRootOnlyFile). A binary
@@ -117,15 +128,48 @@ func detectInstall(dir string, logf func(format string, args ...any)) update.Ins
 	if err != nil {
 		logf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
-	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: service.PackageOwns, RootOnly: update.CheckRootOnlyFile})
+	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: service.PackageOwns, RootOnly: rootOnlyFile})
 	inst = unreadableUnitHint(inst, exe, app, err)
 	if inst.CanApply {
-		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		// The restart advice comes before the missing-directory one: with the
+		// state directory moved, re-running install does not help. It is
+		// advised, never done, because a restart drops every stream.
+		if s := installedStateDir(); s != "" && !sameDir(filepath.Join(s, update.DirName), dir) {
+			updaterDir := filepath.Join(s, update.DirName)
+			inst.CanApply = false
+			inst.Hint = stateDirMovedHint(dir, updaterDir)
+			logf("update: the root updater watches %s, not %s where this process stages; restart the service to use it", updaterDir, dir)
+		} else if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			inst.CanApply = false
 			inst.Hint = stagingDirHint(inst, dir)
 		}
 	}
 	return inst
+}
+
+// sameDir reports whether a and b name the same directory: equal after
+// making them absolute and, where they resolve, following symlinks.
+func sameDir(a, b string) bool {
+	return canonDir(a) == canonDir(b)
+}
+
+func canonDir(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// stateDirMovedHint tells the operator that a service install moved the
+// state directory, so the staging directory the installed root updater
+// watches (updaterDir) is not the one this process stages into (dir) until
+// the service restarts.
+func stateDirMovedHint(dir, updaterDir string) string {
+	return "The installed root updater watches " + updaterDir + ", but this process still stages into " + dir + ", the state directory it started with. To use the installed one, " + update.RestartService
 }
 
 // stagingDirHint tells the operator to re-run install (see

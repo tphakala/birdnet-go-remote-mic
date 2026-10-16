@@ -82,33 +82,84 @@ func execStartDropIn(name string) (string, error) {
 	return "", nil
 }
 
-// unitBinPath returns the program of the unit named name's first ExecStart=
-// line, without systemd's special-executable prefixes (-, @, :, +, !), or ""
-// (see InstalledBinPaths).
-func unitBinPath(name string) (string, error) {
+// unitExecStart returns the value of the first ExecStart= line of the unit
+// named name; found is false, with no error, when the unit is absent. It
+// fails when the unit cannot be read as installed, when a drop-in sets
+// ExecStart=, or when the unit has none.
+func unitExecStart(name string) (val string, found bool, err error) {
 	files, err := loadUnit(name)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", name, err)
+		return "", false, fmt.Errorf("%s: %w", name, err)
 	}
 	if files == nil {
-		return "", nil
+		return "", false, nil
 	}
 	for _, f := range files[1:] {
 		if fileSets(f, keyExecStart) {
-			return "", fmt.Errorf("%s: %s replaces ExecStart=", name, f.path)
+			return "", false, fmt.Errorf("%s: %s replaces ExecStart=", name, f.path)
 		}
 	}
 	for _, line := range files[0].lines {
 		if key, val, ok := entry(line); ok && key == keyExecStart {
-			bin, _, _ := strings.Cut(val, " ")
-			bin = strings.TrimLeft(bin, "-@:+!")
-			if isPlain(bin) && filepath.IsAbs(bin) {
-				return bin, nil
-			}
-			return "", fmt.Errorf("%s: ExecStart= program %q is not a plain absolute path", name, bin)
+			return val, true, nil
 		}
 	}
-	return "", fmt.Errorf("%s: no ExecStart=", name)
+	return "", false, fmt.Errorf("%s: no ExecStart=", name)
+}
+
+// unitBinPath returns the program of the unit named name's first ExecStart=
+// line, without systemd's special-executable prefixes (-, @, :, +, !), or ""
+// (see InstalledBinPaths).
+func unitBinPath(name string) (string, error) {
+	val, found, err := unitExecStart(name)
+	if err != nil || !found {
+		return "", err
+	}
+	bin, _, _ := strings.Cut(val, " ")
+	bin = strings.TrimLeft(bin, "-@:+!")
+	if isPlain(bin) && filepath.IsAbs(bin) {
+		return bin, nil
+	}
+	return "", fmt.Errorf("%s: ExecStart= program %q is not a plain absolute path", name, bin)
+}
+
+// stateDirFlag is the root updater's flag naming the state directory, in the
+// form the installer renders.
+const stateDirFlag = "--state-dir="
+
+// InstalledUpdaterStateDir reports the state directory the installed root
+// updater unit passes to apply-update (--state-dir=), cleaned. "" means it is
+// unknown: no unit, a unit that cannot be read as installed, a drop-in that
+// replaces ExecStart=, or no single plain absolute --state-dir= value. The
+// caller then keeps its old behaviour; InstalledBinPaths reports why a unit
+// could not be read.
+func InstalledUpdaterStateDir() string {
+	val, found, err := unitExecStart(UpdateServiceUnit)
+	if err != nil || !found {
+		return ""
+	}
+	return updaterStateDir(val)
+}
+
+// updaterStateDir returns the cleaned --state-dir= value of the updater's
+// ExecStart value execStart, or "" when it does not hold exactly one such
+// token with a plain absolute path. A -state-dir form, or the flag with its
+// value in the next token, is refused too: the parser does not read those
+// the way the flag set of apply-update would.
+func updaterStateDir(execStart string) string {
+	var found []string
+	for tok := range strings.FieldsFuncSeq(execStart, func(r rune) bool { return strings.ContainsRune(blanks, r) }) {
+		switch {
+		case tok == "--state-dir", tok == "-state-dir", strings.HasPrefix(tok, "-state-dir="):
+			return ""
+		case strings.HasPrefix(tok, stateDirFlag):
+			found = append(found, strings.TrimPrefix(tok, stateDirFlag))
+		}
+	}
+	if len(found) != 1 || !isPlain(found[0]) || !filepath.IsAbs(found[0]) {
+		return ""
+	}
+	return filepath.Clean(found[0])
 }
 
 // InstalledSpec reports the spec the installed appliance unit was written
