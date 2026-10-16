@@ -2330,6 +2330,29 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   overflow: hidden;
 }
 
+/* On a phone-width header the bell sits left of the header's right edge, so a
+   panel as wide as the viewport allows and right-aligned to the bell ran past
+   the left edge of the window. Below this width the panel anchors to the
+   header instead, which spans the content area, so it fits. The badge
+   anchors to the bell button meanwhile, since the wrapper stops being the
+   positioned ancestor; its offset grows by the button's 1px border so it
+   stays where it was. The menu popovers are narrow and keep their anchor. */
+@media (max-width: 26em) {
+  .instrument-header {
+    position: relative;
+  }
+  .notif-wrap {
+    position: static;
+  }
+  .notif-wrap .icon-btn {
+    position: relative;
+  }
+  .notif-wrap .notif-badge {
+    top: -5px;
+    right: -5px;
+  }
+}
+
 /* Keep the panel's elevation (shadow-lg) and draw the keyboard focus ring as an
    outline so it survives forced-colors mode, matching the shared ring pattern. */
 .notif-panel:focus-visible {
@@ -2371,8 +2394,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   height: var(--control-h-sm);
 }
 
+/* No scroll anchoring: the rows are kept across updates, and Chrome would
+   otherwise anchor on one and jump the panel to the top when the active block
+   above it goes. */
 .notif-body {
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 6px;
 }
 
@@ -2380,9 +2407,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.notif-active:not(:empty) {
   padding-bottom: 6px;
   margin-bottom: 6px;
   border-bottom: 1px solid var(--border-subtle);
@@ -2397,6 +2421,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   padding: 2px 4px;
 }
 
+.notif-active-list,
 .notif-list {
   display: flex;
   flex-direction: column;

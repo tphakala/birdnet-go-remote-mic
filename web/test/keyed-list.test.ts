@@ -268,3 +268,286 @@ test("a duplicate key keeps the first item", () => {
   assert.equal(list.get("a")?.v, "first");
   assert.deepEqual(names(parent), ["a", "b"]);
 });
+
+// The tests below make a hook throw and check what the list and the DOM look
+// like afterwards. tracker builds a list of versioned entries whose name is
+// id+version ("c2"), counts how often each entry object is retired (passed to
+// remove, or to replace as the old entry) and throws a sentinel once from the
+// armed hook.
+interface TItem {
+  id: string;
+  v: string;
+}
+interface TEntry {
+  id: string;
+  v: string;
+  el: FakeNode;
+}
+type Phase = "key" | "stale" | "retain" | "nodes" | "remove" | "create" | "update" | "replaceBefore" | "replaceAfter";
+
+function tracker(swap = false) {
+  const placeholder = new FakeNode("placeholder");
+  const parent = parentWith(placeholder);
+  const all: TEntry[] = [];
+  const retired = new Map<TEntry, number>();
+  const seenInHooks: { hook: string; keys: string[]; size: number }[] = [];
+  const sentinel = new Error("hook failed");
+  let armed: { phase: Phase; name: string } | null = null;
+  const fire = (phase: Phase, name: string): void => {
+    if (armed?.phase !== phase || armed.name !== name) return;
+    armed = null;
+    throw sentinel;
+  };
+  const retire = (e: TEntry): void => {
+    retired.set(e, (retired.get(e) ?? 0) + 1);
+  };
+  const holder: { list?: KeyedList<TItem, TEntry> } = {};
+  // look records what the list reports to a hook that is running.
+  const look = (hook: string): void => {
+    const l = holder.list;
+    if (l) seenInHooks.push({ hook, keys: [...l.keys()], size: l.size });
+  };
+  const list = new KeyedList<TItem, TEntry>(parent as unknown as Element, {
+    key: (i) => {
+      fire("key", i.id + i.v);
+      return i.id;
+    },
+    create: (i) => {
+      look("create");
+      fire("create", i.id + i.v);
+      const e = { id: i.id, v: i.v, el: new FakeNode(i.id + i.v) };
+      all.push(e);
+      return e;
+    },
+    nodes: (e) => {
+      fire("nodes", e.el.name);
+      return [asEl(e.el)];
+    },
+    update: (e) => {
+      look("update");
+      fire("update", e.el.name);
+    },
+    stale: (e, i) => {
+      fire("stale", e.el.name);
+      return e.v !== i.v;
+    },
+    replace: (o, n) => {
+      retire(o);
+      look("replace");
+      fire("replaceBefore", o.el.name);
+      if (swap) o.el.replaceWith(n.el);
+      fire("replaceAfter", o.el.name);
+    },
+    remove: (e) => {
+      retire(e);
+      look("remove");
+      fire("remove", e.el.name);
+    },
+    retain: (e, k) => {
+      fire("retain", e.el.name);
+      return k === "d";
+    },
+  });
+  holder.list = list;
+  return {
+    list,
+    parent,
+    all,
+    seenInHooks,
+    sentinel,
+    arm: (phase: Phase, name: string) => {
+      armed = { phase, name };
+    },
+    retires: (e: TEntry | undefined) => retired.get(e as TEntry) ?? 0,
+    entry: (name: string): TEntry => {
+      const e = all.find((x) => x.el.name === name);
+      assert.ok(e, `entry ${name} was created`);
+      return e;
+    },
+  };
+}
+
+// propagates checks that fn throws the very error the hook threw.
+function propagates(fn: () => void, sentinel: Error): void {
+  try {
+    fn();
+  } catch (e) {
+    assert.equal(e, sentinel, "the hook's error propagates unchanged");
+    return;
+  }
+  assert.fail("expected the hook's error");
+}
+
+const versioned = (...specs: string[]): TItem[] => specs.map((s) => ({ id: s.slice(0, 1), v: s.slice(1) }));
+const S0 = versioned("a1", "b1", "c1", "d1");
+// S1 drops b, holds d, creates e, rebuilds c, keeps a and reorders.
+const S1 = versioned("e1", "c2", "a1");
+
+const THROW_POINTS: [string, Phase, string][] = [
+  ["key of the rebuilt item", "key", "c2"],
+  ["stale of the rebuilt entry", "stale", "c1"],
+  ["retain of the dropped entry", "retain", "b1"],
+  ["nodes of the dropped entry", "nodes", "b1"],
+  ["remove of the dropped entry", "remove", "b1"],
+  ["nodes of the held entry", "nodes", "d1"],
+  ["create of the new entry", "create", "e1"],
+  ["update of the new entry", "update", "e1"],
+  ["nodes of the entry being rebuilt", "nodes", "c1"],
+  ["create of the rebuilt entry", "create", "c2"],
+  ["replace before it swaps", "replaceBefore", "c1"],
+  ["replace after it swaps", "replaceAfter", "c1"],
+  ["update of the rebuilt entry", "update", "c2"],
+  ["update of the kept entry", "update", "a1"],
+  ["nodes of the kept entry while ordering", "nodes", "a1"],
+  ["nodes of the new entry while ordering", "nodes", "e1"],
+];
+
+for (const [label, phase, name] of THROW_POINTS) {
+  test(`a hook that throws in ${label} leaves no untracked node and no entry whose remove ran`, () => {
+    const t = tracker(true);
+    t.list.sync(S0);
+    t.arm(phase, name);
+    propagates(() => t.list.sync(S1), t.sentinel);
+    const listed = new Set([...t.list.values()].map((e) => e.el));
+    const children = t.parent.kids.filter((k) => k.name !== "placeholder");
+    for (const k of children) assert.ok(listed.has(k), `${k.name} is in the parent but not in the list`);
+    for (const e of t.list.values()) assert.equal(t.retires(e), 0, `${e.el.name} is listed after its remove ran`);
+    assert.ok(t.parent.kids.some((k) => k.name === "placeholder"), "the placeholder stays");
+  });
+
+  test(`after a throw in ${label} the next sync converges and creates nothing twice`, () => {
+    const t = tracker(true);
+    t.list.sync(S0);
+    t.arm(phase, name);
+    propagates(() => t.list.sync(S1), t.sentinel);
+    t.list.sync(S1);
+    assert.deepEqual(names(t.parent), ["e1", "c2", "a1", "placeholder"]);
+    assert.deepEqual([...t.list.keys()], ["e", "c", "a"]);
+    const made = t.all.map((e) => e.el.name).sort();
+    assert.deepEqual(made, ["a1", "b1", "c1", "c2", "d1", "e1"], "one entry per id and version");
+    t.list.sync([]);
+    t.list.clear();
+    for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+    assert.deepEqual(names(t.parent), ["placeholder"]);
+  });
+}
+
+test("an entry created in a sync that threw is removed once when it is no longer wanted", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.arm("update", "e1");
+  propagates(() => t.list.sync(S1), t.sentinel);
+  t.list.sync(versioned("a1"));
+  assert.equal(t.retires(t.entry("e1")), 1);
+  assert.ok(!t.parent.kids.some((k) => k.name === "e1"));
+});
+
+test("an entry whose remove hook ran is not removed again after a later hook throws", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.arm("update", "a1");
+  propagates(() => t.list.sync(S1), t.sentinel);
+  assert.equal(t.retires(t.entry("b1")), 1);
+  t.list.sync(S1);
+  assert.equal(t.retires(t.entry("b1")), 1, "the converging sync does not run remove for b again");
+});
+
+test("a remove hook that throws still forgets its entry and takes its nodes out", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.arm("remove", "b1");
+  propagates(() => t.list.sync(S1), t.sentinel);
+  assert.ok(!t.parent.kids.some((k) => k.name === "b1"));
+  assert.ok(![...t.list.keys()].includes("b"));
+  t.list.sync(S1);
+  assert.equal(t.retires(t.entry("b1")), 1);
+});
+
+test("a rebuilt entry swapped in by replace stays tracked when update throws", () => {
+  const t = tracker(true);
+  t.list.sync(S0);
+  t.arm("update", "c2");
+  propagates(() => t.list.sync(S1), t.sentinel);
+  assert.ok(t.parent.kids.some((k) => k.name === "c2"), "the swapped-in node is in the parent");
+  assert.equal(t.list.get("c")?.el.name, "c2");
+  t.list.sync(versioned("a1"));
+  assert.deepEqual(names(t.parent), ["a1", "placeholder"], "no untracked node is left behind");
+});
+
+test("reads inside the create, update, replace and remove hooks of a sync that throws still see the list from before it", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.arm("update", "a1");
+  propagates(() => t.list.sync(S1), t.sentinel);
+  // remove b, create e, update e, create c2, replace c, update c2, update a (throws).
+  const last = t.seenInHooks.slice(-7);
+  assert.deepEqual(last.map((r) => r.hook), ["remove", "create", "update", "create", "replace", "update", "update"]);
+  for (const r of last) assert.deepEqual([r.keys, r.size], [["a", "b", "c", "d"], 4], `${r.hook} sees the pre-sync list`);
+  assert.ok(![...t.list.keys()].includes("b"));
+});
+
+test("a held entry wanted again is revived and retired once", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.list.sync(S1);
+  const d = t.entry("d1");
+  t.list.sync(versioned("a1", "d1"));
+  assert.equal(t.list.get("d"), d, "the held entry comes back without create");
+  assert.deepEqual(names(t.parent), ["a1", "d1", "placeholder"]);
+  t.list.clear();
+  for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+  assert.deepEqual(names(t.parent), ["placeholder"]);
+});
+
+test("a stale held entry is rebuilt and each version is retired once", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.list.sync(S1);
+  t.list.sync(versioned("a1", "d2"));
+  assert.equal(t.list.get("d")?.el.name, "d2");
+  assert.equal(t.retires(t.entry("d1")), 1, "the held d1 went through replace");
+  t.list.clear();
+  for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+  assert.deepEqual(names(t.parent), ["placeholder"]);
+});
+
+const HELD_THROW_POINTS: [string, string, Phase, string, TItem[]][] = [
+  ["update of a revived held entry", "d1", "update", "d1", versioned("a1", "d1")],
+  ["replace before it swaps, rebuilding a held entry", "d2", "replaceBefore", "d1", versioned("a1", "d2")],
+  ["replace after it swaps, rebuilding a held entry", "d2", "replaceAfter", "d1", versioned("a1", "d2")],
+  ["update of a rebuilt held entry", "d2", "update", "d2", versioned("a1", "d2")],
+];
+
+for (const [label, wantName, phase, name, next] of HELD_THROW_POINTS) {
+  test(`a hook that throws in ${label} retires the entry once and leaves the list and the DOM in agreement`, () => {
+    const t = tracker(true);
+    t.list.sync(S0);
+    t.list.sync(S1);
+    t.arm(phase, name);
+    propagates(() => t.list.sync(next), t.sentinel);
+    const listed = new Set([...t.list.values()].map((e) => e.el));
+    for (const k of t.parent.kids.filter((n) => n.name !== "placeholder")) assert.ok(listed.has(k), `${k.name} is in the parent but not in the list`);
+    assert.equal(t.list.get("d")?.el.name, wantName);
+    t.list.clear();
+    for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+    assert.deepEqual(names(t.parent), ["placeholder"]);
+  });
+}
+
+test("clear that throws in a remove hook forgets what it removed and leaves the rest recorded", () => {
+  const t = tracker();
+  t.list.sync(S0);
+  t.list.sync(versioned("a1", "b1", "c1"));
+  t.arm("remove", "b1");
+  propagates(() => t.list.clear(), t.sentinel);
+  for (const name of ["a1", "b1"]) {
+    assert.equal(t.retires(t.entry(name)), 1, `${name} is retired once`);
+    assert.ok(!t.parent.kids.some((k) => k.name === name), `${name} is out of the parent`);
+  }
+  assert.equal(t.retires(t.entry("c1")), 0);
+  assert.ok(t.parent.kids.some((k) => k.name === "c1"));
+  assert.deepEqual([...t.list.keys()], ["c"]);
+  t.list.clear();
+  for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+  assert.deepEqual(names(t.parent), ["placeholder"]);
+});

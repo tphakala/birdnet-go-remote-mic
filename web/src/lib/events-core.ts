@@ -142,7 +142,7 @@ export function isoOrNull(ms: number): string | null {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-// rowSignature is the part of an Events-page row's rendered state that can
+// rowSignature is the part of an Events-page or bell row's rendered state that can
 // change after the row is first drawn: the text (the server re-sends an entry
 // under the same id with new text when it updates it in place), the unread
 // marker, and the lifecycle badge. The page rebuilds a cached row when this
@@ -153,6 +153,21 @@ export function rowSignature(n: Pick<Notification, "title" | "message">, unread:
   // JSON quoting keeps a separator inside the text from making two different
   // title and message pairs collide.
   return JSON.stringify([n.title, n.message, unread, life]);
+}
+
+// rowStale says a cached row must be rebuilt for the next item: its signature
+// changed, or it was drawn under another boot. Ids restart from 1 on an
+// appliance restart, so a reused row would keep the old boot's time stamps.
+export function rowStale(cachedSig: string, cachedBoot: string | null, nextSig: string, nextBoot: string | null): boolean {
+  return cachedSig !== nextSig || cachedBoot !== nextBoot;
+}
+
+// rowRetained says a row that is no longer listed stays held, out of the DOM,
+// for a quick return: only while it is of the current boot and the store still
+// has its id (the filter hid it). Once the server trimmed the entry, or the
+// row is of another boot, it is dropped.
+export function rowRetained(cachedBoot: string | null, currentBoot: string | null, inStore: boolean): boolean {
+  return cachedBoot === currentBoot && inStore;
 }
 
 // exportJSON serializes the entries for download, oldest first so the file reads

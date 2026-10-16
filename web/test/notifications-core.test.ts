@@ -11,6 +11,7 @@ import {
   LoadTracker,
   RESYNC_BASE_MS,
   RESYNC_MAX_MS,
+  anchorToMs,
   applyLive,
   applySnapshot,
   activeConditions,
@@ -235,6 +236,31 @@ test("a live event anchors the clock only when no snapshot has", () => {
   assert.deepEqual(s.anchor, { browserMs: NOW, uptimeMs: 4_000 });
   applyLive(s, notif({ id: 2, uptimeMs: 9_000 }), NOW + 5_100);
   assert.deepEqual(s.anchor, { browserMs: NOW, uptimeMs: 4_000 }, "a later live event must not re-anchor");
+});
+
+test("anchorToMs maps an instant at the edge of the Date range and is NaN past it", () => {
+  const a = { browserMs: 0, uptimeMs: 0 };
+  assert.equal(anchorToMs(a, 8.64e15), 8.64e15);
+  assert.equal(Number.isNaN(anchorToMs(a, 8.64e15 + 1)), true);
+  assert.equal(anchorToMs({ browserMs: 0, uptimeMs: 8.64e15 }, 0), -8.64e15);
+  assert.equal(Number.isNaN(anchorToMs({ browserMs: 0, uptimeMs: 8.64e15 + 1 }, 0)), true);
+});
+
+test("an entry with an uptime past the Date range is kept and placed at an unknown time", () => {
+  const far = notif({ id: 1, uptimeMs: 9e15 });
+  assert.equal(isNotification(far), true);
+  const s = initialState();
+  applySnapshot(s, snap({ uptimeMs: 5_000, notifications: [far] }), NOW);
+  assert.equal(s.items.has(1), true);
+  assert.equal(Number.isNaN(eventTimeMs(s, far)), true);
+});
+
+test("a snapshot uptime far from its entries places them at an unknown time", () => {
+  const s = initialState();
+  const e = notif({ id: 1, uptimeMs: 0 });
+  applySnapshot(s, snap({ uptimeMs: -9e15, notifications: [e] }), NOW);
+  assert.equal(s.items.has(1), true);
+  assert.equal(Number.isNaN(eventTimeMs(s, e)), true);
 });
 
 test("uptimeToMs is NaN before any anchor", () => {

@@ -33,7 +33,9 @@ import {
   logLayout,
   oldestCaption,
   resultCountLabel,
+  rowRetained,
   rowSignature,
+  rowStale,
   type EventFilter,
   type Lifecycle,
   type LogItem,
@@ -252,7 +254,7 @@ export class EventsView {
       key: (it) => it.key,
       create: (it) => this.newRow(it, "h3"),
       nodes: (e) => [e.el],
-      stale: (e, it) => e.sig !== it.sig || e.boot !== it.ctx.boot,
+      stale: (e, it) => rowStale(e.sig, e.boot, it.sig, it.ctx.boot),
     });
     card.append(head, this.activeList);
     this.activeCard = card;
@@ -372,13 +374,13 @@ export class EventsView {
           : { ...this.newRow(it.n, "h4"), id: it.n.key },
       nodes: (e) => [e.el],
       // A repeated day label gets a fresh header every render.
-      stale: (e, it) => (it.kind === "day" ? it.repeat : e.sig !== it.n.sig || e.boot !== it.n.ctx.boot),
+      stale: (e, it) => (it.kind === "day" ? it.repeat : rowStale(e.sig, e.boot, it.n.sig, it.n.ctx.boot)),
       // A row filtered out or trimmed is dropped once the server no longer
       // retains it; one merely filtered out stays held for a quick un-filter. A
       // row from another boot is never reused.
       retain: (e) => {
         const state = this.store.getState();
-        return e.id !== null && e.boot === state.bootId && state.items.has(e.id);
+        return rowRetained(e.boot, state.bootId, e.id !== null && state.items.has(e.id));
       },
     });
 

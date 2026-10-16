@@ -62,7 +62,12 @@ reconcile:
   fields (`setText`/`setHidden`/`setAttr` write only on change), rebuild an
   element only when its shape changes (the `stale` and `replace` hooks), hand
   focus on when an entry goes (the `remove` hook runs while a shown entry's nodes are still
-  attached), and reorder with a diff so steady-state renders move no nodes.
+  attached, unless a sync that threw never attached them), and reorder with a diff so steady-state renders move no nodes.
+  Hooks see the list as it was before the sync (`get`, `keys`, `entries`,
+  `size` and the `before` order). A hook that throws aborts the sync and the
+  error propagates, but every node the list put in the parent stays tracked
+  (a created entry is kept, though a later sync may have to attach it;
+  `remove` runs at most once per entry) and the next sync converges.
   Replacing `innerHTML` or re-creating a list per update is a bug: it drops
   keyboard focus and screen reader position on every poll or SSE tick.
 - Guard async races. The store puts a `LatestGate` (`lib/latest-core.ts`) on
