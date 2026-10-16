@@ -511,6 +511,29 @@ test("a stale held entry is rebuilt and each version is retired once", () => {
   assert.deepEqual(names(t.parent), ["placeholder"]);
 });
 
+const HELD_THROW_POINTS: [string, string, Phase, string, TItem[]][] = [
+  ["update of a revived held entry", "d1", "update", "d1", versioned("a1", "d1")],
+  ["replace before it swaps, rebuilding a held entry", "d2", "replaceBefore", "d1", versioned("a1", "d2")],
+  ["replace after it swaps, rebuilding a held entry", "d2", "replaceAfter", "d1", versioned("a1", "d2")],
+  ["update of a rebuilt held entry", "d2", "update", "d2", versioned("a1", "d2")],
+];
+
+for (const [label, wantName, phase, name, next] of HELD_THROW_POINTS) {
+  test(`a hook that throws in ${label} retires the entry once and leaves the list and the DOM in agreement`, () => {
+    const t = tracker(true);
+    t.list.sync(S0);
+    t.list.sync(S1);
+    t.arm(phase, name);
+    propagates(() => t.list.sync(next), t.sentinel);
+    const listed = new Set([...t.list.values()].map((e) => e.el));
+    for (const k of t.parent.kids.filter((n) => n.name !== "placeholder")) assert.ok(listed.has(k), `${k.name} is in the parent but not in the list`);
+    assert.equal(t.list.get("d")?.el.name, wantName);
+    t.list.clear();
+    for (const e of t.all) assert.equal(t.retires(e), 1, `${e.el.name} is retired exactly once`);
+    assert.deepEqual(names(t.parent), ["placeholder"]);
+  });
+}
+
 test("clear that throws in a remove hook forgets what it removed and leaves the rest recorded", () => {
   const t = tracker();
   t.list.sync(S0);
