@@ -2380,9 +2380,6 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.notif-active:not(:empty) {
   padding-bottom: 6px;
   margin-bottom: 6px;
   border-bottom: 1px solid var(--border-subtle);
@@ -2397,6 +2394,7 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   padding: 2px 4px;
 }
 
+.notif-active-list,
 .notif-list {
   display: flex;
   flex-direction: column;

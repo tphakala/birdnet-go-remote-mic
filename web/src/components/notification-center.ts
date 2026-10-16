@@ -6,15 +6,44 @@
 import { button, focusTarget, h, setHidden, setText } from "../lib/ui.ts";
 import { PopoverController, type FocusTarget } from "../lib/menu-core.ts";
 import { ICON_CLOSE } from "./toast.ts";
-import { RESTAMP_MS, renderNotificationRow, restampRows } from "./notification-row.ts";
+import { RESTAMP_MS, renderNotificationRow, restampRows, type UptimeToMs } from "./notification-row.ts";
 import { activeConditions, unreadCount, uptimeToMs, type CoreState } from "../lib/notifications-core.ts";
+import { rowSignature, rowStale } from "../lib/events-core.ts";
+import { KeyedList, type KeyedListHooks } from "../lib/keyed-list.ts";
 import type { NotificationStore } from "../lib/notifications.ts";
+import type { Notification } from "../lib/types.ts";
 
 // The popover renders at most this many history rows. The server ring holds far
 // more (its capacity, 500 by default); the Events page (#/events) shows the full
-// log, so the bell need not rebuild the whole ring on every live event. Active
-// issues are always shown in full above the history.
+// log, so the cap bounds how many rows the popover keeps. Active issues are
+// always shown in full above the history.
 const PANEL_HISTORY_MAX = 50;
+
+// PanelRow is a drawn row and what it was drawn from.
+interface PanelRow {
+  sig: string;
+  boot: string | null;
+  el: HTMLElement;
+}
+
+// PanelItem is a notification to show, with the signature of its text and the
+// context its row is drawn under.
+interface PanelItem {
+  n: Notification;
+  sig: string;
+  ctx: { nowMs: number; toMs: UptimeToMs; boot: string | null };
+}
+
+// Both lists draw the same compact rows. A row owns nothing and holds no
+// focusable control (no chips are wired), so a row that is not wanted is just
+// gone. The key is the id alone; ids restart after an appliance restart, so
+// the boot is part of stale, as on the Events page.
+const ROW_HOOKS: KeyedListHooks<PanelItem, PanelRow, number> = {
+  key: (it) => it.n.id,
+  create: (it) => ({ sig: it.sig, boot: it.ctx.boot, el: renderNotificationRow(it.n, { nowMs: it.ctx.nowMs, toMs: it.ctx.toMs }) }),
+  nodes: (r) => [r.el],
+  stale: (r, it) => rowStale(r.sig, r.boot, it.sig, it.ctx.boot),
+};
 
 export class NotificationCenter {
   private readonly store: NotificationStore;
@@ -22,8 +51,14 @@ export class NotificationCenter {
   private badge!: HTMLElement | null;
   private live!: HTMLElement | null;
   private panel!: HTMLElement;
+  // activeEl wraps the group head and activeListEl, which only the row list
+  // manages (a list parks any other child after its rows).
   private activeEl!: HTMLElement;
+  private activeHead!: HTMLElement;
+  private activeListEl!: HTMLElement;
+  private activeRows!: KeyedList<PanelItem, PanelRow, number>;
   private listEl!: HTMLElement;
+  private historyRows!: KeyedList<PanelItem, PanelRow, number>;
   private emptyEl!: HTMLElement;
   // "Showing 50 of N events" beside the Events link, shown only when history is capped,
   // so a badge counting more unread entries than the list shows is explained.
@@ -66,8 +101,12 @@ export class NotificationCenter {
     closeBtn.innerHTML = ICON_CLOSE; // static, trusted markup
     closeBtn.addEventListener("click", () => this.ctl.close(true));
 
-    this.activeEl = h("div", { class: "notif-active" });
+    this.activeHead = h("div", { class: "notif-group-head" });
+    this.activeListEl = h("div", { class: "notif-active-list" });
+    this.activeEl = h("div", { class: "notif-active", hidden: true }, this.activeHead, this.activeListEl);
     this.listEl = h("div", { class: "notif-list" });
+    this.activeRows = new KeyedList(this.activeListEl, ROW_HOOKS);
+    this.historyRows = new KeyedList(this.listEl, ROW_HOOKS);
     this.emptyEl = h("p", { class: "notif-empty" }, "No notifications. Older and cleared events are on the Events page.");
 
     // The popover shows what is still undismissed; the Events page keeps the full
@@ -127,15 +166,16 @@ export class NotificationCenter {
       .sort((a, b) => b.id - a.id);
     const history = allHistory.slice(0, PANEL_HISTORY_MAX);
 
-    this.activeEl.replaceChildren();
-    if (active.length > 0) {
-      const label = `${active.length} active ${active.length === 1 ? "issue" : "issues"}`;
-      this.activeEl.append(h("div", { class: "notif-group-head" }, label));
-      for (const n of active) this.activeEl.append(renderNotificationRow(n, { nowMs, toMs }));
-    }
-
-    this.listEl.replaceChildren();
-    for (const n of history) this.listEl.append(renderNotificationRow(n, { nowMs, toMs }));
+    // Compact rows show neither the unread marker nor a lifecycle badge, so
+    // their signature is the text alone.
+    const ctx = { nowMs, toMs, boot: state.bootId };
+    const item = (n: Notification): PanelItem => ({ n, sig: rowSignature(n, false, undefined), ctx });
+    setHidden(this.activeEl, active.length === 0);
+    setText(this.activeHead, `${active.length} active ${active.length === 1 ? "issue" : "issues"}`);
+    this.activeRows.sync(active.map(item));
+    this.historyRows.sync(history.map(item));
+    // Reused rows carry the times they were drawn with; bring them up to date.
+    restampRows(this.panel, toMs);
 
     setHidden(this.emptyEl, active.length > 0 || history.length > 0);
     const capped = allHistory.length > history.length;
