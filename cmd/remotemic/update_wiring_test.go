@@ -232,6 +232,25 @@ func TestDetectInstallComparesTheUpdaterStateDir(t *testing.T) {
 	}
 }
 
+// TestDetectInstallMatchesARelativeStagingDir pins that a staging directory
+// given relative to the working directory (a hand run with a relative
+// --cert-dir or config path) matches the absolute state directory in the
+// unit.
+func TestDetectInstallMatchesARelativeStagingDir(t *testing.T) {
+	_, unit := stateDirFixture(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mkdirs(t, filepath.Join(root, "state", "update"))
+	t.Chdir(root)
+	*unit = filepath.Join(root, "state")
+	inst := detectInstall(filepath.Join("state", "update"), t.Logf)
+	if !inst.CanApply {
+		t.Errorf("CanApply false for a relative staging directory that is the unit's, hint %q", inst.Hint)
+	}
+}
+
 // TestInstallDetectorLogsAStateDirMismatchOnce pins that a moved state
 // directory is logged once while it lasts, and again if it returns after the
 // directories matched.
