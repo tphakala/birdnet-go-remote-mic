@@ -1530,7 +1530,7 @@ func TestInstallRedetectedOnRequest(t *testing.T) {
 		wantStatus("after the refused press", false, 1)
 
 		// The reading is 30 s old at the second sleep, not before; literals,
-		// so a shorter or longer window than the 30 s the README promises fails.
+		// so an installRecheck other than 30 s fails.
 		probe.set(canApply)
 		time.Sleep(29 * time.Second)
 		wantStatus("29 s after the reading", false, 1)
