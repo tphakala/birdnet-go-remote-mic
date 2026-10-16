@@ -217,6 +217,42 @@ export function dayLabel(ms: number, nowMs: number): string {
   return DAY_LABEL_FMT.format(ms);
 }
 
+// LogItem is one line of the event log's list: a day header or a row. Each has
+// a key that depends only on the item, so the list reuses a node for the same
+// thing across renders.
+export type LogItem<N> =
+  | { kind: "day"; key: string; label: string; repeat: boolean }
+  | { kind: "row"; key: string; n: N };
+
+// logLayout lays out the shown notifications, in the order given, as day
+// headers and rows: a header before the first row of each local day, "Unknown
+// time" for a row whose time is not known. Rows are ordered by id and
+// uptime-derived times follow id order, but a browser clock change between
+// re-syncs (or two runs of "Unknown time") can still split one day label into
+// two runs. A key names one node and a node cannot sit in two places, so the
+// later header of a label is marked repeat and keyed by the row it precedes.
+export function logLayout<N extends { id: number }>(shown: readonly N[], timeMs: (n: N) => number, nowMs: number): LogItem<N>[] {
+  const out: LogItem<N>[] = [];
+  const seen = new Set<string>();
+  // null, not "": an unknown time also yields the "" key, and the first group
+  // must still get its "Unknown time" header.
+  let lastDay: string | null = null;
+  for (const n of shown) {
+    const ms = timeMs(n);
+    const key = Number.isFinite(ms) ? dayKey(ms) : "";
+    if (key !== lastDay) {
+      lastDay = key;
+      const label = Number.isFinite(ms) ? dayLabel(ms, nowMs) : "Unknown time";
+      const base = `day:${key}|${label}`;
+      const repeat = seen.has(base);
+      seen.add(base);
+      out.push({ kind: "day", key: repeat ? `${base}@${n.id}` : base, label, repeat });
+    }
+    out.push({ kind: "row", key: `row:${n.id}`, n });
+  }
+  return out;
+}
+
 // oldestCaption is the Retained tile's caption for the oldest entry's instant:
 // the clock time alone when it is from today, else prefixed with its day label.
 // An unknown instant yields "".
