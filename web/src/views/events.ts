@@ -4,17 +4,18 @@
 // the bell stay listed here. The page is reactive: while visible, a burst of
 // store "change" events coalesces into one render on the next microtask, and
 // while hidden it only marks itself dirty, so a burst of events costs nothing
-// off-screen. Rows are cached by id and reused across renders; a row is rebuilt
-// only when its rendered state (text, unread, lifecycle) changes.
+// off-screen. Rows are kept by id in a KeyedList and reused across renders; a row
+// is rebuilt only when its rendered state (text, unread, lifecycle) changes.
 //
 // Every time on the page (row times, day groups, the oldest-entry caption,
 // ongoing durations) comes from the entries' server uptime mapped onto the
 // browser clock, so a server clock step cannot misplace or mis-measure them.
 
 import { router } from "../lib/router.ts";
-import { button, clearBusy, downloadBlob, focusDropped, focusOnOrDropped, h, iconSpan, orderChildren, sectionHead, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
+import { button, clearBusy, downloadBlob, focusDropped, focusOnOrDropped, h, iconSpan, sectionHead, setBusy, setHidden, setText, svgIcon, switchControl } from "../lib/ui.ts";
 import { onPrefChange, parseBoolPref, readBoolPref, writeBoolPref } from "../lib/prefs.ts";
 import { showToast } from "../components/toast.ts";
+import { KeyedList } from "../lib/keyed-list.ts";
 import { FilterChips } from "../components/filter-chips.ts";
 import { StatTile } from "../components/stat-tile.ts";
 import { RESTAMP_MS, SEVERITY_TO_TOAST, renderNotificationRow, restampRows, type ChipFacet } from "../components/notification-row.ts";
@@ -24,17 +25,18 @@ import {
   SEVERITIES,
   conditionLifecycles,
   dayKey,
-  dayLabel,
   emptyFilter,
   exportJSON,
   facetCounts,
   filterEvents,
   isFilterActive,
+  logLayout,
   oldestCaption,
   resultCountLabel,
   rowSignature,
   type EventFilter,
   type Lifecycle,
+  type LogItem,
 } from "../lib/events-core.ts";
 import type { NotificationStore } from "../lib/notifications.ts";
 import type { Notification, NotificationSeverity } from "../lib/types.ts";
@@ -73,8 +75,13 @@ const SEVERITY_CHIP_LABEL: Record<NotificationSeverity, string> = {
   info: "Info",
 };
 
+// CachedRow is a drawn row: the signature of the state it shows (see
+// rowSignature) and the appliance boot it was drawn under. Ids restart from 1
+// on an appliance restart, so a row from another boot is never reused for the
+// same id.
 interface CachedRow {
   sig: string;
+  boot: string | null;
   el: HTMLElement;
 }
 
@@ -87,24 +94,37 @@ interface FocusMark {
   index: number;
 }
 
-// syncChildren reconciles parent's children with nodes in place: it removes
-// the stale ones, then orders the rest with orderChildren, which moves only a
-// node that is out of order, so a row that stays keeps its node and its focus.
-// A node that is itself removed or rebuilt loses focus; render() puts it back
-// (see restoreFocus). The parent is expected to hold only managed nodes (rows
-// and day headers here).
-function syncChildren(parent: HTMLElement, nodes: HTMLElement[]): void {
-  const want = new Set(nodes);
-  for (const c of Array.from(parent.children)) if (!want.has(c as HTMLElement)) c.remove();
-  orderChildren(parent, nodes);
-}
-
 // RowContext is what every row in one render shares.
 interface RowContext {
   nowMs: number;
   toMs: (uptimeMs: number) => number;
   lifecycles: Map<number, Lifecycle>;
   isUnread: (n: Notification) => boolean;
+  // The appliance boot the render draws, see CachedRow.
+  boot: string | null;
+}
+
+// RowItem is one notification as a KeyedList item: the state its row shows,
+// as rowSignature reads it, and the context to draw it with.
+interface RowItem {
+  key: number;
+  n: Notification;
+  unread: boolean;
+  lifecycle: Lifecycle | undefined;
+  sig: string;
+  ctx: RowContext;
+}
+
+// LogEntry is a drawn line of the log: a row (id set) or a day header (id
+// null, with no signature or boot).
+interface LogEntry extends CachedRow {
+  id: number | null;
+}
+
+function rowItem(n: Notification, ctx: RowContext): RowItem {
+  const unread = ctx.isUnread(n);
+  const lifecycle = ctx.lifecycles.get(n.id);
+  return { key: n.id, n, unread, lifecycle, sig: rowSignature(n, unread, lifecycle), ctx };
 }
 
 export class EventsView {
@@ -114,14 +134,6 @@ export class EventsView {
   private visible = false;
   private dirty = true;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly rowCache = new Map<number, CachedRow>();
-  // Active-condition rows are cached like the log's rows so an unchanged render
-  // reuses the same nodes (see syncChildren). Cleared on a boot change alongside
-  // rowCache, pruned to the currently active ids each render.
-  private readonly activeCache = new Map<number, CachedRow>();
-  // Day headers keyed by dayKey plus label, reused as nodes across renders and
-  // pruned to the headers drawn this render.
-  private readonly dayCache = new Map<string, HTMLElement>();
   // The local day the day headers were last drawn for. The restamp tick
   // re-renders when it changes, so "Today" rolls over to "Yesterday" at
   // midnight on a page left open with no new events.
@@ -148,14 +160,13 @@ export class EventsView {
   };
   private activeCard!: HTMLElement;
   private activeList!: HTMLElement;
+  // The Active Issues rows by notification id. A row is rebuilt only when its
+  // signature or boot changes, so an unchanged render reuses the same nodes;
+  // an issue that cleared is no longer active and is dropped.
+  private activeRows!: KeyedList<RowItem, CachedRow, number>;
   private activeDesc!: HTMLElement;
   private logTitle!: HTMLElement;
   private unreadPill!: HTMLElement;
-  // bootId the id-keyed caches (the row and active caches) were built under. Ids
-  // restart from 1 on an appliance restart, so a cached row for id N would show
-  // the previous boot's event. The day cache keys on the calendar day, not an id,
-  // so it is boot-independent and not cleared here.
-  private cacheBoot: string | null = null;
   private search!: HTMLInputElement;
   private searchKbd!: HTMLElement;
   private slashInput!: HTMLInputElement;
@@ -173,6 +184,7 @@ export class EventsView {
   private announceTimer: ReturnType<typeof setTimeout> | null = null;
   private resetBtn!: HTMLButtonElement;
   private listEl!: HTMLElement;
+  private logRows!: KeyedList<LogItem<RowItem>, LogEntry>;
   private emptyEl!: HTMLElement;
   private emptyTitle!: HTMLElement;
   private emptyBody!: HTMLElement;
@@ -235,6 +247,13 @@ export class EventsView {
     head.append(h("div", { class: "ev-head-actions" }));
     this.activeDesc = descEl;
     this.activeList = h("div", { class: "ev-list ev-active-list" });
+    // The active card's title is an h2 with no day headers, so its rows are h3.
+    this.activeRows = new KeyedList<RowItem, CachedRow, number>(this.activeList, {
+      key: (it) => it.key,
+      create: (it) => this.newRow(it, "h3"),
+      nodes: (e) => [e.el],
+      stale: (e, it) => e.sig !== it.sig || e.boot !== it.ctx.boot,
+    });
     card.append(head, this.activeList);
     this.activeCard = card;
     return card;
@@ -342,6 +361,26 @@ export class EventsView {
     this.loadNotice = h("div", { class: "ev-load-notice", hidden: true }, h("p", { class: "ev-load-notice-text" }, NOTICE_TEXT), this.noticeRetry);
 
     this.listEl = h("div", { class: "ev-list ev-log-list" });
+    // The log's rows and day headers share one list. Rows sit under h3 day
+    // headers, so their titles are h4. Day headers carry no boot: they key on
+    // the calendar day, not an id, so they outlive an appliance restart.
+    this.logRows = new KeyedList<LogItem<RowItem>, LogEntry>(this.listEl, {
+      key: (it) => it.key,
+      create: (it) =>
+        it.kind === "day"
+          ? { el: h("h3", { class: "ev-day" }, it.label), sig: "", boot: null, id: null }
+          : { ...this.newRow(it.n, "h4"), id: it.n.key },
+      nodes: (e) => [e.el],
+      // A repeated day label gets a fresh header every render.
+      stale: (e, it) => (it.kind === "day" ? it.repeat : e.sig !== it.n.sig || e.boot !== it.n.ctx.boot),
+      // A row filtered out or trimmed is dropped once the server no longer
+      // retains it; one merely filtered out stays held for a quick un-filter. A
+      // row from another boot is never reused.
+      retain: (e) => {
+        const state = this.store.getState();
+        return e.id !== null && e.boot === state.bootId && state.items.has(e.id);
+      },
+    });
 
     this.emptyTitle = h("p", { class: "ev-empty-title" });
     this.emptyBody = h("p", { class: "ev-empty-body" });
@@ -579,13 +618,6 @@ export class EventsView {
   private renderAll(): void {
     this.dirty = false;
     const state = this.store.getState();
-    // Ids restart from 1 on an appliance restart, so a cached row keyed by id
-    // would show the previous boot's event. Drop both row caches on a boot change.
-    if (state.bootId !== this.cacheBoot) {
-      this.rowCache.clear();
-      this.activeCache.clear();
-      this.cacheBoot = state.bootId;
-    }
     const nowMs = Date.now();
     this.renderedDay = dayKey(nowMs);
     const items = [...state.items.values()];
@@ -594,6 +626,7 @@ export class EventsView {
       toMs: (u) => uptimeToMs(state, u),
       lifecycles: conditionLifecycles(items),
       isUnread: (n) => n.id > state.readWatermark && !state.dismissed.has(n.id),
+      boot: state.bootId,
     };
 
     // Before the first snapshot an empty items list is "not fetched yet", not
@@ -725,20 +758,11 @@ export class EventsView {
     this.tiles.retained.set(`${items.length}`, caption || "In memory");
   }
 
-  // cachedRow returns n's row from cache, rebuilding it only when its rendered
-  // state (text, unread, lifecycle; see rowSignature) changed since it was
-  // drawn.
-  private cachedRow(cache: Map<number, CachedRow>, n: Notification, ctx: RowContext, headingLevel: "h3" | "h4"): HTMLElement {
-    const unread = ctx.isUnread(n);
-    const lifecycle = ctx.lifecycles.get(n.id);
-    const sig = rowSignature(n, unread, lifecycle);
-    let cached = cache.get(n.id);
-    if (!cached || cached.sig !== sig) {
-      const el = renderNotificationRow(n, { nowMs: ctx.nowMs, toMs: ctx.toMs, full: true, headingLevel, unread, lifecycle, onChip: this.onChip });
-      cached = { sig, el };
-      cache.set(n.id, cached);
-    }
-    return cached.el;
+  // newRow draws a row for a notification and records what it was drawn from.
+  private newRow(it: RowItem, headingLevel: "h3" | "h4"): CachedRow {
+    const { n, ctx } = it;
+    const el = renderNotificationRow(n, { nowMs: ctx.nowMs, toMs: ctx.toMs, full: true, headingLevel, unread: it.unread, lifecycle: it.lifecycle, onChip: this.onChip });
+    return { sig: it.sig, boot: ctx.boot, el };
   }
 
   private renderActive(active: Notification[], ctx: RowContext): void {
@@ -748,60 +772,14 @@ export class EventsView {
       this.activeDesc,
       `${sorted.length} ${sorted.length === 1 ? "issue is" : "issues are"} still in effect. They clear on their own when the appliance recovers.`,
     );
-    // The active card's title is an h2 with no day headers, so its rows are h3.
-    const nodes = sorted.map((n) => this.cachedRow(this.activeCache, n, ctx, "h3"));
-    // An issue that cleared is no longer active, so drop its cached row.
-    const keep = new Set(sorted.map((n) => n.id));
-    for (const id of this.activeCache.keys()) {
-      if (!keep.has(id)) this.activeCache.delete(id);
-    }
-    syncChildren(this.activeList, nodes);
+    this.activeRows.sync(sorted.map((n) => rowItem(n, ctx)));
     // Reused rows carry the times they were drawn with; bring them up to date.
     restampRows(this.activeList, ctx.toMs);
   }
 
   private renderList(state: CoreState, shown: Notification[], ctx: RowContext): void {
-    const nodes: HTMLElement[] = [];
-    const keepDays = new Set<string>();
-    // null, not "": an unknown time also yields the "" key, and the first group
-    // must still get its "Unknown time" header.
-    let lastDay: string | null = null;
-    for (const n of shown) {
-      const ms = eventTimeMs(state, n);
-      const key = Number.isFinite(ms) ? dayKey(ms) : "";
-      if (key !== lastDay) {
-        lastDay = key;
-        const label = Number.isFinite(ms) ? dayLabel(ms, ctx.nowMs) : "Unknown time";
-        const dayKeyLabel = `${key}|${label}`;
-        let dayHead: HTMLElement;
-        if (keepDays.has(dayKeyLabel)) {
-          // This day group already appeared earlier in this render. Rows are
-          // ordered by id; uptime-derived times follow id order, but a browser
-          // clock change between re-syncs (or two runs of "Unknown time") can
-          // still split one label. The cache holds a single node per key and a
-          // node cannot sit in two places, so the repeat gets an uncached header.
-          dayHead = h("h3", { class: "ev-day" }, label);
-        } else {
-          dayHead = this.dayCache.get(dayKeyLabel) ?? h("h3", { class: "ev-day" }, label);
-          this.dayCache.set(dayKeyLabel, dayHead);
-          keepDays.add(dayKeyLabel);
-        }
-        nodes.push(dayHead);
-      }
-      // Log rows sit under h3 day headers, so their titles are h4.
-      nodes.push(this.cachedRow(this.rowCache, n, ctx, "h4"));
-    }
-    // Drop cached rows the server no longer retains so the cache stays bounded
-    // by the ring. Rows merely filtered out this render are still in state.items,
-    // so they are kept for a quick un-filter.
-    for (const id of this.rowCache.keys()) {
-      if (!state.items.has(id)) this.rowCache.delete(id);
-    }
-    // Prune day headers not drawn this render so the header cache stays small.
-    for (const dk of this.dayCache.keys()) {
-      if (!keepDays.has(dk)) this.dayCache.delete(dk);
-    }
-    syncChildren(this.listEl, nodes);
+    const layout = logLayout(shown, (n) => eventTimeMs(state, n), ctx.nowMs);
+    this.logRows.sync(layout.map((it): LogItem<RowItem> => (it.kind === "day" ? it : { kind: "row", key: it.key, n: rowItem(it.n, ctx) })));
     // Reused rows carry the times they were drawn with; bring them up to date.
     restampRows(this.listEl, ctx.toMs);
   }

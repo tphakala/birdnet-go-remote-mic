@@ -1,10 +1,11 @@
 import { store } from "../lib/store.ts";
 import { meterFrames, type VUMeter } from "../components/vu-meter.ts";
 import { router } from "../lib/router.ts";
-import { announce, clearLoadError, focusDropped, focusNeighbour, formatUptime, holdsFocus, orderChildren, renderLoadError, setHidden, setText } from "../lib/ui.ts";
+import { announce, clearLoadError, focusDropped, focusNeighbour, formatUptime, holdsFocus, renderLoadError, setHidden, setText } from "../lib/ui.ts";
 import { clientCountOf, deviceGoneMessage, focusMovedMessage, neighbourOrder, followDashboardRoute, followLevels, LevelsWatch, routeLevels, telemetryReadings, type LevelsTarget } from "../lib/dashboard-core.ts";
+import { KeyedList } from "../lib/keyed-list.ts";
 import { hideInactivePrefDevice, onPrefChange, parseBoolPref } from "../lib/prefs.ts";
-import type { ApplianceStatus, DeviceConfig, SystemInfo } from "../lib/types.ts";
+import type { ApplianceStatus, Device, DeviceConfig, SystemInfo } from "../lib/types.ts";
 import { AvailableDevices } from "./dashboard/available-devices.ts";
 import { ConfigQueue } from "./dashboard/config-queue.ts";
 import { DeviceCard, type DeviceCardHost } from "./dashboard/device-card.ts";
@@ -16,10 +17,29 @@ const METER_LEVELS = {
   clear: (m: VUMeter) => m.clearLevels(),
 };
 
+// CardSource is what one device card is drawn from: the runtime device and its
+// persisted config, if any.
+interface CardSource {
+  d: Device;
+  cfg: DeviceConfig | undefined;
+}
+
+// RemovedFocus is a card that held keyboard focus when a sync removed it: its
+// neighbours on screen, its name, and whether its own Remove was deleting it.
+interface RemovedFocus {
+  neighbours: string[];
+  name: string;
+  own: boolean;
+}
+
 export class DashboardView {
-  // Cards keyed by immutable device id (the stable identity). The levels
-  // payload is keyed by name, which the levels handler reads from each card.
-  private cards: Map<string, DeviceCard> = new Map();
+  // Cards keyed by immutable device id (the stable identity), in screen order;
+  // null without a rack. The levels payload is keyed by name, which the levels
+  // handler reads from each card.
+  private readonly cards: KeyedList<CardSource, DeviceCard> | null;
+  // Set by the cards' remove hook when a removed card held focus, read and
+  // cleared after the sync by reconcile.
+  private removedFocus: RemovedFocus | null = null;
   private rack: HTMLElement | null;
   private emptyEl: HTMLElement | null;
   private readonly available: AvailableDevices;
@@ -42,6 +62,28 @@ export class DashboardView {
       announceEl: this.announceEl,
       render: () => this.render(),
     };
+    const rack = this.rack;
+    this.cards = rack
+      ? new KeyedList<CardSource, DeviceCard>(rack, {
+          key: (x) => x.d.device,
+          create: (x) => new DeviceCard(x.d, this.cardHost),
+          // The card's element changes when it is mounted again for a new shape.
+          nodes: (c) => [c.el],
+          update: (c, x) => c.update(x.d, x.cfg),
+          // A removed card that held keyboard focus (another tab removed the
+          // device, or a reload dropped it) hands it on after the sync, as
+          // Available Devices does.
+          remove: (card, id) => {
+            if (holdsFocus(card.el)) {
+              // The screen order, read only when a removed card held focus.
+              const idOf = new Map([...(this.cards?.entries() ?? [])].map(([cid, c]) => [c.el, cid] as const));
+              const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
+              this.removedFocus = { neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: card.device.name, own: card.removing };
+            }
+            card.destroy();
+          },
+        })
+      : null;
     this.available = new AvailableDevices(document.getElementById("available-section"), {
       queue: this.queue,
       announceEl: this.announceEl,
@@ -72,7 +114,7 @@ export class DashboardView {
       const id = hideInactivePrefDevice(key);
       const hide = parseBoolPref(newValue, true);
       let changed = false;
-      for (const card of this.cards.values()) {
+      for (const card of this.cards?.values() ?? []) {
         if (id !== null && card.device.device !== id) continue;
         if (card.setHideInactive(hide)) changed = true;
       }
@@ -134,7 +176,7 @@ export class DashboardView {
 
   // liveTargets lists the serving cards' meters for routeLevels.
   private *liveTargets(): Generator<LevelsTarget<VUMeter>> {
-    for (const card of this.cards.values()) {
+    for (const card of this.cards?.values() ?? []) {
       const target = card.levels();
       if (target) yield target;
     }
@@ -143,7 +185,7 @@ export class DashboardView {
   // clearMeters puts every meter in its waiting state when levels stop
   // arriving, so a stale bar does not pass for live signal.
   private clearMeters(): void {
-    for (const card of this.cards.values()) card.clearLevels();
+    for (const card of this.cards?.values() ?? []) card.clearLevels();
   }
 
   // renderLoadError replaces the "Loading..." placeholder with the failure cause
@@ -170,15 +212,13 @@ export class DashboardView {
     });
   }
 
-  // reconcile is the single reconcile pass, driven by store state. For each
-  // runtime device it gets or creates the stable card and updates it (see
-  // DeviceCard.update). It then removes gone cards and orders the rack with a
-  // diff (no DOM move in steady state, which is what keeps keyboard focus from
-  // being dropped every poll).
+  // reconcile is the single reconcile pass, driven by store state. The cards
+  // are a KeyedList: for each runtime device it gets or creates the stable
+  // card and updates it (see DeviceCard.update), removes gone cards and orders
+  // the rack with a diff (no DOM move in steady state, which is what keeps
+  // keyboard focus from being dropped every poll).
   private reconcile(): void {
-    if (!this.rack) return;
-    // The narrowed rack, for the removal and ordering passes below.
-    const rack = this.rack;
+    if (!this.rack || !this.cards) return;
     const devices = store.getState().devices;
 
     // Until a devices read applied, an empty list only means not loaded yet.
@@ -209,50 +249,19 @@ export class DashboardView {
     const cfgByDevice = new Map<string, DeviceConfig>();
     for (const cd of store.getState().config?.devices ?? []) cfgByDevice.set(cd.device, cd);
 
-    const seen = new Set<string>();
     let clientCount = 0;
+    for (const d of devices) clientCount += clientCountOf(d);
 
-    for (const d of devices) {
-      seen.add(d.device);
-      clientCount += clientCountOf(d);
-
-      let card = this.cards.get(d.device);
-      if (!card) {
-        card = new DeviceCard(d, this.cardHost);
-        this.cards.set(d.device, card);
-      }
-      card.update(d, cfgByDevice.get(d.device));
-    }
-
-    // Remove cards for devices that are gone. A removed card that held
-    // keyboard focus (another tab removed the device, or a reload dropped it)
-    // hands it on below, as Available Devices does.
-    let focusLost: { neighbours: string[]; name: string; own: boolean } | null = null;
-    for (const [id, card] of this.cards) {
-      if (!seen.has(id)) {
-        if (holdsFocus(card.el)) {
-          // The screen order, read only when a removed card held focus.
-          const idOf = new Map([...this.cards].map(([cid, c]) => [c.el, cid] as const));
-          const shownIds = [...rack.querySelectorAll<HTMLElement>(":scope > article.rack-card")].flatMap((a) => idOf.get(a) ?? []);
-          focusLost = { neighbours: neighbourOrder(shownIds, shownIds.indexOf(id)), name: card.device.name, own: card.removing };
-        }
-        card.destroy();
-        this.cards.delete(id);
-      }
-    }
-
-    // Order the rack to match the device list with a diff. Walk the articles by
-    // previous sibling rather than indexing this.rack.children: #channel-rack
-    // also holds the hidden #rack-empty placeholder, so an index-based compare was
-    // off by one and moved a card every poll. Steady state performs no DOM moves,
-    // so focus inside a card is never dropped by re-inserting its node.
-    const ordered = devices.flatMap((d) => this.cards.get(d.device) ?? []);
-    orderChildren(rack, ordered.map((c) => c.el));
-    if (focusLost && focusDropped()) {
+    // #channel-rack also holds the hidden #rack-empty placeholder; the list
+    // leaves it after the cards, and in steady state moves no node, so focus
+    // inside a card is never dropped by re-inserting its node.
+    this.cards.sync(devices.map((d) => ({ d, cfg: cfgByDevice.get(d.device) })));
+    const lost = this.takeRemovedFocus();
+    if (lost && focusDropped()) {
       // The card's own Remove says what went in its toast, so this says
       // only where focus went.
-      const { name, own } = focusLost;
-      focusNeighbour(this.announceEl, focusLost.neighbours, (nid) => this.settingsTarget(nid), (next) => (own ? focusMovedMessage(next) : deviceGoneMessage(name, next)));
+      const { name, own } = lost;
+      focusNeighbour(this.announceEl, lost.neighbours, (nid) => this.settingsTarget(nid), (next) => (own ? focusMovedMessage(next) : deviceGoneMessage(name, next)));
     }
 
     const clientsEl = document.getElementById("total-clients-display");
@@ -260,9 +269,17 @@ export class DashboardView {
     this.available.syncShown();
   }
 
+  // takeRemovedFocus returns and clears the record of a focused card the sync
+  // in progress removed, if there is one.
+  private takeRemovedFocus(): RemovedFocus | null {
+    const lost = this.removedFocus;
+    this.removedFocus = null;
+    return lost;
+  }
+
   // settingsTarget is a device card's settings button as a focus target.
   private settingsTarget(id: string): { control: HTMLElement; name: string } | undefined {
-    const c = this.cards.get(id);
+    const c = this.cards?.get(id);
     return c && { control: c.settingsButton, name: c.device.name };
   }
 

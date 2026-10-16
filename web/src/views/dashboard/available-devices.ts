@@ -1,10 +1,11 @@
 import { showToast } from "../../components/toast.ts";
 import { api, isRefusal } from "../../lib/api.ts";
-import { availableCardKey, availableCardShape, availableGoneMessage, availableLabel, availablePlan, capsSummary, neighbourOrder } from "../../lib/dashboard-core.ts";
+import { availableCardKey, availableCardShape, availableChange, availableGoneMessage, availableLabel, capsSummary, neighbourOrder } from "../../lib/dashboard-core.ts";
+import { KeyedList } from "../../lib/keyed-list.ts";
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import type { AvailableDevice, Device } from "../../lib/types.ts";
-import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, orderChildren, part, setAttr, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
+import { button, clearBusy, focusDropped, focusNeighbour, h, holdsFocus, part, setAttr, setBusy, setHidden, setText, showUnconfirmed } from "../../lib/ui.ts";
 import { apiErrorToast, type ConfigQueue } from "./config-queue.ts";
 
 // AvailableCard is one detected but unconfigured capture device: its name,
@@ -80,6 +81,15 @@ class AvailableCard {
   }
 }
 
+// AvailableItem is what a card is drawn from: a detected device with its id,
+// the shape of the card it needs and the key of the text it shows.
+interface AvailableItem {
+  d: AvailableDevice;
+  id: string;
+  shape: string;
+  key: string;
+}
+
 // FocusLost is an Available card that held focus when a render removed it:
 // its device, its neighbours on screen, and its label.
 interface FocusLost {
@@ -103,19 +113,21 @@ export interface AvailableDevicesHost {
 // fully configured host shows no empty panel, and while the device rack above
 // it is still loading (see syncShown). Cards are keyed by device id. A change
 // to what one shows is patched in place, and only a card whose optional rows
-// appear or go is rebuilt (availablePlan), so a render keeps the operator's
+// appear or go is rebuilt (availableChange), so a render keeps the operator's
 // text selection (the device id is there to be copied) and keyboard focus on
 // the cards it leaves alone. A rebuilt card that held focus hands it to its new
 // Enable button.
 export class AvailableDevices {
   private readonly section: HTMLElement | null;
-  private readonly rack: HTMLElement | null;
   private readonly host: AvailableDevicesHost;
   // Device ids with a provisioning request in flight, so the Enable button
   // shows progress and a second click cannot double-provision.
   private readonly provisioning = new Set<string>();
-  // The cards on screen by device id, kept in screen order.
-  private cards = new Map<string, AvailableCard>();
+  // The cards on screen by device id, in screen order; null without a rack.
+  private readonly cards: KeyedList<AvailableItem, AvailableCard> | null;
+  // The card that held keyboard focus when the render in progress removed it
+  // outside its own Enable; render hands focus to a neighbour afterwards.
+  private stranded: FocusLost | null = null;
   // The card that held keyboard focus when a render removed it during that
   // device's Enable, so the Enable can move focus when it settles (to the new
   // device card on success; on failure to its own card when it is listed
@@ -125,8 +137,40 @@ export class AvailableDevices {
 
   constructor(section: HTMLElement | null, host: AvailableDevicesHost) {
     this.section = section;
-    this.rack = part(section, "available-rack");
+    const rack = part(section, "available-rack");
     this.host = host;
+    this.cards = rack
+      ? new KeyedList<AvailableItem, AvailableCard>(rack, {
+          key: (n) => n.id,
+          create: (n) => {
+            const d = n.d;
+            const card = new AvailableCard(d, n.key, this.provisioning.has(n.id));
+            card.enableBtn.addEventListener("click", () => void this.provision(d, card));
+            return card;
+          },
+          nodes: (c) => [c.el],
+          stale: (c, n) => availableChange(c, n) === "build",
+          // A rebuilt card that held focus hands it to its new Enable button.
+          replace: (old, next) => {
+            const refocus = holdsFocus(old.el);
+            old.el.replaceWith(next.el);
+            if (refocus) next.enableBtn.focus({ preventScroll: true });
+          },
+          update: (c, n) => {
+            if (availableChange(c, n) === "patch") c.update(n.d, n.key, this.provisioning.has(n.id));
+          },
+          // A removed card that held focus: during its own Enable the Enable
+          // moves focus once it settles; otherwise (the device went away) focus
+          // goes to its nearest neighbour still listed, after the render.
+          // before is the keys in screen order.
+          remove: (c, id, before) => {
+            if (!holdsFocus(c.el)) return;
+            const lost = { id, neighbours: neighbourOrder(before, before.indexOf(id)), label: c.label };
+            if (this.provisioning.has(id)) this.focusLost = lost;
+            else this.stranded = lost;
+          },
+        })
+      : null;
   }
 
   // syncShown shows the section when it lists a device and the device rack
@@ -136,57 +180,25 @@ export class AvailableDevices {
   // device cards arrive. The rack's length is unknown until that read, so the
   // section waits instead of reserving space.
   public syncShown(): void {
-    if (this.section) setHidden(this.section, this.cards.size === 0 || store.devicesRead() === "pending");
+    if (this.section) setHidden(this.section, (this.cards?.size ?? 0) === 0 || store.devicesRead() === "pending");
   }
 
   // render shows an available-devices read.
   public render(available: AvailableDevice[]): void {
-    if (!this.rack || !this.section) return;
-    const rack = this.rack;
-    const next = available.map((d) => ({ d, id: d.device, shape: availableCardShape(d), key: availableCardKey(d, this.provisioning.has(d.device)) }));
-    const shown = new Map([...this.cards].map(([id, c]) => [id, { shape: c.shape, key: c.key }]));
-    const plan = availablePlan(shown, next);
-
-    // A removed card that held focus: during its own Enable the Enable moves
-    // focus once it settles; otherwise (the device went away) focus goes to
-    // its nearest neighbour still listed, below. cards is kept in screen order
-    // (see the end of this render), so its keys are the order on screen.
-    let stranded: FocusLost | null = null;
-    const oldOrder = [...this.cards.keys()];
-    for (const id of plan.remove) {
-      const c = this.cards.get(id);
-      if (!c) continue;
-      if (holdsFocus(c.el)) {
-        const lost = { id, neighbours: neighbourOrder(oldOrder, oldOrder.indexOf(id)), label: c.label };
-        if (this.provisioning.has(id)) this.focusLost = lost;
-        else stranded = lost;
-      }
-      c.el.remove();
-      this.cards.delete(id);
-    }
-    const build = new Set(plan.build);
-    const patch = new Set(plan.patch);
-    for (const { d, id, key } of next) {
-      if (patch.has(id)) this.cards.get(id)?.update(d, key, this.provisioning.has(id));
-      if (!build.has(id)) continue;
-      const old = this.cards.get(id);
-      const card = new AvailableCard(d, key, this.provisioning.has(id));
-      card.enableBtn.addEventListener("click", () => void this.provision(d, card));
-      const refocus = old !== undefined && holdsFocus(old.el);
-      if (old) old.el.replaceWith(card.el);
-      this.cards.set(id, card);
-      if (refocus) card.enableBtn.focus({ preventScroll: true });
-    }
-    // Order with a diff, as the device rack does: steady state moves no node.
-    // The map is rebuilt in the same order, so its order is the screen's.
-    this.cards = new Map(plan.order.flatMap((id) => {
-      const c = this.cards.get(id);
-      return c ? [[id, c] as const] : [];
-    }));
-    orderChildren(rack, [...this.cards.values()].map((c) => c.el));
+    if (!this.cards || !this.section) return;
+    this.cards.sync(available.map((d) => ({ d, id: d.device, shape: availableCardShape(d), key: availableCardKey(d, this.provisioning.has(d.device)) })));
     this.syncShown();
 
+    const stranded = this.takeStranded();
     if (stranded) this.focusCardNeighbour(stranded.neighbours, stranded.label);
+  }
+
+  // takeStranded returns and clears the record of a focused card the sync in
+  // progress removed outside its own Enable, if there is one.
+  private takeStranded(): FocusLost | null {
+    const lost = this.stranded;
+    this.stranded = null;
+    return lost;
   }
 
   // takeFocusLost returns and clears the record of a focused card that a
@@ -206,7 +218,7 @@ export class AvailableDevices {
       this.host.announceEl,
       neighbours,
       (id) => {
-        const c = this.cards.get(id);
+        const c = this.cards?.get(id);
         return c && { control: c.enableBtn, name: c.label };
       },
       (next) => availableGoneMessage(label, next),
@@ -279,7 +291,7 @@ export class AvailableDevices {
       if (lost && focusDropped()) {
         // Listed again by now (a poll brought it back): its own card takes
         // focus; otherwise its nearest neighbour still listed.
-        const own = this.cards.get(d.device)?.enableBtn;
+        const own = this.cards?.get(d.device)?.enableBtn;
         if (own) own.focus({ preventScroll: true });
         else this.focusCardNeighbour(lost.neighbours, lost.label);
       }

@@ -1,4 +1,5 @@
-import { deviceStateBadge, h, orderChildren, setAttr, setLoading, setText } from "../../lib/ui.ts";
+import { deviceStateBadge, h, setAttr, setLoading, setText } from "../../lib/ui.ts";
+import { KeyedList } from "../../lib/keyed-list.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import { clientSummary, streamFormats, streamSummary } from "../../lib/dashboard-core.ts";
 import type { Config, Device } from "../../lib/types.ts";
@@ -16,13 +17,19 @@ interface DeviceRowRefs {
   stateSpan: HTMLElement;
 }
 
+// RowSource is what one row is drawn from: the device and the config read.
+interface RowSource {
+  d: Device;
+  cfg: Config | null;
+}
+
 // StreamStatus is the Stream Status table: one row per device from the devices
 // read, with its capture address, stream paths, codec and rate, clients and
 // state.
 export class StreamStatus {
   private readonly bodyEl: HTMLElement | null;
-  // Rows keyed by the immutable device id.
-  private readonly rows = new Map<string, DeviceRowRefs>();
+  // Rows keyed by the immutable device id; null without a table body.
+  private readonly rows: KeyedList<RowSource, DeviceRowRefs> | null;
   // The one full-width row shown instead of device rows: loading, then "No
   // devices configured." once a read lists none. It holds the table's first
   // row height from the first paint.
@@ -40,6 +47,14 @@ export class StreamStatus {
     this.messageCell = h("td", { colspan: 6 }, "Loading streams...");
     this.messageRow = h("tr", this.messageCell);
     body?.replaceChildren(this.messageRow);
+    this.rows = body
+      ? new KeyedList<RowSource, DeviceRowRefs>(body, {
+          key: (x) => x.d.device,
+          create: () => this.buildRow(),
+          nodes: (r) => [r.tr],
+          update: (r, x) => this.updateRow(r, x.d, x.cfg),
+        })
+      : null;
     if (this.cardEl) setLoading(this.cardEl, true);
   }
 
@@ -67,16 +82,16 @@ export class StreamStatus {
     if (this.cardEl) setLoading(this.cardEl, false);
   }
 
-  // render fills the table, diffed: rows are keyed by the immutable device id,
-  // cells updated in place, and rows added, removed and ordered only on change
-  // rather than rebuilding the whole tbody every poll.
+  // render fills the table, diffed: rows are a KeyedList keyed by the
+  // immutable device id, cells updated in place, and rows added, removed and
+  // ordered only on change rather than rebuilding the whole tbody every poll.
+  // The message row is not part of the list.
   private render(devices: Device[], cfg: Config | null): void {
-    if (!this.bodyEl) return;
+    if (!this.bodyEl || !this.rows) return;
     const body = this.bodyEl;
 
     if (devices.length === 0) {
-      for (const r of this.rows.values()) r.tr.remove();
-      this.rows.clear();
+      this.rows.sync([]);
       setText(this.messageCell, "No devices configured.");
       if (this.messageRow.parentNode !== body) body.appendChild(this.messageRow);
       return;
@@ -84,19 +99,7 @@ export class StreamStatus {
     // Non-empty: drop the message row if it is showing.
     if (this.messageRow.parentNode) this.messageRow.remove();
 
-    const want = new Set(devices.map((d) => d.device));
-    for (const [id, r] of this.rows) {
-      if (!want.has(id)) { r.tr.remove(); this.rows.delete(id); }
-    }
-
-    const rows: HTMLElement[] = [];
-    for (const d of devices) {
-      let r = this.rows.get(d.device);
-      if (!r) { r = this.buildRow(); this.rows.set(d.device, r); }
-      this.updateRow(r, d, cfg);
-      rows.push(r.tr);
-    }
-    orderChildren(body, rows);
+    this.rows.sync(devices.map((d) => ({ d, cfg })));
   }
 
   private buildRow(): DeviceRowRefs {

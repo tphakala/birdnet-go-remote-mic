@@ -68,7 +68,9 @@ The output must stay plain ES modules (plus the one classic script,
   `#/events`, `#/system`,
   `#/about`; the pure route decisions are in `router-core.ts`),
   `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
-  formatting helpers), `theme.ts` (the System/Light/Dark mode, live OS follow
+  formatting helpers), `keyed-list.ts` (`KeyedList`, the keyed reconciler for
+  the lists a poll updates in place; its pure plan is `keyed-core.ts`),
+  `theme.ts` (the System/Light/Dark mode, live OS follow
   and cross-tab sync, with the browser objects injected so `node:test` covers
   it), `prefs.ts` (per-browser boolean preferences,
   `readBoolPref`/`writeBoolPref`, `onPrefChange` (every cross-tab

@@ -17,6 +17,7 @@ import {
   formatDuration,
   isFilterActive,
   isoOrNull,
+  logLayout,
   oldestCaption,
   resultCountLabel,
   rowSignature,
@@ -381,4 +382,53 @@ test("exportJSON leaves its input untouched and carries whole events", () => {
 test("facetCounts appends an unknown category after the fixed order", () => {
   const c = facetCounts([notif({ id: 9, category: "future" as Notification["category"] })], emptyFilter());
   assert.deepEqual([...c.category.keys()], [...CATEGORIES, "future"]);
+});
+
+// logLayout: the log's day headers and rows as one keyed list.
+const NOON = new Date(2026, 5, 10, 12, 0, 0).getTime();
+// A local noon `days` calendar days before NOON (setDate keeps it noon across a
+// DST change, which subtracting DAY_MS would not).
+const noonMinus = (days: number): number => {
+  const d = new Date(NOON);
+  d.setDate(d.getDate() - days);
+  return d.getTime();
+};
+type Row = { id: number; ms: number };
+const rowAt = (id: number, days: number): Row => ({ id, ms: noonMinus(days) });
+const layout = (rows: Row[]) => logLayout(rows, (r) => r.ms, NOON);
+
+test("logLayout puts a day header before the first row of each day", () => {
+  const out = layout([rowAt(3, 0), rowAt(2, 0), rowAt(1, 1)]);
+  assert.deepEqual(
+    out.map((i) => i.key),
+    [`day:${dayKey(NOON)}|Today`, "row:3", "row:2", `day:${dayKey(noonMinus(1))}|Yesterday`, "row:1"],
+  );
+  assert.deepEqual(
+    out.filter((i) => i.kind === "day").map((i) => (i.kind === "day" ? [i.label, i.repeat] : [])),
+    [["Today", false], ["Yesterday", false]],
+  );
+});
+
+test("logLayout heads rows with no known time with Unknown time", () => {
+  const out = layout([{ id: 2, ms: NaN }, { id: 1, ms: NaN }]);
+  assert.deepEqual(out.map((i) => i.key), ["day:|Unknown time", "row:2", "row:1"]);
+  assert.deepEqual(out[0], { kind: "day", key: "day:|Unknown time", label: "Unknown time", repeat: false });
+});
+
+test("logLayout marks a repeated day label as a repeat with its own key", () => {
+  // The clock stepped between re-syncs, so the same day appears in two runs.
+  const out = layout([rowAt(4, 0), rowAt(3, 1), rowAt(2, 0), rowAt(1, 1)]);
+  const days = out.flatMap((i) => (i.kind === "day" ? [i] : []));
+  assert.deepEqual(days.map((d) => d.repeat), [false, false, true, true]);
+  assert.equal(days[2]?.key, `day:${dayKey(NOON)}|Today@2`);
+  assert.equal(days[3]?.key, `day:${dayKey(noonMinus(1))}|Yesterday@1`);
+  assert.equal(new Set(out.map((i) => i.key)).size, out.length, "every key is unique");
+});
+
+test("logLayout gives the same keys for the same input, and an added row leaves the others' keys alone", () => {
+  const rows = [rowAt(3, 0), rowAt(2, 0), rowAt(1, 1)];
+  const before = layout(rows).map((i) => i.key);
+  assert.deepEqual(layout(rows).map((i) => i.key), before);
+  const after = layout([rowAt(4, 0), ...rows]).map((i) => i.key);
+  assert.deepEqual(after, [before[0], "row:4", ...before.slice(1)]);
 });

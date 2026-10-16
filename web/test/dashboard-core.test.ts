@@ -26,7 +26,7 @@ import {
   rejectedFieldKey,
   runtimeEnabled,
   settingsFocusMessage,
-  availablePlan,
+  availableChange,
   avatarLook,
   bannerIsError,
   capsSummary,
@@ -268,56 +268,24 @@ test("focus messages name the device, the control and why it went", () => {
   assert.equal(tokenHiddenMessage("Garden"), "Garden no longer needs the access token. Focus moved to its device settings.");
 });
 
-const shown = (entries: [string, string, string][]) => new Map(entries.map(([id, shape, key]) => [id, { shape, key }]));
-
-test("availablePlan keeps unchanged cards and builds only new ones or ones with other rows", () => {
-  const plan = availablePlan(shown([["a", "s", "ka"], ["b", "s", "kb"], ["c", "s", "kc"]]), [
-    { id: "a", shape: "s", key: "ka" },
-    { id: "b", shape: "t", key: "kb2" },
-    { id: "d", shape: "s", key: "kd" },
-  ]);
-  assert.deepEqual(plan.remove, ["c"]);
-  assert.deepEqual(plan.build, ["b", "d"], "only the reshaped and the new card are built");
-  assert.deepEqual(plan.patch, [], "a rebuilt card is not also patched");
+test("availableChange keeps a card whose shape and key are unchanged", () => {
+  assert.equal(availableChange({ shape: "s", key: "ka" }, { shape: "s", key: "ka" }), "keep");
 });
 
-test("availablePlan patches a card whose text changed in place", () => {
-  const plan = availablePlan(shown([["a", "s", "ka"], ["b", "s", "kb"]]), [
-    { id: "a", shape: "s", key: "ka" },
-    { id: "b", shape: "s", key: "kb2" },
-  ]);
-  assert.deepEqual(plan.patch, ["b"]);
-  assert.deepEqual(plan.build, [], "a same-shaped change keeps the node");
+test("availableChange builds a card with other rows, even when its text changed too", () => {
+  assert.equal(availableChange({ shape: "s", key: "ka" }, { shape: "t", key: "ka2" }), "build", "other rows win over a changed key");
+  assert.equal(availableChange({ shape: "s", key: "ka" }, { shape: "t", key: "ka" }), "build");
 });
 
-test("availablePlan builds a new card mid-list and orders it there", () => {
-  const plan = availablePlan(shown([["a", "s", "ka"], ["c", "s", "kc"]]), [
-    { id: "a", shape: "s", key: "ka" },
-    { id: "b", shape: "s", key: "kb" },
-    { id: "c", shape: "s", key: "kc" },
-  ]);
-  assert.deepEqual(plan.build, ["b"]);
-  assert.deepEqual(plan.order, ["a", "b", "c"], "a new card is ordered by its place in the list, not appended");
+test("availableChange patches a card whose text changed in place", () => {
+  assert.equal(availableChange({ shape: "s", key: "kb" }, { shape: "s", key: "kb2" }), "patch", "a same-shaped change keeps the node");
 });
 
-test("availablePlan orders cards like the list", () => {
-  const plan = availablePlan(shown([["a", "s", "ka"], ["b", "s", "kb"]]), [
-    { id: "b", shape: "s", key: "kb" },
-    { id: "a", shape: "s", key: "ka" },
-  ]);
-  assert.deepEqual(plan.order, ["b", "a"]);
-  assert.deepEqual(plan.build, [], "a reorder rebuilds nothing");
-  assert.deepEqual(plan.patch, []);
-  assert.deepEqual(plan.remove, []);
-});
-
-test("availablePlan patches a card whose busy state changed", () => {
+test("availableChange patches a card whose busy state changed", () => {
   const d = { device: "hw:1,0", friendlyName: "USB mic" } as unknown as AvailableDevice;
   const shape = availableCardShape(d);
   // The Enable settled: the same device, no longer in flight.
-  const plan = availablePlan(shown([[d.device, shape, availableCardKey(d, true)]]), [{ id: d.device, shape, key: availableCardKey(d, false) }]);
-  assert.deepEqual(plan.patch, [d.device], "a card left busy is patched idle");
-  assert.deepEqual(plan.build, []);
+  assert.equal(availableChange({ shape, key: availableCardKey(d, true) }, { shape, key: availableCardKey(d, false) }), "patch", "a card left busy is patched idle");
   assert.notEqual(availableCardKey(d, true), availableCardKey(d, false));
   assert.equal(availableCardKey(d, false), availableCardKey({ ...d }, false), "equal data gives equal keys");
 });

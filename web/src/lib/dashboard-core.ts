@@ -422,32 +422,14 @@ export interface AvailableShown {
   key: string;
 }
 
-// AvailablePlan is how to turn the cards on screen into the ones for a new
-// list: which to remove, which to build (new, or with rows added or gone),
-// which to patch in place (same rows, other text), and the order to show them
-// in.
-export interface AvailablePlan {
-  remove: string[];
-  build: string[];
-  patch: string[];
-  order: string[];
-}
-
-// availablePlan diffs the shown cards (device id to shape and key) against the
-// next list, so an unchanged card keeps its node, and with it the operator's
-// focus and text selection, and so does one that only changed its text.
-export function availablePlan(shown: ReadonlyMap<string, AvailableShown>, next: readonly (AvailableShown & { id: string })[]): AvailablePlan {
-  const nextIds = new Set(next.map((c) => c.id));
-  const on = (c: { id: string }) => shown.get(c.id);
-  return {
-    remove: [...shown.keys()].filter((id) => !nextIds.has(id)),
-    build: next.filter((c) => on(c)?.shape !== c.shape).map((c) => c.id),
-    patch: next.filter((c) => {
-      const was = on(c);
-      return was !== undefined && was.shape === c.shape && was.key !== c.key;
-    }).map((c) => c.id),
-    order: next.map((c) => c.id),
-  };
+// availableChange says what a shown Available Devices card needs for the
+// device's next state: nothing ("keep"), a patch of its text ("patch"), or a
+// rebuild because its optional rows appear or go ("build"). An unchanged card
+// keeps its node, and with it the operator's focus and text selection, and so
+// does one that only changed its text.
+export function availableChange(shown: AvailableShown, next: AvailableShown): "keep" | "patch" | "build" {
+  if (shown.shape !== next.shape) return "build";
+  return shown.key !== next.key ? "patch" : "keep";
 }
 
 // availableGoneMessage is announced when a poll takes away the Available

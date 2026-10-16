@@ -1,5 +1,6 @@
 import { store } from "../../lib/store.ts";
-import { clearLoadError, h, orderChildren, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
+import { clearLoadError, h, renderLoadError, setHidden, setLoading, setText } from "../../lib/ui.ts";
+import { KeyedList } from "../../lib/keyed-list.ts";
 import { TILE_SLOTS, tileSpecs, type TileSpec } from "../../lib/system-core.ts";
 import type { SystemInfo } from "../../lib/types.ts";
 
@@ -14,28 +15,36 @@ interface TileRefs {
   barFill: HTMLElement;
 }
 
+// TileSource is what a tile is drawn from: a read's spec, or a usual slot laid
+// out before the first read (a slot has no values yet, so it is built but not
+// updated).
+type TileSource = TileSpec | { key: string; label: string };
+
 // TelemetryTiles is the resource-gauge grid at the top of the System view
 // (#sys-tiles). It holds only the live gauges; host and appliance facts live
 // in the System Information card below.
 export class TelemetryTiles {
   private readonly gridEl: HTMLElement | null;
   // Tiles keyed by tile key. Built once, updated in place, added and removed
-  // only when the present set changes.
-  private readonly tiles = new Map<string, TileRefs>();
+  // only when the present set changes. Null without a grid.
+  private readonly tiles: KeyedList<TileSource, TileRefs> | null;
 
   constructor(grid: HTMLElement | null) {
     this.gridEl = grid;
+    this.tiles = null;
     if (!grid) return;
+    this.tiles = new KeyedList<TileSource, TileRefs>(grid, {
+      key: (s) => s.key,
+      create: (s) => this.build(s.label),
+      nodes: (r) => [r.tile],
+      update: (r, s) => {
+        if ("value" in s) this.update(r, s);
+      },
+    });
     // Lay the usual tiles out before the first read, with empty values, so the
     // read fills them in place (they are keyed as the read's tiles are)
     // instead of growing the page.
-    const tiles: HTMLElement[] = [];
-    for (const slot of TILE_SLOTS) {
-      const refs = this.build(slot.label);
-      this.tiles.set(slot.key, refs);
-      tiles.push(refs.tile);
-    }
-    grid.replaceChildren(...tiles);
+    this.tiles.sync(TILE_SLOTS);
     setLoading(grid, true);
   }
 
@@ -44,7 +53,7 @@ export class TelemetryTiles {
   // present set changes.
   public render(sys: SystemInfo): void {
     const grid = this.gridEl;
-    if (!grid) return;
+    if (!grid || !this.tiles) return;
     setLoading(grid, false);
 
     // Remove a load-error placeholder loadError may have left in the grid, so a
@@ -57,32 +66,19 @@ export class TelemetryTiles {
       stale.remove();
     }
 
-    const specs = tileSpecs(sys);
-    const want = new Set(specs.map((s) => s.key));
-    for (const [key, refs] of this.tiles) {
-      if (!want.has(key)) { refs.tile.remove(); this.tiles.delete(key); }
-    }
-
-    const tiles: HTMLElement[] = [];
-    for (const spec of specs) {
-      let refs = this.tiles.get(spec.key);
-      if (!refs) { refs = this.build(spec.label); this.tiles.set(spec.key, refs); }
-      this.update(refs, spec);
-      tiles.push(refs.tile);
-    }
-    orderChildren(grid, tiles);
+    this.tiles.sync(tileSpecs(sys));
   }
 
   // loadError swaps the telemetry placeholder for the failure cause and a
   // Retry button so the System view is not stuck loading when /system is
   // unreachable. A successful retry re-renders via the system event.
   public loadError(message: string): void {
-    if (!this.gridEl) return;
+    if (!this.gridEl || !this.tiles) return;
     // Retry must be usable.
     setLoading(this.gridEl, false);
     this.gridEl.textContent = "";
-    // The tiles were just detached, so drop their stale refs; otherwise a later
-    // render would reuse detached nodes and the diffed pass would not rebuild.
+    // The tiles were just detached, so clear only forgets them; otherwise a
+    // later render would reuse detached nodes and the list would not rebuild.
     this.tiles.clear();
     const p = h("p", { class: "cfg-empty" });
     this.gridEl.appendChild(p);

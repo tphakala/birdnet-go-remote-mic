@@ -56,12 +56,15 @@ reconcile:
 - Never clobber user input: a form being edited is not repopulated from a
   store event (each System card with a form keeps its own `dirty` flag and
   skips a config read while it is set).
-- Reconcile, never rebuild. Keep a keyed `Map` of stable per-item entries,
-  create each once, patch only changed fields (`setText`/`setHidden`/`setAttr`
-  write only on change), rebuild an element only when its shape changes, and
-  reorder with a diff so steady-state renders move no nodes. Replacing
-  `innerHTML` or re-creating a list per update is a bug: it drops keyboard
-  focus and screen reader position on every poll or SSE tick.
+- Reconcile, never rebuild. Keep a keyed list of stable per-item entries with
+  `KeyedList` (`lib/keyed-list.ts`; its keep/create/rebuild/drop decision is
+  `keyedPlan` in `lib/keyed-core.ts`), create each once, patch only changed
+  fields (`setText`/`setHidden`/`setAttr` write only on change), rebuild an
+  element only when its shape changes (the `stale` and `replace` hooks), hand
+  focus on when an entry goes (the `remove` hook runs while a shown entry's nodes are still
+  attached), and reorder with a diff so steady-state renders move no nodes.
+  Replacing `innerHTML` or re-creating a list per update is a bug: it drops
+  keyboard focus and screen reader position on every poll or SSE tick.
 - Guard async races. The store puts a `LatestGate` (`lib/latest-core.ts`) on
   each polled resource so an older response cannot overwrite a newer applied
   one; never drop a response merely because a newer request started, which
