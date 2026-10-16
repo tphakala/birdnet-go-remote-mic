@@ -91,3 +91,36 @@ func TestInstallDetectorLogsEachProblemOnce(t *testing.T) {
 	step("cleared", nil, 0)
 	step("failure returns", unreadable, 1)
 }
+
+// TestNewUpdateManagerReadsTheInstallationAgain pins that the manager
+// newUpdateManager builds re-reads the installation on a press of Update: a
+// service install run after startup shows in the status the press returns.
+// It keys on Method, which does not depend on who owns the test binary.
+func TestNewUpdateManagerReadsTheInstallationAgain(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin = filepath.Join(bin, "remote-mic")
+	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origExe, origPaths := runningExe, installedBinPaths
+	t.Cleanup(func() { runningExe, installedBinPaths = origExe, origPaths })
+	runningExe = func() (string, error) { return bin, nil }
+	installedBinPaths = func() (string, string, error) { return "", "", nil }
+
+	m := newUpdateManager(t.Context(), filepath.Join(dir, "update"), nil)
+	if m == nil {
+		t.Fatal("newUpdateManager returned nil")
+	}
+	if got := m.Status().Install.Method; got != update.MethodManual {
+		t.Fatalf("method %q at startup, want %q", got, update.MethodManual)
+	}
+	installedBinPaths = func() (string, string, error) { return bin, bin, nil }
+	st, _ := m.StartApply()
+	if st.Install.Method != update.MethodService {
+		t.Errorf("method %q after the install changed, want %q", st.Install.Method, update.MethodService)
+	}
+}

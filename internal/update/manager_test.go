@@ -1529,9 +1529,13 @@ func TestInstallRedetectedOnRequest(t *testing.T) {
 		}
 		wantStatus("after the refused press", false, 1)
 
+		// The reading is 30 s old at the second sleep, not before; literals,
+		// so a shorter or longer window than the 30 s the README promises fails.
 		probe.set(canApply)
-		time.Sleep(installRecheck)
-		wantStatus("after the window", true, 2)
+		time.Sleep(29 * time.Second)
+		wantStatus("29 s after the reading", false, 1)
+		time.Sleep(time.Second)
+		wantStatus("30 s after the reading", true, 2)
 		wantStatus("inside the new window", true, 2)
 		wantStatus("inside the new window again", true, 2)
 
@@ -1611,6 +1615,44 @@ func TestInstallWithoutDetectIsStatic(t *testing.T) {
 		time.Sleep(2 * installRecheck)
 		if got := m.Status().Install; got != want {
 			t.Errorf("Status().Install = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// TestDetectRunsWithoutTheStateLock pins that Detect, which reads the file
+// system, runs without m.mu held on both entry points, so a slow read cannot
+// stall the check path or Apply.
+func TestDetectRunsWithoutTheStateLock(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		in := Install{Method: MethodService, CanApply: true, ServiceBin: serviceBin}
+		var m *Manager
+		reads := 0
+		m = NewManager(t.Context(), &Config{
+			Running: vOld,
+			Install: in,
+			Detect: func() Install {
+				reads++
+				if !m.mu.TryLock() {
+					t.Error("Detect ran with m.mu held")
+					return in
+				}
+				m.mu.Unlock()
+				return in
+			},
+			Logf: (&logSink{}).logf,
+		})
+		time.Sleep(installRecheck)
+		m.Status()
+		if reads != 1 {
+			t.Fatalf("Status after the window read the installation %d times, want 1", reads)
+		}
+		m.Apply(on())
+		if _, err := m.StartApply(); !errors.Is(err, ErrNoUpdate) {
+			t.Fatalf("StartApply: got %v, want ErrNoUpdate", err)
+		}
+		if reads != 2 {
+			t.Errorf("StartApply read the installation %d times in all, want 2", reads)
 		}
 	})
 }
