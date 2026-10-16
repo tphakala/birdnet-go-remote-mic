@@ -134,8 +134,7 @@ WantedBy=multi-user.target
 // Beyond the filesystem and network limits it blocks what an updater never
 // does: kernel tunables, modules, logs and clock, cgroup writes, personality
 // and realtime changes, setuid files, namespaces, and every socket family but
-// AF_UNIX (systemctl reaches systemd over one). It sets no syscall filter and
-// no capability bound.
+// AF_UNIX (systemctl reaches systemd over one).
 //
 // Self-updated appliances keep the units their install wrote, so every later
 // release is started by this ExecStart line: its subcommand and flags are a

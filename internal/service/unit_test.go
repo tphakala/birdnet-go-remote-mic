@@ -130,9 +130,10 @@ func TestRenderUpdaterDefaults(t *testing.T) {
 	if strings.Contains(svc, "User=") {
 		t.Errorf("updater unit sets a user:\n%s", svc)
 	}
-	// A syscall filter or a capability bound was weighed and left out: the
+	// SystemCallFilter= and CapabilityBoundingSet= were weighed and left out: the
 	// updater swaps a root-owned binary, restarts a service and runs the new
-	// binary, and a filter that misses one call would fail every update.
+	// binary, and a list that misses one call or capability it needs would fail
+	// every update.
 	for _, key := range []string{"SystemCallFilter=", "CapabilityBoundingSet="} {
 		if strings.Contains(svc, key) {
 			t.Errorf("updater unit sets %s, which was decided against:\n%s", key, svc)
