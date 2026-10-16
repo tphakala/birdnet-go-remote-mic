@@ -2371,8 +2371,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   height: var(--control-h-sm);
 }
 
+/* No scroll anchoring: the rows are kept across updates, and Chrome would
+   otherwise anchor on one and jump the panel to the top when the active block
+   above it goes. */
 .notif-body {
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 6px;
 }
 
