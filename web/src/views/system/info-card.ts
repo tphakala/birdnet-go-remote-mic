@@ -1,4 +1,5 @@
-import { formatRelative, formatUptime, ICON_VERSION, infoRow, orderChildren, part, setLoading, setText, svgIcon } from "../../lib/ui.ts";
+import { formatRelative, formatUptime, ICON_VERSION, infoRow, part, setLoading, setText, svgIcon } from "../../lib/ui.ts";
+import { KeyedList } from "../../lib/keyed-list.ts";
 import { infoRows, withPlaceholders, type InfoLabel, type InfoRow } from "../../lib/system-core.ts";
 import type { ApplianceStatus, SystemInfo } from "../../lib/types.ts";
 
@@ -65,23 +66,32 @@ const INFO_ICONS: Record<InfoLabel, string> = {
   Uptime: ICON_CLOCK,
 };
 
+// InfoPair is the dt and dd of one System Information row.
+type InfoPair = { dt: HTMLElement; dd: HTMLElement };
+
 // InfoCard is the System Information card's label and value grid
 // (#sys-info-card): the Hardware, Network and Software groups. The update status and
 // actions in the same card belong to UpdatePanel.
 export class InfoCard {
   private readonly cardEl: HTMLElement | null;
-  private readonly hwEl: HTMLElement | null;
-  private readonly netEl: HTMLElement | null;
-  private readonly swEl: HTMLElement | null;
-  // Rows keyed by InfoRow.key. Built once, updated in place, added and removed
-  // only when the present set changes.
-  private readonly rows = new Map<string, { dt: HTMLElement; dd: HTMLElement }>();
+  // One list per group, rows keyed by InfoRow.key (every key belongs to one
+  // group). Built once, updated in place, added and removed only when the
+  // present set changes. Null unless all three group grids exist.
+  private readonly lists: Record<InfoRow["group"], KeyedList<InfoRow, InfoPair>> | null;
 
   constructor(root: HTMLElement | null) {
     this.cardEl = root;
-    this.hwEl = part(root, "sys-info-hw");
-    this.netEl = part(root, "sys-info-net");
-    this.swEl = part(root, "sys-info-sw");
+    const hw = part(root, "sys-info-hw");
+    const net = part(root, "sys-info-net");
+    const sw = part(root, "sys-info-sw");
+    const list = (parent: HTMLElement) =>
+      new KeyedList<InfoRow, InfoPair>(parent, {
+        key: (r) => r.key,
+        create: (r) => infoRow(r.label, r.value, { icon: INFO_ICONS[r.label], mono: true }),
+        nodes: (p) => [p.dt, p.dd],
+        update: (p, r) => setText(p.dd, r.value),
+      });
+    this.lists = hw && net && sw ? { hw: list(hw), net: list(net), sw: list(sw) } : null;
     // Until both reads are in, every row is laid out with an empty value, so
     // each read fills rows in place instead of growing the card. A failed read
     // leaves the card waiting, not collapsed: polling retries it.
@@ -91,36 +101,18 @@ export class InfoCard {
 
   // render fills the grid, diffed: rows are keyed by key, values updated in
   // place, and dt/dd pairs added, removed and ordered only on change rather
-  // than clearing the grid every poll.
+  // than clearing the grid every poll. Each group is ordered within its own
+  // grid, dt then dd per row.
   public render(sys: SystemInfo | null, st: ApplianceStatus | null): void {
-    const hw = this.hwEl;
-    const net = this.netEl;
-    const sw = this.swEl;
-    if (!hw || !net || !sw) return;
+    const lists = this.lists;
+    if (!lists) return;
     const loading = !sys || !st;
 
     const read = infoRows(sys, st, Date.now(), formatUptime, formatRelative);
     const rows = loading ? withPlaceholders(read) : read;
-    const want = new Set(rows.map((r) => r.key));
-    for (const [key, pair] of this.rows) {
-      if (!want.has(key)) { pair.dt.remove(); pair.dd.remove(); this.rows.delete(key); }
+    for (const group of ["hw", "net", "sw"] as const) {
+      lists[group].sync(rows.filter((r) => r.group === group));
     }
-
-    // Each group is ordered within its own grid, dt then dd per row.
-    const order: Record<InfoRow["group"], HTMLElement[]> = { hw: [], net: [], sw: [] };
-    for (const r of rows) {
-      let pair = this.rows.get(r.key);
-      if (!pair) {
-        pair = infoRow(r.label, r.value, { icon: INFO_ICONS[r.label], mono: true });
-        this.rows.set(r.key, pair);
-      } else {
-        setText(pair.dd, r.value);
-      }
-      order[r.group].push(pair.dt, pair.dd);
-    }
-    orderChildren(hw, order.hw);
-    orderChildren(net, order.net);
-    orderChildren(sw, order.sw);
     if (this.cardEl && !loading) setLoading(this.cardEl, false);
   }
 }
