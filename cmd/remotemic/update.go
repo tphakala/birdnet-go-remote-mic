@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -48,12 +49,14 @@ func newUpdateManager(ctx context.Context, dir string, center notify.Publisher) 
 	ua := "remote-mic/" + version
 	fetcher := &update.Fetcher{Client: http.DefaultClient, Base: update.DefaultBase, Trusted: trusted, UserAgent: ua}
 	stager := &update.Stager{Dir: dir, Client: http.DefaultClient, UserAgent: ua, Target: update.RunningTarget()}
+	d := &installDetector{dir: dir}
 	return update.NewManager(ctx, &update.Config{
 		Running:   version,
 		Fetch:     fetcher.Latest,
 		Stage:     stager.Stage,
 		Dir:       dir,
-		Install:   detectInstall(dir),
+		Install:   d.detect(),
+		Detect:    d.detect,
 		Publisher: center,
 	})
 }
@@ -65,27 +68,54 @@ var (
 	installedBinPaths = service.InstalledBinPaths
 )
 
+// installDetector reads the installation for the update manager, which asks
+// again on a status read and on every press of Update (update.Config.Detect),
+// so a service install run while the appliance is up is noticed without a
+// restart. It logs a problem once rather than on every read, and again after
+// the problem cleared and returned.
+type installDetector struct {
+	dir string
+
+	mu   sync.Mutex
+	last string // the problem logged by the last read, "" when it found none
+}
+
+// detect is update.Config.Detect.
+func (d *installDetector) detect() update.Install {
+	var msg string
+	inst := detectInstall(d.dir, func(format string, args ...any) { msg = fmt.Sprintf(format, args...) })
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if msg != d.last {
+		if msg != "" {
+			log.Print(msg)
+		}
+		d.last = msg
+	}
+	return inst
+}
+
 // detectInstall classifies this installation from the running binary's path,
 // the installed systemd units, and dpkg's file lists. The one-button update
 // also needs the staging directory the installer creates; without it the
 // root updater has nothing to watch. An installed unit that cannot be read
-// means this install cannot update itself; the reason is logged, and the hints
+// means this install cannot update itself; the reason goes to logf, and the hints
 // that send the operator to `service install` name this binary's path when
 // only root can change it (update.CheckRootOnlyFile). A binary
 // that would otherwise be called run by hand gets the neutral by-hand hint
 // (see unreadableUnitHint).
-func detectInstall(dir string) update.Install {
+func detectInstall(dir string, logf func(format string, args ...any)) update.Install {
 	exe, err := runningExe()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
 	if err != nil {
-		log.Printf("update: locate the running binary: %v", err)
+		logf("update: locate the running binary: %v", err)
 		return update.Install{Method: update.MethodManual, Hint: "Download the release for this system from the release page and replace this binary"}
 	}
 	app, upd, err := installedBinPaths()
 	if err != nil {
-		log.Printf("update: cannot read the installed units, so this install cannot update itself: %v", err)
+		logf("update: cannot read the installed units, so this install cannot update itself: %v", err)
 	}
 	inst := update.DetectInstall(update.InstallEnv{Exe: exe, ServiceBinPath: app, UpdaterBinPath: upd, DpkgOwns: service.PackageOwns, RootOnly: update.CheckRootOnlyFile})
 	inst = unreadableUnitHint(inst, exe, app, err)

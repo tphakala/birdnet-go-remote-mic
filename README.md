@@ -230,9 +230,9 @@ the zero-config first start writes the file for you.
 It also installs the root updater behind [one-button updates](#updates):
 `remote-mic-update.path` watches `/var/lib/remote-mic/update/` and starts
 `remote-mic-update.service` when the appliance stages a release there.
-Re-running `service install` on an existing install adds them; restart the
-service afterwards (`sudo systemctl restart remote-mic`) so the running
-appliance offers the one-button update. Since the appliance updates the
+Re-running `service install` on an existing install adds them, and the running
+appliance offers the one-button update within about half a minute, without a
+restart. Since the appliance updates the
 installed copy, an unpacked tarball or package binary is often older than it:
 `service install` refuses to replace a newer installed binary with an older
 one and names the installed version. Run `service install` from the installed
@@ -430,6 +430,11 @@ replace the binary, so running install during an update waits for it to finish
 (up to five minutes) instead of overwriting it. An updater from a release
 before that lock does not take it.
 
+A self-update replaces only the binary; the systemd units stay as `service
+install` wrote them. Re-running `sudo /usr/local/bin/remote-mic service install`
+writes them again, which is how an existing install picks up unit changes from a
+newer release; the running appliance keeps its old settings until it restarts.
+
 An install set up with `sudo remote-mic service install` updates with the
 button, whatever it was installed from (tarball or Homebrew). A binary
 run by hand, or a package manager's own copy, is never replaced: it shows the
@@ -440,7 +445,9 @@ button. After `service install` from Homebrew, the service runs its own copy
 package's copy does not. Passing `--bin-path` from the `.deb` binary makes a
 copy the same way, with a warning, and gives up apt updates for that copy. An install that warned it was installed without
 automatic updates has no button until that is fixed and `service install` is
-run again. The button is also off, and the hint says what to fix, while anyone
+run again. When a re-run of `service install` leaves the updater out, the
+running appliance stops offering the button within about half a minute, and an
+Update pressed before then is refused at once. The button is also off, and the hint says what to fix, while anyone
 but root could change the service's binary or a directory above it; the hint
 then names no command that runs that binary as root, only the permissions to fix and to
 re-run the install from the release binary. If the appliance restarts before

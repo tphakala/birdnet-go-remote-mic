@@ -44,6 +44,9 @@ const (
 	// updaterStartTimeout is how long a request may wait for the root updater
 	// to pick it up before the attempt is abandoned.
 	updaterStartTimeout = time.Minute
+	// installRecheck is how long Status reuses a reading of the installation
+	// (Config.Detect); StartApply never reuses one.
+	installRecheck = 30 * time.Second
 )
 
 // AvailableKey is the notification condition raised while a newer release
@@ -125,8 +128,13 @@ type Config struct {
 	Stage func(ctx context.Context, rel *Release) error
 	// Dir is the staging directory, where the updater's result appears.
 	Dir string
-	// Install is the detected installation.
+	// Install is the installation detected at startup (see Detect).
 	Install Install
+	// Detect, when set, reads the installation again. The Manager calls it
+	// on request, never on a timer: Status reuses a reading for
+	// installRecheck, and StartApply reads afresh. Install is then the first
+	// reading. It must be safe to call from any goroutine.
+	Detect func() Install
 	// Publisher receives the available condition and update events.
 	Publisher notify.Publisher
 	// Logf logs; log.Printf when nil.
@@ -152,6 +160,13 @@ type Manager struct {
 	ctx    context.Context //nolint:containedctx // the appliance's lifetime, for apply goroutines
 
 	checkMu sync.Mutex // serializes checks
+
+	// instMu guards inst and instAt, the last reading of the installation
+	// and when it was taken (a monotonic reading). It is taken before mu,
+	// never while holding it, because Detect does file system reads.
+	instMu sync.Mutex
+	inst   Install
+	instAt time.Time
 
 	mu        sync.Mutex
 	latest    *Release
@@ -188,7 +203,37 @@ func NewManager(ctx context.Context, c *Config) *Manager {
 	if cfg.Jitter == nil {
 		cfg.Jitter = func(n time.Duration) time.Duration { return time.Duration(rand.Int64N(int64(n))) }
 	}
-	return &Manager{cfg: cfg, supported: supported, wake: make(chan struct{}, 1), ctx: ctx, phase: PhaseIdle}
+	m := &Manager{cfg: cfg, supported: supported, wake: make(chan struct{}, 1), ctx: ctx, phase: PhaseIdle, inst: cfg.Install}
+	if cfg.Detect != nil {
+		m.instAt = time.Now() // the startup reading counts as fresh
+	}
+	return m
+}
+
+// install returns the installation. Without Config.Detect that is the
+// configured Install. Otherwise it is the last reading, unless fresh is set
+// or the reading is older than installRecheck, in which case Detect runs
+// again. A change in CanApply is logged once, so a status poll that keeps
+// seeing the same problem logs nothing.
+func (m *Manager) install(fresh bool) Install {
+	if m.cfg.Detect == nil {
+		return m.cfg.Install
+	}
+	m.instMu.Lock()
+	defer m.instMu.Unlock()
+	if !fresh && time.Since(m.instAt) < installRecheck {
+		return m.inst
+	}
+	next := m.cfg.Detect()
+	if next.CanApply != m.inst.CanApply {
+		if next.CanApply {
+			m.cfg.Logf("update: one-button update is now available")
+		} else {
+			m.cfg.Logf("update: one-button update no longer available: %s", next.Hint)
+		}
+	}
+	m.inst, m.instAt = next, time.Now()
+	return next
 }
 
 // Apply turns the periodic check on or off from the config. Turning it off
@@ -472,13 +517,19 @@ func failureCause(err error) string {
 
 // Status returns the current state.
 func (m *Manager) Status() Status {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.statusLocked()
+	return m.statusWith(m.install(false))
 }
 
-// statusLocked is Status with m.mu held.
-func (m *Manager) statusLocked() Status {
+// statusWith is Status for the installation inst, which the caller read
+// before taking m.mu.
+func (m *Manager) statusWith(inst Install) Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.statusLocked(inst)
+}
+
+// statusLocked is statusWith with m.mu held.
+func (m *Manager) statusLocked(inst Install) Status {
 	s := Status{
 		Current:      m.cfg.Running,
 		Supported:    m.supported,
@@ -487,7 +538,7 @@ func (m *Manager) statusLocked() Status {
 		LastCheck:    m.lastCheck,
 		LastError:    m.lastErr,
 		LastNotice:   m.lastNotice,
-		Install:      m.cfg.Install,
+		Install:      inst,
 		Phase:        m.phase,
 		PhaseMessage: m.phaseMsg,
 	}
@@ -510,33 +561,36 @@ func (m *Manager) statusLocked() Status {
 // while an attempt is in flight, here or on disk, or while the install journal
 // beside the service binary exists: the root updater keeps it from the swap
 // until the new version is confirmed healthy, or recovers from it after a cut
-// off install, and a new request would race either.
+// off install, and a new request would race either. It reads the installation
+// afresh (Config.Detect) and refuses unless that reading passes, so an updater
+// taken away since the last status is never sent a request.
 func (m *Manager) StartApply() (Status, error) {
-	if !m.cfg.Install.CanApply {
-		return m.Status(), ErrCannotApply
+	inst := m.install(true)
+	if !inst.CanApply {
+		return m.statusWith(inst), ErrCannotApply
 	}
 	if !m.enabled.Load() {
-		return m.Status(), ErrChecksDisabled
+		return m.statusWith(inst), ErrChecksDisabled
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// This process's own attempt comes first: once staging has written the
 	// request, the check below would report it as an earlier one.
 	if m.phase == PhaseDownloading || m.phase == PhaseInstalling {
-		return m.statusLocked(), ErrBusy
+		return m.statusLocked(inst), ErrBusy
 	}
 	// An attempt on disk counts too: one started before this process (which
 	// may be the new version the updater is still watching) has not ended.
 	if inFlight(m.cfg.Dir) {
-		return m.statusLocked(), errEarlierAttempt
+		return m.statusLocked(inst), errEarlierAttempt
 	}
-	if bin := m.cfg.Install.ServiceBin; bin != "" {
+	if bin := inst.ServiceBin; bin != "" {
 		if _, err := os.Lstat(bin + JournalSuffix); err == nil {
-			return m.statusLocked(), fmt.Errorf("%w: the root updater still has an update in progress (%s is present until the new version is confirmed healthy, or a cut off install is recovered); try again shortly, and if it is still there after about five minutes, %s, which discards that update", ErrBusy, bin+JournalSuffix, m.cfg.Install.RerunInstall())
+			return m.statusLocked(inst), fmt.Errorf("%w: the root updater still has an update in progress (%s is present until the new version is confirmed healthy, or a cut off install is recovered); try again shortly, and if it is still there after about five minutes, %s, which discards that update", ErrBusy, bin+JournalSuffix, inst.RerunInstall())
 		}
 	}
 	if !m.available || m.latest == nil {
-		return m.statusLocked(), ErrNoUpdate
+		return m.statusLocked(inst), ErrNoUpdate
 	}
 	rel := m.latest
 	m.phase, m.phaseMsg = PhaseDownloading, "Downloading "+rel.Manifest.Version
@@ -545,17 +599,18 @@ func (m *Manager) StartApply() (Status, error) {
 	// finds this cancel.
 	ctx, stop := context.WithCancelCause(m.ctx)
 	m.cancelApply = stop
-	go m.apply(ctx, stop, rel)
+	go m.apply(ctx, stop, rel, inst)
 	// Read before m.mu is released, so it is the phase set here and not one
 	// the apply goroutine has already moved on to.
-	return m.statusLocked(), nil
+	return m.statusLocked(inst), nil
 }
 
 // apply stages rel on ctx, which turning checks off or the appliance shutting
 // down cancels (the attempt then goes back to idle), and watches for the updater to take it. stop
-// releases ctx once staging ends. A panic here would end the appliance, so
-// it is recovered and reported as a failure.
-func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *Release) {
+// releases ctx once staging ends. inst is the installation StartApply read,
+// which the advice on a failed attempt keeps. A panic here would end the
+// appliance, so it is recovered and reported as a failure.
+func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *Release, inst Install) {
 	v := rel.Manifest.Version
 	defer func() {
 		if r := recover(); r != nil {
@@ -596,7 +651,7 @@ func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *
 		Title:    "Installing " + v,
 		Message:  "The update to " + v + " is being installed; the appliance restarts when it is done, which drops connected streams briefly",
 	})
-	m.awaitUpdater(v)
+	m.awaitUpdater(v, inst)
 }
 
 // awaitUpdater polls for the root updater's result. The updater restarts this
@@ -606,7 +661,7 @@ func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *
 // one by renaming it, so a failed remove means the updater has it and is
 // working, however slowly. A withdrawn request fails the attempt with the
 // advice to re-run install (Install.RerunInstall).
-func (m *Manager) awaitUpdater(v string) {
+func (m *Manager) awaitUpdater(v string, inst Install) {
 	start := time.Now()
 	t := time.NewTicker(resultPoll)
 	defer t.Stop()
@@ -632,7 +687,7 @@ func (m *Manager) awaitUpdater(v string) {
 		case !withdrawTried && time.Since(start) > updaterStartTimeout:
 			withdrawTried = true
 			if os.Remove(filepath.Join(m.cfg.Dir, RequestFile)) == nil {
-				m.fail(v, errors.New("the root updater did not start; "+m.cfg.Install.RerunInstall()))
+				m.fail(v, errors.New("the root updater did not start; "+inst.RerunInstall()))
 				return
 			}
 		case time.Since(start) > updaterStartTimeout+DefaultHealthTimeout+time.Minute:
