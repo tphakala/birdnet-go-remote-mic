@@ -110,6 +110,16 @@ func TestRenderUpdaterDefaults(t *testing.T) {
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
 		"PrivateNetwork=true",
+		"ProtectKernelTunables=true",
+		"ProtectKernelModules=true",
+		"ProtectKernelLogs=true",
+		"ProtectControlGroups=true",
+		"ProtectClock=true",
+		"LockPersonality=true",
+		"RestrictRealtime=true",
+		"RestrictSUIDSGID=true",
+		"RestrictNamespaces=true",
+		"RestrictAddressFamilies=AF_UNIX",
 		"ReadWritePaths=/usr/local/bin /var/lib/remote-mic",
 		"StartLimitBurst=10",
 		"StartLimitIntervalSec=10min",
@@ -119,6 +129,14 @@ func TestRenderUpdaterDefaults(t *testing.T) {
 	// line would silently make every update fail.
 	if strings.Contains(svc, "User=") {
 		t.Errorf("updater unit sets a user:\n%s", svc)
+	}
+	// A syscall filter or a capability bound was weighed and left out: the
+	// updater swaps a root-owned binary, restarts a service and runs the new
+	// binary, and a filter that misses one call would fail every update.
+	for _, key := range []string{"SystemCallFilter=", "CapabilityBoundingSet="} {
+		if strings.Contains(svc, key) {
+			t.Errorf("updater unit sets %s, which was decided against:\n%s", key, svc)
+		}
 	}
 }
 

@@ -131,9 +131,17 @@ WantedBy=multi-user.target
 // tight loop, yet leaves room for an operator's retries; service install
 // resets it, so re-running install revives a path unit that hit it.
 //
+// Beyond the filesystem and network limits it blocks what an updater never
+// does: kernel tunables, modules, logs and clock, cgroup writes, personality
+// and realtime changes, setuid files, namespaces, and every socket family but
+// AF_UNIX (systemctl reaches systemd over one). It sets no syscall filter and
+// no capability bound.
+//
 // Self-updated appliances keep the units their install wrote, so every later
 // release is started by this ExecStart line: its subcommand and flags are a
-// contract between versions (see AGENTS.md, Releases).
+// contract between versions (see AGENTS.md, Releases). The same holds for the
+// settings above: every later release's apply-update and version invocations
+// run under them, and only service install renders them again.
 const updateServiceTemplate = `[Unit]
 Description=Install a staged remote-mic update
 Documentation=https://github.com/tphakala/birdnet-go-remote-mic
@@ -149,6 +157,16 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 PrivateNetwork=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX
 ReadWritePaths={{.BinDir}} {{.StateDir}}
 `
 
