@@ -145,16 +145,59 @@ test("a retained entry leaves the DOM and comes back without create", () => {
 test("a held entry is dropped once it is no longer retained", () => {
   let keep = true;
   const removed: string[] = [];
-  const { list, counts } = harness({ retain: () => keep, remove: (_e, k) => removed.push(k) });
+  const connected: boolean[] = [];
+  const { list, counts } = harness({
+    retain: () => keep,
+    remove: (e, k) => {
+      removed.push(k);
+      connected.push(e.el.parent !== null);
+    },
+  });
   list.sync(items("a", "b"));
   list.sync(items("a"));
   assert.deepEqual(removed, [], "holding is not removing");
   keep = false;
   list.sync(items("a"));
   assert.deepEqual(removed, ["b"]);
+  assert.deepEqual(connected, [false], "a held entry's node is already out of the parent");
   const creates = counts.creates;
   list.sync(items("a", "b"));
   assert.equal(counts.creates, creates + 1, "a dropped entry is created again");
+});
+
+test("update receives the created entry, then the rebuilt entry after a rebuild", () => {
+  const updated: Entry[] = [];
+  const { list } = harness({
+    stale: (e, i) => e.v !== (i.v ?? ""),
+    update: (e) => {
+      updated.push(e);
+    },
+  });
+  list.sync([{ id: "a", v: "1" }]);
+  const created = list.get("a");
+  list.sync([{ id: "a", v: "2" }]);
+  const rebuilt = list.get("a");
+  assert.notEqual(created, rebuilt);
+  assert.equal(updated.length, 2);
+  assert.equal(updated[0], created);
+  assert.equal(updated[1], rebuilt);
+});
+
+test("a held entry that went stale while hidden is rebuilt, and replace gets its detached old entry", () => {
+  const log: string[] = [];
+  const { list, parent, counts } = harness({
+    retain: (_e, k) => k === "b",
+    stale: (e, i) => e.v !== (i.v ?? ""),
+    replace: (o, n) => log.push(`${o.v}->${n.v} connected=${o.el.parent !== null}`),
+  });
+  list.sync([{ id: "a", v: "1" }, { id: "b", v: "1" }]);
+  list.sync([{ id: "a", v: "1" }]);
+  const creates = counts.creates;
+  list.sync([{ id: "a", v: "1" }, { id: "b", v: "2" }]);
+  assert.equal(counts.creates, creates + 1, "the stale held entry is created again");
+  assert.deepEqual(log, ["1->2 connected=false"]);
+  assert.equal(list.get("b")?.v, "2");
+  assert.deepEqual(names(parent), ["a", "b"]);
 });
 
 test("nodes is read on every sync", () => {
@@ -190,11 +233,19 @@ test("entries with two nodes keep them adjacent and in order", () => {
 
 test("clear removes every node and calls remove, for shown and held entries", () => {
   const removed: string[] = [];
-  const { list, parent } = harness({ retain: (_e, k) => k === "c", remove: (_e, k) => removed.push(k) });
+  const connected = new Map<string, boolean>();
+  const { list, parent } = harness({
+    retain: (_e, k) => k === "c",
+    remove: (e, k) => {
+      removed.push(k);
+      connected.set(k, e.el.parent !== null);
+    },
+  });
   list.sync(items("a", "b", "c"));
   list.sync(items("a", "b"));
   list.clear();
   assert.deepEqual(removed.sort(), ["a", "b", "c"]);
+  assert.deepEqual([...connected].sort(), [["a", true], ["b", true], ["c", false]], "shown nodes are attached, the held one is not");
   assert.deepEqual(names(parent), []);
   assert.equal(list.size, 0);
   list.sync(items("c"));

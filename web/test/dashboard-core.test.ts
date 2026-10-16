@@ -273,7 +273,7 @@ test("availableChange keeps a card whose shape and key are unchanged", () => {
 });
 
 test("availableChange builds a card with other rows, even when its text changed too", () => {
-  assert.equal(availableChange({ shape: "s", key: "ka" }, { shape: "t", key: "ka2" }), "build", "a rebuilt card is not also patched");
+  assert.equal(availableChange({ shape: "s", key: "ka" }, { shape: "t", key: "ka2" }), "build", "other rows win over a changed key");
   assert.equal(availableChange({ shape: "s", key: "ka" }, { shape: "t", key: "ka" }), "build");
 });
 
