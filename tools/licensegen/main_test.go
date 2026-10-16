@@ -101,7 +101,6 @@ func TestStdLicenseFiles(t *testing.T) {
 		goLicense = "Copyright 2009 The Go Authors.\n\nRedistribution and use in source and binary forms, with or without\nNeither the name of Google LLC nor the names of its contributors"
 		bsdOther  = "Copyright 2009 Someone Else.\n\nRedistribution and use in source and binary forms, with or without\nNeither the name of Someone nor the names of its contributors"
 		mitGo     = "Copyright The Go Authors.\n\nPermission is hereby granted, free of charge, to any person"
-		mitOther  = "Permission is hereby granted, free of charge, to any person"
 		patents   = "Additional IP Rights Grant (Patents)"
 	)
 	for _, tc := range []struct {
@@ -111,7 +110,7 @@ func TestStdLicenseFiles(t *testing.T) {
 		wantText      string // text of the LICENSE entry, when one is wanted
 		wantNoLicense bool   // checkRecognized must fail with ErrNoLicense
 	}{
-		{"goroot has LICENSE", goLicense, mitOther, []string{projectLicense, patentsName}, goLicense, false},
+		{"goroot has LICENSE", goLicense, goLicense + "\nabove GOROOT", []string{projectLicense, patentsName}, goLicense, false},
 		{"license one level up", "", goLicense, []string{projectLicense, patentsName}, goLicense, false},
 		{"parent BSD-3 but not Go", "", bsdOther, []string{patentsName}, "", true},
 		{"parent mentions Go Authors but is MIT", "", mitGo, []string{patentsName}, "", true},
