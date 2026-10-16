@@ -218,8 +218,10 @@ func collect() ([]component, error) {
 		return nil, err
 	}
 	// The Go distribution's LICENSE and PATENTS grant sit at the top of GOROOT,
-	// the same layout licenseFiles reads for a module.
-	std, err := licenseFiles(goroot)
+	// the same layout licenseFiles reads for a module. Homebrew keeps the
+	// LICENSE one level above GOROOT, in the keg root, so stdLicenseFiles looks
+	// there too, but only for text that is the Go license.
+	std, err := stdLicenseFiles(goroot)
 	if err != nil {
 		return nil, fmt.Errorf("go standard library: %w", err)
 	}
@@ -253,8 +255,10 @@ type module struct {
 // keyed by module path.
 func listModules(t target) (map[string]module, error) {
 	// skipfrontend selects the web embed stub, so listing needs no built web/dist;
-	// it does not change which modules are linked.
-	cmd := exec.Command("go", "list", "-deps", "-json=Module", "-tags", "skipfrontend", mainPackage)
+	// it does not change which modules are linked. -mod=readonly: a vendor/
+	// directory would otherwise make go list report modules without a Dir, and
+	// unlike -mod=mod it never rewrites go.mod.
+	cmd := exec.Command("go", "list", "-mod=readonly", "-deps", "-json=Module", "-tags", "skipfrontend", mainPackage)
 	// GOWORK=off: under a go.work every workspace module reports Main and would
 	// be left out, though the released binary links it from the module cache.
 	cmd.Env = append(os.Environ(), "GOOS=linux", "CGO_ENABLED=0", "GOARCH="+t.goarch, "GOARM="+t.goarm, "GOWORK=off")
@@ -307,6 +311,35 @@ func licenseFiles(dir string) ([]licenseFile, error) {
 	return files, nil
 }
 
+// stdLicenseFiles returns the license files of the Go distribution at goroot.
+// Homebrew's GOROOT holds PATENTS but not LICENSE, which sits in the directory
+// above it. When goroot yields only notice files, a LICENSE there is added if
+// it is the Go license, so the output does not depend on how the toolchain was
+// installed. Anything else leaves the notice-only result for checkRecognized
+// to reject.
+func stdLicenseFiles(goroot string) ([]licenseFile, error) {
+	files, err := licenseFiles(goroot)
+	if err != nil {
+		return nil, err
+	}
+	if slices.ContainsFunc(files, func(f licenseFile) bool { return !isNoticeName(f.name) }) {
+		return files, nil
+	}
+	up, err := readLicense(filepath.Join(filepath.Dir(goroot), "LICENSE"))
+	if err != nil || !isGoLicense(up.text) {
+		return files, nil //nolint:nilerr // an unreadable or foreign parent LICENSE leaves the notice-only result, which checkRecognized rejects with ErrNoLicense
+	}
+	files = append(files, up)
+	slices.SortFunc(files, func(a, b licenseFile) int { return cmp.Compare(a.name, b.name) })
+	return files, nil
+}
+
+// isGoLicense reports whether text is the Go distribution's license: BSD-3-Clause
+// wording that names The Go Authors.
+func isGoLicense(text string) bool {
+	return classify(text) == "BSD-3-Clause" && strings.Contains(text, "The Go Authors")
+}
+
 // isLicenseName reports whether a file name is a license, notice or patent
 // grant file (LICENSE, LICENSE.md, LICENCE, COPYING, NOTICE, PATENTS and the
 // like). Go source files such as license.go are code, not license text.
@@ -325,7 +358,7 @@ func isLicenseName(name string) bool {
 
 // readLicense reads a license file with CRLF line endings normalized.
 func readLicense(path string) (licenseFile, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // paths come from the module cache, GOROOT, the fixed asset table, or the repository LICENSE and NOTICE
+	b, err := os.ReadFile(path) //nolint:gosec // paths come from the module cache, GOROOT, the fixed asset table, the directory above GOROOT, or the repository LICENSE and NOTICE
 	if err != nil {
 		return licenseFile{}, err
 	}
