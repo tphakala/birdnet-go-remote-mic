@@ -26,6 +26,8 @@ const (
 	errHides     = "may see differently"
 	lineA        = "A=1"
 	bYAML        = "/b.yaml"
+	optBin       = "/opt/bin/remote-mic"
+	rmState      = "/srv/rm-state"
 )
 
 // unitTree points unitRoot at a fresh temporary tree holding files, keyed by
@@ -147,6 +149,97 @@ func TestInstalledBinPaths(t *testing.T) {
 			}
 			if (tc.wantErr == "") != (err == nil) || err != nil && !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// updaterExecStart renders the root updater unit for s and returns the value
+// of its ExecStart= line.
+func updaterExecStart(t *testing.T, s ServiceSpec) string {
+	t.Helper()
+	_, unit, err := RenderUpdater(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(unit)) {
+		if key, val, ok := entry(strings.TrimSpace(line)); ok && key == keyExecStart {
+			return val
+		}
+	}
+	t.Fatal("rendered updater unit has no ExecStart=")
+	return ""
+}
+
+func TestUpdaterStateDir(t *testing.T) {
+	t.Parallel()
+	custom := ServiceSpec{StateDir: rmState, BinPath: optBin}
+	// The released line for custom, copied here so a change to the contract
+	// line in the template fails this test rather than passing silently.
+	const releasedLine = "/opt/bin/remote-mic service apply-update --bin-path=/opt/bin/remote-mic --state-dir=/srv/rm-state"
+	if got := updaterExecStart(t, custom); got != releasedLine {
+		t.Fatalf("rendered ExecStart %q, want the released line %q", got, releasedLine)
+	}
+	for _, tc := range []struct {
+		name, execStart, want string
+	}{
+		{"rendered default", updaterExecStart(t, ServiceSpec{}), DefaultStateDir},
+		{"rendered custom", updaterExecStart(t, custom), rmState},
+		{"released line", releasedLine, "/srv/rm-state"},
+		{"tab separated", "/b\tservice\tapply-update\t--state-dir=/srv/rm", "/srv/rm"},
+		{"trailing slash cleaned", "/b service apply-update --state-dir=/srv/rm/", "/srv/rm"},
+		{"no token", "/b service apply-update --bin-path=/b", ""},
+		{"separate value", "/b service apply-update --state-dir /x", ""},
+		{"single dash separate value", "/b service apply-update -state-dir /x", ""},
+		{"single dash with value", "/b service apply-update -state-dir=/x", ""},
+		{"bare flag", "/b service apply-update --state-dir", ""},
+		{"two tokens", "/b service apply-update --state-dir=/x --state-dir=/y", ""},
+		{"empty value", "/b service apply-update --state-dir=", ""},
+		{"relative value", "/b service apply-update --state-dir=var/lib", ""},
+		{"quoted value", `/b service apply-update --state-dir="/a b"`, ""},
+		{"specifier", "/b service apply-update --state-dir=%S/rm", ""},
+		{"variable", "/b service apply-update --state-dir=$STATE", ""},
+		{"inside another token", "/b service apply-update --bin-path=/x--state-dir=/y", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := updaterStateDir(tc.execStart); got != tc.want {
+				t.Errorf("updaterStateDir(%q) = %q, want %q", tc.execStart, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstalledUpdaterStateDir(t *testing.T) {
+	upd := filepath.Join(unitDir, UpdateServiceUnit)
+	custom := ServiceSpec{StateDir: rmState, BinPath: optBin}
+	_, def, err := RenderUpdater(ServiceSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cust, err := RenderUpdater(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{name: "no updater unit"},
+		{name: "default spec", files: map[string]string{upd: string(def)}, want: DefaultStateDir},
+		{name: "custom spec", files: map[string]string{upd: string(cust)}, want: rmState},
+		{name: "drop-in replaces ExecStart", files: map[string]string{
+			upd: string(cust),
+			"/run/systemd/system/remote-mic-update.service.d/override.conf": "[Service]\nExecStart=\nExecStart=/opt/rm service apply-update --state-dir=/elsewhere\n",
+		}},
+		{name: "masked updater unit", files: map[string]string{upd: devNullLink}},
+		{name: "no ExecStart", files: map[string]string{upd: "[Service]\nType=oneshot\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unitTree(t, tc.files)
+			if got := InstalledUpdaterStateDir(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

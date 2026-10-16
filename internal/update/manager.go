@@ -660,7 +660,7 @@ func (m *Manager) apply(ctx context.Context, stop context.CancelCauseFunc, rel *
 // after updaterStartTimeout is withdrawn by removing it: the updater claims
 // one by renaming it, so a failed remove means the updater has it and is
 // working, however slowly. A withdrawn request fails the attempt with the
-// advice to re-run install (Install.RerunInstall).
+// advice to re-run install (Install.RerunInstall) and to restart the service.
 func (m *Manager) awaitUpdater(v string, inst Install) {
 	start := time.Now()
 	t := time.NewTicker(resultPoll)
@@ -687,7 +687,7 @@ func (m *Manager) awaitUpdater(v string, inst Install) {
 		case !withdrawTried && time.Since(start) > updaterStartTimeout:
 			withdrawTried = true
 			if os.Remove(filepath.Join(m.cfg.Dir, RequestFile)) == nil {
-				m.fail(v, errors.New("the root updater did not start; "+inst.RerunInstall()))
+				m.fail(v, errors.New("the root updater did not start; "+inst.RerunInstall()+", and "+RestartService))
 				return
 			}
 		case time.Since(start) > updaterStartTimeout+DefaultHealthTimeout+time.Minute:
