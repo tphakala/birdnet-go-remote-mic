@@ -509,6 +509,32 @@ func TestStartApplyUpdaterMissing(t *testing.T) {
 	})
 }
 
+// TestStartApplyUpdaterMissingAdvisesARestart pins that the failure after a
+// request nobody claimed advises a restart as well as re-running install: a
+// state directory moved by an install the appliance has not restarted for
+// ends here too, and re-running install does not help that.
+func TestStartApplyUpdaterMissingAdvisesARestart(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		m, _, _ := applyManagerFor(t, nil, spacedBin)
+		if _, err := m.StartApply(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(updaterStartTimeout + 3*resultPoll)
+		synctest.Wait()
+		st := m.Status()
+		inst := Install{ServiceBin: spacedBin}
+		if st.Phase != PhaseFailed {
+			t.Fatalf("status %+v, want phase %q", st, PhaseFailed)
+		}
+		for _, want := range []string{inst.RerunInstall(), RestartService} {
+			if !strings.Contains(st.PhaseMessage, want) {
+				t.Errorf("message %q does not contain %q", st.PhaseMessage, want)
+			}
+		}
+	})
+}
+
 // spacedBin is a service binary path that needs shell quoting.
 const spacedBin = "/opt/Remote Mic/remote-mic"
 
