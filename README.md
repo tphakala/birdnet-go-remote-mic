@@ -232,7 +232,9 @@ It also installs the root updater behind [one-button updates](#updates):
 `remote-mic-update.service` when the appliance stages a release there.
 Re-running `service install` on an existing install adds them, and the running
 appliance offers the one-button update within about half a minute, without a
-restart. Since the appliance updates the
+restart. A re-run that changes `--state-dir` is the exception: the running
+appliance keeps staging into its old state directory, so the button stays off,
+with a hint to restart the service, until it restarts. Since the appliance updates the
 installed copy, an unpacked tarball or package binary is often older than it:
 `service install` refuses to replace a newer installed binary with an older
 one and names the installed version. Run `service install` from the installed
@@ -433,7 +435,8 @@ before that lock does not take it.
 A self-update replaces only the binary; the systemd units stay as `service
 install` wrote them. Re-running `sudo /usr/local/bin/remote-mic service install`
 writes them again, which is how an existing install picks up unit changes from a
-newer release; the running appliance keeps its old settings until it restarts.
+newer release; the running appliance keeps its old settings until it restarts (after a
+changed state directory, with the update button off meanwhile).
 
 An install set up with `sudo remote-mic service install` updates with the
 button, whatever it was installed from (tarball or Homebrew). A binary
@@ -447,7 +450,9 @@ copy the same way, with a warning, and gives up apt updates for that copy. An in
 automatic updates has no button until that is fixed and `service install` is
 run again. When a re-run of `service install` leaves the updater out, the
 running appliance stops offering the button within about half a minute, and an
-Update pressed before then is refused at once. The button is also off, and the hint says what to fix, while anyone
+Update pressed before then is refused at once. A re-run that moves the state
+directory does the same until the appliance restarts, with a hint to restart
+it. The button is also off, and the hint says what to fix, while anyone
 but root could change the service's binary or a directory above it; the hint
 then names no command that runs that binary as root, only the permissions to fix and to
 re-run the install from the release binary. If the appliance restarts before
