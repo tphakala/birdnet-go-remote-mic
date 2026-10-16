@@ -20,7 +20,9 @@ import {
   logLayout,
   oldestCaption,
   resultCountLabel,
+  rowRetained,
   rowSignature,
+  rowStale,
 } from "../src/lib/events-core.ts";
 import type { Notification } from "../src/lib/types.ts";
 import { at, notif } from "./fixtures.ts";
@@ -154,6 +156,22 @@ test("exportJSON gives a null anchored time for an entry past the Date range", (
   const far = notif({ id: 1, uptimeMs: 9e15 });
   const out = JSON.parse(exportJSON([far], "boot-a", "2026-09-22T12:01:00Z", anchor)) as ExportedLog;
   assert.equal(at(out.events, 0).anchoredTime, null);
+});
+
+test("rowStale rebuilds on a new signature or another boot, and only then", () => {
+  const sig1 = rowSignature(notif({ id: 1, title: "A" }), false, undefined);
+  const sig2 = rowSignature(notif({ id: 1, title: "B" }), false, undefined);
+  assert.equal(rowStale(sig1, "b1", sig1, "b1"), false);
+  assert.equal(rowStale(sig1, "b1", sig2, "b1"), true);
+  assert.equal(rowStale(sig1, "b1", sig1, "b2"), true);
+  assert.equal(rowStale(sig1, null, sig1, "b1"), true);
+});
+
+test("rowRetained holds a filtered-out row of this boot and drops a trimmed or other-boot row", () => {
+  assert.equal(rowRetained("b1", "b1", true), true, "filtered out, still in the store");
+  assert.equal(rowRetained("b1", "b1", false), false, "trimmed by the server");
+  assert.equal(rowRetained("b2", "b1", true), false, "another boot's row is never revived");
+  assert.equal(rowRetained(null, null, true), true);
 });
 
 // withTZ runs fn with the process time zone set to tz, restoring it after.
