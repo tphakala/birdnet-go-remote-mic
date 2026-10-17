@@ -152,7 +152,7 @@
     },
     {
       "name": "golang.org/x/sys",
-      "version": "v0.48.0",
+      "version": "v0.49.0",
       "license": "BSD-3-Clause",
       "files": [
         {
@@ -167,7 +167,7 @@
     },
     {
       "name": "golang.org/x/term",
-      "version": "v0.46.0",
+      "version": "v0.47.0",
       "license": "BSD-3-Clause",
       "files": [
         {
