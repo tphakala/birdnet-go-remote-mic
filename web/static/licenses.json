@@ -93,7 +93,7 @@
     },
     {
       "name": "github.com/tphakala/go-opus",
-      "version": "v1.1.0",
+      "version": "v1.3.0",
       "license": "BSD-3-Clause",
       "files": [
         {
@@ -104,7 +104,7 @@
     },
     {
       "name": "github.com/tphakala/simd",
-      "version": "v1.8.0",
+      "version": "v1.14.0",
       "license": "MIT",
       "files": [
         {
