@@ -4,11 +4,11 @@ go 1.27
 
 require (
 	github.com/brutella/dnssd v1.2.14
-	github.com/oapi-codegen/runtime v1.7.0
+	github.com/oapi-codegen/runtime v1.8.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/tphakala/go-audio-capture v0.8.0
 	github.com/tphakala/go-audio-stream v0.6.0
-	github.com/tphakala/go-opus v1.1.0
+	github.com/tphakala/go-opus v1.3.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -17,7 +17,7 @@ require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/miekg/dns v1.1.61 // indirect
-	github.com/tphakala/simd v1.8.0 // indirect
+	github.com/tphakala/simd v1.14.0 // indirect
 	github.com/vishvananda/netlink v1.2.1-beta.2 // indirect
 	github.com/vishvananda/netns v0.0.0-20200728191858-db3c7e526aae // indirect
 	golang.org/x/mod v0.18.0 // indirect
