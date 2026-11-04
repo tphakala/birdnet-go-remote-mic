@@ -409,6 +409,7 @@ func TestWriterSenderReportPairsCaptureWithPacketTimestamp(t *testing.T) {
 // consecutive and each sender report still pairs a packet's own timestamp with
 // its capture time.
 func TestWriterTimestampsLeaveGapForDroppedFrames(t *testing.T) {
+	t.Parallel()
 	serverConn, clientConn := net.Pipe()
 	const (
 		startTS = 123456
