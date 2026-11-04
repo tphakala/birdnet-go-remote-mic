@@ -131,6 +131,32 @@ export function captureFormatLabel(token: string): string {
   }
 }
 
+// CaptureGeometry is a device's granted capture period, worded for the card
+// footer: label is the short segment, title the full sentence for its tooltip.
+export interface CaptureGeometry {
+  label: string;
+  title: string;
+}
+
+// captureGeometry words the period geometry the driver granted (periodFrames
+// frames per period, periods in the buffer) at rate. It returns null unless
+// both values are present and positive: an appliance that predates them, or a
+// device whose capture cannot report one, shows nothing rather than a guess.
+// Milliseconds keep one decimal at most, since a driver may grant a period that
+// is not a whole number of milliseconds (1024 frames at 48 kHz).
+export function captureGeometry(d: Pick<Device, "periodFrames" | "periods">, rate: number): CaptureGeometry | null {
+  const { periodFrames, periods } = d;
+  if (periodFrames === undefined || periods === undefined || periodFrames <= 0 || periods <= 0 || rate <= 0) return null;
+  const ms = (v: number): string => v.toLocaleString("en-US", { maximumFractionDigits: 1 });
+  const period = ms((periodFrames * 1000) / rate);
+  const buffer = ms((periodFrames * periods * 1000) / rate);
+  return {
+    // No-break spaces keep the segment together when the footer wraps.
+    label: `${period}\u00a0ms\u00a0\u00d7\u00a0${periods}`,
+    title: `Capture period: ${period} ms (${periodFrames.toLocaleString("en-US")} frames) \u00d7 ${periods} ${periods === 1 ? "period" : "periods"}, a ${buffer} ms buffer.`,
+  };
+}
+
 // needsNotificationsFallback reports whether the app should load the
 // notifications snapshot directly once the post-boot or post-login grace has
 // passed: when none has loaded, or when the stream is still down (a previous

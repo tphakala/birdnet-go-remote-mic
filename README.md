@@ -118,7 +118,7 @@ device.
 
 A built-in HTTPS management UI (default `:8443`) runs alongside the streams. The
 **Dashboard** (shown above) lists every capture device with live per-channel
-level meters, stream state, negotiated rate and channel count, the RTSP URL with
+level meters, stream state, negotiated rate, channel count and capture period, the RTSP URL with
 one-click copy, and counters for dropped frames and capture overruns. The
 Dashboard's **Available Devices** list enumerates capture hardware on the host
 that is not streaming yet, so you enable a device straight from the browser
@@ -682,6 +682,9 @@ For a local end-to-end check without hardware, use the ALSA loopback
   skip the device as before), the device falls back to the last size that
   worked, and the larger size is tried again on the next open unless the driver
   refused it. A card-index device is not escalated, and nothing is kept across a process restart.
+  The Dashboard card of a serving device shows the period length and period
+  count the driver granted, raised or not, and its tooltip gives the buffer
+  length. A capture that cannot report its geometry shows nothing.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous

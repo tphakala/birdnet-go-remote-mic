@@ -79,6 +79,12 @@ type DeviceStatus struct {
 	// (s16, s24_le, s24_3le, s32); empty when the device never opened. A wider
 	// capture is downconverted to S16LE, so this surfaces that reduction.
 	NegotiatedFormat string
+	// PeriodFrames and Periods are the capture period geometry the driver
+	// granted at the device's last open: frames per period and periods in the
+	// capture buffer. Both are zero when the device never opened or its
+	// capture cannot report a geometry.
+	PeriodFrames int
+	Periods      int
 	// ClientConnected is true exactly when ClientCount is above zero; the
 	// provider sets both.
 	ClientConnected bool
@@ -367,7 +373,8 @@ func (s *Server) StreamEvents(_ context.Context, _ mgmtapi.StreamEventsRequestOb
 // streams array. streamedChannels is the union of every stream's channels, so a
 // client can tell which captured channels are carried without walking streams.
 // clientConnected, clientCount and droppedFrames are the device-level
-// aggregates of the per-stream figures.
+// aggregates of the per-stream figures. The granted capture period is
+// emitted only when both its frame count and period count are known.
 func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	out := mgmtapi.Device{
 		Name:            d.Config.Name,
@@ -401,6 +408,11 @@ func mapDevice(d *DeviceStatus) mgmtapi.Device {
 	}
 	if d.NegotiatedFormat != "" {
 		out.NegotiatedFormat = new(d.NegotiatedFormat)
+	}
+	// Both or neither: a period length without its count describes no buffer.
+	if d.PeriodFrames > 0 && d.Periods > 0 {
+		out.PeriodFrames = new(d.PeriodFrames)
+		out.Periods = new(d.Periods)
 	}
 	if d.Error != "" {
 		out.Error = new(d.Error)

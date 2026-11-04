@@ -2,7 +2,7 @@ import { showToast } from "../../components/toast.ts";
 import type { VUMeter } from "../../components/vu-meter.ts";
 import { api, isRefusal } from "../../lib/api.ts";
 import { getToken } from "../../lib/auth.ts";
-import { avatarLook, type AvatarIcon, bannerIsError, captureFormatLabel, cardShape, channelLabel, controlGoneMessage, downCauseTitle, footerMetrics, hardwareLine, type LevelsTarget, meterCount, nonServingFooterText, PENDING_STOP_TEXT, pendingStop, rtspUrl, runtimeEnabled, tokenHiddenMessage } from "../../lib/dashboard-core.ts";
+import { avatarLook, type AvatarIcon, bannerIsError, captureFormatLabel, captureGeometry, cardShape, channelLabel, controlGoneMessage, downCauseTitle, footerMetrics, hardwareLine, type LevelsTarget, meterCount, nonServingFooterText, PENDING_STOP_TEXT, pendingStop, rtspUrl, runtimeEnabled, tokenHiddenMessage } from "../../lib/dashboard-core.ts";
 import { hideInactiveKey, readBoolPref, writeBoolPref } from "../../lib/prefs.ts";
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
@@ -512,12 +512,15 @@ export class DeviceCard {
       setText(p.live.droppedEl, counters.dropped);
       setText(p.live.overrunsEl, counters.overruns);
       const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
-      setText(p.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}`);
-      // The label is the hardware capture format; the RTSP stream is always 16-bit,
-      // so name that in a tooltip rather than let "· 24-bit" read as the stream depth.
-      const negTitle = d.negotiatedFormat
-        ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
-        : "";
+      const geo = captureGeometry(d, rate);
+      setText(p.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}${geo ? ` · ${geo.label}` : ""}`);
+      // The format part is the hardware capture format; the RTSP stream is always
+      // 16-bit, so name that in a tooltip rather than let "· 24-bit" read as the
+      // stream depth. The period part spells out the granted capture geometry.
+      const negTitle = [
+        d.negotiatedFormat && "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted.",
+        geo?.title,
+      ].filter(Boolean).join(" ");
       setAttr(p.live.negotiatedEl, "title", negTitle);
       // The tally lights follow every streamed channel, as the channel tag does.
       p.live.meterConsole.sync(d.streamedChannels ?? d.channels, this.hideInactive);

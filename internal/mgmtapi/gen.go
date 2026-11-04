@@ -613,6 +613,18 @@ type Device struct {
 	// Examples: /garden
 	Path string `json:"path"`
 
+	// PeriodFrames Frames per capture period that the driver granted when the device last opened. Present together with periods, and only for a device that opened with a capture that reports its geometry. The default is about 20 ms of audio; a device that keeps falling short of its sample rate is reopened with a larger period (up to 40 ms), so the value can change when the device reopens. Divide by negotiatedRate for the period length.
+	//
+	//
+	// Examples: 960
+	PeriodFrames *int `json:"periodFrames,omitempty"`
+
+	// Periods Number of capture periods in the device's capture buffer, as the driver granted when the device last opened: 4 by default, up to 16 after repeated shortfalls. Present together with periodFrames; the buffer holds periodFrames times periods frames.
+	//
+	//
+	// Examples: 4
+	Periods *int `json:"periods,omitempty"`
+
 	// Rate Requested capture sample rate in Hz (as configured).
 	Rate int `json:"rate"`
 

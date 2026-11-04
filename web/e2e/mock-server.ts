@@ -68,6 +68,8 @@ const DEVICES: Device[] = [
     negotiatedRate: 48000,
     negotiatedChannels: 2,
     negotiatedFormat: "s24_3le",
+    periodFrames: 1920,
+    periods: 16,
     clientConnected: true,
     clientCount: 2,
     droppedFrames: 12,

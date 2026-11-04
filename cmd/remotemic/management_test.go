@@ -121,7 +121,8 @@ func TestProviderStatusCountsServing(t *testing.T) {
 }
 
 func TestDeviceRuntimeStatusReportsNegotiated(t *testing.T) {
-	// status() surfaces the negotiated rate, channel count and capture format only
+	// status() surfaces the negotiated rate, channel count, capture format and
+	// granted capture geometry only
 	// for a device that actually opened (src != nil). A wider capture (here the
 	// packed 24-bit s24_3le) is downconverted to the S16LE stream, and the token is
 	// what the appliance reports so an operator can see that reduction.
@@ -136,6 +137,7 @@ func TestDeviceRuntimeStatusReportsNegotiated(t *testing.T) {
 		rate:     48000,
 		channels: 1,
 		format:   testFmtS243LE,
+		geometry: audio.Geometry{PeriodFrames: 1920, Periods: 16},
 		streams:  []*streamRuntime{{stream: stream}},
 	}
 	ds := opened.status()
@@ -145,15 +147,20 @@ func TestDeviceRuntimeStatusReportsNegotiated(t *testing.T) {
 	if ds.NegotiatedFormat != testFmtS243LE {
 		t.Errorf("negotiatedFormat = %q, want s24_3le", ds.NegotiatedFormat)
 	}
+	if ds.PeriodFrames != 1920 || ds.Periods != 16 {
+		t.Errorf("granted geometry = %d x %d, want 1920 x 16", ds.PeriodFrames, ds.Periods)
+	}
 
 	// A device that never opened (src nil) reports no negotiated values, even if a
 	// stale token lingered on the record: the src != nil gate must hide it.
 	unopened := skippedRecord("attic", "/attic", "open capture: device busy")
 	unopened.format = testFmtS243LE
+	unopened.geometry = audio.Geometry{PeriodFrames: 1920, Periods: 16}
 	ds = unopened.status()
-	if ds.NegotiatedRate != 0 || ds.NegotiatedChannels != 0 || ds.NegotiatedFormat != "" {
-		t.Errorf("unopened device reported negotiated values: %d/%d/%q",
-			ds.NegotiatedRate, ds.NegotiatedChannels, ds.NegotiatedFormat)
+	if ds.NegotiatedRate != 0 || ds.NegotiatedChannels != 0 || ds.NegotiatedFormat != "" ||
+		ds.PeriodFrames != 0 || ds.Periods != 0 {
+		t.Errorf("unopened device reported negotiated values: %d/%d/%q/%d/%d",
+			ds.NegotiatedRate, ds.NegotiatedChannels, ds.NegotiatedFormat, ds.PeriodFrames, ds.Periods)
 	}
 }
 

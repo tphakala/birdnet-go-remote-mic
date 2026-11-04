@@ -72,6 +72,8 @@ func servingOpus() DeviceStatus {
 		NegotiatedRate:     48000,
 		NegotiatedChannels: 1,
 		NegotiatedFormat:   "s24_3le",
+		PeriodFrames:       1920,
+		Periods:            16,
 		ClientConnected:    true,
 		ClientCount:        2,
 		DroppedFrames:      12,
@@ -80,6 +82,15 @@ func servingOpus() DeviceStatus {
 		FriendlyName:       nameScarlett,
 		SupportedRates:     []int{48000, 96000, 192000},
 		SupportedChannels:  []int{1, 2},
+	}
+}
+
+// requireGeometry fails the test unless both granted-geometry fields are set to
+// the wanted values.
+func requireGeometry(t *testing.T, gotFrames, gotPeriods *int, frames, periods int) {
+	t.Helper()
+	if gotFrames == nil || *gotFrames != frames || gotPeriods == nil || *gotPeriods != periods {
+		t.Errorf("periodFrames/periods = %v/%v, want %d/%d", gotFrames, gotPeriods, frames, periods)
 	}
 }
 
@@ -232,6 +243,7 @@ func TestListDevicesMapsServingOpus(t *testing.T) {
 	if d.NegotiatedFormat == nil || *d.NegotiatedFormat != "s24_3le" {
 		t.Errorf("negotiatedFormat = %v, want s24_3le", d.NegotiatedFormat)
 	}
+	requireGeometry(t, d.PeriodFrames, d.Periods, 1920, 16)
 	if !d.ClientConnected || d.ClientCount != 2 || d.DroppedFrames != 12 || d.Overruns != 9 {
 		t.Errorf("runtime fields: connected=%v clients=%d dropped=%d overruns=%d, want true/2/12/9", d.ClientConnected, d.ClientCount, d.DroppedFrames, d.Overruns)
 	}
@@ -272,6 +284,30 @@ func TestMapDeviceDownCause(t *testing.T) {
 	}
 }
 
+// TestMapDeviceHalfGeometry pins that the granted period is emitted only as a
+// pair: a frame count without a period count (or the reverse) describes no
+// buffer, so neither field reaches the wire.
+func TestMapDeviceHalfGeometry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		frames, periods int
+	}{
+		{"frames only", 1920, 0},
+		{"periods only", 0, 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := servingOpus()
+			d.PeriodFrames, d.Periods = tc.frames, tc.periods
+			got := mapDevice(&d)
+			if got.PeriodFrames != nil || got.Periods != nil {
+				t.Errorf("periodFrames/periods = %v/%v, want both absent", got.PeriodFrames, got.Periods)
+			}
+		})
+	}
+}
+
 func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	s := New(&fakeProvider{devices: []DeviceStatus{skippedPCM()}})
 	resp, _ := s.ListDevices(context.Background(), mgmtapi.ListDevicesRequestObject{})
@@ -283,8 +319,9 @@ func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	if d.Mode != mgmtapi.Pcm {
 		t.Errorf("mode = %q, want pcm", d.Mode)
 	}
-	if d.NegotiatedRate != nil || d.NegotiatedChannels != nil || d.NegotiatedFormat != nil {
-		t.Errorf("skipped device must have no negotiated values: %v %v %v", d.NegotiatedRate, d.NegotiatedChannels, d.NegotiatedFormat)
+	if d.NegotiatedRate != nil || d.NegotiatedChannels != nil || d.NegotiatedFormat != nil || d.PeriodFrames != nil || d.Periods != nil {
+		t.Errorf("skipped device must have no negotiated values: %v %v %v %v %v",
+			d.NegotiatedRate, d.NegotiatedChannels, d.NegotiatedFormat, d.PeriodFrames, d.Periods)
 	}
 	if d.ClientConnected || d.DroppedFrames != 0 || d.Overruns != 0 {
 		t.Errorf("skipped device runtime: connected=%v dropped=%d overruns=%d, want false/0/0", d.ClientConnected, d.DroppedFrames, d.Overruns)
