@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestIsClientTLSHandshakeRejection(t *testing.T) {
+func TestIsExpectedHandshakeError(t *testing.T) {
 	cases := []struct {
 		name string
 		line string
@@ -53,6 +53,18 @@ func TestIsClientTLSHandshakeRejection(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "plain HTTP answered by the redirect listener",
+			line: "2026/09/05 15:04:55 http: TLS handshake error from 10.0.0.9:5001: " + errPlainHTTP.Error(),
+			want: true,
+		},
+		{
+			// The sentinel alone must not match, for the same reason as the
+			// client-alert row above.
+			name: "redirect sentinel text outside a handshake-error line",
+			line: "2026/09/05 15:04:55 http: Accept error: " + errPlainHTTP.Error(),
+			want: false,
+		},
+		{
 			name: "arbitrary line mentioning tls but not a handshake error",
 			line: "2026/09/05 15:04:55 management API on https://:8443 (tls: ok)",
 			want: false,
@@ -65,8 +77,8 @@ func TestIsClientTLSHandshakeRejection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isClientTLSHandshakeRejection([]byte(tc.line)); got != tc.want {
-				t.Errorf("isClientTLSHandshakeRejection(%q) = %v, want %v", tc.line, got, tc.want)
+			if got := isExpectedHandshakeError([]byte(tc.line)); got != tc.want {
+				t.Errorf("isExpectedHandshakeError(%q) = %v, want %v", tc.line, got, tc.want)
 			}
 		})
 	}
@@ -155,7 +167,7 @@ func (b *lockedBuffer) String() string {
 // TestFilterDropsRealNetHTTPHandshakeError validates the hand-built markers
 // against the actual producer. Every other test feeds lines matching an assumed
 // net/http wording; this one provokes a real client-aborted TLS handshake and
-// asserts both that isClientTLSHandshakeRejection still matches net/http's real
+// asserts both that isExpectedHandshakeError still matches net/http's real
 // output and that the filter drops it end to end. If net/http or crypto/tls ever
 // reword that log line, this turns red instead of the filter silently going
 // inert.
@@ -197,7 +209,7 @@ func TestFilterDropsRealNetHTTPHandshakeError(t *testing.T) {
 	if n := strings.Count(line, "\n"); n != 1 {
 		t.Fatalf("expected exactly one captured log line, got %d newlines: %q", n, line)
 	}
-	if !isClientTLSHandshakeRejection([]byte(line)) {
+	if !isExpectedHandshakeError([]byte(line)) {
 		t.Fatalf("filter markers no longer match net/http's handshake-error wording: %q", line)
 	}
 
