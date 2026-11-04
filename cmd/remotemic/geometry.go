@@ -148,11 +148,7 @@ func (a *appliance) geometryRunEnded(rt *deviceRuntime) {
 		return
 	}
 	log.Printf("device %q: served %s at %s; its next open uses the default capture period", name, served.Round(time.Minute), describeGeometry(rt.geometryOrStep(rt.geoStep), rt.rate))
-	a.notifier.Clear(geometryKey(name), notify.Notification{
-		Severity: notify.SeverityInfo,
-		Title:    "Capture period back to default",
-		Message:  "The device served for an hour, so its next open uses the default capture period.",
-	})
+	a.clearGeometry(name, "The device served for an hour, so its next open uses the default capture period.")
 }
 
 // geometryShortfall counts a shortfall of a device that stays on the backoff
@@ -186,7 +182,10 @@ func (a *appliance) geometryShortfall(dev *config.Device, openedStep int) {
 
 // geometryRefuse records that the driver refused the geometry of step refusedAt
 // (the lowest refused step of an open attempt): the ceiling drops below it and
-// the step follows, whether or not the attempt then opened at a lower step.
+// the step follows, whether or not the attempt then opened at a lower step. A
+// refusal down to the default clears the capture-period condition here, whether
+// or not the open then succeeds: no later open asks for a larger period, and an
+// open that asks for the default never reaches geometryOpened.
 func (a *appliance) geometryRefuse(name string, refusedAt int) {
 	st := a.geometry[name]
 	if st == nil {
@@ -195,6 +194,9 @@ func (a *appliance) geometryRefuse(name string, refusedAt int) {
 	st.ceiling = min(st.ceiling, refusedAt-1)
 	st.step = min(st.step, st.ceiling)
 	st.shortfalls = 0
+	if st.ceiling == 0 {
+		a.clearGeometry(name, "The driver refused a larger capture period; the next open uses the default period.")
+	}
 }
 
 // geometryOpened records the outcome of an open that asked for step asked and
@@ -202,7 +204,8 @@ func (a *appliance) geometryRefuse(name string, refusedAt int) {
 // firstErr the failure that started it); geometryRefuse has already lowered the
 // ceiling below asked if a refusal was involved. The capture-period
 // condition must say what is in effect: an open at the default clears it
-// whatever the reason, and a fallback to another escalated step rewrites it only
+// whatever the reason (a refusal down to the default has already cleared it in
+// geometryRefuse), and a fallback to another escalated step rewrites it only
 // after a refusal (a transient fallback leaves it, and the step in state, so the
 // next open asks for the escalated step again). An open at the asked step raises
 // or rewrites it with the geometry the driver granted.
@@ -217,15 +220,7 @@ func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked int, fi
 			describeGeometry(geometryFor(rt.rate, asked), rt.rate), firstErr, describeGeometry(rt.geometryOrStep(got), rt.rate))
 	}
 	if got == 0 {
-		msg := "A larger capture period did not open this time; capture uses the default period."
-		if st.ceiling == 0 {
-			msg = "The driver refused a larger capture period; capture uses the default period."
-		}
-		a.notifier.Clear(geometryKey(name), notify.Notification{
-			Severity: notify.SeverityInfo,
-			Title:    "Capture period back to default",
-			Message:  msg,
-		})
+		a.clearGeometry(name, "A larger capture period did not open this time; capture uses the default period.")
 		return
 	}
 	if got < asked && st.ceiling >= asked {
@@ -235,6 +230,16 @@ func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked int, fi
 	if !a.notifier.Onset(n) && a.updater != nil {
 		a.updater.Update(n.Key, n.Title, n.Message)
 	}
+}
+
+// clearGeometry clears name's capture-period condition with msg as the reason.
+// It is a no-op when the condition is not active.
+func (a *appliance) clearGeometry(name, msg string) {
+	a.notifier.Clear(geometryKey(name), notify.Notification{
+		Severity: notify.SeverityInfo,
+		Title:    "Capture period back to default",
+		Message:  msg,
+	})
 }
 
 // geometryOrStep is the geometry the driver granted this runtime, or ladder
