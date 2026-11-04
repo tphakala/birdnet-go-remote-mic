@@ -798,6 +798,65 @@ func TestStageRunAllocsPerPeriod(t *testing.T) {
 	}
 }
 
+// TestPCMStageSurvivesNonPositiveRate pins that a source reporting no rate costs the
+// PCM stage only the back-dating: it neither panics (a divide by zero on the
+// capture goroutine) nor shifts the stamp, which stays the period's.
+func TestPCMStageSurvivesNonPositiveRate(t *testing.T) {
+	t.Parallel()
+	stamp := time.Unix(1700000000, 0)
+	var got []time.Time
+	periods := []audio.Period{{Buf: tonePCM(960, 1), Frames: 960, Captured: stamp}}
+	err := pipeline.NewPCM().Run(audio.NewPeriodSource(0, 1, periods), nil, func(f pipeline.Frame) error {
+		got = append(got, f.Captured)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no frames emitted")
+	}
+	for i, c := range got {
+		if !c.Equal(stamp) {
+			t.Errorf("frame %d: got Captured %v, want the period stamp %v", i, c, stamp)
+		}
+	}
+}
+
+// TestOpusStageSessionChangeRederivesFrameStart pins that a frame started
+// before a session change takes no part in the new session: its first frame is
+// stamped from its own first sample, not from the discarded partial frame.
+func TestOpusStageSessionChangeRederivesFrameStart(t *testing.T) {
+	t.Parallel()
+	t1 := time.Unix(1700000000, 0)
+	t2 := t1.Add(time.Second)
+	pcm := tonePCM(1440+960, 1)
+	periods := []audio.Period{
+		// One whole frame, then half of the next: the second is left partial.
+		{Buf: pcm[:1440*2], Frames: 1440, Session: 1, Captured: t1},
+		{Buf: pcm[1440*2:], Frames: 960, Session: 2, Captured: t2},
+	}
+	var got []time.Time
+	err := pipeline.NewOpus(config.Opus{Bitrate: 64000}).Run(audio.NewPeriodSource(48000, 1, periods), nil, func(f pipeline.Frame) error {
+		got = append(got, f.Captured)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The first period yields a frame stamped at its start, the second one whole
+	// frame stamped at its own start.
+	want := []time.Time{t1.Add(-30 * time.Millisecond), t2.Add(-20 * time.Millisecond)}
+	if len(got) != len(want) {
+		t.Fatalf("got %d frames, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !got[i].Equal(want[i]) {
+			t.Errorf("frame %d: got Captured %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSDPSpec(t *testing.T) {
 	t.Parallel()
 	pcm := pipeline.SDPSpec(&config.Stream{Mode: config.ModePCM}, "m", 256000, 1)
