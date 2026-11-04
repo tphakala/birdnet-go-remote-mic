@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -288,6 +291,54 @@ func TestRecoverManagementEditedTokenEvents(t *testing.T) {
 	}
 	cancel()
 	_ = s.wait()
+}
+
+// TestServeManagementRedirectsPlainHTTP pins the wiring: a plain HTTP request
+// to the management port is answered with a redirect to https on the same port,
+// using the generated certificate to verify the Host (localhost differs from
+// the local IP, so a broken certificate closure shows as the IP fallback), and
+// the API still stops cleanly afterwards.
+func TestServeManagementRedirectsPlainHTTP(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p := &mgmtParams{cfgPath: testCfgFile, cfg: cfg, storeCfg: cfg, prov: newProvider()}
+	p.useConfig(cfg)
+	s, err := serveManagement(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, err := net.SplitHostPort(s.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("tcp", s.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, "GET "+mgmtserver.BasePath+"/healthz HTTP/1.1\r\nHost: localhost:"+port+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusPermanentRedirect {
+		t.Errorf("status %d, want 308", resp.StatusCode)
+	}
+	if got, want := resp.Header.Get("Location"), "https://localhost:"+port+mgmtserver.BasePath+"/healthz"; got != want {
+		t.Errorf("Location %q, want %q", got, want)
+	}
+	cancel()
+	if err := s.wait(); err != nil {
+		t.Errorf("API reported %v after ctx was cancelled, want nil", err)
+	}
 }
 
 // TestServeManagementDrainBoundsStuckHandler drives the drain fallback: a

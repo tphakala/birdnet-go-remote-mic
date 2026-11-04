@@ -16,22 +16,29 @@ import (
 // client-rejection class: a server-side TLS misconfiguration (for example
 // "tls: no certificates configured") lacks the "remote error:" prefix, and
 // every other http.Server error lacks the handshake marker, so both still log.
+//
+// The same handshake line also ends a plain HTTP request that the redirect
+// listener (RedirectPlainHTTP) answered; it carries errPlainHTTP's text instead
+// of the alert and is dropped too, since the redirect already handled it.
 var (
 	tlsHandshakeErrorMarker = []byte("http: TLS handshake error")
 	clientTLSAlertMarker    = []byte("remote error: tls:")
+	plainHTTPMarker         = []byte(errPlainHTTP.Error())
 )
 
-// isClientTLSHandshakeRejection reports whether line is an http.Server log entry
+// isExpectedHandshakeError reports whether line is an http.Server log entry
 // for a handshake the client aborted, whether by rejecting the appliance's
 // self-signed certificate or by failing to negotiate (a version or cipher
-// mismatch). Such lines are expected traffic from an untrusting or incompatible
+// mismatch), or for a plain HTTP request that was answered with a redirect.
+// Such lines are expected traffic from an untrusting, incompatible or mistyped
 // client, not a server fault, and logging one per reconnect buries real events.
-func isClientTLSHandshakeRejection(line []byte) bool {
+func isExpectedHandshakeError(line []byte) bool {
 	return bytes.Contains(line, tlsHandshakeErrorMarker) &&
-		bytes.Contains(line, clientTLSAlertMarker)
+		(bytes.Contains(line, clientTLSAlertMarker) || bytes.Contains(line, plainHTTPMarker))
 }
 
-// handshakeErrorFilter drops client TLS-handshake-rejection lines and forwards
+// handshakeErrorFilter drops expected handshake-error lines (client TLS
+// rejections and redirected plain HTTP) and forwards
 // every other write through dst, the process logger. log.Logger emits each
 // entry as a single contiguous Write and serializes writes under its own mutex,
 // so this filter sees one whole line at a time and needs no locking of its own.
@@ -47,7 +54,7 @@ type handshakeErrorFilter struct {
 }
 
 func (f *handshakeErrorFilter) Write(p []byte) (int, error) {
-	if isClientTLSHandshakeRejection(p) {
+	if isExpectedHandshakeError(p) {
 		// Report the bytes as consumed so the caller does not treat the drop as
 		// a short write.
 		return len(p), nil
@@ -73,7 +80,8 @@ func (f *handshakeErrorFilter) Write(p []byte) (int, error) {
 }
 
 // NewFilteredErrorLog returns a *log.Logger suitable for http.Server.ErrorLog
-// that suppresses client TLS-handshake-rejection spam while passing every other
+// that suppresses client TLS-handshake-rejection and redirected plain HTTP
+// spam while passing every other
 // server error through to dst, the process logger. A nil dst defaults to
 // log.Default(). The returned logger carries no flags of its own: kept lines are
 // formatted by dst, so a genuine error looks identical to the output net/http
