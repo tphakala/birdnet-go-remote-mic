@@ -384,6 +384,69 @@ func TestFanoutFollowsActiveFlag(t *testing.T) {
 	}
 }
 
+// TestFanoutStampsStreamPosition pins that a period's Pos is the number of
+// frames of every upstream period before it, whether those were sent to a
+// consumer, skipped because the stream was idle, or dropped for a full queue,
+// and that two consumers see the same Pos for the same period.
+func TestFanoutStampsStreamPosition(t *testing.T) {
+	t.Parallel()
+	var open atomic.Bool
+	gate := func() (bool, uint64) { return open.Load(), 1 }
+	f, cons := NewFanout(NewFakeSource(48000, 1, nil), "dev", []FanoutStream{
+		{Dropped: new(atomic.Uint64), Gate: gate},
+		{Dropped: new(atomic.Uint64), Gate: gate},
+	})
+	// Uneven sizes, so a counter of periods instead of frames shows.
+	sizes := []int{3, 5, 2}
+	var next uint64 // expected Pos of the next upstream period
+	var count int   // upstream periods fed so far
+	feed := func() uint64 {
+		n := sizes[count%len(sizes)]
+		count++
+		pos := next
+		f.distribute(Period{Buf: make([]byte, n*2), Frames: n})
+		next += uint64(n)
+		return pos
+	}
+	read := func(c Source) Period {
+		t.Helper()
+		p, err := c.Read()
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		return p
+	}
+
+	// Gate closed: nothing is sent, but the stretch still counts.
+	for range 4 {
+		feed()
+	}
+	open.Store(true)
+
+	// Consumer 0 keeps up; consumer 1 is not read until its queue has overflowed.
+	pos0 := make([]uint64, 0, fanoutBuffer+3)
+	for range fanoutBuffer + 3 {
+		want := feed()
+		if got := read(cons[0]); got.Pos != want {
+			t.Errorf("consumer 0: got Pos %d, want %d", got.Pos, want)
+		}
+		pos0 = append(pos0, want)
+	}
+	for i := range fanoutBuffer {
+		if got := read(cons[1]); got.Pos != pos0[i] {
+			t.Errorf("consumer 1 period %d: got Pos %d, want %d (same as consumer 0)", i, got.Pos, pos0[i])
+		}
+	}
+
+	// The three periods consumer 1 dropped still advanced the counter.
+	want := feed()
+	for i, c := range cons {
+		if got := read(c); got.Pos != want {
+			t.Errorf("consumer %d after the drops: got Pos %d, want %d", i, got.Pos, want)
+		}
+	}
+}
+
 func TestFanoutDistributeAllocs(t *testing.T) {
 	// Not parallel: AllocsPerRun counts process-wide allocations.
 	tests := []struct {

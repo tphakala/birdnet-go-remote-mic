@@ -44,6 +44,8 @@ codec usually belongs in one of these, not here:
   is no pacer. The capture pump runs on a `runtime.LockOSThread` goroutine.
 - Stamp RTCP Sender Reports from `Frame.Captured`, never from send time, or TCP
   backpressure skews the receiver's clock.
+- Derive RTP timestamps from `Frame.Pos`, never by summing the durations of
+  the frames received, so a dropped period or frame leaves a timestamp gap.
 - The RTP hot path writes into a reused buffer with a 4-byte interleave prefix.
   Do not call `rtsp.MarshalInterleaved` per RTP packet (it allocates); once per
   SR interval is fine. Avoid per-period allocations: the target is a Pi Zero 2 W.

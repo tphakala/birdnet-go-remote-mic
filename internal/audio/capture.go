@@ -322,7 +322,8 @@ func (s *selectingSource) Read() (Period, error) {
 			out[o+j*2+1] = p.Buf[so+1]
 		}
 	}
-	return Period{Buf: out, Frames: p.Frames, Session: p.Session, Captured: p.Captured}, nil
+	p.Buf = out
+	return p, nil
 }
 
 func (s *selectingSource) Close() error { return s.inner.Close() }

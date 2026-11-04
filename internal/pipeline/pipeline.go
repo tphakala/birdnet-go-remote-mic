@@ -23,7 +23,13 @@ import (
 // buffers); a consumer that retains it must copy it.
 type Frame struct {
 	Payload  []byte
-	Duration uint32 // RTP timestamp increment: PCM = frames in this payload; Opus = 960
+	Duration uint32 // payload length in RTP ticks: PCM = frames in this payload; Opus = 960
+	// Pos is the stream position (audio.Period.Pos) of the payload's first
+	// sample, in RTP ticks (frames at the capture rate, which is the RTP clock in
+	// both modes). The writer derives the RTP timestamp from it, so audio lost
+	// upstream or in a subscriber's queue leaves a timestamp gap of exactly its
+	// length.
+	Pos uint64
 	// Captured is the wall clock when this payload's first sample was captured,
 	// back-dated from its period's stamp (which marks the period's end) by
 	// sample position. That is the instant the packet's RTP timestamp names,
@@ -60,6 +66,10 @@ type Frame struct {
 // period's capture time (audio.Period.Captured) when the period carries one; an
 // Opus frame that spans periods takes the stamp of the period holding its first
 // sample.
+// Every frame also carries the stream position of its first sample
+// (audio.Period.Pos), so audio the fan-out dropped before this stage shows as a
+// gap in Pos; an Opus frame never spans such a gap, and the partial frame
+// before it is discarded.
 // A nil gate means always active: every period is encoded, in the session it
 // carries (zero for an untagged one), so an ungated stage drops no period.
 type Stage interface {
@@ -146,14 +156,17 @@ func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 		// captured marks the end of the period; each payload is stamped with its own
 		// first sample, so the stamp matches the RTP timestamp the writer pairs it
 		// with.
-		remaining := len(period.Buf) / frameBytes // frames not yet emitted
+		total := len(period.Buf) / frameBytes
+		emitted := 0 // frames of this period already emitted
 		if _, err := pk.Split(period.Buf, func(payload []byte) error {
 			n := len(payload) / frameBytes
-			at := captured.Add(-framesDur(remaining, rate))
-			remaining -= n
+			at := captured.Add(-framesDur(total-emitted, rate))
+			pos := period.Pos + uint64(emitted)
+			emitted += n
 			return emit(Frame{
 				Payload:  payload,
 				Duration: uint32(n),
+				Pos:      pos,
 				Captured: at,
 				Session:  session,
 			})
@@ -206,9 +219,10 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 
 	// One 20 ms Opus frame is opusFrameSamples per channel of interleaved PCM, so
 	// the accumulator fills to opusFrameSamples*ch before each Encode (mono is the
-	// ch==1 case). The RTP timestamp advances by opusFrameSamples (960) per frame:
-	// the Opus RTP clock counts samples of a single channel at 48 kHz (RFC 7587),
-	// so the per-frame increment is 960 regardless of the channel count.
+	// ch==1 case). A frame lasts opusFrameSamples (960) RTP ticks: the Opus RTP
+	// clock counts samples of a single channel at 48 kHz (RFC 7587), so the length
+	// is 960 regardless of the channel count. The writer takes the timestamp from
+	// Frame.Pos, so it moves by 960 per frame only when no audio was lost.
 	frameSamples := opusFrameSamples * ch // interleaved int16 per 20 ms frame
 	acc := make([]int16, 0, frameSamples) // reused accumulator
 	encBuf := make([]byte, 4000)          // one Opus packet fits easily
@@ -222,6 +236,9 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 	var session uint64
 	// frameStart is the capture time of the accumulator's first sample.
 	var frameStart time.Time
+	// framePos is the stream position of the accumulator's first sample, and
+	// nextPos the position right after its last one.
+	var framePos, nextPos uint64
 
 	for {
 		period, err := src.Read()
@@ -239,7 +256,13 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			enc.Reset()
 			acc = acc[:0]
 			session = s
+		} else if len(acc) > 0 && period.Pos != nextPos {
+			// The fan-out dropped audio inside this frame. Discard the partial rather
+			// than splice it to audio captured after the gap; keep the encoder, since
+			// the decoder still holds the last frame it produced.
+			acc = acc[:0]
 		}
+		nextPos = period.Pos + uint64(len(period.Buf)/2/ch)
 		// Fill the accumulator up to the rest of the current frame per pass, so the
 		// per-sample loop carries no frame-boundary branch.
 		pcm := period.Buf
@@ -248,6 +271,7 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 				// A frame starts at the first sample not yet consumed from this period,
 				// which is as far before the period's end (captured) as the samples left.
 				frameStart = captured.Add(-framesDur(len(pcm)/2/ch, rate))
+				framePos = period.Pos + uint64((len(period.Buf)-len(pcm))/2/ch)
 			}
 			take := min(frameSamples-len(acc), len(pcm)/2)
 			start := len(acc)
@@ -264,7 +288,7 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			if eerr != nil {
 				return eerr
 			}
-			if err := emit(Frame{Payload: encBuf[:n], Duration: opusFrameSamples, Captured: frameStart, Session: session}); err != nil {
+			if err := emit(Frame{Payload: encBuf[:n], Duration: opusFrameSamples, Pos: framePos, Captured: frameStart, Session: session}); err != nil {
 				return err
 			}
 			acc = acc[:0]

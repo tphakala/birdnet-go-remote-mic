@@ -36,12 +36,16 @@ const fanoutBuffer = 8
 // period sent is tagged with the play session it was sent for and the time it
 // was read from the capture, so a stage that has fallen behind drops what was
 // queued for an earlier play session and stamps the rest with their capture
-// time.
+// time. It also carries the period's stream position (Period.Pos), counted
+// over every period read, so a consumer can tell how much audio it missed.
 type Fanout struct {
 	src       Source
 	name      string
 	consumers []*fanoutConsumer
 	closeOnce sync.Once
+	// pos is the stream position of the next period: the frames of every period
+	// read so far. Run's goroutine is its only user, so it needs no lock.
+	pos uint64
 }
 
 // fanoutConsumer is one downstream Source fed by a Fanout. Read blocks until a
@@ -128,7 +132,15 @@ func (f *Fanout) Run() error {
 // queued for a stage that had fallen behind stay queued across a teardown, but
 // each carries the session it was sent for, so the stage drops them rather
 // than encode them for a client that starts playing before it reads them.
+//
+// Every period read advances the stream position by its frames, before the idle
+// skip and the non-blocking send, so the Pos a consumer sees jumps over the
+// periods it was not sent or lost to a full queue. It is always the fan-out's own
+// count: unlike Captured, a zero Pos is a real position, so a position set by an
+// upstream source cannot be told apart from an unset one.
 func (f *Fanout) distribute(p Period) {
+	pos := f.pos
+	f.pos += uint64(p.Frames)
 	var cp Period
 	copied := false
 	for _, c := range f.consumers {
@@ -150,7 +162,7 @@ func (f *Fanout) distribute(p Period) {
 			}
 			buf := make([]byte, len(p.Buf))
 			copy(buf, p.Buf)
-			cp = Period{Buf: buf, Frames: p.Frames, Captured: captured}
+			cp = Period{Buf: buf, Frames: p.Frames, Pos: pos, Captured: captured}
 			copied = true
 		}
 		// The storage is shared; only the session tag differs per consumer.

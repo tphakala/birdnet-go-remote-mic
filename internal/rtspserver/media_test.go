@@ -322,6 +322,53 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	parseCleanStream(t, data)
 }
 
+// readWriterOutput reads the writer's interleaved output from conn until done
+// reports true for the packet and sender report counts so far, and returns the
+// RTP headers and sender reports in arrival order. onRead, when set, runs after
+// each read with the packet count.
+func readWriterOutput(t *testing.T, conn net.Conn, done func(pkts, srs int) bool, onRead func(pkts int)) ([]rtp.Header, []rtp.SenderReport) {
+	t.Helper()
+	var pkts []rtp.Header
+	var srs []rtp.SenderReport
+	var data []byte
+	tmp := make([]byte, 4096)
+	for !done(len(pkts), len(srs)) {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(tmp)
+		if err != nil {
+			t.Fatalf("read: %v (%d packets, %d sender reports)", err, len(pkts), len(srs))
+		}
+		data = append(data, tmp[:n]...)
+		for {
+			f, used, perr := rtsp.ParseInterleaved(data)
+			if perr != nil {
+				break
+			}
+			data = data[used:]
+			switch f.Channel {
+			case 0:
+				p, err := rtp.ParsePacket(f.Payload)
+				if err != nil {
+					t.Fatalf("ParsePacket: %v", err)
+				}
+				pkts = append(pkts, p.Header)
+			case 1:
+				cp, err := rtp.ParseCompound(f.Payload)
+				if err != nil {
+					t.Fatalf("ParseCompound: %v", err)
+				}
+				if len(cp) > 0 {
+					srs = append(srs, cp[0])
+				}
+			}
+		}
+		if onRead != nil {
+			onRead(len(pkts))
+		}
+	}
+	return pkts, srs
+}
+
 // TestWriterSenderReportPairsCaptureWithPacketTimestamp pins that a sender
 // report names the capture time of the packet's first sample together with that
 // packet's own RTP timestamp, not the timestamp advanced past it.
@@ -332,7 +379,7 @@ func TestWriterSenderReportPairsCaptureWithPacketTimestamp(t *testing.T) {
 	sub := mustSubscribe(t, frames)
 	cap0 := time.Unix(1700000000, 123456789)
 	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: cap0})
-	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: cap0.Add(20 * time.Millisecond)})
+	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Pos: 160, Captured: cap0.Add(20 * time.Millisecond)})
 	track := &Track{Path: testPath, PayloadType: 96, Feed: frames}
 	srv := New(Config{SRInterval: time.Hour}, track)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -346,48 +393,96 @@ func TestWriterSenderReportPairsCaptureWithPacketTimestamp(t *testing.T) {
 		wg.Wait()
 	}()
 
-	var pkt *rtp.Packet
-	var sr *rtp.SenderReport
-	var data []byte
-	tmp := make([]byte, 4096)
-	for pkt == nil || sr == nil {
-		_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := clientConn.Read(tmp)
-		if err != nil {
-			t.Fatalf("read: %v (packet %v, sender report %v)", err, pkt != nil, sr != nil)
-		}
-		data = append(data, tmp[:n]...)
-		for {
-			f, used, perr := rtsp.ParseInterleaved(data)
-			if perr != nil {
-				break
-			}
-			data = data[used:]
-			switch f.Channel {
-			case 0:
-				if pkt == nil {
-					p, err := rtp.ParsePacket(f.Payload)
-					if err != nil {
-						t.Fatalf("ParsePacket: %v", err)
-					}
-					pkt = &p
-				}
-			case 1:
-				pkts, err := rtp.ParseCompound(f.Payload)
-				if err != nil {
-					t.Fatalf("ParseCompound: %v", err)
-				}
-				if len(pkts) > 0 && sr == nil {
-					sr = &pkts[0]
-				}
-			}
-		}
-	}
-	if pkt.Header.Timestamp != startTS || sr.RTPTimestamp != startTS {
-		t.Errorf("got packet timestamp %d and SR timestamp %d, want both %d", pkt.Header.Timestamp, sr.RTPTimestamp, startTS)
+	pkts, srs := readWriterOutput(t, clientConn, func(p, r int) bool { return p > 0 && r > 0 }, nil)
+	pkt, sr := pkts[0], srs[0]
+	if pkt.Timestamp != startTS || sr.RTPTimestamp != startTS {
+		t.Errorf("got packet timestamp %d and SR timestamp %d, want both %d", pkt.Timestamp, sr.RTPTimestamp, startTS)
 	}
 	if want := rtp.NTPFromTime(cap0); sr.NTPTimestamp != want {
 		t.Errorf("got SR NTP %d, want %d (first frame's capture time)", sr.NTPTimestamp, want)
+	}
+}
+
+// TestWriterTimestampsLeaveGapForDroppedFrames pins that frames a subscriber's
+// full queue dropped leave a gap in the RTP timestamps of exactly their length,
+// counted from the first frame the connection sent, while sequence numbers stay
+// consecutive and each sender report still pairs a packet's own timestamp with
+// its capture time.
+func TestWriterTimestampsLeaveGapForDroppedFrames(t *testing.T) {
+	t.Parallel()
+	serverConn, clientConn := net.Pipe()
+	const (
+		startTS = 123456
+		base    = 1 << 33 // a stream position that is not zero and wider than 32 bits
+		step    = 160
+		lost    = 5 // frames dropped on top of a full queue
+		after   = 3 // frames pushed once the writer has made room
+	)
+	cap0 := time.Unix(1700000000, 123456789)
+	mk := func(i int) pipeline.Frame {
+		return pipeline.Frame{
+			Payload: make([]byte, 320), Duration: step, Pos: base + uint64(i)*step,
+			Captured: cap0.Add(time.Duration(i) * 20 * time.Millisecond),
+		}
+	}
+	frames := NewFeed()
+	sub := mustSubscribe(t, frames)
+	for i := range subQueueDepth {
+		if frames.Push(mk(i)) != 0 {
+			t.Fatalf("frame %d dropped with the queue not yet full", i)
+		}
+	}
+	for i := range lost {
+		if got := frames.Push(mk(subQueueDepth + i)); got != 1 {
+			t.Fatalf("frame %d: got %d drops, want 1 (queue full)", subQueueDepth+i, got)
+		}
+	}
+	track := &Track{Path: testPath, PayloadType: 96, Feed: frames}
+	srv := New(Config{SRInterval: time.Nanosecond}, track)
+	ctx, cancel := context.WithCancel(t.Context())
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1, startTS: startTS, writerDone: make(chan struct{})}
+
+	var wg sync.WaitGroup
+	wg.Go(func() { cs.runWriter(sub) })
+	defer func() {
+		cancel()
+		_ = clientConn.Close()
+		wg.Wait()
+	}()
+
+	// Frames sent: the queued ones, then the ones pushed after the gap.
+	sent := make([]int, 0, subQueueDepth+after)
+	for i := range subQueueDepth {
+		sent = append(sent, i)
+	}
+	for i := range after {
+		sent = append(sent, subQueueDepth+lost+i)
+	}
+	pushed := false
+	pkts, srs := readWriterOutput(t, clientConn, func(p, r int) bool { return p >= len(sent) && r >= len(sent) }, func(read int) {
+		// The writer has taken at least as many frames as were read, so the queue
+		// has room for the post-gap frames.
+		if read < after || pushed {
+			return
+		}
+		pushed = true
+		for i := range after {
+			if frames.Push(mk(subQueueDepth+lost+i)) != 0 {
+				t.Fatalf("post-gap frame %d dropped", i)
+			}
+		}
+	})
+	for k, i := range sent {
+		h := pkts[k]
+		if want := uint32(startTS + i*step); h.Timestamp != want {
+			t.Errorf("packet %d (frame %d): got timestamp %d, want %d", k, i, h.Timestamp, want)
+		}
+		if want := pkts[0].SequenceNumber + uint16(k); h.SequenceNumber != want {
+			t.Errorf("packet %d: got seq %d, want %d (consecutive across the gap)", k, h.SequenceNumber, want)
+		}
+		if sr := srs[k]; sr.RTPTimestamp != h.Timestamp || sr.NTPTimestamp != rtp.NTPFromTime(mk(i).Captured) {
+			t.Errorf("sender report %d: got RTP %d NTP %d, want RTP %d NTP %d", k, sr.RTPTimestamp, sr.NTPTimestamp, h.Timestamp, rtp.NTPFromTime(mk(i).Captured))
+		}
 	}
 }
 
