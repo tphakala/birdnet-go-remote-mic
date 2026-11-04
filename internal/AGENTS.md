@@ -15,7 +15,8 @@ not break.
   means the library default period, and `NegotiatedGeometry` reads what the
   driver granted.
 - `pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM` (L16)
-  and `NewOpus` (960-sample frames). `Frame.Captured` is capture time. `Run`
+  and `NewOpus` (960-sample frames). `Frame.Captured` is the capture
+  time of the payload's first sample (the instant its RTP timestamp names). `Run`
   takes a `Gate` (`Feed.Session`, active flag plus play session): a period
   read with no client playing is discarded unencoded. The play session
   advances only when the first client joins an idle stream, and Opus resets

@@ -21,8 +21,10 @@ type Period struct {
 	Session uint64
 	// Captured is when the period was read from the capture, so a stage that
 	// has fallen behind still stamps its frames with their capture time. The
-	// fan-out sets it unless its upstream already did. Zero means untagged, and
-	// the stage stamps its own read time.
+	// fan-out sets it unless its upstream already did. It marks the end of the
+	// period (taken when its read returns), so a stage back-dates it by sample
+	// position to stamp each frame. Zero means untagged, and the stage stamps its
+	// own read time.
 	Captured time.Time
 }
 

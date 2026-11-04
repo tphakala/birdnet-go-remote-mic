@@ -566,7 +566,8 @@ func TestOpusStageNewSessionWithoutIdleGetsFreshEncoder(t *testing.T) {
 
 // TestNilGateAdmitsTaggedPeriods pins that a stage given no gate encodes
 // every period it is fed, tagged with a play session or not, carrying each
-// period's session and capture time onto its frames: a nil gate is no trap
+// period's session and the capture time of its first sample (20 ms before the
+// period's stamp, which marks its end) onto its frames: a nil gate is no trap
 // that silently drops a gated fan-out's audio.
 func TestNilGateAdmitsTaggedPeriods(t *testing.T) {
 	t.Parallel()
@@ -602,7 +603,7 @@ func TestNilGateAdmitsTaggedPeriods(t *testing.T) {
 					t.Errorf("period %d (session %d): no frame emitted, want it admitted", i, i)
 					continue
 				}
-				if want := base.Add(time.Duration(i) * time.Second); !got.Equal(want) {
+				if want := base.Add(time.Duration(i)*time.Second - 20*time.Millisecond); !got.Equal(want) {
 					t.Errorf("period %d: got Captured %v, want %v", i, got, want)
 				}
 			}
@@ -614,8 +615,9 @@ func TestNilGateAdmitsTaggedPeriods(t *testing.T) {
 // fell behind across a teardown and the next PLAY: periods the fan-out queued
 // for the earlier session are dropped unencoded, so the new session starts
 // with its own audio (for Opus, exactly as a fresh encoder would), and
-// every frame emitted carries the gate's session and its period's capture
-// time rather than the stage's read time.
+// every frame emitted carries the gate's session and the capture time of its
+// first sample (derived from its period's stamp) rather than the stage's read
+// time.
 func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 	t.Parallel()
 	// 480-sample mono periods, two per Opus frame: periods 0-2 were queued for
@@ -652,7 +654,10 @@ func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 	}
 	checkTags := func(name string, frames []pipeline.Frame) {
 		t.Helper()
-		first := base.Add(3 * 10 * time.Millisecond)
+		// Period 3 is the first admitted; its stamp marks its end, so its first
+		// sample was captured 10 ms (480 frames) earlier. Frame 0 must start there
+		// exactly: a dropped earlier-session period contributes no frame start.
+		first := base.Add(2 * 10 * time.Millisecond)
 		for i, f := range frames {
 			if f.Session != 2 {
 				t.Errorf("%s frame %d: got session %d, want 2", name, i, f.Session)
@@ -660,6 +665,9 @@ func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 			if f.Captured.Before(first) || f.Captured.After(base.Add(time.Second)) {
 				t.Errorf("%s frame %d: got Captured %v, want a queued period's capture time (from %v)", name, i, f.Captured, first)
 			}
+		}
+		if len(frames) > 0 && !frames[0].Captured.Equal(first) {
+			t.Errorf("%s frame 0: got Captured %v, want %v", name, frames[0].Captured, first)
 		}
 	}
 
@@ -691,6 +699,103 @@ func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 		t.Errorf("pcm: emitted %d bytes, want exactly the second session's %d bytes", len(pcm), len(second))
 	}
 	checkTags("pcm", pcmGot.frames)
+}
+
+// TestStagesStampFramesContiguously pins that each frame's Captured is the
+// capture time of its own first sample: it advances by exactly the durations of
+// the frames before it, across PCM payload splits (including an uneven last
+// payload), Opus frames that straddle periods, and a period size that changes
+// mid-stream.
+func TestStagesStampFramesContiguously(t *testing.T) {
+	t.Parallel()
+	const rate, ch = 48000, 2
+	// Multiples of 48 frames, so every duration is an exact number of nanoseconds.
+	sizes := []int{2016, 480, 1440, 960, 336, 2016}
+	total := 0
+	for _, n := range sizes {
+		total += n
+	}
+	t0 := time.Unix(1700000000, 0)
+	dur := func(frames int) time.Duration { return time.Duration(frames) * time.Second / rate }
+	periods := func() []audio.Period {
+		pcm := tonePCM(total, ch)
+		out := make([]audio.Period, 0, len(sizes))
+		done := 0
+		for _, n := range sizes {
+			done += n
+			out = append(out, audio.Period{Buf: pcm[:n*ch*2], Frames: n, Captured: t0.Add(dur(done))})
+			pcm = pcm[n*ch*2:]
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name  string
+		stage pipeline.Stage
+	}{
+		{pipeline.CodecName(config.ModePCM), pipeline.NewPCM()},
+		{pipeline.CodecName(config.ModeOpus), pipeline.NewOpus(config.Opus{Bitrate: 64000})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var elapsed uint32
+			frames := 0
+			err := tc.stage.Run(audio.NewPeriodSource(rate, ch, periods()), nil, func(f pipeline.Frame) error {
+				if want := t0.Add(dur(int(elapsed))); !f.Captured.Equal(want) {
+					t.Errorf("frame %d: got Captured %v, want %v", frames, f.Captured, want)
+				}
+				elapsed += f.Duration
+				frames++
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if frames == 0 {
+				t.Fatal("no frames emitted")
+			}
+		})
+	}
+}
+
+// TestStageRunAllocsPerPeriod pins that a stage allocates nothing per period:
+// a run over many more periods allocates no more than a short one. The short
+// run is long enough to pass the encoder's one-time lazy allocation. Not
+// parallel: AllocsPerRun counts allocations process-wide.
+func TestStageRunAllocsPerPeriod(t *testing.T) {
+	const rate, ch = 48000, 2
+	gate := pipeline.Gate(func() (bool, uint64) { return true, 1 })
+	emit := func(pipeline.Frame) error { return nil }
+	for _, tc := range []struct {
+		name   string
+		stage  pipeline.Stage
+		frames int
+	}{
+		{pipeline.CodecName(config.ModePCM), pipeline.NewPCM(), 2016},
+		{pipeline.CodecName(config.ModeOpus), pipeline.NewOpus(config.Opus{Bitrate: 64000}), 1440},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := tonePCM(tc.frames, ch)
+			base := time.Unix(1700000000, 0)
+			mk := func(n int) []audio.Period {
+				out := make([]audio.Period, n)
+				for i := range out {
+					out[i] = audio.Period{Buf: buf, Frames: tc.frames, Session: 1, Captured: base}
+				}
+				return out
+			}
+			run := func(periods []audio.Period) float64 {
+				return testing.AllocsPerRun(10, func() {
+					if err := tc.stage.Run(audio.NewPeriodSource(rate, ch, periods), gate, emit); err != nil {
+						t.Fatalf("Run: %v", err)
+					}
+				})
+			}
+			short, long := run(mk(20)), run(mk(120))
+			if long != short {
+				t.Errorf("per-period allocations: got %v extra over 100 periods, want 0", long-short)
+			}
+		})
+	}
 }
 
 func TestSDPSpec(t *testing.T) {
