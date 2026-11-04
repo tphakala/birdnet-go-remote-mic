@@ -211,10 +211,13 @@ type deviceRuntime struct {
 	// Set and read only on the run-loop goroutine.
 	superseded bool
 
-	// started is when it began serving (set by openAndStart) and geometry is the
-	// period geometry the driver granted (zero when the source cannot report it;
-	// see audio.NegotiatedGeometry). Both are read only on the run-loop
+	// geoStep is the capture geometry ladder step this runtime actually opened at
+	// (below the step asked for after a fallback), started is when it began
+	// serving (both set by openAndStart) and geometry is the period geometry the
+	// driver granted (zero when the source cannot report it; see
+	// audio.NegotiatedGeometry). All three are read only on the run-loop
 	// goroutine, like superseded.
+	geoStep  int
 	started  time.Time
 	geometry audio.Geometry
 

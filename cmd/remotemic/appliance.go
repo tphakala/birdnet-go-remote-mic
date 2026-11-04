@@ -667,6 +667,11 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		step--
 		rt, err = a.open(&d, step, a.hub)
 	}
+	// A refusal is remembered even when the whole open then fails, so the next
+	// retry does not ask for a geometry the driver already refused.
+	if refusedAt >= 0 {
+		a.geometryRefuse(dev.Name, refusedAt)
+	}
 	if err != nil {
 		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
@@ -685,6 +690,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			supportedChannels: channels,
 		}
 	}
+	rt.geoStep = step
 	rt.started = time.Now()
 	if asked > 0 {
 		a.geometryOpened(dev.Name, rt, asked, step, first, refusedAt)
@@ -1099,7 +1105,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// Count a shortfall toward a larger capture period only for a device
 			// scheduleRetry keeps retrying (a stable id); see geometryShortfall.
 			if _, ok := errors.AsType[*capture.ShortfallError](res.err); ok && a.retries[name] != nil {
-				a.geometryShortfall(&res.rt.dev)
+				a.geometryShortfall(&res.rt.dev, res.rt.geoStep)
 			}
 			// Only a device scheduleRetry keeps retrying records its fault: a
 			// card-index id is never retried unattended, so the config save its

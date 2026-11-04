@@ -21,6 +21,9 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
 )
 
+// hour61 is a run long enough to count as stable (geometryStableRun).
+const hour61 = 61 * time.Minute
+
 func shortfallErr() error {
 	return &capture.ShortfallError{Rate: 48000, Window: 2 * time.Second, Expected: 96000, Delivered: 40000}
 }
@@ -168,7 +171,7 @@ func TestShortfallsRaiseCapturePeriodStepByStep(t *testing.T) {
 func TestCapturePeriodStepTransitions(t *testing.T) {
 	plain := errors.New("alsa: read failed")
 	otherID := "usb:ffff:0001:s=X:if=0,0"
-	const hour61 = 61 * time.Minute
+
 	cases := []struct {
 		name string
 		run  func(h *geoHarness, host *fakeHost)
@@ -627,6 +630,160 @@ func TestRefusedAboveTransientFallbackSetsCeilingBelowRefusal(t *testing.T) {
 		}
 		if st := h.app.geometry["moth"]; st == nil || st.ceiling != 2 || st.step != 2 {
 			t.Errorf("geometry state = %+v, want step 2 and ceiling 2", st)
+		}
+	})
+}
+
+// TestFallbackToDefaultClearsCondition pins that an open that lands at the
+// default period after an escalated ask clears the capture-period condition,
+// whether the larger sizes were refused or failed transiently, and that the
+// escalated step stays in state unless the ceiling forbids it.
+func TestFallbackToDefaultClearsCondition(t *testing.T) {
+	enomem := fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
+	eio := fmt.Errorf("open capture: %w", syscall.EIO)
+	cases := []struct {
+		name                  string
+		at2, at1              error
+		wantStep, wantCeiling int
+	}{
+		{"refused then transient", enomem, eio, 1, 1},
+		{"transient then transient", eio, eio, 2, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h, _, stop := newGeoHarness(t, new(mothDevice()))
+				defer stop()
+				armed := false
+				h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+					switch {
+					case armed && step == 2:
+						return tc.at2
+					case armed && step == 1:
+						return tc.at1
+					}
+					return nil
+				})
+				for range 3 {
+					h.shortfall()
+				}
+				h.wantGeometry(1, 0)
+				armed = true
+				h.shortfall()
+				h.wantSteps(0, 0, 1, 1, 2, 1, 0)
+				h.wantGeometry(1, 1)
+				if _, ok := activeGeometry(t, h.app, "moth"); ok {
+					t.Error("capture-period condition still active while capturing at the default period")
+				}
+				if st := h.app.geometry["moth"]; st == nil || st.step != tc.wantStep || st.ceiling != tc.wantCeiling {
+					t.Errorf("geometry state = %+v, want step %d and ceiling %d", st, tc.wantStep, tc.wantCeiling)
+				}
+			})
+		})
+	}
+}
+
+// TestShortfallFromFallbackRunDoesNotAdvanceLadder pins that a shortfall counts
+// only against the step the failing run actually opened at: a run that fell
+// back below the step in state neither counts nor resets, so the ladder does
+// not climb on evidence from a geometry it did not ask for.
+func TestShortfallFromFallbackRunDoesNotAdvanceLadder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		armed := false
+		h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+			if armed && step >= 2 {
+				return fmt.Errorf("open capture: %w", syscall.EIO)
+			}
+			return nil
+		})
+		for range 3 {
+			h.shortfall()
+		}
+		armed = true
+		for range 3 {
+			h.shortfall()
+		}
+		h.wantSteps(0, 0, 1, 1, 2, 1, 2, 1, 2, 1)
+		if st := h.app.geometry["moth"]; st == nil || st.step != 2 || st.shortfalls != 0 {
+			t.Errorf("geometry state = %+v, want step 2 with no shortfalls counted", st)
+		}
+	})
+}
+
+// TestRefusalThenTotalOpenFailureLowersCeiling pins that a refusal is recorded
+// even when the whole open then fails, so the next retry does not ask for a
+// geometry the driver already refused.
+func TestRefusalThenTotalOpenFailureLowersCeiling(t *testing.T) {
+	cases := []struct {
+		name  string
+		at1   error
+		at0   error
+		steps []int
+	}{
+		{"chain exhausted", fmt.Errorf("open capture: %w", syscall.EIO), fmt.Errorf("open capture: %w", syscall.EIO), []int{0, 0, 1, 1, 2, 1, 0}},
+		{"busy below the refusal", capture.ErrDeviceInUse, nil, []int{0, 0, 1, 1, 2, 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h, _, stop := newGeoHarness(t, new(mothDevice()))
+				defer stop()
+				armed := false
+				h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+					switch {
+					case armed && step == 2:
+						return fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
+					case armed && step == 1:
+						return tc.at1
+					case armed && step == 0:
+						return tc.at0
+					}
+					return nil
+				})
+				for range 3 {
+					h.shortfall()
+				}
+				armed = true
+				h.die(shortfallErr())
+				h.retry()
+				h.wantSteps(tc.steps...)
+				if s := h.app.devices["moth"].currentState(); s != mgmtserver.StateSkipped {
+					t.Fatalf("state = %s, want skipped when every open fails", s)
+				}
+				if st := h.app.geometry["moth"]; st == nil || st.ceiling != 1 || st.step != 1 {
+					t.Errorf("geometry state = %+v, want the refusal recorded as ceiling 1 and step 1", st)
+				}
+			})
+		})
+	}
+}
+
+// TestRunEndedLogNamesOpenedGeometry pins that the reset log names the geometry
+// the run actually served at, not the step in state, when the run had fallen back.
+func TestRunEndedLogNamesOpenedGeometry(t *testing.T) {
+	logBuf := captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		armed := false
+		h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+			if armed && step == 2 {
+				return fmt.Errorf("open capture: %w", syscall.EIO)
+			}
+			return nil
+		})
+		for range 3 {
+			h.shortfall()
+		}
+		armed = true
+		h.shortfall()
+		h.wantSteps(0, 0, 1, 1, 2, 1)
+		runFor(t, h.app, hour61)
+		h.die(errors.New("alsa: read failed"))
+		if got := logBuf.String(); !strings.Contains(got, "at a 20 ms period and 8 periods (160 ms buffer); its next open uses the default") {
+			t.Errorf("log = %q, want the reset line to name the step 1 geometry the run served at", got)
 		}
 	})
 }

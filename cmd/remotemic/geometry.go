@@ -147,7 +147,7 @@ func (a *appliance) geometryRunEnded(rt *deviceRuntime) {
 	if st.step == 0 {
 		return
 	}
-	log.Printf("device %q: served %s at %s; its next open uses the default capture period", name, served.Round(time.Minute), describeGeometry(rt.geometryOrStep(st.step), rt.rate))
+	log.Printf("device %q: served %s at %s; its next open uses the default capture period", name, served.Round(time.Minute), describeGeometry(rt.geometryOrStep(rt.geoStep), rt.rate))
 	a.notifier.Clear(geometryKey(name), notify.Notification{
 		Severity: notify.SeverityInfo,
 		Title:    "Capture period back to default",
@@ -157,15 +157,21 @@ func (a *appliance) geometryRunEnded(rt *deviceRuntime) {
 
 // geometryShortfall counts a shortfall of a device that stays on the backoff
 // retry, and raises the step its next open asks for after geometryShortfalls of
-// them at one step. It raises no notification: the condition says what is in
-// effect, so only an open that succeeded at the step raises it (geometryOpened).
-func (a *appliance) geometryShortfall(dev *config.Device) {
+// them at one step. openedStep is the step the failing run actually opened at:
+// a run that fell back below the step in state says nothing about that step, so
+// it neither counts nor resets. It raises no notification: the condition says
+// what is in effect, so only an open that succeeded at the step raises it
+// (geometryOpened).
+func (a *appliance) geometryShortfall(dev *config.Device, openedStep int) {
 	st := a.geometry[dev.Name]
 	if st == nil {
+		if openedStep != 0 {
+			return
+		}
 		st = &geometryState{device: dev.Device, rate: dev.Rate, channels: dev.StreamChannelUnion(), ceiling: len(geometryLadder) - 1}
 		a.geometry[dev.Name] = st
 	}
-	if st.step >= st.ceiling {
+	if openedStep != st.step || st.step >= st.ceiling {
 		return
 	}
 	st.shortfalls++
@@ -178,15 +184,27 @@ func (a *appliance) geometryShortfall(dev *config.Device) {
 		describeGeometry(geometryFor(dev.Rate, st.step-1), dev.Rate), describeGeometry(geometryFor(dev.Rate, st.step), dev.Rate))
 }
 
+// geometryRefuse records that the driver refused the geometry of step refusedAt
+// (the lowest refused step of an open attempt): the ceiling drops below it and
+// the step follows, whether or not the attempt then opened at a lower step.
+func (a *appliance) geometryRefuse(name string, refusedAt int) {
+	st := a.geometry[name]
+	if st == nil {
+		return
+	}
+	st.ceiling = min(st.ceiling, refusedAt-1)
+	st.step = min(st.step, st.ceiling)
+	st.shortfalls = 0
+}
+
 // geometryOpened records the outcome of an open that asked for step asked and
 // succeeded at step got (lower after a fallback, firstErr being the failure that
-// started it). refusedAt is the lowest step whose open failed with an error
-// that means the driver refused the geometry (see geometryRefused), or -1. Only
-// a refusal lowers the ceiling, to the step below it; a fallback with no
-// refusal serves this open at the lower step and leaves the step, the ceiling
-// and the condition alone, so the next open asks for the escalated step again.
-// Otherwise it raises or rewrites the capture-period condition with the
-// geometry the driver granted, or clears it when the ceiling is the default.
+// started it); refusedAt is as for geometryRefuse, or -1. The capture-period
+// condition must say what is in effect: an open at the default clears it
+// whatever the reason, and a fallback to another escalated step rewrites it only
+// after a refusal (a transient fallback leaves it, and the step in state, so the
+// next open asks for the escalated step again). An open at the asked step raises
+// or rewrites it with the geometry the driver granted.
 func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got int, firstErr error, refusedAt int) {
 	st := a.geometry[name]
 	if st == nil {
@@ -195,21 +213,20 @@ func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got in
 	if got < asked {
 		log.Printf("device %q: opening with %s failed (%v); using %s", name,
 			describeGeometry(geometryFor(rt.rate, asked), rt.rate), firstErr, describeGeometry(rt.geometryOrStep(got), rt.rate))
-		if refusedAt < 0 {
-			return
-		}
-		st.ceiling = min(st.ceiling, refusedAt-1)
-		st.step = min(st.step, st.ceiling)
-		st.shortfalls = 0
 	}
 	if got == 0 {
+		msg := "A larger capture period did not open this time; capture uses the default period."
 		if st.ceiling == 0 {
-			a.notifier.Clear(geometryKey(name), notify.Notification{
-				Severity: notify.SeverityInfo,
-				Title:    "Capture period back to default",
-				Message:  "The larger capture period did not open; capture uses the default period.",
-			})
+			msg = "The driver refused a larger capture period; capture uses the default period."
 		}
+		a.notifier.Clear(geometryKey(name), notify.Notification{
+			Severity: notify.SeverityInfo,
+			Title:    "Capture period back to default",
+			Message:  msg,
+		})
+		return
+	}
+	if got < asked && refusedAt < 0 {
 		return
 	}
 	n := geometryOnset(name, rt.geometryOrStep(got), rt.rate)
