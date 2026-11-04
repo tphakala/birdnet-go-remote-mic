@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -80,6 +81,24 @@ type fakeOpenLog struct {
 	mu      sync.Mutex
 	events  []string
 	sources map[string]*blockingSource
+	steps   map[string][]int
+}
+
+// addStep records the capture geometry ladder step an open asked for.
+func (l *fakeOpenLog) addStep(name string, step int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.steps == nil {
+		l.steps = make(map[string][]int)
+	}
+	l.steps[name] = append(l.steps[name], step)
+}
+
+// stepsFor returns the ladder steps the named device's opens asked for, in order.
+func (l *fakeOpenLog) stepsFor(name string) []int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.steps[name])
 }
 
 func (l *fakeOpenLog) setSource(name string, src *blockingSource) {
@@ -137,15 +156,16 @@ func (l *fakeOpenLog) snapshot() []string {
 // Tracks) around a blocking fake source, logging each open and each source close
 // through log. It mirrors production openDevice: one metered base capture fanned
 // out into one runtime per configured stream.
-func fakeOpener(log *fakeOpenLog) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
+func fakeOpener(log *fakeOpenLog) func(*config.Device, int, *levels.Hub) (*deviceRuntime, error) {
 	return fakeOpenerWith(log, func(rate, channels int) audio.Source { return newBlockingSource(rate, channels) })
 }
 
 // fakeOpenerWith is fakeOpener around the capture source newSrc builds, so a test
 // can open a device whose capture fails after the open succeeds.
-func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Source) func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
-	return func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+func fakeOpenerWith(log *fakeOpenLog, newSrc func(rate, channels int) audio.Source) func(*config.Device, int, *levels.Hub) (*deviceRuntime, error) {
+	return func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 		log.add("open:" + dev.Name + "@" + dev.Device)
+		log.addStep(dev.Name, step)
 		// Mirror production ResolveOpenChannels: open at >= the highest selected
 		// channel (the union is sorted-unique, so its last element is the max), not
 		// len(union), so a non-contiguous selection like [1,3] opens 3 channels and a
@@ -312,8 +332,8 @@ func TestAppliancePumpGatesStageOnFeed(t *testing.T) {
 	// One slot per stream, so no stage blocks handing over its gate.
 	gates := make(chan recordedGate, len(dev.Streams))
 	open := fakeOpener(log)
-	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
-		rt, err := open(dev, hub)
+	app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
+		rt, err := open(dev, step, hub)
 		if err != nil {
 			return nil, err
 		}

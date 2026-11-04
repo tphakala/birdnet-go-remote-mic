@@ -17,7 +17,7 @@ import (
 // failOpen makes the appliance's device opener fail, so a reconcile skips the
 // device and takes the open-failure path.
 func failOpen(app *appliance) {
-	app.open = func(*config.Device, *levels.Hub) (*deviceRuntime, error) {
+	app.open = func(*config.Device, int, *levels.Hub) (*deviceRuntime, error) {
 		return nil, errors.New("open boom")
 	}
 }

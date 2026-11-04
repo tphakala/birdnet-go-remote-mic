@@ -121,10 +121,11 @@ type appliance struct {
 	announced []announce.Info
 
 	// open builds and starts one device's runtime, resolving the hardware open
-	// channel count per attempt (see openDeviceRetry). It is a field so tests can
-	// inject a fake capture source instead of opening real ALSA hardware; in
-	// production it is openDeviceRetry.
-	open func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error)
+	// channel count per attempt (see openDeviceRetry), at capture geometry ladder
+	// step step (0 is the library default). It is a field so tests can inject a
+	// fake capture source instead of opening real ALSA hardware; in production it
+	// is openDeviceRetry.
+	open func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error)
 
 	// resolve maps a configured device id to the hardware it names right now,
 	// without opening it. It is a field so tests can inject a host device list
@@ -161,10 +162,18 @@ type appliance struct {
 	// state, so a disconnect or a restart that cannot have fixed the encoder
 	// does not clear the device's condition before the stream proves itself.
 	encodeFaults map[string]encodeFault
-	retryTimer   *time.Timer
-	retryAt      time.Time
-	retryDue     chan struct{}
-	quietDown    bool
+	// geometry holds, per device name, the capture geometry ladder step the
+	// device's next open asks for after repeated shortfalls (see geometryState).
+	// It outlives the retry state and the runtime, so a disconnect, a retry or a
+	// config save that leaves the capture alone keeps a step the device earned;
+	// it is forgotten for a changed capture id, rate or stream channel set, a
+	// removed or disabled device, and after a stable run. Memory only, so a process restart opens at
+	// the default.
+	geometry   map[string]*geometryState
+	retryTimer *time.Timer
+	retryAt    time.Time
+	retryDue   chan struct{}
+	quietDown  bool
 }
 
 func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, prov *provider, guard *auth.Guard, notifier notify.Publisher) *appliance {
@@ -190,6 +199,7 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		advertised:   map[string]bool{},
 		retries:      map[string]*retryState{},
 		encodeFaults: map[string]encodeFault{},
+		geometry:     map[string]*geometryState{},
 		retryDue:     make(chan struct{}, 1),
 		pumpDone:     make(chan pumpResult, pumpBacklog),
 		open:         openDeviceRetry,
@@ -578,6 +588,9 @@ func (a *appliance) openRefused(dev *config.Device) bool {
 // Its refusals before any open are the ones openRefused checks; a new refusal
 // belongs in both, or restartFaulted would restart a device this refuses.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
+	// First, before any refusal below: a step earned under another capture
+	// identity must not survive a configuration that cannot open at all.
+	asked := a.geometryStep(dev)
 	res := a.hw[dev.Device]
 	hw := res.hw
 	if res.err != nil {
@@ -641,7 +654,24 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rates, channels = a.rememberCaps(dev.Device, rates, channels)
 
 	d := *dev
-	rt, err := a.open(&d, a.hub)
+	step := asked
+	rt, err := a.open(&d, step, a.hub)
+	// An escalated open that fails must not make the device less available than
+	// the default would: fall back one step at a time, down to the default.
+	first := err
+	refusedAt := -1
+	for err != nil && step > 0 && geometryFallback(err) {
+		if geometryRefused(err) {
+			refusedAt = step
+		}
+		step--
+		rt, err = a.open(&d, step, a.hub)
+	}
+	// A refusal is remembered even when the whole open then fails, so the next
+	// retry does not ask for a geometry the driver already refused.
+	if refusedAt >= 0 {
+		a.geometryRefuse(dev.Name, refusedAt)
+	}
 	if err != nil {
 		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
@@ -660,6 +690,11 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			supportedChannels: channels,
 		}
 	}
+	rt.geoStep = step
+	rt.started = time.Now()
+	if asked > 0 {
+		a.geometryOpened(dev.Name, rt, asked, first)
+	}
 	rt.state = mgmtserver.StateServing
 	rt.friendlyName = hw.Label
 	rt.hwAddr = hw.HWAddr
@@ -670,10 +705,16 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	}
 	a.alive++
 	go a.pump(rt)
+	// Step 0 logs exactly as it always did; an escalated open names its period.
+	geo := ""
+	if step > 0 {
+		g := rt.geometryOrStep(step)
+		geo = fmt.Sprintf(", period %d frames x %d", g.PeriodFrames, g.Periods)
+	}
 	if len(rt.streams) == 1 {
-		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path)
+		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %s%s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), rt.streams[0].stream.Path, geo)
 	} else {
-		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %d streams", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams))
+		a.logAttemptf("capture %q: %d Hz, %d ch on %s%s serving %d streams%s", rt.dev.Name, rt.rate, rt.channels, rt.dev.Device, atAddr(&hw), len(rt.streams), geo)
 	}
 	return rt
 }
@@ -754,6 +795,7 @@ func (a *appliance) startDevice(dev *config.Device) {
 // the alive count, so stop does not.
 func (a *appliance) stop(rt *deviceRuntime) {
 	rt.superseded = true
+	a.geometryRunEnded(rt)
 	for _, sr := range rt.streams {
 		a.srv.RemoveTrack(sr.track.Path)
 		sr.frames.Close()
@@ -901,6 +943,7 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		delete(a.downReason, d.Name)
 		delete(a.retries, d.Name)
 		delete(a.encodeFaults, d.Name)
+		a.dropGeometry(d.Name, "device disabled")
 		hw := a.hw[d.Device].hw
 		a.devices[d.Name] = &deviceRuntime{dev: d, state: mgmtserver.StateDisabled, friendlyName: hw.Label, hwAddr: hw.HWAddr}
 	}
@@ -922,6 +965,7 @@ func (a *appliance) reconcileRecords(newCfg *config.Config) {
 		delete(a.downReason, name)
 		delete(a.retries, name)
 		delete(a.encodeFaults, name)
+		a.dropGeometry(name, "device removed from the configuration")
 		delete(a.devices, name)
 	}
 	a.armRetryTimer()
@@ -975,6 +1019,9 @@ func (a *appliance) onPumpDone(res pumpResult) {
 		}
 		res.rt.markFailed(res.err, cause)
 		name := res.rt.dev.Name
+		// The run is over either way: a run of an hour or more forgets the device's
+		// capture period escalation, before a shortfall below counts again.
+		a.geometryRunEnded(res.rt)
 		// A device that died after opening enters the same down condition as one
 		// that never opened. Decide whether the device was LOST (unplugged or
 		// powered off) or merely FAILED while still present. ErrDeviceGone is the
@@ -1035,6 +1082,8 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			// named as a stall in the log, the message, the cause and the title. It
 			// is retryable and one condition with failed (see sameCondition), so the
 			// banner pairing and the one-onset rule hold.
+			// A *ShortfallError also counts toward a larger capture period (see
+			// geometryShortfall); a *StallError does not.
 			if a.nextFailureLogged(name) {
 				if stalled {
 					log.Printf("device %q failed: stalled, the device stopped delivering audio (%v); its %d stream path(s) return 404 until %s", name, res.err, len(res.rt.streams), restart)
@@ -1053,6 +1102,11 @@ func (a *appliance) onPumpDone(res pumpResult) {
 			n := deviceDownOnset(name, title, msg)
 			a.markDown(name, cause, &n)
 			a.scheduleRetry(&res.rt.dev, false)
+			// Count a shortfall toward a larger capture period only for a device
+			// scheduleRetry keeps retrying (a stable id); see geometryShortfall.
+			if _, ok := errors.AsType[*capture.ShortfallError](res.err); ok && a.retries[name] != nil {
+				a.geometryShortfall(&res.rt.dev, res.rt.geoStep)
+			}
 			// Only a device scheduleRetry keeps retrying records its fault: a
 			// card-index id is never retried unattended, so the config save its
 			// condition points the operator at restarts and clears it at once.

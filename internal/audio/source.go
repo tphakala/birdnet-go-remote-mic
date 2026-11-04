@@ -53,6 +53,31 @@ func Overruns(src Source) uint64 {
 	return 0
 }
 
+// Geometry is a requested capture period geometry. The zero value asks for the
+// library default (20 ms x 4 on Linux); non-zero values are targets the driver
+// may move to the nearest geometry it accepts, so read the granted values back
+// with NegotiatedGeometry.
+type Geometry struct {
+	PeriodFrames int // frames per period
+	Periods      int // periods in the ring buffer
+}
+
+// geometryReporter is implemented by a Source that knows the capture period
+// geometry its driver granted.
+type geometryReporter interface {
+	NegotiatedGeometry() Geometry
+}
+
+// NegotiatedGeometry returns the period geometry the driver granted src, and
+// false for a source that cannot report one (a fake, a wrapper). It reads the
+// stream's negotiated config, so call it once per open, not per period.
+func NegotiatedGeometry(src Source) (Geometry, bool) {
+	if r, ok := src.(geometryReporter); ok {
+		return r.NegotiatedGeometry(), true
+	}
+	return Geometry{}, false
+}
+
 // NewFakeSource returns a Source that replays periods (each a slice of S16LE
 // bytes) in order, then returns io.EOF. It is used by the pipeline and server
 // tests to drive the send path without hardware.

@@ -11,7 +11,9 @@ not break.
   `OpenCapture` tries S16LE, S32LE, S24_LE, S24_3LE, downconverting to S16,
   and refuses a rate mismatch (never resample silently). Devices bind by
   stable USB identity, not ALSA card index. `fanout.go` splits one capture
-  into per-stream channel subsets.
+  into per-stream channel subsets. `OpenCaptureAt` takes a `Geometry`; zero
+  means the library default period, and `NegotiatedGeometry` reads what the
+  driver granted.
 - `pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM` (L16)
   and `NewOpus` (960-sample frames). `Frame.Captured` is capture time. `Run`
   takes a `Gate` (`Feed.Session`, active flag plus play session): a period

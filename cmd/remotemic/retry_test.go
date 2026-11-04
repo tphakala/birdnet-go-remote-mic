@@ -57,13 +57,13 @@ func runFor(t *testing.T, app *appliance, d time.Duration) {
 // opens counts every attempt.
 func failOpenTimes(app *appliance, log *fakeOpenLog, n int) {
 	next := app.open
-	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+	app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 		if n > 0 {
 			n--
 			log.add("open:" + dev.Name + "@" + dev.Device)
 			return nil, errors.New("device or resource busy")
 		}
-		return next(dev, hub)
+		return next(dev, step, hub)
 	}
 }
 
@@ -218,14 +218,14 @@ func TestRetryCauseSwitchKeepsOneCondition(t *testing.T) {
 				})
 				// diesFirst: the first open succeeds and dies, then the opens fail.
 				fails, opened := tc.failOpens, false
-				app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+				app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 					if fails > 0 && (!tc.diesFirst || opened) {
 						fails--
 						log.add("open:" + dev.Name + "@" + dev.Device)
 						return nil, errors.New("device or resource busy")
 					}
 					opened = true
-					return opener(dev, hub)
+					return opener(dev, step, hub)
 				}
 				app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", 48000)}})
 
@@ -340,12 +340,12 @@ func TestRetryStopsWhenDeviceRemoved(t *testing.T) {
 		defer shutdownApp(app, cancel)
 		keep := testDevice("scarlett", idScarlett, "/s", 48000)
 		next := fakeOpener(log)
-		app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+		app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 			if dev.Name == "moth" {
 				log.add("open:" + dev.Name + "@" + dev.Device)
 				return nil, errors.New("device or resource busy")
 			}
-			return next(dev, hub)
+			return next(dev, step, hub)
 		}
 		app.reconcile(&config.Config{Devices: []config.Device{keep, testDevice("moth", idMoth, "/m", 48000)}})
 		if !app.retrying("moth") {
@@ -564,13 +564,13 @@ func TestRetryNewOutageIsLoggedFromItsFirstFailure(t *testing.T) {
 			}
 			return newBlockingSource(rate, channels)
 		})
-		app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+		app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 			if fails > 0 {
 				fails--
 				opLog.add("open:" + dev.Name + "@" + dev.Device)
 				return nil, errors.New("device or resource busy")
 			}
-			return opener(dev, hub)
+			return opener(dev, step, hub)
 		}
 		const rate = 48000
 		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", idMoth, "/m", rate)}})
@@ -677,12 +677,12 @@ func TestRetryConfigSaveRecoversRetryingDevice(t *testing.T) {
 				defer shutdownApp(app, cancel)
 				broken := true
 				next := app.open
-				app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+				app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 					if broken {
 						opLog.add("open:" + dev.Name + "@" + dev.Device)
 						return nil, errors.New("device or resource busy")
 					}
-					return next(dev, hub)
+					return next(dev, step, hub)
 				}
 				dev := testDevice("moth", idMoth, "/m", 48000)
 				app.reconcile(&config.Config{Devices: []config.Device{dev}})

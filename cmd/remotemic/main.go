@@ -211,6 +211,16 @@ type deviceRuntime struct {
 	// Set and read only on the run-loop goroutine.
 	superseded bool
 
+	// geoStep is the capture geometry ladder step this runtime actually opened at
+	// (below the step asked for after a fallback), started is when it began
+	// serving (both set by openAndStart) and geometry is the period geometry the
+	// driver granted (zero when the source cannot report it; see
+	// audio.NegotiatedGeometry). All three are read only on the run-loop
+	// goroutine, like superseded.
+	geoStep  int
+	started  time.Time
+	geometry audio.Geometry
+
 	// awaitEncode asks the stage goroutines to wake the run loop (through
 	// retryDue) when a stream encodes its first frame. Set by the run loop before
 	// it checks any stream's encoded flag, and read by a stage after it sets its
@@ -259,12 +269,13 @@ var runtimeGen atomic.Uint64
 // client is playing (with several clients on one stream, that is one copy and
 // one encode shared by all of them). Each stream extracts its own channels from the shared
 // capture with a selecting source, so the device opens the hardware exactly once.
-func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime, error) {
-	base, capFormat, err := openCaptureAt(dev, openCh)
+func openDevice(dev *config.Device, openCh int, geo audio.Geometry, hub *levels.Hub) (*deviceRuntime, error) {
+	base, capFormat, err := openCaptureAt(dev, openCh, geo)
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
 	rate, channels := base.Negotiated()
+	granted, _ := audio.NegotiatedGeometry(base)
 
 	// Build every stream's stage, SDP and track before starting anything, so a
 	// failure here closes the capture and reports the device skipped rather than
@@ -308,6 +319,7 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 		rate:     rate,
 		channels: channels,
 		format:   capFormat.String(),
+		geometry: granted,
 	}, nil
 }
 
@@ -331,14 +343,20 @@ func openDevice(dev *config.Device, openCh int, hub *levels.Hub) (*deviceRuntime
 // The capture open is non-blocking (go-audio-capture opens O_NONBLOCK), so a
 // device another process holds fails at once with ErrDeviceInUse and is retried,
 // then reported skipped, without parking the reconcile goroutine that runs this.
-func openDeviceRetry(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
+//
+// step is the capture geometry ladder step to open at (see geometryLadder); 0 is
+// the library default. The retry budget applies at every step; a caller that
+// wants a fallback to a smaller step after it is spent does that itself (see
+// openAndStart).
+func openDeviceRetry(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
 	const attempts = 5
 	const delay = 50 * time.Millisecond
+	geo := geometryFor(dev.Rate, step)
 	var err error
 	for i := range attempts {
 		openCh := resolveOpenChannels(dev.Device, dev.StreamChannelUnion())
 		var rt *deviceRuntime
-		if rt, err = openDevice(dev, openCh, hub); err == nil {
+		if rt, err = openDevice(dev, openCh, geo, hub); err == nil {
 			return rt, nil
 		}
 		if permanentOpenError(err) {
