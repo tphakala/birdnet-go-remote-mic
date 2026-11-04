@@ -138,21 +138,22 @@ func TestSelectingSourceReusesBufferAcrossReads(t *testing.T) {
 	}
 }
 
-func TestSelectingSourceKeepsSessionAndCaptureTime(t *testing.T) {
+func TestSelectingSourceKeepsPeriodTags(t *testing.T) {
 	t.Parallel()
-	// The fan-out tags a period with its play session and capture time; a
-	// stream's channel selection sits between the fan-out and the stage, so
-	// it must pass both through, or the stage would encode a stale period.
+	// The fan-out tags a period with its play session, capture time and stream
+	// position; a stream's channel selection sits between the fan-out and the
+	// stage, so it must pass them through, or the stage would encode a stale
+	// period or see a position gap on every period.
 	captured := time.Unix(1700000000, 0)
 	inner := NewPeriodSource(48000, 4, []Period{
-		{Buf: interleave(2, 4, func(f, c int) int16 { return int16(f + c) }), Frames: 2, Session: 7, Captured: captured},
+		{Buf: interleave(2, 4, func(f, c int) int16 { return int16(f + c) }), Frames: 2, Pos: 42, Session: 7, Captured: captured},
 	})
 	got, err := NewSelectingSource(inner, 4, []int{2}).Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got.Session != 7 || !got.Captured.Equal(captured) {
-		t.Errorf("got session %d captured %v, want 7 and %v", got.Session, got.Captured, captured)
+	if got.Session != 7 || got.Pos != 42 || !got.Captured.Equal(captured) {
+		t.Errorf("got session %d pos %d captured %v, want 7, 42 and %v", got.Session, got.Pos, got.Captured, captured)
 	}
 }
 

@@ -628,7 +628,7 @@ func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 	tagged := func() []audio.Period {
 		out := make([]audio.Period, len(raw))
 		for i, b := range raw {
-			out[i] = audio.Period{Buf: b, Frames: 480, Session: 1, Captured: base.Add(time.Duration(i) * 10 * time.Millisecond)}
+			out[i] = audio.Period{Buf: b, Frames: 480, Pos: uint64(i) * 480, Session: 1, Captured: base.Add(time.Duration(i) * 10 * time.Millisecond)}
 			if i >= 3 {
 				out[i].Session = 2
 			}
@@ -701,8 +701,8 @@ func TestStagesDropPeriodsQueuedForEarlierSession(t *testing.T) {
 	checkTags("pcm", pcmGot.frames)
 }
 
-// TestStagesStampFramesContiguously pins that each frame's Captured is the
-// capture time of its own first sample: it advances by exactly the durations of
+// TestStagesStampFramesContiguously pins that each frame's Captured and Pos
+// are those of its own first sample: they advance by exactly the durations of
 // the frames before it, across PCM payload splits (including an uneven last
 // payload), Opus frames that straddle periods, and a period size that changes
 // mid-stream.
@@ -716,14 +716,16 @@ func TestStagesStampFramesContiguously(t *testing.T) {
 		total += n
 	}
 	t0 := time.Unix(1700000000, 0)
+	const base = 5000 // a stream position that is not zero
 	dur := func(frames int) time.Duration { return time.Duration(frames) * time.Second / rate }
 	periods := func() []audio.Period {
 		pcm := tonePCM(total, ch)
 		out := make([]audio.Period, 0, len(sizes))
 		done := 0
 		for _, n := range sizes {
+			pos := uint64(base + done)
 			done += n
-			out = append(out, audio.Period{Buf: pcm[:n*ch*2], Frames: n, Captured: t0.Add(dur(done))})
+			out = append(out, audio.Period{Buf: pcm[:n*ch*2], Frames: n, Pos: pos, Captured: t0.Add(dur(done))})
 			pcm = pcm[n*ch*2:]
 		}
 		return out
@@ -743,6 +745,9 @@ func TestStagesStampFramesContiguously(t *testing.T) {
 				if want := t0.Add(dur(int(elapsed))); !f.Captured.Equal(want) {
 					t.Errorf("frame %d: got Captured %v, want %v", frames, f.Captured, want)
 				}
+				if want := uint64(base) + uint64(elapsed); f.Pos != want {
+					t.Errorf("frame %d: got Pos %d, want %d", frames, f.Pos, want)
+				}
 				elapsed += f.Duration
 				frames++
 				return nil
@@ -755,6 +760,93 @@ func TestStagesStampFramesContiguously(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStagesLeavePositionGapAfterDroppedPeriod pins that audio the fan-out
+// dropped shows up as a gap in the frames' Pos and Captured, and that an Opus
+// frame never splices samples across it: the partial frame before the gap is
+// discarded and the encoder carries on, as the decoder holds the last frame it
+// produced.
+func TestStagesLeavePositionGapAfterDroppedPeriod(t *testing.T) {
+	t.Parallel()
+	const rate, ch = 48000, 1
+	const base = 1000 // a stream position that is not zero
+	t0 := time.Unix(1700000000, 0)
+	dur := func(frames int) time.Duration { return time.Duration(frames) * time.Second / rate }
+	// p0 holds one whole Opus frame and half of the next; p1 (480 frames) was
+	// dropped by the fan-out; p2..p5 follow.
+	pcm := tonePCM(1440+480+4*480, ch)
+	sizes := []int{1440, 480, 480, 480, 480, 480}
+	var periods []audio.Period
+	starts := make([]int, 0, len(sizes)) // first frame of each upstream period, dropped one included
+	at := 0
+	for i, n := range sizes {
+		starts = append(starts, at)
+		if i != 1 {
+			periods = append(periods, audio.Period{
+				Buf: pcm[at*2 : (at+n)*2], Frames: n, Pos: uint64(base + at), Captured: t0.Add(dur(at + n)),
+			})
+		}
+		at += n
+	}
+	postGap := starts[2] // frame index of p2
+
+	run := func(t *testing.T, stage pipeline.Stage) []pipeline.Frame {
+		t.Helper()
+		var out []pipeline.Frame
+		err := stage.Run(audio.NewPeriodSource(rate, ch, periods), nil, func(f pipeline.Frame) error {
+			f.Payload = append([]byte(nil), f.Payload...)
+			out = append(out, f)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return out
+	}
+	t.Run(pipeline.CodecName(config.ModePCM), func(t *testing.T) {
+		t.Parallel()
+		var found bool
+		for _, f := range run(t, pipeline.NewPCM()) {
+			if f.Pos != uint64(base+postGap) {
+				continue
+			}
+			found = true
+			if want := t0.Add(dur(postGap)); !f.Captured.Equal(want) {
+				t.Errorf("first payload after the gap: got Captured %v, want %v", f.Captured, want)
+			}
+		}
+		if !found {
+			t.Errorf("no payload at Pos %d (the first sample after the gap)", base+postGap)
+		}
+	})
+	t.Run(pipeline.CodecName(config.ModeOpus), func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Opus{Bitrate: 64000}
+		got := run(t, pipeline.NewOpus(cfg))
+		// Frame 0 is p0[0:960]; the 480 frames after it are discarded; the
+		// post-gap audio (p2..p5, 1920 frames) is two whole frames.
+		wantPos := []uint64{base, uint64(base + postGap), uint64(base + postGap + 960)}
+		wantAt := []time.Time{t0, t0.Add(dur(postGap)), t0.Add(dur(postGap + 960))}
+		if len(got) != len(wantPos) {
+			t.Fatalf("got %d frames, want %d", len(got), len(wantPos))
+		}
+		for i, f := range got {
+			if f.Pos != wantPos[i] {
+				t.Errorf("frame %d: got Pos %d, want %d", i, f.Pos, wantPos[i])
+			}
+			if !f.Captured.Equal(wantAt[i]) {
+				t.Errorf("frame %d: got Captured %v, want %v", i, f.Captured, wantAt[i])
+			}
+		}
+		// One encoder run over the audio that was sent, no reset at the gap.
+		sent := append(append([]byte(nil), pcm[:960*2]...), pcm[postGap*2:]...)
+		for i, w := range referenceOpus(t, cfg, sent, ch) {
+			if i < len(got) && !bytes.Equal(got[i].Payload, w) {
+				t.Errorf("frame %d differs from the encoder's output over the audio that was sent", i)
+			}
+		}
+	})
 }
 
 // TestStageRunAllocsPerPeriod pins that a stage allocates nothing per period:
@@ -779,7 +871,7 @@ func TestStageRunAllocsPerPeriod(t *testing.T) {
 			mk := func(n int) []audio.Period {
 				out := make([]audio.Period, n)
 				for i := range out {
-					out[i] = audio.Period{Buf: buf, Frames: tc.frames, Session: 1, Captured: base}
+					out[i] = audio.Period{Buf: buf, Frames: tc.frames, Pos: uint64(i * tc.frames), Session: 1, Captured: base}
 				}
 				return out
 			}

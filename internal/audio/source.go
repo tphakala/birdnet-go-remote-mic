@@ -13,6 +13,14 @@ import (
 type Period struct {
 	Buf    []byte
 	Frames int
+	// Pos is the stream position of the period's first frame, counted in frames
+	// at the capture rate from the start of the fan-out's capture. The fan-out
+	// counts every period it read, including ones it sent no consumer (idle) or
+	// dropped for a full queue, so a gap in Pos between two periods a stage reads
+	// is exactly the audio lost between them. Zero for a period straight from a
+	// capture; NewFakeSource numbers its periods the same way, and NewPeriodSource
+	// keeps it as given.
+	Pos uint64
 	// Session is the play session of the stream a fan-out consumer's period
 	// was sent for (see FanoutStream.Gate), so a stage can drop a period queued
 	// for an earlier play session rather than encode it for the current one.
@@ -82,7 +90,8 @@ func NegotiatedGeometry(src Source) (Geometry, bool) {
 
 // NewFakeSource returns a Source that replays periods (each a slice of S16LE
 // bytes) in order, then returns io.EOF. It is used by the pipeline and server
-// tests to drive the send path without hardware.
+// tests to drive the send path without hardware. Each period's Pos is the
+// frames replayed before it.
 func NewFakeSource(rate, channels int, periods [][]byte) Source {
 	return &fakeSource{rate: rate, channels: channels, periods: periods}
 }
@@ -91,6 +100,7 @@ type fakeSource struct {
 	rate, channels int
 	periods        [][]byte
 	idx            int
+	pos            uint64 // Period.Pos of the next period
 }
 
 func (f *fakeSource) Negotiated() (rate, channels int) { return f.rate, f.channels }
@@ -101,7 +111,10 @@ func (f *fakeSource) Read() (Period, error) {
 	}
 	p := f.periods[f.idx]
 	f.idx++
-	return Period{Buf: p, Frames: len(p) / (2 * f.channels)}, nil
+	frames := len(p) / (2 * f.channels)
+	pos := f.pos
+	f.pos += uint64(frames)
+	return Period{Buf: p, Frames: frames, Pos: pos}, nil
 }
 
 func (f *fakeSource) Close() error { return nil }
@@ -109,7 +122,7 @@ func (f *fakeSource) Close() error { return nil }
 // NewPeriodSource returns a Source that replays whole periods in order, then
 // returns io.EOF. Unlike NewFakeSource it keeps every Period field as given,
 // so a test can hand a consumer what a fan-out queues: periods carrying a play
-// session and a capture time.
+// session, a capture time and a stream position.
 func NewPeriodSource(rate, channels int, periods []Period) Source {
 	return &periodSource{rate: rate, channels: channels, periods: periods}
 }

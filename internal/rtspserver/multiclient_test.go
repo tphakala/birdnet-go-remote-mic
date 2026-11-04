@@ -57,8 +57,9 @@ func feedTrack() (*Track, *Feed) {
 	return &Track{Path: testPath, SDP: testSDP, PayloadType: 96, Feed: f}, f
 }
 
-func pushOne(f *Feed) int {
-	return f.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: time.Now()})
+// pushOne pushes one 160-tick frame at stream position pos.
+func pushOne(f *Feed, pos uint64) int {
+	return f.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Pos: pos, Captured: time.Now()})
 }
 
 // TestSecondClientSurvivesFirstLeaving pins that clients are independent: A
@@ -75,10 +76,12 @@ func TestSecondClientSurvivesFirstLeaving(t *testing.T) {
 
 	var bSeen []rtp.Header
 	var aSSRC uint32
+	var pos uint64
 	for range 5 {
-		if pushOne(feed) != 0 {
+		if pushOne(feed, pos) != 0 {
 			t.Fatal("a frame was dropped with both clients reading")
 		}
+		pos += 160
 		aSSRC = a.nextRTP(t).SSRC
 		bSeen = append(bSeen, b.nextRTP(t))
 	}
@@ -87,7 +90,8 @@ func TestSecondClientSurvivesFirstLeaving(t *testing.T) {
 	waitFor(t, func() bool { return feed.Clients() == 1 }, 2*time.Second, "A to unsubscribe")
 
 	for range 5 {
-		pushOne(feed)
+		pushOne(feed, pos)
+		pos += 160
 		bSeen = append(bSeen, b.nextRTP(t))
 	}
 
@@ -122,7 +126,7 @@ func TestSilentConnectionDoesNotBlockNewClient(t *testing.T) {
 	fresh := dial(t, addr)
 	setupAndPlay(t, fresh, addr)
 	waitFor(t, func() bool { return feed.Clients() == 2 }, 2*time.Second, "both connections to subscribe")
-	pushOne(feed)
+	pushOne(feed, 0)
 	fresh.nextRTP(t)
 }
 

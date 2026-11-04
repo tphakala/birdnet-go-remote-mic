@@ -16,7 +16,9 @@ not break.
   driver granted.
 - `pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM` (L16)
   and `NewOpus` (960-sample frames). `Frame.Captured` is the capture
-  time of the payload's first sample (the instant its RTP timestamp names). `Run`
+  time of the payload's first sample (the instant its RTP timestamp names), and
+  `Frame.Pos` is the stream position of that sample (the fan-out's running
+  frame count, dropped and idle periods included). `Run`
   takes a `Gate` (`Feed.Session`, active flag plus play session): a period
   read with no client playing is discarded unencoded. The play session
   advances only when the first client joins an idle stream, and Opus resets
@@ -29,7 +31,8 @@ not break.
   path at once. SETUP echoes client-chosen interleaved channels and takes
   nothing; PLAY subscribes to the track's `Feed` (453 at the cap, 404 once
   the feed is closed) and returns RTP-Info. `writer.go` is the single writer
-  per connection, each with its own SSRC, sequence and timestamp. `Feed` is a
+  per connection, each with its own SSRC, sequence and timestamp (the timestamp
+  follows `Frame.Pos` from the connection's first frame). `Feed` is a
   broadcast: `Push` copies the payload once and offers it to every
   subscriber's bounded queue without blocking, so a slow client drops only its
   own frames, and buffers nothing while no client is playing. The epoch and

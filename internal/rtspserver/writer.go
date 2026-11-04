@@ -18,7 +18,9 @@ const maxWriterPayload = 15360
 // emits an RTCP sender report every SRInterval. It owns the reused packet
 // buffer, and every write goes through writeRaw so it never interleaves with an
 // RTSP response. Each connection has its own SSRC, sequence and timestamp
-// state, so clients of one stream are independent.
+// state, so clients of one stream are independent. Timestamps follow the
+// frames' stream position (pipeline.Frame.Pos) from the first frame sent, so a
+// dropped frame leaves a gap; sequence numbers count packets sent.
 func (cs *connSession) runWriter(sub Subscription) {
 	// Declared first so it runs last (LIFO): cs.close() cancels the context and drops
 	// the socket, then this signals serveConn's join that the writer has fully exited.
@@ -28,7 +30,10 @@ func (cs *connSession) runWriter(sub Subscription) {
 	pt := uint8(cs.track.PayloadType)
 	ssrc := randU32()
 	seq := cs.startSeq
-	ts := cs.startTS
+	// basePos is the stream position of the first frame sent, which gets startTS.
+	// It is a flag, not packetCount == 0, because packetCount wraps.
+	var basePos uint64
+	based := false
 	var packetCount, octetCount uint32
 
 	buf := make([]byte, 4+rtp.HeaderSize+maxWriterPayload)
@@ -64,6 +69,13 @@ func (cs *connSession) runWriter(sub Subscription) {
 		if len(frame.Payload) > maxWriterPayload {
 			return // out-of-contract payload: tear down rather than corrupt the frame
 		}
+		if !based {
+			basePos, based = frame.Pos, true
+		}
+		// The truncation is the intended 32-bit RTP timestamp wraparound (RFC 3550).
+		// A frame lost upstream or in this subscriber's queue leaves a gap of its
+		// length, since the timestamp follows the audio and not the frames received.
+		ts := cs.startTS + uint32(frame.Pos-basePos)
 		hdr := rtp.Header{Version: 2, PayloadType: pt, SequenceNumber: seq, Timestamp: ts, SSRC: ssrc}
 		pkt, aerr := rtp.AppendPacket(buf[4:4], hdr, frame.Payload)
 		if aerr != nil {
@@ -78,7 +90,6 @@ func (cs *connSession) runWriter(sub Subscription) {
 		}
 
 		seq++
-		ts += frame.Duration
 		packetCount++
 		octetCount += uint32(len(frame.Payload))
 		// frame.Captured is the capture time of the payload's first sample, the
