@@ -124,6 +124,10 @@ Dashboard's **Available Devices** list enumerates capture hardware on the host
 that is not streaming yet, so you enable a device straight from the browser
 with no config-file editing.
 
+The UI is HTTPS only. A plain `http://<host>:8443/` request is redirected to
+`https://` on the same port, and the browser then shows the self-signed
+certificate warning until the certificate is trusted. Port 80 does not redirect.
+
 A capture overrun (an ALSA xrun) means the capture fell behind the sound card
 and its buffer filled before it was read, so audio was lost on every stream of
 that device; it usually points at a busy host or an unstable USB connection (a
@@ -557,11 +561,15 @@ One token gates both surfaces:
 
   The appliance generates its own certificate (`mgmt-cert.pem`, beside the
   config file by default), so copy that file to the client and verify against
-  it. Reach the appliance by IP or by its bare hostname: the certificate covers
-  those, not the `.local` name mDNS advertises, so a `.local` URL fails the name
-  check. `curl -k` works with any host form, but it skips verification
-  entirely, which lets anything on the network impersonate the appliance and
-  collect the token: keep it for local testing only.
+  it. Reach the appliance by IP, by its bare hostname or by its `<hostname>.local`
+  name: the certificate covers all three. `curl -k` works with any host form,
+  but it skips verification entirely, which lets anything on the network
+  impersonate the appliance and collect the token: keep it for local testing
+  only.
+
+  Always use `https://`. A request sent to `http://` carries its bearer token in
+  clear before the appliance can redirect it, and `curl -L` drops the
+  `Authorization` header when it follows that redirect to another scheme.
 
 - RTSP stream: standard Digest authentication with the token as the password
   and any username (`mic` by convention), so the usual URL form works in
