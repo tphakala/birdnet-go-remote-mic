@@ -187,7 +187,7 @@ func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got in
 	}
 	if got < asked {
 		log.Printf("device %q: opening with %s failed (%v); using %s", name,
-			describeGeometry(geometryFor(rt.rate, asked), rt.rate), firstErr, describeGeometry(geometryFor(rt.rate, got), rt.rate))
+			describeGeometry(geometryFor(rt.rate, asked), rt.rate), firstErr, describeGeometry(rt.geometryOrStep(got), rt.rate))
 		st.step, st.ceiling, st.shortfalls = got, got, 0
 	}
 	if got == 0 {
