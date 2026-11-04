@@ -146,18 +146,17 @@ func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 		// captured marks the end of the period; each payload is stamped with its own
 		// first sample, so the stamp matches the RTP timestamp the writer pairs it
 		// with.
-		start := captured.Add(-framesDur(len(period.Buf)/frameBytes, rate))
-		done := 0 // frames already emitted from this period
+		remaining := len(period.Buf) / frameBytes // frames not yet emitted
 		if _, err := pk.Split(period.Buf, func(payload []byte) error {
 			n := len(payload) / frameBytes
-			f := Frame{
+			at := captured.Add(-framesDur(remaining, rate))
+			remaining -= n
+			return emit(Frame{
 				Payload:  payload,
 				Duration: uint32(n),
-				Captured: start.Add(framesDur(done, rate)),
+				Captured: at,
 				Session:  session,
-			}
-			done += n
-			return emit(f)
+			})
 		}); err != nil {
 			return err
 		}
@@ -241,16 +240,14 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			acc = acc[:0]
 			session = s
 		}
-		// captured marks the end of the period; periodStart is its first sample.
-		samples := len(period.Buf) / 2
-		periodStart := captured.Add(-framesDur(samples/ch, rate))
 		// Fill the accumulator up to the rest of the current frame per pass, so the
 		// per-sample loop carries no frame-boundary branch.
 		pcm := period.Buf
 		for len(pcm) >= 2 {
 			if len(acc) == 0 {
-				// A frame starts at the first sample not yet consumed from this period.
-				frameStart = periodStart.Add(framesDur((samples-len(pcm)/2)/ch, rate))
+				// A frame starts at the first sample not yet consumed from this period,
+				// which is as far before the period's end (captured) as the samples left.
+				frameStart = captured.Add(-framesDur(len(pcm)/2/ch, rate))
 			}
 			take := min(frameSamples-len(acc), len(pcm)/2)
 			start := len(acc)
