@@ -719,16 +719,24 @@ func TestShortfallFromFallbackRunDoesNotAdvanceLadder(t *testing.T) {
 
 // TestRefusalThenTotalOpenFailureLowersCeiling pins that a refusal is recorded
 // even when the whole open then fails, so the next retry does not ask for a
-// geometry the driver already refused.
+// geometry the driver already refused. A refusal down to the default also
+// clears the capture-period condition then, since no later open asks for a
+// larger period; a refusal above step 1 leaves it, since the next open still
+// asks for step 1.
 func TestRefusalThenTotalOpenFailureLowersCeiling(t *testing.T) {
+	enomem := fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
 	cases := []struct {
-		name  string
-		at1   error
-		at0   error
-		steps []int
+		name        string
+		shortfalls  int
+		at1         error
+		at0         error
+		steps       []int
+		wantCeiling int
+		wantActive  bool
 	}{
-		{"chain exhausted", fmt.Errorf("open capture: %w", syscall.EIO), fmt.Errorf("open capture: %w", syscall.EIO), []int{0, 0, 1, 1, 2, 1, 0}},
-		{"busy below the refusal", capture.ErrDeviceInUse, nil, []int{0, 0, 1, 1, 2, 1}},
+		{"chain exhausted", 3, fmt.Errorf("open capture: %w", syscall.EIO), fmt.Errorf("open capture: %w", syscall.EIO), []int{0, 0, 1, 1, 2, 1, 0}, 1, true},
+		{"busy below the refusal", 3, capture.ErrDeviceInUse, nil, []int{0, 0, 1, 1, 2, 1}, 1, true},
+		{"refused down to the default, busy at the default", 2, enomem, capture.ErrDeviceInUse, []int{0, 0, 1, 1, 0}, 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -739,7 +747,7 @@ func TestRefusalThenTotalOpenFailureLowersCeiling(t *testing.T) {
 				h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
 					switch {
 					case armed && step == 2:
-						return fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
+						return enomem
 					case armed && step == 1:
 						return tc.at1
 					case armed && step == 0:
@@ -747,7 +755,7 @@ func TestRefusalThenTotalOpenFailureLowersCeiling(t *testing.T) {
 					}
 					return nil
 				})
-				for range 3 {
+				for range tc.shortfalls {
 					h.shortfall()
 				}
 				armed = true
@@ -757,9 +765,20 @@ func TestRefusalThenTotalOpenFailureLowersCeiling(t *testing.T) {
 				if s := h.app.devices["moth"].currentState(); s != mgmtserver.StateSkipped {
 					t.Fatalf("state = %s, want skipped when every open fails", s)
 				}
-				if st := h.app.geometry["moth"]; st == nil || st.ceiling != 1 || st.step != 1 {
-					t.Errorf("geometry state = %+v, want the refusal recorded as ceiling 1 and step 1", st)
+				if st := h.app.geometry["moth"]; st == nil || st.ceiling != tc.wantCeiling || st.step != tc.wantCeiling {
+					t.Errorf("geometry state = %+v, want the refusal recorded as ceiling and step %d", st, tc.wantCeiling)
 				}
+				if n, active := activeGeometry(t, h.app, "moth"); active != tc.wantActive {
+					t.Errorf("capture-period condition active = %v (%q), want %v", active, n.Message, tc.wantActive)
+				}
+				if tc.wantCeiling != 0 {
+					return
+				}
+				h.wantGeometry(1, 1)
+				// A retry at the default neither re-raises nor clears again.
+				h.retry()
+				h.wantSteps(append(tc.steps, 0)...)
+				h.wantGeometry(1, 1)
 			})
 		})
 	}
