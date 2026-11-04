@@ -525,7 +525,7 @@ func (rt *deviceRuntime) currentState() mgmtserver.DeviceState {
 }
 
 // status snapshots the device's current state for the API. Negotiated values
-// are reported only for a device that actually opened (src is non-nil), and
+// and the granted capture geometry are reported only for a device that actually opened (src is non-nil), and
 // per-stream client state only for a serving device.
 func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	rt.mu.Lock()
@@ -560,6 +560,8 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		ds.NegotiatedRate = rt.rate
 		ds.NegotiatedChannels = rt.channels
 		ds.NegotiatedFormat = rt.format
+		ds.PeriodFrames = rt.geometry.PeriodFrames
+		ds.Periods = rt.geometry.Periods
 	}
 	// Only a serving device can have clients. A device that died after startup
 	// keeps its feed pointers until process exit, and clients unsubscribe

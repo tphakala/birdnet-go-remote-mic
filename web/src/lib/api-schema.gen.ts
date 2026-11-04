@@ -522,6 +522,16 @@ export interface components {
             negotiatedChannels?: number;
             /** @description Hardware capture sample format the device negotiated, as a short token (s16, s24_le, s24_3le, or s32). Absent unless the device opened. The stream is always delivered as S16LE, so a wider capture format means the audio is downconverted to 16-bit; this surfaces that reduction. */
             negotiatedFormat?: string;
+            /**
+             * @description Frames per capture period that the driver granted when the device last opened. Present together with periods, and only for a device that opened with a capture that reports its geometry. The default is about 20 ms of audio; a device that keeps falling short of its sample rate is reopened with a larger period (up to 40 ms), so the value can change when the device reopens. Divide by negotiatedRate for the period length.
+             * @example 960
+             */
+            periodFrames?: number;
+            /**
+             * @description Number of capture periods in the device's capture buffer, as the driver granted when the device last opened: 4 by default, up to 16 after repeated shortfalls. Present together with periodFrames; the buffer holds periodFrames times periods frames.
+             * @example 4
+             */
+            periods?: number;
             /** @description Whether at least one RTSP client is playing one of this device's streams. Always false for skipped or failed devices. */
             clientConnected: boolean;
             /** @description How many RTSP clients are playing this device's streams right now, summed over its streams (each stream serves up to 8 at once). Zero for skipped or failed devices. */

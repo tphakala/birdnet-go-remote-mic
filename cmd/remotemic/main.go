@@ -213,10 +213,11 @@ type deviceRuntime struct {
 
 	// geoStep is the capture geometry ladder step this runtime actually opened at
 	// (below the step asked for after a fallback), started is when it began
-	// serving (both set by openAndStart) and geometry is the period geometry the
-	// driver granted (zero when the source cannot report it; see
-	// audio.NegotiatedGeometry). All three are read only on the run-loop
-	// goroutine, like superseded.
+	// serving (both set by openAndStart, and read only on the run-loop goroutine,
+	// like superseded). geometry is the period geometry the driver granted (zero
+	// when the source cannot report it; see audio.NegotiatedGeometry). openDevice
+	// sets it before the runtime is published and it never changes, so status
+	// reads it from the API goroutines without the lock, like rate and format.
 	geoStep  int
 	started  time.Time
 	geometry audio.Geometry

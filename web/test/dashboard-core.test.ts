@@ -39,6 +39,7 @@ import {
   LEVELS_STALE_MS,
   LevelsWatch,
   captureFormatLabel,
+  captureGeometry,
   channelHiddenMessage,
   channelLabel,
   clientCountOf,
@@ -140,6 +141,20 @@ test("captureFormatLabel renders bit depth for negotiated formats and falls back
   assert.equal(captureFormatLabel("f32"), "32-bit float");
   // An unrecognised token (a future capture format) shows its uppercased form.
   assert.equal(captureFormatLabel("s20_3le"), "S20_3LE");
+});
+
+test("captureGeometry words the granted period and buffer, and nothing without both values", () => {
+  assert.deepEqual(captureGeometry({ periodFrames: 1920, periods: 16 }, 48000), {
+    label: "40\u00a0ms\u00a0\u00d7\u00a016",
+    title: "Capture period: 40 ms (1,920 frames) \u00d7 16 periods, a 640 ms buffer.",
+  });
+  // A driver may grant a period that is not a whole number of milliseconds.
+  const odd = captureGeometry({ periodFrames: 1024, periods: 4 }, 48000);
+  assert.equal(odd?.label, "21.3\u00a0ms\u00a0\u00d7\u00a04");
+  assert.ok(odd?.title.includes("(1,024 frames)") && odd.title.includes("a 85.3 ms buffer."), odd?.title);
+  // An appliance that predates the fields, or a half record, shows nothing.
+  assert.equal(captureGeometry({ periodFrames: 960 }, 48000), null);
+  assert.equal(captureGeometry({}, 48000), null);
 });
 
 test("footerMetrics formats the card footer counters", () => {

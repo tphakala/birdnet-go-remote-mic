@@ -164,7 +164,8 @@ const downCard = device({
 
 test("supportDetails lists each capture device, ordered by name, without identifying details", () => {
   const status = { version: "v0.3.0" } as ApplianceStatus;
-  const got = supportDetails(status, null, [usbMic, downCard]);
+  const raised = { ...usbMic, periodFrames: 1920, periods: 16 };
+  const got = supportDetails(status, null, [raised, downCard]);
   assert.equal(
     got,
     [
@@ -185,12 +186,13 @@ test("supportDetails lists each capture device, ordered by name, without identif
       "  State: serving",
       "  Configured: 48000 Hz, channels 1,2",
       "  Negotiated: 48000 Hz, 2 channels, s32",
+      "  Capture period: 1920 frames x 16 periods",
       "  First stream: Opus, channels 1",
       "  Overruns: 3, dropped frames: 12",
     ].join("\n"),
   );
   // Order follows the name, not the API's order.
-  assert.equal(supportDetails(status, null, [downCard, usbMic]), got);
+  assert.equal(supportDetails(status, null, [downCard, raised]), got);
 });
 
 test("supportDetails lists every configured stream without its path", () => {

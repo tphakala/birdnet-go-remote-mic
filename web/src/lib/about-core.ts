@@ -267,6 +267,9 @@ function deviceBlock(d: Device, n: number, known: readonly Known[], cfg: DeviceC
   if (d.negotiatedChannels) neg.push(`${d.negotiatedChannels} ${d.negotiatedChannels === 1 ? "channel" : "channels"}`);
   if (d.negotiatedFormat) neg.push(d.negotiatedFormat);
   if (neg.length > 0) lines.push(`  Negotiated: ${neg.join(", ")}`);
+  if (d.periodFrames && d.periods) {
+    lines.push(`  Capture period: ${d.periodFrames} frames x ${d.periods} ${d.periods === 1 ? "period" : "periods"}`);
+  }
   const streams = cfg?.streams ?? [];
   if (streams.length > 0) {
     lines.push(`  Streams: ${streams.length}`);
