@@ -670,6 +670,15 @@ For a local end-to-end check without hardware, use the ALSA loopback
   notification clears; only a save that changes the device's capture or
   stream settings clears it as soon as the device opens. A card-index device
   is not retried this way either.
+- A device that keeps falling short of its sample rate (the capture
+  library's shortfall check) is reopened with a progressively larger capture
+  period and buffer, after two shortfalls at each size, up to a 40 ms period
+  and a 640 ms buffer (the default is a 20 ms period and an 80 ms buffer). A
+  warning notification names the size in use, and it adds latency. The
+  notification clears once a run of the device ends after an hour of serving,
+  and the next open uses the default again. If a larger size fails to open, the
+  device falls back to the last size that worked. A card-index device is not
+  escalated, and nothing is kept across a process restart.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous
