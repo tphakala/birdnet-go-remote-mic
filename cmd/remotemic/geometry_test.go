@@ -493,3 +493,35 @@ func TestOnRetryDuePrunesGeometryOfUnconfiguredDevice(t *testing.T) {
 		}
 	})
 }
+
+// TestFallbackLogNamesGrantedGeometry pins that the line logged when an
+// escalated open falls back names the geometry the driver granted for the step
+// that opened, not the ladder's request for it.
+func TestFallbackLogNamesGrantedGeometry(t *testing.T) {
+	logBuf := captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		next := failingStepOpener(h.app.open, h.log, func(step int) error {
+			if step == 2 {
+				return errors.New("HW_PARAMS: cannot allocate memory")
+			}
+			return nil
+		})
+		h.app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
+			rt, err := next(dev, step, hub)
+			if err == nil && step == 1 {
+				// The driver moved the requested 20 ms x 8 to 40 ms x 8.
+				rt.geometry = audio.Geometry{PeriodFrames: 1920, Periods: 8}
+			}
+			return rt, err
+		}
+		for range 4 {
+			h.shortfall()
+		}
+		h.wantSteps(0, 0, 1, 1, 2, 1)
+		if got := logBuf.String(); !strings.Contains(got, "using a 40 ms period and 8 periods (320 ms buffer)") {
+			t.Errorf("log = %q, want the fallback line to name the granted 40 ms x 8", got)
+		}
+	})
+}
