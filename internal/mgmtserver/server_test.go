@@ -284,6 +284,30 @@ func TestMapDeviceDownCause(t *testing.T) {
 	}
 }
 
+// TestMapDeviceHalfGeometry pins that the granted period is emitted only as a
+// pair: a frame count without a period count (or the reverse) describes no
+// buffer, so neither field reaches the wire.
+func TestMapDeviceHalfGeometry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		frames, periods int
+	}{
+		{"frames only", 1920, 0},
+		{"periods only", 0, 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := servingOpus()
+			d.PeriodFrames, d.Periods = tc.frames, tc.periods
+			got := mapDevice(&d)
+			if got.PeriodFrames != nil || got.Periods != nil {
+				t.Errorf("periodFrames/periods = %v/%v, want both absent", got.PeriodFrames, got.Periods)
+			}
+		})
+	}
+}
+
 func TestListDevicesMapsSkippedPCM(t *testing.T) {
 	s := New(&fakeProvider{devices: []DeviceStatus{skippedPCM()}})
 	resp, _ := s.ListDevices(context.Background(), mgmtapi.ListDevicesRequestObject{})
