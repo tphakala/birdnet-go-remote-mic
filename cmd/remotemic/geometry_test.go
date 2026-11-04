@@ -182,6 +182,26 @@ func TestCapturePeriodStepTransitions(t *testing.T) {
 			h.wantSteps(0, 0, 1, 0)
 			h.wantGeometry(1, 1)
 		}, nil},
+		{"stable run resets from the middle step", func(h *geoHarness, _ *fakeHost) {
+			for range 4 {
+				h.shortfall()
+			}
+			runFor(h.t, h.app, hour61)
+			h.die(plain)
+			h.retry()
+			h.wantSteps(0, 0, 1, 1, 2, 0)
+			h.wantGeometry(1, 1)
+		}, nil},
+		{"stable run resets from the top step", func(h *geoHarness, _ *fakeHost) {
+			for range 6 {
+				h.shortfall()
+			}
+			runFor(h.t, h.app, hour61)
+			h.die(plain)
+			h.retry()
+			h.wantSteps(0, 0, 1, 1, 2, 2, 3, 0)
+			h.wantGeometry(1, 1)
+		}, nil},
 		{"stable run then a deliberate restart resets", func(h *geoHarness, _ *fakeHost) {
 			h.shortfall()
 			h.shortfall()
@@ -415,6 +435,61 @@ func TestEscalatedOpenFailureDownToDefaultClearsCondition(t *testing.T) {
 		h.wantGeometry(1, 1)
 		if _, ok := activeGeometry(t, h.app, "moth"); ok {
 			t.Error("capture-period condition still active at the default period")
+		}
+	})
+}
+
+// TestCapturePeriodConditionAndLogNameGrantedGeometry pins that the capture log
+// line and the condition report what the driver granted, not what the ladder
+// asked for, and that step 0 keeps its log line without a period suffix.
+func TestCapturePeriodConditionAndLogNameGrantedGeometry(t *testing.T) {
+	logBuf := captureLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		if got := logBuf.String(); !strings.Contains(got, `capture "moth"`) || strings.Contains(got, ", period ") {
+			t.Fatalf("step 0 log = %q, want a capture line without a period suffix", got)
+		}
+		next := h.app.open
+		h.app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
+			rt, err := next(dev, step, hub)
+			if err == nil && step == 1 {
+				// The driver moved the requested 20 ms x 8 to 40 ms x 8.
+				rt.geometry = audio.Geometry{PeriodFrames: 1920, Periods: 8}
+			}
+			return rt, err
+		}
+		h.shortfall()
+		h.shortfall()
+		if got := logBuf.String(); !strings.Contains(got, "period 1920 frames x 8") {
+			t.Errorf("log = %q, want the granted period 1920 frames x 8", got)
+		}
+		n, ok := activeGeometry(t, h.app, "moth")
+		if !ok || !strings.Contains(n.Message, "40 ms period and 8 periods (320 ms buffer)") {
+			t.Errorf("condition = %q, %v; want the granted 40 ms x 8", n.Message, ok)
+		}
+	})
+}
+
+// TestOnRetryDuePrunesGeometryOfUnconfiguredDevice pins the backstop that
+// drops a geometry state, and resolves its condition, for a name that is no
+// longer an enabled configured device even when reconcile did not run.
+func TestOnRetryDuePrunesGeometryOfUnconfiguredDevice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		h.shortfall()
+		h.shortfall()
+		if _, ok := activeGeometry(t, h.app, "moth"); !ok {
+			t.Fatal("no capture-period condition before the prune")
+		}
+		h.app.cfg = config.Config{}
+		h.app.onRetryDue()
+		if h.app.geometry["moth"] != nil {
+			t.Error("geometry state survived for an unconfigured device")
+		}
+		if _, ok := activeGeometry(t, h.app, "moth"); ok {
+			t.Error("capture-period condition still active for an unconfigured device")
 		}
 	})
 }
