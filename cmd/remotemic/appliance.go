@@ -659,7 +659,11 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// An escalated open that fails must not make the device less available than
 	// the default would: fall back one step at a time, down to the default.
 	first := err
+	refusedAt := -1
 	for err != nil && step > 0 && geometryFallback(err) {
+		if geometryRefused(err) {
+			refusedAt = step
+		}
 		step--
 		rt, err = a.open(&d, step, a.hub)
 	}
@@ -683,7 +687,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	}
 	rt.started = time.Now()
 	if asked > 0 {
-		a.geometryOpened(dev.Name, rt, asked, step, first)
+		a.geometryOpened(dev.Name, rt, asked, step, first, refusedAt)
 	}
 	rt.state = mgmtserver.StateServing
 	rt.friendlyName = hw.Label

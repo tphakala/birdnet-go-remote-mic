@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"syscall"
 	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
@@ -69,8 +70,9 @@ func describeGeometry(g audio.Geometry, rate int) string {
 
 // geometryFallback reports whether a failed escalated open should be retried one
 // step lower. Busy (another process holds the device), gone and permanent
-// errors say nothing about the geometry, so they do not lower the ceiling; any
-// other failure, whatever the library calls it, goes back to what worked.
+// errors say nothing about the geometry, so they are not retried at another
+// step; any other failure, whatever the library calls it, goes back to what
+// worked for this open (geometryRefused decides whether it is remembered).
 func geometryFallback(err error) bool {
 	return !errors.Is(err, capture.ErrDeviceInUse) && !errors.Is(err, capture.ErrDeviceGone) && !permanentOpenError(err)
 }
@@ -177,10 +179,14 @@ func (a *appliance) geometryShortfall(dev *config.Device) {
 
 // geometryOpened records the outcome of an open that asked for step asked and
 // succeeded at step got (lower after a fallback, firstErr being the failure that
-// started it). It raises or rewrites the capture-period condition with the
-// geometry the driver granted, or clears it when the device ended up at the
-// default.
-func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got int, firstErr error) {
+// started it). refusedAt is the lowest step whose open failed with an error
+// that means the driver refused the geometry (see geometryRefused), or -1. Only
+// a refusal lowers the ceiling, to the step below it; a fallback with no
+// refusal serves this open at the lower step and leaves the step, the ceiling
+// and the condition alone, so the next open asks for the escalated step again.
+// Otherwise it raises or rewrites the capture-period condition with the
+// geometry the driver granted, or clears it when the ceiling is the default.
+func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got int, firstErr error, refusedAt int) {
 	st := a.geometry[name]
 	if st == nil {
 		return
@@ -188,14 +194,21 @@ func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got in
 	if got < asked {
 		log.Printf("device %q: opening with %s failed (%v); using %s", name,
 			describeGeometry(geometryFor(rt.rate, asked), rt.rate), firstErr, describeGeometry(rt.geometryOrStep(got), rt.rate))
-		st.step, st.ceiling, st.shortfalls = got, got, 0
+		if refusedAt < 0 {
+			return
+		}
+		st.ceiling = min(st.ceiling, refusedAt-1)
+		st.step = min(st.step, st.ceiling)
+		st.shortfalls = 0
 	}
 	if got == 0 {
-		a.notifier.Clear(geometryKey(name), notify.Notification{
-			Severity: notify.SeverityInfo,
-			Title:    "Capture period back to default",
-			Message:  "The larger capture period did not open; capture uses the default period.",
-		})
+		if st.ceiling == 0 {
+			a.notifier.Clear(geometryKey(name), notify.Notification{
+				Severity: notify.SeverityInfo,
+				Title:    "Capture period back to default",
+				Message:  "The larger capture period did not open; capture uses the default period.",
+			})
+		}
 		return
 	}
 	n := geometryOnset(name, rt.geometryOrStep(got), rt.rate)
@@ -230,4 +243,22 @@ func (a *appliance) pruneGeometry() {
 			a.dropGeometry(name, "device removed from the configuration")
 		}
 	}
+}
+
+// geometryRefused reports whether an open error plausibly means the driver
+// refused the requested geometry: the library's *GeometryError, the
+// *BadRateError that openNegotiate can surface over a *GeometryError from
+// another format, and a HW_PARAMS commit that failed with ENOMEM (a ring the
+// driver cannot allocate) or EINVAL. Only these lower a device's ceiling; any
+// other failure at an escalated step (EIO right after open, an unplug race, a
+// channel-count mismatch) says nothing about the geometry, so the open falls
+// back for that attempt only.
+func geometryRefused(err error) bool {
+	if _, ok := errors.AsType[*capture.GeometryError](err); ok {
+		return true
+	}
+	if _, ok := errors.AsType[*capture.BadRateError](err); ok {
+		return true
+	}
+	return errors.Is(err, syscall.ENOMEM) || errors.Is(err, syscall.EINVAL)
 }

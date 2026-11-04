@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"syscall"
@@ -365,7 +366,7 @@ func TestEscalatedOpenFailureFallsBack(t *testing.T) {
 	}{
 		{"geometry error", &capture.GeometryError{Err: errors.New("no accepted geometry")}, true},
 		{"bad rate error", &capture.BadRateError{Requested: 48000}, true},
-		{"raw commit error", errors.New("HW_PARAMS: cannot allocate memory"), true},
+		{"commit ENOMEM", fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM), true},
 		{"busy", capture.ErrDeviceInUse, false},
 		{"gone", capture.ErrDeviceGone, false},
 	}
@@ -392,6 +393,9 @@ func TestEscalatedOpenFailureFallsBack(t *testing.T) {
 					n, ok := activeGeometry(t, app, "moth")
 					if !ok || !strings.Contains(n.Message, "20 ms period and 8 periods") {
 						t.Errorf("condition = %q, %v; want it to name the step that opened", n.Message, ok)
+					}
+					if st := app.geometry["moth"]; st == nil || st.ceiling != 1 {
+						t.Errorf("geometry state = %+v, want the ceiling pinned at 1", st)
 					}
 					h.shortfall()
 					h.shortfall()
@@ -420,7 +424,7 @@ func TestEscalatedOpenFailureDownToDefaultClearsCondition(t *testing.T) {
 		failFrom := 99
 		h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
 			if step >= failFrom {
-				return errors.New("HW_PARAMS: cannot allocate memory")
+				return fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
 			}
 			return nil
 		})
@@ -504,7 +508,7 @@ func TestFallbackLogNamesGrantedGeometry(t *testing.T) {
 		defer stop()
 		next := failingStepOpener(h.app.open, h.log, func(step int) error {
 			if step == 2 {
-				return errors.New("HW_PARAMS: cannot allocate memory")
+				return fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
 			}
 			return nil
 		})
@@ -523,5 +527,73 @@ func TestFallbackLogNamesGrantedGeometry(t *testing.T) {
 		if got := logBuf.String(); !strings.Contains(got, "using a 40 ms period and 8 periods (320 ms buffer)") {
 			t.Errorf("log = %q, want the fallback line to name the granted 40 ms x 8", got)
 		}
+	})
+}
+
+// TestGeometryRefused pins which open errors count as the driver refusing a
+// geometry (and so lower the ceiling) and which do not.
+func TestGeometryRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"geometry error", &capture.GeometryError{Err: syscall.EINVAL}, true},
+		{"bad rate error", &capture.BadRateError{Requested: 48000}, true},
+		{"wrapped commit ENOMEM", fmt.Errorf("open capture: %w", fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)), true},
+		{"raw commit EINVAL", fmt.Errorf("alsa: HW_PARAMS: %w", syscall.EINVAL), true},
+		{"EIO right after open", fmt.Errorf("open capture: %w", syscall.EIO), false},
+		{"negotiated below open count", errors.New("audio: device negotiated 1 channels but 2 were requested"), false},
+		{"device in use", capture.ErrDeviceInUse, false},
+		{"device gone", capture.ErrDeviceGone, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := geometryRefused(tc.err); got != tc.want {
+			t.Errorf("%s: geometryRefused = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestTransientEscalatedOpenFailureDoesNotPinCeiling pins that an open error
+// that does not mean the driver refused the geometry falls back for that open
+// only: the ceiling and the active condition stay as they were, and the next
+// open asks for the escalated step again.
+func TestTransientEscalatedOpenFailureDoesNotPinCeiling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		failures := 1
+		h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+			if step == 2 && failures > 0 {
+				failures--
+				return fmt.Errorf("open capture: %w", syscall.EIO)
+			}
+			return nil
+		})
+		for range 4 {
+			h.shortfall()
+		}
+		h.wantSteps(0, 0, 1, 1, 2, 1)
+		if s := h.app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("state = %s, want serving after the fallback", s)
+		}
+		if st := h.app.geometry["moth"]; st == nil || st.step != 2 || st.ceiling != 3 {
+			t.Errorf("geometry state = %+v, want step 2 and the ceiling untouched", st)
+		}
+		n, ok := activeGeometry(t, h.app, "moth")
+		if !ok || !strings.Contains(n.Message, "20 ms period and 8 periods") {
+			t.Errorf("condition = %q, %v; want it untouched at step 1", n.Message, ok)
+		}
+		h.wantGeometry(1, 0)
+
+		h.die(errors.New("alsa: read failed"))
+		h.retry()
+		h.wantSteps(0, 0, 1, 1, 2, 1, 2)
+		n, ok = activeGeometry(t, h.app, "moth")
+		if !ok || !strings.Contains(n.Message, "40 ms period and 8 periods") {
+			t.Errorf("condition = %q, %v; want step 2 once it opened", n.Message, ok)
+		}
+		h.wantGeometry(1, 0)
 	})
 }

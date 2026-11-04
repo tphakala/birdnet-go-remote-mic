@@ -679,7 +679,8 @@ For a local end-to-end check without hardware, use the ALSA loopback
   and the next open uses the default again. If a larger size fails to open for a
   reason other than the device being busy, gone or permanently unopenable (those
   skip the device as before), the device falls back to the last size that
-  worked. A card-index device is not escalated, and nothing is kept across a process restart.
+  worked, and the larger size is tried again on the next open unless the driver
+  refused it. A card-index device is not escalated, and nothing is kept across a process restart.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous
