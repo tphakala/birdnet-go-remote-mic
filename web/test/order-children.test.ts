@@ -31,6 +31,7 @@ test("orderChildren moves a node in the parent with moveBefore and inserts a new
   orderChildren(p as unknown as Element, [a, fresh, b, c] as unknown as Element[]);
   assert.deepEqual(names(p), ["a", "fresh", "b", "c"]);
   // Only the new node is detached and inserted: moveBefore throws for a node
-  // that is not a child yet, and a node in the parent must keep its focus.
+  // outside the parent's tree, as a new node is, and a node in the parent must
+  // keep its focus.
   assert.equal(p.moves, 1);
 });

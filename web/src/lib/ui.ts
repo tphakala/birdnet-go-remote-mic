@@ -393,7 +393,7 @@ export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
   for (const node of nodes) {
     const target: Element | null = prev ? prev.nextElementSibling : parent.firstElementChild;
     if (node !== target) {
-      // moveBefore only moves a node that is already a child of parent.
+      // moveBefore throws for a node outside the parent's tree, as a new node is; this guard is stricter and moves only a node already in parent with it.
       if (node.parentNode === parent && typeof parent.moveBefore === "function") parent.moveBefore(node, target);
       else parent.insertBefore(node, target);
     }

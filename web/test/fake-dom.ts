@@ -77,8 +77,9 @@ export function parentWith(...nodes: FakeNode[]): FakeParent {
 }
 
 // withMoveBefore gives p a state-preserving moveBefore, as a browser with
-// Element.moveBefore has. Like the real one it refuses a node that is not
-// already a child.
+// Element.moveBefore has. It refuses any node that is not a child, which is
+// stricter than the real one (it refuses a node outside the parent's tree) and
+// still makes a new node need insertBefore.
 export function withMoveBefore(p: FakeParent): FakeParent {
   p.moveBefore = (node, target) => {
     if (node.parent !== p) throw new Error("moveBefore of a node that is not a child");
