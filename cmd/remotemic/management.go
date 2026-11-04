@@ -1005,7 +1005,9 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		// rejects the handshake and reconnects, and net/http's default logger
 		// would emit one "http: TLS handshake error ... remote error: tls:" line
 		// per attempt. Filter that client-rejection spam while passing every
-		// other server error (including a local TLS misconfiguration) through.
+		// other server error (including a local TLS misconfiguration) through. A
+		// plain HTTP request answered by the redirect listener below ends its
+		// handshake with a line that is dropped the same way.
 		ErrorLog: mgmtserver.NewFilteredErrorLog(log.Default()),
 		TLSConfig: &tls.Config{
 			MinVersion:     tls.VersionTLS12,
@@ -1067,7 +1069,10 @@ func serveManagement(ctx context.Context, p *mgmtParams) (*mgmtServer, error) {
 		// current certificate (via TLSConfig.GetCertificate), so an operator
 		// regenerate or install reaches new connections without a restart. Serve
 		// closes the listener when it returns, so a restart can bind the port.
-		if serr := srv.Serve(tls.NewListener(ln, srv.TLSConfig)); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+		// Plain HTTP on this port is redirected to https (see
+		// mgmtserver.RedirectPlainHTTP); TLS bytes pass through untouched.
+		redirecting := mgmtserver.RedirectPlainHTTP(ln, func() (*tls.Certificate, error) { return p.prov.tlsCertificate(nil) })
+		if serr := srv.Serve(tls.NewListener(redirecting, srv.TLSConfig)); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
 			died <- serr
 		}
 	}()
