@@ -22,15 +22,11 @@ func runDebScript(t *testing.T, script, unit, failVerb string, args ...string) (
 	if err := os.WriteFile(unitFile, []byte(unit), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stub := `#!/bin/sh
-echo "$*" >> "$STUB_LOG"
+	writeScript(t, filepath.Join(dir, "systemctl"), `echo "$*" >> "$STUB_LOG"
 [ "$1" = "$STUB_FAIL" ] && exit 1
 [ "$1" = show ] && { cat "$STUB_UNIT"; exit 0; }
 exit 0
-`
-	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(stub), 0o755); err != nil {
-		t.Fatal(err)
-	}
+`)
 	cmd := exec.Command("/bin/sh", append([]string{filepath.Join("..", "..", "packaging", "deb", script)}, args...)...)
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "STUB_LOG="+log, "STUB_UNIT="+unitFile)
 	if failVerb != "" {

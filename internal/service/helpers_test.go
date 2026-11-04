@@ -3,8 +3,10 @@
 package service
 
 import (
+	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -155,4 +157,17 @@ func (f *fakeInit) IsActive(unit string) (bool, error) {
 func (f *fakeInit) Restart(unit string) error {
 	f.log("restart " + unit)
 	return f.restartErr
+}
+
+// writeScript writes an executable /bin/sh script that the test then runs.
+// Parallel tests fork, and a child forked while the file is open for writing
+// inherits that descriptor, so the exec fails with ETXTBSY ("text file busy").
+// Holding syscall.ForkLock for the write keeps every fork out of that window.
+func writeScript(t *testing.T, path, body string) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
