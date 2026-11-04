@@ -518,10 +518,8 @@ export class DeviceCard {
       // 16-bit, so name that in a tooltip rather than let "· 24-bit" read as the
       // stream depth. The period part spells out the granted capture geometry.
       const negTitle = [
-        d.negotiatedFormat
-          ? "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted."
-          : "",
-        geo?.title ?? "",
+        d.negotiatedFormat && "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted.",
+        geo?.title,
       ].filter(Boolean).join(" ");
       setAttr(p.live.negotiatedEl, "title", negTitle);
       // The tally lights follow every streamed channel, as the channel tag does.
