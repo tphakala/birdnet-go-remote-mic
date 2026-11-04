@@ -9,6 +9,9 @@ export class FakeParent {
   kids: FakeNode[] = [];
   moves = 0;
   removes = 0;
+  // moveBefore moves a child without detaching it, so it does not count in
+  // moves; only withMoveBefore sets it.
+  moveBefore?: (node: FakeNode, target: FakeNode | null) => void;
 
   get firstElementChild(): FakeNode | null {
     return this.kids[0] ?? null;
@@ -16,6 +19,10 @@ export class FakeParent {
 
   insertBefore(node: FakeNode, target: FakeNode | null): void {
     this.moves++;
+    this.place(node, target);
+  }
+
+  place(node: FakeNode, target: FakeNode | null): void {
     this.kids = this.kids.filter((k) => k !== node);
     const i = target ? this.kids.indexOf(target) : this.kids.length;
     this.kids.splice(i, 0, node);
@@ -29,6 +36,10 @@ export class FakeNode {
 
   constructor(name: string) {
     this.name = name;
+  }
+
+  get parentNode(): FakeParent | null {
+    return this.parent;
   }
 
   get nextElementSibling(): FakeNode | null {
@@ -62,6 +73,18 @@ export function parentWith(...nodes: FakeNode[]): FakeParent {
     p.kids.push(n);
     n.parent = p;
   }
+  return p;
+}
+
+// withMoveBefore gives p a state-preserving moveBefore, as a browser with
+// Element.moveBefore has. It refuses any node that is not a child, which is
+// stricter than the real one (it refuses a node outside the parent's tree) and
+// still makes a new node need insertBefore.
+export function withMoveBefore(p: FakeParent): FakeParent {
+  p.moveBefore = (node, target) => {
+    if (node.parent !== p) throw new Error("moveBefore of a node that is not a child");
+    p.place(node, target);
+  };
   return p;
 }
 

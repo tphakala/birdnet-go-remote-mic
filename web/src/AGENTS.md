@@ -62,7 +62,7 @@ reconcile:
   fields (`setText`/`setHidden`/`setAttr` write only on change), rebuild an
   element only when its shape changes (the `stale` and `replace` hooks), hand
   focus on when an entry goes (the `remove` hook runs while a shown entry's nodes are still
-  attached, unless a sync that threw never attached them), and reorder with a diff so steady-state renders move no nodes.
+  attached, unless a sync that threw never attached them), and reorder with a diff (`orderChildren`, through `moveBefore` where the browser has it) so steady-state renders move no nodes.
   Hooks see the list as it was before the sync (`get`, `keys`, `entries`,
   `size` and the `before` order). A hook that throws aborts the sync and the
   error propagates, but every node the list put in the parent stays tracked

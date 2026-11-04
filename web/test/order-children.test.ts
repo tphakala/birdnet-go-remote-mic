@@ -1,6 +1,7 @@
 // Unit tests for orderChildren (lib/ui.ts): it puts managed nodes in order,
 // moves nothing when they already are, and leaves unmanaged children after
-// them.
+// them, and moves a node already in the parent with moveBefore (which keeps
+// focus inside it) where the browser has it.
 // A minimal stand-in for DOM elements (fake-dom.ts) keeps the test free of a
 // browser. Run with node:test (see web:test).
 
@@ -8,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { orderChildren } from "../src/lib/ui.ts";
-import { FakeNode, names, parentWith } from "./fake-dom.ts";
+import { FakeNode, names, parentWith, withMoveBefore } from "./fake-dom.ts";
 
 test("orderChildren leaves an ordered parent alone", () => {
   const [a, b, c] = [new FakeNode("a"), new FakeNode("b"), new FakeNode("c")];
@@ -22,4 +23,15 @@ test("orderChildren puts managed nodes in order, placeholder last", () => {
   const p = parentWith(empty, c, a);
   orderChildren(p as unknown as Element, [a, b, c] as unknown as Element[]);
   assert.deepEqual(names(p), ["a", "b", "c", "placeholder"]);
+});
+
+test("orderChildren moves a node in the parent with moveBefore and inserts a new one with insertBefore", () => {
+  const [a, b, c, fresh] = [new FakeNode("a"), new FakeNode("b"), new FakeNode("c"), new FakeNode("fresh")];
+  const p = withMoveBefore(parentWith(c, b, a));
+  orderChildren(p as unknown as Element, [a, fresh, b, c] as unknown as Element[]);
+  assert.deepEqual(names(p), ["a", "fresh", "b", "c"]);
+  // Only the new node is detached and inserted: moveBefore throws for a node
+  // outside the parent's tree, as a new node is, and a node in the parent must
+  // keep its focus.
+  assert.equal(p.moves, 1);
 });
