@@ -682,8 +682,9 @@ For a local end-to-end check without hardware, use the ALSA loopback
   skip the device as before), the device falls back to the last size that
   worked, and the larger size is tried again on the next open unless the driver
   refused it. A card-index device is not escalated, and nothing is kept across a process restart.
-  The device's Dashboard card shows the period and buffer the driver granted, for
-  every device, raised or not.
+  The Dashboard card of a serving device shows the period length and period
+  count the driver granted, raised or not, and its tooltip gives the buffer
+  length. A capture that cannot report its geometry shows nothing.
 - Practical limits are hardware, not software: ALSA `hw:` devices are
   single-client (the config rejects a device id used twice, and a second entry
   that resolves to hardware another entry already captures from is skipped), USB isochronous
