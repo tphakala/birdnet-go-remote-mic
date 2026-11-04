@@ -80,7 +80,7 @@ func TestOpenCaptureAtRejectsNegotiatedBelowOpenCount(t *testing.T) {
 	// the buffer, so OpenCaptureAt must reject before Start and close the stream.
 	stub, restore := swapOpenStream(capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960})
 	defer restore()
-	if _, _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2); err == nil {
+	if _, _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2, Geometry{}); err == nil {
 		t.Fatal("OpenCaptureAt accepted a device negotiating 1 channel when 2 were opened, want error")
 	}
 	if stub.started {
@@ -142,12 +142,15 @@ func TestOverrunsZeroForUncountedSource(t *testing.T) {
 	}
 }
 
-func TestOpenCaptureAtReturnsNegotiatedFormat(t *testing.T) {
+func TestOpenCaptureAtReturnsNegotiatedFormatAndGeometry(t *testing.T) {
 	// The negotiated hardware capture format is surfaced in device status, so
 	// OpenCaptureAt returns it alongside the source. A native-S16 device reports
 	// s16; a device that only opens in a wider format (here S24_3LE, the Apogee
 	// HypeMiC case from #76) reports that wider format even though the stream is
-	// downconverted to S16LE.
+	// downconverted to S16LE. The requested period geometry must reach every
+	// format attempt, and the granted geometry is readable from the source
+	// (plain and converting alike).
+	geo := Geometry{PeriodFrames: 1920, Periods: 8}
 	cases := []struct {
 		name       string
 		openFormat capture.Format
@@ -162,20 +165,26 @@ func TestOpenCaptureAtReturnsNegotiatedFormat(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			prev := openStream
 			openStream = func(cfg capture.Config) (captureStream, error) {
+				if cfg.PeriodFrames != geo.PeriodFrames || cfg.Periods != geo.Periods {
+					t.Errorf("format %v opened with geometry %d x %d, want %d x %d", cfg.Format, cfg.PeriodFrames, cfg.Periods, geo.PeriodFrames, geo.Periods)
+				}
 				if cfg.Format != tc.openFormat {
 					return nil, &capture.BadFormatError{Channels: cfg.Channels, Format: cfg.Format}
 				}
-				return &stubStream{neg: capture.Config{Rate: 48000, Channels: 1, PeriodFrames: 960}}, nil
+				return &stubStream{neg: capture.Config{Rate: 48000, Channels: 1, PeriodFrames: geo.PeriodFrames, Periods: geo.Periods}}, nil
 			}
 			defer func() { openStream = prev }()
 
-			src, format, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 1)
+			src, format, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 1, geo)
 			if err != nil {
 				t.Fatalf("OpenCaptureAt: %v", err)
 			}
 			defer func() { _ = src.Close() }()
 			if format != tc.want {
 				t.Errorf("negotiated format = %v (%q), want %v", format, format.String(), tc.want)
+			}
+			if got, ok := NegotiatedGeometry(src); !ok || got != geo {
+				t.Errorf("NegotiatedGeometry = %+v, %v; want %+v, true", got, ok, geo)
 			}
 		})
 	}
@@ -666,10 +675,15 @@ func TestOpenCaptureAtOpensAtGivenCount(t *testing.T) {
 	prev := openStream
 	openStream = func(cfg capture.Config) (captureStream, error) {
 		got = cfg.Channels
+		// The zero Geometry must stay "library default": step 0 of the capture
+		// geometry ladder is byte for byte today's open.
+		if cfg.PeriodFrames != 0 || cfg.Periods != 0 {
+			t.Errorf("zero Geometry sent PeriodFrames=%d Periods=%d, want both 0", cfg.PeriodFrames, cfg.Periods)
+		}
 		return &stubStream{neg: capture.Config{Rate: 48000, Channels: cfg.Channels, PeriodFrames: 960}}, nil
 	}
 	defer func() { openStream = prev }()
-	src, _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2)
+	src, _, err := OpenCaptureAt(&config.Device{Device: testDevID, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}, 2, Geometry{})
 	if err != nil {
 		t.Fatalf("OpenCaptureAt: %v", err)
 	}

@@ -77,14 +77,16 @@ var captureFormats = []capture.Format{capture.FormatS16LE, capture.FormatS32LE, 
 // Among format errors, one that names the device's channel range wins over one
 // that does not (an S32-only or 24-bit-only device rejects S16 at any channel
 // count, with no range).
-func openNegotiate(device string, rate, channels int) (captureStream, capture.Format, error) {
+func openNegotiate(device string, rate, channels int, geo Geometry) (captureStream, capture.Format, error) {
 	var chosenErr error
 	for _, f := range captureFormats {
 		s, err := openStream(capture.Config{
-			Device:   device,
-			Rate:     rate,
-			Channels: channels,
-			Format:   f,
+			Device:       device,
+			Rate:         rate,
+			Channels:     channels,
+			Format:       f,
+			PeriodFrames: geo.PeriodFrames,
+			Periods:      geo.Periods,
 		})
 		if err == nil {
 			return s, f, nil
@@ -178,7 +180,7 @@ func maxSelected(selection []int) int {
 // caller today; it is kept for callers and tests that just want "open dev"
 // without managing the count. See OpenCaptureAt.
 func OpenCapture(dev *config.Device) (Source, error) {
-	src, _, err := OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.StreamChannelUnion()))
+	src, _, err := OpenCaptureAt(dev, ResolveOpenChannels(dev.Device, dev.StreamChannelUnion()), Geometry{})
 	return src, err
 }
 
@@ -194,8 +196,10 @@ func OpenCapture(dev *config.Device) (Source, error) {
 // honest-rate policy: go-audio-capture already fails a rate it cannot deliver
 // exactly, and OpenCaptureAt double-checks the negotiated rate matches the
 // request. The caller's read goroutine should runtime.LockOSThread so the capture
-// loop is not descheduled mid-period.
-func OpenCaptureAt(dev *config.Device, openCh int) (Source, capture.Format, error) {
+// loop is not descheduled mid-period. geo is the requested period geometry; the
+// zero Geometry leaves it to the library default, and NegotiatedGeometry reports
+// what the driver granted.
+func OpenCaptureAt(dev *config.Device, openCh int, geo Geometry) (Source, capture.Format, error) {
 	// dev.Format is the stream OUTPUT format; guard it (S16-only) before touching
 	// hardware. The capture format is negotiated separately below.
 	if _, err := captureFormat(dev.Format); err != nil {
@@ -204,7 +208,7 @@ func OpenCaptureAt(dev *config.Device, openCh int) (Source, capture.Format, erro
 	if openCh < 1 {
 		openCh = 1
 	}
-	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh)
+	s, format, err := openNegotiate(dev.Device, dev.Rate, openCh, geo)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -337,6 +341,14 @@ func (c *captureSource) Close() error { return c.s.Close() }
 
 func (c *captureSource) Overruns() uint64 { return c.s.Xruns() }
 
+func (c *captureSource) NegotiatedGeometry() Geometry { return streamGeometry(c.s) }
+
+// streamGeometry reads the granted period geometry from a stream.
+func streamGeometry(s captureStream) Geometry {
+	n := s.Negotiated()
+	return Geometry{PeriodFrames: n.PeriodFrames, Periods: n.Periods}
+}
+
 // convertingSource wraps a wider-than-S16 capture stream (S32LE, or the 24-bit
 // S24LE / S24_3LE) and delivers S16LE periods, so a 24/32-bit-only device looks
 // like any other S16 Source to the pipeline. It keeps two reused buffers: in
@@ -386,3 +398,5 @@ func (c *convertingSource) Read() (Period, error) {
 func (c *convertingSource) Close() error { return c.s.Close() }
 
 func (c *convertingSource) Overruns() uint64 { return c.s.Xruns() }
+
+func (c *convertingSource) NegotiatedGeometry() Geometry { return streamGeometry(c.s) }

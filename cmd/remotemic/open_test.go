@@ -32,7 +32,7 @@ func swapResolveOpenChannels(fn func(string, []int) int) func() {
 
 // swapOpenCaptureAt substitutes the capture-open seam and returns a restore
 // func, so a test can open a device without hardware.
-func swapOpenCaptureAt(fn func(*config.Device, int) (audio.Source, capture.Format, error)) func() {
+func swapOpenCaptureAt(fn func(*config.Device, int, audio.Geometry) (audio.Source, capture.Format, error)) func() {
 	prev := openCaptureAt
 	openCaptureAt = fn
 	return func() { openCaptureAt = prev }
@@ -46,14 +46,14 @@ func swapOpenCaptureAt(fn func(*config.Device, int) (audio.Source, capture.Forma
 func TestOpenDeviceRetryReportsBusyDevice(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int { return 1 })()
 	calls := 0
-	defer swapOpenCaptureAt(func(*config.Device, int) (audio.Source, capture.Format, error) {
+	defer swapOpenCaptureAt(func(*config.Device, int, audio.Geometry) (audio.Source, capture.Format, error) {
 		calls++
 		return nil, 0, capture.ErrDeviceInUse
 	})()
 
 	dev := &config.Device{Name: "busy", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
 	synctest.Test(t, func(t *testing.T) {
-		_, err := openDeviceRetry(dev, levels.NewHub())
+		_, err := openDeviceRetry(dev, 0, levels.NewHub())
 		if !errors.Is(err, capture.ErrDeviceInUse) {
 			t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
 		}
@@ -71,14 +71,14 @@ func TestOpenDeviceRetryReportsBusyDevice(t *testing.T) {
 func TestOpenDeviceRetryOpensAtResolvedCount(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int { return 2 })()
 	var seen []int
-	defer swapOpenCaptureAt(func(_ *config.Device, openCh int) (audio.Source, capture.Format, error) {
+	defer swapOpenCaptureAt(func(_ *config.Device, openCh int, _ audio.Geometry) (audio.Source, capture.Format, error) {
 		seen = append(seen, openCh)
 		return nil, 0, capture.ErrDeviceInUse
 	})()
 
 	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{2}}}}
 	synctest.Test(t, func(t *testing.T) {
-		if _, err := openDeviceRetry(dev, levels.NewHub()); !errors.Is(err, capture.ErrDeviceInUse) {
+		if _, err := openDeviceRetry(dev, 0, levels.NewHub()); !errors.Is(err, capture.ErrDeviceInUse) {
 			t.Fatalf("openDeviceRetry error = %v, want ErrDeviceInUse", err)
 		}
 	})
@@ -111,7 +111,7 @@ func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 	})()
 
 	var seen []int
-	defer swapOpenCaptureAt(func(_ *config.Device, openCh int) (audio.Source, capture.Format, error) {
+	defer swapOpenCaptureAt(func(_ *config.Device, openCh int, _ audio.Geometry) (audio.Source, capture.Format, error) {
 		seen = append(seen, openCh)
 		if openCh == 1 {
 			return nil, 0, capture.ErrDeviceInUse // busy only at the wrong fallback count
@@ -121,7 +121,7 @@ func TestOpenDeviceRetryReresolvesAfterCardFrees(t *testing.T) {
 
 	dev := &config.Device{Name: "stereo", Device: devMissing, Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Path: "/stereo", Mode: config.ModePCM, Channels: []int{1, 2}}}}
 	synctest.Test(t, func(t *testing.T) {
-		rt, err := openDeviceRetry(dev, levels.NewHub())
+		rt, err := openDeviceRetry(dev, 0, levels.NewHub())
 		if err != nil {
 			t.Fatalf("device stayed skipped after the card freed: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestOpenDeviceRetryStopsOnPermanentError(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int { attempts++; return 1 })()
 
 	dev := &config.Device{Name: "bad", Device: "usb:zz", Rate: 48000, Format: testFmtS16, Streams: []config.Stream{{Channels: []int{1}}}}
-	_, err := openDeviceRetry(dev, levels.NewHub())
+	_, err := openDeviceRetry(dev, 0, levels.NewHub())
 	if _, ok := errors.AsType[*capture.BadDeviceError](err); !ok {
 		t.Fatalf("openDeviceRetry error = %v, want *capture.BadDeviceError", err)
 	}
@@ -197,13 +197,13 @@ func (c *overrunCapture) Overruns() uint64                 { return c.n.Load() }
 // pointed at a per-stream source instead would silently report zero.
 func TestOpenDeviceRuntimeReadsCaptureOverruns(t *testing.T) {
 	fake := newOverrunCapture(4)
-	defer swapOpenCaptureAt(func(*config.Device, int) (audio.Source, capture.Format, error) {
+	defer swapOpenCaptureAt(func(*config.Device, int, audio.Geometry) (audio.Source, capture.Format, error) {
 		return fake, capture.FormatS16LE, nil
 	})()
 
 	dev := &config.Device{Name: "yard", Device: devMissing, Rate: 48000, Format: testFmtS16,
 		Streams: []config.Stream{{Path: "/yard", Mode: config.ModePCM, Channels: []int{1}}}}
-	rt, err := openDevice(dev, 1, levels.NewHub())
+	rt, err := openDevice(dev, 1, audio.Geometry{}, levels.NewHub())
 	if err != nil {
 		t.Fatalf("openDevice: %v", err)
 	}
@@ -214,5 +214,54 @@ func TestOpenDeviceRuntimeReadsCaptureOverruns(t *testing.T) {
 	fake.n.Store(9)
 	if got := rt.status().Overruns; got != 9 {
 		t.Errorf("status Overruns = %d, want the capture's live 9", got)
+	}
+}
+
+// grantingCapture is a capture that reports the geometry its "driver" granted,
+// which may differ from the one requested.
+type grantingCapture struct {
+	overrunCapture
+	granted audio.Geometry
+}
+
+func (c *grantingCapture) NegotiatedGeometry() audio.Geometry { return c.granted }
+
+// TestOpenDeviceRetryGeometry pins the ladder's wiring into the capture open: a
+// step becomes the requested period in frames at the device's rate (step 0 the
+// zero Geometry, the library default), and the runtime records what the driver
+// granted, not what was asked.
+func TestOpenDeviceRetryGeometry(t *testing.T) {
+	cases := []struct {
+		name string
+		rate int
+		step int
+		want audio.Geometry
+	}{
+		{"default", 48000, 0, audio.Geometry{}},
+		{"step 2 at 48 kHz", 48000, 2, audio.Geometry{PeriodFrames: 1920, Periods: 8}},
+		{"step 3 at 44.1 kHz", 44100, 3, audio.Geometry{PeriodFrames: 1764, Periods: 16}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer swapResolveOpenChannels(func(string, []int) int { return 1 })()
+			granted := audio.Geometry{PeriodFrames: 2048, Periods: 4}
+			var asked audio.Geometry
+			defer swapOpenCaptureAt(func(_ *config.Device, _ int, geo audio.Geometry) (audio.Source, capture.Format, error) {
+				asked = geo
+				return &grantingCapture{granted: granted}, capture.FormatS16LE, nil
+			})()
+			dev := &config.Device{Name: "g", Device: devMissing, Rate: tc.rate, Format: testFmtS16, Streams: []config.Stream{{Path: "/g", Mode: config.ModePCM, Channels: []int{1}}}}
+			rt, err := openDeviceRetry(dev, tc.step, levels.NewHub())
+			if err != nil {
+				t.Fatalf("openDeviceRetry: %v", err)
+			}
+			defer func() { _ = rt.fanout.Close() }()
+			if asked != tc.want {
+				t.Errorf("requested geometry = %+v, want %+v", asked, tc.want)
+			}
+			if rt.geometry != granted {
+				t.Errorf("runtime geometry = %+v, want the granted %+v", rt.geometry, granted)
+			}
+		})
 	}
 }

@@ -76,8 +76,8 @@ func scriptedStages(t *testing.T, app *appliance, log *fakeOpenLog) func(path st
 	})
 	var latest map[string]chan bool
 	var latestRT *deviceRuntime
-	app.open = func(dev *config.Device, hub *levels.Hub) (*deviceRuntime, error) {
-		rt, err := next(dev, hub)
+	app.open = func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
+		rt, err := next(dev, step, hub)
 		if err != nil {
 			return rt, err
 		}

@@ -333,6 +333,9 @@ func (a *appliance) onRetryDue() {
 	// An encode fault has no deadline, so a stale one costs no busy loop, but a
 	// device configured again under that name would inherit its proof.
 	maps.DeleteFunc(a.encodeFaults, func(name string, _ encodeFault) bool { return !a.enabledInConfig(name) })
+	// Same for a geometry step: no deadline, but a name configured again would
+	// inherit it.
+	a.pruneGeometry()
 	recovered := false
 	attempted := false
 	reannounce := false
