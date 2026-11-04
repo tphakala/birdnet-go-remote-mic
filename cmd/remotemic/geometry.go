@@ -195,7 +195,7 @@ func (a *appliance) geometryRefuse(name string, refusedAt int) {
 	st.step = min(st.step, st.ceiling)
 	st.shortfalls = 0
 	if st.ceiling == 0 {
-		a.clearGeometry(name, "The driver refused a larger capture period; the device uses the default period.")
+		a.clearGeometry(name, "The driver refused a larger capture period; the next open uses the default period.")
 	}
 }
 
