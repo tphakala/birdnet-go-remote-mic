@@ -296,8 +296,8 @@ func TestRecoverManagementEditedTokenEvents(t *testing.T) {
 // TestServeManagementRedirectsPlainHTTP pins the wiring: a plain HTTP request
 // to the management port is answered with a redirect to https on the same port,
 // using the generated certificate to verify the Host (localhost differs from
-// the local IP, so a broken certificate closure shows as the IP fallback), and the API still stops
-// cleanly afterwards.
+// the local IP, so a broken certificate closure shows as the IP fallback), and
+// the API still stops cleanly afterwards.
 func TestServeManagementRedirectsPlainHTTP(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Management: config.Management{Listen: testListenAny, CertDir: t.TempDir()}}

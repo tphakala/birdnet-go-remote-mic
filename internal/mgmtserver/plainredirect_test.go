@@ -14,7 +14,6 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,9 +203,6 @@ func TestRedirectTarget(t *testing.T) {
 			if got != tc.want || status != tc.wantStatus {
 				t.Errorf("redirectTarget = (%q, %d), want (%q, %d)", got, status, tc.want, tc.wantStatus)
 			}
-			if strings.Contains(got, "evil") && !strings.Contains(tc.request, "//evil") {
-				t.Errorf("Location %q reflects the spoofed host", got)
-			}
 		})
 	}
 }
@@ -260,35 +256,28 @@ type plainReply struct {
 	contentLength int64
 }
 
-// plainExchange sends raw to the server over plain TCP, then returns the parsed
-// response and whether the server then closed the connection (EOF before the
-// read deadline). send, when set, runs on its own goroutine after raw is written.
-func plainExchange(t *testing.T, ts *httptest.Server, raw string, send func(net.Conn)) (*plainReply, bool) {
+// plainExchange sends raw to the server over plain TCP and returns the parsed
+// response, or nil when the server closed without answering. Any read error
+// other than EOF, a reset included, or bytes after the response, fail the test.
+func plainExchange(t *testing.T, ts *httptest.Server, raw string) *plainReply {
 	t.Helper()
 	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var wg sync.WaitGroup
-	t.Cleanup(func() {
-		_ = conn.Close()
-		wg.Wait()
-	})
+	t.Cleanup(func() { _ = conn.Close() })
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := io.WriteString(conn, raw); err != nil {
 		t.Fatal(err)
 	}
-	if send != nil {
-		wg.Go(func() { send(conn) })
-	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, nil)
 	if err != nil {
 		// http.ReadResponse reports an empty stream as an unexpected EOF.
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, true
+			return nil
 		}
 		t.Fatalf("reading the response: %v", err)
 	}
@@ -297,7 +286,7 @@ func plainExchange(t *testing.T, ts *httptest.Server, raw string, send func(net.
 	if len(rest) != 0 || err != nil {
 		t.Fatalf("after the redirect: %d extra bytes, err %v; want a clean close", len(rest), err)
 	}
-	return &plainReply{resp.StatusCode, resp.Header, resp.Close, resp.ContentLength}, true
+	return &plainReply{resp.StatusCode, resp.Header, resp.Close, resp.ContentLength}
 }
 
 func serverPort(ts *httptest.Server) string {
@@ -324,9 +313,9 @@ func TestRedirectPlainHTTP(t *testing.T) {
 		t.Parallel()
 		ts, _ := newRedirectServer(t, nil)
 		port := serverPort(ts)
-		resp, closed := plainExchange(t, ts, "GET /a?b=1 HTTP/1.1\r\nHost: example.com:"+port+"\r\n\r\n", nil)
-		if resp == nil || !closed {
-			t.Fatalf("no response or no close: resp=%v closed=%v", resp, closed)
+		resp := plainExchange(t, ts, "GET /a?b=1 HTTP/1.1\r\nHost: example.com:"+port+"\r\n\r\n")
+		if resp == nil {
+			t.Fatal("no response")
 		}
 		if resp.status != http.StatusPermanentRedirect {
 			t.Errorf("status %d, want 308", resp.status)
@@ -347,7 +336,7 @@ func TestRedirectPlainHTTP(t *testing.T) {
 	t.Run("unverified host is redirected with 307 to the local IP", func(t *testing.T) {
 		t.Parallel()
 		ts, _ := newRedirectServer(t, nil)
-		resp, _ := plainExchange(t, ts, "GET /a HTTP/1.1\r\nHost: evil.example\r\n\r\n", nil)
+		resp := plainExchange(t, ts, "GET /a HTTP/1.1\r\nHost: evil.example\r\n\r\n")
 		if resp == nil || resp.status != http.StatusTemporaryRedirect {
 			t.Fatalf("response %v, want 307", resp)
 		}
@@ -366,12 +355,12 @@ func TestRedirectPlainHTTP(t *testing.T) {
 		ts, _ := newRedirectServer(t, func() (*tls.Certificate, error) { return current.Load(), nil })
 		port := serverPort(ts)
 		const raw = "GET / HTTP/1.1\r\nHost: swapped.example\r\n\r\n"
-		resp, _ := plainExchange(t, ts, raw, nil)
+		resp := plainExchange(t, ts, raw)
 		if resp == nil || resp.header.Get("Location") != "https://127.0.0.1:"+port+"/" {
 			t.Fatalf("before the swap: %v, want the 127.0.0.1 fallback", resp)
 		}
 		current.Store(&tls.Certificate{Leaf: &x509.Certificate{DNSNames: []string{"swapped.example"}}})
-		resp, _ = plainExchange(t, ts, raw, nil)
+		resp = plainExchange(t, ts, raw)
 		if resp == nil || resp.header.Get("Location") != "https://swapped.example:"+port+"/" {
 			t.Fatalf("after the swap: %v, want swapped.example", resp)
 		}
@@ -386,7 +375,7 @@ func TestRedirectPlainHTTP(t *testing.T) {
 		// client reads ECONNRESET instead of a clean close (plainExchange fails
 		// on any read error).
 		raw := "POST /api/v1/x HTTP/1.1\r\nHost: example.com\r\nContent-Length: " + strconv.Itoa(size) + "\r\n\r\n" + strings.Repeat("x", size)
-		resp, _ := plainExchange(t, ts, raw, nil)
+		resp := plainExchange(t, ts, raw)
 		if resp == nil || resp.status != http.StatusPermanentRedirect {
 			t.Fatalf("response %v, want 308", resp)
 		}
@@ -395,9 +384,9 @@ func TestRedirectPlainHTTP(t *testing.T) {
 	t.Run("malformed plain request is not answered and still logs", func(t *testing.T) {
 		t.Parallel()
 		ts, lines := newRedirectServer(t, nil)
-		resp, closed := plainExchange(t, ts, "GET\r\n\r\n", nil)
-		if resp != nil || !closed {
-			t.Fatalf("got resp=%v closed=%v, want an empty close", resp, closed)
+		resp := plainExchange(t, ts, "GET\r\n\r\n")
+		if resp != nil {
+			t.Fatalf("got %v, want an empty close", resp)
 		}
 		if line := nextLine(t, lines); isExpectedHandshakeError([]byte(line)) {
 			t.Errorf("a request that was not answered was dropped from the log: %q", line)
@@ -407,7 +396,7 @@ func TestRedirectPlainHTTP(t *testing.T) {
 	t.Run("redirected connection logs only the dropped line", func(t *testing.T) {
 		t.Parallel()
 		ts, lines := newRedirectServer(t, nil)
-		_, _ = plainExchange(t, ts, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n", nil)
+		plainExchange(t, ts, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 		line := nextLine(t, lines)
 		if !isExpectedHandshakeError([]byte(line)) {
 			t.Fatalf("filter no longer matches net/http's wording for the redirect: %q", line)
