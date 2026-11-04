@@ -95,8 +95,9 @@ func (c *sniffConn) Read(p []byte) (int, error) {
 // answerPlain parses the request that began with first and writes the redirect
 // (or a 400 when there is no host to name). It returns errPlainHTTP only when a
 // response was written. A request that does not parse, or that times out or
-// ends mid-way, gets no response and a fixed-text error (plainParseError) that still reaches the log,
-// as non-HTTP traffic on this port does today. Write errors are ignored: the
+// ends mid-way, gets no response and a fixed-text error (plainParseError) that
+// still reaches the log, as non-HTTP traffic on this port does today. Write
+// errors are ignored: the
 // client is gone, and the connection deadline bounds every step here.
 //
 // A request that declared a body, or that left bytes buffered (pipelining), is
@@ -105,7 +106,9 @@ func (c *sniffConn) Read(p []byte) (int, error) {
 // client then reads ECONNRESET. This mirrors net/http's closeWriteAndWait. A
 // bodiless request skips it and the connection closes at once.
 func (c *sniffConn) answerPlain(first []byte) error {
-	limited := &io.LimitedReader{R: c.Conn, N: maxPlainRequestBytes}
+	// The bytes already read count toward the cap, so the whole request, first
+	// read included, is bounded by maxPlainRequestBytes.
+	limited := &io.LimitedReader{R: c.Conn, N: max(0, maxPlainRequestBytes-int64(len(first)))}
 	br := bufio.NewReader(io.MultiReader(bytes.NewReader(first), limited))
 	req, err := http.ReadRequest(br)
 	if err != nil {
@@ -113,7 +116,7 @@ func (c *sniffConn) answerPlain(first []byte) error {
 	}
 	var leaf *x509.Certificate
 	if cert, cerr := c.certificate(); cerr == nil && cert != nil {
-		leaf = cert.Leaf
+		leaf = leafOf(cert)
 	}
 	location, status := redirectTarget(req, leaf, c.LocalAddr())
 	_, _ = c.Write(plainResponse(location, status))
@@ -131,7 +134,7 @@ func (c *sniffConn) answerPlain(first []byte) error {
 // unauthenticated client write up to the request cap into the log per
 // connection, or plant errPlainHTTP's text to have its own line dropped.
 func plainParseError(err error, capped bool) error {
-	var netErr net.Error
+	_, isNetErr := errors.AsType[net.Error](err)
 	switch {
 	case capped:
 		return errors.New("plain-text request exceeded the size limit")
@@ -139,11 +142,25 @@ func plainParseError(err error, capped bool) error {
 		return errors.New("plain-text request timed out")
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
 		return errors.New("plain-text request ended early")
-	case errors.As(err, &netErr):
+	case isNetErr:
 		return errors.New("plain-text request read failed")
 	default:
 		return errors.New("plain-text request not understood")
 	}
+}
+
+// leafOf returns the parsed leaf of cert. tls.Certificate.Leaf is optional, so
+// a certificate that carries only its DER chain is parsed from Certificate[0];
+// nil means no leaf could be had, and the caller falls back to the local IP.
+func leafOf(cert *tls.Certificate) *x509.Certificate {
+	if cert.Leaf != nil || len(cert.Certificate) == 0 {
+		return cert.Leaf
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil
+	}
+	return leaf
 }
 
 func plainResponse(location string, status int) []byte {

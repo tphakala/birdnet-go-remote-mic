@@ -510,11 +510,33 @@ func TestRedirectPlainHTTPLateBody(t *testing.T) {
 
 // TestRedirectPlainHTTPCertificateFallback pins that a missing certificate
 // (an error, or nil without one) falls back to the local IP instead of failing.
+// TestRedirectPlainHTTPCertificateWithoutLeaf pins that a certificate carrying
+// only its DER chain still verifies the Host: Leaf is optional on tls.Certificate.
+func TestRedirectPlainHTTPCertificateWithoutLeaf(t *testing.T) {
+	t.Parallel()
+	var ts *httptest.Server
+	ts, _ = newRedirectServer(t, func() (*tls.Certificate, error) {
+		cert := ts.TLS.Certificates[0]
+		cert.Leaf = nil
+		return &cert, nil
+	})
+	resp := plainExchange(t, ts, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	if resp == nil || resp.status != http.StatusPermanentRedirect {
+		t.Fatalf("response %v, want 308 for a Host the certificate covers", resp)
+	}
+	if got, want := resp.header.Get("Location"), "https://example.com:"+serverPort(ts)+"/"; got != want {
+		t.Errorf("Location %q, want %q", got, want)
+	}
+}
+
 func TestRedirectPlainHTTPCertificateFallback(t *testing.T) {
 	t.Parallel()
 	for name, certificate := range map[string]func() (*tls.Certificate, error){
 		"certificate error": func() (*tls.Certificate, error) { return nil, errors.New("no certificate") },
 		"nil certificate":   func() (*tls.Certificate, error) { return nil, nil }, //nolint:nilnil // a nil certificate with no error is the case under test
+		"unparsable chain": func() (*tls.Certificate, error) {
+			return &tls.Certificate{Certificate: [][]byte{[]byte("not DER")}}, nil
+		},
 	} {
 		t.Run(name+" falls back to the local IP", func(t *testing.T) {
 			t.Parallel()
@@ -660,9 +682,12 @@ func TestSniffConnPassesThroughNonHTTP(t *testing.T) {
 }
 
 // TestAnswerPlainCapsTheRequest pins the request size cap: a header block that
-// never ends is read no further than maxPlainRequestBytes.
+// never ends is read no further than maxPlainRequestBytes in total, the bytes
+// of the first read included. A pipe hands over exactly what the reader asks
+// for, so the client's write count is the number of bytes read after first.
 func TestAnswerPlainCapsTheRequest(t *testing.T) {
 	t.Parallel()
+	first := []byte("GET / HTTP/1.1\r\nX: ")
 	c, client := pipeConn(t)
 	var written atomic.Int64
 	var wg sync.WaitGroup
@@ -671,14 +696,14 @@ func TestAnswerPlainCapsTheRequest(t *testing.T) {
 		written.Add(int64(n))
 		_ = client.Close()
 	})
-	err := c.answerPlain([]byte("GET / HTTP/1.1\r\nX: "))
+	err := c.answerPlain(first)
 	// Closing the server end releases a writer that the cap left blocked.
 	_ = c.Close()
 	wg.Wait()
 	if err == nil || err.Error() != "plain-text request exceeded the size limit" {
 		t.Errorf("answerPlain error %v, want the size limit reason", err)
 	}
-	if got := written.Load(); got > maxPlainRequestBytes {
-		t.Errorf("the client wrote %d bytes, want at most %d to be read", got, maxPlainRequestBytes)
+	if got, want := written.Load(), int64(maxPlainRequestBytes-len(first)); got != want {
+		t.Errorf("the client wrote %d bytes after the first read, want %d", got, want)
 	}
 }
