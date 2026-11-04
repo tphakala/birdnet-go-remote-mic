@@ -693,7 +693,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rt.geoStep = step
 	rt.started = time.Now()
 	if asked > 0 {
-		a.geometryOpened(dev.Name, rt, asked, step, first, refusedAt)
+		a.geometryOpened(dev.Name, rt, asked, first)
 	}
 	rt.state = mgmtserver.StateServing
 	rt.friendlyName = hw.Label

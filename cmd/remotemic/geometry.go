@@ -198,18 +198,20 @@ func (a *appliance) geometryRefuse(name string, refusedAt int) {
 }
 
 // geometryOpened records the outcome of an open that asked for step asked and
-// succeeded at step got (lower after a fallback, firstErr being the failure that
-// started it); refusedAt is as for geometryRefuse, or -1. The capture-period
+// succeeded (rt.geoStep is the step it opened at, lower after a fallback, and
+// firstErr the failure that started it); geometryRefuse has already lowered the
+// ceiling below asked if a refusal was involved. The capture-period
 // condition must say what is in effect: an open at the default clears it
 // whatever the reason, and a fallback to another escalated step rewrites it only
 // after a refusal (a transient fallback leaves it, and the step in state, so the
 // next open asks for the escalated step again). An open at the asked step raises
 // or rewrites it with the geometry the driver granted.
-func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got int, firstErr error, refusedAt int) {
+func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked int, firstErr error) {
 	st := a.geometry[name]
 	if st == nil {
 		return
 	}
+	got := rt.geoStep
 	if got < asked {
 		log.Printf("device %q: opening with %s failed (%v); using %s", name,
 			describeGeometry(geometryFor(rt.rate, asked), rt.rate), firstErr, describeGeometry(rt.geometryOrStep(got), rt.rate))
@@ -226,8 +228,8 @@ func (a *appliance) geometryOpened(name string, rt *deviceRuntime, asked, got in
 		})
 		return
 	}
-	if got < asked && refusedAt < 0 {
-		return
+	if got < asked && st.ceiling >= asked {
+		return // a transient fallback; a refusal would have lowered the ceiling below asked
 	}
 	n := geometryOnset(name, rt.geometryOrStep(got), rt.rate)
 	if !a.notifier.Onset(n) && a.updater != nil {
