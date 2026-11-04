@@ -88,7 +88,8 @@ type geometryState struct {
 	rate     int
 	channels []int
 	// step is the ladder step the next open asks for. ceiling is the highest
-	// step that has not failed to open; escalation stops there.
+	// step the driver has not refused (see geometryRefused); escalation stops
+	// there.
 	step, ceiling int
 	// shortfalls counts shortfalls at step since it was entered.
 	shortfalls int
