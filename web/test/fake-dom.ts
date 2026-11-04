@@ -9,15 +9,13 @@ export class FakeParent {
   kids: FakeNode[] = [];
   moves = 0;
   removes = 0;
+  // moveBefore moves a child without detaching it, so it does not count in
+  // moves; only withMoveBefore sets it.
+  moveBefore?: (node: FakeNode, target: FakeNode | null) => void;
 
   get firstElementChild(): FakeNode | null {
     return this.kids[0] ?? null;
   }
-
-  // stateful counts moves made with moveBefore, which a browser does without
-  // detaching the node; it is set only by withMoveBefore.
-  stateful = 0;
-  moveBefore?: (node: FakeNode, target: FakeNode | null) => void;
 
   insertBefore(node: FakeNode, target: FakeNode | null): void {
     this.moves++;
@@ -79,11 +77,11 @@ export function parentWith(...nodes: FakeNode[]): FakeParent {
 }
 
 // withMoveBefore gives p a state-preserving moveBefore, as a browser with
-// Element.moveBefore has; it counts those moves in p.stateful, not p.moves.
+// Element.moveBefore has. Like the real one it refuses a node that is not
+// already a child.
 export function withMoveBefore(p: FakeParent): FakeParent {
   p.moveBefore = (node, target) => {
     if (node.parent !== p) throw new Error("moveBefore of a node that is not a child");
-    p.stateful++;
     p.place(node, target);
   };
   return p;
