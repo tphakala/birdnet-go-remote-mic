@@ -136,8 +136,8 @@ func (f *Fanout) Run() error {
 // Every period read advances the stream position by its frames, before the idle
 // skip and the non-blocking send, so the Pos a consumer sees jumps over the
 // periods it was not sent or lost to a full queue. It is always the fan-out's own
-// count: unlike Captured, a zero Pos is a real position, so an upstream's cannot
-// be told from an unset one.
+// count: unlike Captured, a zero Pos is a real position, so a position set by an
+// upstream source cannot be told apart from an unset one.
 func (f *Fanout) distribute(p Period) {
 	pos := f.pos
 	f.pos += uint64(p.Frames)
