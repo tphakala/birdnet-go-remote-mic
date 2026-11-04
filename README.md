@@ -675,8 +675,9 @@ For a local end-to-end check without hardware, use the ALSA loopback
   period and buffer, after two shortfalls at each size, up to a 40 ms period
   and a 640 ms buffer (the default is a 20 ms period and an 80 ms buffer). A
   warning notification names the size in use, and it adds latency. The
-  notification clears once a run of the device ends after an hour of serving,
-  and the next open uses the default again. If a larger size fails to open for a
+  notification clears as soon as an open lands at the default period, or once a
+  run of the device ends after an hour of serving (the next open then uses the
+  default again). If a larger size fails to open for a
   reason other than the device being busy, gone or permanently unopenable (those
   skip the device as before), the device falls back to the last size that
   worked, and the larger size is tried again on the next open unless the driver
