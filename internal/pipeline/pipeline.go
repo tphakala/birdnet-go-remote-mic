@@ -24,8 +24,10 @@ import (
 type Frame struct {
 	Payload  []byte
 	Duration uint32 // RTP timestamp increment: PCM = frames in this payload; Opus = 960
-	// Captured is the wall clock when this media left the capture device. The
-	// RTCP sender report maps this (not send time) to the RTP timestamp, so TCP
+	// Captured is the wall clock when this payload's first sample was captured,
+	// back-dated from its period's stamp (which marks the period's end) by
+	// sample position. That is the instant the packet's RTP timestamp names,
+	// and the RTCP sender report pairs the two (not send time), so TCP
 	// backpressure never skews the receiver's clock recovery.
 	Captured time.Time
 	// Session is the play session the stage produced this frame for (see
@@ -54,8 +56,10 @@ type Frame struct {
 // is dropped unencoded, and every frame carries the session it was produced for
 // (Frame.Session), so the feed can drop one that a teardown and the next PLAY
 // overtook while it was being encoded (rtspserver.Feed checks it on Push). A
-// frame is stamped with its period's capture time (audio.Period.Captured) when
-// the period carries one.
+// frame is stamped with the capture time of its first sample, derived from its
+// period's capture time (audio.Period.Captured) when the period carries one; an
+// Opus frame that spans periods takes the stamp of the period holding its first
+// sample.
 // A nil gate means always active: every period is encoded, in the session it
 // carries (zero for an untagged one), so an ungated stage drops no period.
 type Stage interface {
@@ -74,8 +78,8 @@ type Gate func() (active bool, session uint64)
 // when it was queued for another session than the gate reports (an untagged
 // period, Session zero, belongs to any). A nil gate is always open and admits
 // every period in the session it carries, so a stage given no gate encodes
-// whatever it is fed, tagged or not. captured is the period's capture time,
-// or now when the period carries none.
+// whatever it is fed, tagged or not. captured is the period's capture time
+// (the end of the period), or now when the period carries none.
 func (g Gate) admit(p *audio.Period) (ok bool, session uint64, captured time.Time) {
 	if g == nil {
 		session = p.Session
@@ -101,6 +105,16 @@ const maxL16Payload = 15360
 
 // opusFrameSamples is one 20 ms Opus frame at 48 kHz.
 const opusFrameSamples = 960
+
+// framesDur is the duration of frames sample instants at rate Hz. It returns 0
+// for a non-positive rate, so a source that misreports its rate costs only the
+// back-dating rather than a divide-by-zero panic on the capture goroutine.
+func framesDur(frames, rate int) time.Duration {
+	if rate <= 0 {
+		return 0
+	}
+	return time.Duration(frames) * time.Second / time.Duration(rate)
+}
 
 type pcmStage struct{}
 
@@ -129,11 +143,18 @@ func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 		if !ok {
 			continue
 		}
+		// captured marks the end of the period; each payload is stamped with its own
+		// first sample, so the stamp matches the RTP timestamp the writer pairs it
+		// with.
+		remaining := len(period.Buf) / frameBytes // frames not yet emitted
 		if _, err := pk.Split(period.Buf, func(payload []byte) error {
+			n := len(payload) / frameBytes
+			at := captured.Add(-framesDur(remaining, rate))
+			remaining -= n
 			return emit(Frame{
 				Payload:  payload,
-				Duration: uint32(len(payload) / frameBytes),
-				Captured: captured,
+				Duration: uint32(n),
+				Captured: at,
 				Session:  session,
 			})
 		}); err != nil {
@@ -199,6 +220,8 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 	// client resets the fresh encoder too; that is harmless. (A nil gate follows the
 	// periods' own tags, so untagged periods stay in session 0 and never reset.)
 	var session uint64
+	// frameStart is the capture time of the accumulator's first sample.
+	var frameStart time.Time
 
 	for {
 		period, err := src.Read()
@@ -221,6 +244,11 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 		// per-sample loop carries no frame-boundary branch.
 		pcm := period.Buf
 		for len(pcm) >= 2 {
+			if len(acc) == 0 {
+				// A frame starts at the first sample not yet consumed from this period,
+				// which is as far before the period's end (captured) as the samples left.
+				frameStart = captured.Add(-framesDur(len(pcm)/2/ch, rate))
+			}
 			take := min(frameSamples-len(acc), len(pcm)/2)
 			start := len(acc)
 			acc = acc[:start+take]
@@ -236,7 +264,7 @@ func (o *opusStage) Run(src audio.Source, gate Gate, emit func(Frame) error) err
 			if eerr != nil {
 				return eerr
 			}
-			if err := emit(Frame{Payload: encBuf[:n], Duration: opusFrameSamples, Captured: captured, Session: session}); err != nil {
+			if err := emit(Frame{Payload: encBuf[:n], Duration: opusFrameSamples, Captured: frameStart, Session: session}); err != nil {
 				return err
 			}
 			acc = acc[:0]

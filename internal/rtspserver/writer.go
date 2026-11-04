@@ -81,6 +81,8 @@ func (cs *connSession) runWriter(sub Subscription) {
 		ts += frame.Duration
 		packetCount++
 		octetCount += uint32(len(frame.Payload))
+		// frame.Captured is the capture time of the payload's first sample, the
+		// instant hdr.Timestamp names; pair it with that, not with the advanced ts.
 		lastCaptured = frame.Captured
 		lastTS = hdr.Timestamp
 

@@ -14,6 +14,7 @@ import (
 
 	audiostream "github.com/tphakala/go-audio-stream"
 	rtsp "github.com/tphakala/go-audio-stream/rtsp"
+	"github.com/tphakala/go-audio-stream/rtsp/rtp"
 	"github.com/tphakala/go-audio-stream/rtsp/sdp"
 	"github.com/tphakala/go-opus/opus"
 
@@ -319,6 +320,75 @@ func TestWriterInterleavesResponsesAtomically(t *testing.T) {
 	data := append([]byte(nil), collected...)
 	mu.Unlock()
 	parseCleanStream(t, data)
+}
+
+// TestWriterSenderReportPairsCaptureWithPacketTimestamp pins that a sender
+// report names the capture time of the packet's first sample together with that
+// packet's own RTP timestamp, not the timestamp advanced past it.
+func TestWriterSenderReportPairsCaptureWithPacketTimestamp(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	const startTS = 123456
+	frames := NewFeed()
+	sub := mustSubscribe(t, frames)
+	cap0 := time.Unix(1700000000, 123456789)
+	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: cap0})
+	frames.Push(pipeline.Frame{Payload: make([]byte, 320), Duration: 160, Captured: cap0.Add(20 * time.Millisecond)})
+	track := &Track{Path: testPath, PayloadType: 96, Feed: frames}
+	srv := New(Config{SRInterval: time.Hour}, track)
+	ctx, cancel := context.WithCancel(t.Context())
+	cs := &connSession{srv: srv, track: track, conn: serverConn, ctx: ctx, cancel: cancel, rtpCh: 0, rtcpCh: 1, startSeq: 1, startTS: startTS, writerDone: make(chan struct{})}
+
+	var wg sync.WaitGroup
+	wg.Go(func() { cs.runWriter(sub) })
+	defer func() {
+		cancel()
+		_ = clientConn.Close()
+		wg.Wait()
+	}()
+
+	var pkt *rtp.Packet
+	var sr *rtp.SenderReport
+	var data []byte
+	tmp := make([]byte, 4096)
+	for pkt == nil || sr == nil {
+		_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := clientConn.Read(tmp)
+		if err != nil {
+			t.Fatalf("read: %v (packet %v, sender report %v)", err, pkt != nil, sr != nil)
+		}
+		data = append(data, tmp[:n]...)
+		for {
+			f, used, perr := rtsp.ParseInterleaved(data)
+			if perr != nil {
+				break
+			}
+			data = data[used:]
+			switch f.Channel {
+			case 0:
+				if pkt == nil {
+					p, err := rtp.ParsePacket(f.Payload)
+					if err != nil {
+						t.Fatalf("ParsePacket: %v", err)
+					}
+					pkt = &p
+				}
+			case 1:
+				pkts, err := rtp.ParseCompound(f.Payload)
+				if err != nil {
+					t.Fatalf("ParseCompound: %v", err)
+				}
+				if len(pkts) > 0 && sr == nil {
+					sr = &pkts[0]
+				}
+			}
+		}
+	}
+	if pkt.Header.Timestamp != startTS || sr.RTPTimestamp != startTS {
+		t.Errorf("got packet timestamp %d and SR timestamp %d, want both %d", pkt.Header.Timestamp, sr.RTPTimestamp, startTS)
+	}
+	if want := rtp.NTPFromTime(cap0); sr.NTPTimestamp != want {
+		t.Errorf("got SR NTP %d, want %d (first frame's capture time)", sr.NTPTimestamp, want)
+	}
 }
 
 func TestWriterTearsDownOnWriteError(t *testing.T) {
