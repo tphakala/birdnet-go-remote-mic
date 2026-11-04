@@ -384,13 +384,20 @@ export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
 // orderChildren puts nodes into parent in the given order. In steady state
 // nothing moves, so keyboard focus and a screen reader's position inside a
-// node survive the render. It walks element siblings from the first, so a
-// child it does not manage (a placeholder) ends up after the managed ones.
+// node survive the render. A node that does move keeps them too where the
+// browser has Element.moveBefore; elsewhere insertBefore detaches the node
+// for a moment and a focus inside it falls to the body. It walks element
+// siblings from the first, so a child it does not manage (a placeholder) ends
+// up after the managed ones.
 export function orderChildren(parent: Element, nodes: Iterable<Element>): void {
   let prev: Element | null = null;
   for (const node of nodes) {
     const target: Element | null = prev ? prev.nextElementSibling : parent.firstElementChild;
-    if (node !== target) parent.insertBefore(node, target);
+    if (node !== target) {
+      // moveBefore only moves a node that is already a child of parent.
+      if (node.parentNode === parent && typeof parent.moveBefore === "function") parent.moveBefore(node, target);
+      else parent.insertBefore(node, target);
+    }
     prev = node;
   }
 }
