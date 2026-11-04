@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -93,6 +96,36 @@ func TestRedirectTarget(t *testing.T) {
 		{
 			name:       "non-numeric port is rejected",
 			request:    "GET / HTTP/1.1\r\nHost: remote-mic.local:x",
+			want:       localRoot,
+			wantStatus: http.StatusTemporaryRedirect,
+		},
+		{
+			name:       "IPv4 host in the certificate",
+			request:    "GET / HTTP/1.1\r\nHost: 192.0.2.10:8443",
+			want:       localRoot,
+			wantStatus: http.StatusPermanentRedirect,
+		},
+		{
+			name:       "six-digit port is rejected",
+			request:    "GET / HTTP/1.1\r\nHost: remote-mic.local:123456",
+			want:       localRoot,
+			wantStatus: http.StatusTemporaryRedirect,
+		},
+		{
+			name:       "empty port is rejected",
+			request:    "GET / HTTP/1.1\r\nHost: remote-mic.local:",
+			want:       localRoot,
+			wantStatus: http.StatusTemporaryRedirect,
+		},
+		{
+			name:       "label ending with a hyphen is rejected although the wildcard would match",
+			request:    "GET / HTTP/1.1\r\nHost: x-.example.com",
+			want:       localRoot,
+			wantStatus: http.StatusTemporaryRedirect,
+		},
+		{
+			name:       "label over 63 bytes is rejected although the wildcard would match",
+			request:    "GET / HTTP/1.1\r\nHost: " + strings.Repeat("a", 64) + ".example.com",
 			want:       localRoot,
 			wantStatus: http.StatusTemporaryRedirect,
 		},
@@ -228,16 +261,22 @@ func (w lineWriter) Write(p []byte) (int, error) {
 }
 
 // newRedirectServer starts a TLS test server whose listener redirects plain
-// HTTP, with a short handshake deadline so the silent-client case is quick. A
-// nil certificate uses the server's own, which covers example.com and
+// HTTP. A nil certificate uses the server's own, which covers example.com and
 // 127.0.0.1. Each test gets its own server so log lines never cross tests.
 func newRedirectServer(t *testing.T, certificate func() (*tls.Certificate, error)) (*httptest.Server, lineWriter) {
+	t.Helper()
+	return newRedirectServerTimeout(t, 10*time.Second, certificate)
+}
+
+// newRedirectServerTimeout is newRedirectServer with an explicit handshake
+// deadline; only the test that waits for that deadline needs a short one.
+func newRedirectServerTimeout(t *testing.T, timeout time.Duration, certificate func() (*tls.Certificate, error)) (*httptest.Server, lineWriter) {
 	t.Helper()
 	lines := make(lineWriter, 16)
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
-	ts.Config.ReadHeaderTimeout = time.Second
+	ts.Config.ReadHeaderTimeout = timeout
 	ts.Config.ErrorLog = log.New(lines, "", 0)
 	if certificate == nil {
 		certificate = func() (*tls.Certificate, error) { return &ts.TLS.Certificates[0], nil }
@@ -422,6 +461,75 @@ func TestRedirectPlainHTTP(t *testing.T) {
 	})
 }
 
+// TestRedirectPlainHTTPLateBody pins the drain for a body that arrives after the
+// answer, when nothing is buffered behind the request head.
+func TestRedirectPlainHTTPLateBody(t *testing.T) {
+	t.Parallel()
+	for name, head := range map[string]string{
+		"content length": "POST /x HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\n",
+		"chunked":        "POST /x HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n",
+	} {
+		t.Run("body sent after the answer is drained, "+name, func(t *testing.T) {
+			t.Parallel()
+			ts, _ := newRedirectServer(t, nil)
+			conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			// The head alone reaches the server first, so nothing is buffered
+			// behind it and only the declared body can make it drain.
+			if _, err := io.WriteString(conn, head); err != nil {
+				t.Fatal(err)
+			}
+			br := bufio.NewReader(conn)
+			resp, err := http.ReadResponse(br, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusPermanentRedirect {
+				t.Fatalf("status %d, want 308", resp.StatusCode)
+			}
+			body := "4\r\nabcd\r\n0\r\n\r\n"
+			if name == "content length" {
+				body = "abcd"
+			}
+			if _, err := io.WriteString(conn, body); err != nil {
+				t.Fatalf("writing the body after the answer: %v", err)
+			}
+			if rest, err := io.ReadAll(br); err != nil || len(rest) != 0 {
+				t.Errorf("after the answer: %d bytes, err %v; want a clean close", len(rest), err)
+			}
+		})
+	}
+}
+
+// TestRedirectPlainHTTPCertificateFallback pins that a missing certificate
+// (an error, or nil without one) falls back to the local IP instead of failing.
+func TestRedirectPlainHTTPCertificateFallback(t *testing.T) {
+	t.Parallel()
+	for name, certificate := range map[string]func() (*tls.Certificate, error){
+		"certificate error": func() (*tls.Certificate, error) { return nil, errors.New("no certificate") },
+		"nil certificate":   func() (*tls.Certificate, error) { return nil, nil }, //nolint:nilnil // a nil certificate with no error is the case under test
+	} {
+		t.Run(name+" falls back to the local IP", func(t *testing.T) {
+			t.Parallel()
+			ts, _ := newRedirectServer(t, certificate)
+			resp := plainExchange(t, ts, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+			if resp == nil || resp.status != http.StatusTemporaryRedirect {
+				t.Fatalf("response %v, want 307", resp)
+			}
+			if got, want := resp.header.Get("Location"), "https://127.0.0.1:"+serverPort(ts)+"/"; got != want {
+				t.Errorf("Location %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRedirectPlainHTTPLeavesTLSAlone(t *testing.T) {
 	t.Parallel()
 
@@ -441,7 +549,7 @@ func TestRedirectPlainHTTPLeavesTLSAlone(t *testing.T) {
 
 	t.Run("silent client blocks neither accept nor the deadline", func(t *testing.T) {
 		t.Parallel()
-		ts, _ := newRedirectServer(t, nil)
+		ts, _ := newRedirectServerTimeout(t, 2*time.Second, nil)
 		silent, err := net.Dial("tcp", ts.Listener.Addr().String())
 		if err != nil {
 			t.Fatal(err)
@@ -452,11 +560,125 @@ func TestRedirectPlainHTTPLeavesTLSAlone(t *testing.T) {
 			t.Fatalf("TLS request while a silent connection is open: %v", err)
 		}
 		_ = resp.Body.Close()
-		if err := silent.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		if err := silent.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := silent.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 			t.Errorf("silent connection read: %v, want EOF from the server's handshake deadline", err)
 		}
 	})
+}
+
+func TestPlainParseError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		err    error
+		capped bool
+		want   string
+	}{
+		{"size cap wins over the EOF it causes", io.EOF, true, "plain-text request exceeded the size limit"},
+		{"deadline", os.ErrDeadlineExceeded, false, "plain-text request timed out"},
+		{"EOF", io.EOF, false, "plain-text request ended early"},
+		{"unexpected EOF", io.ErrUnexpectedEOF, false, "plain-text request ended early"},
+		{"connection reset", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, false, "plain-text request read failed"},
+		{"parser message with client bytes", errors.New(`malformed MIME header line: "secret"`), false, "plain-text request not understood"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := plainParseError(tc.err, tc.capped)
+			if got.Error() != tc.want {
+				t.Errorf("plainParseError = %q, want %q", got, tc.want)
+			}
+			if isExpectedHandshakeError([]byte("http: TLS handshake error from x: " + got.Error())) {
+				t.Errorf("%q would be dropped by the log filter", got)
+			}
+		})
+	}
+}
+
+// TestPlainResponseNoTarget pins the 400 reply sent when no host can be named.
+func TestPlainResponseNoTarget(t *testing.T) {
+	t.Parallel()
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(plainResponse("", 0))), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("body shorter than its Content-Length: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest || !resp.Close || resp.Header.Get("Location") != "" {
+		t.Errorf("got status %d close %v location %q, want a 400 with Connection: close and no Location",
+			resp.StatusCode, resp.Close, resp.Header.Get("Location"))
+	}
+	if string(body) != "Client sent an HTTP request to an HTTPS server.\n" {
+		t.Errorf("body %q", body)
+	}
+}
+
+// pipeConn returns a sniffConn over one end of an in-memory pipe and the other end.
+func pipeConn(t *testing.T) (*sniffConn, net.Conn) {
+	t.Helper()
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+	// A wrong decision would block on a pipe nobody writes to; the deadline
+	// turns that hang into a failure.
+	if err := server.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return &sniffConn{Conn: server, certificate: func() (*tls.Certificate, error) { return nil, nil }}, client
+}
+
+// TestSniffConnPassesThroughNonHTTP pins the first-byte boundary: only 'A'..'Z'
+// starts the plain path, and once the first read has decided, later reads that
+// begin with a letter (a long TLS stream) are delivered untouched.
+func TestSniffConnPassesThroughNonHTTP(t *testing.T) {
+	t.Parallel()
+	for _, first := range []byte{0x16, 0x80, '@', '[', 'a', 'z', '0'} {
+		t.Run(strconv.Itoa(int(first)), func(t *testing.T) {
+			t.Parallel()
+			c, client := pipeConn(t)
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				_, _ = client.Write([]byte{first, 'x'})
+				_, _ = client.Write([]byte("GET / HTTP/1.1\r\n"))
+			})
+			defer wg.Wait()
+			buf := make([]byte, 2)
+			if n, err := io.ReadFull(c, buf); err != nil || n != 2 || buf[0] != first {
+				t.Fatalf("first read: %v %v %v, want the bytes unchanged", n, err, buf)
+			}
+			rest := make([]byte, len("GET / HTTP/1.1\r\n"))
+			if _, err := io.ReadFull(c, rest); err != nil || string(rest) != "GET / HTTP/1.1\r\n" {
+				t.Fatalf("later read: %q, %v, want the bytes unchanged", rest, err)
+			}
+		})
+	}
+}
+
+// TestAnswerPlainCapsTheRequest pins the request size cap: a header block that
+// never ends is read no further than maxPlainRequestBytes.
+func TestAnswerPlainCapsTheRequest(t *testing.T) {
+	t.Parallel()
+	c, client := pipeConn(t)
+	var written atomic.Int64
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		n, _ := client.Write([]byte(strings.Repeat("a", 2*maxPlainRequestBytes)))
+		written.Add(int64(n))
+		_ = client.Close()
+	})
+	err := c.answerPlain([]byte("GET / HTTP/1.1\r\nX: "))
+	// Closing the server end releases a writer that the cap left blocked.
+	_ = c.Close()
+	wg.Wait()
+	if err == nil || err.Error() != "plain-text request exceeded the size limit" {
+		t.Errorf("answerPlain error %v, want the size limit reason", err)
+	}
+	if got := written.Load(); got > maxPlainRequestBytes {
+		t.Errorf("the client wrote %d bytes, want at most %d to be read", got, maxPlainRequestBytes)
+	}
 }
