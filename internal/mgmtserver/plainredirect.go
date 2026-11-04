@@ -6,11 +6,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -95,7 +95,7 @@ func (c *sniffConn) Read(p []byte) (int, error) {
 // answerPlain parses the request that began with first and writes the redirect
 // (or a 400 when there is no host to name). It returns errPlainHTTP only when a
 // response was written. A request that does not parse, or that times out or
-// ends mid-way, gets no response and a wrapped error that still reaches the log,
+// ends mid-way, gets no response and a fixed-text error (plainParseError) that still reaches the log,
 // as non-HTTP traffic on this port does today. Write errors are ignored: the
 // client is gone, and the connection deadline bounds every step here.
 //
@@ -105,11 +105,11 @@ func (c *sniffConn) Read(p []byte) (int, error) {
 // client then reads ECONNRESET. This mirrors net/http's closeWriteAndWait. A
 // bodiless request skips it and the connection closes at once.
 func (c *sniffConn) answerPlain(first []byte) error {
-	r := io.MultiReader(bytes.NewReader(first), &io.LimitedReader{R: c.Conn, N: maxPlainRequestBytes})
-	br := bufio.NewReader(r)
+	limited := &io.LimitedReader{R: c.Conn, N: maxPlainRequestBytes}
+	br := bufio.NewReader(io.MultiReader(bytes.NewReader(first), limited))
 	req, err := http.ReadRequest(br)
 	if err != nil {
-		return fmt.Errorf("plain-text request: %w", err)
+		return plainParseError(err, limited.N == 0)
 	}
 	var leaf *x509.Certificate
 	if cert, cerr := c.certificate(); cerr == nil && cert != nil {
@@ -124,6 +124,26 @@ func (c *sniffConn) answerPlain(first []byte) error {
 		_, _ = io.Copy(io.Discard, io.LimitReader(c.Conn, maxPlainDrainBytes))
 	}
 	return errPlainHTTP
+}
+
+// plainParseError names why a plain request did not parse, in fixed text. The
+// parser's own message quotes the client's bytes, and logging it would let an
+// unauthenticated client write up to the request cap into the log per
+// connection, or plant errPlainHTTP's text to have its own line dropped.
+func plainParseError(err error, capped bool) error {
+	var netErr net.Error
+	switch {
+	case capped:
+		return errors.New("plain-text request exceeded the size limit")
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return errors.New("plain-text request timed out")
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return errors.New("plain-text request ended early")
+	case errors.As(err, &netErr):
+		return errors.New("plain-text request read failed")
+	default:
+		return errors.New("plain-text request not understood")
+	}
 }
 
 func plainResponse(location string, status int) []byte {

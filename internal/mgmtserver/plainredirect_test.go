@@ -384,12 +384,23 @@ func TestRedirectPlainHTTP(t *testing.T) {
 	t.Run("malformed plain request is not answered and still logs", func(t *testing.T) {
 		t.Parallel()
 		ts, lines := newRedirectServer(t, nil)
-		resp := plainExchange(t, ts, "GET\r\n\r\n")
+		// The bad header line carries a marker and the sentinel's own text: the
+		// log must hold neither, so a client can neither fill the log with its
+		// bytes nor get its own line dropped by the filter.
+		raw := "GET / HTTP/1.1\r\nBad Header MARKER-xyz " + errPlainHTTP.Error() + "\r\n\r\n"
+		resp := plainExchange(t, ts, raw)
 		if resp != nil {
 			t.Fatalf("got %v, want an empty close", resp)
 		}
-		if line := nextLine(t, lines); isExpectedHandshakeError([]byte(line)) {
+		line := nextLine(t, lines)
+		if isExpectedHandshakeError([]byte(line)) {
 			t.Errorf("a request that was not answered was dropped from the log: %q", line)
+		}
+		if strings.Contains(line, "MARKER-xyz") || strings.Contains(line, "Bad Header") {
+			t.Errorf("client bytes reached the log: %q", line)
+		}
+		if !strings.Contains(line, "plain-text request") {
+			t.Errorf("log line does not name the plain-text request: %q", line)
 		}
 	})
 
