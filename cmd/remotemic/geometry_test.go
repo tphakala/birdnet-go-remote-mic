@@ -597,3 +597,36 @@ func TestTransientEscalatedOpenFailureDoesNotPinCeiling(t *testing.T) {
 		h.wantGeometry(1, 0)
 	})
 }
+
+// TestRefusedAboveTransientFallbackSetsCeilingBelowRefusal pins the ceiling
+// bookkeeping when one fallback chain mixes errors: step 3 is refused and step
+// 2 fails transiently, so the device serves at step 1 but the ceiling only
+// drops to 2 (below the refusal, not to the step that opened).
+func TestRefusedAboveTransientFallbackSetsCeilingBelowRefusal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		armed := false
+		h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+			switch {
+			case armed && step == 3:
+				return fmt.Errorf("alsa: HW_PARAMS: %w", syscall.ENOMEM)
+			case armed && step == 2:
+				return fmt.Errorf("open capture: %w", syscall.EIO)
+			}
+			return nil
+		})
+		for range 5 {
+			h.shortfall()
+		}
+		armed = true
+		h.shortfall()
+		h.wantSteps(0, 0, 1, 1, 2, 2, 3, 2, 1)
+		if s := h.app.devices["moth"].currentState(); s != mgmtserver.StateServing {
+			t.Fatalf("state = %s, want serving at step 1", s)
+		}
+		if st := h.app.geometry["moth"]; st == nil || st.ceiling != 2 || st.step != 2 {
+			t.Errorf("geometry state = %+v, want step 2 and ceiling 2", st)
+		}
+	})
+}
