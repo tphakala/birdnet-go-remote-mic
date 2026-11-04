@@ -645,9 +645,11 @@ func TestFallbackToDefaultClearsCondition(t *testing.T) {
 		name                  string
 		at2, at1              error
 		wantStep, wantCeiling int
+		wantMsg               string
 	}{
-		{"refused then transient", enomem, eio, 1, 1},
-		{"transient then transient", eio, eio, 2, 3},
+		{"refused then transient", enomem, eio, 1, 1, "did not open this time"},
+		{"transient then transient", eio, eio, 2, 3, "did not open this time"},
+		{"refused down to the default", enomem, enomem, 0, 0, "driver refused"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -674,6 +676,9 @@ func TestFallbackToDefaultClearsCondition(t *testing.T) {
 				h.wantGeometry(1, 1)
 				if _, ok := activeGeometry(t, h.app, "moth"); ok {
 					t.Error("capture-period condition still active while capturing at the default period")
+				}
+				if got := lastNotification(t, applianceCenter(t, h.app)).Message; !strings.Contains(got, tc.wantMsg) {
+					t.Errorf("clear message = %q, want it to contain %q", got, tc.wantMsg)
 				}
 				if st := h.app.geometry["moth"]; st == nil || st.step != tc.wantStep || st.ceiling != tc.wantCeiling {
 					t.Errorf("geometry state = %+v, want step %d and ceiling %d", st, tc.wantStep, tc.wantCeiling)
@@ -784,6 +789,38 @@ func TestRunEndedLogNamesOpenedGeometry(t *testing.T) {
 		h.die(errors.New("alsa: read failed"))
 		if got := logBuf.String(); !strings.Contains(got, "at a 20 ms period and 8 periods (160 ms buffer); its next open uses the default") {
 			t.Errorf("log = %q, want the reset line to name the step 1 geometry the run served at", got)
+		}
+	})
+}
+
+// TestTransientFallbackLeavesConditionAtEscalatedStep pins that a transient
+// fallback to another escalated step leaves the condition as it was, naming the
+// step the next open asks for again, while the device serves one step lower.
+func TestTransientFallbackLeavesConditionAtEscalatedStep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, _, stop := newGeoHarness(t, new(mothDevice()))
+		defer stop()
+		armed := false
+		h.app.open = failingStepOpener(h.app.open, h.log, func(step int) error {
+			if armed && step == 2 {
+				return fmt.Errorf("open capture: %w", syscall.EIO)
+			}
+			return nil
+		})
+		for range 4 {
+			h.shortfall()
+		}
+		n, ok := activeGeometry(t, h.app, "moth")
+		if !ok || !strings.Contains(n.Message, "40 ms period and 8 periods") {
+			t.Fatalf("condition = %q, %v; want step 2 before the fallback", n.Message, ok)
+		}
+		armed = true
+		h.die(errors.New("alsa: read failed"))
+		h.retry()
+		h.wantSteps(0, 0, 1, 1, 2, 2, 1)
+		n, ok = activeGeometry(t, h.app, "moth")
+		if !ok || !strings.Contains(n.Message, "40 ms period and 8 periods") {
+			t.Errorf("condition = %q, %v; want it left at step 2", n.Message, ok)
 		}
 	})
 }
