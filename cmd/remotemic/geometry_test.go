@@ -354,10 +354,10 @@ func failingStepOpener(next func(*config.Device, int, *levels.Hub) (*deviceRunti
 	}
 }
 
-// TestEscalatedOpenFailureFallsBack pins that an escalated open that fails goes
-// back to the last step that worked, whatever the error, without skipping the
-// device and without asking for the failed step again, while busy and gone
-// errors (which say nothing about the geometry) are not treated as a refusal.
+// TestEscalatedOpenFailureFallsBack pins that an escalated open the driver
+// refuses goes back to the last step that worked, without skipping the device
+// and without asking for the refused step again, while busy and gone errors
+// (which say nothing about the geometry) are not retried at another step.
 func TestEscalatedOpenFailureFallsBack(t *testing.T) {
 	cases := []struct {
 		name     string
