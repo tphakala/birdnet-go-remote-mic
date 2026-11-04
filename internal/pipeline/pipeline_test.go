@@ -775,21 +775,15 @@ func TestStagesLeavePositionGapAfterDroppedPeriod(t *testing.T) {
 	dur := func(frames int) time.Duration { return time.Duration(frames) * time.Second / rate }
 	// p0 holds one whole Opus frame and half of the next; p1 (480 frames) was
 	// dropped by the fan-out; p2..p5 follow.
-	pcm := tonePCM(1440+480+4*480, ch)
-	sizes := []int{1440, 480, 480, 480, 480, 480}
-	var periods []audio.Period
-	starts := make([]int, 0, len(sizes)) // first frame of each upstream period, dropped one included
-	at := 0
-	for i, n := range sizes {
-		starts = append(starts, at)
-		if i != 1 {
-			periods = append(periods, audio.Period{
-				Buf: pcm[at*2 : (at+n)*2], Frames: n, Pos: uint64(base + at), Captured: t0.Add(dur(at + n)),
-			})
-		}
-		at += n
+	const postGap = 1440 + 480 // first frame after the dropped period
+	pcm := tonePCM(postGap+4*480, ch)
+	periods := make([]audio.Period, 0, 5)
+	for _, r := range [][2]int{{0, 1440}, {postGap, 480}, {postGap + 480, 480}, {postGap + 960, 480}, {postGap + 1440, 480}} {
+		at, n := r[0], r[1]
+		periods = append(periods, audio.Period{
+			Buf: pcm[at*2 : (at+n)*2], Frames: n, Pos: uint64(base + at), Captured: t0.Add(dur(at + n)),
+		})
 	}
-	postGap := starts[2] // frame index of p2
 
 	run := func(t *testing.T, stage pipeline.Stage) []pipeline.Frame {
 		t.Helper()
@@ -842,7 +836,7 @@ func TestStagesLeavePositionGapAfterDroppedPeriod(t *testing.T) {
 		// One encoder run over the audio that was sent, no reset at the gap.
 		sent := append(append([]byte(nil), pcm[:960*2]...), pcm[postGap*2:]...)
 		for i, w := range referenceOpus(t, cfg, sent, ch) {
-			if i < len(got) && !bytes.Equal(got[i].Payload, w) {
+			if !bytes.Equal(got[i].Payload, w) {
 				t.Errorf("frame %d differs from the encoder's output over the audio that was sent", i)
 			}
 		}

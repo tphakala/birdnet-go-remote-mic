@@ -157,12 +157,12 @@ func (pcmStage) Run(src audio.Source, gate Gate, emit func(Frame) error) error {
 		// first sample, so the stamp matches the RTP timestamp the writer pairs it
 		// with.
 		total := len(period.Buf) / frameBytes
-		remaining := total // frames not yet emitted
+		emitted := 0 // frames of this period already emitted
 		if _, err := pk.Split(period.Buf, func(payload []byte) error {
 			n := len(payload) / frameBytes
-			at := captured.Add(-framesDur(remaining, rate))
-			pos := period.Pos + uint64(total-remaining)
-			remaining -= n
+			at := captured.Add(-framesDur(total-emitted, rate))
+			pos := period.Pos + uint64(emitted)
+			emitted += n
 			return emit(Frame{
 				Payload:  payload,
 				Duration: uint32(n),
