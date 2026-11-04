@@ -181,12 +181,12 @@ tasks:
   web:lint:
     desc: Lint web UI TypeScript and JavaScript
     cmds:
-      - npx -p oxlint@1.80.0 oxlint --deny-warnings web/src web/test web/e2e
+      - npx -p oxlint@1.91.0 oxlint --deny-warnings web/src web/test web/e2e
 
   web:a11y:
     desc: Audit HTML markup and accessibility rules
     cmds:
-      - npx -p html-validate@11.10.0 html-validate -c web/.htmlvalidate.json web/static/index.html
+      - npx -p html-validate@11.18.0 html-validate -c web/.htmlvalidate.json web/static/index.html
 
   web:test:
     desc: Run the web UI unit tests (node:test) straight from the TypeScript source
