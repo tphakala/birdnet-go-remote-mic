@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -151,12 +152,19 @@ func TestWorkflowMarkLatestStep(t *testing.T) {
 			if err := os.Mkdir(bin, 0o750); err != nil {
 				t.Fatal(err)
 			}
-			for name, body := range map[string]string{"gh": ghStub, "go": goStub} {
-				//nolint:gosec // an executable stub in a test temp dir
-				if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
-					t.Fatal(err)
+			// A parallel subtest's fork must not start while a stub is open for
+			// writing: the child would inherit the descriptor and the exec of the
+			// stub would fail with ETXTBSY ("text file busy").
+			func() {
+				syscall.ForkLock.RLock()
+				defer syscall.ForkLock.RUnlock()
+				for name, body := range map[string]string{"gh": ghStub, "go": goStub} {
+					//nolint:gosec // an executable stub in a test temp dir
+					if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
+			}()
 			scriptPath := filepath.Join(dir, "step.sh")
 			if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 				t.Fatal(err)
