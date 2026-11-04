@@ -2,6 +2,10 @@ module github.com/tphakala/birdnet-go-remote-mic
 
 go 1.27
 
+// Default net listeners to plain TCP. Since Go 1.24 listeners use Multipath
+// TCP on Linux by default, and remote-mic does not use it.
+godebug multipathtcp=0
+
 require (
 	github.com/brutella/dnssd v1.2.14
 	github.com/oapi-codegen/runtime v1.8.0
