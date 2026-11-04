@@ -587,9 +587,7 @@ func TestInstalledVersion(t *testing.T) {
 	script := func(t *testing.T, body string) string {
 		t.Helper()
 		p := filepath.Join(t.TempDir(), "remote-mic")
-		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil { //nolint:gosec // a test script must be executable
-			t.Fatal(err)
-		}
+		writeScript(t, p, body)
 		return p
 	}
 	if v, present, err := installedVersion(script(t, "echo remote-mic v0.4.0\necho more\n")); v != "v0.4.0" || !present || err != nil {
