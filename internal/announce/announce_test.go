@@ -237,7 +237,7 @@ func TestRunReturnsRefusedService(t *testing.T) {
 		default:
 			t.Error("Run is still retrying a service the responder refused")
 			cancel()
-			<-done
+			t.Logf("Run ended with: %v", <-done)
 		}
 	})
 }

@@ -1170,8 +1170,8 @@ func TestSaveTokenSerializesEdits(t *testing.T) {
 	case <-attempting:
 	case s := <-secondSaw:
 		close(unblock)
-		<-firstDone
-		<-secondDone
+		t.Logf("first save: %v", <-firstDone)
+		t.Logf("second save: %v", <-secondDone)
 		t.Fatalf("second edit ran its check (saw %q) without taking the edit lock", s.cur)
 	case <-time.After(10 * time.Second): // a failure bound, not synchronization
 		close(unblock)
