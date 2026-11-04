@@ -39,8 +39,8 @@ var geometryLadder = [...]struct {
 const (
 	// geometryShortfalls is how many shortfalls at one step raise the next.
 	geometryShortfalls = 2
-	// geometryStableRun is how long a device must have served since its open
-	// for its escalation to be forgotten at its next death or open.
+	// geometryStableRun is how long a run of a device must have served for its
+	// escalation to be forgotten when that run ends (see geometryRunEnded).
 	geometryStableRun = time.Hour
 )
 

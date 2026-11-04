@@ -166,8 +166,8 @@ type appliance struct {
 	// device's next open asks for after repeated shortfalls (see geometryState).
 	// It outlives the retry state and the runtime, so a disconnect, a retry or a
 	// config save that leaves the capture alone keeps a step the device earned;
-	// it is forgotten for a changed capture id or rate, a removed or disabled
-	// device, and after a stable run. Memory only, so a process restart opens at
+	// it is forgotten for a changed capture id, rate or stream channel set, a
+	// removed or disabled device, and after a stable run. Memory only, so a process restart opens at
 	// the default.
 	geometry   map[string]*geometryState
 	retryTimer *time.Timer
