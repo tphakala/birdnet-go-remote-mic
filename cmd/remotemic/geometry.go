@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"slices"
 	"time"
 
@@ -226,7 +225,7 @@ func (a *appliance) dropGeometry(name, reason string) {
 // device, backstopping reconcileRecords so a device configured again under that
 // name cannot inherit a step.
 func (a *appliance) pruneGeometry() {
-	for name := range maps.Clone(a.geometry) {
+	for name := range a.geometry {
 		if !a.enabledInConfig(name) {
 			a.dropGeometry(name, "device removed from the configuration")
 		}

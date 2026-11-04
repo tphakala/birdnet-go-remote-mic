@@ -681,7 +681,6 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			supportedChannels: channels,
 		}
 	}
-	rt.geoStep = step
 	rt.started = time.Now()
 	if asked > 0 {
 		a.geometryOpened(dev.Name, rt, asked, step, first)
