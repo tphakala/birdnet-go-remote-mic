@@ -1287,7 +1287,8 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
-  *::after {
+  *::after,
+  *::backdrop {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
@@ -2045,31 +2046,48 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   white-space: pre-line;
 }
 
-/* Modal Overlay (Restarting & Confirm) */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
+/* Modal dialogs (restart, access token, confirm): native <dialog> elements
+   opened with showModal(), so the browser supplies the top layer, the inert
+   page, focus containment and Escape. The dialog is the surface and
+   .modal-card lays out what is in it. No display is set on the dialog: a
+   closed one must keep the browser's display: none. */
+.modal-dialog {
+  /* The browser centres a modal dialog with inset 0 and auto margins, and the
+     reset at the top of this file zeroes every margin. */
+  margin: auto;
+  width: calc(100% - 40px);
+  max-width: 480px;
+  max-height: calc(100% - 40px);
+  /* A tall dialog (the token prompt at a large font on a phone) scrolls
+     inside itself rather than past the viewport. */
+  overflow: auto;
+  background: var(--bg-surface);
+  color: inherit;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Scrolling in the dialog or over its backdrop must not scroll the page under
+   it. ::backdrop is no scroll container unless it clips its overflow. */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
   background: var(--modal-scrim);
   backdrop-filter: blur(6px);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
-.modal-overlay.open {
-  display: flex;
-  /* Show flips display none->flex (via .open on the login/restart overlays, or
-     by creating the confirm overlay already-open), so these one-shots play on
-     open: the backdrop fades and the card rises into place. Close removes the
-     element outright, so there is no exit animation to stage. The global
-     reduced-motion block neutralises both. */
-  animation: overlay-in 0.18s ease;
-}
-
-.modal-overlay.open .modal-card {
+/* showModal() flips display none->block, so these one-shots play on every
+   open: the backdrop fades and the dialog rises into place. A close has no
+   exit animation. The reduced-motion block neutralises both. */
+.modal-dialog[open] {
   animation: modal-card-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.modal-dialog[open]::backdrop {
+  animation: overlay-in 0.18s ease;
 }
 
 @keyframes overlay-in {
@@ -2082,27 +2100,13 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* The login prompt must sit above transient confirm dialogs. Both are
-   .modal-overlay at z-index 1000, and a confirm dialog appended to the DOM
-   after the prompt would otherwise paint on top of it if a 401 fires while a
-   confirm is open. Keep it below the toast stack (2000). */
-#login-modal {
-  z-index: 1500;
-}
-
 .modal-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-lg);
   padding: 28px;
-  max-width: 480px;
-  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   gap: 16px;
-  box-shadow: var(--shadow-lg);
 }
 
 /* Modal typography. Modals are read in one go and often from a distance (a

@@ -14,7 +14,11 @@
 //     the Dashboard announces "Devices loaded." (once, in the first combination);
 //   - an Available Devices card patched in place: after the device's name and
 //     capabilities change between polls, a selection in its id row survives and
-//     the card shows the new text (also once).
+//     the card shows the new text (also once);
+//   - the native <dialog> modals: the confirm dialog open (audited like a view,
+//     in every combination), and, once, that Cancel takes focus, Escape and an
+//     outside click close a confirm and return focus, and the access-token
+//     prompt and the restart modal stay open under Escape.
 //
 // It runs every combination of theme, viewport width and browser default font
 // size, over each view plus the open notification panel, theme menu and error
@@ -781,6 +785,122 @@ async function checkRetryFocus(page: Page, server: MockServer, views: readonly V
   }
 }
 
+// CONFIRM selects the confirm dialog, the one modal-dialog without an id.
+const CONFIRM = "dialog.modal-dialog:not([id])";
+
+// checkModals drives the native <dialog> modals through the paths a fake cannot
+// show: the browser's own top layer, Escape, outside clicks and focus return.
+// The confirm opens from the System view's Restart button; the access-token
+// prompt opens when the mock answers 401; the restart modal follows a confirmed
+// restart. It ends by reloading the page, before the restart modal's own reload
+// (about 6 s after it opens) can interfere.
+async function checkModals(page: Page, server: MockServer, findings: Finding[]): Promise<void> {
+  const where = "modal dialogs";
+  const fail = (key: string, detail: string): void => {
+    findings.push({ kind: "focus", where, key: `${where}: ${key}`, detail: `${where}: ${detail}` });
+  };
+  const RESTART = "#btn-sys-restart";
+  // What holds focus, as a selector-like name.
+  const active = (): Promise<string> => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName || "none");
+  // gone waits for the confirm dialog to leave the page; it removes itself
+  // after its close event.
+  const gone = (): Promise<unknown> => page.waitForFunction((sel: string) => document.querySelector(sel) === null, CONFIRM, { timeout: 3000 });
+  const matches = (sel: string): Promise<boolean> => page.evaluate((s: string) => document.querySelector(s) !== null, sel);
+
+  try {
+    await page.evaluate(() => {
+      location.hash = "#/system";
+    });
+    await page.waitForSelector(RESTART, { state: "visible", timeout: RECOVERY_MS });
+
+    // 1. The confirm: Cancel has focus, Escape closes it and returns focus.
+    await page.focus(RESTART);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
+    const cancelFocused = await page.evaluate((sel: string) => document.activeElement?.matches(`${sel} button[value=cancel]`) === true, CONFIRM);
+    if (!cancelFocused) fail("confirm focus", `focus is on ${await active()} in the open confirm, want its Cancel button`);
+    await page.keyboard.press("Escape");
+    await gone();
+    if ((await active()) !== RESTART.slice(1)) fail("confirm Escape focus", `focus is on ${await active()} after Escape, want ${RESTART}`);
+    if (await matches("#restart-modal[open]")) fail("restart modal opened", "Escape on the confirm opened the restart modal");
+
+    // 2. A click outside the dialog closes it too.
+    await page.focus(RESTART);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
+    await page.mouse.click(2, 2);
+    await gone();
+    if ((await active()) !== RESTART.slice(1)) fail("confirm outside click focus", `focus is on ${await active()} after a click outside, want ${RESTART}`);
+
+    // 3. The access-token prompt cancels an open confirm, cannot be dismissed,
+    // and a token closes it.
+    await page.focus(RESTART);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
+    server.requireAuth(true);
+    try {
+      await page.waitForSelector("#login-modal:modal", { state: "visible", timeout: RECOVERY_MS });
+      try {
+        await gone();
+      } catch {
+        fail("confirm kept", "the confirm dialog stayed open under the access-token prompt");
+      }
+      if ((await active()) !== "login-token") fail("login focus", `focus is on ${await active()} in the open prompt, want #login-token`);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(100);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+      if (!(await matches("#login-modal:modal"))) fail("login dismissed", "Escape closed the access-token prompt");
+      server.requireAuth(false);
+      await page.keyboard.type("sweep-token");
+      await page.keyboard.press("Enter");
+      await page.waitForFunction((id: string) => document.getElementById(id)?.hasAttribute("open") === false, "login-modal", { timeout: RECOVERY_MS });
+      if ((await active()) !== "main-content") fail("login close focus", `focus is on ${await active()} after the prompt closed, want #main-content`);
+    } catch {
+      fail("login prompt", "the access-token prompt did not open, hold or close as expected");
+    } finally {
+      server.requireAuth(false);
+    }
+
+    // 4. The restart modal cannot be dismissed and holds focus. A step 3 that
+    // failed can leave a modal open and the Restart button inert, so start from
+    // a fresh page then.
+    if (await matches("dialog:modal")) {
+      await page.reload();
+      await page.waitForSelector(RESTART, { state: "attached", timeout: RECOVERY_MS });
+    }
+    await page.waitForSelector(RESTART, { state: "visible", timeout: RECOVERY_MS });
+    await page.focus(RESTART);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
+    await page.click(`${CONFIRM} .btn-danger`);
+    try {
+      await page.waitForSelector("#restart-modal:modal", { state: "visible", timeout: 3000 });
+      const inside = await page.evaluate(() => document.getElementById("restart-modal")?.contains(document.activeElement) === true);
+      if (!inside) fail("restart focus", `focus is on ${await active()} in the open restart modal, want it inside the modal`);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(100);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+      if (!(await matches("#restart-modal:modal"))) fail("restart dismissed", "Escape closed the restart modal");
+    } catch {
+      fail("restart modal", "#restart-modal never opened after the restart was confirmed");
+    }
+  } catch (err) {
+    fail("setup", `a step of the modal checks did not finish: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // A step that timed out can leave a modal open, which makes the rest of the
+    // page inert, so the page is always reloaded with authentication off.
+    server.requireAuth(false);
+    try {
+      await page.reload();
+      await page.waitForSelector(RESTART, { state: "attached", timeout: RECOVERY_MS });
+    } catch (err) {
+      fail("reload", `the page did not reload after the modal checks: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 // AVAILABLE_EDIT is what checkAvailablePatch changes the available device to:
 // a new name (the card title and the Enable button's name) and a lower top
 // rate (the capabilities text), both text on rows the card already has.
@@ -999,6 +1119,31 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
       if (!(await ready(view))) continue;
       await check(view, null);
 
+      if (view === "system") {
+        // The confirm dialog open, audited for contrast, text scaling and
+        // overflow. It is the first confirm on the page, so its ids match
+        // between font sizes.
+        try {
+          await page.click("#btn-sys-restart");
+          await page.waitForSelector(`${CONFIRM}[open]`, { state: "visible", timeout: 3000 });
+          await page.waitForTimeout(200);
+          await check("confirm dialog open", `${CONFIRM}[open]`);
+        } catch {
+          findings.push({ kind: "render", where: "confirm dialog open", key: "confirm dialog did not open", detail: "no dialog.modal-dialog[open] after Restart" });
+        }
+        await page.keyboard.press("Escape");
+        const closed = await page
+          .waitForFunction((sel: string) => document.querySelector(sel) === null, CONFIRM, { timeout: 3000 })
+          .then(() => true)
+          .catch(() => false);
+        if (!closed) {
+          findings.push({ kind: "focus", where: "confirm dialog open", key: "confirm dialog not dismissed", detail: "Escape left the confirm dialog open" });
+          // An open modal leaves the rest of the page inert for the next view.
+          await page.reload();
+          await page.waitForSelector("#btn-sys-restart", { state: "attached", timeout: RECOVERY_MS });
+        }
+      }
+
       if (view === "dashboard") {
         const s = await page.evaluate(sampleStability, { minMs: STABILITY_MIN_MS, maxMs: STABILITY_MAX_MS });
         if (s.rows.length === 0) {
@@ -1028,6 +1173,7 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
     if (combo === combos[0]) {
       await checkRetryFocus(page, server, views, findings);
       if (views.includes("dashboard")) await checkAvailablePatch(page, server, findings);
+      if (views.includes("system")) await checkModals(page, server, findings);
     }
 
     // Open states, checked on the dashboard: only the overlay is audited for

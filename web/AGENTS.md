@@ -73,7 +73,8 @@ progressive enhancement that degrades gracefully without it; no polyfills.
   drops older system reads), `router.ts` (hash routes `#/dashboard`,
   `#/events`, `#/system`,
   `#/about`; the pure route decisions are in `router-core.ts`),
-  `modal.ts` (focus trap, inert background, `confirmDialog`), `ui.ts` (DOM and
+  `modal.ts` (`confirmDialog` on a native `<dialog>`, `closeTransientDialogs`; what a
+  close means and `HeldDialog`, a modal only the app closes, are in `modal-core.ts`), `ui.ts` (DOM and
   formatting helpers), `keyed-list.ts` (`KeyedList`, the keyed reconciler for
   the lists a poll updates in place; its pure plan is `keyed-core.ts`),
   `theme.ts` (the System/Light/Dark mode, live OS follow
@@ -118,7 +119,10 @@ progressive enhancement that degrades gracefully without it; no polyfills.
   also fails chosen paths (`MockServer.failPaths`, or `POST
   /__mock/fail?paths=/api/v1/devices` on a running mock) to check where focus
   lands when a load-error Retry recovers; a new Retry path gets a `RETRY_CASES`
-  entry. Run it after layout, colour, type or focus changes; keep the fixtures
+  entry. It also opens the confirm dialog (audited in every
+  combination) and, once, drives the confirm, access-token and restart modals
+  through Escape, an outside click and focus return (`MockServer.requireAuth`,
+  or `POST /__mock/auth?required=1` on a running mock, answers 401). Run it after layout, colour, type or focus changes; keep the fixtures
   in step with `types.ts`.
 
 ## Accessibility (a CI gate, not a nicety)
@@ -143,9 +147,13 @@ progressive enhancement that degrades gracefully without it; no polyfills.
   their reasons. The one relative token, `--font-size-code`, is only for
   inline code in body-size or larger text, and `index.html` sets no font size
   inline; the test checks both.
-- Everything is keyboard-operable with a visible focus ring. Modals trap focus
-  (`trapFocus`), make the background inert (`setAppInert`), and return focus
-  to the invoker on close. Updates must not steal or drop focus.
+- Everything is keyboard-operable with a visible focus ring. Modals are native
+  `<dialog>` elements opened with `showModal()`: the browser makes the page
+  inert, keeps focus inside and returns it to the invoker, so add no
+  `role="dialog"`, `aria-modal`, focus trap, `inert` toggling or Escape
+  handler. A toast raised while a modal is open is inert and painted under it
+  (the notification stays in the bell and the Events log). Updates must not
+  steal or drop focus.
 - Native elements and correct ARIA: toggles use `aria-pressed`, groups are
   labeled, decorative icons are `aria-hidden` (`iconSpan`). Announce state
   through the existing live regions: polite `toast-root` and `role=status`
