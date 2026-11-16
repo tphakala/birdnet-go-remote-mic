@@ -11,6 +11,7 @@ class FakeDialog implements DialogPort {
   open = false;
   returnValue = "";
   shows = 0;
+  closes = 0;
   private readonly listeners = new Map<string, Listener[]>();
   private pending = 0;
 
@@ -20,6 +21,7 @@ class FakeDialog implements DialogPort {
     this.shows++;
   }
   close(returnValue?: string): void {
+    this.closes++;
     if (!this.open) return;
     this.open = false;
     if (returnValue !== undefined) this.returnValue = returnValue;
@@ -27,6 +29,9 @@ class FakeDialog implements DialogPort {
   }
   addEventListener(type: "cancel" | "close", listener: Listener): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+  listenerCount(type: "cancel" | "close"): number {
+    return this.listeners.get(type)?.length ?? 0;
   }
   flush(): void {
     for (; this.pending > 0; this.pending--) for (const l of this.listeners.get("close") ?? []) l({ preventDefault() {} });
@@ -70,8 +75,11 @@ test("closeAll cancels every open dialog and leaves a confirmed one confirmed", 
   a.flush();
   b.flush();
   assert.deepEqual([await pa, await pb], [false, true]);
+  // Both dialogs have closed and delivered their close events, so the set is
+  // empty and closeAll reaches neither.
+  const before = a.closes + b.closes;
   stack.closeAll();
-  assert.equal(a.shows + b.shows, 2);
+  assert.equal(a.closes + b.closes, before);
 });
 
 test("HeldDialog stays open until hide", () => {
