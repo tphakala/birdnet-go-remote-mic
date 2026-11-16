@@ -45,6 +45,11 @@ The output must stay plain ES modules (plus the one classic script,
   self-hosted woff2 in `static/fonts`; icons are inline SVG. Never load
   anything from a CDN: the appliance often runs on a LAN with no internet.
 
+## Browser support
+
+Target Baseline Widely available. A newer feature is allowed only as
+progressive enhancement that degrades gracefully without it; no polyfills.
+
 ## Structure
 
 - `src/app.ts`: bootstrap only (theme, nav, views, notification center,
