@@ -817,7 +817,7 @@ async function checkModals(page: Page, server: MockServer, findings: Finding[]):
     await page.focus(RESTART);
     await page.keyboard.press("Enter");
     await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
-    const cancelFocused = await page.evaluate(() => document.activeElement?.matches(`${CONFIRM} button[value=cancel]`) === true);
+    const cancelFocused = await page.evaluate((sel: string) => document.activeElement?.matches(`${sel} button[value=cancel]`) === true, CONFIRM);
     if (!cancelFocused) fail("confirm focus", `focus is on ${await active()} in the open confirm, want its Cancel button`);
     await page.keyboard.press("Escape");
     await gone();
