@@ -785,6 +785,9 @@ async function checkRetryFocus(page: Page, server: MockServer, views: readonly V
   }
 }
 
+// CONFIRM selects the confirm dialog, the one modal-dialog without an id.
+const CONFIRM = "dialog.modal-dialog:not([id])";
+
 // checkModals drives the native <dialog> modals through the paths a fake cannot
 // show: the browser's own top layer, Escape, outside clicks and focus return.
 // The confirm opens from the System view's Restart button; the access-token
@@ -797,8 +800,6 @@ async function checkModals(page: Page, server: MockServer, findings: Finding[]):
     findings.push({ kind: "focus", where, key: `${where}: ${key}`, detail: `${where}: ${detail}` });
   };
   const RESTART = "#btn-sys-restart";
-  // The confirm dialog is the one modal-dialog without an id.
-  const CONFIRM = "dialog.modal-dialog:not([id])";
   // What holds focus, as a selector-like name.
   const active = (): Promise<string> => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName || "none");
   // gone waits for the confirm dialog to leave the page; it removes itself
@@ -816,7 +817,7 @@ async function checkModals(page: Page, server: MockServer, findings: Finding[]):
     await page.focus(RESTART);
     await page.keyboard.press("Enter");
     await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
-    const cancelFocused = await page.evaluate(() => document.activeElement?.matches("dialog.modal-dialog:not([id]) button[value=cancel]") === true);
+    const cancelFocused = await page.evaluate(() => document.activeElement?.matches(`${CONFIRM} button[value=cancel]`) === true);
     if (!cancelFocused) fail("confirm focus", `focus is on ${await active()} in the open confirm, want its Cancel button`);
     await page.keyboard.press("Escape");
     await gone();
@@ -1103,14 +1104,14 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
         // between font sizes.
         try {
           await page.click("#btn-sys-restart");
-          await page.waitForSelector("dialog.modal-dialog[open]:not([id])", { state: "visible", timeout: 3000 });
+          await page.waitForSelector(`${CONFIRM}[open]`, { state: "visible", timeout: 3000 });
           await page.waitForTimeout(200);
-          await check("confirm dialog open", "dialog.modal-dialog[open]:not([id])");
+          await check("confirm dialog open", `${CONFIRM}[open]`);
         } catch {
           findings.push({ kind: "render", where: "confirm dialog open", key: "confirm dialog did not open", detail: "no dialog.modal-dialog[open] after Restart" });
         }
         await page.keyboard.press("Escape");
-        await page.waitForFunction((sel: string) => document.querySelector(sel) === null, "dialog.modal-dialog:not([id])", { timeout: 3000 }).catch(() => undefined);
+        await page.waitForFunction((sel: string) => document.querySelector(sel) === null, CONFIRM, { timeout: 3000 }).catch(() => undefined);
       }
 
       if (view === "dashboard") {
