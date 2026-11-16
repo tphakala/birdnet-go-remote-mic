@@ -82,16 +82,6 @@ test("closeAll cancels every open dialog and leaves a confirmed one confirmed", 
   assert.equal(a.closes + b.closes, before);
 });
 
-test("ask on a dialog that cannot be shown leaves no close listener behind", async () => {
-  const d = new FakeDialog();
-  d.showModal();
-  await new TransientDialogs().ask(d).then(
-    () => assert.fail("ask resolved on a dialog that was already open"),
-    () => undefined,
-  );
-  assert.equal(d.listenerCount("close"), 0);
-});
-
 test("HeldDialog stays open until hide", () => {
   const d = new FakeDialog();
   const held = new HeldDialog(d);

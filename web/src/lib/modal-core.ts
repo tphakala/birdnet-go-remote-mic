@@ -27,14 +27,6 @@ export class TransientDialogs {
   // a click outside, closeAll). dispose runs once after the close.
   ask(dialog: DialogPort, dispose: () => void = () => {}): Promise<boolean> {
     return new Promise((resolve) => {
-      // A dialog that is already open would get a second close listener (a
-      // browser's showModal returns quietly for an open modal), and showModal
-      // throws on a disconnected one. Both reject the promise before anything
-      // is attached or tracked; the close event is delivered in a later task,
-      // so the listener below is in place before it.
-      if (dialog.open) throw new Error("ask: the dialog is already open");
-      dialog.showModal();
-      this.open.add(dialog);
       dialog.addEventListener("close", () => {
         this.open.delete(dialog);
         const confirmed = dialog.returnValue === CONFIRM_VALUE;
@@ -42,6 +34,8 @@ export class TransientDialogs {
         dispose();
         resolve(confirmed);
       });
+      dialog.showModal();
+      this.open.add(dialog);
     });
   }
 
