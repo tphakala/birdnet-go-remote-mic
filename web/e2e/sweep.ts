@@ -832,10 +832,19 @@ async function checkModals(page: Page, server: MockServer, findings: Finding[]):
     await gone();
     if ((await active()) !== RESTART.slice(1)) fail("confirm outside click focus", `focus is on ${await active()} after a click outside, want ${RESTART}`);
 
-    // 3. The access-token prompt cannot be dismissed, and a token closes it.
+    // 3. The access-token prompt cancels an open confirm, cannot be dismissed,
+    // and a token closes it.
+    await page.focus(RESTART);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${CONFIRM}:modal`, { state: "visible", timeout: 3000 });
     server.requireAuth(true);
     try {
       await page.waitForSelector("#login-modal:modal", { state: "visible", timeout: RECOVERY_MS });
+      try {
+        await gone();
+      } catch {
+        fail("confirm kept", "the confirm dialog stayed open under the access-token prompt");
+      }
       if ((await active()) !== "login-token") fail("login focus", `focus is on ${await active()} in the open prompt, want #login-token`);
       await page.keyboard.press("Escape");
       await page.waitForTimeout(100);
