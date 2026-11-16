@@ -118,7 +118,7 @@ export function supportDetails(
 // does not change it), if any.
 function deviceDetails(devices: readonly Device[], configs: readonly DeviceConfig[]): string[] {
   if (devices.length === 0) return ["Capture devices: none"];
-  const sorted = [...devices].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const sorted = devices.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const known = knownValues(devices);
   const lines = [`Capture devices: ${sorted.length}`];
   if (sorted.some((d) => d.state !== "serving" && d.error)) lines.push(PRIVACY_NOTE);

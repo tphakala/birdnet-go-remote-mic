@@ -88,6 +88,9 @@ export class AccessCard {
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
+        // An Enter that confirms an IME composition is not a save. Safari
+        // reports isComposing false on that keydown, so keyCode 229 covers it.
+        if (e.isComposing || e.keyCode === 229) return;
         void this.save();
       }
     });

@@ -768,7 +768,7 @@ export class EventsView {
   }
 
   private renderActive(active: Notification[], ctx: RowContext): void {
-    const sorted = [...active].sort((a, b) => b.id - a.id);
+    const sorted = active.toSorted((a, b) => b.id - a.id);
     setHidden(this.activeCard, sorted.length === 0);
     setText(
       this.activeDesc,

@@ -15,7 +15,8 @@ The output must stay plain ES modules (plus the one classic script,
 
 - TypeScript strict mode (`tsconfig.json`: `strict`, `noImplicitAny`,
   `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess`,
-  `verbatimModuleSyntax`, `erasableSyntaxOnly`), target and module ES2022.
+  `verbatimModuleSyntax`, `erasableSyntaxOnly`), target ES2023 and module
+  ES2022.
   Every step runs through `npx -p <pinned tool>` from `Taskfile.yml`: `tsc`
   (typescript 7), `oxlint --deny-warnings`, and `html-validate` with the
   recommended and a11y presets. Zero warnings is the bar. `task web:verify`
