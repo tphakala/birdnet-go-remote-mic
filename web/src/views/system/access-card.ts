@@ -1,3 +1,4 @@
+import { tokenKeydown } from "../../lib/access-core.ts";
 import { api, apiErrorMessage, firstProblem, isRefusal } from "../../lib/api.ts";
 import { store } from "../../lib/store.ts";
 import { clearBusy, copyText, focusOnOrDropped, part, scrollBehavior, setBusy, setButtonLabel, setFieldError, setLoading, setText, showUnconfirmed, svgIcon } from "../../lib/ui.ts";
@@ -83,16 +84,7 @@ export class AccessCard {
       this.setError("");
       if (this.actionsEl) this.actionsEl.hidden = false;
     });
-    // The card is not a <form>, so Enter in the token field would do nothing.
-    // Wire it to Save, matching the muscle memory of a single-field form.
-    // An Enter that confirms an IME composition is not a save, so leave it to
-    // the IME. Safari reports isComposing false on that keydown; keyCode 229
-    // covers it.
-    input.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
-      e.preventDefault();
-      void this.save();
-    });
+    input.addEventListener("keydown", (e) => tokenKeydown(e, () => void this.save()));
     part(this.cardEl, "btn-auth-reveal")?.addEventListener("click", () => {
       this.setReveal(input.type === "password");
     });
