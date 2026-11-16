@@ -415,7 +415,7 @@ export function capsSummary(d: Pick<AvailableDevice, "supportedChannels" | "supp
     if (ch.includes(1) && ch.includes(2) && ch.length === 2) parts.push("mono/stereo");
     else if (ch.length === 1 && ch[0] === 1) parts.push("mono");
     else if (ch.length === 1 && ch[0] === 2) parts.push("stereo");
-    else parts.push(`${[...ch].sort((a, b) => a - b).join("/")} channels`);
+    else parts.push(`${ch.toSorted((a, b) => a - b).join("/")} channels`);
   }
   const rates = d.supportedRates ?? [];
   if (rates.length) {

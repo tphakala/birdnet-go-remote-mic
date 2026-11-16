@@ -187,8 +187,8 @@ export function exportJSON(
   anchor: ClockAnchor | null = null,
 ): string {
   const clockAnchor = anchor ? { browserTime: isoOrNull(anchor.browserMs), uptimeMs: anchor.uptimeMs } : null;
-  const events = [...items]
-    .sort((a, b) => a.id - b.id)
+  const events = items
+    .toSorted((a, b) => a.id - b.id)
     .map((n) => ({
       ...n,
       anchoredTime: isoOrNull(anchorToMs(anchor, n.uptimeMs)),
