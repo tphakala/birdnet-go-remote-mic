@@ -862,7 +862,13 @@ async function checkModals(page: Page, server: MockServer, findings: Finding[]):
       server.requireAuth(false);
     }
 
-    // 4. The restart modal cannot be dismissed and holds focus.
+    // 4. The restart modal cannot be dismissed and holds focus. A step 3 that
+    // failed can leave a modal open and the Restart button inert, so start from
+    // a fresh page then.
+    if (await matches("dialog:modal")) {
+      await page.reload();
+      await page.waitForSelector(RESTART, { state: "attached", timeout: RECOVERY_MS });
+    }
     await page.waitForSelector(RESTART, { state: "visible", timeout: RECOVERY_MS });
     await page.focus(RESTART);
     await page.keyboard.press("Enter");
@@ -880,12 +886,18 @@ async function checkModals(page: Page, server: MockServer, findings: Finding[]):
     } catch {
       fail("restart modal", "#restart-modal never opened after the restart was confirmed");
     }
-    await page.reload();
-    await page.waitForSelector(RESTART, { state: "attached", timeout: RECOVERY_MS });
   } catch (err) {
     fail("setup", `a step of the modal checks did not finish: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
+    // A step that timed out can leave a modal open, which makes the rest of the
+    // page inert, so the page is always reloaded with authentication off.
     server.requireAuth(false);
+    try {
+      await page.reload();
+      await page.waitForSelector(RESTART, { state: "attached", timeout: RECOVERY_MS });
+    } catch (err) {
+      fail("reload", `the page did not reload after the modal checks: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 
@@ -1120,7 +1132,16 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
           findings.push({ kind: "render", where: "confirm dialog open", key: "confirm dialog did not open", detail: "no dialog.modal-dialog[open] after Restart" });
         }
         await page.keyboard.press("Escape");
-        await page.waitForFunction((sel: string) => document.querySelector(sel) === null, CONFIRM, { timeout: 3000 }).catch(() => undefined);
+        const closed = await page
+          .waitForFunction((sel: string) => document.querySelector(sel) === null, CONFIRM, { timeout: 3000 })
+          .then(() => true)
+          .catch(() => false);
+        if (!closed) {
+          findings.push({ kind: "focus", where: "confirm dialog open", key: "confirm dialog not dismissed", detail: "Escape left the confirm dialog open" });
+          // An open modal leaves the rest of the page inert for the next view.
+          await page.reload();
+          await page.waitForSelector("#btn-sys-restart", { state: "attached", timeout: RECOVERY_MS });
+        }
       }
 
       if (view === "dashboard") {

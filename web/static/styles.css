@@ -2058,6 +2058,9 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   width: calc(100% - 40px);
   max-width: 480px;
   max-height: calc(100% - 40px);
+  /* A tall dialog (the token prompt at a large font on a phone) scrolls
+     inside itself rather than past the viewport. */
+  overflow: auto;
   background: var(--bg-surface);
   color: inherit;
   border: 1px solid var(--border-base);
