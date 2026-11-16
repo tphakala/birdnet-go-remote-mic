@@ -1,7 +1,8 @@
 import { api, apiErrorMessage, isRefusal } from "../lib/api.ts";
 import { withDeadline } from "../lib/deadline.ts";
 import { showToast } from "./toast.ts";
-import { closeTransientDialogs, confirmDialog, setAppInert, trapFocus } from "../lib/modal.ts";
+import { closeTransientDialogs, confirmDialog } from "../lib/modal.ts";
+import { HeldDialog } from "../lib/modal-core.ts";
 import { announce } from "../lib/ui.ts";
 import { formatElapsed } from "../lib/update-core.ts";
 
@@ -9,6 +10,19 @@ import { formatElapsed } from "../lib/update-core.ts";
 // two countdown/health-poll intervals), and against the update's install modal
 // taking the modal while a restart holds it (or the reverse).
 let restarting = false;
+
+// held is the restart modal's HeldDialog, built on first use. There is one
+// because the element is reused by the restart and the update flows, and a
+// HeldDialog attaches its listeners once.
+let held: HeldDialog | null = null;
+
+function restartDialog(): HeldDialog | null {
+  if (held) return held;
+  const dialog = document.getElementById("restart-modal");
+  if (!(dialog instanceof HTMLDialogElement)) return null;
+  held = new HeldDialog(dialog);
+  return held;
+}
 
 // say writes to the polite live region that carries only phase changes, so a
 // screen reader is not spammed by the per-second visual countdown. The shared
@@ -55,7 +69,7 @@ export async function triggerApplianceRestart(): Promise<void> {
     return;
   }
 
-  const modal = document.getElementById("restart-modal");
+  const modal = restartDialog();
   const timerEl = document.getElementById("reconnect-timer");
   if (!modal) {
     restarting = false;
@@ -91,15 +105,13 @@ export async function triggerApplianceRestart(): Promise<void> {
     if (textEl) textEl.textContent = UNCONFIRMED_TEXT;
   }
 
-  modal.classList.add("open");
-  setAppInert(true);
-  trapFocus(modal);
-  modal.querySelector<HTMLElement>(".modal-card")?.focus();
+  // showModal() focuses the card (tabindex -1), which names the dialog.
+  modal.show();
 
   // The per-second countdown below updates only the aria-hidden visual
   // element, so it is not read out on every tick. The dialog names its title
-  // and description (aria-labelledby, aria-describedby,
-  // static/index.html:470) for a screen reader to read as focus enters it
+  // and description (aria-labelledby, aria-describedby on #restart-modal in
+  // static/index.html) for a screen reader to read as focus enters it
   // (what a given reader says is NOT MEASURED), so the phase line adds only
   // what they lack: when it reconnects. The unconfirmed description already
   // says it waits.
@@ -204,7 +216,7 @@ export interface UpdateModal {
 // null when a restart already holds it. Transient dialogs (a confirm) close
 // first, as the login prompt does, so the modal is never stacked on one.
 export function showUpdateModal(target: string): UpdateModal | null {
-  const modal = document.getElementById("restart-modal");
+  const modal = restartDialog();
   const titleEl = document.getElementById("modal-title");
   const textEl = document.getElementById("modal-text");
   const timerEl = document.getElementById("reconnect-timer");
@@ -219,10 +231,7 @@ export function showUpdateModal(target: string): UpdateModal | null {
   if (textEl) {
     textEl.textContent = `Installing ${target}. The appliance restarts to finish, which drops connected streams for a moment, and goes back to the running version on its own if the new one does not start. This page reloads once the new version is up.`;
   }
-  modal.classList.add("open");
-  setAppInert(true);
-  const release = trapFocus(modal);
-  modal.querySelector<HTMLElement>(".modal-card")?.focus();
+  modal.show();
   say(`Installing ${target}. This page reloads when the new version is up.`);
   if (timerEl) timerEl.textContent = `Installing (${formatElapsed(0)})`;
 
@@ -247,9 +256,7 @@ export function showUpdateModal(target: string): UpdateModal | null {
       if (hidden) return;
       hidden = true;
       settled = true;
-      modal.classList.remove("open");
-      release();
-      setAppInert(false);
+      modal.hide();
       if (titleEl) titleEl.textContent = oldTitle;
       textEl?.replaceChildren(...oldText);
       // An overdue wait revealed Reload; a later restart must not open with it.

@@ -450,6 +450,10 @@ export interface MockServer {
   // it changed (a new friendly name, a lower top probed rate), until it is
   // called again; no argument puts the fixture back.
   editAvailable(edit?: AvailableEdit): void;
+  // requireAuth makes every API request except /api/v1/healthz answer 401, as
+  // an appliance with an access token does for a client without it, until it is
+  // called with false.
+  requireAuth(on: boolean): void;
   close(): Promise<void>;
 }
 
@@ -463,10 +467,11 @@ function eventFilter(req: IncomingMessage): Set<string> | null {
 }
 
 // startMockServer serves distDir and the mock API on 127.0.0.1:port (0 picks a
-// free port). Three test hooks sit beside the API: POST /__mock/notify pushes
+// free port). Four test hooks sit beside the API: POST /__mock/notify pushes
 // the live error notification; POST /__mock/fail (or the returned failPaths)
-// makes chosen GET paths answer 503; and POST /__mock/edit-available (or
-// editAvailable) changes the available device between polls.
+// makes chosen GET paths answer 503; POST /__mock/edit-available (or
+// editAvailable) changes the available device between polls; and POST
+// /__mock/auth (or requireAuth) turns the 401 on and off.
 export async function startMockServer(distDir: string, port: number = DEFAULT_PORT): Promise<MockServer> {
   const root = resolve(distDir);
   // Each open event stream, with the event types its ?events= filter asked
@@ -491,6 +496,8 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
   let failing = new Set<string>();
   // What GET /devices/available answers: the fixture, or an edited copy.
   let available: AvailableDevice[] = AVAILABLE;
+  // Whether the API answers 401, as it does without a valid access token.
+  let authRequired = false;
 
   async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
     const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname).replace(/^\/+/, "");
@@ -579,6 +586,10 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
       res.writeHead(503, { "Content-Type": "application/problem+json", "Cache-Control": "no-store" });
       res.end(JSON.stringify({ title: "Service Unavailable", status: 503, detail: "failing by request of the sweep" }));
       return;
+    } else if (authRequired && url.pathname.startsWith("/api/v1/") && url.pathname !== "/api/v1/healthz") {
+      res.writeHead(401, { "Content-Type": "application/problem+json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ title: "Unauthorized", status: 401, detail: "access token required" }));
+      return;
     } else if (url.pathname.startsWith("/api/v1/")) {
       work = serveAPI(method, url.pathname.slice("/api/v1".length), req, res);
     } else if (url.pathname === "/__mock/notify" && method === "POST") {
@@ -591,6 +602,13 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
       // Test hook for manual runs: ?paths=/api/v1/devices,/licenses.json fails
       // those paths, and no paths ends the failure.
       failPaths((url.searchParams.get("paths") ?? "").split(",").filter(Boolean));
+      res.writeHead(204);
+      res.end();
+      return;
+    } else if (url.pathname === "/__mock/auth" && method === "POST") {
+      // Test hook for manual runs: ?required=1 makes the API answer 401 (the
+      // access token prompt opens), ?required=0 ends it.
+      requireAuth(url.searchParams.get("required") === "1");
       res.writeHead(204);
       res.end();
       return;
@@ -615,6 +633,10 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
 
   function failPaths(paths: readonly string[]): void {
     failing = new Set(paths);
+  }
+
+  function requireAuth(on: boolean): void {
+    authRequired = on;
   }
 
   function editAvailable(edit?: AvailableEdit): void {
@@ -642,6 +664,7 @@ export async function startMockServer(distDir: string, port: number = DEFAULT_PO
     pushNotification,
     failPaths,
     editAvailable,
+    requireAuth,
     close(): Promise<void> {
       clearInterval(levelTimer);
       clearInterval(heartbeatTimer);

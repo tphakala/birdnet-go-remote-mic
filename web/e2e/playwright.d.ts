@@ -19,7 +19,8 @@ export interface Page {
   evaluate<R, A>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R>;
   addInitScript<A>(fn: (arg: A) => void, arg?: A): Promise<void>;
   on(event: "pageerror", listener: (err: Error) => void): void;
-  keyboard: { press(key: string): Promise<void> };
+  keyboard: { press(key: string): Promise<void>; type(text: string): Promise<void> };
+  mouse: { click(x: number, y: number): Promise<void> };
 }
 
 export interface BrowserContext {

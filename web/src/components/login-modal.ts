@@ -1,53 +1,42 @@
 // The access-token prompt. It opens when the store reports that the appliance
-// rejected the UI's credentials (or it has none), traps focus like the other
-// modals, and closes once a token is accepted. There is deliberately no Escape
-// or backdrop dismissal: nothing on the page works without a token.
+// rejected the UI's credentials (or it has none) as a native modal dialog, and
+// closes once a token is accepted. There is deliberately no Escape or backdrop
+// dismissal: nothing on the page works without a token (HeldDialog).
 import { store } from "../lib/store.ts";
-import { closeTransientDialogs, setAppInert, trapFocus } from "../lib/modal.ts";
+import { closeTransientDialogs } from "../lib/modal.ts";
+import { HeldDialog } from "../lib/modal-core.ts";
 import { focusWorkspace } from "../lib/ui.ts";
 
 export function initLoginModal(): void {
-  const overlay = document.getElementById("login-modal");
+  const dialog = document.getElementById("login-modal");
   const form = document.getElementById("login-form") as HTMLFormElement | null;
   const input = document.getElementById("login-token") as HTMLInputElement | null;
   const error = document.getElementById("login-error");
   const submit = document.getElementById("login-submit") as HTMLButtonElement | null;
-  if (!overlay || !form || !input || !error || !submit) return;
+  if (!(dialog instanceof HTMLDialogElement) || !form || !input || !error || !submit) return;
 
-  let release: (() => void) | null = null;
-  let open = false;
+  const held = new HeldDialog(dialog);
 
   const show = (): void => {
-    if (open) return;
+    if (held.shown) return;
     // A confirm dialog (e.g. "Allow open access?" from a token save) can be open
-    // when a 401 arrives. Two modals would compete for focus and both inert the
-    // background, and this prompt's own hide() could later hand focus to a still
-    // -inert page. Close any transient dialog first so this is the only modal.
+    // when a 401 arrives. Cancelling it aborts that half-finished action and
+    // leaves this prompt as the only modal.
     closeTransientDialogs();
-    open = true;
     error.textContent = "";
     input.value = "";
-    overlay.classList.add("open");
-    setAppInert(true);
-    release = trapFocus(overlay);
-    input.focus();
+    held.show();
   };
 
   const hide = (): void => {
-    if (!open) return;
-    open = false;
-    overlay.classList.remove("open");
-    release?.();
-    release = null;
-    setAppInert(false);
-    // Only pull focus into the workspace when the background is actually
-    // interactive again. If another modal still holds .app-container inert
-    // (depth > 0), focusing an inert descendant would silently fail and strand
-    // focus, so leave it for that modal to place. preventScroll keeps the page
-    // where the operator left it: a plain focus() on the tall landmark would jump
-    // to the top of <main>.
-    const app = document.querySelector<HTMLElement>(".app-container");
-    if (!app?.hasAttribute("inert")) focusWorkspace();
+    if (!held.shown) return;
+    held.hide();
+    // The close returned focus to whatever had it before the prompt. Move it to
+    // the workspace instead; if another modal is still open the page is inert,
+    // this focus() does nothing, and focus stays in that modal. preventScroll
+    // keeps the page where the operator left it: a plain focus() on the tall
+    // landmark would jump to the top of <main>.
+    focusWorkspace();
   };
 
   form.addEventListener("submit", (e) => {
@@ -83,7 +72,7 @@ export function initLoginModal(): void {
         submit.textContent = origLabel;
         // Disabling the focused submit button dropped focus to the body; put it
         // back on the field so a retry is one keystroke away.
-        if (open) input.focus();
+        if (held.shown) input.focus();
       }
     })();
   });
