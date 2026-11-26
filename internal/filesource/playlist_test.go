@@ -96,8 +96,7 @@ func TestDirectorySkipsMismatchesAndLogsOnce(t *testing.T) {
 			}
 		}
 
-		// The same file at another rate is a new reason, so it is logged again
-		// while the earlier reason is still remembered.
+		// The same file at another rate is a new reason, so it is logged again.
 		writeFile(t, dir, "c_mono.flac", flacBytes(t, 44100, 2, 16, ramp(periodFrames, 2)))
 		readN(t, s, 8)
 		lines = rec.all()
