@@ -894,12 +894,17 @@ func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
 
 // TestRetryOpenFailureNamesHiddenDir pins a file device whose path the
 // installed unit hides: started by that unit (systemd with $REMOTEMIC_CONFIG
-// set), the device error and the down message name the directory and the
-// message drops the automatic-restart promise, which no retry keeps there.
-// Started any other way, or for a path the unit leaves visible, both read as
-// for any open failure.
+// set), the device error and the down message name the directory, and the
+// message trades the automatic-restart promise, which no retry keeps there,
+// for what brings it back: a path the service can see and a restart, as a
+// running appliance does not reread its config file. Started any other way,
+// or for a path the unit leaves visible, both read as for any open failure.
 func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
-	const home = "file:/home/pi/audio"
+	const (
+		home     = "file:/home/pi/audio"
+		homeNote = "under /home (hidden from the installed service)"
+		hint     = "it starts once the config names a path the service can see and the service is restarted"
+	)
 	for _, tc := range []struct {
 		name, id           string
 		invocation, config bool
@@ -924,8 +929,17 @@ func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
 			if got := strings.Contains(devErr, wantHiddenNote); got != tc.wantNote {
 				t.Errorf("device error = %q, want hidden note %v", devErr, tc.wantNote)
 			}
-			if got := strings.Contains(msg, wantAutoRestart); got == tc.wantNote {
-				t.Errorf("message = %q, want restart promise %v", msg, !tc.wantNote)
+			if !tc.wantNote {
+				if !strings.Contains(msg, wantAutoRestart) {
+					t.Errorf("message = %q, want it to say %q", msg, wantAutoRestart)
+				}
+				return
+			}
+			if !strings.HasSuffix(devErr, "; "+homeNote) {
+				t.Errorf("device error = %q, want it to end %q", devErr, "; "+homeNote)
+			}
+			if !strings.HasSuffix(msg, "; "+homeNote+"; "+hint) {
+				t.Errorf("message = %q, want it to end %q", msg, "; "+homeNote+"; "+hint)
 			}
 		})
 	}

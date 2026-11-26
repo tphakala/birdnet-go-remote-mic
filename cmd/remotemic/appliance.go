@@ -575,8 +575,10 @@ func restartHint(dev *config.Device) string {
 }
 
 // serviceHiddenDir reports the directory that hides a file device's path from
-// this process when the installed unit started it. Under that unit nothing in
-// the directory is the real content, so no open there succeeds.
+// this process when the installed unit started it. It assumes the released
+// unit's sandbox (ProtectHome=true, PrivateTmp=true), under which nothing in
+// the directory is the real content and no open there succeeds; the installed
+// unit under a drop-in that relaxes either setting still gets the directory.
 func serviceHiddenDir(id string) (dir string, ok bool) {
 	path, isFile := config.FileSourcePath(id)
 	if !isFile || !startedByInstalledUnit() {
@@ -719,7 +721,9 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			// still retried, since startedByInstalledUnit can take another unit
 			// for the installed one, where the path may open.
 			err = fmt.Errorf("%w; %s", err, hiddenNote(dir))
-			hint = "it starts once it names a path the service can see"
+			// A file id is set in the config file only, which a running
+			// appliance rereads only while its management API is down.
+			hint = "it starts once the config names a path the service can see and the service is restarted"
 		}
 		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,

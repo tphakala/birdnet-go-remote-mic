@@ -246,8 +246,9 @@ func startedBySystemd() bool { return os.Getenv("INVOCATION_ID") != "" }
 
 // startedByInstalledUnit reports whether the installer's unit started this
 // process, as far as the process can tell: systemd started it with
-// $REMOTEMIC_CONFIG set, which that unit does. A unit written by hand that
-// sets the variable too passes for it.
+// $REMOTEMIC_CONFIG set, which that unit does. A unit written by hand, or a
+// shell systemd started (see startedBySystemd), with the variable set passes
+// for it too.
 func startedByInstalledUnit() bool { return startedBySystemd() && os.Getenv(configEnv) != "" }
 
 // runAppliance starts the appliance. A variable so tests of runServe's
