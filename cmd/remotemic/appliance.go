@@ -26,6 +26,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/pipeline"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/reload"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/rtspserver"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 )
 
 // pumpBacklog bounds the pumpDone channel. At most one result arrives per live
@@ -560,15 +561,33 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // reason (the host exposes no /proc/asound listing, as in some containers) is
 // still opened, since the open itself addresses the card directly.
 // restartHint says, in a down notification, how the device comes back: a
-// card-index id waits for a config save (it is never restarted unattended),
-// anything else is retried by the backoff. The open-failure, resolve-failure
-// and failed-while-present messages share it so their promise cannot drift; the
-// disconnect message has its own wording (it comes back on reconnect).
+// card-index id waits for a config save (it is never restarted unattended), a
+// file device whose path the installed unit hides waits for a config naming
+// another path, and anything else is retried by the backoff. The hidden path
+// is still retried, since startedByInstalledUnit can take a unit written by
+// hand for the installed one, where the path may open. The open-failure,
+// resolve-failure and failed-while-present messages share it so their promise
+// cannot drift; the disconnect message has its own wording (it comes back on
+// reconnect).
 func restartHint(dev *config.Device) string {
 	if config.IsCardIndexID(dev.Device) {
 		return "it restarts on the next config save"
 	}
+	if _, hidden := serviceHiddenDir(dev.Device); hidden {
+		return "it starts once it names a path the service can see"
+	}
 	return "it restarts automatically when capture works again"
+}
+
+// serviceHiddenDir reports the directory that hides a file device's path from
+// this process when the installed unit started it. Under that unit nothing in
+// the directory is the real content, so no open there succeeds.
+func serviceHiddenDir(id string) (dir string, ok bool) {
+	path, isFile := config.FileSourcePath(id)
+	if !isFile || !startedByInstalledUnit() {
+		return "", false
+	}
+	return service.HiddenDir(path)
 }
 
 // resolveRefused reports whether openAndStart refuses the device for how its
@@ -696,6 +715,12 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		a.geometryRefuse(dev.Name, refusedAt)
 	}
 	if err != nil {
+		if dir, hidden := serviceHiddenDir(dev.Device); hidden {
+			// The open error alone (permission denied, or not found in the
+			// private /tmp) does not say why; the log, the device record and
+			// the notification all carry this.
+			err = fmt.Errorf("%w; %s", err, hiddenNote(dir))
+		}
 		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
 		// so a device that keeps failing across successive reconciles enters the

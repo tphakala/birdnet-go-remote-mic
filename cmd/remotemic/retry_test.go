@@ -839,36 +839,84 @@ func TestRetryLostDeviceDropsRetry(t *testing.T) {
 	})
 }
 
+// openFailureOnset reconciles one device whose every open fails, resolving
+// ids with resolve when it is not nil, and returns the device's one down
+// message and its device error.
+func openFailureOnset(t *testing.T, id string, resolve func(string) (audio.Hardware, error)) (msg, devErr string) {
+	t.Helper()
+	const name = "moth"
+	app, _, cancel := newTestAppliance(t)
+	defer cancel()
+	defer app.closeAll()
+	if resolve != nil {
+		app.resolve = resolve
+	}
+	failOpen(app)
+	app.reconcile(&config.Config{Devices: []config.Device{testDevice(name, id, "/m", 48000)}})
+	act := applianceCenter(t, app).Active()
+	if len(act) != 1 {
+		t.Fatalf("active = %+v, want one down condition", act)
+	}
+	return act[0].Message, app.devices[name].status().Error
+}
+
 // TestRetryOpenFailureMessageMatchesRestartPath pins the open-failure and
 // resolve-failure onset text: a stable id is retried automatically, a
 // card-index id waits for a config save.
 func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
+	resolveFails := func(string) (audio.Hardware, error) {
+		return audio.Hardware{}, errors.New("reading the sound card listing: input/output error")
+	}
 	for _, tc := range []struct {
 		name, id, want string
-		resolveFails   bool
+		resolve        func(string) (audio.Hardware, error)
 	}{
 		{name: "open fails, stable id", id: idMoth, want: wantAutoRestart},
 		{name: "open fails, card index", id: addrHW3, want: "restarts on the next config save"},
-		{name: "resolve fails, stable id", id: idMoth, want: wantAutoRestart, resolveFails: true},
+		{name: "resolve fails, stable id", id: idMoth, want: wantAutoRestart, resolve: resolveFails},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			app, _, cancel := newTestAppliance(t)
-			defer cancel()
-			defer app.closeAll()
-			if tc.resolveFails {
-				app.resolve = func(string) (audio.Hardware, error) {
-					return audio.Hardware{}, errors.New("reading the sound card listing: input/output error")
-				}
+			if msg, _ := openFailureOnset(t, tc.id, tc.resolve); !strings.Contains(msg, tc.want) {
+				t.Errorf("message = %q, want it to say %q", msg, tc.want)
 			}
-			failOpen(app)
-			app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", tc.id, "/m", 48000)}})
+		})
+	}
+}
 
-			act := applianceCenter(t, app).Active()
-			if len(act) != 1 {
-				t.Fatalf("active = %+v, want one down condition", act)
+// TestRetryOpenFailureNamesHiddenDir pins a file device whose path the
+// installed unit hides: started by that unit (systemd with $REMOTEMIC_CONFIG
+// set), the device error and the down message name the directory and the
+// message drops the automatic-restart promise, which no retry keeps there.
+// Started any other way, or for a path the unit leaves visible, both read as
+// for any open failure.
+func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
+	const home = "file:/home/pi/audio"
+	for _, tc := range []struct {
+		name, id           string
+		invocation, config bool
+		wantNote           bool
+	}{
+		{name: "installed unit, hidden path", id: home, invocation: true, config: true, wantNote: true},
+		{name: "installed unit, visible path", id: "file:/srv/audio", invocation: true, config: true},
+		{name: "other unit, hidden path", id: home, invocation: true},
+		{name: "by hand, hidden path", id: home, config: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.invocation {
+				t.Setenv("INVOCATION_ID", "0123456789abcdef")
 			}
-			if !strings.Contains(act[0].Message, tc.want) {
-				t.Errorf("message = %q, want it to say %q", act[0].Message, tc.want)
+			if tc.config {
+				t.Setenv(configEnv, "/etc/remote-mic/config.yaml")
+			}
+			msg, devErr := openFailureOnset(t, tc.id, nil)
+			if got := strings.Contains(msg, wantHiddenNote); got != tc.wantNote {
+				t.Errorf("message = %q, want hidden note %v", msg, tc.wantNote)
+			}
+			if got := strings.Contains(devErr, wantHiddenNote); got != tc.wantNote {
+				t.Errorf("device error = %q, want hidden note %v", devErr, tc.wantNote)
+			}
+			if got := strings.Contains(msg, wantAutoRestart); got == tc.wantNote {
+				t.Errorf("message = %q, want restart promise %v", msg, !tc.wantNote)
 			}
 		})
 	}

@@ -244,6 +244,12 @@ Run a command with -h to see its flags.
 // appliance). A shell that itself runs under systemd, or sudo -E, does.
 func startedBySystemd() bool { return os.Getenv("INVOCATION_ID") != "" }
 
+// startedByInstalledUnit reports whether the installer's unit started this
+// process, as far as the process can tell: systemd started it with
+// $REMOTEMIC_CONFIG set, which that unit does. A unit written by hand that
+// sets the variable too passes for it.
+func startedByInstalledUnit() bool { return startedBySystemd() && os.Getenv(configEnv) != "" }
+
 // runAppliance starts the appliance. A variable so tests of runServe's
 // checks do not start it.
 var runAppliance = run
@@ -309,7 +315,7 @@ func parseServeFlags(args []string, stderr io.Writer) (cfg configRef, ov serveOv
 	// themselves (the installer's unit sets the variable), so it keeps the
 	// working directory's config.yaml, as before the installed unit was
 	// consulted: following the installed unit there would stop that unit.
-	if !ov.set["config"] && os.Getenv(configEnv) == "" && startedBySystemd() {
+	if !ov.set["config"] && startedBySystemd() && !startedByInstalledUnit() {
 		return configRef{path: configDefault, source: fromService}, ov, *checkFlag, *pprof, nil
 	}
 	ref, err := resolveConfig(fs, *path, stderr)
@@ -435,7 +441,7 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 		// such a path, so no retry recovers a failed open there: the note
 		// replaces the retry hint.
 		if dir, hidden := service.HiddenDir(path); hidden {
-			status = strings.TrimSuffix(status, fileRetryHint) + "; under " + dir + " (hidden from the installed service)"
+			status = strings.TrimSuffix(status, fileRetryHint) + "; " + hiddenNote(dir)
 		}
 		return status + detail
 	}
@@ -479,6 +485,12 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 // appliance retries every failed open, a pass with no playable audio
 // included, so both kinds share it.
 const fileRetryHint = "; it starts automatically once it can play"
+
+// hiddenNote names the directory the installed unit hides a file device's
+// path under, in serve --check and in the appliance's open error alike.
+func hiddenNote(dir string) string {
+	return "under " + dir + " (hidden from the installed service)"
+}
 
 // fileCheckTimeout bounds the open of a file source in serve --check. The
 // installed unit runs the check as ExecStartPre on every start, so a stat or

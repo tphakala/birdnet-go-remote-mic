@@ -326,7 +326,8 @@ audio, are skipped and logged once. A missing path or a pass with no playable
 file shows the device as down, and it retries on its own. Under the installed
 service the path must be readable by the service user and not under `/home`,
 `/root`, `/run/user`, `/tmp` or `/var/tmp`, which the unit hides from it
-(`--check` flags such a path); prefer local storage over a network mount.
+(`--check` flags such a path, and the device's error names the directory);
+prefer local storage over a network mount.
 
 A card-index id such as `hw:1,0` still works (offered when the host has no
 stable form: no sysfs in a minimal container, or a USB device with neither a
