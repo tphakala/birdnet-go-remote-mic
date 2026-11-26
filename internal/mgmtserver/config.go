@@ -112,7 +112,8 @@ func WithReloader(fn Reloader) Option {
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
 // Only discovery, the access token, the notifications and updates blocks and
 // the device list are patchable; an absent field is left unchanged, and a present devices array
-// replaces the whole list.
+// replaces the whole list, except that it may not add or change a file: device
+// id (see checkFileSources): a violation is a 422.
 // The merged configuration must validate as a whole. With a reloader mounted the
 // change is applied to the running pipeline in place (restartRequired=false);
 // without one it is persisted but takes effect only after a restart.
@@ -147,6 +148,9 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 			devs, derr := patchedDevices(cur.Devices, *patch.Devices)
 			if derr != nil {
 				return config.Config{}, derr
+			}
+			if gerr := checkFileSources(prev.Devices, devs); gerr != nil {
+				return config.Config{}, gerr
 			}
 			cur.Devices = devs
 		}
@@ -583,6 +587,32 @@ func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.
 		devs = append(devs, wireDeviceToConfig(wd))
 	}
 	return devs, nil
+}
+
+// checkFileSources keeps file sources out of the management API: a file: id
+// makes the appliance read a path, so only the config file may name one. next
+// may carry a file id only when the stored config already has it (R1), and a
+// device keeps its name only with a stored id unless neither id is virtual
+// (R2). A list that carries the stored file devices unchanged passes. It never
+// touches the filesystem, so the answer reveals nothing about a path.
+func checkFileSources(stored, next []config.Device) error {
+	refuse := func(i int) error {
+		return &config.ValidationError{
+			Field:  fmt.Sprintf("devices[%d].device", i),
+			Reason: "file sources are set in the config file only; the management API cannot add or change one",
+		}
+	}
+	for i := range next {
+		id := next[i].Device
+		if config.IsVirtualID(id) && !slices.ContainsFunc(stored, func(d config.Device) bool { return d.Device == id }) {
+			return refuse(i)
+		}
+		if old, ok := deviceByName(stored, next[i].Name); ok && old.Device != id &&
+			(config.IsVirtualID(old.Device) || config.IsVirtualID(id)) {
+			return refuse(i)
+		}
+	}
+	return nil
 }
 
 // deviceByID returns a pointer to the device with the given device id in devs,

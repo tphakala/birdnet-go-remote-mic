@@ -14,6 +14,7 @@ const (
 	pathGarden = "/garden"
 	formatS16  = "s16"
 	deviceHW1  = "hw:1,0"
+	fileIDA    = "file:/srv/a.flac"
 
 	// Repeated validation field paths, extracted so the notification tests do not
 	// trip goconst on the cpu and clear-threshold cases.
@@ -317,6 +318,16 @@ func TestValidate(t *testing.T) {
 		{"duplicate name fails", func(c *Config) { c.Devices[1].Name = nameGarden }, true},
 		{"duplicate path fails", func(c *Config) { c.Devices[1].Streams[0].Path = pathGarden }, true},
 		{"duplicate device id fails", func(c *Config) { c.Devices[1].Device = deviceHW1 }, true},
+		{"file id valid", func(c *Config) { c.Devices[1].Device = fileIDA }, false},
+		{"file id with empty path fails", func(c *Config) { c.Devices[1].Device = "file:" }, true},
+		{"file id with relative path fails", func(c *Config) { c.Devices[1].Device = "file:srv/a.flac" }, true},
+		{"file id with unclean path fails", func(c *Config) { c.Devices[1].Device = "file:/srv/../a" }, true},
+		{"file id with trailing slash fails", func(c *Config) { c.Devices[1].Device = "file:/srv/a/" }, true},
+		{"file id with control character fails", func(c *Config) { c.Devices[1].Device = "file:/srv/a\nb" }, true},
+		{"duplicate file id fails", func(c *Config) {
+			c.Devices[0].Device = fileIDA
+			c.Devices[1].Device = fileIDA
+		}, true},
 		{"path without slash fails", func(c *Config) { c.Devices[0].Streams[0].Path = "garden" }, true},
 		{"path with space fails", func(c *Config) { c.Devices[0].Streams[0].Path = "/gar den" }, true},
 		{"bare slash path fails", func(c *Config) { c.Devices[0].Streams[0].Path = "/" }, true},
@@ -620,10 +631,36 @@ func TestIsCardIndexID(t *testing.T) {
 		"usb:16d0:06f3:p=0000:01:00.0-1.1:if=0,0": false,
 		"hw:CARD=Headphones,DEV=0":                false,
 		" hw:CARD=Loopback,DEV=1":                 false,
+		fileIDA:                                   false,
+		" file:/srv/a.flac":                       true,
 	}
 	for id, want := range cases {
 		if got := IsCardIndexID(id); got != want {
 			t.Errorf("IsCardIndexID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+func TestFileSourcePath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		id       string
+		wantPath string
+		wantOK   bool
+	}{
+		{"file:/x", "/x", true},
+		{" file:/x", "", false},
+		{"FILE:/x", "", false},
+		{"usb:1235:8218:s=S1:if=0,0", "", false},
+		{"hw:1,0", "", false},
+	}
+	for _, c := range cases {
+		path, ok := FileSourcePath(c.id)
+		if path != c.wantPath || ok != c.wantOK {
+			t.Errorf("FileSourcePath(%q) = (%q, %v), want (%q, %v)", c.id, path, ok, c.wantPath, c.wantOK)
+		}
+		if got := IsVirtualID(c.id); got != c.wantOK {
+			t.Errorf("IsVirtualID(%q) = %v, want %v", c.id, got, c.wantOK)
 		}
 	}
 }
