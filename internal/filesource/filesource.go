@@ -90,12 +90,18 @@ type NoAudioError struct {
 }
 
 func (e *NoAudioError) Error() string {
-	var counts [numSkipClasses]int
+	// The slot past the known classes counts any other value, which a Skip
+	// built outside this package can hold, under SkipClass.String's "unknown".
+	var counts [numSkipClasses + 1]int
 	for _, s := range e.Skipped {
-		counts[s.Class]++
+		c := s.Class
+		if c < 0 || c > numSkipClasses {
+			c = numSkipClasses
+		}
+		counts[c]++
 	}
 	var parts []string
-	for c := range numSkipClasses {
+	for c := range numSkipClasses + 1 {
 		if counts[c] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %v", counts[c], c))
 		}

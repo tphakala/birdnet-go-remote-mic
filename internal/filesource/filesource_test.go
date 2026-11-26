@@ -144,6 +144,18 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 	}
 }
 
+// TestNoAudioErrorCountsUnknownClass pins NoAudioError's text for a Skip built
+// with a class outside the known ones, which a caller outside the package can
+// do: it counts as unknown rather than indexing out of range.
+func TestNoAudioErrorCountsUnknownClass(t *testing.T) {
+	t.Parallel()
+	err := &NoAudioError{Skipped: []Skip{{Class: SkipRate}, {Class: numSkipClasses + 3}, {Class: -1}}}
+	const want = "filesource: no playable audio (1 sample rate differs, 2 unknown)"
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
 func TestReadFailsWhenLoopFindsNoAudio(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
