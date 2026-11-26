@@ -329,7 +329,7 @@ func (d *Device) IsEnabled() bool {
 //
 // A virtual id (see IsVirtualID) is not a card index: it names no hardware, so
 // nothing about it can drift. The test runs on the raw id, before the trim, so
-// " file:/x" stays an (invalid) ALSA id.
+// " file:/x" stays an ALSA card-index id, which matches no hardware.
 func IsCardIndexID(id string) bool {
 	if IsVirtualID(id) {
 		return false
