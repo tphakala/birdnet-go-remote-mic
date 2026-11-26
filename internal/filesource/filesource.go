@@ -338,25 +338,24 @@ func (s *Source) tryOpen() (Skip, bool, error) {
 		s.dropFile()
 		return Skip{Name: s.name, Reason: reason, Class: c}, false, nil
 	}
-	// An entry can be a FIFO, and opening one without a writer blocks before
-	// the file is installed, where Close cannot reach it.
-	path := filepath.Join(s.dir, s.name)
-	fi, err := os.Stat(path)
+	// An entry can be a FIFO swapped in at any time, so open without blocking
+	// and check the descriptor itself: a path check before the open would
+	// leave a window for the swap.
+	f, err := openFile(filepath.Join(s.dir, s.name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return Skip{}, false, errEntryGone
 	}
 	if err != nil {
+		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
 		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
 	}
 	if !fi.Mode().IsRegular() {
+		_ = f.Close()
 		return Skip{Name: s.name, Reason: "not a regular file", Class: SkipUnreadable}, false, nil
-	}
-	f, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Skip{}, false, errEntryGone
-	}
-	if err != nil {
-		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
 	}
 	// Install the file before parsing its header so Close can interrupt a slow
 	// read; refuse it when Close already ran.
