@@ -12,6 +12,7 @@ require (
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/tphakala/go-audio-capture v0.8.0
 	github.com/tphakala/go-audio-stream v0.6.0
+	github.com/tphakala/go-flac v1.4.0
 	github.com/tphakala/go-opus v1.3.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1

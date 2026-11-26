@@ -26,6 +26,8 @@ github.com/tphakala/go-audio-capture v0.8.0 h1:4WRhd1neOOCKN41C+mTyq56cclfnYh5sA
 github.com/tphakala/go-audio-capture v0.8.0/go.mod h1:cd2ljQbhwVT5rodyhErr6CTs1E8rZiNwvxF9xoQyzkA=
 github.com/tphakala/go-audio-stream v0.6.0 h1:aVMV95cgqpn3fOELIBVDSs9nKuYPLYts1ouQh7ooCfU=
 github.com/tphakala/go-audio-stream v0.6.0/go.mod h1:W9be1o1XSqEkSAG81yHOV6+G9odYbpWJlmL5DBEhfgM=
+github.com/tphakala/go-flac v1.4.0 h1:P+ZFIohr67hYN3ayLQaGAlhroIRXJRSG9fFZIVo/wLU=
+github.com/tphakala/go-flac v1.4.0/go.mod h1:85Qszl3Z+lnrtXuVZIdF4KhjKef0W6YyJlhPsmBUhMM=
 github.com/tphakala/go-opus v1.3.0 h1:0lpjV0HMAhStV7/oKkZRaQgdzNT5pdFDiWhBqteobxE=
 github.com/tphakala/go-opus v1.3.0/go.mod h1:BjrAk2Jf16arkoj6aeIeE/Nnsnq3IRJgzY+kNn3jlH4=
 github.com/tphakala/simd v1.14.0 h1:f1ZBojSE3udWggptQpGyTynVfVdCZxd/KTTfaiDeoCA=
