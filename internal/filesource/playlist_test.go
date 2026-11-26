@@ -96,22 +96,30 @@ func TestDirectorySkipsMismatchesAndLogsOnce(t *testing.T) {
 			}
 		}
 
-		// A mono file replaced by a stereo one plays from the next pass.
-		cPCM := noise(periodFrames, 2)
-		writeFile(t, dir, "c_mono.flac", flacBytes(t, testRate, 2, 16, cPCM))
-		if got := readN(t, s, 8); !bytes.Contains(got, cPCM) {
-			t.Fatal("the replaced file never played")
-		}
-		if n := len(rec.all()); n != 3 {
-			t.Fatalf("%d lines after the file started to play, want 3", n)
-		}
-
-		// The same file at another rate is a new reason, so it is logged again.
+		// The same file at another rate is a new reason, so it is logged again
+		// while the earlier reason is still remembered.
 		writeFile(t, dir, "c_mono.flac", flacBytes(t, 44100, 2, 16, ramp(periodFrames, 2)))
 		readN(t, s, 8)
 		lines = rec.all()
 		if len(lines) != 4 || !strings.Contains(lines[3], "c_mono.flac") || !strings.Contains(lines[3], "44100") {
 			t.Fatalf("logged %q, want a fourth line for the rate mismatch", lines)
+		}
+
+		// A mono file replaced by a stereo one plays from the next pass, and a
+		// clean pass makes the file forget its reason: the same mismatch is
+		// reported again when it returns.
+		writeFile(t, dir, "c_mono.flac", flacBytes(t, testRate, 2, 16, noise(periodFrames, 2)))
+		if got := readN(t, s, 8); !bytes.Contains(got, noise(periodFrames, 2)) {
+			t.Fatal("the replaced file never played")
+		}
+		if n := len(rec.all()); n != 4 {
+			t.Fatalf("%d lines after the file started to play, want 4", n)
+		}
+		writeFile(t, dir, "c_mono.flac", flacBytes(t, 44100, 2, 16, ramp(periodFrames, 2)))
+		readN(t, s, 8)
+		lines = rec.all()
+		if len(lines) != 5 || !strings.Contains(lines[4], "44100") {
+			t.Fatalf("logged %q, want the rate mismatch reported again after a clean pass", lines)
 		}
 
 		// A file absent for a pass is forgotten, so it is reported again on return.
@@ -125,7 +133,7 @@ func TestDirectorySkipsMismatchesAndLogsOnce(t *testing.T) {
 		}
 		readN(t, s, 8)
 		lines = rec.all()
-		if len(lines) != 5 || !strings.Contains(lines[4], "d_bad.flac") {
+		if len(lines) != 6 || !strings.Contains(lines[5], "d_bad.flac") {
 			t.Fatalf("logged %q, want d_bad.flac reported again after it returned", lines)
 		}
 	})
