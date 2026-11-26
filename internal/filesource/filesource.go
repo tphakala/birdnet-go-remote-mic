@@ -163,7 +163,7 @@ func Open(cfg Config) (*Source, error) {
 		if s.next >= len(s.entries) {
 			return nil, &NoAudioError{Skipped: s.passSkips}
 		}
-		if _, err := s.tryNext(); err != nil {
+		if _, _, err := s.tryNext(); err != nil {
 			return nil, err
 		}
 	}
@@ -257,12 +257,11 @@ func (s *Source) nextFile() error {
 		}
 		return nil
 	}
-	skipped, err := s.tryNext()
+	sk, skipped, err := s.tryNext()
 	if err != nil {
 		return err
 	}
 	if skipped {
-		sk := s.passSkips[len(s.passSkips)-1]
 		s.logOnce(sk.Name, sk.Reason)
 	}
 	return nil
@@ -309,23 +308,22 @@ func (s *Source) scan() error {
 	return nil
 }
 
-// tryNext tries the pass's next entry. It reports whether the entry was
-// skipped, in which case its Skip is the last of passSkips. An entry that
-// vanished is neither played nor reported.
-func (s *Source) tryNext() (skipped bool, err error) {
+// tryNext tries the pass's next entry and records its Skip in passSkips when
+// it was not played. An entry that vanished is neither played nor reported.
+func (s *Source) tryNext() (sk Skip, skipped bool, err error) {
 	s.name = s.entries[s.next]
 	s.next++
-	skip, played, err := s.tryOpen()
+	sk, played, err := s.tryOpen()
 	switch {
 	case errors.Is(err, errEntryGone):
-		return false, nil
+		return Skip{}, false, nil
 	case err != nil:
-		return false, err
+		return Skip{}, false, err
 	case played:
-		return false, nil
+		return Skip{}, false, nil
 	}
-	s.passSkips = append(s.passSkips, skip)
-	return true, nil
+	s.passSkips = append(s.passSkips, sk)
+	return sk, true, nil
 }
 
 // tryOpen opens the current entry and installs its decoder as s.cur. It
