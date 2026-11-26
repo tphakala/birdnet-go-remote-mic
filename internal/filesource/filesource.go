@@ -115,7 +115,8 @@ type Source struct {
 	primed    int    // bytes of buf already filled by Open
 	dec       decoders
 	cur       io.Reader // the open file's decoder, nil between files
-	passBytes int       // bytes this pass produced
+	passAudio bool      // this pass produced audio
+	fileAudio bool      // the current file produced audio
 	passDone  bool      // this pass has opened its file
 	passSkips []Skip
 	logged    map[string]string // entry name to the last logged reason
@@ -207,7 +208,9 @@ func (s *Source) Read() (audio.Period, error) {
 		}
 		m, err := s.cur.Read(s.buf[n:])
 		n += m
-		s.passBytes += m
+		if m > 0 {
+			s.passAudio, s.fileAudio = true, true
+		}
 		if err != nil {
 			if s.closed() {
 				return audio.Period{}, ErrClosed
@@ -226,10 +229,10 @@ func (s *Source) Read() (audio.Period, error) {
 // produced no audio. A single file is its own pass.
 func (s *Source) nextFile() error {
 	if s.passDone {
-		if s.passBytes == 0 {
+		if !s.passAudio {
 			return &NoAudioError{Skipped: s.passSkips}
 		}
-		s.passBytes, s.passSkips, s.passDone = 0, nil, false
+		s.passAudio, s.passSkips, s.passDone = false, nil, false
 	}
 	s.passDone = true
 	skip, played, err := s.tryOpen()
@@ -296,7 +299,7 @@ func (s *Source) tryOpen() (Skip, bool, error) {
 	case channels < s.cfg.MinChannels || channels > s.cfg.MaxChannels:
 		return skip(SkipChannels, fmt.Sprintf("%d channels, need %d to %d", channels, s.cfg.MinChannels, s.cfg.MaxChannels))
 	}
-	s.cur = r
+	s.cur, s.fileAudio = r, false
 	if s.channels != 0 {
 		return Skip{}, true, nil
 	}
@@ -310,22 +313,28 @@ func (s *Source) tryOpen() (Skip, bool, error) {
 		return Skip{}, false, ErrClosed
 	}
 	if m == 0 {
-		return skip(SkipUndecodable, "no audio")
+		return skip(SkipUndecodable, noAudioReason(err))
 	}
 	s.rate, s.channels, s.buf = rate, channels, buf
-	s.primed, s.passBytes = m, m
+	s.primed, s.passAudio, s.fileAudio = m, true, true
 	if err != nil {
 		s.endFile(err)
 	}
 	return Skip{}, true, nil
 }
 
-// endFile closes the current file after the decoder returned err. A clean end
-// forgets the file's logged reason; any other error is logged once per reason.
+// endFile closes the current file after the decoder returned err. A file that
+// produced no audio is a skip of this pass. Otherwise a clean end forgets the
+// file's logged reason, and any other error is logged once per reason.
 func (s *Source) endFile(err error) {
-	if errors.Is(err, io.EOF) {
+	switch {
+	case !s.fileAudio:
+		reason := noAudioReason(err)
+		s.passSkips = append(s.passSkips, Skip{Name: s.name, Reason: reason, Class: SkipUndecodable})
+		s.logOnce(s.name, reason)
+	case errors.Is(err, io.EOF):
 		delete(s.logged, s.name)
-	} else {
+	default:
 		s.logOnce(s.name, reasonOf(err))
 	}
 	s.closeFile()
@@ -362,3 +371,12 @@ func stripPath(err error) error {
 }
 
 func reasonOf(err error) string { return stripPath(err).Error() }
+
+// noAudioReason names why a file ended without audio: the decoder's error, or
+// "no audio" for a clean end.
+func noAudioReason(err error) string {
+	if err == nil || errors.Is(err, io.EOF) {
+		return "no audio"
+	}
+	return reasonOf(err)
+}

@@ -457,3 +457,74 @@ func TestNoAudioErrorText(t *testing.T) {
 		t.Errorf("error = %q, want %q", got, want)
 	}
 }
+
+func TestReadReportsFileWithoutAudio(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "a.flac", flacBytes(t, testRate, 2, 16, ramp(periodFrames+40, 2)))
+	empty := writeFile(t, dir, "new.tmp", flacBytes(t, testRate, 2, 16, nil))
+	synctest.Test(t, func(t *testing.T) {
+		var rec recorder
+		s, err := Open(cfgFor(path, &rec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		readN(t, s, 1)
+		if err := os.Rename(empty, path); err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.Read()
+		var na *NoAudioError
+		if !errors.As(err, &na) || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUndecodable {
+			t.Fatalf("Read = %v, want *NoAudioError with one undecodable skip", err)
+		}
+		if got, want := err.Error(), "filesource: no playable audio (1 undecodable)"; got != want {
+			t.Fatalf("error text = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestOpenReportsFirstReadError(t *testing.T) {
+	t.Parallel()
+	data := flacBytes(t, testRate, 2, 16, noise(100, 2))
+	data[len(data)-1] ^= 0xff // the frame's CRC-16: the header parses, the first read fails
+	path := writeFile(t, t.TempDir(), "a.flac", data)
+	var rec recorder
+	s, err := Open(cfgFor(path, &rec))
+	if err == nil {
+		closeQuiet(s)
+		t.Fatal("Open succeeded on a file whose first frame is corrupt")
+	}
+	var na *NoAudioError
+	if !errors.As(err, &na) || len(na.Skipped) != 1 {
+		t.Fatalf("err = %v, want *NoAudioError with one skip", err)
+	}
+	if got := na.Skipped[0].Reason; got == "no audio" {
+		t.Fatalf("skip reason = %q, want the decoder's error", got)
+	}
+}
+
+func TestShortFileLoopsWithoutSkipping(t *testing.T) {
+	t.Parallel()
+	// Shorter than one period: the first read returns audio together with the
+	// end of the file, and every pass is shorter than a period.
+	s16 := ramp(100, 2)
+	path := writeFile(t, t.TempDir(), "a.flac", flacBytes(t, testRate, 2, 16, s16))
+	synctest.Test(t, func(t *testing.T) {
+		var rec recorder
+		s, err := Open(cfgFor(path, &rec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		got := readN(t, s, 3)
+		want := repeat(s16, 3*periodFrames/100+1)[:3*periodFrames*4]
+		if !bytes.Equal(got, want) {
+			t.Fatal("short file does not loop gaplessly")
+		}
+		if lines := rec.all(); len(lines) != 0 {
+			t.Fatalf("a playing file logged %q, want nothing", lines)
+		}
+	})
+}
