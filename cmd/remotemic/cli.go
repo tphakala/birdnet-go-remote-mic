@@ -425,10 +425,21 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 
 // checkStatus describes what one configured device id resolves to for
 // reportCheck, recording a present device's address in owner. A file id
-// reports what its source would play and never touches owner.
+// reports what its source would play, notes a path the installed service
+// cannot see, and never touches owner.
 func checkStatus(d *config.Device, owner map[string]string) string {
 	if path, ok := config.FileSourcePath(d.Device); ok {
-		return fileCheckStatus(d, path)
+		status := fileCheckStatus(d, path)
+		if dir, hidden := service.HiddenDir(path); hidden {
+			// On the device's own line, ahead of any per-file lines, as the
+			// card-index note is. It is lexical, so it holds after a timeout too.
+			head, rest, more := strings.Cut(status, "\n")
+			status = head + "; under " + dir + " (hidden from the installed service)"
+			if more {
+				status += "\n" + rest
+			}
+		}
+		return status
 	}
 	hw, err := resolveDevice(d.Device)
 	if err != nil {
@@ -484,16 +495,16 @@ func fileCheckStatus(d *config.Device, path string) string {
 		cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 		src, err := open(cfg)
 		var b strings.Builder
-		var na *filesource.NoAudioError
-		switch {
-		case errors.As(err, &na):
-			b.WriteString(err.Error())
-			for _, s := range na.Skipped {
-				fmt.Fprintf(&b, "\n    %s: %s", s.Name, s.Reason)
+		if err != nil {
+			// The appliance retries every failed open, a pass with no playable
+			// audio included, so both kinds share one hint.
+			b.WriteString(err.Error() + "; it starts automatically once it can play")
+			if na, ok := errors.AsType[*filesource.NoAudioError](err); ok {
+				for _, s := range na.Skipped {
+					fmt.Fprintf(&b, "\n    %s: %s", s.Name, s.Reason)
+				}
 			}
-		case err != nil:
-			fmt.Fprintf(&b, "file source: %v; it starts once the path is readable", err)
-		default:
+		} else {
 			rate, channels := src.Negotiated()
 			_ = src.Close()
 			fmt.Fprintf(&b, "file source, %d Hz, %d ch", rate, channels)
@@ -509,7 +520,7 @@ func fileCheckStatus(d *config.Device, path string) string {
 	case s := <-res:
 		return s
 	case <-timer.C:
-		return fmt.Sprintf("file source: no answer from the filesystem within %v", fileCheckTimeout)
+		return fmt.Sprintf("no answer from the filesystem within %v", fileCheckTimeout)
 	}
 }
 

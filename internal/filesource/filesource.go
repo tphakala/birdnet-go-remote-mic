@@ -8,7 +8,8 @@
 // Open from the first file that produced audio; a file that does not match is
 // skipped. Read never returns io.EOF: a file source that cannot produce audio
 // fails with a *NoAudioError, so the fan-out treats it as a dead device and
-// the appliance retries it. Errors from this package carry no file paths.
+// the appliance retries it. Errors and log lines from this package lead with
+// "filesource:", once, and carry no file paths.
 package filesource
 
 import (
@@ -157,7 +158,7 @@ func Open(cfg Config) (*Source, error) {
 	}
 	s.pace = newPacer(cfg.Rate, s.periodFrames)
 	if err := s.scan(); err != nil {
-		return nil, fmt.Errorf("file source: %w", stripPath(err))
+		return nil, fmt.Errorf("filesource: %w", stripPath(err))
 	}
 	// Loop until a file fixed the geometry: its priming read may also have
 	// ended it, which leaves s.cur nil with audio already primed.

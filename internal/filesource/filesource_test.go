@@ -83,13 +83,14 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		"notes.txt":    writeFile(t, dir, "notes.txt", []byte("hello")),
 	}
 	tests := []struct {
-		name    string
-		path    string
-		rate    int
-		minCh   int
-		maxCh   int
-		class   SkipClass
-		wantErr error // a plain error instead of *NoAudioError
+		name     string
+		path     string
+		rate     int
+		minCh    int
+		maxCh    int
+		class    SkipClass
+		wantErr  error  // a plain error instead of *NoAudioError
+		wantText string // the whole error text, when set
 	}{
 		{name: "rate mismatch", path: files["rate.flac"], rate: testRate, minCh: 1, maxCh: 8, class: SkipRate},
 		{name: "fewer channels than min", path: files["mono.flac"], rate: testRate, minCh: 2, maxCh: 8, class: SkipChannels},
@@ -102,7 +103,7 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		{name: "garbage wav", path: files["garbage.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "header-valid wav with no audio", path: files["empty.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "unsupported extension", path: files["notes.txt"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUnsupported},
-		{name: "missing path", path: filepath.Join(dir, "missing.flac"), rate: testRate, minCh: 1, maxCh: 8, wantErr: fs.ErrNotExist},
+		{name: "missing path", path: filepath.Join(dir, "missing.flac"), rate: testRate, minCh: 1, maxCh: 8, wantErr: fs.ErrNotExist, wantText: "filesource: no such file or directory"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +130,9 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 				if len(na.Skipped) != 1 || na.Skipped[0].Class != tc.class {
 					t.Fatalf("skipped = %+v, want one skip of class %v", na.Skipped, tc.class)
 				}
+			}
+			if tc.wantText != "" && err.Error() != tc.wantText {
+				t.Fatalf("err = %q, want %q", err.Error(), tc.wantText)
 			}
 			if containsPath(err, dir) {
 				t.Fatalf("error text carries a path: %v", err)
