@@ -549,7 +549,7 @@ type Device struct {
 	// ClientCount How many RTSP clients are playing this device's streams right now, summed over its streams (each stream serves up to 8 at once). Zero for skipped or failed devices.
 	ClientCount int `json:"clientCount"`
 
-	// Device Configured capture device id. A stable id names the physical device and survives reboots: a USB unit by vendor, product and serial follows it to any port, while the by-port form (a USB unit with no serial) and the alsa-lib hw:CARD= form survive a replug into the same port. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable).
+	// Device Configured capture device id. A stable id names the physical device and survives reboots: a USB unit by vendor, product and serial follows it to any port, while the by-port form (a USB unit with no serial) and the alsa-lib hw:CARD= form survive a replug into the same port. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable). An id of the form file:<absolute path> plays an audio file, or a directory of them, in a loop instead of capturing; it can be set in the config file only.
 	//
 	//
 	// Examples: usb:1235:8218:s=S1A2B3:if=0,0, hw:CARD=Loopback,DEV=1
@@ -1250,7 +1250,7 @@ type ClientInterface interface {
 
 	// PatchConfigWithBody Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -1259,7 +1259,7 @@ type ClientInterface interface {
 
 	// PatchConfig Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1473,7 +1473,7 @@ func (c *Client) GetConfig(ctx context.Context, reqEditors ...RequestEditorFn) (
 
 // PatchConfigWithBody Update configuration
 //
-// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 //
 // Takes any type of body and a specified content type.
 //
@@ -1492,7 +1492,7 @@ func (c *Client) PatchConfigWithBody(ctx context.Context, contentType string, bo
 
 // PatchConfig Update configuration
 //
-// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2557,7 +2557,7 @@ type ClientWithResponsesInterface interface {
 
 	// PatchConfigWithBodyWithResponse Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -2566,7 +2566,7 @@ type ClientWithResponsesInterface interface {
 
 	// PatchConfigWithResponse Update configuration
 	//
-	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+	// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -3767,7 +3767,7 @@ func (c *ClientWithResponses) GetConfigWithResponse(ctx context.Context, reqEdit
 
 // PatchConfigWithBodyWithResponse Update configuration
 //
-// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -3782,7 +3782,7 @@ func (c *ClientWithResponses) PatchConfigWithBodyWithResponse(ctx context.Contex
 
 // PatchConfigWithResponse Update configuration
 //
-// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+// Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //

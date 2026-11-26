@@ -206,7 +206,7 @@ export interface paths {
         head?: never;
         /**
          * Update configuration
-         * @description Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect.
+         * @description Validates and persists a partial configuration update to the config file. Changes are applied to the running appliance in place when possible (a token or discovery change, and adding, removing or restarting a device); `restartRequired` in the response reports the exception, when a change could only be persisted and needs a restart to take effect. A device list that adds a `file:` device id, or changes a device's id to or from one, is refused with 422: file sources are set in the config file only.
          */
         patch: operations["patchConfig"];
         trace?: never;
@@ -473,7 +473,7 @@ export interface components {
              */
             name: string;
             /**
-             * @description Configured capture device id. A stable id names the physical device and survives reboots: a USB unit by vendor, product and serial follows it to any port, while the by-port form (a USB unit with no serial) and the alsa-lib hw:CARD= form survive a replug into the same port. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable).
+             * @description Configured capture device id. A stable id names the physical device and survives reboots: a USB unit by vendor, product and serial follows it to any port, while the by-port form (a USB unit with no serial) and the alsa-lib hw:CARD= form survive a replug into the same port. A card-index id such as hw:1,0 is accepted but can name a different device after a reboot (see idStable). An id of the form file:<absolute path> plays an audio file, or a directory of them, in a loop instead of capturing; it can be set in the config file only.
              * @example usb:1235:8218:s=S1A2B3:if=0,0
              * @example hw:CARD=Loopback,DEV=1
              */

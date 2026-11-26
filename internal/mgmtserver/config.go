@@ -112,7 +112,8 @@ func WithReloader(fn Reloader) Option {
 // PatchConfig handles PATCH /config. Without a mounted store it reports 501.
 // Only discovery, the access token, the notifications and updates blocks and
 // the device list are patchable; an absent field is left unchanged, and a present devices array
-// replaces the whole list.
+// replaces the whole list, except that it may not add or change a file: device
+// id (see checkFileSources): a violation is a 422.
 // The merged configuration must validate as a whole. With a reloader mounted the
 // change is applied to the running pipeline in place (restartRequired=false);
 // without one it is persisted but takes effect only after a restart.
@@ -305,11 +306,15 @@ func validationProblem(verr *config.ValidationError) mgmtapi.ValidationProblem {
 }
 
 // validateWrite validates a config the API is about to persist that may carry
-// strings from the request: the full Validate plus the length caps on the
-// strings the write introduces relative to prev, the stored config. Load does
-// not apply the caps (see config.MaxNameLen), so an over-cap string already
-// stored must not block an unrelated write such as a token rotation.
+// strings from the request: the file source guard (see checkFileSources), the
+// full Validate, and the length caps on the strings the write introduces
+// relative to prev, the stored config. Load does not apply the caps (see
+// config.MaxNameLen), so an over-cap string already stored must not block an
+// unrelated write such as a token rotation.
 func validateWrite(c, prev *config.Config) error {
+	if err := checkFileSources(prev.Devices, c.Devices); err != nil {
+		return err
+	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -583,6 +588,46 @@ func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.
 		devs = append(devs, wireDeviceToConfig(wd))
 	}
 	return devs, nil
+}
+
+// checkFileSources keeps file sources out of the management API: a file: id
+// makes the appliance read a path, so only the config file may name one. next
+// may carry a file id only when the stored config already has it, and a device
+// that keeps its name may change its id only when neither the old nor the new
+// id is virtual. A list that carries the stored file devices unchanged passes.
+// An entry whose name another entry carries is left to Validate, which refuses
+// the duplicate name. It never touches the filesystem, so the answer reveals
+// nothing about a path.
+func checkFileSources(stored, next []config.Device) error {
+	for i := range next {
+		// A name used twice is for Validate to report as a duplicate name; the
+		// stored device that name matches is not being retargeted.
+		if nameRepeated(next, i) {
+			continue
+		}
+		id := next[i].Device
+		_, known := deviceByID(stored, id)
+		added := config.IsVirtualID(id) && !known
+		old, sameName := deviceByName(stored, next[i].Name)
+		retargeted := sameName && old.Device != id && (config.IsVirtualID(old.Device) || config.IsVirtualID(id))
+		if added || retargeted {
+			return &config.ValidationError{
+				Field:  fmt.Sprintf("devices[%d].device", i),
+				Reason: "file sources are set in the config file only; the management API cannot add or change one",
+			}
+		}
+	}
+	return nil
+}
+
+// nameRepeated reports whether another entry of devs carries devs[i]'s name.
+func nameRepeated(devs []config.Device, i int) bool {
+	for j := range devs {
+		if j != i && devs[j].Name == devs[i].Name {
+			return true
+		}
+	}
+	return false
 }
 
 // deviceByID returns a pointer to the device with the given device id in devs,

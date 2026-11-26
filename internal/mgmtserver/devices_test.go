@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -303,6 +305,56 @@ func TestProvisionDeviceAlreadyConfiguredYields409(t *testing.T) {
 	}
 	if _, ok := resp.(mgmtapi.ProvisionDevice409ApplicationProblemPlusJSONResponse); !ok {
 		t.Fatalf("returned %T, want 409", resp)
+	}
+}
+
+// provision422Field provisions through a store seeded with baseConfig plus
+// extra devices and returns the single 422 field, failing on any other outcome.
+func provision422Field(t *testing.T, extra []config.Device, avail *AvailableDevice, req *mgmtapi.ProvisionDeviceRequest) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c := baseConfig()
+	c.Devices = append(c.Devices, extra...)
+	c.ApplyDefaults()
+	s := New(&fakeProvider{available: []AvailableDevice{*avail}}, WithConfigStore(NewFileConfigStore(path, &c)))
+	resp, err := s.ProvisionDevice(t.Context(), mgmtapi.ProvisionDeviceRequestObject{Body: req})
+	if err != nil {
+		t.Fatalf("ProvisionDevice: %v", err)
+	}
+	vp, ok := resp.(mgmtapi.ProvisionDevice422ApplicationProblemPlusJSONResponse)
+	if !ok {
+		t.Fatalf("returned %T, want 422", resp)
+	}
+	if vp.Errors == nil || len(*vp.Errors) != 1 {
+		t.Fatalf("errors = %+v, want one entry", vp.Errors)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("a refused provision wrote the config file (stat err = %v); want it absent", statErr)
+	}
+	return (*vp.Errors)[0].Field
+}
+
+func TestProvisionDeviceRefusesFileSourceID(t *testing.T) {
+	t.Parallel()
+	// A provider that reports a file: id as available is not expected; the guard
+	// in validateWrite must still refuse to persist one through this endpoint.
+	got := provision422Field(t, nil, &AvailableDevice{ID: "file:/srv/x", FriendlyName: "File"},
+		&mgmtapi.ProvisionDeviceRequest{Device: "file:/srv/x"})
+	if got != fieldDevice1 {
+		t.Errorf("422 field = %q, want %s", got, fieldDevice1)
+	}
+}
+
+func TestProvisionDeviceNameOfStoredFileDeviceIsDuplicateName(t *testing.T) {
+	t.Parallel()
+	stored := []config.Device{{
+		Name: "test", Device: "file:/srv/a", Rate: 48000, Format: fmtS16,
+		Streams: []config.Stream{{Path: "/test", Mode: config.ModePCM, Channels: []int{1}}},
+	}}
+	got := provision422Field(t, stored, &AvailableDevice{ID: devAttic, FriendlyName: nameAudioMoth},
+		&mgmtapi.ProvisionDeviceRequest{Device: devAttic, Name: new("test")})
+	if got != "devices[2].name" {
+		t.Errorf("422 field = %q, want devices[2].name (a duplicate name, not a file source change)", got)
 	}
 }
 

@@ -9,9 +9,11 @@ import (
 	"log"
 	"net"
 	"os"
+	posixpath "path"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -230,7 +232,7 @@ func (c *Config) ManagementEnabled() bool {
 // to a one-element Streams on load.
 type Device struct {
 	Name    string   `yaml:"name"`    // DNS-SD instance name and log label; unique
-	Device  string   `yaml:"device"`  // go-audio-capture device id, e.g. "usb:1235:8218:s=S1:if=0,0" (see IsCardIndexID)
+	Device  string   `yaml:"device"`  // go-audio-capture device id, e.g. "usb:1235:8218:s=S1:if=0,0" (see IsCardIndexID), or "file:<absolute path>" (see FileSourcePath)
 	Rate    int      `yaml:"rate"`    // capture sample rate in Hz (one ALSA open per device)
 	Format  string   `yaml:"format"`  // only "s16"
 	Streams []Stream `yaml:"streams"` // one or more streams fanned out from the one capture
@@ -324,12 +326,51 @@ func (d *Device) IsEnabled() bool {
 // treated as a card index. A card-index id is still accepted, because the host
 // offered no stable form (no sysfs in a minimal container, or a USB device with
 // neither a serial nor a derivable port), but it is flagged to the operator.
+//
+// A virtual id (see IsVirtualID) is not a card index: it names no hardware, so
+// nothing about it can drift. The test runs on the raw id, before the trim, so
+// " file:/x" stays an ALSA card-index id, which matches no hardware.
 func IsCardIndexID(id string) bool {
+	if IsVirtualID(id) {
+		return false
+	}
 	id = strings.TrimSpace(id)
 	if strings.HasPrefix(id, "usb:") {
 		return false
 	}
 	return !strings.HasPrefix(id, "hw:") || !strings.Contains(id, "=")
+}
+
+// FileSourcePath returns the path of a file source id, "file:<absolute path>",
+// which plays one audio file, or a directory of them, instead of capturing from
+// a sound card. The prefix is matched exactly on the raw id (no trimming, no
+// case folding), so every caller agrees on what is virtual.
+func FileSourcePath(id string) (string, bool) {
+	p, ok := strings.CutPrefix(id, "file:")
+	if !ok {
+		return "", false
+	}
+	return p, true
+}
+
+// IsVirtualID reports whether a device id names a synthesized source rather
+// than sound card hardware. It is the one place a later scheme (a tone
+// generator, say) joins. Virtual ids are set in the config file only (the
+// management API refuses to add or change one), are stable, and are never
+// enumerated.
+func IsVirtualID(id string) bool {
+	_, ok := FileSourcePath(id)
+	return ok
+}
+
+// validateFileSourcePath checks a file source path without touching the
+// filesystem: a missing file or a mount that appears later is a runtime
+// condition, retried by the appliance. Slash semantics, as the platform is Linux.
+func validateFileSourcePath(p string) string {
+	if !posixpath.IsAbs(p) || posixpath.Clean(p) != p || strings.ContainsFunc(p, unicode.IsControl) {
+		return "file source path must be absolute and clean, e.g. file:/srv/audio"
+	}
+	return ""
 }
 
 // QuietAlertEnabled reports whether the device raises the very-quiet audio
@@ -580,8 +621,9 @@ func (c *Config) Validate() error {
 }
 
 // validateDevices checks the device list: the count cap, each device's fields,
-// and the uniqueness of names, paths and device ids. The length caps are not
-// here (see ValidateLengths).
+// and the uniqueness of names, paths and device ids. A file: id (see
+// FileSourcePath) must carry an absolute, clean path; the filesystem is never
+// consulted. The length caps are not here (see ValidateLengths).
 func (c *Config) validateDevices() error {
 	// An empty device list is valid: on first run the appliance boots with no
 	// configured devices so the web UI can enumerate the host's capture hardware
@@ -605,6 +647,11 @@ func (c *Config) validateDevices() error {
 		if d.Device == "" {
 			return &ValidationError{field("device"), "must not be empty"}
 		}
+		if p, ok := FileSourcePath(d.Device); ok {
+			if reason := validateFileSourcePath(p); reason != "" {
+				return &ValidationError{field("device"), reason}
+			}
+		}
 		if d.Format != "s16" {
 			return &ValidationError{field("format"), "must be s16"}
 		}
@@ -625,7 +672,7 @@ func (c *Config) validateDevices() error {
 			return &ValidationError{field("name"), "duplicate name " + strconv.Quote(d.Name)}
 		}
 		if ids[d.Device] {
-			return &ValidationError{field("device"), "duplicate device " + strconv.Quote(d.Device) + " (ALSA hw devices are single-client)"}
+			return &ValidationError{field("device"), "duplicate device " + strconv.Quote(d.Device) + " (one device can serve several streams)"}
 		}
 		names[d.Name] = true
 		ids[d.Device] = true

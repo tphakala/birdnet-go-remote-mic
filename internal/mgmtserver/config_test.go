@@ -21,6 +21,8 @@ const (
 	devHW1     = "hw:1,0"
 	pathGarden = "/garden"
 	fmtS16     = "s16"
+
+	fieldDevice1 = "devices[1].device"
 )
 
 // baseConfig is a minimal valid, defaulted configuration for the config tests.
@@ -884,5 +886,82 @@ func TestPatchedDevicesRejectsNameRotationCollapse(t *testing.T) {
 	}
 	if verr.Field != "devices[0].streams" || !strings.Contains(verr.Reason, `"duo"`) {
 		t.Errorf("collapse error = %s: %s, want devices[0].streams naming duo (matched by its id)", verr.Field, verr.Reason)
+	}
+}
+
+func TestPatchConfigFileSourceGuard(t *testing.T) {
+	t.Parallel()
+	const (
+		fileA     = "file:/srv/a"
+		fileB     = "file:/srv/b"
+		nameOther = "other"
+	)
+	dev := func(name, id, path string, rate int) mgmtapi.DeviceConfig {
+		return mgmtapi.DeviceConfig{
+			Name: name, Device: id, Path: path,
+			Mode: mgmtapi.Pcm, Format: mgmtapi.DeviceConfigFormatS16, Rate: rate, Channels: []int{1},
+		}
+	}
+	garden := func() mgmtapi.DeviceConfig { return dev(devGarden, devHW1, pathGarden, 48000) }
+	test := func(id string) mgmtapi.DeviceConfig { return dev("test", id, "/test", 48000) }
+	// other is stored with fileB, so a retarget of test to fileB passes the
+	// add rule and only the id-change rule can refuse it.
+	other := func() mgmtapi.DeviceConfig { return dev(nameOther, fileB, "/other", 48000) }
+
+	tests := []struct {
+		name      string
+		devices   []mgmtapi.DeviceConfig
+		wantField string // empty: the patch must succeed
+	}{
+		{"unchanged list", []mgmtapi.DeviceConfig{garden(), test(fileA), other()}, ""},
+		{"add a file id", []mgmtapi.DeviceConfig{garden(), test(fileA), other(), dev("extra", "file:/srv/c", "/extra", 48000)}, "devices[3].device"},
+		{"retarget a file device to another file", []mgmtapi.DeviceConfig{garden(), test(fileB), other()}, fieldDevice1},
+		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(devAttic), other()}, fieldDevice1},
+		{"turn hardware into the file id and drop the file device", []mgmtapi.DeviceConfig{dev(devGarden, fileA, pathGarden, 48000), other()}, "devices[0].device"},
+		{"rename keeping the id", []mgmtapi.DeviceConfig{garden(), dev("test2", fileA, "/test", 48000), other()}, ""},
+		{"drop the file device", []mgmtapi.DeviceConfig{garden(), other()}, ""},
+		{"change the file device's rate", []mgmtapi.DeviceConfig{garden(), dev("test", fileA, "/test", 44100), other()}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			c := baseConfig()
+			c.Devices = append(c.Devices,
+				config.Device{
+					Name: "test", Device: fileA, Rate: 48000, Format: fmtS16,
+					Streams: []config.Stream{{Path: "/test", Mode: config.ModePCM, Channels: []int{1}}},
+				},
+				config.Device{
+					Name: nameOther, Device: fileB, Rate: 48000, Format: fmtS16,
+					Streams: []config.Stream{{Path: "/other", Mode: config.ModePCM, Channels: []int{1}}},
+				})
+			c.ApplyDefaults()
+			store := NewFileConfigStore(path, &c)
+
+			s := New(&fakeProvider{}, WithConfigStore(store))
+			devs := tc.devices
+			resp, err := s.PatchConfig(t.Context(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+			if err != nil {
+				t.Fatalf("PatchConfig: %v", err)
+			}
+			if tc.wantField == "" {
+				if _, ok := resp.(mgmtapi.PatchConfig200JSONResponse); !ok {
+					t.Fatalf("PatchConfig returned %T, want 200", resp)
+				}
+				return
+			}
+			vp, ok := resp.(mgmtapi.PatchConfig422ApplicationProblemPlusJSONResponse)
+			if !ok {
+				t.Fatalf("PatchConfig returned %T, want 422", resp)
+			}
+			if vp.Errors == nil || len(*vp.Errors) != 1 || (*vp.Errors)[0].Field != tc.wantField {
+				t.Fatalf("errors = %+v, want one at %s", vp.Errors, tc.wantField)
+			}
+			// A refused patch must not be persisted: the file must still not exist.
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Errorf("a refused patch wrote the config file (stat err = %v); want it absent", statErr)
+			}
+		})
 	}
 }
