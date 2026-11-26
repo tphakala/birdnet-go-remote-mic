@@ -10,7 +10,7 @@ import (
 )
 
 // A path replaced by a FIFO with no writer would block os.Open for good, and
-// Close cannot interrupt a open that has not installed its file yet.
+// Close cannot interrupt an open that has not installed its file yet.
 func TestReadSkipsFifoReplacement(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

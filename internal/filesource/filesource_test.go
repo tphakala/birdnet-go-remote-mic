@@ -611,3 +611,39 @@ func TestOpenDefaultsLogfToStdLog(t *testing.T) {
 		t.Fatalf("std logger saw %q, want the skip line naming a.flac", buf.String())
 	}
 }
+
+func TestReadLogsAgainAfterACleanPass(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	full := flacBytes(t, testRate, 2, 16, noise(4096*6, 2))
+	cut := full[:len(full)*2/3]
+	prefix, _ := io.ReadAll(mustFlacReader(t, cut))
+	path := writeFile(t, dir, "a.flac", cut)
+	clean := writeFile(t, dir, "clean.tmp", flacBytes(t, testRate, 2, 16, noise(4096*2, 2)))
+	truncated := writeFile(t, dir, "cut.tmp", cut)
+	synctest.Test(t, func(t *testing.T) {
+		var rec recorder
+		s, err := Open(cfgFor(path, &rec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		periodBytes := periodFrames * 4
+		// Pass 1 plays the truncated file; pass 2 plays the clean one.
+		if err := os.Rename(clean, path); err != nil {
+			t.Fatal(err)
+		}
+		readN(t, s, len(prefix)/periodBytes+1)
+		if lines := rec.all(); len(lines) != 1 {
+			t.Fatalf("logged %q after the first failing pass, want 1 line", lines)
+		}
+		// Pass 3 plays the truncated file again, after pass 2 ended cleanly.
+		if err := os.Rename(truncated, path); err != nil {
+			t.Fatal(err)
+		}
+		readN(t, s, (4096*2*4+len(prefix))/periodBytes+2)
+		if lines := rec.all(); len(lines) != 2 {
+			t.Fatalf("logged %q after fail, clean, fail, want 2 lines (the clean pass forgets the reason)", lines)
+		}
+	})
+}
