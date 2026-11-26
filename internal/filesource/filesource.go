@@ -2,13 +2,13 @@
 // an audio.Source that stands in for a sound card, mainly for testing. It is
 // its own clock: Read paces itself to real time, so nothing downstream paces.
 //
-// A directory plays its FLAC and Opus files in name order, listed again at the
-// start of every pass so added and removed files are picked up. The rate is
-// the device's and the channel count is the file's, both fixed at Open from
-// the first file that produced audio; a file that does not match is skipped. Read never returns io.EOF: a
-// file source that cannot produce audio fails with a *NoAudioError, so the
-// fan-out treats it as a dead device and the appliance retries it. Errors from
-// this package carry no file paths.
+// A directory plays its FLAC, Opus and WAV files in name order, listed again
+// at the start of every pass so added and removed files are picked up. The
+// rate is the device's and the channel count is the file's, both fixed at
+// Open from the first file that produced audio; a file that does not match is
+// skipped. Read never returns io.EOF: a file source that cannot produce audio
+// fails with a *NoAudioError, so the fan-out treats it as a dead device and
+// the appliance retries it. Errors from this package carry no file paths.
 package filesource
 
 import (
@@ -32,7 +32,7 @@ var ErrClosed = errors.New("filesource: closed")
 
 // Config describes a file source.
 type Config struct {
-	// Path names the file to play, or a directory whose FLAC and Opus files
+	// Path names the file to play, or a directory whose FLAC, Opus and WAV files
 	// play in name order. A directory is not searched recursively.
 	Path string
 	// Rate is the device rate in Hz. A file at another rate is not played; there

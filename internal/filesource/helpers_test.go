@@ -13,6 +13,7 @@ import (
 
 	flacpcm "github.com/tphakala/go-flac/pcm"
 	"github.com/tphakala/go-opus/oggopus"
+	wavpcm "github.com/tphakala/go-wav/pcm"
 )
 
 // recorder collects Logf lines so tests never touch the global logger.
@@ -73,6 +74,16 @@ func flacBytes(t *testing.T, rate, channels, bits int, pcm []byte) []byte {
 	cfg := flacpcm.Config{SampleRate: rate, Channels: channels, BitDepth: bits}
 	if err := flacpcm.EncodeInterleaved(&buf, cfg, pcm); err != nil {
 		t.Fatalf("encode flac: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func wavBytes(t *testing.T, rate, channels, bits int, pcm []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	cfg := wavpcm.Config{SampleRate: rate, Channels: channels, BitDepth: bits}
+	if err := wavpcm.EncodeInterleaved(&buf, cfg, pcm); err != nil {
+		t.Fatalf("encode wav: %v", err)
 	}
 	return buf.Bytes()
 }

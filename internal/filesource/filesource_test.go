@@ -34,24 +34,34 @@ func TestReadLoopsFileGaplessly(t *testing.T) {
 	t.Parallel()
 	frames := periodFrames*5/2 + 7 // 2.5 periods plus a few frames: the wrap lands mid-period
 	s16 := ramp(frames, 2)
-	path := writeFile(t, t.TempDir(), "a.flac", flacBytes(t, testRate, 2, 24, s16To24(s16)))
-	synctest.Test(t, func(t *testing.T) {
-		var rec recorder
-		s, err := Open(cfgFor(path, &rec))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer closeQuiet(s)
-		if rate, ch := s.Negotiated(); rate != testRate || ch != 2 {
-			t.Fatalf("Negotiated = (%d, %d), want (%d, 2)", rate, ch, testRate)
-		}
-		const periods = 7
-		got := readN(t, s, periods)
-		want := bytes.Repeat(s16, periods*periodFrames*4/len(s16)+1)[:periods*periodFrames*4]
-		if !bytes.Equal(got, want) {
-			t.Fatalf("looped output differs from the repeated source (len got %d, want %d)", len(got), len(want))
-		}
-	})
+	// 24-bit sources, so a Reset without WithConvertTo(16) shows on pass 2.
+	encoders := map[string]func(*testing.T) []byte{
+		"a.flac": func(t *testing.T) []byte { return flacBytes(t, testRate, 2, 24, s16To24(s16)) },
+		"a.wav":  func(t *testing.T) []byte { return wavBytes(t, testRate, 2, 24, s16To24(s16)) },
+	}
+	for name, enc := range encoders {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := writeFile(t, t.TempDir(), name, enc(t))
+			synctest.Test(t, func(t *testing.T) {
+				var rec recorder
+				s, err := Open(cfgFor(path, &rec))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer closeQuiet(s)
+				if rate, ch := s.Negotiated(); rate != testRate || ch != 2 {
+					t.Fatalf("Negotiated = (%d, %d), want (%d, 2)", rate, ch, testRate)
+				}
+				const periods = 7
+				got := readN(t, s, periods)
+				want := bytes.Repeat(s16, periods*periodFrames*4/len(s16)+1)[:periods*periodFrames*4]
+				if !bytes.Equal(got, want) {
+					t.Fatalf("looped output differs from the repeated source (len got %d, want %d)", len(got), len(want))
+				}
+			})
+		})
+	}
 }
 
 func TestOpenRejectsUnplayableFile(t *testing.T) {
@@ -67,6 +77,9 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		"empty.flac":   writeFile(t, dir, "empty.flac", flacBytes(t, testRate, 2, 16, nil)),
 		"a.opus":       writeFile(t, dir, "a.opus", opusBytes(t, 48000, 2, stereo)),
 		"garbage.opus": writeFile(t, dir, "garbage.opus", []byte("this is not an ogg stream at all, just text")),
+		"rate.wav":     writeFile(t, dir, "rate.wav", wavBytes(t, 44100, 2, 16, stereo)),
+		"garbage.wav":  writeFile(t, dir, "garbage.wav", []byte("this is not a wav stream at all, just text")),
+		"empty.wav":    writeFile(t, dir, "empty.wav", wavBytes(t, testRate, 2, 16, nil)),
 		"notes.txt":    writeFile(t, dir, "notes.txt", []byte("hello")),
 	}
 	tests := []struct {
@@ -85,6 +98,9 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		{name: "header-valid flac with no audio", path: files["empty.flac"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "opus at 44.1 kHz device rate", path: files["a.opus"], rate: 44100, minCh: 1, maxCh: 8, class: SkipRate},
 		{name: "garbage opus", path: files["garbage.opus"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
+		{name: "wav rate mismatch", path: files["rate.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipRate},
+		{name: "garbage wav", path: files["garbage.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
+		{name: "header-valid wav with no audio", path: files["empty.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "unsupported extension", path: files["notes.txt"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUnsupported},
 		{name: "missing path", path: filepath.Join(dir, "missing.flac"), rate: testRate, minCh: 1, maxCh: 8, wantErr: fs.ErrNotExist},
 	}

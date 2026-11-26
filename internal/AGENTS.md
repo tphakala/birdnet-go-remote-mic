@@ -14,7 +14,7 @@ not break.
   into per-stream channel subsets. `OpenCaptureAt` takes a `Geometry`; zero
   means the library default period, and `NegotiatedGeometry` reads what the
   driver granted.
-- `filesource`: an `audio.Source` that plays a FLAC or Opus file, or a
+- `filesource`: an `audio.Source` that plays a FLAC, Opus or WAV file, or a
   directory of them in name order (re-listed every pass, not recursive), in a
   loop, standing in for a sound card (platform-neutral, not wired in yet). It
   paces its own `Read` to real time: a 4-period catch-up ring, then a
