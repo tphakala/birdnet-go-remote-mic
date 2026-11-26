@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,6 +26,12 @@ const (
 	mgmtAddr7     = ":7443"
 	cfgPathX      = "x.yaml"
 	pprofAddr6060 = "127.0.0.1:6060"
+
+	// The --check wording for a file device that cannot play yet, and for a
+	// path the installed unit hides, spelled out so a change to either is a
+	// deliberate test change.
+	wantRetryHint  = "it starts automatically once it can play"
+	wantHiddenNote = "(hidden from the installed service)"
 )
 
 // TestApplyServeOverridesUnsetLeavesConfig asserts a flag the operator did not
@@ -432,19 +437,63 @@ func swapOpenFileSource(t *testing.T, fn func(filesource.Config) (audio.Source, 
 	openFileSource = fn
 }
 
+// fileCheckCfg is a config of file devices for serve --check, named dev0,
+// dev1 and so on in id order.
+func fileCheckCfg(ids ...string) *config.Config {
+	cfg := config.Default()
+	cfg.Devices = nil
+	for i, id := range ids {
+		cfg.Devices = append(cfg.Devices, checkDevice("dev"+strconv.Itoa(i), id, "/p"+strconv.Itoa(i)))
+	}
+	return &cfg
+}
+
+// TestReportCheckFileHiddenPath pins the serve --check note for a file path
+// under a directory the installed unit hides from the service: on the
+// device's line, ahead of any per-file lines, in place of the retry hint.
+func TestReportCheckFileHiddenPath(t *testing.T) {
+	t.Run("hidden path", func(t *testing.T) {
+		swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
+			cfg.Logf("skipped %s", "x.flac")
+			return geomSource{rate: cfg.Rate, channels: 2}, nil
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCheckCfg("file:/home/pi/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := "file source, 48000 Hz, 2 ch; under /home " + wantHiddenNote + "\n    skipped x.flac"; !strings.Contains(out.String(), want) {
+			t.Errorf("report = %q, want the note on the device line ahead of the skip line: %q", out.String(), want)
+		}
+	})
+
+	// The installed service never sees a hidden path, so no retry recovers it
+	// there: the note stands in for the retry hint rather than contradicting it.
+	t.Run("hidden path that fails", func(t *testing.T) {
+		swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
+			return nil, &filesource.NoAudioError{Skipped: []filesource.Skip{
+				{Name: "a.flac", Reason: "sample rate 44100", Class: filesource.SkipRate},
+			}}
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCheckCfg("file:/home/pi/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		l := checkLine(out.String(), "dev0")
+		if want := "file:/home/pi/audio  filesource: no playable audio (1 sample rate differs); under /home " + wantHiddenNote; !strings.Contains(l, want) || strings.Contains(l, wantRetryHint) {
+			t.Errorf("line = %q, want %q and no retry hint", l, want)
+		}
+		if !strings.Contains(out.String(), "\n    a.flac: sample rate 44100") {
+			t.Errorf("report lacks the indented skip line: %q", out.String())
+		}
+	})
+}
+
 // TestReportCheckFileSource pins serve --check for file devices: the source is
 // opened as the appliance would open it, never resolved as ALSA hardware, never
 // probed when every device is virtual, and bounded so a hung mount cannot hold
 // the ExecStartPre of a service start.
 func TestReportCheckFileSource(t *testing.T) {
-	fileCfg := func(ids ...string) *config.Config {
-		cfg := config.Default()
-		cfg.Devices = nil
-		for i, id := range ids {
-			cfg.Devices = append(cfg.Devices, checkDevice("dev"+strconv.Itoa(i), id, "/p"+strconv.Itoa(i)))
-		}
-		return &cfg
-	}
+	fileCfg := fileCheckCfg
 	probeCalls := 0
 	prevEnum, prevResolve := captureDevices, resolveDevice
 	t.Cleanup(func() { captureDevices, resolveDevice = prevEnum, prevResolve })
@@ -466,8 +515,8 @@ func TestReportCheckFileSource(t *testing.T) {
 		if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
 			t.Fatal(err)
 		}
-		if l := checkLine(out.String(), "dev0"); !strings.Contains(l, "file source, 48000 Hz, 2 ch") {
-			t.Errorf("line = %q, want the file source geometry", l)
+		if l := checkLine(out.String(), "dev0"); !strings.Contains(l, "file source, 48000 Hz, 2 ch") || strings.Contains(l, wantHiddenNote) {
+			t.Errorf("line = %q, want the file source geometry and no hidden-path note", l)
 		}
 		if !strings.Contains(out.String(), "\n    skipped x.flac") {
 			t.Errorf("report lacks the indented skip line: %q", out.String())
@@ -489,7 +538,10 @@ func TestReportCheckFileSource(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := out.String()
-		for _, want := range []string{"no playable audio (1 sample rate differs, 1 undecodable)", "\n    a.flac: sample rate 44100", "\n    b.wav: no audio"} {
+		if l, want := checkLine(got, "dev0"), "file:/srv/audio  filesource: no playable audio (1 sample rate differs, 1 undecodable); "+wantRetryHint; !strings.Contains(l, want) {
+			t.Errorf("line = %q, want it to contain %q", l, want)
+		}
+		for _, want := range []string{"\n    a.flac: sample rate 44100", "\n    b.wav: no audio"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("report lacks %q: %q", want, got)
 			}
@@ -499,16 +551,23 @@ func TestReportCheckFileSource(t *testing.T) {
 		}
 	})
 
-	t.Run("other error", func(t *testing.T) {
-		swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
-			return nil, fs.ErrNotExist
-		})
-		var out bytes.Buffer
-		if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
-			t.Fatal(err)
+	// The next two open through the real filesource.Open (no seam swap), so a
+	// prefix the package and this command both add shows up here. The
+	// hidden-path note is added by checkStatus, so a temp dir under /tmp does
+	// not change fileCheckStatus's text.
+	t.Run("missing path through Open", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing.flac")
+		d := checkDevice("dev0", "file:"+path, "/p")
+		if got, detail := fileCheckStatus(&d, path); got != "filesource: no such file or directory; "+wantRetryHint || detail != "" {
+			t.Errorf("status = %q, detail = %q, want %q and no detail", got, detail, "filesource: no such file or directory; "+wantRetryHint)
 		}
-		if l := checkLine(out.String(), "dev0"); !strings.Contains(l, "file source: file does not exist; it starts once the path is readable") {
-			t.Errorf("line = %q", l)
+	})
+
+	t.Run("no audio through Open", func(t *testing.T) {
+		path := t.TempDir()
+		d := checkDevice("dev0", "file:"+path, "/p")
+		if got, detail := fileCheckStatus(&d, path); got != "filesource: no playable audio; "+wantRetryHint || detail != "" {
+			t.Errorf("status = %q, detail = %q, want %q and no detail", got, detail, "filesource: no playable audio; "+wantRetryHint)
 		}
 	})
 
@@ -547,8 +606,8 @@ func TestReportCheckFileSource(t *testing.T) {
 			if got := time.Since(start); got != fileCheckTimeout {
 				t.Errorf("check took %v, want %v", got, fileCheckTimeout)
 			}
-			if !strings.Contains(out.String(), "no answer from the filesystem within 5s") {
-				t.Errorf("report lacks the timeout line: %q", out.String())
+			if l, want := checkLine(out.String(), "dev0"), "file:/srv/audio  no answer from the filesystem within 5s"; !strings.Contains(l, want) {
+				t.Errorf("line = %q, want it to contain %q", l, want)
 			}
 			close(release)
 		})

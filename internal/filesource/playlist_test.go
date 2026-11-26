@@ -56,13 +56,12 @@ func TestDirectoryPlaysInNameOrderAndRescans(t *testing.T) {
 			}
 		}
 		// The descriptors already open play out; the next listing is empty.
-		var na *NoAudioError
 		for range 20 {
 			if _, err = s.Read(); err != nil {
 				break
 			}
 		}
-		if !errors.As(err, &na) || len(na.Skipped) != 0 {
+		if na, ok := errors.AsType[*NoAudioError](err); !ok || len(na.Skipped) != 0 {
 			t.Fatalf("Read on an emptied directory = %v, want *NoAudioError with no skips", err)
 		}
 		if lines := rec.all(); len(lines) != 0 {
@@ -173,8 +172,8 @@ func TestOpenSkipsToFirstPlayable(t *testing.T) {
 			closeQuiet(s2)
 			t.Fatal("Open succeeded with no playable file")
 		}
-		var na *NoAudioError
-		if !errors.As(err, &na) || len(na.Skipped) != 2 ||
+		na, ok := errors.AsType[*NoAudioError](err)
+		if !ok || len(na.Skipped) != 2 ||
 			na.Skipped[0].Class != SkipUndecodable || na.Skipped[1].Class != SkipRate {
 			t.Fatalf("err = %v (%+v), want *NoAudioError with an undecodable and a rate skip", err, na)
 		}

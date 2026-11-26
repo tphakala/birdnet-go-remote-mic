@@ -425,10 +425,19 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 
 // checkStatus describes what one configured device id resolves to for
 // reportCheck, recording a present device's address in owner. A file id
-// reports what its source would play and never touches owner.
+// reports what its source would play, notes a path the installed service
+// cannot see, and never touches owner.
 func checkStatus(d *config.Device, owner map[string]string) string {
 	if path, ok := config.FileSourcePath(d.Device); ok {
-		return fileCheckStatus(d, path)
+		status, detail := fileCheckStatus(d, path)
+		// On the device's own line, as the card-index note is. It is lexical,
+		// so it holds after a timeout too. The installed service never sees
+		// such a path, so no retry recovers a failed open there: the note
+		// replaces the retry hint.
+		if dir, hidden := service.HiddenDir(path); hidden {
+			status = strings.TrimSuffix(status, fileRetryHint) + "; under " + dir + " (hidden from the installed service)"
+		}
+		return status + detail
 	}
 	hw, err := resolveDevice(d.Device)
 	if err != nil {
@@ -466,6 +475,11 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 	return status
 }
 
+// fileRetryHint follows a failed open of a file source in serve --check: the
+// appliance retries every failed open, a pass with no playable audio
+// included, so both kinds share it.
+const fileRetryHint = "; it starts automatically once it can play"
+
 // fileCheckTimeout bounds the open of a file source in serve --check. The
 // installed unit runs the check as ExecStartPre on every start, so a stat or
 // open on a hung network mount would otherwise hold the start (and keep the
@@ -473,43 +487,43 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 const fileCheckTimeout = 5 * time.Second
 
 // fileCheckStatus describes what a file device would play right now, opening
-// the source as the appliance does. The output is local, so skipped files are
-// named, one indented line each.
-func fileCheckStatus(d *config.Device, path string) string {
+// the source as the appliance does: a status for the device's line, and the
+// indented lines that follow it (the output is local, so skipped files are
+// named, one line each).
+func fileCheckStatus(d *config.Device, path string) (status, detail string) {
+	type result struct{ status, detail string }
 	cfg := fileSourceConfig(d, path)
 	open := openFileSource      // read here: the goroutine may outlive a swap of the seam
-	res := make(chan string, 1) // buffered: after a timeout the goroutine sends and exits unseen
+	res := make(chan result, 1) // buffered: after a timeout the goroutine sends and exits unseen
 	go func() {
 		var lines []string
 		cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 		src, err := open(cfg)
-		var b strings.Builder
-		var na *filesource.NoAudioError
-		switch {
-		case errors.As(err, &na):
-			b.WriteString(err.Error())
-			for _, s := range na.Skipped {
-				fmt.Fprintf(&b, "\n    %s: %s", s.Name, s.Reason)
+		var r result
+		if err != nil {
+			r.status = err.Error() + fileRetryHint
+			if na, ok := errors.AsType[*filesource.NoAudioError](err); ok {
+				for _, s := range na.Skipped {
+					lines = append(lines, s.Name+": "+s.Reason)
+				}
 			}
-		case err != nil:
-			fmt.Fprintf(&b, "file source: %v; it starts once the path is readable", err)
-		default:
+		} else {
 			rate, channels := src.Negotiated()
 			_ = src.Close()
-			fmt.Fprintf(&b, "file source, %d Hz, %d ch", rate, channels)
+			r.status = fmt.Sprintf("file source, %d Hz, %d ch", rate, channels)
 		}
 		for _, l := range lines {
-			b.WriteString("\n    " + l)
+			r.detail += "\n    " + l
 		}
-		res <- b.String()
+		res <- r
 	}()
 	timer := time.NewTimer(fileCheckTimeout)
 	defer timer.Stop()
 	select {
-	case s := <-res:
-		return s
+	case r := <-res:
+		return r.status, r.detail
 	case <-timer.C:
-		return fmt.Sprintf("file source: no answer from the filesystem within %v", fileCheckTimeout)
+		return fmt.Sprintf("no answer from the filesystem within %v", fileCheckTimeout), ""
 	}
 }
 

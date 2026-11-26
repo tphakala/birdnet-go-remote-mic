@@ -92,6 +92,32 @@ WantedBy=multi-user.target
 // installed, the current one first.
 var releasedUnitTexts = []string{unitTemplate, unitTemplateV010}
 
+// hiddenDirs lists the directories the released units hide from the service,
+// by the setting that hides them (systemd.exec(5)). It is the union over
+// releasedUnitTexts, since an installed appliance keeps its unit for good.
+// TestHiddenDirsMatchReleasedUnits fails until a row covers any ProtectHome=,
+// PrivateTmp=, InaccessiblePaths= or TemporaryFileSystem= line a released
+// template has. Every directory here also lies in privateDirs, and no two
+// overlap, so the order HiddenDir visits them in does not matter.
+var hiddenDirs = map[string][]string{
+	"ProtectHome=true": {dirHome, dirRoot, "/run/user"},
+	"PrivateTmp=true":  {dirTmp, dirVarTmp},
+}
+
+// HiddenDir reports the directory the installed service cannot see that path
+// is or lies under, if any. It is lexical: it resolves no links and touches
+// no filesystem, so a caller bounding its filesystem access can still call it.
+func HiddenDir(path string) (dir string, ok bool) {
+	for _, dirs := range hiddenDirs {
+		for _, d := range dirs {
+			if within(path, d) {
+				return d, true
+			}
+		}
+	}
+	return "", false
+}
+
 // parseReleased parses each released template text.
 func parseReleased(texts []string) []*template.Template {
 	out := make([]*template.Template, len(texts))

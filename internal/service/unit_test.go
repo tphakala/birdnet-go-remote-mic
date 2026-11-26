@@ -3,6 +3,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -153,5 +154,72 @@ func TestRenderUpdaterCustom(t *testing.T) {
 	)
 	if _, _, err := RenderUpdater(ServiceSpec{StateDir: "/var/lib"}); err == nil {
 		t.Error("RenderUpdater accepted a shared state directory")
+	}
+}
+
+// TestHiddenDir pins the lexical match serve --check uses to flag a file
+// source path the installed service cannot see: a hidden directory itself or
+// anything under it, never a sibling that only shares a name prefix, and
+// /run/user without the rest of /run.
+func TestHiddenDir(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path    string
+		wantDir string
+	}{
+		{dirHome, dirHome},
+		{"/home/pi/a.flac", dirHome},
+		{"/homework/a.flac", ""},
+		{"/root/a.wav", "/root"},
+		{"/run/user/1000/a.wav", "/run/user"},
+		{"/run/media/usb/a.wav", ""},
+		{"/tmp/a.opus", dirTmp},
+		{dirVarTmp, dirVarTmp},
+		{"/var/tmpfiles/a.wav", ""},
+		{"/srv/audio", ""},
+	}
+	for _, tc := range tests {
+		dir, ok := HiddenDir(tc.path)
+		if dir != tc.wantDir || ok != (tc.wantDir != "") {
+			t.Errorf("HiddenDir(%q) = %q, %v, want %q, %v", tc.path, dir, ok, tc.wantDir, tc.wantDir != "")
+		}
+	}
+}
+
+// TestHiddenDirsMatchReleasedUnits keeps hiddenDirs in step with the unit
+// templates: every row is a setting some released unit has, every setting a
+// released unit uses to hide paths from the service has a row (so a template
+// that changes ProtectHome= or adds TemporaryFileSystem= fails here until the
+// table covers it), and every hidden directory is one the CLI already treats as
+// private (privateDirs).
+func TestHiddenDirsMatchReleasedUnits(t *testing.T) {
+	t.Parallel()
+	watched := []string{"ProtectHome", "PrivateTmp", "InaccessiblePaths", "TemporaryFileSystem"}
+	seen := make(map[string]bool)
+	for _, text := range releasedUnitTexts {
+		for line := range strings.SplitSeq(text, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+				continue
+			}
+			if key, val, ok := entry(line); ok && slices.Contains(watched, key) {
+				seen[key+"="+val] = true
+			}
+		}
+	}
+	for setting, dirs := range hiddenDirs {
+		if !seen[setting] {
+			t.Errorf("hiddenDirs row %q is set by no released unit", setting)
+		}
+		for _, dir := range dirs {
+			if !slices.ContainsFunc(privateDirs, func(p string) bool { return within(dir, p) }) {
+				t.Errorf("hidden dir %q lies in no privateDirs entry %v", dir, privateDirs)
+			}
+		}
+	}
+	for setting := range seen {
+		if _, ok := hiddenDirs[setting]; !ok {
+			t.Errorf("a released unit sets %q, which no hiddenDirs row covers", setting)
+		}
 	}
 }

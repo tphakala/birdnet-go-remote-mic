@@ -22,6 +22,16 @@ import (
 // specifier-injection shape even though install already requires root.
 var userNameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
+// Directories named by more than one list: sharedSystemDirs (the installer
+// never owns them), privateDirs (the service may see them differently) and
+// hiddenDirs (the released units hide them from the service).
+const (
+	dirHome   = "/home"
+	dirRoot   = "/root"
+	dirTmp    = "/tmp"
+	dirVarTmp = "/var/tmp"
+)
+
 // sharedSystemDirs are directories the installer must never own recursively or
 // remove. The installer chowns the config and state directories (recursively at
 // their root) and --purge deletes them, so pointing --config or --state-dir at
@@ -30,13 +40,13 @@ var userNameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 var sharedSystemDirs = map[string]bool{
 	"/": true, "/etc": true, "/etc/systemd": true, "/etc/default": true,
 	"/etc/cron.d": true, "/var": true, "/var/lib": true, "/var/log": true,
-	"/var/run": true, "/var/cache": true, "/var/tmp": true, "/var/spool": true,
+	"/var/run": true, "/var/cache": true, dirVarTmp: true, "/var/spool": true,
 	"/var/mail": true, "/var/lock": true, "/run": true, "/run/lock": true,
 	"/usr": true, "/usr/local": true, "/usr/local/bin": true, "/usr/local/sbin": true,
 	"/usr/local/etc": true, "/usr/local/lib": true, "/usr/local/share": true,
 	"/usr/bin": true, "/usr/sbin": true, "/usr/lib": true, "/usr/share": true,
 	"/bin": true, "/sbin": true, "/lib": true, "/lib64": true, "/boot": true,
-	"/boot/efi": true, "/opt": true, "/home": true, "/root": true, "/tmp": true,
+	"/boot/efi": true, "/opt": true, dirHome: true, dirRoot: true, dirTmp: true,
 	"/dev": true, "/proc": true, "/sys": true, "/mnt": true, "/media": true,
 	"/srv": true,
 }

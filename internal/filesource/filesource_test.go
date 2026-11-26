@@ -83,13 +83,14 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		"notes.txt":    writeFile(t, dir, "notes.txt", []byte("hello")),
 	}
 	tests := []struct {
-		name    string
-		path    string
-		rate    int
-		minCh   int
-		maxCh   int
-		class   SkipClass
-		wantErr error // a plain error instead of *NoAudioError
+		name     string
+		path     string
+		rate     int
+		minCh    int
+		maxCh    int
+		class    SkipClass
+		wantErr  error  // a plain error instead of *NoAudioError
+		wantText string // the whole error text, when set
 	}{
 		{name: "rate mismatch", path: files["rate.flac"], rate: testRate, minCh: 1, maxCh: 8, class: SkipRate},
 		{name: "fewer channels than min", path: files["mono.flac"], rate: testRate, minCh: 2, maxCh: 8, class: SkipChannels},
@@ -102,7 +103,7 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		{name: "garbage wav", path: files["garbage.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "header-valid wav with no audio", path: files["empty.wav"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "unsupported extension", path: files["notes.txt"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUnsupported},
-		{name: "missing path", path: filepath.Join(dir, "missing.flac"), rate: testRate, minCh: 1, maxCh: 8, wantErr: fs.ErrNotExist},
+		{name: "missing path", path: filepath.Join(dir, "missing.flac"), rate: testRate, minCh: 1, maxCh: 8, wantErr: fs.ErrNotExist, wantText: "filesource: no such file or directory"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,13 +123,16 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
 				}
 			default:
-				var na *NoAudioError
-				if !errors.As(err, &na) {
+				na, ok := errors.AsType[*NoAudioError](err)
+				if !ok {
 					t.Fatalf("err = %T %v, want *NoAudioError", err, err)
 				}
 				if len(na.Skipped) != 1 || na.Skipped[0].Class != tc.class {
 					t.Fatalf("skipped = %+v, want one skip of class %v", na.Skipped, tc.class)
 				}
+			}
+			if tc.wantText != "" && err.Error() != tc.wantText {
+				t.Fatalf("err = %q, want %q", err.Error(), tc.wantText)
 			}
 			if containsPath(err, dir) {
 				t.Fatalf("error text carries a path: %v", err)
@@ -159,8 +163,8 @@ func TestReadFailsWhenLoopFindsNoAudio(t *testing.T) {
 		// The open descriptor still plays the 40 remaining frames, then the pass
 		// ends and the replacement (mono) is skipped.
 		_, err = s.Read()
-		var na *NoAudioError
-		if !errors.As(err, &na) {
+		na, ok := errors.AsType[*NoAudioError](err)
+		if !ok {
 			t.Fatalf("Read = %v, want *NoAudioError", err)
 		}
 		if errors.Is(err, io.EOF) {
@@ -500,8 +504,8 @@ func TestReadReportsRemovedFileAsUnreadable(t *testing.T) {
 		// The open descriptor plays out the last 40 frames; the next pass cannot
 		// open the file and reports it as unreadable, never as a clean end.
 		_, err = s.Read()
-		var na *NoAudioError
-		if !errors.As(err, &na) || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUnreadable {
+		na, ok := errors.AsType[*NoAudioError](err)
+		if !ok || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUnreadable {
 			t.Fatalf("Read = %v, want *NoAudioError with one unreadable skip", err)
 		}
 		if containsPath(err, dir) || containsPath(errors.New(na.Skipped[0].Reason), dir) {
@@ -539,8 +543,8 @@ func TestReadReportsFileWithoutAudio(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = s.Read()
-		var na *NoAudioError
-		if !errors.As(err, &na) || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUndecodable {
+		na, ok := errors.AsType[*NoAudioError](err)
+		if !ok || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUndecodable {
 			t.Fatalf("Read = %v, want *NoAudioError with one undecodable skip", err)
 		}
 		if got, want := err.Error(), "filesource: no playable audio (1 undecodable)"; got != want {
@@ -560,8 +564,8 @@ func TestOpenReportsFirstReadError(t *testing.T) {
 		closeQuiet(s)
 		t.Fatal("Open succeeded on a file whose first frame is corrupt")
 	}
-	var na *NoAudioError
-	if !errors.As(err, &na) || len(na.Skipped) != 1 {
+	na, ok := errors.AsType[*NoAudioError](err)
+	if !ok || len(na.Skipped) != 1 {
 		t.Fatalf("err = %v, want *NoAudioError with one skip", err)
 	}
 	if got := na.Skipped[0].Reason; got == "no audio" {
@@ -740,9 +744,11 @@ func TestReadLogsEachNewReason(t *testing.T) {
 		if err := os.Rename(mono, path); err != nil {
 			t.Fatal(err)
 		}
-		var na *NoAudioError
-		for !errors.As(err, &na) {
+		for {
 			_, err = s.Read()
+			if _, ok := errors.AsType[*NoAudioError](err); ok {
+				break
+			}
 		}
 		lines := rec.all()
 		if len(lines) != 2 || !strings.Contains(lines[0], "truncated") || !strings.Contains(lines[1], "channels") {
