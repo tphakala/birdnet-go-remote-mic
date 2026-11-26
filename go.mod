@@ -14,6 +14,7 @@ require (
 	github.com/tphakala/go-audio-stream v0.6.0
 	github.com/tphakala/go-flac v1.5.0
 	github.com/tphakala/go-opus v1.3.0
+	github.com/tphakala/go-wav v1.1.2
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )

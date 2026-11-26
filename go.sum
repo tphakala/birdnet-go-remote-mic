@@ -30,6 +30,8 @@ github.com/tphakala/go-flac v1.5.0 h1:73CkUXiCtSaWb7PjeqaFWiJAdk70UCpFoZ6zvBB/bc
 github.com/tphakala/go-flac v1.5.0/go.mod h1:B9n3N4Q6yJOXSzVULIbcJC6ZyFYPMCF3x/ruNIZ4QQ0=
 github.com/tphakala/go-opus v1.3.0 h1:0lpjV0HMAhStV7/oKkZRaQgdzNT5pdFDiWhBqteobxE=
 github.com/tphakala/go-opus v1.3.0/go.mod h1:BjrAk2Jf16arkoj6aeIeE/Nnsnq3IRJgzY+kNn3jlH4=
+github.com/tphakala/go-wav v1.1.2 h1:1JSWnVH+j/7Y8hIo3ZOmf4jNZtkOGQvjnJfZ5LhxKkA=
+github.com/tphakala/go-wav v1.1.2/go.mod h1:uHyG52/VxaMf7e3AxS/lJ+DDZoADPuIlxsij1iWUi/U=
 github.com/tphakala/simd v1.16.0 h1:dHw1NIuN56pjKsbi3uYdXQMYaGgT7brYXkdn3tsWDKQ=
 github.com/tphakala/simd v1.16.0/go.mod h1:eO53GkWg40mRbr2tzs0Xb1IMZQ5U8cMR+Aa1RlXUinE=
 github.com/vishvananda/netlink v1.3.1 h1:3AEMt62VKqz90r0tmNhog0r/PpWKmrEShJU0wJW6bV0=

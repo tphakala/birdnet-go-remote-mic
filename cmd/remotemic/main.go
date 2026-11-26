@@ -31,6 +31,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/auth"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/filesource"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
@@ -55,6 +56,16 @@ var resolveOpenChannels = audio.ResolveOpenChannels
 // openDevice's wiring of the capture into the runtime is testable without
 // hardware.
 var openCaptureAt = audio.OpenCaptureAt
+
+// openFileSource opens a file device's source. It is a package var so the
+// file wiring (open dispatch, serve --check) is testable without files.
+var openFileSource = func(cfg filesource.Config) (audio.Source, error) {
+	s, err := filesource.Open(cfg)
+	if err != nil {
+		return nil, err // not `return filesource.Open(cfg)`: a nil *Source would become a non-nil Source
+	}
+	return s, nil
+}
 
 // startPprof serves net/http/pprof diagnostics on addr until ctx is cancelled. It
 // is only reached when the operator passes --pprof: the endpoints expose CPU/heap
@@ -264,7 +275,8 @@ var runtimeGen atomic.Uint64
 
 // openDevice opens and starts capture for one configured device at the resolved
 // hardware channel count openCh, meters every opened channel once, and fans the
-// capture out into one pipeline stage, SDP, and RTSP track per configured stream.
+// capture out into one pipeline stage, SDP, and RTSP track per configured stream
+// (the wiring after the open is buildRuntime, shared with file devices).
 // The meter and fan-out run on the capture pump regardless of whether any RTSP
 // client is connected, but the fan-out copies a period only for a stream a
 // client is playing (with several clients on one stream, that is one copy and
@@ -275,6 +287,40 @@ func openDevice(dev *config.Device, openCh int, geo audio.Geometry, hub *levels.
 	if err != nil {
 		return nil, fmt.Errorf("open capture: %w", err)
 	}
+	return buildRuntime(dev, base, capFormat.String(), hub)
+}
+
+// fileSourceConfig is how a file device (id file:<path>) is opened, by the
+// appliance and by serve --check alike. The device has no hardware to probe, so
+// the channel bounds come from the selection (at least the highest selected
+// channel) and the config cap.
+func fileSourceConfig(dev *config.Device, path string) filesource.Config {
+	minCh := 1
+	if union := dev.StreamChannelUnion(); len(union) > 0 {
+		minCh = union[len(union)-1]
+	}
+	return filesource.Config{
+		Path:        path,
+		Rate:        dev.Rate,
+		MinChannels: minCh,
+		MaxChannels: config.MaxChannels,
+	}
+}
+
+// openFileDevice opens a file device (id file:<path>) and builds its runtime.
+func openFileDevice(dev *config.Device, path string, hub *levels.Hub) (*deviceRuntime, error) {
+	base, err := openFileSource(fileSourceConfig(dev, path))
+	if err != nil {
+		return nil, fmt.Errorf("open file source: %w", err)
+	}
+	// A file source delivers S16LE.
+	return buildRuntime(dev, base, capture.FormatS16LE.String(), hub)
+}
+
+// buildRuntime wires an opened source into a deviceRuntime: it meters every
+// channel once and fans the source out into one pipeline stage, SDP, and RTSP
+// track per configured stream. It closes base when it fails.
+func buildRuntime(dev *config.Device, base audio.Source, format string, hub *levels.Hub) (*deviceRuntime, error) {
 	rate, channels := base.Negotiated()
 	granted, _ := audio.NegotiatedGeometry(base)
 
@@ -319,7 +365,7 @@ func openDevice(dev *config.Device, openCh int, geo audio.Geometry, hub *levels.
 		streams:  streams,
 		rate:     rate,
 		channels: channels,
-		format:   capFormat.String(),
+		format:   format,
 		geometry: granted,
 	}, nil
 }
@@ -345,11 +391,19 @@ func openDevice(dev *config.Device, openCh int, geo audio.Geometry, hub *levels.
 // device another process holds fails at once with ErrDeviceInUse and is retried,
 // then reported skipped, without parking the reconcile goroutine that runs this.
 //
+// A file device (id file:<path>) is opened once, with no channel probe and no
+// geometry (see openFileDevice).
+//
 // step is the capture geometry ladder step to open at (see geometryLadder); 0 is
 // the library default. The retry budget applies at every step; a caller that
 // wants a fallback to a smaller step after it is spent does that itself (see
 // openAndStart).
 func openDeviceRetry(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
+	if path, ok := config.FileSourcePath(dev.Device); ok {
+		// One attempt: no hardware to release, nothing to probe, and a failed
+		// open is retried by the appliance's backoff, not by sleeping here.
+		return openFileDevice(dev, path, hub)
+	}
 	const attempts = 5
 	const delay = 50 * time.Millisecond
 	geo := geometryFor(dev.Rate, step)

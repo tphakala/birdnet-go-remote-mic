@@ -526,7 +526,8 @@ func (rt *deviceRuntime) currentState() mgmtserver.DeviceState {
 
 // status snapshots the device's current state for the API. Negotiated values
 // and the granted capture geometry are reported only for a device that actually opened (src is non-nil), and
-// per-stream client state only for a serving device.
+// per-stream client state only for a serving device. A failed file device
+// reports no capabilities, as its source is gone.
 func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	rt.mu.Lock()
 	state, errMsg, downCause := rt.state, rt.err, rt.downCause
@@ -539,8 +540,15 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 	// static per record and read lock-free here alongside friendlyName); this hides
 	// it only in the failed view, so a later successful retry surfaces it again.
 	hwAddr := rt.hwAddr
+	rates, channels := rt.supportedRates, rt.supportedChannels
 	if state == mgmtserver.StateFailed {
 		hwAddr = ""
+		if config.IsVirtualID(rt.dev.Device) {
+			// A file device's capabilities describe the source it opened, which
+			// is gone; stale ones would pin the UI's rate list to a rate the
+			// operator may need to change.
+			rates, channels = nil, nil
+		}
 	}
 
 	ds := mgmtserver.DeviceStatus{
@@ -553,8 +561,8 @@ func (rt *deviceRuntime) status() mgmtserver.DeviceStatus {
 		FriendlyName:      rt.friendlyName,
 		HWAddr:            hwAddr,
 		IDStable:          !config.IsCardIndexID(rt.dev.Device),
-		SupportedRates:    rt.supportedRates,
-		SupportedChannels: rt.supportedChannels,
+		SupportedRates:    rates,
+		SupportedChannels: channels,
 	}
 	if rt.src != nil {
 		ds.NegotiatedRate = rt.rate

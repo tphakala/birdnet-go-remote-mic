@@ -17,7 +17,7 @@ func TestDirectoryPlaysInNameOrderAndRescans(t *testing.T) {
 	dir := t.TempDir()
 	aPCM, bPCM := ramp(periodFrames*2, 2), ramp(periodFrames*3, 2)
 	writeFile(t, dir, "b.flac", flacBytes(t, testRate, 2, 16, bPCM))
-	a := writeFile(t, dir, "a.flac", flacBytes(t, testRate, 2, 16, aPCM))
+	a := writeFile(t, dir, "a.wav", wavBytes(t, testRate, 2, 16, aPCM))
 	writeFile(t, dir, "notes.txt", []byte("not audio"))
 	zPCM := noise(periodFrames, 2)
 	for _, sub := range []string{"sub", "sub.flac"} { // a directory is never played, even one named like a file
@@ -39,7 +39,7 @@ func TestDirectoryPlaysInNameOrderAndRescans(t *testing.T) {
 		}
 		defer closeQuiet(s)
 		if got, want := readN(t, s, 5), append(bytes.Clone(aPCM), bPCM...); !bytes.Equal(got, want) {
-			t.Fatal("pass 1 is not a.flac then b.flac")
+			t.Fatal("pass 1 is not a.wav then b.flac")
 		}
 		writeFile(t, dir, "c.opus", cEnc)
 		if err := os.Remove(a); err != nil {

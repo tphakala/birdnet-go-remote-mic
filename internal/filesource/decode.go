@@ -9,6 +9,7 @@ import (
 
 	flacpcm "github.com/tphakala/go-flac/pcm"
 	"github.com/tphakala/go-opus/oggopus"
+	wavpcm "github.com/tphakala/go-wav/pcm"
 )
 
 // errUnsupportedFormat marks a file whose extension no decoder claims.
@@ -20,19 +21,23 @@ var errUnsupportedFormat = errors.New("unsupported format")
 // has streamed); frame CRCs and the truncation check remain.
 var flacOptions = []flacpcm.DecoderOption{flacpcm.WithConvertTo(16), flacpcm.SkipMD5Verification()}
 
+// wavOptions apply to NewDecoder and to every Reset, like flacOptions.
+var wavOptions = []wavpcm.Option{wavpcm.WithConvertTo(16)}
+
 // decoders holds at most one decoder per format, created on first use and
 // reused with Reset for every later file or loop, so a pass allocates only at
 // its file switches. Only the reader goroutine touches it.
 type decoders struct {
 	flac *flacpcm.Decoder
 	opus *oggopus.Decoder
+	wav  *wavpcm.Decoder
 }
 
 // supported reports whether a decoder claims name's extension; keep it in step
 // with the switch in open.
 func supported(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".flac", ".opus":
+	case ".flac", ".opus", ".wav":
 		return true
 	default:
 		return false
@@ -68,6 +73,18 @@ func (d *decoders) open(name string, f *os.File) (r io.Reader, rate, channels in
 		}
 		info := d.opus.Info()
 		return d.opus, int(info.OutputSampleRate), info.Channels, nil
+	case ".wav":
+		if d.wav == nil {
+			d.wav, err = wavpcm.NewDecoder(f, wavOptions...)
+		} else {
+			err = d.wav.Reset(f, wavOptions...)
+		}
+		if err != nil {
+			d.wav = nil
+			return nil, 0, 0, err
+		}
+		info := d.wav.Info()
+		return d.wav, info.SampleRate, info.Channels, nil
 	default:
 		return nil, 0, 0, errUnsupportedFormat
 	}
