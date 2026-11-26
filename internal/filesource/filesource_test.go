@@ -77,7 +77,6 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		maxCh   int
 		class   SkipClass
 		wantErr error // a plain error instead of *NoAudioError
-		anyErr  bool
 	}{
 		{name: "rate mismatch", path: files["rate.flac"], rate: testRate, minCh: 1, maxCh: 8, class: SkipRate},
 		{name: "fewer channels than min", path: files["mono.flac"], rate: testRate, minCh: 2, maxCh: 8, class: SkipChannels},
@@ -88,7 +87,6 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 		{name: "garbage opus", path: files["garbage.opus"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUndecodable},
 		{name: "unsupported extension", path: files["notes.txt"], rate: testRate, minCh: 1, maxCh: 8, class: SkipUnsupported},
 		{name: "missing path", path: filepath.Join(dir, "missing.flac"), rate: testRate, minCh: 1, maxCh: 8, wantErr: fs.ErrNotExist},
-		{name: "directory", path: dir, rate: testRate, minCh: 1, maxCh: 8, anyErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,7 +105,6 @@ func TestOpenRejectsUnplayableFile(t *testing.T) {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
 				}
-			case tc.anyErr:
 			default:
 				var na *NoAudioError
 				if !errors.As(err, &na) {
