@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -152,6 +154,9 @@ func TestReadFailsWhenLoopFindsNoAudio(t *testing.T) {
 		}
 		if len(na.Skipped) != 1 || na.Skipped[0].Class != SkipChannels {
 			t.Fatalf("skipped = %+v, want one channel-count skip", na.Skipped)
+		}
+		if lines := rec.all(); len(lines) != 1 || !strings.Contains(lines[0], "1 channels") {
+			t.Fatalf("logged %q, want one line naming the channel mismatch", lines)
 		}
 	})
 }
@@ -407,24 +412,30 @@ func TestFramesDurationLong(t *testing.T) {
 
 func TestOpenRejectsInvalidConfig(t *testing.T) {
 	t.Parallel()
+	// A real stereo file, so only the config check can reject these.
+	path := writeFile(t, t.TempDir(), "a.flac", flacBytes(t, testRate, 2, 16, ramp(periodFrames, 2)))
 	for _, cfg := range []Config{
-		{Path: "/x", Rate: 0, MinChannels: 1, MaxChannels: 2},
-		{Path: "/x", Rate: testRate, MinChannels: 0, MaxChannels: 2},
-		{Path: "/x", Rate: testRate, MinChannels: 3, MaxChannels: 2},
+		{Path: path, Rate: 0, MinChannels: 1, MaxChannels: 2},
+		{Path: path, Rate: testRate, MinChannels: 0, MaxChannels: 2},
+		{Path: path, Rate: testRate, MinChannels: 3, MaxChannels: 2},
 	} {
-		if s, err := Open(cfg); err == nil {
+		s, err := Open(cfg)
+		if s != nil {
 			closeQuiet(s)
-			t.Errorf("Open(%+v) succeeded, want an error", cfg)
+		}
+		if err == nil || err.Error() != "filesource: invalid config" {
+			t.Errorf("Open(%+v) error = %v, want the invalid config error", cfg, err)
 		}
 	}
 }
 
-func TestOpenDefaultsLogfAndReadsAfterRemoval(t *testing.T) {
+func TestReadReportsRemovedFileAsUnreadable(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := writeFile(t, dir, "a.flac", flacBytes(t, testRate, 2, 16, ramp(periodFrames+40, 2)))
 	synctest.Test(t, func(t *testing.T) {
-		s, err := Open(Config{Path: path, Rate: testRate, MinChannels: 1, MaxChannels: 2})
+		var rec recorder
+		s, err := Open(cfgFor(path, &rec))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -527,4 +538,76 @@ func TestShortFileLoopsWithoutSkipping(t *testing.T) {
 			t.Fatalf("a playing file logged %q, want nothing", lines)
 		}
 	})
+}
+
+func TestReadPacesAtInexactPeriodRate(t *testing.T) {
+	t.Parallel()
+	// 11025 Hz: a 220-frame period is 19.954648... ms, so a per-period rounded
+	// step would drift from the exact 11000 frames / 11025 Hz.
+	const rate = 11025
+	path := writeFile(t, t.TempDir(), "a.flac", flacBytes(t, rate, 1, 16, ramp(rate, 1)))
+	synctest.Test(t, func(t *testing.T) {
+		var rec recorder
+		s, err := Open(Config{Path: path, Rate: rate, MinChannels: 1, MaxChannels: 1, Logf: rec.logf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		start := time.Now()
+		readN(t, s, 50)
+		if got, want := time.Since(start), 997732426*time.Nanosecond; got != want {
+			t.Fatalf("50 periods took %v, want %v", got, want)
+		}
+	})
+}
+
+func TestSlowStartIsNotLag(t *testing.T) {
+	t.Parallel()
+	path := writeFile(t, t.TempDir(), "a.flac", flacBytes(t, testRate, 2, 16, ramp(testRate, 2)))
+	synctest.Test(t, func(t *testing.T) {
+		var rec recorder
+		s, err := Open(cfgFor(path, &rec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		time.Sleep(10 * periodDur) // a start slower than the 4-period ring
+		first := time.Now()
+		p, err := s.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := first.Add(periodDur); !p.Captured.Equal(want) {
+			t.Fatalf("first Captured = %v after the read began, want %v", p.Captured.Sub(first), periodDur)
+		}
+		if got := s.Overruns(); got != 0 {
+			t.Fatalf("Overruns = %d after a slow start, want 0", got)
+		}
+	})
+}
+
+// Not parallel: it swaps the process-wide logger.
+func TestOpenDefaultsLogfToStdLog(t *testing.T) {
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	}()
+	data := flacBytes(t, testRate, 2, 16, noise(4096*3, 2))
+	data = data[:len(data)*2/3] // decodable frames, then a truncation error
+	path := writeFile(t, t.TempDir(), "a.flac", data)
+	synctest.Test(t, func(t *testing.T) {
+		s, err := Open(Config{Path: path, Rate: testRate, MinChannels: 1, MaxChannels: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		readN(t, s, 2*len(data)/(periodFrames*4))
+	})
+	if !strings.Contains(buf.String(), "a.flac") {
+		t.Fatalf("std logger saw %q, want the skip line naming a.flac", buf.String())
+	}
 }
