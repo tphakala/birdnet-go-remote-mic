@@ -894,6 +894,8 @@ func TestPatchConfigFileSourceGuard(t *testing.T) {
 		fileA = "file:/srv/a"
 		fileB = "file:/srv/b"
 		hw2   = "hw:2,0"
+
+		nameOther = "other"
 	)
 	dev := func(name, id, path string, rate int) mgmtapi.DeviceConfig {
 		return mgmtapi.DeviceConfig{
@@ -903,30 +905,38 @@ func TestPatchConfigFileSourceGuard(t *testing.T) {
 	}
 	garden := func() mgmtapi.DeviceConfig { return dev(devGarden, devHW1, pathGarden, 48000) }
 	test := func(id string) mgmtapi.DeviceConfig { return dev("test", id, "/test", 48000) }
+	// other is stored with fileB, so a retarget of test to fileB passes the
+	// add rule and only the id-change rule can refuse it.
+	other := func() mgmtapi.DeviceConfig { return dev(nameOther, fileB, "/other", 48000) }
 
 	tests := []struct {
 		name      string
 		devices   []mgmtapi.DeviceConfig
 		wantField string // empty: the patch must succeed
 	}{
-		{"unchanged list", []mgmtapi.DeviceConfig{garden(), test(fileA)}, ""},
-		{"add a file id", []mgmtapi.DeviceConfig{garden(), test(fileA), dev("extra", fileB, "/extra", 48000)}, "devices[2].device"},
-		{"retarget a file device to another file", []mgmtapi.DeviceConfig{garden(), test(fileB)}, "devices[1].device"},
-		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(hw2)}, "devices[1].device"},
-		{"turn hardware into the file id and drop the file device", []mgmtapi.DeviceConfig{dev(devGarden, fileA, pathGarden, 48000)}, "devices[0].device"},
-		{"rename keeping the id", []mgmtapi.DeviceConfig{garden(), dev("test2", fileA, "/test", 48000)}, ""},
-		{"drop the file device", []mgmtapi.DeviceConfig{garden()}, ""},
-		{"change the file device's rate", []mgmtapi.DeviceConfig{garden(), dev("test", fileA, "/test", 44100)}, ""},
+		{"unchanged list", []mgmtapi.DeviceConfig{garden(), test(fileA), other()}, ""},
+		{"add a file id", []mgmtapi.DeviceConfig{garden(), test(fileA), other(), dev("extra", "file:/srv/c", "/extra", 48000)}, "devices[3].device"},
+		{"retarget a file device to another file", []mgmtapi.DeviceConfig{garden(), test(fileB), other()}, "devices[1].device"},
+		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(hw2), other()}, "devices[1].device"},
+		{"turn hardware into the file id and drop the file device", []mgmtapi.DeviceConfig{dev(devGarden, fileA, pathGarden, 48000), other()}, "devices[0].device"},
+		{"rename keeping the id", []mgmtapi.DeviceConfig{garden(), dev("test2", fileA, "/test", 48000), other()}, ""},
+		{"drop the file device", []mgmtapi.DeviceConfig{garden(), other()}, ""},
+		{"change the file device's rate", []mgmtapi.DeviceConfig{garden(), dev("test", fileA, "/test", 44100), other()}, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			c := baseConfig()
-			c.Devices = append(c.Devices, config.Device{
-				Name: "test", Device: fileA, Rate: 48000, Format: fmtS16,
-				Streams: []config.Stream{{Path: "/test", Mode: config.ModePCM, Channels: []int{1}}},
-			})
+			c.Devices = append(c.Devices,
+				config.Device{
+					Name: "test", Device: fileA, Rate: 48000, Format: fmtS16,
+					Streams: []config.Stream{{Path: "/test", Mode: config.ModePCM, Channels: []int{1}}},
+				},
+				config.Device{
+					Name: nameOther, Device: fileB, Rate: 48000, Format: fmtS16,
+					Streams: []config.Stream{{Path: "/other", Mode: config.ModePCM, Channels: []int{1}}},
+				})
 			c.ApplyDefaults()
 			store := NewFileConfigStore(path, &c)
 			if err := store.Update(func(cur config.Config) (config.Config, error) { return cur, nil }); err != nil {
