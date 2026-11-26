@@ -3,6 +3,7 @@ package filesource
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -202,30 +203,35 @@ func mustFlacReader(t *testing.T, b []byte) io.Reader {
 
 func TestOpusLoops(t *testing.T) {
 	t.Parallel()
-	// A 24 kHz input rate: only OutputSampleRate (always 48 kHz) is right.
-	enc := opusBytes(t, 24000, 2, ramp(24000, 2))
-	want, _, err := oggopus.DecodeInterleaved(bytes.NewReader(enc))
-	if err != nil {
-		t.Fatal(err)
+	for _, channels := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%dch", channels), func(t *testing.T) {
+			t.Parallel()
+			// A 24 kHz input rate: only OutputSampleRate (always 48 kHz) is right.
+			enc := opusBytes(t, 24000, channels, ramp(24000, channels))
+			want, _, err := oggopus.DecodeInterleaved(bytes.NewReader(enc))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeFile(t, t.TempDir(), "a.opus", enc)
+			synctest.Test(t, func(t *testing.T) {
+				var rec recorder
+				s, err := Open(cfgFor(path, &rec))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer closeQuiet(s)
+				if rate, ch := s.Negotiated(); rate != 48000 || ch != channels {
+					t.Fatalf("Negotiated = (%d, %d), want (48000, %d)", rate, ch, channels)
+				}
+				periodBytes := periodFrames * channels * 2
+				n := 2*len(want)/periodBytes + 1
+				got := readN(t, s, n)
+				if !bytes.Equal(got[:2*len(want)], bytes.Repeat(want, 2)) {
+					t.Fatalf("two passes differ from twice the decoded file (%d bytes each)", len(want))
+				}
+			})
+		})
 	}
-	path := writeFile(t, t.TempDir(), "a.opus", enc)
-	synctest.Test(t, func(t *testing.T) {
-		var rec recorder
-		s, err := Open(cfgFor(path, &rec))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer closeQuiet(s)
-		if rate, ch := s.Negotiated(); rate != 48000 || ch != 2 {
-			t.Fatalf("Negotiated = (%d, %d), want (48000, 2)", rate, ch)
-		}
-		periodBytes := periodFrames * 4
-		n := 2*len(want)/periodBytes + 1
-		got := readN(t, s, n)
-		if !bytes.Equal(got[:2*len(want)], bytes.Repeat(want, 2)) {
-			t.Fatalf("two passes differ from twice the decoded file (%d bytes each)", len(want))
-		}
-	})
 }
 
 func TestReadPacesToWallClock(t *testing.T) {
@@ -665,6 +671,35 @@ func TestReadReturnsErrClosedWhenClosedDuringSkipLog(t *testing.T) {
 		}
 		if _, err := s.Read(); !errors.Is(err, ErrClosed) {
 			t.Fatalf("Read = %v, want ErrClosed once Close has run", err)
+		}
+	})
+}
+
+func TestReadLogsEachNewReason(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	full := flacBytes(t, testRate, 2, 16, noise(4096*6, 2))
+	path := writeFile(t, dir, "a.flac", full[:len(full)*2/3])
+	mono := writeFile(t, dir, "mono.tmp", flacBytes(t, testRate, 1, 16, ramp(periodFrames*3, 1)))
+	synctest.Test(t, func(t *testing.T) {
+		var rec recorder
+		s, err := Open(cfgFor(path, &rec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		// Pass 1 fails on truncation; pass 2 finds a channel-count mismatch, a
+		// different reason for the same file with no clean pass between.
+		if err := os.Rename(mono, path); err != nil {
+			t.Fatal(err)
+		}
+		var na *NoAudioError
+		for !errors.As(err, &na) {
+			_, err = s.Read()
+		}
+		lines := rec.all()
+		if len(lines) != 2 || !strings.Contains(lines[0], "truncated") || !strings.Contains(lines[1], "channels") {
+			t.Fatalf("logged %q, want the truncation line then the channel mismatch line", lines)
 		}
 	})
 }
