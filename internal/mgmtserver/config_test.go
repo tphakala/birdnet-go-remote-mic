@@ -1,7 +1,6 @@
 package mgmtserver
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -891,10 +890,8 @@ func TestPatchedDevicesRejectsNameRotationCollapse(t *testing.T) {
 func TestPatchConfigFileSourceGuard(t *testing.T) {
 	t.Parallel()
 	const (
-		fileA = "file:/srv/a"
-		fileB = "file:/srv/b"
-		hw2   = "hw:2,0"
-
+		fileA     = "file:/srv/a"
+		fileB     = "file:/srv/b"
 		nameOther = "other"
 	)
 	dev := func(name, id, path string, rate int) mgmtapi.DeviceConfig {
@@ -917,7 +914,7 @@ func TestPatchConfigFileSourceGuard(t *testing.T) {
 		{"unchanged list", []mgmtapi.DeviceConfig{garden(), test(fileA), other()}, ""},
 		{"add a file id", []mgmtapi.DeviceConfig{garden(), test(fileA), other(), dev("extra", "file:/srv/c", "/extra", 48000)}, "devices[3].device"},
 		{"retarget a file device to another file", []mgmtapi.DeviceConfig{garden(), test(fileB), other()}, "devices[1].device"},
-		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(hw2), other()}, "devices[1].device"},
+		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(devAttic), other()}, "devices[1].device"},
 		{"turn hardware into the file id and drop the file device", []mgmtapi.DeviceConfig{dev(devGarden, fileA, pathGarden, 48000), other()}, "devices[0].device"},
 		{"rename keeping the id", []mgmtapi.DeviceConfig{garden(), dev("test2", fileA, "/test", 48000), other()}, ""},
 		{"drop the file device", []mgmtapi.DeviceConfig{garden(), other()}, ""},
@@ -939,23 +936,12 @@ func TestPatchConfigFileSourceGuard(t *testing.T) {
 				})
 			c.ApplyDefaults()
 			store := NewFileConfigStore(path, &c)
-			if err := store.Update(func(cur config.Config) (config.Config, error) { return cur, nil }); err != nil {
-				t.Fatalf("seed config file: %v", err)
-			}
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read seeded config: %v", err)
-			}
 
 			s := New(&fakeProvider{}, WithConfigStore(store))
 			devs := tc.devices
-			resp, err := s.PatchConfig(context.Background(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
+			resp, err := s.PatchConfig(t.Context(), mgmtapi.PatchConfigRequestObject{Body: &mgmtapi.ConfigPatch{Devices: &devs}})
 			if err != nil {
 				t.Fatalf("PatchConfig: %v", err)
-			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read config after patch: %v", err)
 			}
 			if tc.wantField == "" {
 				if _, ok := resp.(mgmtapi.PatchConfig200JSONResponse); !ok {
@@ -970,8 +956,9 @@ func TestPatchConfigFileSourceGuard(t *testing.T) {
 			if vp.Errors == nil || len(*vp.Errors) != 1 || (*vp.Errors)[0].Field != tc.wantField {
 				t.Fatalf("errors = %+v, want one at %s", vp.Errors, tc.wantField)
 			}
-			if !bytes.Equal(after, before) {
-				t.Errorf("a refused patch changed the stored config file")
+			// A refused patch must not be persisted: the file must still not exist.
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Errorf("a refused patch wrote the config file (stat err = %v); want it absent", statErr)
 			}
 		})
 	}

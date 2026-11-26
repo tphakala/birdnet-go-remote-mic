@@ -672,11 +672,7 @@ func (c *Config) validateDevices() error {
 			return &ValidationError{field("name"), "duplicate name " + strconv.Quote(d.Name)}
 		}
 		if ids[d.Device] {
-			reason := "duplicate device " + strconv.Quote(d.Device)
-			if !IsVirtualID(d.Device) {
-				reason += " (ALSA hw devices are single-client)"
-			}
-			return &ValidationError{field("device"), reason}
+			return &ValidationError{field("device"), "duplicate device " + strconv.Quote(d.Device) + " (one device can serve several streams)"}
 		}
 		names[d.Name] = true
 		ids[d.Device] = true

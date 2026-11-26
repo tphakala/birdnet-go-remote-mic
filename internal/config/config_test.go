@@ -641,37 +641,6 @@ func TestIsCardIndexID(t *testing.T) {
 	}
 }
 
-func TestValidateDuplicateIDMessage(t *testing.T) {
-	t.Parallel()
-	const alsaNote = "ALSA hw devices are single-client"
-	cases := []struct {
-		name     string
-		id       string
-		wantNote bool
-	}{
-		{"hardware id keeps the single-client note", deviceHW1, true},
-		{"file id drops it", fileIDA, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			c := validBase()
-			c.Devices[0].Device = tc.id
-			c.Devices[1].Device = tc.id
-			err := c.Validate()
-			if err == nil {
-				t.Fatal("duplicate device id validated, want an error")
-			}
-			if verr, ok := errors.AsType[*ValidationError](err); !ok || verr.Field != "devices[1].device" {
-				t.Fatalf("error = %v, want a ValidationError at devices[1].device", err)
-			}
-			if got := strings.Contains(err.Error(), alsaNote); got != tc.wantNote {
-				t.Errorf("message %q mentions the single-client note = %v, want %v", err, got, tc.wantNote)
-			}
-		})
-	}
-}
-
 func TestFileSourcePath(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

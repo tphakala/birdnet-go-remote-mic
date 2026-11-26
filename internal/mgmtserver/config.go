@@ -149,9 +149,6 @@ func (s *Server) PatchConfig(ctx context.Context, request mgmtapi.PatchConfigReq
 			if derr != nil {
 				return config.Config{}, derr
 			}
-			if gerr := checkFileSources(prev.Devices, devs); gerr != nil {
-				return config.Config{}, gerr
-			}
 			cur.Devices = devs
 		}
 		cur.ApplyDefaults()
@@ -309,11 +306,15 @@ func validationProblem(verr *config.ValidationError) mgmtapi.ValidationProblem {
 }
 
 // validateWrite validates a config the API is about to persist that may carry
-// strings from the request: the full Validate plus the length caps on the
-// strings the write introduces relative to prev, the stored config. Load does
-// not apply the caps (see config.MaxNameLen), so an over-cap string already
-// stored must not block an unrelated write such as a token rotation.
+// strings from the request: the file source guard (see checkFileSources), the
+// full Validate, and the length caps on the strings the write introduces
+// relative to prev, the stored config. Load does not apply the caps (see
+// config.MaxNameLen), so an over-cap string already stored must not block an
+// unrelated write such as a token rotation.
 func validateWrite(c, prev *config.Config) error {
+	if err := checkFileSources(prev.Devices, c.Devices); err != nil {
+		return err
+	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -591,25 +592,22 @@ func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.
 
 // checkFileSources keeps file sources out of the management API: a file: id
 // makes the appliance read a path, so only the config file may name one. next
-// may carry a file id only when the stored config already has it (R1), and a
-// device keeps its name only with a stored id unless neither id is virtual
-// (R2). A list that carries the stored file devices unchanged passes. It never
-// touches the filesystem, so the answer reveals nothing about a path.
+// may carry a file id only when the stored config already has it, and a device
+// that keeps its name may change its id only when neither the old nor the new
+// id is virtual. A list that carries the stored file devices unchanged passes.
+// It never touches the filesystem, so the answer reveals nothing about a path.
 func checkFileSources(stored, next []config.Device) error {
-	refuse := func(i int) error {
-		return &config.ValidationError{
-			Field:  fmt.Sprintf("devices[%d].device", i),
-			Reason: "file sources are set in the config file only; the management API cannot add or change one",
-		}
-	}
 	for i := range next {
 		id := next[i].Device
-		if config.IsVirtualID(id) && !slices.ContainsFunc(stored, func(d config.Device) bool { return d.Device == id }) {
-			return refuse(i)
-		}
-		if old, ok := deviceByName(stored, next[i].Name); ok && old.Device != id &&
-			(config.IsVirtualID(old.Device) || config.IsVirtualID(id)) {
-			return refuse(i)
+		_, known := deviceByID(stored, id)
+		added := config.IsVirtualID(id) && !known
+		old, sameName := deviceByName(stored, next[i].Name)
+		retargeted := sameName && old.Device != id && (config.IsVirtualID(old.Device) || config.IsVirtualID(id))
+		if added || retargeted {
+			return &config.ValidationError{
+				Field:  fmt.Sprintf("devices[%d].device", i),
+				Reason: "file sources are set in the config file only; the management API cannot add or change one",
+			}
 		}
 	}
 	return nil
