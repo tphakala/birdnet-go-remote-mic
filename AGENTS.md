@@ -36,12 +36,16 @@ Sibling libraries (same author, public). A bug in capture, RTSP framing, or the
 codec usually belongs in one of these, not here:
 `github.com/tphakala/go-audio-capture` (pure-Go ALSA capture, ioctl level),
 `github.com/tphakala/go-audio-stream` (RTSP messages, RTP/RTCP marshal,
-`packet/l16`, `packet/opus`, SDP), `github.com/tphakala/go-opus` (Opus encoder).
+`packet/l16`, `packet/opus`, SDP), `github.com/tphakala/go-opus` (Opus encoder
+and Ogg Opus decoder), `github.com/tphakala/go-flac` (FLAC decoder for file
+sources).
 
 ## Architecture rules
 
 - The sound card is the clock. The capture read loop drives everything; there
-  is no pacer. The capture pump runs on a `runtime.LockOSThread` goroutine.
+  is no pacer. The capture pump runs on a `runtime.LockOSThread` goroutine. A
+  file source (`internal/filesource`) stands in for the card by pacing its own
+  `Read`; nothing downstream paces either way.
 - Stamp RTCP Sender Reports from `Frame.Captured`, never from send time, or TCP
   backpressure skews the receiver's clock.
 - Derive RTP timestamps from `Frame.Pos`, never by summing the durations of

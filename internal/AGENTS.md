@@ -14,6 +14,14 @@ not break.
   into per-stream channel subsets. `OpenCaptureAt` takes a `Geometry`; zero
   means the library default period, and `NegotiatedGeometry` reads what the
   driver granted.
+- `filesource`: an `audio.Source` that plays a FLAC or Opus file in a loop,
+  standing in for a sound card (platform-neutral, not wired in yet). It paces
+  its own `Read` to real time: a 4-period catch-up ring, then a re-anchor
+  counted by `Overruns()`. The rate is the device's; the channel count is
+  fixed at `Open` from the first file that produced audio. `Read` never
+  returns `io.EOF` (a pass with no audio is a `*NoAudioError`), `Close`
+  unblocks it, the per-period path does not allocate within a file (opening
+  the next file at a file or pass boundary does), and errors carry no paths. File sources are config-file only, never set through the API.
 - `pipeline`: `Stage` turns periods into RTP payload frames: `NewPCM` (L16)
   and `NewOpus` (960-sample frames). `Frame.Captured` is the capture
   time of the payload's first sample (the instant its RTP timestamp names), and
