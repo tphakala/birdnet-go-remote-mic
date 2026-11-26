@@ -1123,3 +1123,19 @@ func TestApplianceFileDeviceLifecycle(t *testing.T) {
 		}
 	})
 }
+
+// TestStatusKeepsFailedAlsaDeviceCapabilities pins that only a file device
+// loses its capabilities when it fails: a failed card keeps its last-known
+// rates and channels so the settings form can still offer them.
+func TestStatusKeepsFailedAlsaDeviceCapabilities(t *testing.T) {
+	rt := &deviceRuntime{
+		dev:               testDevice("garden", "usb:1235:8218:s=S1:if=0,0", "/g", 48000),
+		state:             mgmtserver.StateFailed,
+		supportedRates:    []int{44100, 48000},
+		supportedChannels: []int{1, 2},
+	}
+	st := rt.status()
+	if !slices.Equal(st.SupportedRates, []int{44100, 48000}) || !slices.Equal(st.SupportedChannels, []int{1, 2}) {
+		t.Errorf("failed ALSA device caps = %v %v, want [44100 48000] [1 2]", st.SupportedRates, st.SupportedChannels)
+	}
+}
