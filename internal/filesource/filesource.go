@@ -227,6 +227,9 @@ func (s *Source) Read() (audio.Period, error) {
 // nextFile opens the file for the next pass, or reports the end of a pass that
 // produced no audio. A single file is its own pass.
 func (s *Source) nextFile() error {
+	if s.closed() {
+		return ErrClosed
+	}
 	if s.passDone {
 		if !s.passAudio {
 			return &NoAudioError{Skipped: s.passSkips}

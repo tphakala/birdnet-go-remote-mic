@@ -647,3 +647,24 @@ func TestReadLogsAgainAfterACleanPass(t *testing.T) {
 		}
 	})
 }
+
+func TestReadReturnsErrClosedWhenClosedDuringSkipLog(t *testing.T) {
+	t.Parallel()
+	path := writeFile(t, t.TempDir(), "a.flac", flacBytes(t, testRate, 2, 16, ramp(periodFrames+40, 2)))
+	synctest.Test(t, func(t *testing.T) {
+		var s *Source
+		cfg := cfgFor(path, new(recorder))
+		cfg.Logf = func(string, ...any) { closeQuiet(s) } // Close lands while a skip is being reported
+		var err error
+		if s, err = Open(cfg); err != nil {
+			t.Fatal(err)
+		}
+		readN(t, s, 1)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Read(); !errors.Is(err, ErrClosed) {
+			t.Fatalf("Read = %v, want ErrClosed once Close has run", err)
+		}
+	})
+}
