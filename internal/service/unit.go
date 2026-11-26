@@ -102,8 +102,8 @@ var hiddenDirs = []struct {
 	setting string
 	dirs    []string
 }{
-	{"ProtectHome=true", []string{"/home", "/root", "/run/user"}},
-	{"PrivateTmp=true", []string{"/tmp", "/var/tmp"}},
+	{"ProtectHome=true", []string{dirHome, dirRoot, "/run/user"}},
+	{"PrivateTmp=true", []string{dirTmp, dirVarTmp}},
 }
 
 // HiddenDir reports the directory the installed service cannot see that path

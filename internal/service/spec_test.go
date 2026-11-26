@@ -31,7 +31,7 @@ func TestValidateRejectsSharedDirs(t *testing.T) {
 		"config in /var/lib":       {ConfigPath: "/var/lib/remote.yaml"},       // ConfigDir == /var/lib
 		"state is /usr/local/bin":  {StateDir: "/usr/local/bin"},               // the default bin dir
 		"config in /usr/local/bin": {ConfigPath: "/usr/local/bin/config.yaml"}, // ConfigDir == /usr/local/bin
-		"state is /var/tmp":        {StateDir: "/var/tmp"},                     //
+		"state is /var/tmp":        {StateDir: dirVarTmp},                      //
 	}
 	for name, spec := range cases {
 		t.Run(name, func(t *testing.T) {

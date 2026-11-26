@@ -167,14 +167,14 @@ func TestHiddenDir(t *testing.T) {
 		path    string
 		wantDir string
 	}{
-		{"/home", "/home"},
-		{"/home/pi/a.flac", "/home"},
+		{dirHome, dirHome},
+		{"/home/pi/a.flac", dirHome},
 		{"/homework/a.flac", ""},
 		{"/root/a.wav", "/root"},
 		{"/run/user/1000/a.wav", "/run/user"},
 		{"/run/media/usb/a.wav", ""},
-		{"/tmp/a.opus", "/tmp"},
-		{"/var/tmp", "/var/tmp"},
+		{"/tmp/a.opus", dirTmp},
+		{dirVarTmp, dirVarTmp},
 		{"/var/tmpfiles/a.wav", ""},
 		{"/srv/audio", ""},
 	}

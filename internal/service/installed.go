@@ -44,7 +44,7 @@ var relevantKeys = []string{
 // add without naming a path (LogNamespace=, PrivateDevices=, ProtectProc=,
 // PrivateNetwork= and others) remount parts of /run, /dev, /proc and /sys.
 // A config there is refused.
-var privateDirs = []string{"/tmp", "/var/tmp", "/home", "/root", "/run", "/dev", "/proc", "/sys"}
+var privateDirs = []string{dirTmp, dirVarTmp, dirHome, dirRoot, "/run", "/dev", "/proc", "/sys"}
 
 // maxDropIn caps a drop-in the reader applies. systemd stops reading a file
 // at a line longer than 1 MiB, so a larger file could end before an
