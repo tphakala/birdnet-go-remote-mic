@@ -31,8 +31,8 @@ func TestReadSkipsFifoReplacement(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = s.Read()
-		var na *NoAudioError
-		if !errors.As(err, &na) || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUnreadable {
+		na, ok := errors.AsType[*NoAudioError](err)
+		if !ok || len(na.Skipped) != 1 || na.Skipped[0].Class != SkipUnreadable {
 			t.Fatalf("Read = %v, want *NoAudioError with one unreadable skip", err)
 		}
 	})
