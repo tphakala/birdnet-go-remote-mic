@@ -561,20 +561,15 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // reason (the host exposes no /proc/asound listing, as in some containers) is
 // still opened, since the open itself addresses the card directly.
 // restartHint says, in a down notification, how the device comes back: a
-// card-index id waits for a config save (it is never restarted unattended), a
-// file device whose path the installed unit hides waits for a config naming
-// another path, and anything else is retried by the backoff. The hidden path
-// is still retried, since startedByInstalledUnit can take a unit written by
-// hand for the installed one, where the path may open. The open-failure,
-// resolve-failure and failed-while-present messages share it so their promise
-// cannot drift; the disconnect message has its own wording (it comes back on
-// reconnect).
+// card-index id waits for a config save (it is never restarted unattended),
+// anything else is retried by the backoff. The open-failure, resolve-failure
+// and failed-while-present messages share it so their promise cannot drift;
+// the disconnect message has its own wording (it comes back on reconnect),
+// and so does the open failure of a path the installed unit hides (see
+// openAndStart).
 func restartHint(dev *config.Device) string {
 	if config.IsCardIndexID(dev.Device) {
 		return "it restarts on the next config save"
-	}
-	if _, hidden := serviceHiddenDir(dev.Device); hidden {
-		return "it starts once it names a path the service can see"
 	}
 	return "it restarts automatically when capture works again"
 }
@@ -715,17 +710,22 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 		a.geometryRefuse(dev.Name, refusedAt)
 	}
 	if err != nil {
+		hint := restartHint(dev)
 		if dir, hidden := serviceHiddenDir(dev.Device); hidden {
 			// The open error alone (permission denied, or not found in the
 			// private /tmp) does not say why; the log, the device record and
-			// the notification all carry this.
+			// the notification all carry this. The failed-while-present message
+			// never says it, as it follows a successful open. The device is
+			// still retried, since startedByInstalledUnit can take another unit
+			// for the installed one, where the path may open.
 			err = fmt.Errorf("%w; %s", err, hiddenNote(dir))
+			hint = "it starts once it names a path the service can see"
 		}
 		a.logAttemptf("skipping device %q (%s%s): %v", dev.Name, dev.Device, atAddr(&hw), err)
 		// Record the open failure as a down-condition onset. Onset is idempotent,
 		// so a device that keeps failing across successive reconciles enters the
 		// condition once, not once per retry.
-		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v; %s", dev.Device, atAddr(&hw), err, restartHint(dev)))
+		n := deviceDownOnset(dev.Name, "Device unavailable", fmt.Sprintf("Could not open %s%s: %v; %s", dev.Device, atAddr(&hw), err, hint))
 		a.markDown(dev.Name, downOpenFailed, &n)
 		return &deviceRuntime{
 			dev:               *dev,

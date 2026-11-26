@@ -725,15 +725,24 @@ func TestRetryConfigSaveRecoversRetryingDevice(t *testing.T) {
 
 // TestRetryFailedMessageMatchesRestartPath pins the failed-while-present text:
 // a stable id says it restarts on its own, a card-index id (never restarted
-// unattended) says it waits for a config save.
+// unattended) says it waits for a config save, and a file device that served
+// says it restarts on its own even under a directory the installed unit hides.
 func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
 	for _, tc := range []struct {
 		name, id, want string
+		installedUnit  bool
 	}{
 		{name: "stable id", id: idMoth, want: wantAutoRestart},
 		{name: "card index", id: addrHW3, want: "restarts on the next config save"},
+		// A path that opened is visible, so a hidden-path hint is wrong here
+		// whatever the environment says.
+		{name: "file under a hidden dir", id: "file:/home/pi/audio", want: wantAutoRestart, installedUnit: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.installedUnit {
+				t.Setenv("INVOCATION_ID", "0123456789abcdef")
+				t.Setenv(configEnv, "/etc/remote-mic/config.yaml")
+			}
 			app, log, cancel := newTestAppliance(t)
 			defer cancel()
 			defer app.closeAll()
