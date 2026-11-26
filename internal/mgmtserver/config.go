@@ -595,9 +595,16 @@ func patchedDevices(cur []config.Device, wire []mgmtapi.DeviceConfig) ([]config.
 // may carry a file id only when the stored config already has it, and a device
 // that keeps its name may change its id only when neither the old nor the new
 // id is virtual. A list that carries the stored file devices unchanged passes.
-// It never touches the filesystem, so the answer reveals nothing about a path.
+// An entry whose name another entry carries is left to Validate, which refuses
+// the duplicate name. It never touches the filesystem, so the answer reveals
+// nothing about a path.
 func checkFileSources(stored, next []config.Device) error {
 	for i := range next {
+		// A name used twice is for Validate to report as a duplicate name; the
+		// stored device that name matches is not being retargeted.
+		if nameRepeated(next, i) {
+			continue
+		}
 		id := next[i].Device
 		_, known := deviceByID(stored, id)
 		added := config.IsVirtualID(id) && !known
@@ -611,6 +618,16 @@ func checkFileSources(stored, next []config.Device) error {
 		}
 	}
 	return nil
+}
+
+// nameRepeated reports whether another entry of devs carries devs[i]'s name.
+func nameRepeated(devs []config.Device, i int) bool {
+	for j := range devs {
+		if j != i && devs[j].Name == devs[i].Name {
+			return true
+		}
+	}
+	return false
 }
 
 // deviceByID returns a pointer to the device with the given device id in devs,

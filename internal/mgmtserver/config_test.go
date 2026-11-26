@@ -21,6 +21,8 @@ const (
 	devHW1     = "hw:1,0"
 	pathGarden = "/garden"
 	fmtS16     = "s16"
+
+	fieldDevice1 = "devices[1].device"
 )
 
 // baseConfig is a minimal valid, defaulted configuration for the config tests.
@@ -913,8 +915,8 @@ func TestPatchConfigFileSourceGuard(t *testing.T) {
 	}{
 		{"unchanged list", []mgmtapi.DeviceConfig{garden(), test(fileA), other()}, ""},
 		{"add a file id", []mgmtapi.DeviceConfig{garden(), test(fileA), other(), dev("extra", "file:/srv/c", "/extra", 48000)}, "devices[3].device"},
-		{"retarget a file device to another file", []mgmtapi.DeviceConfig{garden(), test(fileB), other()}, "devices[1].device"},
-		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(devAttic), other()}, "devices[1].device"},
+		{"retarget a file device to another file", []mgmtapi.DeviceConfig{garden(), test(fileB), other()}, fieldDevice1},
+		{"retarget a file device to hardware", []mgmtapi.DeviceConfig{garden(), test(devAttic), other()}, fieldDevice1},
 		{"turn hardware into the file id and drop the file device", []mgmtapi.DeviceConfig{dev(devGarden, fileA, pathGarden, 48000), other()}, "devices[0].device"},
 		{"rename keeping the id", []mgmtapi.DeviceConfig{garden(), dev("test2", fileA, "/test", 48000), other()}, ""},
 		{"drop the file device", []mgmtapi.DeviceConfig{garden(), other()}, ""},
