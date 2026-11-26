@@ -5,14 +5,19 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	capture "github.com/tphakala/go-audio-capture"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/filesource"
 )
 
 const (
@@ -417,4 +422,135 @@ func TestReportCheckEmptyAddressClaimsNothing(t *testing.T) {
 			t.Errorf("%s line = %q, want plain present with no duplicate report", name, l)
 		}
 	}
+}
+
+// swapOpenFileSource substitutes the file-source open seam for one test.
+func swapOpenFileSource(t *testing.T, fn func(filesource.Config) (audio.Source, error)) {
+	t.Helper()
+	prev := openFileSource
+	t.Cleanup(func() { openFileSource = prev })
+	openFileSource = fn
+}
+
+// TestReportCheckFileSource pins serve --check for file devices: the source is
+// opened as the appliance would open it, never resolved as ALSA hardware, never
+// probed when every device is virtual, and bounded so a hung mount cannot hold
+// the ExecStartPre of a service start.
+func TestReportCheckFileSource(t *testing.T) {
+	fileCfg := func(ids ...string) *config.Config {
+		cfg := config.Default()
+		cfg.Devices = nil
+		for i, id := range ids {
+			cfg.Devices = append(cfg.Devices, checkDevice("dev"+strconv.Itoa(i), id, "/p"+strconv.Itoa(i)))
+		}
+		return &cfg
+	}
+	probeCalls := 0
+	prevEnum, prevResolve := captureDevices, resolveDevice
+	t.Cleanup(func() { captureDevices, resolveDevice = prevEnum, prevResolve })
+	captureDevices = func() ([]audio.Hardware, error) {
+		probeCalls++
+		return nil, errors.New("no /proc/asound")
+	}
+	resolveDevice = func(id string) (audio.Hardware, error) {
+		t.Errorf("resolveDevice called for %q", id)
+		return audio.Hardware{}, errors.New("unexpected")
+	}
+
+	t.Run("playable", func(t *testing.T) {
+		swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
+			cfg.Logf("skipped %s", "x.flac")
+			return geomSource{rate: cfg.Rate, channels: 2}, nil
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		if l := checkLine(out.String(), "dev0"); !strings.Contains(l, "file source, 48000 Hz, 2 ch") {
+			t.Errorf("line = %q, want the file source geometry", l)
+		}
+		if !strings.Contains(out.String(), "\n    skipped x.flac") {
+			t.Errorf("report lacks the indented skip line: %q", out.String())
+		}
+		if probeCalls != 0 || strings.Contains(out.String(), "probe unavailable") {
+			t.Errorf("a file-only config probed ALSA (%d calls): %q", probeCalls, out.String())
+		}
+	})
+
+	t.Run("no audio", func(t *testing.T) {
+		swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
+			return nil, &filesource.NoAudioError{Skipped: []filesource.Skip{
+				{Name: "a.flac", Reason: "sample rate 44100", Class: filesource.SkipRate},
+				{Name: "b.wav", Reason: "no audio", Class: filesource.SkipUndecodable},
+			}}
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		got := out.String()
+		for _, want := range []string{"no playable audio (1 sample rate differs, 1 undecodable)", "\n    a.flac: sample rate 44100", "\n    b.wav: no audio"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("report lacks %q: %q", want, got)
+			}
+		}
+		if strings.Contains(got, "Malformed") {
+			t.Errorf("a file id reported as malformed: %q", got)
+		}
+	})
+
+	t.Run("other error", func(t *testing.T) {
+		swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
+			return nil, fs.ErrNotExist
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		if l := checkLine(out.String(), "dev0"); !strings.Contains(l, "file source: file does not exist; it starts once the path is readable") {
+			t.Errorf("line = %q", l)
+		}
+	})
+
+	t.Run("probe failure still checks file rows", func(t *testing.T) {
+		swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
+			return geomSource{rate: cfg.Rate, channels: 1}, nil
+		})
+		probeCalls = 0
+		var out bytes.Buffer
+		if err := reportCheck(fileCfg("file:/srv/audio", "hw:1,0"), &out); err != nil {
+			t.Fatal(err)
+		}
+		if probeCalls != 1 {
+			t.Errorf("captureDevices calls = %d, want 1 for the ALSA row", probeCalls)
+		}
+		if l := checkLine(out.String(), "dev0"); !strings.Contains(l, "file source, 48000 Hz, 1 ch") {
+			t.Errorf("file row = %q, want it checked despite the probe failure", l)
+		}
+		if l := checkLine(out.String(), "dev1"); !strings.Contains(l, "unknown") {
+			t.Errorf("ALSA row = %q, want unknown", l)
+		}
+	})
+
+	t.Run("hung filesystem", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{}) // inside the bubble, so the blocked open counts as durably blocked
+			swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
+				<-release
+				return nil, errors.New("released")
+			})
+			start := time.Now()
+			var out bytes.Buffer
+			if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
+				t.Fatal(err)
+			}
+			if got := time.Since(start); got != fileCheckTimeout {
+				t.Errorf("check took %v, want %v", got, fileCheckTimeout)
+			}
+			if !strings.Contains(out.String(), "no answer from the filesystem within 5s") {
+				t.Errorf("report lacks the timeout line: %q", out.String())
+			}
+			close(release)
+		})
+	})
 }

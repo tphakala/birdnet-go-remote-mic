@@ -35,14 +35,14 @@ func TestReadLoopsFileGaplessly(t *testing.T) {
 	frames := periodFrames*5/2 + 7 // 2.5 periods plus a few frames: the wrap lands mid-period
 	s16 := ramp(frames, 2)
 	// 24-bit sources, so a Reset without WithConvertTo(16) shows on pass 2.
-	encoders := map[string]func(*testing.T) []byte{
-		"a.flac": func(t *testing.T) []byte { return flacBytes(t, testRate, 2, 24, s16To24(s16)) },
-		"a.wav":  func(t *testing.T) []byte { return wavBytes(t, testRate, 2, 24, s16To24(s16)) },
-	}
-	for name, enc := range encoders {
+	for _, name := range []string{"a.flac", "a.wav"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			path := writeFile(t, t.TempDir(), name, enc(t))
+			enc := flacBytes
+			if strings.HasSuffix(name, ".wav") {
+				enc = wavBytes
+			}
+			path := writeFile(t, t.TempDir(), name, enc(t, testRate, 2, 24, s16To24(s16)))
 			synctest.Test(t, func(t *testing.T) {
 				var rec recorder
 				s, err := Open(cfgFor(path, &rec))

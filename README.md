@@ -316,6 +316,16 @@ microphone after a reboot or a replug. Copy the id from `remote-mic devices list
   for identical units that report the same serial.
 - `hw:CARD=<card id>,DEV=<device>` names a built-in or virtual card by its
   kernel card id.
+- `file:<absolute path>` plays a FLAC, Opus or WAV file, or a directory of
+  them, in a loop at real-time pace, for testing. It can be set in the config
+  file only; the web UI and the management API cannot add one.
+
+A file source must match the device `rate` (Opus files are 48 kHz). Its channel
+count comes from the first playable file; files that do not match, or have no
+audio, are skipped and logged once. A missing path or a pass with no playable
+file shows the device as down, and it retries on its own. Under the installed
+service the path must be readable by the service user and not under `/home` or
+`/tmp`, which the unit hides; prefer local storage over a network mount.
 
 A card-index id such as `hw:1,0` still works (offered when the host has no
 stable form: no sysfs in a minimal container, or a USB device with neither a

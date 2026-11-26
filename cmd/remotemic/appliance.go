@@ -315,7 +315,8 @@ func resolveError(dev *config.Device, err error) (cause, msg string) {
 // id, and, for an entry that resolves ambiguously (a same-serial twin named by its
 // shared serial), each matching unit's port id. So a device configured by a card
 // index, or an owned same-serial twin, is still recognised as configured and not
-// re-offered as available.
+// re-offered as available. A file id resolves to itself without enumerating
+// (resolveID).
 func (a *appliance) refreshHardware(cfg *config.Config) {
 	hw := make(map[string]hwResult, len(cfg.Devices))
 	ids := make(map[string]bool, 2*len(cfg.Devices))
@@ -325,7 +326,7 @@ func (a *appliance) refreshHardware(cfg *config.Config) {
 		if _, done := hw[id]; done {
 			continue
 		}
-		h, err := a.resolve(id)
+		h, err := a.resolveID(id)
 		hw[id] = hwResult{hw: h, err: err}
 		if err == nil {
 			// Claim both the resolved stable id and the port-form id. When two
@@ -354,6 +355,22 @@ func (a *appliance) refreshHardware(cfg *config.Config) {
 	}
 	a.hw = hw
 	a.prov.setConfiguredIDs(ids)
+}
+
+// fileSourceLabel is the friendly name of every file device. It is a constant
+// because support details print the friendly name unscrubbed, and a file or
+// directory name must not reach a public report that way.
+const fileSourceLabel = "File source"
+
+// resolveID resolves a configured device id to its hardware. A file id names no
+// hardware: it resolves to itself, as a stable id, without enumerating, so it is
+// never refused, never shares hardware and never reads as disconnected. Every
+// other id goes through a.resolve.
+func (a *appliance) resolveID(id string) (audio.Hardware, error) {
+	if config.IsVirtualID(id) {
+		return audio.Hardware{ID: id, Label: fileSourceLabel, IDStable: true}, nil
+	}
+	return a.resolve(id)
 }
 
 // hardwareOwner returns the name of another serving device that already captures
@@ -586,7 +603,9 @@ func (a *appliance) openRefused(dev *config.Device) bool {
 
 // openAndStart opens dev and starts serving it, or records why it could not.
 // Its refusals before any open are the ones openRefused checks; a new refusal
-// belongs in both, or restartFaulted would restart a device this refuses.
+// belongs in both, or restartFaulted would restart a device this refuses. A
+// file device skips the ALSA channel resolution and capability probes; its
+// capabilities are the open source's rate and channel count.
 func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// First, before any refusal below: a step earned under another capture
 	// identity must not survive a configuration that cannot open at all.
@@ -629,6 +648,7 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// (dev.Device), so a probe by address cannot make the open reach the wrong
 	// device. Fall back to dev.Device when there is no resolved address (a
 	// card-index id opened without a resolution, the container fallback).
+	virtual := config.IsVirtualID(dev.Device)
 	probeID := dev.Device
 	if hw.HWAddr != "" {
 		probeID = hw.HWAddr
@@ -639,19 +659,22 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	// restart is opened at its correct count once it frees rather than at a
 	// fallback pinned here. A wrong value here costs at most a cosmetic
 	// capability list, and rememberCaps below retains the last known good.
-	openCh := resolveOpenChannels(probeID, dev.StreamChannelUnion())
-	// Probe supported rates and channels for the config UI before opening: once we
-	// hold the hw device exclusively the probe would see our own process and report
-	// busy. Both use the same non-blocking capability query. Rates are probed at
-	// the count we will actually open, since a device's rate set can depend on
-	// the channel count.
-	rates := audio.ProbeRates(probeID, openCh, audio.CandidateRates())
-	channels := audio.ProbeChannels(probeID, audio.CandidateChannels())
-	// Keep the last-known caps if this probe came back empty (a transient
-	// card-swap window), so the UI does not flicker to an empty list. The cache
-	// key stays the configured id so cached caps follow the device across a
-	// card-index change of address.
-	rates, channels = a.rememberCaps(dev.Device, rates, channels)
+	var rates, channels []int
+	if !virtual {
+		openCh := resolveOpenChannels(probeID, dev.StreamChannelUnion())
+		// Probe supported rates and channels for the config UI before opening: once we
+		// hold the hw device exclusively the probe would see our own process and report
+		// busy. Both use the same non-blocking capability query. Rates are probed at
+		// the count we will actually open, since a device's rate set can depend on
+		// the channel count.
+		rates = audio.ProbeRates(probeID, openCh, audio.CandidateRates())
+		channels = audio.ProbeChannels(probeID, audio.CandidateChannels())
+		// Keep the last-known caps if this probe came back empty (a transient
+		// card-swap window), so the UI does not flicker to an empty list. The cache
+		// key stays the configured id so cached caps follow the device across a
+		// card-index change of address.
+		rates, channels = a.rememberCaps(dev.Device, rates, channels)
+	}
 
 	d := *dev
 	step := asked
@@ -700,6 +723,11 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 	rt.hwAddr = hw.HWAddr
 	rt.supportedRates = rates
 	rt.supportedChannels = channels
+	if virtual {
+		// A file device has nothing to probe: its capabilities are exactly what
+		// the open source delivers, and are shown only while it serves.
+		rt.supportedRates, rt.supportedChannels = []int{rt.rate}, []int{rt.channels}
+	}
 	for _, sr := range rt.streams {
 		a.srv.AddTrack(sr.track)
 	}
@@ -995,7 +1023,9 @@ func (a *appliance) publish(cfg *config.Config) {
 // and re-notify it every enumeration tick; after an encode fault that retry
 // must also prove its encoder before it counts as recovered (see
 // encodeFault), even across a later disconnect of the device. Neither path
-// restarts a card-index id, which waits for a config save.
+// restarts a card-index id, which waits for a config save. A file device never
+// reads as lost (it has no hardware to disconnect), so its death is always the
+// backoff path.
 func (a *appliance) onPumpDone(res pumpResult) {
 	a.alive--
 	if res.rt.superseded {
@@ -1037,7 +1067,7 @@ func (a *appliance) onPumpDone(res pumpResult) {
 		// path).
 		lost := errors.Is(res.err, capture.ErrDeviceGone)
 		if !lost {
-			if _, rerr := a.resolve(res.rt.dev.Device); rerr != nil {
+			if _, rerr := a.resolveID(res.rt.dev.Device); rerr != nil {
 				_, lost = errors.AsType[*capture.DeviceNotFoundError](rerr)
 			}
 		}
@@ -1137,7 +1167,10 @@ func (a *appliance) onPumpDone(res pumpResult) {
 // names a card by kernel probe order, so after a hardware change the index may
 // name a different device than it did when the entry went down, and an
 // unattended restart could open the wrong microphone (the #62 swap). Such an
-// entry is restarted only by an explicit config save.
+// entry is restarted only by an explicit config save. A file device
+// (config.IsVirtualID) is not restarted here either: no hardware change can
+// affect it, and a restart would reset its backoff, so the backoff alone
+// retries it.
 //
 // A device down after an encode fault is restarted by restartFaulted, not by
 // startDevice: the hardware change cannot have fixed its encoder, so it keeps
@@ -1149,6 +1182,11 @@ func (a *appliance) retryDown() {
 		d := a.cfg.Devices[i]
 		rt, ok := a.devices[d.Name]
 		if !ok || !d.IsEnabled() {
+			continue
+		}
+		if config.IsVirtualID(d.Device) {
+			// A hardware change cannot affect a file source, and restarting it
+			// here would reset its backoff on every hotplug.
 			continue
 		}
 		if config.IsCardIndexID(d.Device) {

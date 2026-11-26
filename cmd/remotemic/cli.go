@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/filesource"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 )
 
@@ -377,20 +380,33 @@ func runListDevices(w io.Writer) error {
 // id resolves to on the host, writing a summary to w. It returns the validation
 // error for an invalid config (so `serve --check` exits nonzero, like
 // `nginx -t`), but a device that is not currently present is only noted, not
-// fatal, because the appliance tolerates a missing device by skipping it.
+// fatal, because the appliance tolerates a missing device by skipping it. A
+// file device is checked by opening its source, not by resolving hardware, and
+// host enumeration runs only when some device is not a file device.
 func reportCheck(cfg *config.Config, w io.Writer) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	out(w, "config OK: %d device(s), RTSP %s\n", len(cfg.Devices), cfg.Listen)
-	if _, derr := captureDevices(); derr != nil {
+	// A file device needs no host enumeration, so a config of file devices alone
+	// never probes ALSA (and prints no probe failure in a container without it).
+	var derr error
+	if slices.ContainsFunc(cfg.Devices, func(d config.Device) bool { return !config.IsVirtualID(d.Device) }) {
+		_, derr = captureDevices()
+	}
+	if derr != nil {
 		// The host enumeration failed wholesale (no readable device listing), so
 		// per-device resolution would fail too and print "Cannot resolve" for
 		// every entry, which tells the operator nothing about the hardware. Report
 		// the probe failure once and mark every device unknown instead.
 		out(w, "  (device probe unavailable: %v)\n", derr)
 		for i := range cfg.Devices {
-			out(w, "  %-20s %s  unknown\n", cfg.Devices[i].Name, cfg.Devices[i].Device)
+			d := &cfg.Devices[i]
+			if config.IsVirtualID(d.Device) {
+				out(w, "  %-20s %s  %s\n", d.Name, d.Device, checkStatus(d, nil))
+				continue
+			}
+			out(w, "  %-20s %s  unknown\n", d.Name, d.Device)
 		}
 		return nil
 	}
@@ -408,8 +424,12 @@ func reportCheck(cfg *config.Config, w io.Writer) error {
 }
 
 // checkStatus describes what one configured device id resolves to for
-// reportCheck, recording a present device's address in owner.
+// reportCheck, recording a present device's address in owner. A file id
+// reports what its source would play and never touches owner.
 func checkStatus(d *config.Device, owner map[string]string) string {
+	if path, ok := config.FileSourcePath(d.Device); ok {
+		return fileCheckStatus(d, path)
+	}
 	hw, err := resolveDevice(d.Device)
 	if err != nil {
 		_, msg := resolveError(d, err)
@@ -444,6 +464,53 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 		}
 	}
 	return status
+}
+
+// fileCheckTimeout bounds the open of a file source in serve --check. The
+// installed unit runs the check as ExecStartPre on every start, so a stat or
+// open on a hung network mount would otherwise hold the start (and keep the
+// management API down) until systemd gives up.
+const fileCheckTimeout = 5 * time.Second
+
+// fileCheckStatus describes what a file device would play right now, opening
+// the source as the appliance does. The output is local, so skipped files are
+// named, one indented line each.
+func fileCheckStatus(d *config.Device, path string) string {
+	cfg := fileSourceConfig(d, path)
+	open := openFileSource      // read here: the goroutine may outlive a swap of the seam
+	res := make(chan string, 1) // buffered: after a timeout the goroutine sends and exits unseen
+	go func() {
+		var lines []string
+		cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+		src, err := open(cfg)
+		var b strings.Builder
+		var na *filesource.NoAudioError
+		switch {
+		case errors.As(err, &na):
+			b.WriteString(err.Error())
+			for _, s := range na.Skipped {
+				fmt.Fprintf(&b, "\n    %s: %s", s.Name, s.Reason)
+			}
+		case err != nil:
+			fmt.Fprintf(&b, "file source: %v; it starts once the path is readable", err)
+		default:
+			rate, channels := src.Negotiated()
+			_ = src.Close()
+			fmt.Fprintf(&b, "file source, %d Hz, %d ch", rate, channels)
+		}
+		for _, l := range lines {
+			b.WriteString("\n    " + l)
+		}
+		res <- b.String()
+	}()
+	timer := time.NewTimer(fileCheckTimeout)
+	defer timer.Stop()
+	select {
+	case s := <-res:
+		return s
+	case <-timer.C:
+		return fmt.Sprintf("file source: no answer from the filesystem within %v", fileCheckTimeout)
+	}
 }
 
 // serveOverrides carries the serve subcommand's config-overriding flag values

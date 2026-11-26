@@ -3,8 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -12,9 +15,11 @@ import (
 	"testing/synctest"
 
 	capture "github.com/tphakala/go-audio-capture"
+	wavpcm "github.com/tphakala/go-wav/pcm"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/filesource"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 )
 
@@ -263,5 +268,91 @@ func TestOpenDeviceRetryGeometry(t *testing.T) {
 				t.Errorf("runtime geometry = %+v, want the granted %+v", rt.geometry, granted)
 			}
 		})
+	}
+}
+
+// geomSource is a source with a settable geometry that ends at once.
+type geomSource struct{ rate, channels int }
+
+func (g geomSource) Negotiated() (rate, channels int) { return g.rate, g.channels }
+func (g geomSource) Read() (audio.Period, error)      { return audio.Period{}, io.EOF }
+func (g geomSource) Close() error                     { return nil }
+
+// TestOpenDeviceRetryOpensFileSourceOnce pins the file dispatch: a file id
+// never reaches the ALSA seams, is attempted exactly once, gets channel bounds
+// from the selection and the config cap, and a failed open returns the error
+// itself (no typed-nil source in the interface).
+func TestOpenDeviceRetryOpensFileSourceOnce(t *testing.T) {
+	defer swapResolveOpenChannels(func(string, []int) int {
+		t.Error("resolveOpenChannels called for a file device")
+		return 1
+	})()
+	defer swapOpenCaptureAt(func(*config.Device, int, audio.Geometry) (audio.Source, capture.Format, error) {
+		t.Error("openCaptureAt called for a file device")
+		return nil, 0, errors.New("unreachable")
+	})()
+	var cfgs []filesource.Config
+	var openErr error
+	prev := openFileSource
+	openFileSource = func(cfg filesource.Config) (audio.Source, error) {
+		cfgs = append(cfgs, cfg)
+		if openErr != nil {
+			return nil, openErr
+		}
+		return geomSource{rate: cfg.Rate, channels: 3}, nil
+	}
+	defer func() { openFileSource = prev }()
+
+	dev := &config.Device{Name: "yard", Device: "file:/srv/audio", Rate: 48000, Format: testFmtS16,
+		Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}, {Path: "/b", Mode: config.ModePCM, Channels: []int{3, 2}}}}
+	rt, err := openDeviceRetry(dev, 2, levels.NewHub())
+	if err != nil {
+		t.Fatalf("openDeviceRetry: %v", err)
+	}
+	_ = rt.fanout.Close()
+	if rt.format != "s16" || rt.rate != 48000 || rt.channels != 3 {
+		t.Errorf("runtime = %s %d Hz %d ch, want s16 48000 Hz 3 ch", rt.format, rt.rate, rt.channels)
+	}
+	want := filesource.Config{Path: "/srv/audio", Rate: 48000, MinChannels: 3, MaxChannels: config.MaxChannels}
+	if len(cfgs) != 1 || cfgs[0].Path != want.Path || cfgs[0].Rate != want.Rate ||
+		cfgs[0].MinChannels != want.MinChannels || cfgs[0].MaxChannels != want.MaxChannels {
+		t.Fatalf("file source configs = %+v, want one with %+v", cfgs, want)
+	}
+
+	cfgs, openErr = nil, errors.New("no audio")
+	rt, err = openDeviceRetry(dev, 0, levels.NewHub())
+	if rt != nil || !errors.Is(err, openErr) {
+		t.Fatalf("openDeviceRetry = %v, %v; want nil and the open error", rt, err)
+	}
+	if len(cfgs) != 1 {
+		t.Errorf("failed open attempted %d times, want 1", len(cfgs))
+	}
+}
+
+// TestOpenFileSourceReturnsNilInterfaceOnError pins the default opener: a
+// failed open must give a nil audio.Source (not an interface holding a nil
+// *filesource.Source), and a playable file opens with its own geometry.
+func TestOpenFileSourceReturnsNilInterfaceOnError(t *testing.T) {
+	src, err := openFileSource(filesource.Config{Path: filepath.Join(t.TempDir(), "missing.wav"), Rate: 48000, MinChannels: 1, MaxChannels: 2})
+	if src != nil || err == nil {
+		t.Fatalf("openFileSource(missing) = %v, %v; want a nil source and an error", src, err)
+	}
+
+	pcm := make([]byte, 48000/50*2*2) // one period of silent stereo
+	var wav bytes.Buffer
+	if err := wavpcm.EncodeInterleaved(&wav, wavpcm.Config{SampleRate: 48000, Channels: 2, BitDepth: 16}, pcm); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "a.wav")
+	if err := os.WriteFile(path, wav.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src, err = openFileSource(filesource.Config{Path: path, Rate: 48000, MinChannels: 1, MaxChannels: 2})
+	if err != nil {
+		t.Fatalf("openFileSource(wav): %v", err)
+	}
+	defer func() { _ = src.Close() }()
+	if rate, ch := src.Negotiated(); rate != 48000 || ch != 2 {
+		t.Errorf("Negotiated = (%d, %d), want (48000, 2)", rate, ch)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	stdlog "log"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -1060,4 +1061,65 @@ func TestSameCondition(t *testing.T) {
 			t.Errorf("sameCondition(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
+}
+
+// TestApplianceFileDeviceLifecycle pins a file device as a stable, retried,
+// never-enumerated device: no ALSA resolution or probing, capabilities that
+// describe the open source (and vanish with it), a failure that is a retried
+// failure rather than a loss, and no restart by a hardware change.
+func TestApplianceFileDeviceLifecycle(t *testing.T) {
+	defer swapResolveOpenChannels(func(string, []int) int {
+		t.Error("resolveOpenChannels called for a file device")
+		return 1
+	})()
+	synctest.Test(t, func(t *testing.T) {
+		app, log, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		app.resolve = func(id string) (audio.Hardware, error) {
+			if config.IsVirtualID(id) {
+				t.Errorf("resolve called for the file id %q", id)
+			}
+			return audio.Hardware{ID: id, HWAddr: id, IDStable: true}, nil
+		}
+		const name = "yard"
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice(name, "file:/srv/audio", "/y", 48000)}})
+
+		st := app.devices[name].status()
+		if st.State != mgmtserver.StateServing || !st.IDStable || st.HWAddr != "" || st.FriendlyName != "File source" ||
+			!slices.Equal(st.SupportedRates, []int{48000}) || !slices.Equal(st.SupportedChannels, []int{1}) {
+			t.Fatalf("serving status = state %s, idStable %v, hwAddr %q, name %q, rates %v, channels %v",
+				st.State, st.IDStable, st.HWAddr, st.FriendlyName, st.SupportedRates, st.SupportedChannels)
+		}
+
+		killDevice(t, app, log, name, errTestEIO)
+		st = app.devices[name].status()
+		if st.State != mgmtserver.StateFailed || st.DownCause != downFailed {
+			t.Fatalf("after the source failed: state %s cause %q, want failed/%s", st.State, st.DownCause, downFailed)
+		}
+		if len(st.SupportedRates) != 0 || len(st.SupportedChannels) != 0 {
+			t.Errorf("failed file device shows caps %v %v, want none", st.SupportedRates, st.SupportedChannels)
+		}
+		if app.retries[name] == nil {
+			t.Fatal("no retry scheduled for the failed file device")
+		}
+
+		before := opens(log, name)
+		app.retryDown()
+		if got := opens(log, name); got != before {
+			t.Errorf("a hardware change reopened the file device (%d opens, want %d)", got, before)
+		}
+
+		failOpenTimes(app, log, 1<<30)
+		runFor(t, app, retryBackoff[0]+time.Second)
+		if got := opens(log, name); got <= before {
+			t.Fatalf("the retry never reopened the file device (%d opens)", got)
+		}
+		st = app.devices[name].status()
+		if st.DownCause != downOpenFailed || app.retries[name] == nil {
+			t.Errorf("after a failed reopen: cause %q retry %v, want %s with a retry", st.DownCause, app.retries[name], downOpenFailed)
+		}
+		if len(st.SupportedRates) != 0 || len(st.SupportedChannels) != 0 {
+			t.Errorf("down file device shows caps %v %v, want none", st.SupportedRates, st.SupportedChannels)
+		}
+	})
 }
