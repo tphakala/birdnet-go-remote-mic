@@ -28,6 +28,17 @@ type decoders struct {
 	opus *oggopus.Decoder
 }
 
+// supported reports whether a decoder claims name's extension; keep it in step
+// with the switch in open.
+func supported(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".flac", ".opus":
+		return true
+	default:
+		return false
+	}
+}
+
 // open points the decoder for name's format at f, parses its header and
 // returns it with the stream's rate and channel count. The decoder yields
 // S16LE interleaved frames.

@@ -1,9 +1,11 @@
-// Package filesource plays an audio file in a loop as an audio.Source that
-// stands in for a sound card, mainly for testing. It is its own clock: Read
-// paces itself to real time, so nothing downstream paces.
+// Package filesource plays an audio file, or a directory of them, in a loop as
+// an audio.Source that stands in for a sound card, mainly for testing. It is
+// its own clock: Read paces itself to real time, so nothing downstream paces.
 //
-// The rate is the device's and the channel count is the file's, both fixed at
-// Open from the first file that produced audio. Read never returns io.EOF: a
+// A directory plays its FLAC and Opus files in name order, listed again at the
+// start of every pass so added and removed files are picked up. The rate is
+// the device's and the channel count is the file's, both fixed at Open from
+// the first file that produced audio; a file that does not match is skipped. Read never returns io.EOF: a
 // file source that cannot produce audio fails with a *NoAudioError, so the
 // fan-out treats it as a dead device and the appliance retries it. Errors from
 // this package carry no file paths.
@@ -15,8 +17,10 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -28,14 +32,15 @@ var ErrClosed = errors.New("filesource: closed")
 
 // Config describes a file source.
 type Config struct {
-	// Path names the file to play.
+	// Path names the file to play, or a directory whose FLAC and Opus files
+	// play in name order. A directory is not searched recursively.
 	Path string
 	// Rate is the device rate in Hz. A file at another rate is not played; there
 	// is no resampling.
 	Rate int
 	// MinChannels and MaxChannels bound the file's channel count.
 	MinChannels, MaxChannels int
-	// Logf receives one line per skipped or failing file. Nil means log.Printf.
+	// Logf receives one line per skipped or failing file and reason. Nil means log.Printf.
 	Logf func(format string, args ...any)
 }
 
@@ -100,23 +105,26 @@ func (e *NoAudioError) Error() string {
 	return "filesource: no playable audio (" + strings.Join(parts, ", ") + ")"
 }
 
-// Source plays a file in a loop. Read and Overruns may run concurrently with
+// Source plays a file or a directory of files in a loop. Read and Overruns may run concurrently with
 // Close; Read itself is for a single goroutine.
 type Source struct {
 	cfg          Config
 	logf         func(format string, args ...any)
 	channels     int
 	periodFrames int
-	name         string // base name of the file, for logs and skips
+	dir          string // directory of the pass's entries
 
 	// Reader goroutine only.
 	buf       []byte // one period, reused
 	primed    int    // bytes of buf already filled by Open
 	dec       decoders
 	cur       io.Reader // the open file's decoder, nil between files
+	name      string    // base name of the current entry, for logs and skips
+	entries   []string  // this pass's listing, in play order
+	next      int       // index of the entry to try next
+	inPass    bool      // entries is the current pass's listing
 	passAudio bool      // this pass produced audio
 	fileAudio bool      // the current file produced audio
-	passDone  bool      // this pass has opened its file
 	passSkips []Skip
 	logged    map[string]string // entry name to the last logged reason
 	pace      *pacer
@@ -128,25 +136,19 @@ type Source struct {
 	once sync.Once
 }
 
-// Open validates cfg and opens the file. It accepts the file only when its
-// header passes the rate and channel checks and its first read returns audio;
-// those bytes start the first period. It logs nothing when it fails.
+// Open validates cfg and opens the first file that qualifies. A file qualifies
+// when its header passes the rate and channel checks and its first read
+// returns audio; those bytes start the first period. The files skipped before
+// it are logged once; when none qualifies Open returns them in a
+// *NoAudioError and logs nothing.
 func Open(cfg Config) (*Source, error) {
 	if cfg.Rate <= 0 || cfg.MinChannels < 1 || cfg.MinChannels > cfg.MaxChannels {
 		return nil, errors.New("filesource: invalid config")
-	}
-	fi, err := os.Stat(cfg.Path)
-	if err != nil {
-		return nil, fmt.Errorf("file source: %w", stripPath(err))
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, errors.New("file source: not a regular file")
 	}
 	s := &Source{
 		cfg:          cfg,
 		logf:         cfg.Logf,
 		periodFrames: max(1, cfg.Rate/50),
-		name:         filepath.Base(cfg.Path),
 		logged:       make(map[string]string),
 		done:         make(chan struct{}),
 	}
@@ -154,14 +156,20 @@ func Open(cfg Config) (*Source, error) {
 		s.logf = log.Printf
 	}
 	s.pace = newPacer(cfg.Rate, s.periodFrames)
-	skip, played, err := s.tryOpen()
-	if err != nil {
-		return nil, err
+	if err := s.scan(); err != nil {
+		return nil, fmt.Errorf("file source: %w", stripPath(err))
 	}
-	if !played {
-		return nil, &NoAudioError{Skipped: []Skip{skip}}
+	for s.cur == nil {
+		if s.next >= len(s.entries) {
+			return nil, &NoAudioError{Skipped: s.passSkips}
+		}
+		if _, err := s.tryNext(); err != nil {
+			return nil, err
+		}
 	}
-	s.passDone = true
+	for _, sk := range s.passSkips {
+		s.logOnce(sk.Name, sk.Reason)
+	}
 	return s, nil
 }
 
@@ -224,33 +232,105 @@ func (s *Source) Read() (audio.Period, error) {
 	return audio.Period{Buf: s.buf, Frames: s.periodFrames, Captured: captured}, nil
 }
 
-// nextFile opens the file for the next pass, or reports the end of a pass that
-// produced no audio. A single file is its own pass.
+// nextFile tries the next entry of the pass, starting a pass when none is
+// running. It returns nil with no file installed for an entry that was
+// skipped, so Read calls it again. It reports a pass that produced no audio,
+// whether the path is gone, empty or holds nothing playable.
 func (s *Source) nextFile() error {
 	if s.closed() {
 		return ErrClosed
 	}
-	if s.passDone {
+	if !s.inPass {
+		if err := s.scan(); err != nil {
+			sk := Skip{Name: filepath.Base(s.cfg.Path), Reason: reasonOf(err), Class: SkipUnreadable}
+			s.logOnce(sk.Name, sk.Reason)
+			if s.closed() {
+				return ErrClosed
+			}
+			return &NoAudioError{Skipped: []Skip{sk}}
+		}
+	}
+	if s.next >= len(s.entries) {
+		s.inPass = false
 		if !s.passAudio {
 			return &NoAudioError{Skipped: s.passSkips}
 		}
-		s.passAudio, s.passSkips, s.passDone = false, nil, false
+		return nil
 	}
-	s.passDone = true
-	skip, played, err := s.tryOpen()
+	skipped, err := s.tryNext()
 	if err != nil {
 		return err
 	}
-	if !played {
-		s.passSkips = append(s.passSkips, skip)
-		s.logOnce(skip.Name, skip.Reason)
+	if skipped {
+		sk := s.passSkips[len(s.passSkips)-1]
+		s.logOnce(sk.Name, sk.Reason)
 	}
 	return nil
 }
 
-// tryOpen opens the file and installs its decoder as s.cur. It returns played
-// false with the Skip when the file cannot be played, and ErrClosed when Close
-// ran meanwhile. On the first call (channels still unknown) it fixes the
+// errNotPlayable marks a path that is neither a regular file nor a directory.
+var errNotPlayable = errors.New("not a regular file or directory")
+
+// errEntryGone marks an entry that vanished between the listing and its turn.
+var errEntryGone = errors.New("entry gone")
+
+// scan lists the pass: a directory's non-directory entries with a supported
+// extension in name order, or the path itself when it is a regular file (its
+// own extension then decides, so an unsupported one is reported as a skip).
+// It forgets the logged reasons of files no longer listed. Its errors are
+// raw, for the caller to strip.
+func (s *Source) scan() error {
+	fi, err := os.Stat(s.cfg.Path)
+	if err != nil {
+		return err
+	}
+	var names []string
+	switch {
+	case fi.IsDir():
+		des, err := os.ReadDir(s.cfg.Path)
+		if err != nil {
+			return err
+		}
+		s.dir = s.cfg.Path
+		for _, de := range des {
+			if !de.IsDir() && supported(de.Name()) {
+				names = append(names, de.Name())
+			}
+		}
+	case fi.Mode().IsRegular():
+		s.dir = filepath.Dir(s.cfg.Path)
+		names = []string{filepath.Base(s.cfg.Path)}
+	default:
+		return errNotPlayable
+	}
+	maps.DeleteFunc(s.logged, func(name, _ string) bool { return !slices.Contains(names, name) })
+	s.entries, s.next, s.inPass = names, 0, true
+	s.passAudio, s.passSkips = false, nil
+	return nil
+}
+
+// tryNext tries the pass's next entry. It reports whether the entry was
+// skipped, in which case its Skip is the last of passSkips. An entry that
+// vanished is neither played nor reported.
+func (s *Source) tryNext() (skipped bool, err error) {
+	s.name = s.entries[s.next]
+	s.next++
+	skip, played, err := s.tryOpen()
+	switch {
+	case errors.Is(err, errEntryGone):
+		return false, nil
+	case err != nil:
+		return false, err
+	case played:
+		return false, nil
+	}
+	s.passSkips = append(s.passSkips, skip)
+	return true, nil
+}
+
+// tryOpen opens the current entry and installs its decoder as s.cur. It
+// returns played false with the Skip when the file cannot be played, errEntryGone
+// when it no longer exists, and ErrClosed when Close ran meanwhile. On the first call (channels still unknown) it fixes the
 // geometry from the file and keeps its first read as the start of the first
 // period.
 func (s *Source) tryOpen() (Skip, bool, error) {
@@ -258,17 +338,23 @@ func (s *Source) tryOpen() (Skip, bool, error) {
 		s.dropFile()
 		return Skip{Name: s.name, Reason: reason, Class: c}, false, nil
 	}
-	// Open stats the path once, but a later pass can find a FIFO there, and
-	// opening one without a writer blocks before the file is installed, where
-	// Close cannot reach it.
-	fi, err := os.Stat(s.cfg.Path)
+	// An entry can be a FIFO, and opening one without a writer blocks before
+	// the file is installed, where Close cannot reach it.
+	path := filepath.Join(s.dir, s.name)
+	fi, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Skip{}, false, errEntryGone
+	}
 	if err != nil {
 		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
 	}
 	if !fi.Mode().IsRegular() {
 		return Skip{Name: s.name, Reason: "not a regular file", Class: SkipUnreadable}, false, nil
 	}
-	f, err := os.Open(s.cfg.Path)
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Skip{}, false, errEntryGone
+	}
 	if err != nil {
 		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
 	}
