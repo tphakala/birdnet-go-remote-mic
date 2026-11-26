@@ -97,21 +97,19 @@ var releasedUnitTexts = []string{unitTemplate, unitTemplateV010}
 // releasedUnitTexts, since an installed appliance keeps its unit for good.
 // TestHiddenDirsMatchReleasedUnits fails until a row covers any ProtectHome=,
 // PrivateTmp=, InaccessiblePaths= or TemporaryFileSystem= line a released
-// template has. Every directory here also lies in privateDirs.
-var hiddenDirs = []struct {
-	setting string
-	dirs    []string
-}{
-	{"ProtectHome=true", []string{dirHome, dirRoot, "/run/user"}},
-	{"PrivateTmp=true", []string{dirTmp, dirVarTmp}},
+// template has. Every directory here also lies in privateDirs, and no two
+// overlap, so the order HiddenDir visits them in does not matter.
+var hiddenDirs = map[string][]string{
+	"ProtectHome=true": {dirHome, dirRoot, "/run/user"},
+	"PrivateTmp=true":  {dirTmp, dirVarTmp},
 }
 
 // HiddenDir reports the directory the installed service cannot see that path
 // is or lies under, if any. It is lexical: it resolves no links and touches
 // no filesystem, so a caller bounding its filesystem access can still call it.
 func HiddenDir(path string) (dir string, ok bool) {
-	for _, row := range hiddenDirs {
-		for _, d := range row.dirs {
+	for _, dirs := range hiddenDirs {
+		for _, d := range dirs {
 			if within(path, d) {
 				return d, true
 			}

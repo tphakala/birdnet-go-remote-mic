@@ -514,16 +514,16 @@ func TestReportCheckFileSource(t *testing.T) {
 	t.Run("missing path through Open", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "missing.flac")
 		d := checkDevice("dev0", "file:"+path, "/p")
-		if got, want := fileCheckStatus(&d, path), "filesource: no such file or directory; "+wantRetryHint; got != want {
-			t.Errorf("status = %q, want %q", got, want)
+		if got, detail := fileCheckStatus(&d, path); got != "filesource: no such file or directory; "+wantRetryHint || detail != "" {
+			t.Errorf("status = %q, detail = %q, want %q and no detail", got, detail, "filesource: no such file or directory; "+wantRetryHint)
 		}
 	})
 
 	t.Run("no audio through Open", func(t *testing.T) {
 		path := t.TempDir()
 		d := checkDevice("dev0", "file:"+path, "/p")
-		if got, want := fileCheckStatus(&d, path), "filesource: no playable audio; "+wantRetryHint; got != want {
-			t.Errorf("status = %q, want %q", got, want)
+		if got, detail := fileCheckStatus(&d, path); got != "filesource: no playable audio; "+wantRetryHint || detail != "" {
+			t.Errorf("status = %q, detail = %q, want %q and no detail", got, detail, "filesource: no playable audio; "+wantRetryHint)
 		}
 	})
 

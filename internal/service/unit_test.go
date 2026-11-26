@@ -207,20 +207,18 @@ func TestHiddenDirsMatchReleasedUnits(t *testing.T) {
 			}
 		}
 	}
-	rows := make(map[string]bool)
-	for _, row := range hiddenDirs {
-		rows[row.setting] = true
-		if !seen[row.setting] {
-			t.Errorf("hiddenDirs row %q is set by no released unit", row.setting)
+	for setting, dirs := range hiddenDirs {
+		if !seen[setting] {
+			t.Errorf("hiddenDirs row %q is set by no released unit", setting)
 		}
-		for _, dir := range row.dirs {
+		for _, dir := range dirs {
 			if !slices.ContainsFunc(privateDirs, func(p string) bool { return within(dir, p) }) {
 				t.Errorf("hidden dir %q lies in no privateDirs entry %v", dir, privateDirs)
 			}
 		}
 	}
 	for setting := range seen {
-		if !rows[setting] {
+		if _, ok := hiddenDirs[setting]; !ok {
 			t.Errorf("a released unit sets %q, which no hiddenDirs row covers", setting)
 		}
 	}
