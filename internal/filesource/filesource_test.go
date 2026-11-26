@@ -192,6 +192,40 @@ func TestReadLogsDecodeErrorOnce(t *testing.T) {
 	})
 }
 
+func TestReadSurvivesPanickingLogger(t *testing.T) {
+	t.Parallel()
+	const frames = 4096 * 6
+	full := flacBytes(t, testRate, 2, 16, noise(frames, 2))
+	cut := full[:len(full)*2/3]
+	prefix, err := io.ReadAll(mustFlacReader(t, cut))
+	if err == nil || len(prefix) == 0 {
+		t.Fatalf("truncated fixture decodes to %d bytes, err %v; want audio and an error", len(prefix), err)
+	}
+	path := writeFile(t, t.TempDir(), "a.flac", cut)
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		cfg := Config{Path: path, Rate: testRate, MinChannels: 1, MaxChannels: 8, Logf: func(string, ...any) {
+			calls++
+			panic("logger failed")
+		}}
+		s, err := Open(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQuiet(s)
+		periodBytes := periodFrames * 4
+		n := 2*len(prefix)/periodBytes + 2
+		got := readN(t, s, n)
+		want := bytes.Repeat(prefix, n*periodBytes/len(prefix)+1)[:n*periodBytes]
+		if !bytes.Equal(got, want) {
+			t.Fatal("output after a panicking logger is not the decodable prefix repeated once per pass")
+		}
+		if calls != 1 {
+			t.Fatalf("logger called %d times over two passes, want 1", calls)
+		}
+	})
+}
+
 func mustFlacReader(t *testing.T, b []byte) io.Reader {
 	t.Helper()
 	d, err := flacpcm.NewDecoder(bytes.NewReader(b), flacpcm.WithConvertTo(16), flacpcm.SkipMD5Verification())

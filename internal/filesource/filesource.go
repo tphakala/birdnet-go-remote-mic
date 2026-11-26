@@ -346,11 +346,19 @@ func (s *Source) dropFile() {
 	s.cur = nil
 }
 
+// logOnce logs reason for name unless it is the reason last logged for name.
+// Logf is the caller's callback and runs on the capture pump, so a panic in it
+// is recovered here: playback and the file cleanup after the log go on.
 func (s *Source) logOnce(name, reason string) {
 	if s.logged[name] == reason {
 		return
 	}
 	s.logged[name] = reason
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("filesource: %s: logger panicked: %v", name, r)
+		}
+	}()
 	s.logf("filesource: %s: %s", name, reason)
 }
 
