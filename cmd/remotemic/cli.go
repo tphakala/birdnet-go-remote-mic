@@ -431,9 +431,11 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 	if path, ok := config.FileSourcePath(d.Device); ok {
 		status, detail := fileCheckStatus(d, path)
 		// On the device's own line, as the card-index note is. It is lexical,
-		// so it holds after a timeout too.
+		// so it holds after a timeout too. The installed service never sees
+		// such a path, so no retry recovers a failed open there: the note
+		// replaces the retry hint.
 		if dir, hidden := service.HiddenDir(path); hidden {
-			status += "; under " + dir + " (hidden from the installed service)"
+			status = strings.TrimSuffix(status, fileRetryHint) + "; under " + dir + " (hidden from the installed service)"
 		}
 		return status + detail
 	}
@@ -473,6 +475,11 @@ func checkStatus(d *config.Device, owner map[string]string) string {
 	return status
 }
 
+// fileRetryHint follows a failed open of a file source in serve --check: the
+// appliance retries every failed open, a pass with no playable audio
+// included, so both kinds share it.
+const fileRetryHint = "; it starts automatically once it can play"
+
 // fileCheckTimeout bounds the open of a file source in serve --check. The
 // installed unit runs the check as ExecStartPre on every start, so a stat or
 // open on a hung network mount would otherwise hold the start (and keep the
@@ -494,9 +501,7 @@ func fileCheckStatus(d *config.Device, path string) (status, detail string) {
 		src, err := open(cfg)
 		var r result
 		if err != nil {
-			// The appliance retries every failed open, a pass with no playable
-			// audio included, so both kinds share one hint.
-			r.status = err.Error() + "; it starts automatically once it can play"
+			r.status = err.Error() + fileRetryHint
 			if na, ok := errors.AsType[*filesource.NoAudioError](err); ok {
 				for _, s := range na.Skipped {
 					lines = append(lines, s.Name+": "+s.Reason)

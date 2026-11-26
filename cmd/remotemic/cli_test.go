@@ -437,19 +437,63 @@ func swapOpenFileSource(t *testing.T, fn func(filesource.Config) (audio.Source, 
 	openFileSource = fn
 }
 
+// fileCheckCfg is a config of file devices for serve --check, named dev0,
+// dev1 and so on in id order.
+func fileCheckCfg(ids ...string) *config.Config {
+	cfg := config.Default()
+	cfg.Devices = nil
+	for i, id := range ids {
+		cfg.Devices = append(cfg.Devices, checkDevice("dev"+strconv.Itoa(i), id, "/p"+strconv.Itoa(i)))
+	}
+	return &cfg
+}
+
+// TestReportCheckFileHiddenPath pins the serve --check note for a file path
+// under a directory the installed unit hides from the service: on the
+// device's line, ahead of any per-file lines, in place of the retry hint.
+func TestReportCheckFileHiddenPath(t *testing.T) {
+	t.Run("hidden path", func(t *testing.T) {
+		swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
+			cfg.Logf("skipped %s", "x.flac")
+			return geomSource{rate: cfg.Rate, channels: 2}, nil
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCheckCfg("file:/home/pi/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := "file source, 48000 Hz, 2 ch; under /home " + wantHiddenNote + "\n    skipped x.flac"; !strings.Contains(out.String(), want) {
+			t.Errorf("report = %q, want the note on the device line ahead of the skip line: %q", out.String(), want)
+		}
+	})
+
+	// The installed service never sees a hidden path, so no retry recovers it
+	// there: the note stands in for the retry hint rather than contradicting it.
+	t.Run("hidden path that fails", func(t *testing.T) {
+		swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
+			return nil, &filesource.NoAudioError{Skipped: []filesource.Skip{
+				{Name: "a.flac", Reason: "sample rate 44100", Class: filesource.SkipRate},
+			}}
+		})
+		var out bytes.Buffer
+		if err := reportCheck(fileCheckCfg("file:/home/pi/audio"), &out); err != nil {
+			t.Fatal(err)
+		}
+		l := checkLine(out.String(), "dev0")
+		if want := "file:/home/pi/audio  filesource: no playable audio (1 sample rate differs); under /home " + wantHiddenNote; !strings.Contains(l, want) || strings.Contains(l, wantRetryHint) {
+			t.Errorf("line = %q, want %q and no retry hint", l, want)
+		}
+		if !strings.Contains(out.String(), "\n    a.flac: sample rate 44100") {
+			t.Errorf("report lacks the indented skip line: %q", out.String())
+		}
+	})
+}
+
 // TestReportCheckFileSource pins serve --check for file devices: the source is
 // opened as the appliance would open it, never resolved as ALSA hardware, never
 // probed when every device is virtual, and bounded so a hung mount cannot hold
 // the ExecStartPre of a service start.
 func TestReportCheckFileSource(t *testing.T) {
-	fileCfg := func(ids ...string) *config.Config {
-		cfg := config.Default()
-		cfg.Devices = nil
-		for i, id := range ids {
-			cfg.Devices = append(cfg.Devices, checkDevice("dev"+strconv.Itoa(i), id, "/p"+strconv.Itoa(i)))
-		}
-		return &cfg
-	}
+	fileCfg := fileCheckCfg
 	probeCalls := 0
 	prevEnum, prevResolve := captureDevices, resolveDevice
 	t.Cleanup(func() { captureDevices, resolveDevice = prevEnum, prevResolve })
@@ -524,20 +568,6 @@ func TestReportCheckFileSource(t *testing.T) {
 		d := checkDevice("dev0", "file:"+path, "/p")
 		if got, detail := fileCheckStatus(&d, path); got != "filesource: no playable audio; "+wantRetryHint || detail != "" {
 			t.Errorf("status = %q, detail = %q, want %q and no detail", got, detail, "filesource: no playable audio; "+wantRetryHint)
-		}
-	})
-
-	t.Run("hidden path", func(t *testing.T) {
-		swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
-			cfg.Logf("skipped %s", "x.flac")
-			return geomSource{rate: cfg.Rate, channels: 2}, nil
-		})
-		var out bytes.Buffer
-		if err := reportCheck(fileCfg("file:/home/pi/audio"), &out); err != nil {
-			t.Fatal(err)
-		}
-		if want := "file source, 48000 Hz, 2 ch; under /home " + wantHiddenNote + "\n    skipped x.flac"; !strings.Contains(out.String(), want) {
-			t.Errorf("report = %q, want the note on the device line ahead of the skip line: %q", out.String(), want)
 		}
 	})
 
