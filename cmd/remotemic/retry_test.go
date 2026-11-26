@@ -1128,6 +1128,7 @@ func TestApplianceFileDeviceLifecycle(t *testing.T) {
 // loses its capabilities when it fails: a failed card keeps its last-known
 // rates and channels so the settings form can still offer them.
 func TestStatusKeepsFailedAlsaDeviceCapabilities(t *testing.T) {
+	t.Parallel()
 	rt := &deviceRuntime{
 		dev:               testDevice("garden", "usb:1235:8218:s=S1:if=0,0", "/g", 48000),
 		state:             mgmtserver.StateFailed,
