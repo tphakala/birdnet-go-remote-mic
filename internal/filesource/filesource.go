@@ -105,7 +105,6 @@ func (e *NoAudioError) Error() string {
 type Source struct {
 	cfg          Config
 	logf         func(format string, args ...any)
-	rate         int
 	channels     int
 	periodFrames int
 	name         string // base name of the file, for logs and skips
@@ -168,7 +167,7 @@ func Open(cfg Config) (*Source, error) {
 
 // Negotiated returns the device rate and the file's channel count, both fixed
 // for the source's lifetime.
-func (s *Source) Negotiated() (rate, channels int) { return s.rate, s.channels }
+func (s *Source) Negotiated() (rate, channels int) { return s.cfg.Rate, s.channels }
 
 // Overruns counts the times a late reader made the source re-anchor.
 func (s *Source) Overruns() uint64 { return s.pace.overruns.Load() }
@@ -248,13 +247,12 @@ func (s *Source) nextFile() error {
 
 // tryOpen opens the file and installs its decoder as s.cur. It returns played
 // false with the Skip when the file cannot be played, and ErrClosed when Close
-// ran meanwhile. On
-// the first call (channels still unknown) it fixes the geometry from the file
-// and keeps its first read as the start of the first period.
+// ran meanwhile. On the first call (channels still unknown) it fixes the
+// geometry from the file and keeps its first read as the start of the first
+// period.
 func (s *Source) tryOpen() (Skip, bool, error) {
 	skip := func(c SkipClass, reason string) (Skip, bool, error) {
-		s.closeFile()
-		s.cur = nil
+		s.dropFile()
 		return Skip{Name: s.name, Reason: reason, Class: c}, false, nil
 	}
 	// Open stats the path once, but a later pass can find a FIFO there, and
@@ -308,14 +306,13 @@ func (s *Source) tryOpen() (Skip, bool, error) {
 	buf := make([]byte, s.periodFrames*channels*2)
 	m, err := r.Read(buf)
 	if s.closed() {
-		s.closeFile()
-		s.cur = nil
+		s.dropFile()
 		return Skip{}, false, ErrClosed
 	}
 	if m == 0 {
 		return skip(SkipUndecodable, noAudioReason(err))
 	}
-	s.rate, s.channels, s.buf = rate, channels, buf
+	s.channels, s.buf = channels, buf
 	s.primed, s.passAudio, s.fileAudio = m, true, true
 	if err != nil {
 		s.endFile(err)
@@ -337,6 +334,11 @@ func (s *Source) endFile(err error) {
 	default:
 		s.logOnce(s.name, reasonOf(err))
 	}
+	s.dropFile()
+}
+
+// dropFile closes the current file and forgets its decoder.
+func (s *Source) dropFile() {
 	s.closeFile()
 	s.cur = nil
 }

@@ -110,8 +110,6 @@ func readN(t *testing.T, s *Source, n int) []byte {
 	return out
 }
 
-func repeat(b []byte, n int) []byte { return bytes.Repeat(b, n) }
-
 func containsPath(err error, dir string) bool {
 	return err != nil && strings.Contains(err.Error(), dir)
 }

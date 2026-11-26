@@ -46,7 +46,7 @@ func TestReadLoopsFileGaplessly(t *testing.T) {
 		}
 		const periods = 7
 		got := readN(t, s, periods)
-		want := repeat(s16, periods*periodFrames*4/len(s16)+1)[:periods*periodFrames*4]
+		want := bytes.Repeat(s16, periods*periodFrames*4/len(s16)+1)[:periods*periodFrames*4]
 		if !bytes.Equal(got, want) {
 			t.Fatalf("looped output differs from the repeated source (len got %d, want %d)", len(got), len(want))
 		}
@@ -181,7 +181,7 @@ func TestReadLogsDecodeErrorOnce(t *testing.T) {
 		periodBytes := periodFrames * 4
 		n := 3*len(prefix)/periodBytes + 2
 		got := readN(t, s, n)
-		want := repeat(prefix, n*periodBytes/len(prefix)+1)[:n*periodBytes]
+		want := bytes.Repeat(prefix, n*periodBytes/len(prefix)+1)[:n*periodBytes]
 		if !bytes.Equal(got, want) {
 			t.Fatal("output is not the decodable prefix repeated once per pass")
 		}
@@ -222,7 +222,7 @@ func TestOpusLoops(t *testing.T) {
 		periodBytes := periodFrames * 4
 		n := 2*len(want)/periodBytes + 1
 		got := readN(t, s, n)
-		if !bytes.Equal(got[:2*len(want)], repeat(want, 2)) {
+		if !bytes.Equal(got[:2*len(want)], bytes.Repeat(want, 2)) {
 			t.Fatalf("two passes differ from twice the decoded file (%d bytes each)", len(want))
 		}
 	})
@@ -530,7 +530,7 @@ func TestShortFileLoopsWithoutSkipping(t *testing.T) {
 		}
 		defer closeQuiet(s)
 		got := readN(t, s, 3)
-		want := repeat(s16, 3*periodFrames/100+1)[:3*periodFrames*4]
+		want := bytes.Repeat(s16, 3*periodFrames/100+1)[:3*periodFrames*4]
 		if !bytes.Equal(got, want) {
 			t.Fatal("short file does not loop gaplessly")
 		}
