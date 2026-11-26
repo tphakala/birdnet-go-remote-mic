@@ -281,14 +281,22 @@ var errEntryGone = errors.New("entry gone")
 // It forgets the logged reasons of files no longer listed. Its errors are
 // raw, for the caller to strip.
 func (s *Source) scan() error {
-	fi, err := os.Stat(s.cfg.Path)
+	// Open the path once without blocking and decide on the descriptor, so a
+	// path swapped to a FIFO cannot hang the listing where Close cannot reach
+	// it. A directory is listed through the descriptor for the same reason.
+	f, err := openFile(s.cfg.Path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
 	var names []string
 	switch {
 	case fi.IsDir():
-		des, err := os.ReadDir(s.cfg.Path)
+		des, err := f.ReadDir(-1)
 		if err != nil {
 			return err
 		}
@@ -298,6 +306,7 @@ func (s *Source) scan() error {
 				names = append(names, de.Name())
 			}
 		}
+		slices.Sort(names)
 	case fi.Mode().IsRegular():
 		s.dir = filepath.Dir(s.cfg.Path)
 		names = []string{filepath.Base(s.cfg.Path)}
