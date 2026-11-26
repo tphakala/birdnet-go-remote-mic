@@ -39,8 +39,8 @@ func newPacer(rate, periodFrames int) *pacer {
 // and returns the instant to stamp it with: its end, or for a catch-up period
 // the same end expressed on the current wall clock. A reader whose period
 // ended 4 or more periods ago (5 or more completed periods waiting)
-// re-anchors instead of bursting, and the overrun is counted; the next period
-// then waits one full period. It returns ErrClosed when done closes first.
+// re-anchors instead of bursting, and the overrun is counted; the period in
+// hand then waits one full period. It returns ErrClosed when done closes first.
 func (p *pacer) wait(n int, done <-chan struct{}) (time.Time, error) {
 	now := time.Now()
 	if p.anchor.IsZero() {
