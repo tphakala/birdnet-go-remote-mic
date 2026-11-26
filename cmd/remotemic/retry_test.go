@@ -850,8 +850,8 @@ func TestRetryLostDeviceDropsRetry(t *testing.T) {
 
 // openFailureOnset reconciles one device whose every open fails, resolving
 // ids with resolve when it is not nil, and returns the device's one down
-// message and its device error.
-func openFailureOnset(t *testing.T, id string, resolve func(string) (audio.Hardware, error)) (msg, devErr string) {
+// message, its device error, and whether a retry is in flight.
+func openFailureOnset(t *testing.T, id string, resolve func(string) (audio.Hardware, error)) (msg, devErr string, retrying bool) {
 	t.Helper()
 	const name = "moth"
 	app, _, cancel := newTestAppliance(t)
@@ -866,7 +866,7 @@ func openFailureOnset(t *testing.T, id string, resolve func(string) (audio.Hardw
 	if len(act) != 1 {
 		t.Fatalf("active = %+v, want one down condition", act)
 	}
-	return act[0].Message, app.devices[name].status().Error
+	return act[0].Message, app.devices[name].status().Error, app.retrying(name)
 }
 
 // TestRetryOpenFailureMessageMatchesRestartPath pins the open-failure and
@@ -885,7 +885,7 @@ func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
 		{name: "resolve fails, stable id", id: idMoth, want: wantAutoRestart, resolve: resolveFails},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if msg, _ := openFailureOnset(t, tc.id, tc.resolve); !strings.Contains(msg, tc.want) {
+			if msg, _, _ := openFailureOnset(t, tc.id, tc.resolve); !strings.Contains(msg, tc.want) {
 				t.Errorf("message = %q, want it to say %q", msg, tc.want)
 			}
 		})
@@ -922,7 +922,12 @@ func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
 			if tc.config {
 				t.Setenv(configEnv, "/etc/remote-mic/config.yaml")
 			}
-			msg, devErr := openFailureOnset(t, tc.id, nil)
+			msg, devErr, retrying := openFailureOnset(t, tc.id, nil)
+			// Kept for a hidden path too: another unit can pass for the
+			// installed one, and there the path may open.
+			if !retrying {
+				t.Error("no retry in flight after the failed open, want one")
+			}
 			if got := strings.Contains(msg, wantHiddenNote); got != tc.wantNote {
 				t.Errorf("message = %q, want hidden note %v", msg, tc.wantNote)
 			}
