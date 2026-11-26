@@ -897,7 +897,8 @@ func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
 // set), the device error and the down message name the directory, and the
 // message trades the automatic-restart promise, which no retry keeps there,
 // for what brings it back: a path the service can see and a restart, as a
-// running appliance does not reread its config file. Started any other way,
+// running appliance rereads its config file only while its management API is
+// down. Started any other way,
 // or for a path the unit leaves visible, both read as for any open failure.
 func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
 	const (
