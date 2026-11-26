@@ -254,6 +254,16 @@ func (s *Source) tryOpen() (Skip, bool, error) {
 		s.cur = nil
 		return Skip{Name: s.name, Reason: reason, Class: c}, false, nil
 	}
+	// Open stats the path once, but a later pass can find a FIFO there, and
+	// opening one without a writer blocks before the file is installed, where
+	// Close cannot reach it.
+	fi, err := os.Stat(s.cfg.Path)
+	if err != nil {
+		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
+	}
+	if !fi.Mode().IsRegular() {
+		return Skip{Name: s.name, Reason: "not a regular file", Class: SkipUnreadable}, false, nil
+	}
 	f, err := os.Open(s.cfg.Path)
 	if err != nil {
 		return Skip{Name: s.name, Reason: reasonOf(err), Class: SkipUnreadable}, false, nil
