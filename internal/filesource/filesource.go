@@ -159,7 +159,9 @@ func Open(cfg Config) (*Source, error) {
 	if err := s.scan(); err != nil {
 		return nil, fmt.Errorf("file source: %w", stripPath(err))
 	}
-	for s.cur == nil {
+	// Loop until a file fixed the geometry: its priming read may also have
+	// ended it, which leaves s.cur nil with audio already primed.
+	for s.channels == 0 {
 		if s.next >= len(s.entries) {
 			return nil, &NoAudioError{Skipped: s.passSkips}
 		}
