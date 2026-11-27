@@ -668,8 +668,12 @@ test("hardwareLine shows the address, a distinct model, and a card-index warning
 
 test("hardwareLine names a file source by its path in every state, without ALSA", () => {
   const d = { name: "Replay", device: "file:/srv/audio/dawn_chorus.wav", friendlyName: "File source", idStable: true };
-  assert.equal(hardwareLine({ ...d, state: "serving" }), "File source: /srv/audio/dawn_chorus.wav");
-  assert.equal(hardwareLine({ ...d, state: "skipped" }), "File source: /srv/audio/dawn_chorus.wav");
+  for (const state of ["serving", "failed", "skipped", "disabled"] as const) {
+    assert.equal(hardwareLine({ ...d, state }), "File source: /srv/audio/dawn_chorus.wav", state);
+  }
+  assert.equal(hardwareLine({ ...d, state: "failed", hwAddr: "hw:2,0" }), "File source: /srv/audio/dawn_chorus.wav");
+  // "file:" alone is still a file id, with an empty path.
+  assert.equal(hardwareLine({ ...d, device: "file:", state: "skipped" }), "File source: ");
 });
 
 test("availableLabel adds the address to a friendly name, else falls back", () => {
