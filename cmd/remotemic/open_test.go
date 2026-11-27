@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -281,8 +282,8 @@ func (g geomSource) Close() error                     { return nil }
 // TestOpenRuntimeOpensFileSourceOnce pins the appliance's file dispatch
 // through its production opener: a file id never reaches the ALSA seams, is
 // attempted exactly once, gets channel bounds from the selection and the
-// config cap, and a failed open returns the error itself (no typed-nil source
-// in the interface).
+// config cap, a failed open returns the error itself (no typed-nil source in
+// the interface), and once the appliance's lifetime ends no open starts.
 func TestOpenRuntimeOpensFileSourceOnce(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int {
 		t.Error("resolveOpenChannels called for a file device")
@@ -306,7 +307,9 @@ func TestOpenRuntimeOpensFileSourceOnce(t *testing.T) {
 
 	dev := &config.Device{Name: "yard", Device: "file:/srv/audio", Rate: 48000, Format: testFmtS16,
 		Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}, {Path: "/b", Mode: config.ModePCM, Channels: []int{3, 2}}}}
-	a := newAppliance(t.Context(), nil, nil, nil, nil, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := newAppliance(ctx, nil, nil, nil, nil, nil)
 	rt, err := a.open(dev, 2, levels.NewHub())
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -328,6 +331,16 @@ func TestOpenRuntimeOpensFileSourceOnce(t *testing.T) {
 	}
 	if len(cfgs) != 1 {
 		t.Errorf("failed open attempted %d times, want 1", len(cfgs))
+	}
+
+	cancel()
+	cfgs = nil
+	rt, err = a.open(dev, 0, levels.NewHub())
+	if rt != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("open after the appliance stopped = %v, %v; want nil and context.Canceled", rt, err)
+	}
+	if len(cfgs) != 0 {
+		t.Errorf("open after the appliance stopped attempted %d times, want 0", len(cfgs))
 	}
 }
 
