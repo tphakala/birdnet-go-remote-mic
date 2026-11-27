@@ -603,8 +603,8 @@ func TestReportCheckFileSource(t *testing.T) {
 			if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
 				t.Fatal(err)
 			}
-			if got := time.Since(start); got != fileCheckTimeout {
-				t.Errorf("check took %v, want %v", got, fileCheckTimeout)
+			if got := time.Since(start); got != fileOpenTimeout {
+				t.Errorf("check took %v, want %v", got, fileOpenTimeout)
 			}
 			if l, want := checkLine(out.String(), "dev0"), "file:/srv/audio  no answer from the filesystem within 5s"; !strings.Contains(l, want) {
 				t.Errorf("line = %q, want it to contain %q", l, want)
