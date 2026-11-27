@@ -353,8 +353,9 @@ const hostile: { what: string; devices: Device[]; secret: string; keep?: string 
     secret: "SECRET",
     keep: "open <path>: no such file",
   },
-  // The next three guard the space rule above: a path's continuation stops at
-  // ": ", before a parenthesis, and before a kept kernel path.
+  // The rows below guard the space rule above: a path's continuation stops
+  // after ":", ";", "," and ")", before a parenthesis or a bracket, and before
+  // a kept kernel path.
   {
     what: "a path before an errno text holding a slash",
     devices: [device({ name: "g", state: "failed", error: "read /srv/SECRET.wav: input/output error" })],
@@ -372,6 +373,36 @@ const hostile: { what: string; devices: Device[]; secret: string; keep?: string 
     devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav /proc/asound/cards: permission denied" })],
     secret: "SECRET",
     keep: "open <path> /proc/asound/cards: permission denied",
+  },
+  {
+    what: "a path before a semicolon and a word holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav; read/write denied" })],
+    secret: "SECRET",
+    keep: "open <path> read/write denied",
+  },
+  {
+    what: "a path before a comma and a word holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav, read/write denied" })],
+    secret: "SECRET",
+    keep: "open <path> read/write denied",
+  },
+  {
+    what: "a path closing a parenthesis before a word holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "stat (/srv/SECRET.wav) open/close failed" })],
+    secret: "SECRET",
+    keep: "stat (<path>) open/close failed",
+  },
+  {
+    what: "a path before a bracketed note holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav [read/write] denied" })],
+    secret: "SECRET",
+    keep: "open <path> [read/write] denied",
+  },
+  {
+    what: "a path before a kept sound device path",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav /dev/snd/pcmC0D0c: busy" })],
+    secret: "SECRET",
+    keep: "open <path> /dev/snd/pcmC0D0c: busy",
   },
 ];
 
