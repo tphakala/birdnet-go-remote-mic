@@ -779,6 +779,9 @@ func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
 			if !strings.Contains(act[0].Message, tc.want) {
 				t.Errorf("message = %q, want it to say %q", act[0].Message, tc.want)
 			}
+			if strings.Contains(act[0].Message, wantHiddenNote) {
+				t.Errorf("message = %q, want no hidden-path note after a successful open", act[0].Message)
+			}
 		})
 	}
 }

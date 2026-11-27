@@ -103,8 +103,12 @@ func TestSandboxHiddenDir(t *testing.T) {
 	// Derived: PrivateTmp='s read-only fallback in place of the private /tmp.
 	empty := table(svcRoot, svcRun, svcHostTmp, svcHome, svcRootDir, svcRunUser,
 		"200 289 0:22 /systemd/empty /tmp ro,nosuid,nodev,noexec,relatime shared:233 master:5 - tmpfs tmpfs rw,size=777368k,mode=755", svcVarTmp)
-	// Malformed: a duplicate id 2 makes 2 -> 3 -> 2 a cycle.
-	looping := table("1 0 0:1 / / rw - x x rw", "2 1 0:1 / /home rw - x x rw", "3 2 0:1 / /home rw - x x rw", "2 3 0:1 / /home rw - x x rw")
+	// Malformed: a duplicate id 2 makes 2 -> 3 -> 2 a cycle of sandbox
+	// mounts, so a walk that gave up on the mount it stopped at would note it.
+	looping := table("1 0 0:1 / / rw - x x rw",
+		"2 1 0:1 /systemd/inaccessible/dir /home rw - x x rw",
+		"3 2 0:1 /systemd/inaccessible/dir /home rw - x x rw",
+		"2 3 0:1 /systemd/inaccessible/dir /home rw - x x rw")
 
 	tests := []struct {
 		name, path, want string
@@ -126,6 +130,13 @@ func TestSandboxHiddenDir(t *testing.T) {
 		{"bind on top of the private /tmp", "/tmp/audio/a.flac", "", bound},
 		{"beside a bind on the private /tmp", "/tmp/other.flac", dirTmp, bound},
 		{"read-only /tmp fallback", tmpFile, dirTmp, empty},
+		// Derived: a bind at /tmp of a directory inside a private dir that is
+		// not its tmp directory, which a process can see into.
+		{"bind from inside a private directory", tmpFile, "", table(svcRoot, svcRun, svcHostTmp,
+			"200 289 0:35 /systemd-private-b0debf5e106542878cba642025437640-remote-mic.service-f9H7YH/tmp/audio /tmp rw,nosuid,nodev shared:233 master:79 - tmpfs tmpfs rw,nr_inodes=1048576")},
+		// Derived: an operator's bind of /data/tmp onto /tmp, no sandbox.
+		{"bind of another tmp directory", tmpFile, "", table(svcRoot, svcRun, svcHostTmp,
+			"201 289 179:2 /data/tmp /tmp rw,nosuid,noatime - ext4 /dev/mmcblk0p2 rw")},
 		{"malformed table", homeAudio, "", with("7 1 0:1")},
 		{"path under no hidden directory", "/srv/audio", "", func() ([]mountEntry, error) {
 			t.Error("the mount table was read for a path under no hidden directory")
