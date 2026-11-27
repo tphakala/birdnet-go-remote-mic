@@ -20,6 +20,7 @@ import (
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/notify"
+	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
 )
 
 var errTestEIO = errors.New("input/output error")
@@ -723,25 +724,46 @@ func TestRetryConfigSaveRecoversRetryingDevice(t *testing.T) {
 	}
 }
 
+// hideFromSandbox makes sandboxHiddenDir report path hidden, under the
+// directory service.HiddenDir names for it, and only path, until the test
+// ends, so a caller passing the file: id instead of its path gets nothing.
+// Callers are sequential, like every newTestAppliance user, so no parallel
+// test reads the seam while it is swapped.
+func hideFromSandbox(t *testing.T, path string) {
+	t.Helper()
+	dir, ok := service.HiddenDir(path)
+	if !ok {
+		t.Fatalf("%s is under no hidden directory", path)
+	}
+	saved := sandboxHiddenDir
+	t.Cleanup(func() { sandboxHiddenDir = saved })
+	sandboxHiddenDir = func(p string) (string, bool) {
+		if p == path {
+			return dir, true
+		}
+		return "", false
+	}
+}
+
 // TestRetryFailedMessageMatchesRestartPath pins the failed-while-present text:
 // a stable id says it restarts on its own, a card-index id (never restarted
 // unattended) says it waits for a config save, and a file device that served
-// says it restarts on its own even under a directory the installed unit hides.
+// says it restarts on its own even under a directory the sandbox reports
+// hidden.
 func TestRetryFailedMessageMatchesRestartPath(t *testing.T) {
 	for _, tc := range []struct {
 		name, id, want string
-		installedUnit  bool
+		hidden         bool
 	}{
 		{name: "stable id", id: idMoth, want: wantAutoRestart},
 		{name: "card index", id: addrHW3, want: "restarts on the next config save"},
 		// A path that opened is visible, so a hidden-path hint is wrong here
-		// whatever the environment says.
-		{name: "file under a hidden dir", id: "file:/home/pi/audio", want: wantAutoRestart, installedUnit: true},
+		// whatever the sandbox check says.
+		{name: "file under a hidden dir", id: "file:/home/pi/audio", want: wantAutoRestart, hidden: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.installedUnit {
-				t.Setenv("INVOCATION_ID", "0123456789abcdef")
-				t.Setenv(configEnv, "/etc/remote-mic/config.yaml")
+			if tc.hidden {
+				hideFromSandbox(t, "/home/pi/audio")
 			}
 			app, log, cancel := newTestAppliance(t)
 			defer cancel()
@@ -892,50 +914,48 @@ func TestRetryOpenFailureMessageMatchesRestartPath(t *testing.T) {
 	}
 }
 
-// TestRetryOpenFailureNamesHiddenDir pins a file device whose path the
-// installed unit hides: started by that unit (systemd with $REMOTEMIC_CONFIG
-// set), the device error and the down message name the directory, and the
-// message trades the automatic-restart promise, which no retry keeps there,
-// for what brings it back: a path the service can see and a restart, as a
-// running appliance rereads its config file only while its management API is
-// down. Started any other way,
-// or for a path the unit leaves visible, both read as for any open failure.
+// TestRetryOpenFailureNamesHiddenDir pins a file device whose path this
+// process's sandbox hides: the device error and the down message name the
+// directory, and the message trades the automatic-restart promise, which no
+// retry keeps there, for what brings it back: a path the service can see and
+// a restart, as a running appliance rereads its config file only while its
+// management API is down. The sandbox decides, not the environment: under the
+// installed unit's environment with the path left visible, both read as for
+// any open failure.
 func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
 	const (
-		home     = "file:/home/pi/audio"
+		homePath = "/home/pi/audio"
 		homeNote = "under /home (hidden from the installed service)"
 		hint     = "it starts once the config names a path the service can see and the service is restarted"
 	)
 	for _, tc := range []struct {
-		name, id           string
-		invocation, config bool
-		wantNote           bool
+		name         string
+		hidden, unit bool
 	}{
-		{name: "installed unit, hidden path", id: home, invocation: true, config: true, wantNote: true},
-		{name: "installed unit, visible path", id: "file:/srv/audio", invocation: true, config: true},
-		{name: "other unit, hidden path", id: home, invocation: true},
-		{name: "by hand, hidden path", id: home, config: true},
+		{name: "sandbox hides the path", hidden: true},
+		{name: "installed-unit environment, sandbox leaves the path visible", unit: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.invocation {
-				t.Setenv("INVOCATION_ID", "0123456789abcdef")
+			if tc.hidden {
+				hideFromSandbox(t, homePath)
 			}
-			if tc.config {
+			if tc.unit {
+				t.Setenv("INVOCATION_ID", "0123456789abcdef")
 				t.Setenv(configEnv, "/etc/remote-mic/config.yaml")
 			}
-			msg, devErr, retrying := openFailureOnset(t, tc.id, nil)
-			// Kept for a hidden path too: another unit can pass for the
-			// installed one, and there the path may open.
+			msg, devErr, retrying := openFailureOnset(t, "file:"+homePath, nil)
+			// Kept for a hidden path too: every failed open is retried, at
+			// one open per backoff step.
 			if !retrying {
 				t.Error("no retry in flight after the failed open, want one")
 			}
-			if got := strings.Contains(msg, wantHiddenNote); got != tc.wantNote {
-				t.Errorf("message = %q, want hidden note %v", msg, tc.wantNote)
+			if got := strings.Contains(msg, wantHiddenNote); got != tc.hidden {
+				t.Errorf("message = %q, want hidden note %v", msg, tc.hidden)
 			}
-			if got := strings.Contains(devErr, wantHiddenNote); got != tc.wantNote {
-				t.Errorf("device error = %q, want hidden note %v", devErr, tc.wantNote)
+			if got := strings.Contains(devErr, wantHiddenNote); got != tc.hidden {
+				t.Errorf("device error = %q, want hidden note %v", devErr, tc.hidden)
 			}
-			if !tc.wantNote {
+			if !tc.hidden {
 				if !strings.Contains(msg, wantAutoRestart) {
 					t.Errorf("message = %q, want it to say %q", msg, wantAutoRestart)
 				}

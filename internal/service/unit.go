@@ -107,6 +107,8 @@ var hiddenDirs = map[string][]string{
 // HiddenDir reports the directory the installed service cannot see that path
 // is or lies under, if any. It is lexical: it resolves no links and touches
 // no filesystem, so a caller bounding its filesystem access can still call it.
+// It predicts for the released units; SandboxHiddenDir says whether this
+// process actually cannot see the path.
 func HiddenDir(path string) (dir string, ok bool) {
 	for _, dirs := range hiddenDirs {
 		for _, d := range dirs {
