@@ -1,6 +1,6 @@
 # oapi-codegen configuration for the management API.
 # Generate with:
-#   go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 \
+#   go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.2 \
 #     -config api/oapi-codegen.yaml api/openapi.yaml
 package: mgmtapi
 generate:
