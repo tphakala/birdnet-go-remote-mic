@@ -18,8 +18,9 @@ import (
 // hung network mount can block indefinitely. The appliance's run loop and
 // serve --check (the installed unit's ExecStartPre, which would otherwise
 // hold the start and keep the management API down) both stop waiting after
-// it. A disk spinning up can take longer, but the open abandoned here still
-// finishes and warms the caches, so the next retry is fast.
+// it. A slower open (a disk spinning up) is abandoned and retried; the
+// abandoned open still runs to the end, which may warm the caches for the
+// retry.
 const fileOpenTimeout = 5 * time.Second
 
 var (
@@ -66,6 +67,9 @@ func (f *fileOpens) open(ctx context.Context, cfg filesource.Config) (audio.Sour
 	}
 	res := make(chan result)       // unbuffered: only a caller still waiting takes the source
 	abandon := make(chan struct{}) // closed once the caller stopped waiting
+	// Not waited for: an open blocked in a syscall cannot be interrupted. The
+	// pending entry bounds these goroutines to one per path, and a source that
+	// arrives after the caller gave up is closed here.
 	go func() {
 		src, err := open(cfg)
 		// Cleared before the handoff, so the caller's next open of this path
