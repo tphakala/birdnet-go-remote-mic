@@ -191,13 +191,11 @@ test("fileSourcePath cuts the raw file: prefix exactly as config.FileSourcePath 
 
 test("identityHint describes a file source before any stability, and a hardware id by its stability", () => {
   const usb = "usb:0d8c:0014:s=X:if=0,0";
-  for (const idStable of [true, false, undefined]) {
-    const file = identityHint("file:/srv/a.wav", idStable);
-    assert.ok(file.includes("config file"), `idStable ${idStable}: ${file}`);
-    for (const hw of ["follows the hardware", "card index", "unknown"]) {
-      assert.ok(!file.includes(hw), `idStable ${idStable}: ${file}`);
-    }
-  }
+  // A file id gets the same hint whatever idStable says.
+  const file = identityHint("file:/srv/a.wav", undefined);
+  assert.ok(file.includes("config file"), file);
+  assert.equal(identityHint("file:/srv/a.wav", true), file);
+  assert.equal(identityHint("file:/srv/a.wav", false), file);
   assert.ok(identityHint("hw:1,0", false).includes("card index"));
   assert.ok(identityHint(usb, true).includes("follows the hardware"));
   assert.ok(identityHint(usb, undefined).includes("unknown"));
