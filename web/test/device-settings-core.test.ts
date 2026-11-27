@@ -184,8 +184,8 @@ test("fileSourcePath cuts the raw file: prefix exactly as config.FileSourcePath 
   // The server cuts the prefix off the raw id with nothing before it.
   const src = readFileSync(CONFIG_GO, "utf8");
   assert.ok(
-    /func FileSourcePath\(id string\) \(string, bool\) \{\s*\w+, \w+ := strings\.CutPrefix\(id, "file:"\)/.test(src),
-    "config.FileSourcePath no longer cuts \"file:\" off the raw id; update fileSourcePath to match",
+    /func FileSourcePath\((\w+) string\) \(string, bool\) \{\s*(?:if\s+)?\w+, \w+ := strings\.CutPrefix\(\1, "file:"\)/.test(src),
+    "config.FileSourcePath changed shape; check whether it still cuts \"file:\" off the raw id, then update fileSourcePath or this pattern",
   );
 });
 
