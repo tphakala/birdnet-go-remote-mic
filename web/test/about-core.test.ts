@@ -437,6 +437,9 @@ test("supportDetails names a raw file: id a file path without the path, and keep
   ].join("\n");
   assert.ok(got.includes(want), got);
   assert.ok(!got.includes("SECRET"), got);
+  // An older appliance omits idStable; a file id is still stable by its form.
+  const older = supportDetails(null, null, [device({ name: "y", device: "file:/srv/c.wav" })]);
+  assert.ok(older.includes("  ID: file path, stable\n"), older);
   // The file check reads the raw id, as config.FileSourcePath does: a padded
   // one is not a file source there.
   const padded = supportDetails(null, null, [device({ name: "x", device: " file:/srv/b.wav", idStable: false })]);
