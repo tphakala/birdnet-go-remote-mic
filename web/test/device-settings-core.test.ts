@@ -196,7 +196,10 @@ test("identityHint describes a file source before any stability, and a hardware 
   assert.ok(file.includes("config file"), file);
   assert.equal(identityHint("file:/srv/a.wav", true), file);
   assert.equal(identityHint("file:/srv/a.wav", false), file);
-  assert.ok(identityHint("hw:1,0", false).includes("card index"));
-  assert.ok(identityHint(usb, true).includes("follows the hardware"));
-  assert.ok(identityHint(usb, undefined).includes("unknown"));
+  const index = identityHint("hw:1,0", false);
+  assert.ok(index.includes("card index"), index);
+  const stable = identityHint(usb, true);
+  assert.ok(stable.includes("follows the hardware"), stable);
+  const unknown = identityHint(usb, undefined);
+  assert.ok(unknown.includes("unknown"), unknown);
 });
