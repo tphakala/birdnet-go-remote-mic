@@ -1003,6 +1003,9 @@ func TestRetryRereadsTheSandbox(t *testing.T) {
 		if e := app.devices["moth"].status().Error; strings.Contains(e, wantHiddenNote) {
 			t.Errorf("device error = %q, want no hidden note", e)
 		}
+		if got := countDown(t, app, "moth", notify.KindOnset); got != 1 {
+			t.Errorf("down onsets = %d, want 1: the text is rewritten in place", got)
+		}
 	})
 }
 
