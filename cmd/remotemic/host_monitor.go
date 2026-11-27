@@ -6,6 +6,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/levels"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/mgmtserver"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/monitor"
@@ -59,7 +60,8 @@ func (r hostReader) Disk() (total, used, avail int64, ok bool) {
 // stopped") rather than clearing it with a misleading recovery message. A
 // restarted device gets a fresh runtime with a new Gen and counters that start at
 // zero; the monitor rebaselines when the Gen changes, falling back to a counter
-// that goes backwards.
+// that goes backwards. Each entry also says whether the device is a file
+// source, so the monitor words its overruns for it.
 func (p *provider) deviceCounters() []monitor.DeviceCounters {
 	recs := p.deviceList()
 	out := make([]monitor.DeviceCounters, 0, len(recs))
@@ -67,7 +69,8 @@ func (p *provider) deviceCounters() []monitor.DeviceCounters {
 		if rt.currentState() != mgmtserver.StateServing {
 			continue
 		}
-		out = append(out, monitor.DeviceCounters{Name: rt.dev.Name, Gen: rt.gen, Dropped: rt.droppedTotal(), Overruns: rt.overruns()})
+		_, file := config.FileSourcePath(rt.dev.Device)
+		out = append(out, monitor.DeviceCounters{Name: rt.dev.Name, Gen: rt.gen, Dropped: rt.droppedTotal(), Overruns: rt.overruns(), File: file})
 	}
 	return out
 }

@@ -1817,7 +1817,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 .menu-item:focus-visible,
 .license-summary:focus-visible,
 .license-text-summary:focus-visible,
-.license-text:focus-visible {
+.license-text:focus-visible,
+.table-scroll:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
@@ -2048,7 +2049,8 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 }
 
 /* A file source shows its whole file: id here, which can be one long word:
-   let it break anywhere so the table still fits a tablet-width card. */
+   let it break anywhere so the table still fits a tablet-width card. The
+   sweep checks this at TABLET_WIDTH (web/e2e/sweep.ts). */
 .client-table td.source-id {
   overflow-wrap: anywhere;
 }
@@ -3285,8 +3287,19 @@ select.field-input {
   align-items: center;
   gap: 10px;
 }
-.settings-actions-spacer {
-  flex: 1;
+/* A device card's actions wrap at a narrow width or a large font, so Save
+   stays inside the card; Cancel and Save keep together at the right. The
+   confirm dialog's row (.modal-card .settings-actions) does not wrap. */
+.card-settings .settings-actions {
+  flex-wrap: wrap;
+}
+.settings-actions-end {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
 }
 /* Stale notice shown in an open device settings form when the saved config
    changed elsewhere while the form was open. The Reload link rebuilds the form

@@ -127,7 +127,7 @@ export class SettingsPanel {
     const cancelBtn = button({ variant: "secondary", label: "Cancel" });
     const saveBtn = button({ variant: "primary", label: "Save Changes" });
     const actions = h("div", { class: "settings-actions" },
-      removeBtn, badge, staleNote, h("span", { class: "settings-actions-spacer" }), cancelBtn, saveBtn,
+      removeBtn, badge, staleNote, h("div", { class: "settings-actions-end" }, cancelBtn, saveBtn),
     );
     reloadBtn.addEventListener("click", () => void this.reload());
     removeBtn.addEventListener("click", () => void this.remove(removeBtn));

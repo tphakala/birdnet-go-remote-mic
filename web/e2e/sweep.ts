@@ -18,7 +18,12 @@
 //   - the native <dialog> modals: the confirm dialog open (audited like a view,
 //     in every combination), and, once, that Cancel takes focus, Escape and an
 //     outside click close a confirm and return focus, and the access-token
-//     prompt and the restart modal stay open under Escape.
+//     prompt and the restart modal stay open under Escape;
+//   - the settings panel of the first device card and of the file: device's
+//     card open (audited like a view, in every combination), and that nothing
+//     in it passes its card's right edge;
+//   - once, at a tablet width, that the Stream Status table fits its scroll
+//     box with the mock's long file: device id in it.
 //
 // It runs every combination of theme, viewport width and browser default font
 // size, over each view plus the open notification panel, theme menu and error
@@ -143,6 +148,13 @@ interface OverflowResult {
   scrollWidth: number;
   clientWidth: number;
   offenders: Array<{ selector: string; right: number; width: number }>;
+}
+
+interface ContainResult {
+  boxRight: number;
+  // How many visible, unclipped elements in the scope were measured.
+  checked: number;
+  offenders: Array<{ selector: string; right: number }>;
 }
 
 interface StabilityResult {
@@ -522,6 +534,57 @@ function auditOverflow(): OverflowResult {
   }
   offenders.sort((a, b) => b.right - a.right);
   return { scrollWidth: root.scrollWidth, clientWidth: vw, offenders: offenders.slice(0, 8) };
+}
+
+// auditContained finds the visible elements in scope whose right edge passes
+// the right edge of box, an ancestor of scope. Unlike auditOverflow it catches
+// content that sticks out of its card while the page stays within the viewport.
+function auditContained(opts: { box: string; scope: string }): ContainResult {
+  const box = document.querySelector(opts.box);
+  const scope = document.querySelector(opts.scope);
+  if (!box || !scope) return { boxRight: 0, checked: 0, offenders: [] };
+  const b = box.getBoundingClientRect();
+  const describe = (el: Element): string => {
+    const parts: string[] = [];
+    let cur: Element | null = el;
+    while (cur && cur !== box && parts.length < 3) {
+      let s = cur.tagName.toLowerCase();
+      const cls = [...cur.classList].slice(0, 2);
+      if (cls.length) s += "." + cls.join(".");
+      parts.unshift(s);
+      cur = cur.parentElement;
+    }
+    return parts.join(" > ");
+  };
+  // Content inside a clipping ancestor below the box (a dropdown's value
+  // group) cannot paint past it.
+  const clipped = (el: Element): boolean => {
+    for (let cur = el.parentElement; cur && cur !== box; cur = cur.parentElement) {
+      if (getComputedStyle(cur).overflowX !== "visible") return true;
+    }
+    return false;
+  };
+  let checked = 0;
+  const offenders: ContainResult["offenders"] = [];
+  // The scope itself is measured too: its parent is the box, so a scope that
+  // passes the card is reported rather than hiding its children.
+  for (const el of [scope, ...scope.querySelectorAll("*")]) {
+    // A closed dropdown menu stays laid out at opacity 0.
+    if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || clipped(el)) continue;
+    // Only the scope's content counts as measured, so a scope that clips all
+    // of it still reads as nothing measured.
+    if (el !== scope) checked++;
+    if (r.right <= b.right + 1) continue;
+    // Report the element that sticks out of its parent (a button, not also its
+    // label span).
+    const parent = el.parentElement;
+    if (parent && parent !== box && parent.getBoundingClientRect().right > b.right + 1) continue;
+    offenders.push({ selector: describe(el), right: Math.round(r.right) });
+  }
+  offenders.sort((x, y) => y.right - x.right);
+  return { boxRight: Math.round(b.right), checked, offenders: offenders.slice(0, 8) };
 }
 
 function sampleStability(opts: { minMs: number; maxMs: number }): Promise<StabilityResult> {
@@ -968,6 +1031,55 @@ async function checkAvailablePatch(page: Page, server: MockServer, findings: Fin
   }
 }
 
+// TABLET_WIDTH is a viewport inside the band where the Stream Status table
+// needs its source-id wrap rule: narrower, the table scrolls in its box with
+// or without the rule; wider, it fits either way.
+const TABLET_WIDTH = 768;
+
+// checkStreamTableFits loads the System view at TABLET_WIDTH and checks that
+// the Stream Status table, with the mock's long file: device id in it, fits
+// its scroll box. The page overflow check cannot see this: a table that
+// scrolls inside .table-scroll never widens the page (auditOverflow's clipped).
+async function checkStreamTableFits(browser: Browser, serverUrl: string, findings: Finding[]): Promise<void> {
+  const where = `stream status at ${TABLET_WIDTH}px`;
+  const context = await browser.newContext({ viewport: { width: TABLET_WIDTH, height: 900 } });
+  try {
+    const page = await context.newPage();
+    await page.goto(`${serverUrl}/#/system`);
+    try {
+      await page.waitForSelector(VIEW_READY.system, { state: "attached", timeout: RECOVERY_MS });
+      await page.waitForFunction(
+        (sel: string) => [...document.querySelectorAll(sel)].some((td) => td.textContent?.startsWith("file:") === true),
+        "#sys-device-rows td.source-id",
+        { timeout: RECOVERY_MS },
+      );
+    } catch {
+      findings.push({ kind: "render", where, key: `${where}: no file: device row`, detail: "the Stream Status table never showed a file: device id" });
+      return;
+    }
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    const m = await page.evaluate(() => {
+      const el = document.querySelector("#view-system .client-card .table-scroll");
+      return el ? { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth } : null;
+    });
+    // A hidden box measures 0 = 0 and would pass.
+    if (!m || m.clientWidth === 0) {
+      findings.push({ kind: "render", where, key: `${where}: no scroll box`, detail: "the Stream Status .table-scroll is missing or has no width" });
+      return;
+    }
+    if (m.scrollWidth > m.clientWidth + 1) {
+      findings.push({
+        kind: "overflow",
+        where,
+        key: "Stream Status table wider than its scroll box",
+        detail: `table scrollWidth ${m.scrollWidth}px > clientWidth ${m.clientWidth}px at ${TABLET_WIDTH}px`,
+      });
+    }
+  } finally {
+    await context.close();
+  }
+}
+
 async function sweep(flags: Flags, browser: Browser, server: MockServer): Promise<number> {
   const serverUrl = server.url;
 
@@ -1111,6 +1223,57 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
       }
     };
 
+    // A device card's settings panel open (toggle is its settings button),
+    // audited like a view, plus a check that it stays inside its card: at
+    // 320 px and a 16 px font the Save button once ended 10 px past its card
+    // while the page stayed 320 px wide, which the page overflow check cannot
+    // see.
+    const checkSettingsPanel = async (toggle: string, where: string): Promise<void> => {
+      const card = ".rack-card.expanded";
+      try {
+        await page.click(toggle);
+        await page.waitForSelector(`${card} .card-settings:not([hidden]) .settings-actions`, { state: "visible", timeout: RECOVERY_MS });
+      } catch {
+        findings.push({ kind: "render", where, key: `${where}: did not open`, detail: `no open .card-settings after ${toggle}` });
+        // The click may have expanded the card without showing the panel;
+        // reload so the next call does not find this card as .expanded.
+        await page.reload();
+        await ready("dashboard");
+        return;
+      }
+      await check(where, `${card} .card-settings`);
+      const c = await page.evaluate(auditContained, { box: card, scope: `${card} .card-settings` });
+      if (c.checked === 0) {
+        findings.push({ kind: "render", where, key: `${where}: nothing measured`, detail: "the open settings panel had no visible element to measure against its card" });
+      }
+      for (const o of c.offenders) {
+        findings.push({ kind: "overflow", where, key: `${o.selector} past its card`, detail: `${o.selector} right ${o.right}px > card right ${c.boxRight}px` });
+      }
+      try {
+        await page.click(`${card} .card-settings-toggle`);
+      } catch {
+        findings.push({ kind: "focus", where, key: `${where}: close click failed`, detail: "the settings button could not be clicked to close the panel" });
+        await page.reload();
+        await ready("dashboard");
+        return;
+      }
+      const closed = await page
+        .waitForFunction((sel: string) => document.querySelector(sel) === null, card, { timeout: RECOVERY_MS })
+        .then(() => true)
+        .catch(() => false);
+      if (closed) return;
+      // A form that loaded dirty (a downgraded codec) asks to discard first,
+      // which is expected; any other way of staying open is a finding.
+      const confirming = await page.evaluate((sel: string) => document.querySelector(sel) !== null, `${CONFIRM}[open]`);
+      if (confirming) {
+        await page.keyboard.press("Escape");
+      } else {
+        findings.push({ kind: "focus", where, key: "settings panel did not close", detail: "the settings button left the panel open" });
+      }
+      await page.reload();
+      await ready("dashboard");
+    };
+
     await page.goto(`${serverUrl}/#/${views[0]}`);
     for (const view of views) {
       await page.evaluate((v: string) => {
@@ -1165,6 +1328,10 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
             findings.push({ kind: "stability", where: view, key: `${r.selector} level cycle not seen`, detail: `${r.selector} never showed both -inf and a -xx.x dBFS readout (saw ${r.readouts.join(", ") || "none"})` });
           }
         }
+        // The first card, and the file: device's card, whose form carries the
+        // longer file source hints (its id tooltip names the file: id).
+        await checkSettingsPanel("#channel-rack .rack-card .card-settings-toggle", "settings panel open");
+        await checkSettingsPanel(`#channel-rack .rack-card:has([title*=": file:"]) .card-settings-toggle`, "file settings panel open");
       }
     }
 
@@ -1173,7 +1340,10 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
     if (combo === combos[0]) {
       await checkRetryFocus(page, server, views, findings);
       if (views.includes("dashboard")) await checkAvailablePatch(page, server, findings);
-      if (views.includes("system")) await checkModals(page, server, findings);
+      if (views.includes("system")) {
+        await checkModals(page, server, findings);
+        await checkStreamTableFits(browser, serverUrl, findings);
+      }
     }
 
     // Open states, checked on the dashboard: only the overlay is audited for
