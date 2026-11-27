@@ -594,6 +594,7 @@ func TestReportCheckFileSource(t *testing.T) {
 	t.Run("hung filesystem", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			release := make(chan struct{}) // inside the bubble, so the blocked open counts as durably blocked
+			defer close(release)           // also on t.Fatal, so the bubble never ends with the open still blocked
 			swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
 				cfg.Logf("slow.flac: skipped") // the open got this far before it hung
 				<-release
@@ -614,7 +615,6 @@ func TestReportCheckFileSource(t *testing.T) {
 			if strings.Contains(out.String(), "slow.flac") {
 				t.Errorf("report shows a line from the abandoned open:\n%s", out.String())
 			}
-			close(release)
 		})
 	})
 }
