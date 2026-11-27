@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -151,18 +152,14 @@ func TestApplianceHungFileOpen(t *testing.T) {
 func TestFileOpensStopsWaitingOnShutdown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		release := make(chan struct{}) // inside the bubble, so the blocked open counts as durably blocked
-		var mu sync.Mutex
-		calls := 0
+		var calls atomic.Int32
 		swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
-			mu.Lock()
-			calls++
-			mu.Unlock()
+			calls.Add(1)
 			<-release
 			return nil, errors.New("released")
 		})
-		releaseOnce := sync.OnceFunc(func() { close(release) })
 		defer func() {
-			releaseOnce()
+			close(release)
 			synctest.Wait()
 		}()
 
@@ -186,10 +183,8 @@ func TestFileOpensStopsWaitingOnShutdown(t *testing.T) {
 			t.Errorf("open after cancel waited %v, want no wait", got)
 		}
 		synctest.Wait() // let a wrongly started open reach the seam before counting
-		mu.Lock()
-		defer mu.Unlock()
-		if calls != 1 {
-			t.Errorf("%d opens started, want 1 (none after the cancel)", calls)
+		if got := calls.Load(); got != 1 {
+			t.Errorf("%d opens started, want 1 (none after the cancel)", got)
 		}
 	})
 }

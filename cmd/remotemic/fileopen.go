@@ -81,16 +81,13 @@ func (f *fileOpens) open(ctx context.Context, cfg filesource.Config) (audio.Sour
 			}
 		}
 	}()
-	timer := time.NewTimer(fileOpenTimeout)
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeoutCause(ctx, fileOpenTimeout, errFileOpenTimeout)
+	defer cancel()
 	select {
 	case r := <-res:
 		return r.src, r.err
-	case <-timer.C:
-		close(abandon)
-		return nil, errFileOpenTimeout
 	case <-ctx.Done():
 		close(abandon)
-		return nil, ctx.Err()
+		return nil, context.Cause(ctx) // errFileOpenTimeout, or why the caller's ctx ended
 	}
 }
