@@ -1,5 +1,7 @@
 // Pure, DOM-free helpers for the device settings form, split out so they can be
-// unit tested with node:test (see web/test/device-settings-core.test.ts).
+// unit tested with node:test (see web/test/device-settings-core.test.ts). It
+// also holds the device facts other modules share (field labels, file source
+// ids).
 
 import type { DeviceConfig, StreamConfig } from "./types.ts";
 
@@ -88,6 +90,33 @@ export function extraStreamsNote(streams: readonly StreamConfig[] | undefined): 
   const n = streams?.length ?? 0;
   if (n < 2) return "";
   return `This device serves ${n} streams from one capture. The path, codec mode, channels and Opus bitrate here are the first stream's; the other streams keep theirs, and the sample rate applies to all of them.`;
+}
+
+// fileSourcePath returns the path of a file source id ("file:<path>"), or null
+// for any other id. It is the twin of config.FileSourcePath: the raw prefix,
+// no trimming and no case folding, so the UI agrees with the appliance on what
+// is virtual. "file:" alone returns "", so callers compare with !== null.
+export function fileSourcePath(id: string): string | null {
+  return id.startsWith("file:") ? id.slice("file:".length) : null;
+}
+
+// identityHint explains the persisted id: a file source plays files from its
+// path and is set in the config file only; for a card-index id (idStable false)
+// it warns it can change and gives the remedy; for a stable id it says the id
+// follows the hardware; and when the stability is unknown (idStable absent,
+// e.g. the hardware could not be matched or probed) it says so rather than
+// claiming the id is stable.
+export function identityHint(id: string, idStable: boolean | undefined): string {
+  if (fileSourcePath(id) !== null) {
+    return "Plays the audio file, or the directory of files, at this path instead of a sound card. To change it, edit the config file and restart the appliance.";
+  }
+  if (idStable === false) {
+    return "This id is a card index and can change after a reboot or replug. Remove and re-add this device to pin it by its stable identity.";
+  }
+  if (idStable === true) {
+    return "The stable id this device is pinned to. It follows the hardware across reboots and re-plugging into another port.";
+  }
+  return "The stability of this id is unknown: the hardware could not be matched or probed.";
 }
 
 // DEVICE_FIELD_LABELS is how the device settings form labels each device

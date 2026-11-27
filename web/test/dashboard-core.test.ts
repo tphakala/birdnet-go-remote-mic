@@ -666,6 +666,12 @@ test("hardwareLine shows the address, a distinct model, and a card-index warning
   );
 });
 
+test("hardwareLine names a file source by its path in every state, without ALSA", () => {
+  const d = { name: "Replay", device: "file:/srv/audio/dawn_chorus.wav", friendlyName: "File source", idStable: true };
+  assert.equal(hardwareLine({ ...d, state: "serving" }), "File source: /srv/audio/dawn_chorus.wav");
+  assert.equal(hardwareLine({ ...d, state: "skipped" }), "File source: /srv/audio/dawn_chorus.wav");
+});
+
 test("availableLabel adds the address to a friendly name, else falls back", () => {
   const device = "usb:2752:0019:s=Y8ZQ2BM1:if=0,0";
   assert.equal(availableLabel({ device, hwAddr: "hw:4,0", friendlyName: "Scarlett 2i2" }), "Scarlett 2i2 (hw:4,0)");

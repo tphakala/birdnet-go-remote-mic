@@ -2,6 +2,7 @@
 // of licenses.json (written by tools/licensegen from the build's module graph,
 // so the page never drifts from what the binary links), and the plain-text
 // system details a bug report asks for. No DOM, network, or storage here.
+import { fileSourcePath } from "./device-settings-core.ts";
 import { networkSummary, shownInterfaces } from "./system-core.ts";
 import type { ApplianceStatus, Device, DeviceConfig, StreamMode, SystemInfo } from "./types.ts";
 
@@ -143,15 +144,20 @@ function usbLabel(id: string): string | null {
 
 // deviceIdKind describes a configured device id without the parts that identify
 // the unit: a USB id keeps only vendor:product (never the s= serial or the p=
-// port), a stable ALSA card-name id and a card index are named by kind only.
-// idStable is absent from an older appliance, so the id's own form decides then,
-// as config.IsCardIndexID does: any usb: id, or an hw: id naming its card.
+// port), a file source, a stable ALSA card-name id and a card index are named
+// by kind only. idStable is absent from an older appliance, so the id's own
+// form decides then, as config.IsCardIndexID does: a file: id, any usb: id, or
+// an hw: id naming its card. The file check reads the raw id before the trim,
+// as config.FileSourcePath does, so a padded "file:" id is a card index here
+// as it is on the appliance.
 function deviceIdKind(d: Device): string {
+  const file = fileSourcePath(d.device) !== null;
   const id = d.device.trim();
   const usb = usbLabel(id);
-  const stable = d.idStable ?? (id.startsWith("usb:") || (id.startsWith("hw:") && id.includes("=")));
+  const stable = d.idStable ?? (file || id.startsWith("usb:") || (id.startsWith("hw:") && id.includes("=")));
   let kind = "card index";
-  if (usb) kind = `USB ${usb.slice("usb:".length)}`;
+  if (file) kind = "file path";
+  else if (usb) kind = `USB ${usb.slice("usb:".length)}`;
   else if (stable) kind = "ALSA card name";
   return `${kind}, ${stable ? "stable" : "not stable (can change after a reboot or replug)"}`;
 }
@@ -206,10 +212,15 @@ const OTHER_QUOTED = /(?<![\p{L}\p{N}])'[^'\n]*'|`[^`\n]*`/gu;
 const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}\u202A-\u202E\u2066-\u2069]+/gu;
 // An absolute path wherever it starts (after a space, a colon, a bracket, a
 // placeholder), to the next whitespace: a stream path may hold any other
-// character. A trailing colon or closing parenthesis is the message's own and
-// is kept. /proc and /dev/snd paths name kernel interfaces, not the
-// operator's setup, and are kept for the diagnosis.
-const PATH_TOKEN = /(?<![A-Za-z0-9_.-])\/(?!proc\/|dev\/snd\/)\S+/g;
+// character. It runs on across a single space when the next word holds a "/"
+// too ("/srv/my audio/x.wav"), so a directory name with a space is not cut in
+// two. It does not continue after a segment that ends a clause (":", ";", ","
+// or ")"), nor into a word that opens a parenthesis or bracket or is itself a
+// kept kernel path, so the message after a path ("input/output error"), a note,
+// and a /proc or /dev/snd path stay. A trailing colon or closing parenthesis is
+// the message's own and is kept. /proc and /dev/snd paths name kernel
+// interfaces, not the operator's setup, and are kept for the diagnosis.
+const PATH_TOKEN = /(?<![A-Za-z0-9_.-])\/(?!proc\/|dev\/snd\/)\S+(?:(?<![:;,)]) (?![([]|\/(?:proc|dev\/snd)\/)\S*\/\S*)*/g;
 // What a scrubbed quoted span may still hold and be kept: exactly a
 // placeholder this scrub writes, a vendor:product id, or one of the fixed
 // selector names go-audio-capture quotes in its id-format hints.

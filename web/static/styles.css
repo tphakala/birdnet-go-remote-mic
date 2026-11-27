@@ -727,6 +727,7 @@ textarea {
   font-size: var(--font-size-caption);
   font-weight: 500;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .device-tags {

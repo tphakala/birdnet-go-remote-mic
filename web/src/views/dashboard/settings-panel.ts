@@ -2,7 +2,7 @@ import { DeviceSettingsForm } from "../../components/device-settings.ts";
 import { showToast } from "../../components/toast.ts";
 import { api, firstProblem, isRefusal } from "../../lib/api.ts";
 import { deviceConfigKey, deviceToConfig, judgeUnconfirmedSave, REMOVED_FOCUS_MESSAGE, rejectedFieldKey } from "../../lib/dashboard-core.ts";
-import { withFirstStream } from "../../lib/device-settings-core.ts";
+import { fileSourcePath, withFirstStream } from "../../lib/device-settings-core.ts";
 import { confirmDialog } from "../../lib/modal.ts";
 import { store } from "../../lib/store.ts";
 import type { Device, DeviceConfig } from "../../lib/types.ts";
@@ -324,18 +324,23 @@ export class SettingsPanel {
   }
 
   // remove deletes the configured device after confirmation, returning its
-  // hardware to the available list. On success the card disappears via the
-  // device refresh; on failure the button is restored so it can be retried. A
-  // refresh that fails after the delete succeeded is reported as such, not as
-  // a failed removal: the next poll takes the card away.
+  // hardware to the available list; a file source names no hardware, so it does
+  // not return there and can be added back only in the config file. On success
+  // the card disappears via the device refresh; on failure the button is
+  // restored so it can be retried. A refresh that fails after the delete
+  // succeeded is reported as such, not as a failed removal: the next poll
+  // takes the card away.
   private async remove(btn: HTMLElement): Promise<void> {
     // aria-disabled keeps the button focusable while busy, so guard against a
     // keyboard re-activation that pointer-events cannot block: without this a
     // second Enter opens a second confirm and issues a second DELETE.
     if (btn.getAttribute("aria-disabled") === "true") return;
+    const d = this.host.device();
     const ok = await confirmDialog({
       title: "Remove device",
-      body: `Remove ${this.host.device().name}? It stops streaming and returns to the available list, and its stream path is discarded.`,
+      body: fileSourcePath(d.device) !== null
+        ? `Remove ${d.name}? It stops streaming and its stream path is discarded. The audio files are kept; a file source can be added back only in the config file.`
+        : `Remove ${d.name}? It stops streaming and returns to the available list, and its stream path is discarded.`,
       confirmLabel: "Remove",
       danger: true,
     });

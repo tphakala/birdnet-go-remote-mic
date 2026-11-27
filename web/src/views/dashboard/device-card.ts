@@ -514,11 +514,12 @@ export class DeviceCard {
       const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
       const geo = captureGeometry(d, rate);
       setText(p.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}${geo ? ` · ${geo.label}` : ""}`);
-      // The format part is the hardware capture format; the RTSP stream is always
-      // 16-bit, so name that in a tooltip rather than let "· 24-bit" read as the
-      // stream depth. The period part spells out the granted capture geometry.
+      // The format part is the capture format (the sound card's, or what a file
+      // source decodes to); the RTSP stream is always 16-bit, so name that in a
+      // tooltip rather than let "· 24-bit" read as the stream depth. The period
+      // part spells out the granted capture geometry.
       const negTitle = [
-        d.negotiatedFormat && "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted.",
+        d.negotiatedFormat && "Capture format. The RTSP stream is 16-bit; a wider capture is downconverted.",
         geo?.title,
       ].filter(Boolean).join(" ");
       setAttr(p.live.negotiatedEl, "title", negTitle);

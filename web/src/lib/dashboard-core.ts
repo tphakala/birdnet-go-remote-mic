@@ -3,7 +3,7 @@
 // web/test/dashboard-core.test.ts) without a DOM.
 
 import type { FieldProblem } from "./api.ts";
-import { DEVICE_FIELD_LABELS, defaultOpusBitrate } from "./device-settings-core.ts";
+import { DEVICE_FIELD_LABELS, defaultOpusBitrate, fileSourcePath } from "./device-settings-core.ts";
 import type { ViewName } from "./router-core.ts";
 import { formatReading } from "./system-core.ts";
 import type { Timers } from "./timers.ts";
@@ -313,8 +313,12 @@ export function avatarLook(state: string, mode: StreamMode): { icon: AvatarIcon;
 // anything else shows "No matching hardware". The model is left out when
 // absent or when it only repeats the configured name. A card-index id can name
 // a different device after a reboot or replug, which the line says; the
-// settings panel's Device ID hint carries the remedy (remove and re-add).
+// settings panel's Device ID hint carries the remedy (remove and re-add). A
+// file source names no hardware, so its line is its configured path in every
+// state, and its friendlyName ("File source") is not repeated.
 export function hardwareLine(d: Pick<Device, "name" | "device" | "state" | "hwAddr" | "friendlyName" | "idStable">): string {
+  const path = fileSourcePath(d.device);
+  if (path !== null) return `File source: ${path}`;
   const hw = d.friendlyName?.trim();
   const showHw = !!hw && hw.toLowerCase() !== d.name.trim().toLowerCase();
   const addr = d.hwAddr ? `ALSA: ${d.hwAddr}` : d.state === "serving" ? `ALSA: ${d.device}` : "No matching hardware";

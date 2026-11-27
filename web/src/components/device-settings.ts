@@ -7,6 +7,8 @@ import {
   bitrateFollowsDefault,
   defaultOpusBitrate,
   extraStreamsNote,
+  fileSourcePath,
+  identityHint,
   inputMaxLength,
   lengthError,
   otherOpusStream,
@@ -407,23 +409,8 @@ export class DeviceSettingsForm {
     row.append(input, copyBtn);
     field.appendChild(row);
 
-    field.appendChild(this.hint(this.identityHint(), hintId));
+    field.appendChild(this.hint(identityHint(this.device.device, this.hardware.idStable), hintId));
     grid.appendChild(field);
-  }
-
-  // identityHint explains the persisted id: for a card-index id (idStable false)
-  // it warns it can change and gives the remedy; for a stable id it says the id
-  // follows the hardware; and when the stability is unknown (idStable absent,
-  // e.g. the hardware could not be matched or probed) it says so rather than
-  // claiming the id is stable.
-  private identityHint(): string {
-    if (this.hardware.idStable === false) {
-      return "This id is a card index and can change after a reboot or replug. Remove and re-add this device to pin it by its stable identity.";
-    }
-    if (this.hardware.idStable === true) {
-      return "The stable id this device is pinned to. It follows the hardware across reboots and re-plugging into another port.";
-    }
-    return "The stability of this id is unknown: the hardware could not be matched or probed.";
   }
 
   // syncDefaultBitrate moves the Opus bitrate to the default for the selected
@@ -865,6 +852,7 @@ export class DeviceSettingsForm {
   }
 
   private rateHint(): string {
+    if (fileSourcePath(this.device.device) !== null) return "Only files at this rate play; there is no resampling. Opus is fixed at 48000.";
     const base = "Capture rate delivered by the device and streamed as-is. Opus is fixed at 48000.";
     return this.hardware.supportedRates?.length ? base : base + " Showing common rates (device set unavailable).";
   }

@@ -19,6 +19,8 @@ import {
   bitrateFollowsDefault,
   defaultOpusBitrate,
   extraStreamsNote,
+  fileSourcePath,
+  identityHint,
   otherOpusStream,
   withFirstStream,
 } from "../src/lib/device-settings-core.ts";
@@ -171,4 +173,27 @@ test("every device config field the appliance validates has a form label", () =>
   assert.ok(keys.size >= 5, `found only ${keys.size} field keys in config.go; did the helpers change?`);
   const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
   for (const key of keys) assert.ok(Object.hasOwn(labels, key) && labels[key], `config.go validates "${key}" but DEVICE_FIELD_LABELS has no label for it`);
+});
+
+test("fileSourcePath cuts the raw file: prefix exactly as config.FileSourcePath does", () => {
+  assert.equal(fileSourcePath("file:/srv/a b.wav"), "/srv/a b.wav");
+  assert.equal(fileSourcePath("file:"), "", "an empty path is still a file id");
+  assert.equal(fileSourcePath(" file:/srv/a"), null, "the raw id is tested, untrimmed");
+  assert.equal(fileSourcePath("FILE:/srv/a"), null, "the prefix is case sensitive");
+  assert.equal(fileSourcePath("usb:0d8c:0014:s=X:if=0,0"), null);
+  // The server cuts the prefix off the raw id with nothing before it.
+  const src = readFileSync(CONFIG_GO, "utf8");
+  assert.ok(
+    /func FileSourcePath\(id string\) \(string, bool\) \{\s*\w+, \w+ := strings\.CutPrefix\(id, "file:"\)/.test(src),
+    "config.FileSourcePath no longer cuts \"file:\" off the raw id; update fileSourcePath to match",
+  );
+});
+
+test("identityHint describes a file source before any stability, and a hardware id by its stability", () => {
+  const usb = "usb:0d8c:0014:s=X:if=0,0";
+  const file = identityHint("file:/srv/a.wav", true);
+  assert.ok(file.includes("config file") && !file.includes("follows the hardware"), file);
+  assert.ok(identityHint("hw:1,0", false).includes("card index"));
+  assert.ok(identityHint(usb, true).includes("follows the hardware"));
+  assert.ok(identityHint(usb, undefined).includes("unknown"));
 });
