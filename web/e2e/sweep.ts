@@ -565,12 +565,16 @@ function auditContained(opts: { box: string; scope: string }): ContainResult {
   };
   let checked = 0;
   const offenders: ContainResult["offenders"] = [];
-  for (const el of scope.querySelectorAll("*")) {
+  // The scope itself is measured too: its parent is the box, so a scope that
+  // passes the card is reported rather than hiding its children.
+  for (const el of [scope, ...scope.querySelectorAll("*")]) {
     // A closed dropdown menu stays laid out at opacity 0.
     if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || clipped(el)) continue;
-    checked++;
+    // Only the scope's content counts as measured, so a scope that clips all
+    // of it still reads as nothing measured.
+    if (el !== scope) checked++;
     if (r.right <= b.right + 1) continue;
     // Report the element that sticks out of its parent (a button, not also its
     // label span).
