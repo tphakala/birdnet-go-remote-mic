@@ -580,12 +580,11 @@ func restartHint(dev *config.Device) string {
 }
 
 // serviceHiddenDir reports the directory that hides a file device's path from
-// this process, read from its own mount table: a systemd sandbox mount at
-// that directory (from ProtectHome=, PrivateTmp= or InaccessiblePaths=),
-// under which the process sees none of the host's files. A drop-in that
-// relaxes those settings, or a unit without them, gets no directory. It is
-// called on the open-failure path only, as it reads /proc/self/mountinfo
-// each time.
+// this process, read from its own mount table: the sandbox ProtectHome= or
+// PrivateTmp= set up there, under which nothing is the real content and no
+// open succeeds. A drop-in that relaxes either setting, or a unit without
+// them, gets no directory. It is called on the open-failure path only, as it
+// reads /proc/self/mountinfo each time.
 func serviceHiddenDir(id string) (dir string, ok bool) {
 	path, isFile := config.FileSourcePath(id)
 	if !isFile {
