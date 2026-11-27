@@ -594,7 +594,9 @@ func TestReportCheckFileSource(t *testing.T) {
 	t.Run("hung filesystem", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			release := make(chan struct{}) // inside the bubble, so the blocked open counts as durably blocked
-			swapOpenFileSource(t, func(filesource.Config) (audio.Source, error) {
+			defer close(release)           // also on t.Fatal, so the bubble never ends with the open still blocked
+			swapOpenFileSource(t, func(cfg filesource.Config) (audio.Source, error) {
+				cfg.Logf("slow.flac: skipped") // the open got this far before it hung
 				<-release
 				return nil, errors.New("released")
 			})
@@ -603,13 +605,16 @@ func TestReportCheckFileSource(t *testing.T) {
 			if err := reportCheck(fileCfg("file:/srv/audio"), &out); err != nil {
 				t.Fatal(err)
 			}
-			if got := time.Since(start); got != fileCheckTimeout {
-				t.Errorf("check took %v, want %v", got, fileCheckTimeout)
+			if got := time.Since(start); got != fileOpenTimeout {
+				t.Errorf("check took %v, want %v", got, fileOpenTimeout)
 			}
-			if l, want := checkLine(out.String(), "dev0"), "file:/srv/audio  no answer from the filesystem within 5s"; !strings.Contains(l, want) {
-				t.Errorf("line = %q, want it to contain %q", l, want)
+			// No retry hint and no lines from the abandoned open.
+			if l, want := checkLine(out.String(), "dev0"), "file:/srv/audio  no answer from the filesystem within 5s"; !strings.HasSuffix(strings.TrimRight(l, " "), want) {
+				t.Errorf("line = %q, want it to end with %q", l, want)
 			}
-			close(release)
+			if strings.Contains(out.String(), "slow.flac") {
+				t.Errorf("report shows a line from the abandoned open:\n%s", out.String())
+			}
 		})
 	})
 }

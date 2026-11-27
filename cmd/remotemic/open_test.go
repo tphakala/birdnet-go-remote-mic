@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -231,10 +232,11 @@ type grantingCapture struct {
 
 func (c *grantingCapture) NegotiatedGeometry() audio.Geometry { return c.granted }
 
-// TestOpenDeviceRetryGeometry pins the ladder's wiring into the capture open: a
-// step becomes the requested period in frames at the device's rate (step 0 the
-// zero Geometry, the library default), and the runtime records what the driver
-// granted, not what was asked.
+// TestOpenDeviceRetryGeometry pins the ladder's wiring into the capture open,
+// through the appliance's production opener: a step becomes the requested
+// period in frames at the device's rate (step 0 the zero Geometry, the library
+// default), and the runtime records what the driver granted, not what was
+// asked.
 func TestOpenDeviceRetryGeometry(t *testing.T) {
 	cases := []struct {
 		name string
@@ -256,9 +258,9 @@ func TestOpenDeviceRetryGeometry(t *testing.T) {
 				return &grantingCapture{granted: granted}, capture.FormatS16LE, nil
 			})()
 			dev := &config.Device{Name: "g", Device: devMissing, Rate: tc.rate, Format: testFmtS16, Streams: []config.Stream{{Path: "/g", Mode: config.ModePCM, Channels: []int{1}}}}
-			rt, err := openDeviceRetry(dev, tc.step, levels.NewHub())
+			rt, err := newAppliance(t.Context(), nil, nil, nil, nil, nil).open(dev, tc.step, levels.NewHub())
 			if err != nil {
-				t.Fatalf("openDeviceRetry: %v", err)
+				t.Fatalf("open: %v", err)
 			}
 			defer func() { _ = rt.fanout.Close() }()
 			if asked != tc.want {
@@ -278,11 +280,12 @@ func (g geomSource) Negotiated() (rate, channels int) { return g.rate, g.channel
 func (g geomSource) Read() (audio.Period, error)      { return audio.Period{}, io.EOF }
 func (g geomSource) Close() error                     { return nil }
 
-// TestOpenDeviceRetryOpensFileSourceOnce pins the file dispatch: a file id
-// never reaches the ALSA seams, is attempted exactly once, gets channel bounds
-// from the selection and the config cap, and a failed open returns the error
-// itself (no typed-nil source in the interface).
-func TestOpenDeviceRetryOpensFileSourceOnce(t *testing.T) {
+// TestOpenRuntimeOpensFileSourceOnce pins the appliance's file dispatch
+// through its production opener: a file id never reaches the ALSA seams, is
+// attempted exactly once, gets channel bounds from the selection and the
+// config cap, a failed open returns the error itself (no typed-nil source in
+// the interface), and once the appliance's lifetime ends no open starts.
+func TestOpenRuntimeOpensFileSourceOnce(t *testing.T) {
 	defer swapResolveOpenChannels(func(string, []int) int {
 		t.Error("resolveOpenChannels called for a file device")
 		return 1
@@ -305,9 +308,12 @@ func TestOpenDeviceRetryOpensFileSourceOnce(t *testing.T) {
 
 	dev := &config.Device{Name: "yard", Device: "file:/srv/audio", Rate: 48000, Format: testFmtS16,
 		Streams: []config.Stream{{Path: "/a", Mode: config.ModePCM, Channels: []int{1}}, {Path: "/b", Mode: config.ModePCM, Channels: []int{3, 2}}}}
-	rt, err := openDeviceRetry(dev, 2, levels.NewHub())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := newAppliance(ctx, nil, nil, nil, nil, nil)
+	rt, err := a.open(dev, 2, levels.NewHub())
 	if err != nil {
-		t.Fatalf("openDeviceRetry: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 	_ = rt.fanout.Close()
 	if rt.format != "s16" || rt.rate != 48000 || rt.channels != 3 {
@@ -320,12 +326,22 @@ func TestOpenDeviceRetryOpensFileSourceOnce(t *testing.T) {
 	}
 
 	cfgs, openErr = nil, errors.New("no audio")
-	rt, err = openDeviceRetry(dev, 0, levels.NewHub())
+	rt, err = a.open(dev, 0, levels.NewHub())
 	if rt != nil || !errors.Is(err, openErr) {
-		t.Fatalf("openDeviceRetry = %v, %v; want nil and the open error", rt, err)
+		t.Fatalf("open = %v, %v; want nil and the open error", rt, err)
 	}
 	if len(cfgs) != 1 {
 		t.Errorf("failed open attempted %d times, want 1", len(cfgs))
+	}
+
+	cancel()
+	cfgs = nil
+	rt, err = a.open(dev, 0, levels.NewHub())
+	if rt != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("open after the appliance stopped = %v, %v; want nil and context.Canceled", rt, err)
+	}
+	if len(cfgs) != 0 {
+		t.Errorf("open after the appliance stopped attempted %d times, want 0", len(cfgs))
 	}
 }
 

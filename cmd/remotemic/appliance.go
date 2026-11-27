@@ -63,7 +63,9 @@ type reconcileReq struct {
 // Every method runs on the single run-loop goroutine and is never called
 // concurrently, so the maps and counters need no locks. The capture pumps run on
 // their own goroutines but touch only their own deviceRuntime (its frame source
-// and drop counter), never the appliance's shared state.
+// and drop counter), never the appliance's shared state. A file source's open
+// runs on its own goroutine too, touching only files (under its lock) and the
+// source it opened.
 type appliance struct {
 	ctx  context.Context //nolint:containedctx // the run loop's lifetime, for the pumps and stages it starts
 	hub  *levels.Hub
@@ -125,8 +127,10 @@ type appliance struct {
 	// channel count per attempt (see openDeviceRetry), at capture geometry ladder
 	// step step (0 is the library default). It is a field so tests can inject a
 	// fake capture source instead of opening real ALSA hardware; in production it
-	// is openDeviceRetry.
+	// is openRuntime.
 	open func(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error)
+	// files runs the file source opens of openRuntime, bounded and one per path.
+	files fileOpens
 
 	// resolve maps a configured device id to the hardware it names right now,
 	// without opening it. It is a field so tests can inject a host device list
@@ -185,7 +189,7 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		notifier = (*notify.Center)(nil)
 	}
 	updater, _ := notifier.(notify.Updater)
-	return &appliance{
+	a := &appliance{
 		updater:      updater,
 		ctx:          ctx,
 		hub:          hub,
@@ -203,9 +207,10 @@ func newAppliance(ctx context.Context, hub *levels.Hub, srv *rtspserver.Server, 
 		geometry:     map[string]*geometryState{},
 		retryDue:     make(chan struct{}, 1),
 		pumpDone:     make(chan pumpResult, pumpBacklog),
-		open:         openDeviceRetry,
 		resolve:      audio.Resolve,
 	}
+	a.open = a.openRuntime
+	return a
 }
 
 // hwResult is what one configured device id resolved to: the hardware it names

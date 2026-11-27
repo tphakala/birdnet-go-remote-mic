@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/audio"
 	"github.com/tphakala/birdnet-go-remote-mic/internal/config"
@@ -493,51 +493,36 @@ func hiddenNote(dir string) string {
 	return "under " + dir + " (hidden from the installed service)"
 }
 
-// fileCheckTimeout bounds the open of a file source in serve --check. The
-// installed unit runs the check as ExecStartPre on every start, so a stat or
-// open on a hung network mount would otherwise hold the start (and keep the
-// management API down) until systemd gives up.
-const fileCheckTimeout = 5 * time.Second
-
 // fileCheckStatus describes what a file device would play right now, opening
-// the source as the appliance does: a status for the device's line, and the
-// indented lines that follow it (the output is local, so skipped files are
-// named, one line each).
+// the source as the appliance does (bounded by fileOpenTimeout): a status for
+// the device's line, and the indented lines that follow it (the output is
+// local, so skipped files are named, one line each).
 func fileCheckStatus(d *config.Device, path string) (status, detail string) {
-	type result struct{ status, detail string }
+	var lines []string
 	cfg := fileSourceConfig(d, path)
-	open := openFileSource      // read here: the goroutine may outlive a swap of the seam
-	res := make(chan result, 1) // buffered: after a timeout the goroutine sends and exits unseen
-	go func() {
-		var lines []string
-		cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
-		src, err := open(cfg)
-		var r result
-		if err != nil {
-			r.status = err.Error() + fileRetryHint
-			if na, ok := errors.AsType[*filesource.NoAudioError](err); ok {
-				for _, s := range na.Skipped {
-					lines = append(lines, s.Name+": "+s.Reason)
-				}
+	cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	var opens fileOpens
+	src, err := opens.open(context.Background(), cfg)
+	switch {
+	case errors.Is(err, errFileOpenTimeout):
+		// The abandoned open may still log into lines: leave them unread.
+		return err.Error(), ""
+	case err != nil:
+		status = err.Error() + fileRetryHint
+		if na, ok := errors.AsType[*filesource.NoAudioError](err); ok {
+			for _, s := range na.Skipped {
+				lines = append(lines, s.Name+": "+s.Reason)
 			}
-		} else {
-			rate, channels := src.Negotiated()
-			_ = src.Close()
-			r.status = fmt.Sprintf("file source, %d Hz, %d ch", rate, channels)
 		}
-		for _, l := range lines {
-			r.detail += "\n    " + l
-		}
-		res <- r
-	}()
-	timer := time.NewTimer(fileCheckTimeout)
-	defer timer.Stop()
-	select {
-	case r := <-res:
-		return r.status, r.detail
-	case <-timer.C:
-		return fmt.Sprintf("no answer from the filesystem within %v", fileCheckTimeout), ""
+	default:
+		rate, channels := src.Negotiated()
+		_ = src.Close()
+		status = fmt.Sprintf("file source, %d Hz, %d ch", rate, channels)
 	}
+	for _, l := range lines {
+		detail += "\n    " + l
+	}
+	return status, detail
 }
 
 // serveOverrides carries the serve subcommand's config-overriding flag values

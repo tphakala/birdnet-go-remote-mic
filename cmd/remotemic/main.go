@@ -307,9 +307,18 @@ func fileSourceConfig(dev *config.Device, path string) filesource.Config {
 	}
 }
 
-// openFileDevice opens a file device (id file:<path>) and builds its runtime.
-func openFileDevice(dev *config.Device, path string, hub *levels.Hub) (*deviceRuntime, error) {
-	base, err := openFileSource(fileSourceConfig(dev, path))
+// openRuntime is the appliance's production opener (appliance.open): a file
+// device (id file:<path>) opens its source through a.files, off the run loop
+// and bounded (see fileOpens), then builds its runtime here on the run loop.
+// It makes one attempt: there is no hardware to release or probe, and a failed
+// open is retried by the appliance's backoff. Any other device opens through
+// openDeviceRetry.
+func (a *appliance) openRuntime(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
+	path, ok := config.FileSourcePath(dev.Device)
+	if !ok {
+		return openDeviceRetry(dev, step, hub)
+	}
+	base, err := a.files.open(a.ctx, fileSourceConfig(dev, path))
 	if err != nil {
 		return nil, fmt.Errorf("open file source: %w", err)
 	}
@@ -391,19 +400,11 @@ func buildRuntime(dev *config.Device, base audio.Source, format string, hub *lev
 // device another process holds fails at once with ErrDeviceInUse and is retried,
 // then reported skipped, without parking the reconcile goroutine that runs this.
 //
-// A file device (id file:<path>) is opened once, with no channel probe and no
-// geometry (see openFileDevice).
-//
 // step is the capture geometry ladder step to open at (see geometryLadder); 0 is
 // the library default. The retry budget applies at every step; a caller that
 // wants a fallback to a smaller step after it is spent does that itself (see
 // openAndStart).
 func openDeviceRetry(dev *config.Device, step int, hub *levels.Hub) (*deviceRuntime, error) {
-	if path, ok := config.FileSourcePath(dev.Device); ok {
-		// One attempt: no hardware to release, nothing to probe, and a failed
-		// open is retried by the appliance's backoff, not by sleeping here.
-		return openFileDevice(dev, path, hub)
-	}
 	const attempts = 5
 	const delay = 50 * time.Millisecond
 	geo := geometryFor(dev.Rate, step)

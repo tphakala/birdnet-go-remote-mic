@@ -323,7 +323,9 @@ microphone after a reboot or a replug. Copy the id from `remote-mic devices list
 A file source must match the device `rate` (Opus files are 48 kHz). Its channel
 count comes from the first playable file; files that do not match, or have no
 audio, are skipped and logged once. A missing path or a pass with no playable
-file shows the device as down, and it retries on its own. Under the installed
+file shows the device as down, and it retries on its own. So does an open that
+gets no answer from the filesystem within 5 s (a hung network mount); each such
+open holds up the other devices for at most those 5 s. Under the installed
 service the path must be readable by the service user and not under `/home`,
 `/root`, `/run/user`, `/tmp` or `/var/tmp`, which the unit hides from it
 (`--check` flags such a path, and the device's error names the directory);
