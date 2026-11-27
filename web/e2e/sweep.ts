@@ -1231,7 +1231,7 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
       const card = ".rack-card.expanded";
       try {
         await page.click("#channel-rack .rack-card .card-settings-toggle");
-        await page.waitForSelector(`${card} .card-settings:not([hidden]) .settings-actions`, { state: "visible", timeout: 3000 });
+        await page.waitForSelector(`${card} .card-settings:not([hidden]) .settings-actions`, { state: "visible", timeout: RECOVERY_MS });
       } catch {
         findings.push({ kind: "render", where, key: "settings panel did not open", detail: "no open .card-settings after the first card's settings button" });
         return;
@@ -1246,7 +1246,7 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
       }
       await page.click(`${card} .card-settings-toggle`);
       const closed = await page
-        .waitForFunction((sel: string) => document.querySelector(sel) === null, card, { timeout: 3000 })
+        .waitForFunction((sel: string) => document.querySelector(sel) === null, card, { timeout: RECOVERY_MS })
         .then(() => true)
         .catch(() => false);
       if (closed) return;
