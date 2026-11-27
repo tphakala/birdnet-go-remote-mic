@@ -19,6 +19,8 @@ import {
   bitrateFollowsDefault,
   defaultOpusBitrate,
   extraStreamsNote,
+  fileSourcePath,
+  identityHint,
   otherOpusStream,
   withFirstStream,
 } from "../src/lib/device-settings-core.ts";
@@ -171,4 +173,33 @@ test("every device config field the appliance validates has a form label", () =>
   assert.ok(keys.size >= 5, `found only ${keys.size} field keys in config.go; did the helpers change?`);
   const labels: Readonly<Record<string, string>> = DEVICE_FIELD_LABELS;
   for (const key of keys) assert.ok(Object.hasOwn(labels, key) && labels[key], `config.go validates "${key}" but DEVICE_FIELD_LABELS has no label for it`);
+});
+
+test("fileSourcePath cuts the raw file: prefix exactly as config.FileSourcePath does", () => {
+  assert.equal(fileSourcePath("file:/srv/a b.wav"), "/srv/a b.wav");
+  assert.equal(fileSourcePath("file:"), "", "an empty path is still a file id");
+  assert.equal(fileSourcePath(" file:/srv/a"), null, "the raw id is tested, untrimmed");
+  assert.equal(fileSourcePath("FILE:/srv/a"), null, "the prefix is case sensitive");
+  assert.equal(fileSourcePath("usb:0d8c:0014:s=X:if=0,0"), null);
+  // The server cuts the prefix off the raw id with nothing before it.
+  const src = readFileSync(CONFIG_GO, "utf8");
+  assert.ok(
+    /func FileSourcePath\((\w+) string\) \(string, bool\) \{\s*(?:if\s+)?\w+, \w+ := strings\.CutPrefix\(\1, "file:"\)/.test(src),
+    "config.FileSourcePath changed shape; check whether it still cuts \"file:\" off the raw id, then update fileSourcePath or this pattern",
+  );
+});
+
+test("identityHint describes a file source before any stability, and a hardware id by its stability", () => {
+  const usb = "usb:0d8c:0014:s=X:if=0,0";
+  // A file id gets the same hint whatever idStable says.
+  const file = identityHint("file:/srv/a.wav", undefined);
+  assert.ok(file.includes("config file"), file);
+  assert.equal(identityHint("file:/srv/a.wav", true), file);
+  assert.equal(identityHint("file:/srv/a.wav", false), file);
+  const index = identityHint("hw:1,0", false);
+  assert.ok(index.includes("card index"), index);
+  const stable = identityHint(usb, true);
+  assert.ok(stable.includes("follows the hardware"), stable);
+  const unknown = identityHint(usb, undefined);
+  assert.ok(unknown.includes("unknown"), unknown);
 });

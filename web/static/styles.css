@@ -727,6 +727,7 @@ textarea {
   font-size: var(--font-size-caption);
   font-weight: 500;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .device-tags {
@@ -2044,6 +2045,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
 /* A device with several streams lists one path, and one format, per line. */
 .client-table td.stream-paths {
   white-space: pre-line;
+}
+
+/* A file source shows its whole file: id here, which can be one long word:
+   let it break anywhere so the table still fits a tablet-width card. */
+.client-table td.source-id {
+  overflow-wrap: anywhere;
 }
 
 /* Modal dialogs (restart, access token, confirm): native <dialog> elements

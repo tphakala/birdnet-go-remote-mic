@@ -2,6 +2,7 @@ import { deviceStateBadge, h, setAttr, setLoading, setText } from "../../lib/ui.
 import { KeyedList } from "../../lib/keyed-list.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
 import { clientSummary, streamFormats, streamSummary } from "../../lib/dashboard-core.ts";
+import { fileSourcePath } from "../../lib/device-settings-core.ts";
 import type { Config, Device } from "../../lib/types.ts";
 
 // DeviceRowRefs are the stable cells of one Stream Status table row, reused
@@ -10,7 +11,7 @@ import type { Config, Device } from "../../lib/types.ts";
 interface DeviceRowRefs {
   tr: HTMLElement;
   name: HTMLElement;
-  alsa: HTMLElement;
+  source: HTMLElement;
   path: HTMLElement;
   codec: HTMLElement;
   client: HTMLElement;
@@ -24,8 +25,8 @@ interface RowSource {
 }
 
 // StreamStatus is the Stream Status table: one row per device from the devices
-// read, with its capture address, stream paths, codec and rate, clients and
-// state.
+// read, with its capture address (a file source's configured id), stream paths,
+// codec and rate, clients and state.
 export class StreamStatus {
   private readonly bodyEl: HTMLElement | null;
   // Rows keyed by the immutable device id; null without a table body.
@@ -104,24 +105,24 @@ export class StreamStatus {
 
   private buildRow(): DeviceRowRefs {
     const name = h("td");
-    const alsa = h("td", { class: "mono" });
+    const source = h("td", { class: "mono source-id" });
     const path = h("td", { class: "mono stream-paths" });
     const codec = h("td", { class: "mono stream-paths" });
     const client = h("td", { class: "mono" });
     const stateSpan = h("span");
-    const tr = h("tr", name, alsa, path, codec, client, h("td", stateSpan));
-    return { tr, name, alsa, path, codec, client, stateSpan };
+    const tr = h("tr", name, source, path, codec, client, h("td", stateSpan));
+    return { tr, name, source, path, codec, client, stateSpan };
   }
 
   private updateRow(r: DeviceRowRefs, d: Device, cfg: Config | null): void {
     setText(r.name, d.name);
-    // The current ALSA address; when the id resolved to no single present device
-    // it is absent, so a serving card-index device (container fallback) shows its
-    // configured id and anything else shows "-". The persisted id is long and
-    // goes in the tooltip.
-    setText(r.alsa, d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
-    const alsaTitle = deviceIdTitle(d.device);
-    setAttr(r.alsa, "title", alsaTitle);
+    // A file source shows its configured id in every state: it names no
+    // hardware. Otherwise the current ALSA address; when the id resolved to no
+    // single present device it is absent, so a serving card-index device
+    // (container fallback) shows its configured id and anything else shows
+    // "-". The persisted id is long and goes in the tooltip.
+    setText(r.source, fileSourcePath(d.device) !== null ? d.device : d.hwAddr ?? (d.state === "serving" ? d.device : "-"));
+    setAttr(r.source, "title", deviceIdTitle(d.device));
     // By the device id, which a rename does not change.
     const deviceCfg = cfg?.devices.find((c) => c.device === d.device);
     const streams = streamSummary(d, deviceCfg);

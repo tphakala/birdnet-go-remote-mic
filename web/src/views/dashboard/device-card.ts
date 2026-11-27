@@ -3,6 +3,7 @@ import type { VUMeter } from "../../components/vu-meter.ts";
 import { api, isRefusal } from "../../lib/api.ts";
 import { getToken } from "../../lib/auth.ts";
 import { avatarLook, type AvatarIcon, bannerIsError, captureFormatLabel, captureGeometry, cardShape, channelLabel, controlGoneMessage, downCauseTitle, footerMetrics, hardwareLine, type LevelsTarget, meterCount, nonServingFooterText, PENDING_STOP_TEXT, pendingStop, rtspUrl, runtimeEnabled, tokenHiddenMessage } from "../../lib/dashboard-core.ts";
+import { fileSourcePath } from "../../lib/device-settings-core.ts";
 import { hideInactiveKey, readBoolPref, writeBoolPref } from "../../lib/prefs.ts";
 import { store } from "../../lib/store.ts";
 import { deviceIdTitle } from "../../lib/text.ts";
@@ -73,6 +74,12 @@ function flashCopied(btn: HTMLElement, label: HTMLElement | null, rest: string, 
 const OVERRUNS_DESCRIPTION =
   "Times capture fell behind the sound card, or the system suspended, and lost audio; " +
   "usually a busy host or unstable USB. Counted since the device opened.";
+
+// FILE_OVERRUNS_DESCRIPTION is the same counter on a file source, where an
+// overrun restarts the playback clock and skips no audio from the file.
+const FILE_OVERRUNS_DESCRIPTION =
+  "Times playback fell behind real time, usually on a busy host, and restarted its clock; " +
+  "no audio from the file is skipped. Counted since the device opened.";
 
 // metricItem builds one footer metric: its label and the value element sync
 // fills. A description is read after the value by a screen reader from a
@@ -379,7 +386,7 @@ export class DeviceCard {
       const meterConsole = new MeterConsole(meterCount(d), settingsBtn, this.host.announceEl);
       const clients = metricItem("Clients:");
       const dropped = metricItem("Dropped Frames:");
-      const overruns = metricItem("Capture Overruns:", OVERRUNS_DESCRIPTION);
+      const overruns = metricItem("Capture Overruns:", fileSourcePath(d.device) !== null ? FILE_OVERRUNS_DESCRIPTION : OVERRUNS_DESCRIPTION);
       const negotiatedEl = h("span");
       article.append(
         h("div", { class: "endpoint-strip" },
@@ -514,11 +521,12 @@ export class DeviceCard {
       const negFormat = d.negotiatedFormat ? ` · ${captureFormatLabel(d.negotiatedFormat)}` : "";
       const geo = captureGeometry(d, rate);
       setText(p.live.negotiatedEl, `Negotiated: ${rate.toLocaleString("en-US")} Hz${negFormat}${geo ? ` · ${geo.label}` : ""}`);
-      // The format part is the hardware capture format; the RTSP stream is always
-      // 16-bit, so name that in a tooltip rather than let "· 24-bit" read as the
-      // stream depth. The period part spells out the granted capture geometry.
+      // The format part is the capture format (the sound card's, or what a file
+      // source decodes to); the RTSP stream is always 16-bit, so name that in a
+      // tooltip rather than let "· 24-bit" read as the stream depth. The period
+      // part spells out the granted capture geometry.
       const negTitle = [
-        d.negotiatedFormat && "Hardware capture format. The RTSP stream is 16-bit; a wider capture is downconverted.",
+        d.negotiatedFormat && "Capture format. The RTSP stream is 16-bit; a wider capture is downconverted.",
         geo?.title,
       ].filter(Boolean).join(" ");
       setAttr(p.live.negotiatedEl, "title", negTitle);

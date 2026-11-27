@@ -53,7 +53,9 @@ function uptimeMs(): number {
 
 // Devices: every state the dashboard renders. The serving stereo device fans
 // out into two streams (channel 1 as Opus, channel 2 as PCM), which is why
-// channels (first stream) and streamedChannels (all streams) differ.
+// channels (first stream) and streamedChannels (all streams) differ. Replay is
+// a file source, whose long file name checks that the hardware line wraps at
+// 320 px.
 const DEVICES: Device[] = [
   {
     name: "Garden",
@@ -164,6 +166,30 @@ const DEVICES: Device[] = [
     error: "device not connected: no capture device matches hw:5,0",
     downCause: "not-connected",
     idStable: false,
+  },
+  {
+    name: "Replay",
+    device: "file:/srv/audio/20260412_dawn_chorus.wav",
+    path: "/replay",
+    mode: "opus",
+    format: "s16",
+    rate: 48000,
+    channels: [1],
+    streamedChannels: [1],
+    state: "serving",
+    negotiatedRate: 48000,
+    negotiatedChannels: 1,
+    negotiatedFormat: "s16",
+    clientConnected: false,
+    clientCount: 0,
+    droppedFrames: 0,
+    overruns: 0,
+    opus: { bitrate: 128000 },
+    friendlyName: "File source",
+    idStable: true,
+    supportedRates: [48000],
+    supportedChannels: [1],
+    streams: [{ path: "/replay", clientConnected: false, clientCount: 0, droppedFrames: 0 }],
   },
 ];
 
@@ -331,7 +357,7 @@ function notif(
 // every severity, so the bell panel and the Events view render every row style.
 function snapshot(): NotificationSnapshot {
   const notifications: Notification[] = [
-    notif(1, 9 * 3_600_000, { severity: "info", category: "system", kind: "event", title: "Appliance started", message: `remote-mic ${VERSION} started with 5 configured devices.` }),
+    notif(1, 9 * 3_600_000, { severity: "info", category: "system", kind: "event", title: "Appliance started", message: `remote-mic ${VERSION} started with ${DEVICES.length} configured devices.` }),
     notif(2, 8 * 3_600_000, { severity: "info", category: "stream", kind: "event", source: "192.168.1.20:51234", title: "Client connected", message: "An RTSP client started playing /garden." }),
     notif(3, 6 * 3_600_000, { severity: "warning", category: "system", kind: "onset", key: "host.temp", title: "High SoC temperature", message: "SoC temperature reached 81.2 °C (threshold 80 °C)." }),
     notif(4, 5 * 3_600_000, { severity: "info", category: "system", kind: "clear", key: "host.temp", title: "SoC temperature back to normal", message: "SoC temperature fell to 69.8 °C." }),

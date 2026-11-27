@@ -347,6 +347,63 @@ const hostile: { what: string; devices: Device[]; secret: string; keep?: string 
     devices: [device({ name: "g", state: "failed", error: "open USB:1235:8218:s=UPSECRET and HW:card=CARDSECRET" })],
     secret: "SECRET",
   },
+  {
+    what: "a path holding spaces",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/my SECRET/dawn SECRET/x.wav: no such file" })],
+    secret: "SECRET",
+    keep: "open <path>: no such file",
+  },
+  // The rows below guard the space rule above: a path's continuation stops
+  // after ":", ";", "," and ")", before a parenthesis or a bracket, and before
+  // a kept kernel path.
+  {
+    what: "a path before an errno text holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "read /srv/SECRET.wav: input/output error" })],
+    secret: "SECRET",
+    keep: "read <path>: input/output error",
+  },
+  {
+    what: "a path before a parenthesized note holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav (read/write): permission denied" })],
+    secret: "SECRET",
+    keep: "open <path> (read/write): permission denied",
+  },
+  {
+    what: "a path before a kept kernel path",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav /proc/asound/cards: permission denied" })],
+    secret: "SECRET",
+    keep: "open <path> /proc/asound/cards: permission denied",
+  },
+  {
+    what: "a path before a semicolon and a word holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav; read/write denied" })],
+    secret: "SECRET",
+    keep: "open <path> read/write denied",
+  },
+  {
+    what: "a path before a comma and a word holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav, read/write denied" })],
+    secret: "SECRET",
+    keep: "open <path> read/write denied",
+  },
+  {
+    what: "a path closing a parenthesis before a word holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "stat (/srv/SECRET.wav) open/close failed" })],
+    secret: "SECRET",
+    keep: "stat (<path>) open/close failed",
+  },
+  {
+    what: "a path before a bracketed note holding a slash",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav [read/write] denied" })],
+    secret: "SECRET",
+    keep: "open <path> [read/write] denied",
+  },
+  {
+    what: "a path before a kept sound device path",
+    devices: [device({ name: "g", state: "failed", error: "open /srv/SECRET.wav /dev/snd/pcmC0D0c: busy" })],
+    secret: "SECRET",
+    keep: "open <path> /dev/snd/pcmC0D0c: busy",
+  },
 ];
 
 for (const c of hostile) {
@@ -391,6 +448,33 @@ test("supportDetails leaves a serving device's stale error out and says 1 channe
 test("supportDetails shortens an ALSA long card name to its short name", () => {
   const got = supportDetails(null, null, [device({ name: "x", friendlyName: "USB Audio CODEC at usb-0000:01:00.0-1.2, high speed" })]);
   assert.ok(got.includes("Device 1: USB Audio CODEC\n"), got);
+});
+
+test("supportDetails names a raw file: id a file path without the path, and keeps its hidden-directory note", () => {
+  const replay = device({
+    name: "replay",
+    device: "file:/srv/SECRET dir/dawn.wav",
+    friendlyName: "File source",
+    idStable: true,
+    state: "skipped",
+    downCause: "open-failed",
+    error: "open file source: filesource: permission denied; under /home (hidden from the installed service)",
+  });
+  const got = supportDetails(null, null, [replay]);
+  const want = [
+    "Device 1: File source",
+    "  ID: file path, stable",
+    "  State: skipped (open-failed): open file source: filesource: permission denied; under <path> (hidden from the installed service)",
+  ].join("\n");
+  assert.ok(got.includes(want), got);
+  assert.ok(!got.includes("SECRET"), got);
+  // An older appliance omits idStable; a file id is still stable by its form.
+  const older = supportDetails(null, null, [device({ name: "y", device: "file:/srv/c.wav" })]);
+  assert.ok(older.includes("  ID: file path, stable\n"), older);
+  // The file check reads the raw id, as config.FileSourcePath does: a padded
+  // one is not a file source there.
+  const padded = supportDetails(null, null, [device({ name: "x", device: " file:/srv/b.wav", idStable: false })]);
+  assert.ok(padded.includes("  ID: card index, not stable (can change after a reboot or replug)"), padded);
 });
 
 test("supportDetails reports an empty device list and omits the section when devices are unknown", () => {
