@@ -105,7 +105,7 @@ export class StreamStatus {
 
   private buildRow(): DeviceRowRefs {
     const name = h("td");
-    const source = h("td", { class: "mono" });
+    const source = h("td", { class: "mono source-id" });
     const path = h("td", { class: "mono stream-paths" });
     const codec = h("td", { class: "mono stream-paths" });
     const client = h("td", { class: "mono" });

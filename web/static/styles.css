@@ -2047,6 +2047,12 @@ input[type="checkbox"]:checked + .switch-track .switch-thumb {
   white-space: pre-line;
 }
 
+/* A file source shows its whole file: id here, which can be one long word:
+   let it break anywhere so the table still fits a tablet-width card. */
+.client-table td.source-id {
+  overflow-wrap: anywhere;
+}
+
 /* Modal dialogs (restart, access token, confirm): native <dialog> elements
    opened with showModal(), so the browser supplies the top layer, the inert
    page, focus containment and Escape. The dialog is the surface and
