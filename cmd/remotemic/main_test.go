@@ -4,6 +4,8 @@ package main
 
 import (
 	"os"
+	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/tphakala/birdnet-go-remote-mic/internal/service"
@@ -25,6 +27,23 @@ func TestMain(m *testing.M) {
 	_ = os.Unsetenv(configEnv)
 	installedConfig = func() (string, string, error) { return "", "", nil }
 	installedSpec = func() (service.ServiceSpec, error) { return service.ServiceSpec{}, nil }
+	prodSandboxHiddenDir = sandboxHiddenDir
 	sandboxHiddenDir = func(string) (string, bool) { return "", false }
 	m.Run()
+}
+
+// prodSandboxHiddenDir is the sandboxHiddenDir the binary runs with, kept by
+// TestMain before it stubs the seam.
+var prodSandboxHiddenDir func(string) (string, bool)
+
+// TestSandboxHiddenDirSeamReadsTheMountTable pins the seam's production value:
+// the hidden-path note follows this process's mount table, not the lexical
+// prediction service.HiddenDir makes for the released units, which has the
+// same signature.
+func TestSandboxHiddenDirSeamReadsTheMountTable(t *testing.T) {
+	t.Parallel()
+	got, want := reflect.ValueOf(prodSandboxHiddenDir).Pointer(), reflect.ValueOf(service.SandboxHiddenDir).Pointer()
+	if got != want {
+		t.Errorf("sandboxHiddenDir is %s, want service.SandboxHiddenDir", runtime.FuncForPC(got).Name())
+	}
 }

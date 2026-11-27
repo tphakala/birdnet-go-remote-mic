@@ -974,6 +974,38 @@ func TestRetryOpenFailureNamesHiddenDir(t *testing.T) {
 	}
 }
 
+// TestRetryRereadsTheSandbox pins that every failed open asks the sandbox
+// again rather than keeping the first verdict: a path hidden at the first
+// attempt and visible at the retry loses the note and the restart-on-config
+// hint, rewritten in the one down condition.
+func TestRetryRereadsTheSandbox(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const path = "/home/pi/audio"
+		hideFromSandbox(t, path)
+		app, _, cancel := newTestAppliance(t)
+		defer shutdownApp(app, cancel)
+		failOpen(app)
+		app.reconcile(&config.Config{Devices: []config.Device{testDevice("moth", "file:"+path, "/m", 48000)}})
+		if act := applianceCenter(t, app).Active(); len(act) != 1 || !strings.Contains(act[0].Message, wantHiddenNote) {
+			t.Fatalf("precondition: active = %+v, want one condition with the hidden note", act)
+		}
+
+		sandboxHiddenDir = func(string) (string, bool) { return "", false }
+		runFor(t, app, retryBackoff[0]+time.Second)
+
+		act := applianceCenter(t, app).Active()
+		if len(act) != 1 {
+			t.Fatalf("active = %+v, want one down condition", act)
+		}
+		if strings.Contains(act[0].Message, wantHiddenNote) || !strings.Contains(act[0].Message, wantAutoRestart) {
+			t.Errorf("message = %q, want the automatic-restart wording and no hidden note", act[0].Message)
+		}
+		if e := app.devices["moth"].status().Error; strings.Contains(e, wantHiddenNote) {
+			t.Errorf("device error = %q, want no hidden note", e)
+		}
+	})
+}
+
 // TestStopRetriesStopsTheTimer pins shutdown: once stopRetries has run, a
 // pending retry never fires, so no attempt reopens a device after closeAll.
 func TestStopRetriesStopsTheTimer(t *testing.T) {
