@@ -87,15 +87,18 @@ func mountPoints() ([]string, error) {
 	return out, nil
 }
 
-// SandboxHiddenDir reports the directory HiddenDir names for path when this
-// process's own mount table shows a systemd sandbox mount there on the
-// path's way down (ProtectHome='s inaccessible directory, PrivateTmp='s
-// private directory or its read-only empty fallback): the process sees none
-// of the real content, so no open under it succeeds. Unlike HiddenDir it is
-// not a prediction for the installed unit but a reading of this process. It
-// reads /proc/self/mountinfo only when HiddenDir names a directory, touches
-// nothing under path, and reports nothing when the table cannot be read or
-// parsed.
+// SandboxHiddenDir reports the directory HiddenDir names for path when, in
+// this process's own mount table, the mount path lands on (walked lexically,
+// links not followed) is a systemd sandbox mount at exactly that directory:
+// the inaccessible directory ProtectHome= binds there, or PrivateTmp='s
+// private directory or its read-only empty fallback. The process then does
+// not see the host's files under it. Unlike HiddenDir it is not a prediction
+// for the installed unit but a reading of this process. A false result does
+// not mean path is visible: InaccessiblePaths= below the directory,
+// ProtectHome=tmpfs, TemporaryFileSystem= and a path reached through a
+// symlink are not recognized. It reads /proc/self/mountinfo only when
+// HiddenDir names a directory, touches nothing under path, and reports
+// nothing when the table cannot be read or parsed.
 func SandboxHiddenDir(path string) (dir string, ok bool) {
 	return sandboxHiddenDir(path, readMountinfo)
 }
