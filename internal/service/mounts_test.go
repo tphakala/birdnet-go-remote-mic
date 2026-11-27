@@ -138,6 +138,11 @@ func TestSandboxHiddenDir(t *testing.T) {
 		{"bind of another tmp directory", tmpFile, "", table(svcRoot, svcRun, svcHostTmp,
 			"201 289 179:2 /data/tmp /tmp rw,nosuid,noatime - ext4 /dev/mmcblk0p2 rw")},
 		{"malformed table", homeAudio, "", with("7 1 0:1")},
+		// A scan error after some lines leaves the entries read so far.
+		{"table read cut short by an error", homeAudio, "", func() ([]mountEntry, error) {
+			entries, _ := table(installed...)()
+			return entries, errors.New("token too long")
+		}},
 		{"path under no hidden directory", "/srv/audio", "", func() ([]mountEntry, error) {
 			t.Error("the mount table was read for a path under no hidden directory")
 			return nil, errors.New("not read")
