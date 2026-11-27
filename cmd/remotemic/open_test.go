@@ -232,10 +232,11 @@ type grantingCapture struct {
 
 func (c *grantingCapture) NegotiatedGeometry() audio.Geometry { return c.granted }
 
-// TestOpenDeviceRetryGeometry pins the ladder's wiring into the capture open: a
-// step becomes the requested period in frames at the device's rate (step 0 the
-// zero Geometry, the library default), and the runtime records what the driver
-// granted, not what was asked.
+// TestOpenDeviceRetryGeometry pins the ladder's wiring into the capture open,
+// through the appliance's production opener: a step becomes the requested
+// period in frames at the device's rate (step 0 the zero Geometry, the library
+// default), and the runtime records what the driver granted, not what was
+// asked.
 func TestOpenDeviceRetryGeometry(t *testing.T) {
 	cases := []struct {
 		name string
@@ -257,9 +258,9 @@ func TestOpenDeviceRetryGeometry(t *testing.T) {
 				return &grantingCapture{granted: granted}, capture.FormatS16LE, nil
 			})()
 			dev := &config.Device{Name: "g", Device: devMissing, Rate: tc.rate, Format: testFmtS16, Streams: []config.Stream{{Path: "/g", Mode: config.ModePCM, Channels: []int{1}}}}
-			rt, err := openDeviceRetry(dev, tc.step, levels.NewHub())
+			rt, err := newAppliance(t.Context(), nil, nil, nil, nil, nil).open(dev, tc.step, levels.NewHub())
 			if err != nil {
-				t.Fatalf("openDeviceRetry: %v", err)
+				t.Fatalf("open: %v", err)
 			}
 			defer func() { _ = rt.fanout.Close() }()
 			if asked != tc.want {
