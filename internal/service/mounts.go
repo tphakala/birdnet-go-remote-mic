@@ -20,22 +20,28 @@ const (
 	stateDirLabel  = "state directory"
 )
 
-// mountinfoPath lists the mounts of this process's namespace, one per line;
-// the fifth field is the mount point.
+// mountinfoPath lists the mounts of this process's namespace, one per line
+// (proc(5)).
 const mountinfoPath = "/proc/self/mountinfo"
 
-// parseMountPoints returns the mount points in a mountinfo listing. The kernel
-// escapes a space, tab, newline or backslash in a path as a three-digit octal
-// sequence (\040), which is decoded here.
-func parseMountPoints(r io.Reader) ([]string, error) {
-	var out []string
+// mountEntry is one line of a mountinfo listing (proc(5)): the mount's id,
+// its parent's id, the root of the mount within its filesystem, and the
+// mount point, both paths decoded.
+type mountEntry struct{ id, parent, root, point string }
+
+// parseMountinfo returns the entries of a mountinfo listing, whose first,
+// second, fourth and fifth fields are the id, parent id, root and mount point.
+// The kernel escapes a space, tab, newline or backslash in a path as a
+// three-digit octal sequence (\040), which is decoded here.
+func parseMountinfo(r io.Reader) ([]mountEntry, error) {
+	var out []mountEntry
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) < 5 {
 			return nil, fmt.Errorf("malformed line %q", sc.Text())
 		}
-		out = append(out, unescapeMountPath(f[4]))
+		out = append(out, mountEntry{id: f[0], parent: f[1], root: unescapeMountPath(f[3]), point: unescapeMountPath(f[4])})
 	}
 	return out, sc.Err()
 }
@@ -58,14 +64,113 @@ func unescapeMountPath(p string) string {
 	return b.String()
 }
 
-// mountPoints lists this host's mount points.
-func mountPoints() ([]string, error) {
+// readMountinfo reads this process's mount table.
+func readMountinfo() ([]mountEntry, error) {
 	f, err := os.Open(mountinfoPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	return parseMountPoints(f)
+	return parseMountinfo(f)
+}
+
+// mountPoints lists this host's mount points.
+func mountPoints() ([]string, error) {
+	entries, err := readMountinfo()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.point)
+	}
+	return out, nil
+}
+
+// SandboxHiddenDir reports the directory HiddenDir names for path when, in
+// this process's own mount table, the mount path lands on (walked lexically,
+// links not followed) is a systemd sandbox mount at exactly that directory:
+// the inaccessible directory ProtectHome= binds there, or PrivateTmp='s
+// private directory or its read-only empty fallback. The process then does
+// not see the host's files under it. Unlike HiddenDir it is not a prediction
+// for the installed unit but a reading of this process. A false result does
+// not mean path is visible: InaccessiblePaths= below the directory,
+// ProtectHome=tmpfs, TemporaryFileSystem= and a path reached through a
+// symlink are not recognized. It reads /proc/self/mountinfo only when
+// HiddenDir names a directory, touches nothing under path, and reports
+// nothing when the table cannot be read or parsed.
+func SandboxHiddenDir(path string) (dir string, ok bool) {
+	return sandboxHiddenDir(path, readMountinfo)
+}
+
+func sandboxHiddenDir(path string, mounts func() ([]mountEntry, error)) (string, bool) {
+	dir, ok := HiddenDir(path)
+	if !ok {
+		return "", false
+	}
+	entries, err := mounts()
+	if err != nil {
+		return "", false
+	}
+	if m := resolveMount(entries, path); m != nil && m.point == dir && sandboxRoot(m.root) {
+		return dir, true
+	}
+	return "", false
+}
+
+// resolveMount returns the mount path lands on, walking the mount tree the
+// way the kernel walks a path: from the namespace root (the / entry whose
+// parent is itself or is not listed), into the child of the current mount that covers
+// path at the shallowest mount point, until no child does. An overmount at
+// the same point is a child of the mount it covers, so it is taken; a mount
+// propagated beneath a covering one, or attached under a covered directory,
+// is never reached, whatever order the table lists them in. It returns nil
+// when no root is listed (a chroot onto a directory that is not a mount
+// point) or the walk does not end within one step per entry, which only a
+// malformed table with repeated ids can cause.
+func resolveMount(entries []mountEntry, path string) *mountEntry {
+	ids := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		ids[e.id] = true
+	}
+	var cur *mountEntry
+	for i := range entries {
+		if e := entries[i]; e.point == "/" && (e.parent == e.id || !ids[e.parent]) {
+			cur = &entries[i]
+			break
+		}
+	}
+	if cur == nil {
+		return nil
+	}
+	for range entries {
+		var next *mountEntry
+		for i := range entries {
+			e := &entries[i]
+			if e != cur && e.parent == cur.id && within(path, e.point) && (next == nil || len(e.point) <= len(next.point)) {
+				next = e
+			}
+		}
+		if next == nil {
+			return cur
+		}
+		cur = next
+	}
+	return nil
+}
+
+// sandboxRoot reports whether a mount's root is one systemd binds over a
+// directory it hides: ProtectHome='s <runtime>/systemd/inaccessible/dir,
+// PrivateTmp='s read-only fallback <runtime>/systemd/empty, or the tmp
+// directory of a PrivateTmp= private directory (/tmp/systemd-private-.../tmp,
+// /var/tmp/systemd-private-.../tmp, or /systemd-private-.../tmp when /tmp is
+// its own filesystem). The root is relative to the filesystem holding it, so
+// only its suffix or a distinctive part is matched; the filesystem type and
+// options say nothing, as the inaccessible bind shows /run's tmpfs.
+func sandboxRoot(root string) bool {
+	return strings.HasSuffix(root, "/systemd/inaccessible/dir") ||
+		strings.HasSuffix(root, "/systemd/empty") ||
+		(strings.Contains(root, "/systemd-private-") && strings.HasSuffix(root, "/tmp"))
 }
 
 // checkPurgeDirs is the purge's directory check: checkNotOverBinDir plus

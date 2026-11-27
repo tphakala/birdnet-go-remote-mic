@@ -570,7 +570,7 @@ func (a *appliance) pump(rt *deviceRuntime) {
 // anything else is retried by the backoff. The open-failure, resolve-failure
 // and failed-while-present messages share it so their promise cannot drift;
 // the disconnect message has its own wording (it comes back on reconnect),
-// and so does the open failure of a path the installed unit hides (see
+// and so does the open failure of a path this process's sandbox hides (see
 // openAndStart).
 func restartHint(dev *config.Device) string {
 	if config.IsCardIndexID(dev.Device) {
@@ -580,17 +580,24 @@ func restartHint(dev *config.Device) string {
 }
 
 // serviceHiddenDir reports the directory that hides a file device's path from
-// this process when the installed unit started it. It assumes the released
-// unit's sandbox (ProtectHome=true, PrivateTmp=true), under which nothing in
-// the directory is the real content and no open there succeeds; the installed
-// unit under a drop-in that relaxes either setting still gets the directory.
+// this process, read from its own mount table (see service.SandboxHiddenDir):
+// a sandbox mount at that directory, such as the ones ProtectHome= and
+// PrivateTmp= set up, so the process does not see the host's files there. A
+// drop-in that relaxes the setting for the path's directory leaves no mount
+// there, so a path that fails for another reason gets no directory. It is
+// called on the open-failure path only, as it reads /proc/self/mountinfo
+// each time.
 func serviceHiddenDir(id string) (dir string, ok bool) {
 	path, isFile := config.FileSourcePath(id)
-	if !isFile || !startedByInstalledUnit() {
+	if !isFile {
 		return "", false
 	}
-	return service.HiddenDir(path)
+	return sandboxHiddenDir(path)
 }
+
+// sandboxHiddenDir is service.SandboxHiddenDir, a seam so tests do not read
+// the mount table of the process running them.
+var sandboxHiddenDir = service.SandboxHiddenDir
 
 // resolveRefused reports whether openAndStart refuses the device for how its
 // id resolved (a.hw), before any open: an id that names no present hardware,
@@ -723,8 +730,9 @@ func (a *appliance) openAndStart(dev *config.Device) *deviceRuntime {
 			// private /tmp) does not say why; the log, the device record and
 			// the notification all carry this. The failed-while-present message
 			// never says it, as it follows a successful open. The device is
-			// still retried, since startedByInstalledUnit can take another unit
-			// for the installed one, where the path may open.
+			// still retried like every failed open, at one open per backoff
+			// step: downOpenFailed is retryable, and a cause of its own would
+			// be a new wire enum value (see the cause classes).
 			err = fmt.Errorf("%w; %s", err, hiddenNote(dir))
 			// A file id is set in the config file only, which a running
 			// appliance rereads only while its management API is down.
