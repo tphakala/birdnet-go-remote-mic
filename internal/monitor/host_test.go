@@ -1719,17 +1719,28 @@ func TestHostOverrunFileSourceWording(t *testing.T) {
 // A device whose name now names the other kind of source (a config edit from
 // an ALSA id to a file: id, or back) ends the old state as a stopped device,
 // in the old kind's words, and starts the new one from a first sighting: a
-// raised warning is resolved, never cleared, and the next overrun is logged
+// raised warning is resolved, never cleared, overruns the rate limit held
+// back are reported in the old kind's words, and the next overrun is logged
 // at once in the new kind's words.
 func TestHostOverrunsSourceKindChangeEndsState(t *testing.T) {
 	t.Parallel()
+	const (
+		fileOne  = `device "garden": 1 capture overrun(s), playback fell behind real time and restarted its clock, no audio skipped`
+		heldOwed = `device "garden": device source changed; 2 capture overrun(s) since the last overrun report, `
+	)
+	resolved := fmt.Sprintf(`device "garden": device source changed; overrun warning resolved after %d overrun(s) since the check that raised it`, overrunOnsetCount+2)
 	for _, tc := range []struct {
 		name     string
 		fromFile bool
+		bursts   []uint64 // overruns per poll before the change
+		resolves int
+		ended    string
 		next     string
 	}{
-		{"alsa to file", false, `device "garden": 1 capture overrun(s), playback fell behind real time and restarted its clock, no audio skipped`},
-		{"file to alsa", true, gardenOneOverrunLine},
+		{"raised, alsa to file", false, []uint64{overrunOnsetCount, 2}, 1, resolved, fileOne},
+		{"raised, file to alsa", true, []uint64{overrunOnsetCount, 2}, 1, resolved, gardenOneOverrunLine},
+		{"held, alsa to file", false, []uint64{1, 2}, 0, heldOwed + "audio lost", fileOne},
+		{"held, file to alsa", true, []uint64{1, 2}, 0, heldOwed + "playback fell behind real time and restarted its clock, no audio skipped", gardenOneOverrunLine},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1739,22 +1750,20 @@ func TestHostOverrunsSourceKindChangeEndsState(t *testing.T) {
 			h, lr := newHostLogT(feed.source, rec, hostSettings(), c)
 			key := deviceOverrunsKey(nameGarden)
 			h.poll()
-			overrunPoll(h, c, feed, 10*time.Second, overrunOnsetCount) // raised
-			overrunPoll(h, c, feed, 10*time.Second, 2)
+			for _, n := range tc.bursts {
+				overrunPoll(h, c, feed, 10*time.Second, n)
+			}
 			before := len(lr.all())
 			feed.devs[0] = DeviceCounters{Name: nameGarden, Gen: 2, File: !tc.fromFile}
 			pollEvery(h, c, 10*time.Second, 1)
-			if rec.resolveCount(key) != 1 || rec.clearCount(key) != 0 {
-				t.Fatalf("resolves=%d clears=%d, want 1 resolve and no clear", rec.resolveCount(key), rec.clearCount(key))
+			if rec.resolveCount(key) != tc.resolves || rec.clearCount(key) != 0 {
+				t.Fatalf("resolves=%d clears=%d, want %d resolve(s) and no clear", rec.resolveCount(key), rec.clearCount(key), tc.resolves)
 			}
-			if got, want := rec.resolveReason(key), "device source changed"; got != want {
+			if got, want := rec.resolveReason(key), "device source changed"; tc.resolves > 0 && got != want {
 				t.Errorf("resolve reason = %q, want %q", got, want)
 			}
 			overrunPoll(h, c, feed, 10*time.Second, 1)
-			want := []string{
-				fmt.Sprintf(`device "garden": device source changed; overrun warning resolved after %d overrun(s) since the check that raised it`, overrunOnsetCount+2),
-				tc.next,
-			}
+			want := []string{tc.ended, tc.next}
 			if got := lr.all()[before:]; !slices.Equal(got, want) {
 				t.Errorf("lines =\n%q\nwant\n%q", got, want)
 			}
