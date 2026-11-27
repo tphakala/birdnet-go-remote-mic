@@ -1,7 +1,6 @@
 # oapi-codegen configuration for the management API.
-# Generate with:
-#   go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.2 \
-#     -config api/oapi-codegen.yaml api/openapi.yaml
+# Generate with `task api:generate`, which pins the generator version
+# (OAPI_CODEGEN in Taskfile.yml).
 package: mgmtapi
 generate:
   models: true

@@ -5,6 +5,8 @@ vars:
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
   LDFLAGS: -s -w -X main.version={{.VERSION}}
+  # api:generate and api:verify must run the same generator version.
+  OAPI_CODEGEN: go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.2
 
 tasks:
   default:
@@ -88,7 +90,7 @@ tasks:
   api:generate:
     desc: Regenerate the management API code (Go and the web UI's TypeScript types) from the OpenAPI spec
     cmds:
-      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.2 -config api/oapi-codegen.yaml api/openapi.yaml
+      - "{{.OAPI_CODEGEN}} -config api/oapi-codegen.yaml api/openapi.yaml"
       - task: web:types:generate
 
   api:lint:
@@ -109,7 +111,7 @@ tasks:
   api:verify:
     desc: Fail if the generated API code is stale relative to the spec
     cmds:
-      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.2 -config api/oapi-codegen.yaml api/openapi.yaml
+      - "{{.OAPI_CODEGEN}} -config api/oapi-codegen.yaml api/openapi.yaml"
       - |
         if ! git diff --quiet -- internal/mgmtapi/gen.go; then
           echo "internal/mgmtapi/gen.go is out of date; run: task api:generate"
