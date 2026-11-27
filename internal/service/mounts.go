@@ -87,15 +87,17 @@ func mountPoints() ([]string, error) {
 	return out, nil
 }
 
-// SandboxHiddenDir reports the directory HiddenDir names for path when this
-// process's own mount table shows a systemd sandbox mount there on the
-// path's way down (ProtectHome='s inaccessible directory, PrivateTmp='s
-// private directory or its read-only empty fallback): the process sees none
-// of the real content, so no open under it succeeds. Unlike HiddenDir it is
-// not a prediction for the installed unit but a reading of this process. It
-// reads /proc/self/mountinfo only when HiddenDir names a directory, touches
-// nothing under path, and reports nothing when the table cannot be read or
-// parsed.
+// SandboxHiddenDir reports the directory HiddenDir names for path when, in
+// this process's own mount table, the mount path resolves to is a systemd
+// sandbox mount at that directory (ProtectHome='s inaccessible directory,
+// PrivateTmp='s private directory or its read-only empty fallback): the
+// process sees none of the host's files there. Unlike HiddenDir it is not a
+// prediction for the installed unit but a reading of this process. It
+// reports nothing for a path hidden another way (a tmpfs over the directory,
+// a mount below it) or reached through a symlink, so no result does not mean
+// the path is visible. It reads /proc/self/mountinfo only when HiddenDir
+// names a directory, touches nothing under path, and reports nothing when
+// the table cannot be read or parsed.
 func SandboxHiddenDir(path string) (dir string, ok bool) {
 	return sandboxHiddenDir(path, readMountinfo)
 }
@@ -115,11 +117,12 @@ func sandboxHiddenDir(path string, mounts func() ([]mountEntry, error)) (string,
 	return "", false
 }
 
-// resolveMount returns the mount path lands on, walking the mount tree the
-// way the kernel walks a path: from the namespace root (the / entry whose
-// parent is itself or is not listed), into the child of the current mount that covers
-// path at the shallowest mount point, until no child does. An overmount at
-// the same point is a child of the mount it covers, so it is taken; a mount
+// resolveMount returns the mount path lands on, walking the mount tree as
+// the kernel walks a path, except that it is lexical and follows no
+// symlink: from the namespace root (the / entry whose parent is itself or
+// is not listed), into the child of the current mount that covers path at
+// the shallowest mount point, until no child does. An overmount at the same
+// point is a child of the mount it covers, so it is taken; a mount
 // propagated beneath a covering one, or attached under a covered directory,
 // is never reached, whatever order the table lists them in. It returns nil
 // when no root is listed (a chroot onto a directory that is not a mount
