@@ -78,7 +78,7 @@ const OVERRUNS_DESCRIPTION =
 // FILE_OVERRUNS_DESCRIPTION is the same counter on a file source, where an
 // overrun restarts the playback clock and skips no audio from the file.
 const FILE_OVERRUNS_DESCRIPTION =
-  "Times playback fell behind real time, usually on a busy host, and restarted its clock; " +
+  "Times playback fell behind real time, usually on a busy host or slow storage, and restarted its clock; " +
   "no audio from the file is skipped. Counted since the device opened.";
 
 // metricItem builds one footer metric: its label and the value element sync

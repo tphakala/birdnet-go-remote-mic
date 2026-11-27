@@ -133,7 +133,10 @@ and its buffer filled before it was read, so audio was lost on every stream of
 that device; it usually points at a busy host or an unstable USB connection (a
 recovered system suspend counts as one too). With notifications on (the
 default), five overruns within five minutes raise a warning notification, which
-clears after five minutes without one.
+clears after five minutes without one. On a `file:` device an overrun means
+playback fell behind real time and restarted its clock instead; no audio from
+the file is skipped, and the same warning then points at a busy host or slow
+storage.
 
 ![The System tab: host telemetry, per-device stream status, and network and discovery settings](assets/system.png)
 

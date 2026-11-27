@@ -56,7 +56,7 @@ func TestProviderDeviceCounters(t *testing.T) {
 	// overrun figure comes from the device's capture source.
 	a := &deviceRuntime{dev: config.Device{Name: "orchard"}, gen: 5, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}, src: newOverrunCapture(3)}
 	a.streams[0].dropped.Store(42)
-	b := &deviceRuntime{dev: config.Device{Name: "bats"}, gen: 8, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
+	b := &deviceRuntime{dev: config.Device{Name: "bats", Device: "file:/srv/audio"}, gen: 8, state: mgmtserver.StateServing, streams: []*streamRuntime{{}}}
 	// A disabled and a failed device carry (possibly frozen) counters but must be
 	// excluded, so the monitor sees them go absent and resolves any active drops
 	// condition rather than clearing it with a misleading "client keeping up".
@@ -70,6 +70,11 @@ func TestProviderDeviceCounters(t *testing.T) {
 		got[0].Name != "orchard" || got[0].Gen != 5 || got[0].Dropped != 42 || got[0].Overruns != 3 ||
 		got[1].Name != "bats" || got[1].Gen != 8 || got[1].Dropped != 0 || got[1].Overruns != 0 {
 		t.Errorf("deviceCounters = %+v, want only the two serving devices with their gens and counters", got)
+	}
+	// The monitor words a file source's overruns for it, so the flag must come
+	// from the device id.
+	if len(got) == 2 && (got[0].File || !got[1].File) {
+		t.Errorf("File = %v, %v, want false for the ALSA device and true for the file: one", got[0].File, got[1].File)
 	}
 }
 

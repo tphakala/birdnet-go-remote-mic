@@ -122,7 +122,10 @@ progressive enhancement that degrades gracefully without it; no polyfills.
   entry. It also opens the confirm dialog (audited in every
   combination) and, once, drives the confirm, access-token and restart modals
   through Escape, an outside click and focus return (`MockServer.requireAuth`,
-  or `POST /__mock/auth?required=1` on a running mock, answers 401). Run it after layout, colour, type or focus changes; keep the fixtures
+  or `POST /__mock/auth?required=1` on a running mock, answers 401). It also
+  opens a device settings panel in every combination (audited, plus a check
+  that it stays inside its card) and checks once, at 768 px, that the Stream
+  Status table fits its scroll box. Run it after layout, colour, type or focus changes; keep the fixtures
   in step with `types.ts`.
 
 ## Accessibility (a CI gate, not a nicety)

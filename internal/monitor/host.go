@@ -54,6 +54,8 @@ const (
 	// overrunWindow raises it, and overrunClearAfter with none clears it. An
 	// isolated overrun (a passing scheduling hiccup, say) is only logged; a
 	// recurring pattern means the host is too busy or the USB link is unstable.
+	// For a file source it means the host or its storage cannot keep playback
+	// at real time.
 	overrunWindow     = 5 * time.Minute
 	overrunOnsetCount = 5
 	overrunClearAfter = 5 * time.Minute
@@ -97,13 +99,13 @@ type HostReader interface {
 	Undervoltage() (now, ok bool)
 }
 
-// DeviceCounters is one device's cumulative loss counters as the host monitor
-// polls them, tagged with the identity (Gen) of the runtime the counters belong
-// to. A restart hands the device a fresh runtime whose counters start at zero
-// and a new Gen; the monitor treats a Gen change as a restart even when a fresh
-// counter has already climbed past the old value between two polls, so it never
-// diffs two runtimes' counters: drops take the restart poll as a new baseline
-// and overruns count the fresh total. Gen zero (the source did not supply one)
+// DeviceCounters is one device's cumulative drop and overrun counters as the
+// host monitor polls them, tagged with the identity (Gen) of the runtime the
+// counters belong to. A restart hands the device a fresh runtime whose counters
+// start at zero and a new Gen; the monitor treats a Gen change as a restart
+// even when a fresh counter has already climbed past the old value between two
+// polls, so it never diffs two runtimes' counters: drops take the restart poll
+// as a new baseline and overruns count the fresh total. Gen zero (the source did not supply one)
 // disables the Gen check and leaves a counter going backwards as the sole
 // restart signal.
 type DeviceCounters struct {
@@ -115,8 +117,14 @@ type DeviceCounters struct {
 	Dropped uint64
 	// Overruns counts the capture overruns (ALSA xruns, which include a
 	// recovered system suspend) the device's capture recovered from; each one
-	// lost audio before any stream saw it.
+	// lost audio before any stream saw it. A file source counts something
+	// else here; see File.
 	Overruns uint64
+	// File reports that the device is a file source (config.FileSourcePath),
+	// whose overruns are its pacer restarting the clock after playback fell
+	// behind real time: they skip no audio and point at a busy host or slow
+	// storage rather than at USB.
+	File bool
 }
 
 // CounterSource returns the current per-device counters. A device absent from
@@ -163,6 +171,12 @@ type counterState struct {
 	ovLogAt    time.Time
 	ovUnlogged uint64
 	ovEpisode  uint64
+
+	// file is the source kind the state was created for (DeviceCounters.File).
+	// It never changes: a device whose name comes to name the other kind ends
+	// this state and starts a new one, so every line and notification of one
+	// state is worded for the source that produced its overruns.
+	file bool
 }
 
 // Host is the host-health condition monitor. A single goroutine polls the
@@ -489,6 +503,14 @@ func (h *Host) evaluateCounters(now time.Time) {
 	}
 	for _, d := range h.counters() {
 		st := h.devs[d.Name]
+		if st != nil && st.file != d.File {
+			// The name now names the other kind of source (its id was edited
+			// between a file: id and a card). End the old state as a stopped
+			// device, so the line it owes and any raised condition keep its own
+			// words, and start the new one from a first sighting.
+			h.endDevice(st, d.Name, "device source changed")
+			st = nil
+		}
 		if st == nil {
 			// First sighting (the monitor's first poll, a device back after the
 			// presence grace, or a re-enable): baseline only. A cumulative counter
@@ -503,9 +525,14 @@ func (h *Host) evaluateCounters(now time.Time) {
 				prev: d.Dropped, prevAt: now, gen: d.Gen, seen: true,
 				ovPrev: d.Overruns,
 				ov:     notify.NewFlap(overrunOnsetCount-1, overrunWindow, overrunClearAfter),
+				file:   d.File,
 			}
 			if d.Overruns > 0 {
-				h.logf("device %q: capture has recovered from %d overrun(s) since it opened", d.Name, d.Overruns)
+				if d.File {
+					h.logf("device %q: playback has recovered from %d overrun(s) since it opened (%s)", d.Name, d.Overruns, overrunCost(true))
+				} else {
+					h.logf("device %q: capture has recovered from %d overrun(s) since it opened", d.Name, d.Overruns)
+				}
 				st.ovLogAt = now
 			}
 			h.devs[d.Name] = st
@@ -601,7 +628,7 @@ func (h *Host) observeOverruns(st *counterState, now time.Time, name string, tot
 		h.logf("device %q: no capture overruns for %s, overrun warning cleared (%d overrun(s) since the check that raised it)",
 			name, humanDuration(int(overrunClearAfter/time.Second)), st.ovEpisode)
 		st.ovEpisode = 0
-		h.pub.Clear(deviceOverrunsKey(name), overrunsClearFor(name))
+		h.pub.Clear(deviceOverrunsKey(name), overrunsClearFor(name, st.file))
 	}
 	// One Event per overrun, capped at the onset count: past it a burst changes
 	// nothing, since an active flap only records the time of its latest event.
@@ -615,8 +642,8 @@ func (h *Host) observeOverruns(st *counterState, now time.Time, name string, tot
 		if st.ovUnlogged > 0 {
 			held = fmt.Sprintf(" (%d earlier overrun(s) not yet reported)", st.ovUnlogged)
 		}
-		h.logf("device %q: at least %d capture overruns within %s, audio lost; raising an overrun warning%s", name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)), held)
-		h.pub.Onset(overrunsOnset(name))
+		h.logf("device %q: at least %d capture overruns within %s, %s; raising an overrun warning%s", name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second)), overrunCost(st.file), held)
+		h.pub.Onset(overrunsOnset(name, st.file))
 		// The onset line reports any overruns not yet logged, and after the
 		// clear the first overrun is logged at once again. The episode starts
 		// with this poll's overruns.
@@ -644,9 +671,9 @@ func (h *Host) logOverruns(st *counterState, now time.Time, name string, delta u
 	}
 	switch {
 	case st.ovLogAt.IsZero():
-		h.logf("device %q: %d capture overrun(s), audio lost", name, st.ovUnlogged)
+		h.logf("device %q: %d capture overrun(s), %s", name, st.ovUnlogged, overrunCost(st.file))
 	case now.Sub(st.ovLogAt) >= overrunWindow:
-		h.logf("device %q: %d capture overrun(s) since the last overrun report, audio lost", name, st.ovUnlogged)
+		h.logf("device %q: %d capture overrun(s) since the last overrun report, %s", name, st.ovUnlogged, overrunCost(st.file))
 	default:
 		return
 	}
@@ -691,7 +718,7 @@ func (h *Host) endOverruns(st *counterState, name, reason string) {
 	case st.ov.Active():
 		h.logf("device %q: %s; overrun warning resolved after %d overrun(s) since the check that raised it", name, reason, st.ovEpisode)
 	case st.ovUnlogged > 0:
-		h.logf("device %q: %s; %d capture overrun(s) since the last overrun report, audio lost", name, reason, st.ovUnlogged)
+		h.logf("device %q: %s; %d capture overrun(s) since the last overrun report, %s", name, reason, st.ovUnlogged, overrunCost(st.file))
 	}
 }
 
@@ -738,19 +765,35 @@ func dropsClearFor(name string) notify.Notification {
 	return conditionClear("Client keeping up", name+" is no longer dropping frames")
 }
 
-func overrunsOnset(name string) notify.Notification {
+// overrunCost is what an overrun log line says the overruns cost. A capture
+// overrun loses audio; a file source's is its pacer restarting the clock
+// after playback fell behind real time, which skips none.
+func overrunCost(file bool) string {
+	if file {
+		return "playback fell behind real time and restarted its clock, no audio skipped"
+	}
+	return "audio lost"
+}
+
+func overrunsOnset(name string, file bool) notify.Notification {
+	format := "%s lost audio to at least %d capture overruns within %s; the host may be too busy or the USB connection unstable"
+	if file {
+		format = "%s had at least %d capture overruns within %s: playback fell behind real time and restarted its clock each time, skipping no audio from the file; the host may be too busy or the storage too slow"
+	}
 	return notify.Notification{
 		Severity: notify.SeverityWarning,
 		Category: notify.CategoryDevice,
 		Key:      deviceOverrunsKey(name),
 		Source:   name,
 		Title:    "Capture overruns",
-		Message: fmt.Sprintf("%s lost audio to at least %d capture overruns within %s; the host may be too busy or the USB connection unstable",
-			name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second))),
+		Message:  fmt.Sprintf(format, name, overrunOnsetCount, humanDuration(int(overrunWindow/time.Second))),
 	}
 }
 
-func overrunsClearFor(name string) notify.Notification {
-	return conditionClear("Capture overruns stopped",
-		fmt.Sprintf("%s has had no capture overruns for %s", name, humanDuration(int(overrunClearAfter/time.Second))))
+func overrunsClearFor(name string, file bool) notify.Notification {
+	msg := fmt.Sprintf("%s has had no capture overruns for %s", name, humanDuration(int(overrunClearAfter/time.Second)))
+	if file {
+		msg += "; playback is keeping up with real time"
+	}
+	return conditionClear("Capture overruns stopped", msg)
 }

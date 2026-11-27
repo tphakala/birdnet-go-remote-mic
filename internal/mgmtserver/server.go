@@ -93,7 +93,8 @@ type DeviceStatus struct {
 	ClientCount   int
 	DroppedFrames int64
 	// Overruns is the capture's cumulative count of recovered overruns (ALSA
-	// xruns) since the device was last opened. A failed device keeps the count it
+	// xruns, or a file source's playback clock restarts) since the device was
+	// last opened. A failed device keeps the count it
 	// reached; a record that holds no capture (never opened, disabled, or skipped)
 	// reports zero.
 	Overruns int64
