@@ -19,8 +19,9 @@
 //     in every combination), and, once, that Cancel takes focus, Escape and an
 //     outside click close a confirm and return focus, and the access-token
 //     prompt and the restart modal stay open under Escape;
-//   - the first device card's settings panel open (audited like a view, in
-//     every combination), and that nothing in it passes its card's right edge;
+//   - the settings panel of the first device card and of the file: device's
+//     card open (audited like a view, in every combination), and that nothing
+//     in it passes its card's right edge;
 //   - once, at a tablet width, that the Stream Status table fits its scroll
 //     box with the mock's long file: device id in it.
 //
@@ -1222,18 +1223,18 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
       }
     };
 
-    // The first device card's settings panel open, audited like a view, plus a
-    // check that it stays inside its card: at 320 px and a 16 px font the Save
-    // button once ended 10 px past its card while the page stayed 320 px wide,
-    // which the page overflow check cannot see.
-    const checkSettingsPanel = async (): Promise<void> => {
-      const where = "settings panel open";
+    // A device card's settings panel open (toggle is its settings button),
+    // audited like a view, plus a check that it stays inside its card: at
+    // 320 px and a 16 px font the Save button once ended 10 px past its card
+    // while the page stayed 320 px wide, which the page overflow check cannot
+    // see.
+    const checkSettingsPanel = async (toggle: string, where: string): Promise<void> => {
       const card = ".rack-card.expanded";
       try {
-        await page.click("#channel-rack .rack-card .card-settings-toggle");
+        await page.click(toggle);
         await page.waitForSelector(`${card} .card-settings:not([hidden]) .settings-actions`, { state: "visible", timeout: RECOVERY_MS });
       } catch {
-        findings.push({ kind: "render", where, key: "settings panel did not open", detail: "no open .card-settings after the first card's settings button" });
+        findings.push({ kind: "render", where, key: `${where}: did not open`, detail: `no open .card-settings after ${toggle}` });
         return;
       }
       await check(where, `${card} .card-settings`);
@@ -1316,7 +1317,10 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
             findings.push({ kind: "stability", where: view, key: `${r.selector} level cycle not seen`, detail: `${r.selector} never showed both -inf and a -xx.x dBFS readout (saw ${r.readouts.join(", ") || "none"})` });
           }
         }
-        await checkSettingsPanel();
+        // The first card, and the file: device's card, whose form carries the
+        // longer file source hints (its id tooltip names the file: id).
+        await checkSettingsPanel("#channel-rack .rack-card .card-settings-toggle", "settings panel open");
+        await checkSettingsPanel(`#channel-rack .rack-card:has([title*=": file:"]) .card-settings-toggle`, "file settings panel open");
       }
     }
 
