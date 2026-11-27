@@ -1022,8 +1022,8 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	if n.Category != notify.CategoryDevice || n.Severity != notify.SeverityWarning || n.Source != nameGarden || n.Title != "Capture overruns" {
 		t.Errorf("overrun onset = %+v, want a device warning titled %q sourced %q", n, "Capture overruns", nameGarden)
 	}
-	if want := overrunOnsetText(); !strings.Contains(n.Message, want) {
-		t.Errorf("overrun onset message = %q, want it to contain %q", n.Message, want)
+	if want := "garden lost audio to " + overrunOnsetText() + "; the host may be too busy or the USB connection unstable"; n.Message != want {
+		t.Errorf("overrun onset message = %q, want %q", n.Message, want)
 	}
 
 	// Overruns keep coming, a minute apart: the condition holds.
@@ -1043,8 +1043,8 @@ func TestHostOverrunsOnsetAndClear(t *testing.T) {
 	if rec.isActive(key) || rec.clearCount(key) != 1 {
 		t.Fatalf("active=%v clears=%d after the quiet dwell, want cleared once", rec.isActive(key), rec.clearCount(key))
 	}
-	if msg, want := rec.clearMessage(key), overrunClearText(); !strings.Contains(msg, want) {
-		t.Errorf("overrun clear message = %q, want it to contain %q", msg, want)
+	if msg, want := rec.clearMessage(key), "garden has had "+overrunClearText(); msg != want {
+		t.Errorf("overrun clear message = %q, want %q", msg, want)
 	}
 
 	// A fresh overrun after the clear starts a new window rather than re-raising.
