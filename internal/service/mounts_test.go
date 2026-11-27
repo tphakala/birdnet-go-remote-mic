@@ -131,6 +131,11 @@ func TestSandboxHiddenDir(t *testing.T) {
 			t.Error("the mount table was read for a path under no hidden directory")
 			return nil, errors.New("not read")
 		}},
+		// Derived: the process root is the namespace root, which proc(5)
+		// lists as its own parent.
+		{"self-parented namespace root", homeAudio, dirHome, table("1 1 0:2 / / rw - rootfs rootfs rw",
+			"2 1 0:22 /systemd/inaccessible/dir /home ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,mode=755")},
+		{"no root entry", homeAudio, "", table(svcHome)},
 		{"looping table", homeAudio, "", looping},
 	}
 	for _, tt := range tests {

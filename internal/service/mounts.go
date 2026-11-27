@@ -117,7 +117,7 @@ func sandboxHiddenDir(path string, mounts func() ([]mountEntry, error)) (string,
 
 // resolveMount returns the mount path lands on, walking the mount tree the
 // way the kernel walks a path: from the namespace root (the / entry whose
-// parent is not listed), into the child of the current mount that covers
+// parent is itself or is not listed), into the child of the current mount that covers
 // path at the shallowest mount point, until no child does. An overmount at
 // the same point is a child of the mount it covers, so it is taken; a mount
 // propagated beneath a covering one, or attached under a covered directory,
@@ -132,7 +132,7 @@ func resolveMount(entries []mountEntry, path string) *mountEntry {
 	}
 	var cur *mountEntry
 	for i := range entries {
-		if entries[i].point == "/" && !ids[entries[i].parent] {
+		if e := entries[i]; e.point == "/" && (e.parent == e.id || !ids[e.parent]) {
 			cur = &entries[i]
 			break
 		}
@@ -144,7 +144,7 @@ func resolveMount(entries []mountEntry, path string) *mountEntry {
 		var next *mountEntry
 		for i := range entries {
 			e := &entries[i]
-			if e.parent == cur.id && within(path, e.point) && (next == nil || len(e.point) <= len(next.point)) {
+			if e != cur && e.parent == cur.id && within(path, e.point) && (next == nil || len(e.point) <= len(next.point)) {
 				next = e
 			}
 		}
