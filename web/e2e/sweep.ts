@@ -1235,6 +1235,10 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
         await page.waitForSelector(`${card} .card-settings:not([hidden]) .settings-actions`, { state: "visible", timeout: RECOVERY_MS });
       } catch {
         findings.push({ kind: "render", where, key: `${where}: did not open`, detail: `no open .card-settings after ${toggle}` });
+        // The click may have expanded the card without showing the panel;
+        // reload so the next call does not find this card as .expanded.
+        await page.reload();
+        await ready("dashboard");
         return;
       }
       await check(where, `${card} .card-settings`);
@@ -1245,7 +1249,14 @@ async function sweep(flags: Flags, browser: Browser, server: MockServer): Promis
       for (const o of c.offenders) {
         findings.push({ kind: "overflow", where, key: `${o.selector} past its card`, detail: `${o.selector} right ${o.right}px > card right ${c.boxRight}px` });
       }
-      await page.click(`${card} .card-settings-toggle`);
+      try {
+        await page.click(`${card} .card-settings-toggle`);
+      } catch {
+        findings.push({ kind: "focus", where, key: `${where}: close click failed`, detail: "the settings button could not be clicked to close the panel" });
+        await page.reload();
+        await ready("dashboard");
+        return;
+      }
       const closed = await page
         .waitForFunction((sel: string) => document.querySelector(sel) === null, card, { timeout: RECOVERY_MS })
         .then(() => true)
